@@ -14,7 +14,7 @@ const event = (method: string, item?: Record<string, unknown>): ProviderEvent =>
   payload: item ? { item } : { turn: { status: "completed" } },
 });
 
-it("keeps a turn open for late image completion and appends images to the final reply", () => {
+it("forwards messages and the native terminal immediately, then emits late images separately", () => {
   const images = new CodexGeneratedImages();
   images.project(event("item/started", { type: "imageGeneration", id: "image" }));
   expect(
@@ -25,8 +25,8 @@ it("keeps a turn open for late image completion and appends images to the final 
         text: "Done.",
       }),
     ),
-  ).toEqual([]);
-  expect(images.project(event("turn/completed"))).toEqual([]);
+  ).toHaveLength(1);
+  expect(images.project(event("turn/completed"))).toEqual([event("turn/completed")]);
   const output = images.project(
     event("item/completed", {
       type: "imageGeneration",
@@ -35,14 +35,53 @@ it("keeps a turn open for late image completion and appends images to the final 
       savedPath: "C:\\images\\a.png",
     }),
   );
-  expect(output.map((entry) => entry.method)).toEqual([
-    "item/completed",
-    "item/completed",
-    "turn/completed",
-  ]);
+  expect(output.map((entry) => entry.method)).toEqual(["item/completed", "item/completed"]);
   expect(output[1]?.payload).toMatchObject({
-    item: { id: "answer", text: "Done.\n\n![](<C:/images/a.png>)" },
+    item: { text: "![](<C:/images/a.png>)" },
   });
+});
+
+it("never delays async questions or phase-less completions and flushes saved previews on close", () => {
+  const images = new CodexGeneratedImages();
+  images.project(event("item/started", { type: "imageGeneration", id: "image" }));
+  const question = event("item/completed", {
+    type: "agentMessage",
+    id: "question",
+    delivery: "async",
+    questions: [{ title: "Choose?" }],
+  });
+  expect(images.project(question)).toEqual([question]);
+  const answer = event("item/completed", { type: "agentMessage", id: "answer", text: "Done" });
+  expect(images.project(answer)).toEqual([answer]);
+  images.project(
+    event("item/completed", {
+      type: "imageGeneration",
+      id: "image",
+      status: "completed",
+      savedPath: "/tmp/a.png",
+    }),
+  );
+  const closed = images.project(event("session/closed"));
+  expect(closed[0]?.payload).toMatchObject({ item: { text: "![](</tmp/a.png>)" } });
+  expect(closed.at(-1)?.method).toBe("session/closed");
+});
+
+it("drops cancelled background work and never publishes the late image", () => {
+  const images = new CodexGeneratedImages();
+  images.project(event("item/started", { type: "imageGeneration", id: "image" }));
+  expect(images.project(event("turn/completed"))).toHaveLength(1);
+  images.cancel(ThreadId.make("thread"), TurnId.make("turn"));
+  expect(
+    images.project(
+      event("item/completed", {
+        type: "imageGeneration",
+        id: "image",
+        status: "completed",
+        savedPath: "/tmp/late.png",
+      }),
+    ),
+  ).toHaveLength(1);
+  expect(images.project(event("session/closed"))).toHaveLength(1);
 });
 
 it("creates an image-only reply, skips failed images and clears retired sessions", () => {

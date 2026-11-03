@@ -1,4 +1,5 @@
 import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { ApprovalRequestId, type ProviderRuntimeEvent } from "@t3tools/contracts";
 import { Deferred, Effect, Exit, Fiber, Option, PubSub, Queue, Scope, Stream } from "effect";
 import { expect, it } from "vitest";
@@ -7,6 +8,47 @@ import { run } from "../pi/PiMetadata.testkit.ts";
 import { fixture, threadId } from "../pi/PiAdapter.testkit.ts";
 import { PiRpcError } from "../pi/PiRpc.ts";
 import { makePiAdapter, parsePiResumeCursor } from "./PiAdapter.ts";
+
+it("keeps idle compaction alive on Stop and holds a new prompt until compaction ends", async () =>
+  fixture(async ({ settings, options, trace }) => {
+    options.environment.F5_PI_CASE = "compaction-hold";
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = yield* makePiAdapter(settings, options);
+          const terminal = yield* Deferred.make<void>();
+          yield* adapter.streamEvents.pipe(
+            Stream.runForEach((event) =>
+              event.type === "turn.completed" ? Deferred.succeed(terminal, undefined) : Effect.void,
+            ),
+            Effect.forkScoped,
+          );
+          yield* adapter.startSession({
+            threadId,
+            cwd: tmpdir(),
+            runtimeMode: "approval-required",
+          });
+          yield* adapter.readThread!(threadId);
+          yield* adapter.interruptTurn(threadId);
+          expect(yield* adapter.hasSession(threadId)).toBe(true);
+          yield* adapter.sendTurn({ threadId, input: "Held during compaction" });
+          yield* adapter.readThread!(threadId);
+          expect(
+            (yield* Effect.promise(trace)).filter((record) => record.type === "prompt"),
+          ).toEqual([]);
+          yield* Effect.promise(() =>
+            writeFile(options.environment.F5_PI_SESSION + ".compact-end", ""),
+          );
+          yield* Deferred.await(terminal);
+          const records = yield* Effect.promise(trace);
+          expect(records.filter((record) => record.type === "prompt")).toHaveLength(1);
+          expect(records.findIndex((record) => record.type === "prompt")).toBeGreaterThan(
+            records.findIndex((record) => record.type === "compaction-released"),
+          );
+        }),
+      ),
+    );
+  }));
 
 // "streaming": native work started before its wake reached F5, so Pi must queue the prompt.
 it.each([

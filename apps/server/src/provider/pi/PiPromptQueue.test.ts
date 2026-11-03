@@ -1,6 +1,23 @@
 import { expect, it } from "vitest";
 import { PiPromptQueue } from "./PiPromptQueue.ts";
 
+it("drops released prompts whose owner ended without registering a pending response", () => {
+  const queue = new PiPromptQueue();
+  queue.observe({ type: "compaction_start" });
+  queue.submit({ type: "prompt", id: "orphan" });
+  expect(queue.observe({ type: "compaction_end" }, false).send).toEqual([]);
+  queue.observe({ type: "compaction_start" });
+  expect(
+    queue.observe({
+      type: "response",
+      command: "prompt",
+      id: "orphan",
+      success: false,
+      error: "Cannot submit a prompt while compaction is in progress",
+    }).consumed,
+  ).toBe(false);
+});
+
 it("retries raced prompts ahead of held steers, exactly once and in order", () => {
   const queue = new PiPromptQueue();
   const first = { type: "prompt", id: "first", message: "Start" };

@@ -1,7 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import { Deferred, Effect, Layer, PubSub, Ref, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, PubSub, Ref, Stream } from "effect";
 import { expect } from "vitest";
 import { ServerConfig } from "../../config";
 import type { ProviderInstance } from "../ProviderDriver";
@@ -79,7 +79,13 @@ it.live("publishes merged models in order and refreshes rebuilt instances once",
           modelCatalog: { status: "failed" },
           models: [{ ...model, isUnlisted: true, capabilities: { source: "built-in" } }],
         });
+        const published = yield* registry.streamChanges.pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild({ startImmediately: true }),
+        );
         const failed = yield* registry.refreshInstance(id);
+        expect((yield* Fiber.join(published))[0]).toEqual(failed);
         expect(failed[0]?.models).toEqual([model]);
         expect(failed[0]?.probeOutcome).toBe("success");
         expect(updates).toEqual([[model], [model]]);

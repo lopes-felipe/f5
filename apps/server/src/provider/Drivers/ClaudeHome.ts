@@ -51,6 +51,17 @@ const CLAUDE_HOST_SESSION_VARIABLES = new Set([
   "CLAUDE_AGENT_SDK_VERSION",
 ]);
 
+export function stripClaudeHostSessionEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(baseEnv).filter(
+      ([key]) => !CLAUDE_HOST_SESSION_VARIABLES.has(platform === "win32" ? key.toUpperCase() : key),
+    ),
+  );
+}
+
 /**
  * Prepare Claude's child environment after account isolation and instance env
  * merging. Ignore the host's entrypoint, but honor an explicit instance value.
@@ -65,11 +76,7 @@ export const makeClaudeProcessEnvironment = Effect.fn("makeClaudeProcessEnvironm
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, FileSystem.FileSystem | Path.Path> {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const cleanEnv = { ...baseEnv };
-  for (const key of Object.keys(cleanEnv)) {
-    if (CLAUDE_HOST_SESSION_VARIABLES.has(platform === "win32" ? key.toUpperCase() : key))
-      delete cleanEnv[key];
-  }
+  const cleanEnv = stripClaudeHostSessionEnvironment(baseEnv, platform);
   // Account environment already includes instance values; reapply explicit overrides
   // after stripping inherited host session identity.
   for (const variable of instanceEnvironment ?? []) {

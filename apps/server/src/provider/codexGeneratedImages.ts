@@ -1,47 +1,113 @@
-import { EventId, ProviderItemId, type ProviderEvent } from "@t3tools/contracts";
+import {
+  EventId,
+  ProviderItemId,
+  type ProviderEvent,
+  type ThreadId,
+  type TurnId,
+} from "@t3tools/contracts";
 import { appendGeneratedImageEmbeds } from "@t3tools/shared/generatedImageMarkdown";
 
 interface ImageTurn {
-  running: Set<string>;
+  event: ProviderEvent;
   saved: Map<string, string>;
-  answer?: ProviderEvent;
-  terminal?: ProviderEvent;
+  shown: Set<string>;
+  answer: string;
+  ended: boolean;
 }
 
-/** Retain the native terminal until all image items already started have completed. */
+/** Native messages and terminals never wait for image work. Late images get their own reply. */
 export class CodexGeneratedImages {
   #turns = new Map<string, ImageTurn>();
-
-  project(event: ProviderEvent): ProviderEvent[] {
-    const prefix = JSON.stringify([
+  #cancelledTargets = new Set<string>();
+  #key(event: ProviderEvent): string {
+    return JSON.stringify([
       event.threadId,
       event.providerInstanceId,
       event.sessionGeneration,
+      event.turnId,
     ]);
-    const key = prefix + ":" + event.turnId;
+  }
+
+  #flush(state: ImageTurn, createdAt: string): ProviderEvent[] {
+    const paths = [...state.saved.values()].filter(
+      (path) =>
+        !state.shown.has(path) && appendGeneratedImageEmbeds(state.answer, [path]) !== state.answer,
+    );
+    for (const path of state.saved.values()) state.shown.add(path);
+    if (!paths.length) return [];
+    const base = state.event;
+    const id = "generated-images:" + base.id + ":" + state.shown.size;
+    return [
+      {
+        ...base,
+        createdAt,
+        id: EventId.makeUnsafe(id),
+        itemId: ProviderItemId.make(id),
+        method: "item/completed",
+        payload: {
+          item: { type: "agentMessage", id, text: appendGeneratedImageEmbeds("", paths) },
+        },
+      },
+    ];
+  }
+
+  cancel(threadId: ThreadId, turnId?: TurnId): void {
+    if (this.#cancelledTargets.size >= 64)
+      this.#cancelledTargets.delete(this.#cancelledTargets.values().next().value!);
+    this.#cancelledTargets.add(JSON.stringify([threadId, turnId ?? null]));
+    for (const [key, state] of this.#turns) {
+      if (state.event.threadId === threadId && (!turnId || state.event.turnId === turnId)) {
+        this.#turns.delete(key);
+      }
+    }
+  }
+
+  project(event: ProviderEvent): ProviderEvent[] {
+    // At most 64 turns of bookkeeping are retained, never a completion or user question.
     if (event.method === "session/closed" || event.method === "session/exited") {
-      for (const id of this.#turns.keys()) if (id.startsWith(prefix + ":")) this.#turns.delete(id);
-      return [event];
+      const output: ProviderEvent[] = [];
+      for (const [key, state] of this.#turns) {
+        if (
+          state.event.threadId !== event.threadId ||
+          state.event.sessionGeneration !== event.sessionGeneration ||
+          state.event.providerInstanceId !== event.providerInstanceId
+        )
+          continue;
+        output.push(...this.#flush(state, event.createdAt));
+        this.#turns.delete(key);
+      }
+      return [...output, event];
     }
     if (!event.turnId) return [event];
-    const payload = event.payload as
-      | { item?: Record<string, unknown>; turn?: { status?: string } }
-      | undefined;
-    const item = payload?.item;
+    const key = this.#key(event);
+    const target = JSON.stringify([event.threadId, event.turnId]);
+    const threadTarget = JSON.stringify([event.threadId, null]);
+    if (event.method === "turn/started") {
+      this.#cancelledTargets.delete(threadTarget);
+      this.#cancelledTargets.delete(target);
+    }
+    if (this.#cancelledTargets.has(target) || this.#cancelledTargets.has(threadTarget))
+      return [event];
+    const item = (event.payload as { item?: Record<string, unknown> } | undefined)?.item;
     let state = this.#turns.get(key);
     if (
       item?.type === "imageGeneration" &&
       (event.method === "item/started" || event.method === "item/completed")
     ) {
       if (!state) {
-        state = { running: new Set(), saved: new Map() };
+        if (this.#turns.size >= 64) this.#turns.delete(this.#turns.keys().next().value!);
+        state = {
+          event,
+          saved: new Map(),
+          shown: new Set(),
+          answer: "",
+          ended: false,
+        };
         this.#turns.set(key, state);
       }
       const id = String(item.id);
-      if (event.method === "item/started") state.running.add(id);
-      else {
-        state.running.delete(id);
-        const path = item.savedPath ?? item.saved_path;
+      if (event.method === "item/completed") {
+        const path = "f5ImagePath" in item ? item.f5ImagePath : (item.savedPath ?? item.saved_path);
         if (
           item.status === "completed" &&
           item.failure == null &&
@@ -55,42 +121,14 @@ export class CodexGeneratedImages {
     if (
       event.method === "item/completed" &&
       item?.type === "agentMessage" &&
-      item.phase !== "commentary"
-    ) {
-      const previous = state.answer;
-      state.answer = event;
-      return previous ? [previous] : [];
-    }
-    const output = [event];
-    if (event.method === "turn/completed" || event.method === "turn/aborted") {
-      state.terminal = event;
-      output.length = 0;
-      if (payload?.turn?.status !== "completed") state.running.clear();
-    }
-    if (!state.terminal || state.running.size) return output;
-    const answer = state.answer;
-    const original = (answer?.payload as { item?: Record<string, unknown> } | undefined)?.item;
-    const text = typeof original?.text === "string" ? original.text : "";
-    const finalText = appendGeneratedImageEmbeds(text, state.saved.values());
-    if (answer || finalText) {
-      const base = answer ?? state.terminal;
-      output.push({
-        ...base,
-        id: EventId.makeUnsafe("generated-images:" + base.id),
-        itemId: answer?.itemId ?? ProviderItemId.make("generated-images:" + event.turnId),
-        method: "item/completed",
-        payload: {
-          item: {
-            ...original,
-            type: "agentMessage",
-            id: original?.id ?? "generated-images:" + event.turnId,
-            text: finalText,
-          },
-        },
-      });
-    }
-    output.push(state.terminal);
-    this.#turns.delete(key);
-    return output;
+      item.delivery !== "async" &&
+      item.phase !== "commentary" &&
+      typeof item.text === "string"
+    )
+      state.answer = item.text;
+    const terminal = event.method === "turn/completed" || event.method === "turn/aborted";
+    if (terminal) state.ended = true;
+    const images = state.ended ? this.#flush(state, event.createdAt) : [];
+    return terminal ? [...images, event] : [event, ...images];
   }
 }

@@ -17,7 +17,7 @@ export class PiPromptQueue {
     return [record];
   }
 
-  observe(event: PiRpcRecord): { consumed: boolean; send: PiRpcRecord[] } {
+  observe(event: PiRpcRecord, hasActiveTurn = true): { consumed: boolean; send: PiRpcRecord[] } {
     if (event.type === "compaction_start") this.compacting = true;
     if (event.type === "response" && event.command === "prompt") {
       const prompt = this.#pending.get(event.id);
@@ -36,7 +36,8 @@ export class PiPromptQueue {
     if (event.type !== "compaction_end") return { consumed: false, send: [] };
     this.compacting = false;
     this.#rejected = 0;
-    const send = this.#held.splice(0);
+    const held = this.#held.splice(0);
+    const send = hasActiveTurn ? held : [];
     for (const prompt of send) this.#pending.set(prompt.id, prompt);
     return { consumed: false, send };
   }

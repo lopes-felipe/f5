@@ -17,7 +17,15 @@ process.stdin.on('data',chunk=>{pending+=chunk.toString('utf8');for(;;){const en
 switch(record.type){
 case 'get_state':if(process.env.F5_PI_CASE==='fork-state-failure'&&sessionFile.endsWith('.fork')){emit({type:'response',id:record.id,command:record.type,success:false});break;}reply(record,{model:process.env.F5_PI_CASE==='wrong-model-readback'?{provider:'one',id:'shared'}:model,thinkingLevel:'high',sessionFile,isStreaming:false,isCompacting:false,pendingMessageCount:0});break;
 case 'get_available_models':reply(record,{models:[{...model,reasoning:true}]});break;
-case 'get_commands':if(process.env.F5_PI_CASE!=='hang-start')reply(record,{commands:[{name:'reload',source:'extension'}]});break;
+case 'get_commands':
+ if(process.env.F5_PI_CASE!=='hang-start')reply(record,{commands:[{name:'reload',source:'extension'}]});
+ if(process.env.F5_PI_CASE==='compaction-hold'){
+  emit({type:'compaction_start'});
+  const timer=setInterval(()=>{if(fs.existsSync(process.env.F5_PI_SESSION+'.compact-end')){
+   clearInterval(timer);trace({type:'compaction-released'});emit({type:'compaction_end',aborted:true});
+  }},10);
+ }
+ break;
 case 'get_entries':reply(record,{leafId,entries});break;
 case 'get_messages':{
  const byId=new Map(entries.map(entry=>[entry.id,entry]));const branch=[];let current=leafId;

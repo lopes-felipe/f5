@@ -696,10 +696,9 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
     const nativeEvent = (ctx: PiContext, event: PiRpcRecord) =>
       Effect.gen(function* () {
         if (ctx.closed) return;
-        const delivery = ctx.prompts.observe(event);
+        const delivery = ctx.prompts.observe(event, ctx.turns.activeTurnId !== undefined);
         if (delivery.consumed) return;
         for (const record of delivery.send) {
-          if (!ctx.turns.activeTurnId) break;
           yield* ctx.rpc
             .send(record)
             .pipe(Effect.tapError(() => stop(ctx, "Pi held prompt delivery failed.", true)));
@@ -1261,7 +1260,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
             const ctx = yield* requireSession(threadId);
             if (ctx.wake)
               return yield* stop(ctx, "Pi native continuation interrupted by the user.");
-            if (ctx.prompts.compacting) {
+            if (ctx.turns.activeTurnId && ctx.prompts.compacting) {
               ctx.prompts.clear();
               return yield* stop(ctx, "Pi compaction interrupted by the user.");
             }
