@@ -20,7 +20,7 @@ function setup(
       url: string,
     ) => Promise<import("@t3tools/contracts").OpenExternalUrlStatus>;
     cancelBrowserOpen?: (profileId: string) => void;
-    alwaysAllowed?: (profileId: string, integration: "codex-chrome" | "codex-computer") => boolean;
+    alwaysAllowed?: (profileId: string, integration: "codex-chrome") => boolean;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
@@ -710,7 +710,38 @@ describe("background capability negotiation", () => {
       },
     });
     expect(h.attention).toHaveBeenCalledTimes(2);
-    expect(alwaysAllowed).toHaveBeenCalledTimes(2);
+    // Only Codex Chrome can be always allowed: Computer Use never consults the grant.
+    expect(alwaysAllowed).toHaveBeenCalledTimes(1);
+  });
+  it("answers the profile's waiting Codex Chrome requests once it chooses always allow", () => {
+    let allowed = false;
+    const h = setup(false, undefined, { alwaysAllowed: () => allowed });
+    h.hello();
+    const session = (requestId: string, integration: "codex-chrome" | "codex-computer") => ({
+      type: "accessRequested",
+      request: {
+        requestId,
+        threadId: requestId,
+        sessionGeneration: "s",
+        reason: "r",
+        kind: "chrome-session",
+        chromeSession: { integration },
+        apps: [],
+      },
+    });
+    h.process.emit("message", session("a", "codex-chrome"));
+    h.process.emit("message", session("b", "codex-chrome"));
+    h.process.emit("message", session("c", "codex-computer"));
+    expect(h.attention).toHaveBeenCalledTimes(3);
+    allowed = true;
+    h.channel.answerPendingAlwaysAllowed("profile");
+    const answered = sent(h)
+      .filter((message) => message.type === "accessAnswer")
+      .map((message) => (message as { answer: { requestId: string } }).answer.requestId);
+    expect(answered).toEqual(["a", "b"]);
+    // Answered once: a repeat finds nothing waiting.
+    h.channel.answerPendingAlwaysAllowed("profile");
+    expect(sent(h).filter((message) => message.type === "accessAnswer")).toHaveLength(2);
   });
   it("arms an approved takeover only after consent and keeps it across consent cleanup", async () => {
     const h = setup();

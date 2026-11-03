@@ -17,8 +17,8 @@ export class ComputerConsentAuthority {
       request: (profileId: string, answer: ComputerAccessAnswer) => ComputerAccessRequested;
       answer: (profileId: string, answer: ComputerAccessAnswer) => void;
       show: (profileId: string, options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
-      /** Remembers "always allow" for a profile's sessions of this integration. */
-      alwaysAllow?: (profileId: string, integration: "codex-chrome" | "codex-computer") => void;
+      /** Remembers "always allow" for a profile's Codex Chrome sessions, once answered. */
+      alwaysAllow?: (profileId: string, integration: "codex-chrome") => void;
     },
   ) {}
 
@@ -27,6 +27,7 @@ export class ComputerConsentAuthority {
     const key = `${profileId}\0${offered.backendIncarnation}\0${request.requestId}`;
     if (this.pending.has(key)) throw new Error("This request is already being reviewed.");
     this.pending.add(key);
+    let remember = false;
     try {
       let answer: ComputerAccessAnswer = {
         requestId: request.requestId,
@@ -78,7 +79,7 @@ export class ComputerConsentAuthority {
           defaultId: 0,
           cancelId: 0,
           noLink: true,
-          ...(session && this.options.alwaysAllow
+          ...(session?.integration === "codex-chrome" && this.options.alwaysAllow
             ? {
                 checkboxLabel: "Always allow for this profile (revoke in Settings)",
                 checkboxChecked: false,
@@ -89,11 +90,10 @@ export class ComputerConsentAuthority {
           answer = { ...answer, allowChromeSetup: choice.response === 1 };
         else if (request.kind === "chrome-session") {
           answer = { ...answer, allowChromeSession: choice.response === 1 };
-          // Stored only once the request is still current, just before it is answered.
-          if (session && choice.response === 1 && choice.checkboxChecked) {
-            this.options.request(profileId, offered);
-            this.options.alwaysAllow?.(profileId, session.integration);
-          }
+          remember =
+            session?.integration === "codex-chrome" &&
+            choice.response === 1 &&
+            choice.checkboxChecked;
         } else answer = { ...answer, allowSessionActions: choice.response === 1 };
       } else {
         const decisions: ComputerAccessAnswer["decisions"][number][] = [];
@@ -135,6 +135,8 @@ export class ComputerConsentAuthority {
     } finally {
       this.pending.delete(key);
     }
+    // Stored only once the request it answers was still current and has been answered.
+    if (remember) this.options.alwaysAllow?.(profileId, "codex-chrome");
   }
 
   async confirmResume(

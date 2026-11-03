@@ -48,7 +48,7 @@ describe("renderer computer controls", () => {
   it("lists and revokes the profile's always-allow, and can't grant one", () => {
     const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
     const integrationConsents = {
-      list: vi.fn((): Array<"codex-chrome" | "codex-computer"> => ["codex-chrome"]),
+      list: vi.fn((): Array<"codex-chrome"> => ["codex-chrome"]),
       revoke: vi.fn(),
     };
     registerComputerIpc(
@@ -71,9 +71,10 @@ describe("renderer computer controls", () => {
     expect(integrationConsents.list).toHaveBeenCalledWith("profile");
     handlers.get("desktop-computer:revoke-integration-consent")!(event, "codex-chrome");
     expect(integrationConsents.revoke).toHaveBeenCalledWith("profile", "codex-chrome");
-    expect(() =>
-      handlers.get("desktop-computer:revoke-integration-consent")!(event, "claude-chrome"),
-    ).toThrow("Invalid integration");
+    for (const other of ["claude-chrome", "codex-computer"])
+      expect(() =>
+        handlers.get("desktop-computer:revoke-integration-consent")!(event, other),
+      ).toThrow("Invalid integration");
     expect([...handlers.keys()].some((name) => /allow|grant/.test(name))).toBe(false);
   });
 });
