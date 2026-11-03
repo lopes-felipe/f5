@@ -13,7 +13,10 @@ import { ChromeArtifactCache, defaultChromeArtifactCacheIo } from "./chromeArtif
 import { claudeChromeDescriptor, parseNativeHostManifest } from "./chromeNativeHost";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import { ChromeSessionRuntime, type ChromeRuntimeDeps } from "./chromeSessionRuntime";
-import { CLAUDE_IN_CHROME_EXTERNAL_CONFLICT } from "./Layers/claudeAgentBrowser";
+import {
+  CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+  CLAUDE_IN_CHROME_TOOLS_CHANGED,
+} from "./Layers/claudeAgentBrowser";
 
 const base = PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!;
 const record: ClaudeChromeRecord = {
@@ -185,6 +188,34 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     h.runtime.reconnecting("t", "g1");
     expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(true);
     expect(await h.runtime.admit(call("read_page"), "t")).toBeUndefined();
+  });
+
+  it("names an uncertified tool as a tools change, at startup and once connected", async () => {
+    const h = await setup();
+    await h.runtime.prepare(session());
+    await cliLaunch();
+    const changed = { ...verifiedStatus(), tools: [{ name: "read_page" }, { name: "new_tool" }] };
+    expect(await h.runtime.connected("t", "g1", changed)).toBe(false);
+    expect(h.runtime.status("t", "g1")?.detail).toBe(CLAUDE_IN_CHROME_TOOLS_CHANGED);
+    h.runtime.reconnecting("t", "g1");
+    expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(true);
+    expect(await h.runtime.connected("t", "g1", changed)).toBe(false);
+    expect(h.runtime.status("t", "g1")?.detail).toBe(CLAUDE_IN_CHROME_TOOLS_CHANGED);
+  });
+
+  it("never blames a provenance mismatch on new tools", async () => {
+    const h = await setup();
+    await h.runtime.prepare(session());
+    await cliLaunch();
+    const spoofed = {
+      ...verifiedStatus(),
+      config: { type: "stdio", command: "/tmp/not-claude", args: ["--claude-in-chrome-mcp"] },
+      tools: [{ name: "read_page" }, { name: "new_tool" }],
+    };
+    expect(await h.runtime.connected("t", "g1", spoofed)).toBe(false);
+    expect(h.runtime.status("t", "g1")?.detail).toBe(
+      "F5 could not verify the Chrome server's provenance.",
+    );
   });
 
   it("fails startup when the wrapper never lands, keeping the journal restorable", async () => {

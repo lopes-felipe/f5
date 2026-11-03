@@ -839,6 +839,9 @@ export const DesktopComputerHostMessage = Schema.Union([
 ]);
 export type DesktopComputerHostMessage = typeof DesktopComputerHostMessage.Type;
 
+/** Integrations whose consent a profile can always allow in main's dialog. */
+export type AlwaysAllowedIntegration = "codex-chrome" | "claude-chrome";
+
 /** User controls only. Execution and grant widening are never exposed over WebSocket. */
 export interface DesktopComputerAutomationBridge {
   readonly status: () => Promise<ComputerAutomationBackendStatus>;
@@ -849,7 +852,7 @@ export interface DesktopComputerAutomationBridge {
   readonly setPaused: (threadId: string, paused: boolean) => Promise<void>;
   readonly onStatus: (callback: (status: ComputerAutomationBackendStatus) => void) => () => void;
   /** Integrations this profile always allows; only main's consent dialog adds one. */
-  readonly integrationConsents?: () => Promise<ReadonlyArray<"codex-chrome">>;
+  readonly integrationConsents?: () => Promise<ReadonlyArray<AlwaysAllowedIntegration>>;
   /** Rejects when the revocation couldn't be saved. */
-  readonly revokeIntegrationConsent?: (integration: "codex-chrome") => Promise<void>;
+  readonly revokeIntegrationConsent?: (integration: AlwaysAllowedIntegration) => Promise<void>;
 }

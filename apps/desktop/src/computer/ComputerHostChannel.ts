@@ -24,6 +24,10 @@ import type { ChromeProcessSupervisor } from "./ChromeProcessSupervisor";
 import { sameComputerHolder } from "./ComputerLeaseAuthority";
 import { ComputerExecutionAuthority } from "./ComputerExecutionAuthority";
 import { ComputerTakeoverCoordinator } from "./ComputerTakeoverCoordinator";
+import {
+  alwaysAllowableIntegration,
+  type AlwaysAllowableIntegration,
+} from "./IntegrationConsentStore";
 
 interface Backend {
   child: ChildProcess;
@@ -53,8 +57,8 @@ export class ComputerHostChannel {
       supervisor?: ChromeProcessSupervisor;
       /** Signature check for an adopted process and its parent, by PID; returns why it fails. */
       verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
-      /** The profile chose "always allow" for Codex Chrome sessions in main's dialog. */
-      alwaysAllowed?: (profileId: string, integration: "codex-chrome") => boolean;
+      /** The profile chose "always allow" for this integration in main's dialog. */
+      alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -737,23 +741,23 @@ export class ComputerHostChannel {
   broadcast(message: DesktopComputerHostMessage): void {
     for (const profileId of this.backends.keys()) this.send(profileId, message);
   }
-  /** Answers a pending Codex Chrome session request the profile always allows. */
+  /**
+   * Answers a pending request the profile always allows: a Codex Chrome session or a
+   * Claude in Chrome setup.
+   */
   private answerAlwaysAllowed(profileId: string, request: ComputerAccessRequested): boolean {
-    const integration = request.chromeSession?.integration;
+    const integration = alwaysAllowableIntegration(request);
     const backend = this.backends.get(profileId);
-    if (
-      !backend ||
-      request.kind !== "chrome-session" ||
-      integration !== "codex-chrome" ||
-      !this.chromeOptions?.alwaysAllowed?.(profileId, integration)
-    )
+    if (!backend || !integration || !this.chromeOptions?.alwaysAllowed?.(profileId, integration))
       return false;
     try {
       this.answerAccess(profileId, {
         requestId: request.requestId,
         backendIncarnation: backend.incarnation,
         decisions: [],
-        allowChromeSession: true,
+        ...(request.kind === "chrome-setup"
+          ? { allowChromeSetup: true }
+          : { allowChromeSession: true }),
       });
       return true;
     } catch {
@@ -762,8 +766,8 @@ export class ComputerHostChannel {
     }
   }
   /**
-   * The profile just chose "always allow": answer its other Codex Chrome session requests
-   * still waiting, such as those of threads that restarted together.
+   * The profile just chose "always allow": answer its other requests for that kind still
+   * waiting, such as those of threads that restarted together.
    */
   answerPendingAlwaysAllowed(profileId: string): void {
     const backend = this.backends.get(profileId);

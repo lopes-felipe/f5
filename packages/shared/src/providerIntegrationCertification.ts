@@ -1,6 +1,7 @@
 import claudeChromeRecords from "./certification/claude-chrome.generated.json" with { type: "json" };
 import codexChromeRecords from "./certification/codex-chrome.generated.json" with { type: "json" };
 import codexComputerRecords from "./certification/codex-computer.generated.json" with { type: "json" };
+import { CLAUDE_SDK_BASELINE_VERSION } from "./claudeSdkManifest";
 
 /**
  * The single certification source for provider-native browser and computer integrations.
@@ -86,8 +87,9 @@ interface RecordBase<I extends ProviderIntegration, Identity> {
   readonly platform: "darwin" | "win32";
   readonly arch: string;
   /**
-   * Exact versions for bundled providers (Claude). Codex records hold certified floors
-   * (`*Min`); a missing `*Max` means no ceiling, and live checks guard newer builds.
+   * Certified floors (`*Min`): Claude's bundled SDK and CLI (`sdkMin`, `cliMin`), Codex's
+   * app, plugin, service or CLI. A missing `*Max` means no ceiling; live checks guard
+   * newer builds.
    */
   readonly versions: Readonly<Record<string, string>>;
   readonly identity: Identity;
@@ -194,9 +196,9 @@ export function compareVersions(a: string | undefined, b: string | undefined): n
   return 0;
 }
 
-/** The version a record certifies from: a Codex floor (`appMin`) or Claude's exact CLI. */
+/** The version a record certifies from: a Codex app floor or Claude's bundled SDK floor. */
 const certifiedFrom = (record: ProviderIntegrationRecord) =>
-  record.versions.appMin ?? record.versions.cliVersion;
+  record.versions.appMin ?? record.versions.sdkMin;
 
 /** Newest certified version first; records without a readable version last. */
 export function newestRecordsFirst<R extends ProviderIntegrationRecord>(
@@ -239,8 +241,9 @@ export function integrationTemplateRecord<R extends ProviderIntegrationRecord>(
 }
 
 /**
- * The only certification gate. Desktop and server both read it, so they cannot disagree.
+ * The Codex certification gate. Desktop and server both read it, so they cannot disagree.
  * With the installed provider `version`, the record that covers it; otherwise the newest.
+ * Claude in Chrome's gate is `claudeChromeRecordFor` (newer records shadow older floors).
  */
 export function certifiedIntegrationRecord<I extends ProviderIntegration>(
   integration: I,
@@ -257,12 +260,36 @@ export function certifiedIntegrationRecord<I extends ProviderIntegration>(
     : recordForVersion(certifying, version);
 }
 
+/**
+ * The only Claude in Chrome gate, for server, desktop and acceptance alike: the record
+ * with the highest floor at or below the bundled SDK `version`, only when that record
+ * certifies. Any newer record shadows older floors for the builds it covers: an unstamped
+ * one (a changed descriptor) until its own live run, and a withdrawn one for good, so
+ * withdrawing the covering record is the off-switch. `version` defaults to the pinned SDK
+ * (`sdk:audit` fails unless the bundled package matches it), which is what desktop runs.
+ */
+export function claudeChromeRecordFor(
+  platform: string,
+  arch: string,
+  version: string = CLAUDE_SDK_BASELINE_VERSION,
+  records: ReadonlyArray<ClaudeChromeRecord> = PROVIDER_INTEGRATION_RECORDS["claude-chrome"],
+): ClaudeChromeRecord | undefined {
+  const record = recordForVersion(
+    records.filter((entry) => entry.platform === platform && entry.arch === arch),
+    version,
+  );
+  return record && recordCertifies(record) ? record : undefined;
+}
+
+/** Whether the integration is open for this build. Claude goes through its versioned gate. */
 export function isIntegrationCertified(
   integration: ProviderIntegration,
   platform: string,
   arch: string,
 ): boolean {
-  return certifiedIntegrationRecord(integration, platform, arch) !== undefined;
+  return integration === "claude-chrome"
+    ? claudeChromeRecordFor(platform, arch) !== undefined
+    : certifiedIntegrationRecord(integration, platform, arch) !== undefined;
 }
 
 /** Looks a record up by id, certified or not: restore keeps working after retirement. */
@@ -315,6 +342,7 @@ export const INTEGRATION_DISCLOSURES: Readonly<Record<ProviderIntegration, Reado
       "Claude creates native-messaging folders for seven browsers (Chrome, Brave, Arc, Edge, Chromium, Vivaldi and Opera) and points them at F5's Claude.",
       "Claude's first-time reconnect page can't open from F5; open the Claude in Chrome extension yourself.",
       "Running `claude --chrome` in a terminal reclaims the browser connection from F5.",
+      "With Always allow, F5 takes the browser connection back from your terminal Claude without asking; another F5 profile's setup always asks.",
       "In Full access, Claude skips the extension's per-site permission prompts.",
     ],
     "codex-chrome": [
@@ -333,6 +361,10 @@ export const INTEGRATION_DISCLOSURES: Readonly<Record<ProviderIntegration, Reado
 export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
   Record<ProviderIntegration, ReadonlyArray<string>>
 > = Object.freeze({
+  // All observed by the live harness. Not required of it: permission-mode behaviour
+  // (disclosed), routing isolation (another profile's registration always asks; see
+  // `alwaysAllowableIntegration`), stale native hosts (unit-tested), and frozen-server stop
+  // (main's group kill is unit-tested; a queued browser call needs a mutation fixture).
   "claude-chrome": [
     "manifests-and-wrapper",
     "allowed-origins",
@@ -340,12 +372,8 @@ export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
     "status-shape",
     "tool-inventory",
     "read-only-call",
-    "permission-mode",
     "restore-original-bytes",
-    "routing-isolation",
-    "stale-native-host",
     "terminal-claude-unaffected",
-    "frozen-server-stop-cancels-queued",
     "byte-identical-launches",
   ],
   // Session admission: `policy-off-kills` stands in for a per-call denial F5 can't make.

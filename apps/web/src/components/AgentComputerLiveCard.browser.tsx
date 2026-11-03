@@ -117,6 +117,33 @@ it("holds a Codex Chrome session request briefly so one main answers never flash
   }
 });
 
+it("holds a Claude in Chrome setup request the same way", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
+  const screen = await render(<ComputerAccessInbox />);
+  const dialog = page.getByRole("dialog", { name: "Browser integration setup" });
+  try {
+    store.request({
+      requestId: "claude-setup",
+      threadId,
+      backendIncarnation: "fixture-backend",
+      kind: "chrome-setup",
+      reason: "Synthetic component test",
+      apps: [],
+      chromeSetup: {
+        provider: "claude",
+        previousTargets: ["/terminal/wrapper"],
+        targetPath: "/f5/wrapper",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, AUTO_ANSWER_GRACE_MS / 2));
+    expect(dialog.query()).toBeNull();
+    await expect.element(dialog).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
+});
+
 it("retains idle controls while apps are granted and removes them after access is revoked", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
   const store = useAgentComputerActivityStore.getState();

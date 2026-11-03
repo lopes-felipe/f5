@@ -2,6 +2,10 @@ import type { ComputerAccessAnswer, ComputerAccessRequested } from "@t3tools/con
 import { appTier, restrictComputerTier, type ComputerPlatform } from "@t3tools/shared/computerApps";
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import type { MessageBoxOptions, MessageBoxReturnValue } from "electron";
+import {
+  alwaysAllowableIntegration,
+  type AlwaysAllowableIntegration,
+} from "./IntegrationConsentStore";
 
 const quoteUntrusted = (value: string) =>
   JSON.stringify(
@@ -17,8 +21,11 @@ export class ComputerConsentAuthority {
       request: (profileId: string, answer: ComputerAccessAnswer) => ComputerAccessRequested;
       answer: (profileId: string, answer: ComputerAccessAnswer) => void;
       show: (profileId: string, options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
-      /** Remembers "always allow" for a profile's Codex Chrome sessions, once answered. */
-      alwaysAllow?: (profileId: string, integration: "codex-chrome") => void;
+      /**
+       * Remembers "always allow" for a profile's Codex Chrome sessions or Claude in Chrome
+       * setup, once answered.
+       */
+      alwaysAllow?: (profileId: string, integration: AlwaysAllowableIntegration) => void;
     },
   ) {}
 
@@ -28,6 +35,7 @@ export class ComputerConsentAuthority {
     if (this.pending.has(key)) throw new Error("This request is already being reviewed.");
     this.pending.add(key);
     let remember = false;
+    const rememberable = this.options.alwaysAllow ? alwaysAllowableIntegration(request) : undefined;
     try {
       let answer: ComputerAccessAnswer = {
         requestId: request.requestId,
@@ -79,22 +87,19 @@ export class ComputerConsentAuthority {
           defaultId: 0,
           cancelId: 0,
           noLink: true,
-          ...(session?.integration === "codex-chrome" && this.options.alwaysAllow
+          ...(rememberable
             ? {
                 checkboxLabel: "Always allow for this profile (revoke in Settings)",
                 checkboxChecked: false,
               }
             : {}),
         });
+        remember = rememberable !== undefined && choice.response === 1 && choice.checkboxChecked;
         if (request.kind === "chrome-setup")
           answer = { ...answer, allowChromeSetup: choice.response === 1 };
-        else if (request.kind === "chrome-session") {
+        else if (request.kind === "chrome-session")
           answer = { ...answer, allowChromeSession: choice.response === 1 };
-          remember =
-            session?.integration === "codex-chrome" &&
-            choice.response === 1 &&
-            choice.checkboxChecked;
-        } else answer = { ...answer, allowSessionActions: choice.response === 1 };
+        else answer = { ...answer, allowSessionActions: choice.response === 1 };
       } else {
         const decisions: ComputerAccessAnswer["decisions"][number][] = [];
         for (const app of request.apps) {
@@ -136,7 +141,7 @@ export class ComputerConsentAuthority {
       this.pending.delete(key);
     }
     // Stored only once the request it answers was still current and has been answered.
-    if (remember) this.options.alwaysAllow?.(profileId, "codex-chrome");
+    if (remember && rememberable) this.options.alwaysAllow?.(profileId, rememberable);
   }
 
   async confirmResume(

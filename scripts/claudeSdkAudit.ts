@@ -1,22 +1,31 @@
 import ts from "typescript";
+import { compareVersions } from "@t3tools/shared/providerIntegrationCertification";
 
 /**
- * Claude in Chrome records that no longer describe the pinned SDK. A record must be
- * regenerated (and re-certified) or marked withdrawn whenever the pin moves; withdrawn
- * records stay so restore can still find their historical rules.
+ * Claude in Chrome targets (`platform-arch`) that no non-withdrawn record covers at the
+ * pinned SDK. Records are floors, so a pin bump keeps an unchanged descriptor covered;
+ * descriptor drift is caught by `generate-claude-chrome-descriptor.ts --check`.
  */
-export function staleClaudeChromeRecords(
+export function uncoveredClaudeChromeTarget(
   records: ReadonlyArray<{
-    readonly id: string;
+    readonly platform: string;
+    readonly arch: string;
     readonly versions: Readonly<Record<string, string>>;
     /** The CHANGELOG note explaining the withdrawal. */
     readonly withdrawn?: string;
   }>,
   pinnedSdkVersion: string,
 ): string[] {
-  return records
-    .filter((record) => !record.withdrawn && record.versions.sdkVersion !== pinnedSdkVersion)
-    .map((record) => record.id);
+  const targets = [...new Set(records.map((record) => `${record.platform}-${record.arch}`))];
+  return targets.filter(
+    (target) =>
+      !records.some(
+        (record) =>
+          `${record.platform}-${record.arch}` === target &&
+          !record.withdrawn &&
+          (compareVersions(record.versions.sdkMin, pinnedSdkVersion) ?? 1) <= 0,
+      ),
+  );
 }
 
 function literalValues(type: ts.Type): string[] {

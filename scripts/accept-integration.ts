@@ -22,7 +22,9 @@ import { createInterface } from "node:readline/promises";
 import {
   PROVIDER_INTEGRATION_RECORDS,
   certifiedIntegrationRecord,
+  claudeChromeRecordFor,
   recordCertifies,
+  type ClaudeChromeRecord,
   type IntegrationAcceptanceReport,
   type ProviderIntegration,
   type ProviderIntegrationRecord,
@@ -161,19 +163,33 @@ const certifying = tagged.filter(
   (record) =>
     record.platform === process.platform && record.arch === process.arch && recordCertifies(record),
 );
-// The checklist exercises the record the runtime will pick for the installed provider.
+// The checklist exercises the record the runtime will pick for the installed provider:
+// for Claude, the SDK the candidate bundles (its pin, as `sdk:audit` requires).
 const providerVersion =
-  integration === "claude-chrome" ? undefined : plistVersion("/Applications/ChatGPT.app");
-const exercised = certifiedIntegrationRecord(
-  integration,
-  process.platform,
-  process.arch,
-  certifying as never,
-  providerVersion,
-);
+  integration === "claude-chrome"
+    ? /CLAUDE_SDK_BASELINE_VERSION = "([^"]+)"/.exec(
+        run("git", ["show", `${sourceCommit}:packages/shared/src/claudeSdkManifest.ts`]),
+      )?.[1]
+    : plistVersion("/Applications/ChatGPT.app");
+const exercised =
+  integration === "claude-chrome"
+    ? providerVersion &&
+      claudeChromeRecordFor(
+        process.platform,
+        process.arch,
+        providerVersion,
+        tagged as ClaudeChromeRecord[],
+      )
+    : certifiedIntegrationRecord(
+        integration,
+        process.platform,
+        process.arch,
+        certifying as never,
+        providerVersion,
+      );
 if (!exercised)
   throw new Error(
-    `${tag} certifies no ${integration} record for darwin-${process.arch}${providerVersion ? ` covering ChatGPT ${providerVersion}` : ""}.`,
+    `${tag} certifies no ${integration} record for darwin-${process.arch}${providerVersion ? ` covering ${integration === "claude-chrome" ? "Claude SDK" : "ChatGPT"} ${providerVersion}` : ""}.`,
   );
 
 const fixture = await startMutationServer();
