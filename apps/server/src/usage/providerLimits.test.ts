@@ -1,8 +1,96 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { Effect } from "effect";
+import * as Semaphore from "effect/Semaphore";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { makeProviderLimits } from "./providerLimits.ts";
 import { normalizeProviderLimits, providerLimitsIdentity } from "./providerLimits.ts";
 import { normalizeResetCredits, normalizeRateLimits } from "./codexAccountUsage.ts";
 
 describe("provider limits", () => {
+  it.each([
+    {
+      environment: { CURSOR_API_KEY: " api-key ", AGENT_CLI_CREDENTIAL_STORE: "memory" },
+      expectedRequests: 2,
+    },
+    {
+      environment: { CURSOR_API_KEY: "api-key", CURSOR_AUTH_TOKEN: "explicit-token" },
+      expectedRequests: 1,
+    },
+    {
+      environment: { CURSOR_API_KEY: "api-key" },
+      apiEndpoint: "https://proxy.example",
+      expectedRequests: 0,
+    },
+    {
+      environment: { CURSOR_API_KEY: "api-key", CURSOR_API_ENDPOINT: "https://proxy.example" },
+      expectedRequests: 0,
+    },
+    { environment: { CURSOR_API_KEY: "api-key" }, invalidExchange: true, expectedRequests: 1 },
+  ])(
+    "uses the selected Cursor account with safe API-key exchange: %j",
+    async ({ environment, apiEndpoint, invalidExchange, expectedRequests }) => {
+      const fetchMock = vi.fn(async (url: string) =>
+        Response.json(
+          url.endsWith("/auth/exchange_user_api_key")
+            ? invalidExchange
+              ? {}
+              : { accessToken: "exchanged-token" }
+            : { planUsage: { totalPercentUsed: 37 } },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      try {
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const capability = yield* makeProviderLimits({
+              provider: "cursor",
+              instanceId: ProviderInstanceId.make("cursor-test"),
+              displayName: "Cursor",
+              enabled: true,
+              environment,
+              ...(apiEndpoint ? { apiEndpoint } : {}),
+            });
+            return yield* capability.refreshAccount!(yield* Semaphore.make(1));
+          }).pipe(Effect.scoped),
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(expectedRequests);
+        if (expectedRequests === 2) {
+          expect(fetchMock.mock.calls[0]?.[0]).toBe(
+            "https://api2.cursor.sh/auth/exchange_user_api_key",
+          );
+          expect(fetchMock).toHaveBeenNthCalledWith(
+            1,
+            expect.any(String),
+            expect.objectContaining({
+              redirect: "error",
+              headers: expect.objectContaining({ Authorization: "Bearer api-key" }),
+            }),
+          );
+        }
+        if (expectedRequests > 0 && !invalidExchange) {
+          expect(fetchMock).toHaveBeenLastCalledWith(
+            "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
+            expect.objectContaining({
+              headers: expect.objectContaining({
+                Authorization: environment.CURSOR_AUTH_TOKEN
+                  ? "Bearer explicit-token"
+                  : "Bearer exchanged-token",
+              }),
+            }),
+          );
+          const section = result.snapshot.sections[0];
+          expect(section?.outcome).toBe("available");
+          if (section?.kind === "provider-limits")
+            expect(section.snapshot?.data.windows[0]?.usedPercent).toBe(37);
+        } else {
+          expect(result.snapshot.sections[0]?.outcome).toBe("unavailable");
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("changes the history identity when any account-selecting input changes", () => {
     const base = { HOME: "/users/me" };
     const identity = (

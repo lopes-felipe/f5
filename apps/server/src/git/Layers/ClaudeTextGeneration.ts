@@ -58,6 +58,9 @@ import {
 import { makeClaudeEnvironment } from "../../provider/Drivers/ClaudeHome.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
+const NO_SESSION_PERSISTENCE = "--no-session-persistence";
+// Claude Code before 2.0.63 rejects this flag before executing the prompt.
+const NO_SESSION_PERSISTENCE_REJECTED = "error: unknown option '--no-session-persistence'";
 const DEFAULT_CLAUDE_MODEL_SELECTION = createModelSelection(
   ProviderInstanceId.make("claudeAgent"),
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.claudeAgent,
@@ -183,7 +186,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ...(fastMode ? { fastMode: true } : {}),
     };
 
-    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
+    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
+      noSessionPersistence: boolean,
+    ) {
       const configuredBinary = claudeSettings.binaryPath.trim() || "claude";
       const binaryPath =
         configuredBinary.includes("/") || configuredBinary.includes("\\")
@@ -204,6 +209,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         "--tools",
         "",
         "--disable-slash-commands",
+        ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
         // A default permission mode from the user's settings (plan mode, for one) must not
         // change how metadata is generated.
         "--permission-mode",
@@ -264,26 +270,33 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { concurrency: "unbounded" },
       );
 
-      if (exitCode !== 0) {
+      return { stdout, stderr, exitCode };
+    });
+
+    const rawStdout = yield* runClaudeCommand(true).pipe(
+      Effect.flatMap((result) =>
+        result.exitCode !== 0 && result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED)
+          ? runClaudeCommand(false)
+          : Effect.succeed(result),
+      ),
+      Effect.flatMap(({ stdout, stderr, exitCode }) => {
+        if (exitCode === 0) return Effect.succeed(stdout);
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
         const detail =
           claudeErrorResult(stdoutDetail) ??
           (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Claude CLI command failed: ${detail}`
-              : `Claude CLI command failed with code ${exitCode}.`,
-          kind: classifyCliFailureKind(detail),
-        });
-      }
-
-      return stdout;
-    });
-
-    const rawStdout = yield* runClaudeCommand().pipe(
+        return Effect.fail(
+          new TextGenerationError({
+            operation,
+            detail:
+              detail.length > 0
+                ? `Claude CLI command failed: ${detail}`
+                : `Claude CLI command failed with code ${exitCode}.`,
+            kind: classifyCliFailureKind(detail),
+          }),
+        );
+      }),
       Effect.scoped,
       Effect.timeoutOption(CLAUDE_TIMEOUT_MS),
       Effect.flatMap(
