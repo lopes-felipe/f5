@@ -874,6 +874,67 @@ const lifecycleLayer = it.layer(
 );
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect(
+    "delivers questions and terminal before Stop or session close with an unfinished image",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const questionSeen = yield* Deferred.make<void>();
+        const terminalSeen = yield* Deferred.make<void>();
+        const events: ProviderRuntimeEvent[] = [];
+        const collected = yield* adapter.streamEvents.pipe(
+          Stream.take(5),
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              events.push(event);
+              if (event.type === "user-input.requested")
+                yield* Deferred.succeed(questionSeen, undefined);
+              if (event.type === "turn.completed") yield* Deferred.succeed(terminalSeen, undefined);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const emit = (method: string, item?: Record<string, unknown>) =>
+          lifecycleManager.emit("event", {
+            id: asEventId("image-lifecycle:" + method + ":" + String(item?.id)),
+            kind: "notification",
+            provider: "codex",
+            threadId: asThreadId("image-lifecycle"),
+            turnId: asTurnId("image-lifecycle-turn"),
+            ...(item ? { itemId: asItemId(String(item.id)) } : {}),
+            createdAt: new Date().toISOString(),
+            method,
+            payload: item ? { item } : { turn: { status: "completed" } },
+          } satisfies ProviderEvent);
+        emit("item/started", { type: "imageGeneration", id: "pending-image" });
+        emit("item/completed", {
+          type: "agentMessage",
+          id: "question",
+          delivery: "async",
+          questions: [{ title: "Choose?" }],
+        });
+        yield* Deferred.await(questionSeen);
+        emit("item/completed", { type: "agentMessage", id: "answer", text: "Done." });
+        emit("turn/completed");
+        yield* Deferred.await(terminalSeen);
+        yield* adapter.interruptTurn(
+          asThreadId("image-lifecycle"),
+          asTurnId("image-lifecycle-turn"),
+        );
+        emit("session/closed");
+        yield* Fiber.join(collected);
+        assert.deepEqual(
+          events.map((event) => event.type),
+          [
+            "item.started",
+            "user-input.requested",
+            "item.completed",
+            "turn.completed",
+            "session.exited",
+          ],
+        );
+      }),
+  );
   it.effect("preserves the legacy turn/aborted notification", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

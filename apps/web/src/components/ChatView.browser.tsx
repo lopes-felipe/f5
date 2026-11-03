@@ -3488,6 +3488,8 @@ describe("ChatView timeline (full app)", () => {
             ? {
                 type: "result",
                 result: {
+                  // The picker rejects results for an older query. Only expose this
+                  // file after the debounced search matches the editor's current query.
                   entries:
                     body.query === "src/a"
                       ? [{ path: "src/a.ts", kind: "file", parentPath: "src" }]
@@ -3503,6 +3505,16 @@ describe("ChatView timeline (full app)", () => {
       const editor = await waitForComposerEditor();
       await page.elementLocator(editor).fill("Use @src/a");
       await page.getByText("a.ts", { exact: true }).click();
+      await vi.waitFor(() =>
+        expect(
+          usePendingUserInputDraftStore.getState().answersByThreadId[THREAD_ID]?.[
+            "question-request"
+          ]?.choice,
+        ).toMatchObject({
+          customAnswer: "Use @src/a.ts ",
+          mentions: [expect.objectContaining({ path: "src/a.ts" })],
+        }),
+      );
       await vi.waitFor(() =>
         expect(editor.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
       );

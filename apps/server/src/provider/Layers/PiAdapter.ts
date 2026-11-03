@@ -81,12 +81,15 @@ import {
   type PiResumeCursor,
 } from "../pi/PiHistory.ts";
 
+import { PiPromptQueue } from "../pi/PiPromptQueue.ts";
+
 interface PiContext {
   readonly threadId: ThreadId;
   readonly generation: string;
   readonly scope: Scope.Closeable;
   readonly rpc: PiRpcConnection;
   readonly turns: PiTurnState;
+  readonly prompts: PiPromptQueue;
   readonly dialogs: PiUiRequests;
   readonly eventGate: Semaphore.Semaphore;
   baselineModel: { provider: string; modelId: string } | null;
@@ -693,6 +696,13 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
     const nativeEvent = (ctx: PiContext, event: PiRpcRecord) =>
       Effect.gen(function* () {
         if (ctx.closed) return;
+        const delivery = ctx.prompts.observe(event, ctx.turns.activeTurnId !== undefined);
+        if (delivery.consumed) return;
+        for (const record of delivery.send) {
+          yield* ctx.rpc
+            .send(record)
+            .pipe(Effect.tapError(() => stop(ctx, "Pi held prompt delivery failed.", true)));
+        }
         const barrier =
           event.type === "response" && typeof event.id === "string"
             ? ctx.barriers.get(event.id)
@@ -937,6 +947,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                     scope,
                     rpc,
                     turns: new PiTurnState(),
+                    prompts: new PiPromptQueue(),
                     dialogs: new PiUiRequests(generation),
                     eventGate: Semaphore.makeUnsafe(1),
                     baselineModel: null,
@@ -1151,23 +1162,22 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   deliveryStarted = true;
                   // Native work can start before its wake reaches F5. Steering lets Pi
                   // queue the prompt into that run, or start an idle run as usual.
-                  yield* ctx.rpc
-                    .send(
-                      compact
-                        ? { type: "compact", id, ...compact }
-                        : {
-                            type: "prompt",
-                            id,
-                            message,
-                            streamingBehavior: "steer",
-                            ...(images.length ? { images } : {}),
-                          },
-                    )
-                    .pipe(
-                      Effect.tapError(() =>
-                        stop(ctx, "Pi turn delivery could not be verified.", true),
-                      ),
-                    );
+                  const records = ctx.prompts.submit(
+                    compact
+                      ? { type: "compact", id, ...compact }
+                      : {
+                          type: "prompt",
+                          id,
+                          message,
+                          streamingBehavior: "steer",
+                          ...(images.length ? { images } : {}),
+                        },
+                  );
+                  yield* Effect.forEach(records, (record) => ctx.rpc.send(record)).pipe(
+                    Effect.tapError(() =>
+                      stop(ctx, "Pi turn delivery could not be verified.", true),
+                    ),
+                  );
                   yield* emit(ctx, {
                     type: "turn.started",
                     turnId,
@@ -1250,6 +1260,10 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
             const ctx = yield* requireSession(threadId);
             if (ctx.wake)
               return yield* stop(ctx, "Pi native continuation interrupted by the user.");
+            if (ctx.turns.activeTurnId && ctx.prompts.compacting) {
+              ctx.prompts.clear();
+              return yield* stop(ctx, "Pi compaction interrupted by the user.");
+            }
             const abort = ctx.turns.interrupt();
             if (abort) yield* ctx.rpc.send(abort);
           }),

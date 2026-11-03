@@ -830,6 +830,32 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   });
 
   describe("checkClaudeProviderPreflight", () => {
+    it.effect("strips the launching Claude session from harness preflight children", () =>
+      Effect.gen(function* () {
+        vi.stubEnv("CLAUDECODE", "1");
+        vi.stubEnv("CLAUDE_CODE_MESSAGING_TOKEN", "host-token");
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+        const envs: NodeJS.ProcessEnv[] = [];
+        yield* checkClaudeProviderPreflight().pipe(
+          Effect.provide(
+            mockSpawnerLayer(
+              (args) => ({
+                stdout: args.includes("--version") ? "claude 2.1.0" : '{"loggedIn":true}',
+                stderr: "",
+                code: 0,
+              }),
+              (command) =>
+                envs.push((command as { options: { env: NodeJS.ProcessEnv } }).options.env),
+            ),
+          ),
+        );
+        assert.isTrue(envs.length >= 2);
+        for (const env of envs) {
+          assert.isUndefined(env.CLAUDECODE);
+          assert.isUndefined(env.CLAUDE_CODE_MESSAGING_TOKEN);
+        }
+      }).pipe(Effect.scoped),
+    );
     it.effect("honors the configured claude binary path override", () =>
       Effect.gen(function* () {
         let observedCommand: unknown;

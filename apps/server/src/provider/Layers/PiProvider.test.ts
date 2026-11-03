@@ -6,7 +6,24 @@ import {
   buildInitialPiProviderSnapshot,
   checkPiProviderStatus,
   piVersionSupportsF5,
+  readPiVersion,
 } from "./PiProvider.ts";
+
+it(
+  "accepts a healthy version probe that takes longer than four seconds",
+  async () =>
+    fixture(async (settings, environment) => {
+      expect(
+        await run(
+          readPiVersion(settings.binaryPath, {
+            ...environment,
+            F5_PI_VERSION_DELAY: "4200",
+          }),
+        ),
+      ).toBe("0.80.5");
+    }),
+  15_000,
+);
 
 it.each([
   ["0.80.3", false],

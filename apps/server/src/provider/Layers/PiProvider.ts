@@ -66,7 +66,7 @@ export const readPiVersion = (binaryPath: string, environment: NodeJS.ProcessEnv
           extensionPath: undefined,
           mcpSession: undefined,
         }).env,
-        timeoutMs: 4000,
+        timeoutMs: 10_000,
         maxBufferBytes: 4096,
         signal,
       }),

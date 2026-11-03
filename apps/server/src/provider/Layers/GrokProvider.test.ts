@@ -10,6 +10,31 @@ import { describe, expect, it } from "vitest";
 import { checkGrokProviderStatus, parseGrokModelsCliOutput } from "./GrokProvider.ts";
 
 describe("checkGrokProviderStatus", () => {
+  it.skipIf(process.platform === "win32")(
+    "allows slow healthy version probes",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "f5-grok-slow-"));
+      const binaryPath = join(dir, "grok");
+      writeFileSync(
+        binaryPath,
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then sleep 4.2; echo "grok 1.2.0"; fi\nexit 0\n',
+      );
+      chmodSync(binaryPath, 0o755);
+      try {
+        const settings = Schema.decodeSync(GrokSettings)({ enabled: true, binaryPath });
+        const provider = await Effect.runPromise(
+          checkGrokProviderStatus(settings, {
+            PATH: process.env.PATH,
+          }).pipe(Effect.provide(NodeServices.layer)),
+        );
+        expect(provider.installed).toBe(true);
+        expect(provider.version).toBe("1.2.0");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
   it("reads native login and models output without assuming exit zero means authenticated", () => {
     expect(parseGrokModelsCliOutput("You are not logged in.\nRun grok login").authenticated).toBe(
       false,

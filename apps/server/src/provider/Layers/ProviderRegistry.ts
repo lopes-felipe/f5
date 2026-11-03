@@ -450,7 +450,8 @@ export const ProviderRegistryLive = Layer.effect(
           });
         }
         if (options?.publish !== false) {
-          yield* PubSub.publish(changesPubSub, providers);
+          // Instance removal can commit while cache persistence is suspended.
+          yield* PubSub.publish(changesPubSub, yield* Ref.get(providersRef));
         }
       }
 
@@ -473,6 +474,7 @@ export const ProviderRegistryLive = Layer.effect(
       providerSource: ProviderSnapshotSource,
     ) {
       return yield* providerSource.refresh.pipe(
+        Effect.andThen(providerSource.getSnapshot),
         Effect.flatMap((nextProvider) =>
           correlateSnapshotWithSource(providerSource, nextProvider).pipe(
             Effect.flatMap(syncProvider),

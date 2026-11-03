@@ -1,4 +1,6 @@
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
+import { makeCodexGeneratedImageStore } from "../codexGeneratedImageStore.ts";
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -3131,9 +3133,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       });
 
+    const generatedImages = new CodexGeneratedImages();
     const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.tryPromise({
         try: async () => {
+          generatedImages.cancel(threadId, turnId);
           const chrome = chromeSessions.get(threadId)?.session;
           // Read before Codex reports the interrupted call completed.
           const callRunning = chrome?.callRunning ?? false;
@@ -3482,6 +3486,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     });
     yield* Effect.addFinalizer(() => Effect.sync(unregisterQueueResources));
     const prepareRuntimeEvent = yield* makeAutomationRuntimeEventPreparer;
+    const importGeneratedImage = yield* makeCodexGeneratedImageStore;
 
     const eventPreparation = new Map<string, Promise<void>>();
     const preparationControllers = new Set<AbortController>();
@@ -3698,15 +3703,20 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ? chromeSessions.get(event.threadId)?.session
                 : undefined;
               if (chromeSession) observeCodexChrome(chromeSession, event);
+              const imageEvent = yield* importGeneratedImage(event);
               let runtimeEvents = withAgentBrowserPreview(
-                mapToRuntimeEvents(
-                  event,
-                  event.threadId,
-                  limitsByThread.get(key)?.get("codex")?.snapshot,
-                  [...(limitsByThread.get(key)?.values() ?? [])],
-                  turnStartedAtByThread.get(key),
-                  previousFailure,
-                ),
+                generatedImages
+                  .project(imageEvent)
+                  .flatMap((projected) =>
+                    mapToRuntimeEvents(
+                      projected,
+                      event.threadId,
+                      limitsByThread.get(key)?.get("codex")?.snapshot,
+                      [...(limitsByThread.get(key)?.values() ?? [])],
+                      turnStartedAtByThread.get(key),
+                      previousFailure,
+                    ),
+                  ),
                 previewServerName,
                 ownsAutomation ? computerMcpSessions.get(event.threadId)?.serverName : undefined,
                 ownsAutomation ? computerDecisions.get(event.threadId) : undefined,

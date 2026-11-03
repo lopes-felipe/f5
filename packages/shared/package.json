@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./generatedImageMarkdown": {
+      "types": "./src/generatedImageMarkdown.ts",
+      "import": "./src/generatedImageMarkdown.ts"
+    },
     "./turnAssistantMessage": {
       "types": "./src/turnAssistantMessage.ts",
       "import": "./src/turnAssistantMessage.ts"

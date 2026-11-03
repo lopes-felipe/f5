@@ -12,12 +12,20 @@ trace({type:'spawn',pid:process.pid,args:process.argv.slice(2),readOnly:process.
 if(process.argv.includes('--version')){process.stdout.write('0.80.5');process.exit(0);}
 const emit=record=>process.stdout.write(JSON.stringify(record)+'\n');
 const reply=(record,data)=>emit({type:'response',id:record.id,command:record.type,success:true,data});
-let model={provider:'one',id:'shared'}, sessionFile=process.env.F5_PI_SESSION, leafId=null, entries=[], pending='', awaitingModel, wakeScheduled=false;
+let model={provider:'one',id:'shared'}, sessionFile=process.env.F5_PI_SESSION, leafId=null, entries=[], pending='', awaitingModel, wakeScheduled=false, compactionRaced=false;
 process.stdin.on('data',chunk=>{pending+=chunk.toString('utf8');for(;;){const end=pending.indexOf('\n');if(end<0)break;const record=JSON.parse(pending.slice(0,end));pending=pending.slice(end+1);trace(record);
 switch(record.type){
 case 'get_state':if(process.env.F5_PI_CASE==='fork-state-failure'&&sessionFile.endsWith('.fork')){emit({type:'response',id:record.id,command:record.type,success:false});break;}reply(record,{model:process.env.F5_PI_CASE==='wrong-model-readback'?{provider:'one',id:'shared'}:model,thinkingLevel:'high',sessionFile,isStreaming:false,isCompacting:false,pendingMessageCount:0});break;
 case 'get_available_models':reply(record,{models:[{...model,reasoning:true}]});break;
-case 'get_commands':if(process.env.F5_PI_CASE!=='hang-start')reply(record,{commands:[{name:'reload',source:'extension'}]});break;
+case 'get_commands':
+ if(process.env.F5_PI_CASE!=='hang-start')reply(record,{commands:[{name:'reload',source:'extension'}]});
+ if(process.env.F5_PI_CASE==='compaction-hold'){
+  emit({type:'compaction_start'});
+  const timer=setInterval(()=>{if(fs.existsSync(process.env.F5_PI_SESSION+'.compact-end')){
+   clearInterval(timer);trace({type:'compaction-released'});emit({type:'compaction_end',aborted:true});
+  }},10);
+ }
+ break;
 case 'get_entries':reply(record,{leafId,entries});break;
 case 'get_messages':{
  const byId=new Map(entries.map(entry=>[entry.id,entry]));const branch=[];let current=leafId;
@@ -38,6 +46,13 @@ case 'set_model':
 case 'extension_ui_response':if(awaitingModel){reply(awaitingModel,{});awaitingModel=null;}break;
 case 'prompt':{
  const mode=process.env.F5_PI_CASE;
+ if(mode==='compaction-race'&&!compactionRaced){
+  compactionRaced=true;
+  emit({type:'compaction_start'});
+  emit({type:'response',id:record.id,command:'prompt',success:false,error:'Cannot submit a prompt while compaction is in progress.'});
+  setTimeout(()=>emit({type:'compaction_end',aborted:true}),20);
+  break;
+ }
  if(mode==='flood'){
   reply(record,{});
   // Saturate the adapter's injected output buffer, staying below the RPC frame budget.

@@ -2,6 +2,17 @@ import { expect, it } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { resolveChatAssetTarget } from "./chatAssetTarget";
 
+it("serves imported Codex images through attachments without granting CODEX_HOME reads", () => {
+  const filename = "thread-1-12345678-1234-1234-1234-123456789abc.png";
+  expect(resolveChatAssetTarget("/state/attachments/" + filename, "/workspace", [], [])).toEqual({
+    identity: { kind: "attachments" },
+    path: filename,
+  });
+  expect(
+    resolveChatAssetTarget("/home/me/.codex/generated_images/output.png", "/workspace", [], []),
+  ).toBeUndefined();
+});
+
 it.each(["image.png", "/state/scratch/one/image.png", "file:///state/scratch/one/image.png"])(
   "resolves scratch media to its thread identity: %s",
   (src) => {

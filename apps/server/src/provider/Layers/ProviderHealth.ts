@@ -1,4 +1,5 @@
 import { ProviderRegistry } from "../Services/ProviderRegistry";
+import { stripClaudeHostSessionEnvironment } from "../Drivers/ClaudeHome";
 import { ProviderKind } from "@t3tools/contracts";
 import { Schema } from "effect";
 /**
@@ -537,7 +538,7 @@ export const checkClaudeProviderPreflight = (input?: {
     const checkedAt = new Date().toISOString();
     const claudeOptions = {
       ...readClaudeProviderOptions(input?.providerOptions),
-      baseEnvironment: input?.processEnvironment ?? process.env,
+      baseEnvironment: input?.processEnvironment ?? stripClaudeHostSessionEnvironment(process.env),
     };
     const binaryPath = claudeOptions.binaryPath ?? "claude";
 
