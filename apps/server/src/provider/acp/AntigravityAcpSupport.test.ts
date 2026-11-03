@@ -1,4 +1,6 @@
 import * as NodePath from "node:path";
+import * as fs from "node:fs/promises";
+import os from "node:os";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 import { fallbackDefaultProfile } from "../../profiles/ProfileRegistryStore.ts";
 import { describe, expect, it } from "vitest";
@@ -6,6 +8,7 @@ import {
   antigravityAuthorizationUrl,
   antigravityEnvironment,
   antigravityProfileDirectory,
+  linkAntigravityUserSkills,
 } from "./AntigravityAcpSupport.ts";
 import {
   antigravityApprovalOptions,
@@ -14,6 +17,50 @@ import {
 } from "./AntigravityQuestions.ts";
 import { acpElicitationDescriptor, acpElicitationResponse } from "./AcpElicitationForm.ts";
 import type { RequestPermissionRequest } from "effect-acp/schema";
+
+it("links existing global skills, repairs stale links and preserves profile content", async () => {
+  const temporary = await fs.mkdtemp(NodePath.join(os.tmpdir(), "f5-antigravity-skills-"));
+  const home = NodePath.join(temporary, "profile");
+  const userHome = NodePath.join(temporary, "user");
+  const configSource = NodePath.join(userHome, ".gemini", "config", "skills");
+  const cliSource = NodePath.join(userHome, ".gemini", "antigravity-cli", "skills");
+  const configTarget = NodePath.join(home, "config", "skills");
+  const cliTarget = NodePath.join(home, "antigravity-cli", "skills");
+  const symlinkType = process.platform === "win32" ? "junction" : "dir";
+  try {
+    await linkAntigravityUserSkills(home, userHome);
+    await expect(fs.lstat(configTarget)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(cliTarget)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await fs.mkdir(NodePath.join(configSource, "review"), { recursive: true });
+    await linkAntigravityUserSkills(home, userHome);
+    expect(await fs.readlink(configTarget)).toBe(configSource);
+    expect((await fs.stat(NodePath.join(configTarget, "review"))).isDirectory()).toBe(true);
+    await expect(fs.lstat(cliTarget)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await fs.mkdir(cliTarget, { recursive: true });
+    await linkAntigravityUserSkills(home, userHome);
+    expect((await fs.lstat(cliTarget)).isDirectory()).toBe(true);
+    await fs.mkdir(cliSource, { recursive: true });
+    await fs.unlink(configTarget);
+    await fs.mkdir(NodePath.join(configTarget, "own-skill"), { recursive: true });
+    await linkAntigravityUserSkills(home, userHome);
+    expect(await fs.readlink(cliTarget)).toBe(cliSource);
+    expect((await fs.stat(NodePath.join(configTarget, "own-skill"))).isDirectory()).toBe(true);
+
+    await fs.unlink(cliTarget);
+    await fs.symlink(NodePath.join(temporary, "missing"), cliTarget, symlinkType);
+    await linkAntigravityUserSkills(home, userHome);
+    expect(await fs.readlink(cliTarget)).toBe(cliSource);
+    await fs.rm(cliSource, { recursive: true });
+    await linkAntigravityUserSkills(home, userHome);
+    await expect(fs.lstat(cliTarget)).rejects.toMatchObject({ code: "ENOENT" });
+    await fs.mkdir(cliTarget, { recursive: true });
+    expect((await fs.stat(cliTarget)).isDirectory()).toBe(true);
+  } finally {
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+});
 
 describe("Antigravity isolation and native requests", () => {
   it("isolates profile and instance account paths, ignoring inherited credentials", () => {
