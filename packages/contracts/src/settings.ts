@@ -536,6 +536,8 @@ export const ServerSettings = Schema.Struct({
   ),
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   scheduledBackupsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Hourly copy-on-write clones of the profile database; skipped where cloning is unsupported. */
+  databaseSnapshotsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   storageCleanup: StorageCleanupSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   storageDiscovery: StorageDiscoverySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   /** Empty uses this profile's default worktrees folder; otherwise absolute or ~/… on this machine. */
@@ -738,6 +740,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   scheduledBackupsEnabled: Schema.optionalKey(Schema.Boolean),
+  databaseSnapshotsEnabled: Schema.optionalKey(Schema.Boolean),
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
   storageDiscovery: Schema.optionalKey(StorageDiscoverySettings),
   worktreesDirectory: Schema.optionalKey(TrimmedString),

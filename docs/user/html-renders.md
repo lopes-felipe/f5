@@ -67,6 +67,13 @@ way. When F5 is open in a regular browser, that navigation cannot be blocked. Pa
 generated attachment budget with tool screenshots: 200 attachments and 64 MiB per thread.
 Deleting the thread also reclaims its pages.
 
+## MCP apps
+
+MCP apps can request full screen only after you click or tap inside the app. On web and
+desktop, input elsewhere in F5 starts a five-second cooldown; if an app tap falls within
+that cooldown, tap again after it ends. Use **Return to conversation** or Escape to exit.
+Apps cannot reopen full screen automatically after you exit.
+
 ## Previews
 
 Before publishing, agents check a page with `html_preview`. A connected F5 desktop renders it

@@ -60,6 +60,7 @@ import {
   WS_CHANNELS,
   WS_METHODS,
   type WsWelcomePayload,
+  type DatabaseDamage,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
 
@@ -106,6 +107,7 @@ const previewAutomationRequestListeners = new Set<(payload: PreviewAutomationReq
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageStatusUpdatedListeners = new Set<(payload: StorageStatus) => void>();
+const databaseDamagedListeners = new Set<(payload: DatabaseDamage) => void>();
 const storageDiskSpaceUpdatedListeners = new Set<(payload: DiskSpaceStatus) => void>();
 const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) => void>();
 const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
@@ -156,6 +158,25 @@ export function onServerWelcome(listener: (payload: WsWelcomePayload) => void): 
 
   return () => {
     welcomeListeners.delete(listener);
+  };
+}
+
+/**
+ * Subscribe to profile database damage reports. Replays the latest report so a
+ * window opened after the damage still shows it.
+ */
+export function onDatabaseDamaged(listener: (payload: DatabaseDamage) => void): () => void {
+  databaseDamagedListeners.add(listener);
+  const latest = instance?.transport.getLatestPush(WS_CHANNELS.serverDatabaseDamaged)?.data;
+  if (latest) {
+    try {
+      listener(latest);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+  return () => {
+    databaseDamagedListeners.delete(listener);
   };
 }
 
@@ -319,6 +340,15 @@ export function createWsNativeApi(): NativeApi {
     for (const listener of agentsSnapshotUpdatedListeners) {
       try {
         listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.serverDatabaseDamaged, (message) => {
+    for (const listener of databaseDamagedListeners) {
+      try {
+        listener(message.data);
       } catch {
         // Swallow listener errors
       }

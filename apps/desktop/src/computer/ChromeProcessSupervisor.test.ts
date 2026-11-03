@@ -604,12 +604,47 @@ describe("adopting a provider-started process", () => {
     expect(supervisor.registrations()).toEqual([]);
   });
 
-  it("refuses and stops several candidates", async () => {
+  it("refuses and stops several candidates that don't settle", async () => {
     const t = setup();
     t.h.processes.set(71, { ...t.h.processes.get(70)!, pgid: 71 });
     const supervisor = new ChromeProcessSupervisor({ io: t.io });
-    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("more than one");
+    const adopted = supervisor.adopt(adoption, BACKEND, t.verify);
+    const refused = expect(adopted).rejects.toThrow("more than one");
+    // In poll-sized steps, so each re-read runs before time moves on.
+    for (let elapsed = 0; elapsed <= 6_000; elapsed += 250) await t.h.advance(250);
+    await refused;
     expect(t.groupKills().sort()).toEqual([70, 71]);
+  });
+
+  it("waits out the extra runtime a Codex MCP reload runs briefly, then adopts the one left", async () => {
+    const t = setup();
+    // The reload's own short-lived copy, cancelled about a second later.
+    t.h.processes.set(71, { ...t.h.processes.get(70)!, pgid: 71, startTime: 1_100 });
+    t.io.setTimeout(() => t.h.processes.delete(71), 1_000);
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    let settled = false;
+    const adopted = supervisor.adopt(adoption, BACKEND, t.verify).finally(() => (settled = true));
+    await t.h.advance(500);
+    // Still waiting while both run.
+    expect(settled).toBe(false);
+    for (let elapsed = 500; elapsed <= 2_000; elapsed += 250) await t.h.advance(250);
+    await expect(adopted).resolves.toMatchObject({ pid: 70, launchToken: "adopted" });
+    expect(t.groupKills()).toEqual([]);
+    expect(t.verified).toEqual([[60, 70]]);
+  });
+
+  it("stops waiting for extra runtimes when the session is stopped meanwhile", async () => {
+    const t = setup();
+    t.h.processes.set(71, { ...t.h.processes.get(70)!, pgid: 71 });
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    const adopted = supervisor.adopt(adoption, BACKEND, t.verify);
+    const refused = expect(adopted).rejects.toThrow();
+    await t.h.advance(0);
+    supervisor.stop((entry) => entry.launchToken === "adopted", "emergency");
+    await t.h.advance(500);
+    await refused;
+    expect(t.groupKills().sort()).toEqual([70, 71]);
+    expect(supervisor.registrations()).toEqual([]);
   });
 
   it("refuses and stops the runtime's whole group when a signature fails", async () => {
