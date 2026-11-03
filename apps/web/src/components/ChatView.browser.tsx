@@ -3488,7 +3488,10 @@ describe("ChatView timeline (full app)", () => {
             ? {
                 type: "result",
                 result: {
-                  entries: [{ path: "src/a.ts", kind: "file", parentPath: "src" }],
+                  entries:
+                    body.query === "src/a"
+                      ? [{ path: "src/a.ts", kind: "file", parentPath: "src" }]
+                      : [],
                   truncated: false,
                 },
               }
