@@ -469,6 +469,10 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "project",
     scope: "project",
   },
+  "project.actions": {
+    category: "project",
+    scope: "project",
+  },
   "project.icon": {
     category: "project",
     scope: "project",

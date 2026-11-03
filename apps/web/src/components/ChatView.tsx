@@ -100,7 +100,6 @@ import {
   type CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
   type EditorId,
-  type KeybindingCommand,
   MessageId,
   type OrchestrationCommandExecutionSummary,
   type OrchestrationGetThreadFileChangesResult,
@@ -114,7 +113,6 @@ import {
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
   type ServerProvider,
-  type ServerConfig,
   type ProviderKind,
   type ProviderInstanceId,
   type ProviderModelOptions,
@@ -164,7 +162,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { gitBranchesQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
-import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
 import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings";
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
@@ -316,16 +314,8 @@ import { Button } from "./ui/button";
 import { randomUUID } from "~/lib/utils";
 
 import { toastManager } from "./ui/toast";
-import {
-  decodeProjectScriptKeybindingRule,
-  replaceProjectScriptKeybinding,
-} from "~/lib/projectScriptKeybindings";
-import { type NewProjectScriptInput } from "./ProjectScriptsControl";
-import {
-  commandForProjectScript,
-  nextProjectScriptId,
-  projectScriptIdFromCommand,
-} from "~/projectScripts";
+import { useProjectScriptMutations } from "~/hooks/useProjectScriptMutations";
+import { projectScriptIdFromCommand } from "~/projectScripts";
 import { AppTitlebar } from "./AppTitlebar";
 import { workflowDisplayType } from "../lib/workflowType";
 import { resolveThreadStatusPillForThread } from "../threadStatus";
@@ -3595,148 +3585,11 @@ export default memo(function ChatView({
     (command: string) => runTerminalCommand(command, { preferNewTerminal: true }),
     [runTerminalCommand],
   );
-  const persistProjectScripts = useCallback(
-    async (input: {
-      projectId: ProjectId;
-      projectCwd: string;
-      previousScripts: ProjectScript[];
-      nextScripts: ProjectScript[];
-      keybinding?: string | null;
-      keybindingCommand: KeybindingCommand | null;
-    }) => {
-      const api = readNativeApi();
-      if (!api) return;
-
-      await api.orchestration.dispatchCommand({
-        type: "project.meta.update",
-        commandId: newCommandId(),
-        projectId: input.projectId,
-        scripts: input.nextScripts,
-      });
-
-      const keybindingRule = decodeProjectScriptKeybindingRule({
-        keybinding: input.keybinding,
-        command: input.keybindingCommand,
-      });
-
-      await replaceProjectScriptKeybinding({
-        server: api.server,
-        customKeybindings:
-          queryClient.getQueryData<ServerConfig>(serverQueryKeys.config())?.customKeybindings ?? [],
-        command: input.keybindingCommand,
-        rule: keybindingRule,
-      });
-      await queryClient.invalidateQueries({ queryKey: serverQueryKeys.all });
-    },
-    [queryClient],
-  );
-  const saveProjectScript = useCallback(
-    async (input: NewProjectScriptInput) => {
-      if (!activeProject) return;
-      const nextId = nextProjectScriptId(
-        input.name,
-        activeProject.scripts.map((script) => script.id),
-      );
-      const nextScript: ProjectScript = {
-        id: nextId,
-        name: input.name,
-        command: input.command,
-        icon: input.icon,
-        runOnWorktreeCreate: input.runOnWorktreeCreate,
-        ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
-        ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
-      };
-      const nextScripts = input.runOnWorktreeCreate
-        ? [
-            ...activeProject.scripts.map((script) =>
-              script.runOnWorktreeCreate ? { ...script, runOnWorktreeCreate: false } : script,
-            ),
-            nextScript,
-          ]
-        : [...activeProject.scripts, nextScript];
-
-      await persistProjectScripts({
-        projectId: activeProject.id,
-        projectCwd: activeProject.cwd,
-        previousScripts: activeProject.scripts,
-        nextScripts,
-        keybinding: input.keybinding,
-        keybindingCommand: commandForProjectScript(nextId),
-      });
-    },
-    [activeProject, persistProjectScripts],
-  );
-  const updateProjectScript = useCallback(
-    async (scriptId: string, input: NewProjectScriptInput) => {
-      if (!activeProject) return;
-      const existingScript = activeProject.scripts.find((script) => script.id === scriptId);
-      if (!existingScript) {
-        throw new Error("Script not found.");
-      }
-
-      const {
-        async: _previousAsync,
-        runOnWorktreeSettle: _previousSettle,
-        ...existingWithoutAsync
-      } = existingScript;
-      const updatedScript: ProjectScript = {
-        ...existingWithoutAsync,
-        name: input.name,
-        command: input.command,
-        icon: input.icon,
-        runOnWorktreeCreate: input.runOnWorktreeCreate,
-        ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
-        ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
-      };
-      const nextScripts = activeProject.scripts.map((script) =>
-        script.id === scriptId
-          ? updatedScript
-          : input.runOnWorktreeCreate
-            ? { ...script, runOnWorktreeCreate: false }
-            : script,
-      );
-
-      await persistProjectScripts({
-        projectId: activeProject.id,
-        projectCwd: activeProject.cwd,
-        previousScripts: activeProject.scripts,
-        nextScripts,
-        keybinding: input.keybinding,
-        keybindingCommand: commandForProjectScript(scriptId),
-      });
-    },
-    [activeProject, persistProjectScripts],
-  );
-  const deleteProjectScript = useCallback(
-    async (scriptId: string) => {
-      if (!activeProject) return;
-      const nextScripts = activeProject.scripts.filter((script) => script.id !== scriptId);
-
-      const deletedName = activeProject.scripts.find((s) => s.id === scriptId)?.name;
-
-      try {
-        await persistProjectScripts({
-          projectId: activeProject.id,
-          projectCwd: activeProject.cwd,
-          previousScripts: activeProject.scripts,
-          nextScripts,
-          keybinding: null,
-          keybindingCommand: commandForProjectScript(scriptId),
-        });
-        toastManager.add({
-          type: "success",
-          title: `Deleted action "${deletedName ?? "Unknown"}"`,
-        });
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Could not delete action",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
-        });
-      }
-    },
-    [activeProject, persistProjectScripts],
-  );
+  const {
+    addScript: saveProjectScript,
+    updateScript: updateProjectScript,
+    deleteScript: deleteProjectScript,
+  } = useProjectScriptMutations(activeProject ?? null);
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
