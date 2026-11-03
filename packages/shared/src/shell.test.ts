@@ -73,6 +73,30 @@ describe("readPathFromLoginShell", () => {
 });
 
 describe("readEnvironmentFromLoginShell", () => {
+  it.skipIf(process.platform === "win32")(
+    "force-kills a real probe that ignores SIGTERM",
+    () => {
+      expect(() =>
+        readEnvironmentFromLoginShell("/bin/sh", ["PATH"], (file, _args, options) =>
+          NodeChildProcess.execFileSync(
+            file,
+            // exec keeps the fixture to one process; sleep inherits ignored SIGTERM.
+            ["-c", "trap '' TERM; printf ready; exec sleep 6"],
+            options,
+          ),
+        ),
+      ).toThrow(
+        expect.objectContaining({
+          code: "ETIMEDOUT",
+          signal: "SIGKILL",
+          // Prove startup installed the trap before the timeout fired.
+          stdout: "ready",
+        }),
+      );
+    },
+    10_000,
+  );
+
   it("extracts multiple environment variables from a login shell command", () => {
     const execFile = vi.fn<
       (
