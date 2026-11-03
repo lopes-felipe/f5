@@ -506,8 +506,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -520,6 +521,21 @@ jobs:
       - uses: ./.github/actions/setup
         id: install
         if: steps.changes.outputs.heavy == 'true'
+      # These checks run before the report directory is set, so they write no
+      # test reports outside this job's summary inventory.
+      - name: Check Claude in Chrome descriptor drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check
+      - name: Certification record checks
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run --cwd packages/shared test src/providerIntegrationCertification.test.ts
+      - name: Verify native watchdog and power command safety
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_REQUIRE_NATIVE_WATCHDOG_TESTS: "1"
+        run: bun run --cwd apps/desktop test src/keepAwake
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -558,35 +574,6 @@ jobs:
           path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
           retention-days: 7
           if-no-files-found: ignore
-      - uses: ./.github/actions/assert-clean-worktree
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-  macos-descriptor-drift:
-    permissions:
-      contents: read
-      pull-requests: read
-    # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
-    runs-on: macos-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/changes
-        id: changes
-      - uses: ./.github/actions/setup
-        id: install
-        if: steps.changes.outputs.heavy == 'true'
-      - name: Check Claude in Chrome descriptor drift
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check
-      - name: Certification record checks
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          bun run --cwd packages/shared test src/providerIntegrationCertification.test.ts
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   macos-workspaces:
@@ -646,7 +633,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     env:
       F5_CI_DURATION_SHARDING: "true"
     runs-on: macos-latest
@@ -675,7 +662,7 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
           F5_CI_SUITE_ID: "server-unit-${{ matrix.shard }}"
-        run: bun run test:server:shard --shard=${{ matrix.shard }}/3
+        run: bun run test:server:shard --shard=${{ matrix.shard }}/2
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
@@ -731,6 +718,12 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
           F5_CI_SUITE_ID: "server-integration"
         run: bun run --cwd apps/server test:integration
+      - name: Real Git extended
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-git-extended"
+        run: bun run --cwd apps/server test:git:extended
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts macos-integration
@@ -747,59 +740,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
-          retention-days: 7
-          if-no-files-found: ignore
-      - uses: ./.github/actions/assert-clean-worktree
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-  macos-git:
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [CheckpointStore, GitCore, GitManager, UpstreamGit, WorktreeRecovery]
-    runs-on: macos-latest
-    timeout-minutes: 30
-    if: github.event_name != 'pull_request'
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-        id: install
-      - name: Set diagnostic paths
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
-          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
-      - name: Prepare report directory
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          node scripts/ci-test-summary.ts --prepare
-      - name: Real Git extended
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
-          F5_CI_SUITE_ID: "server-git-extended"
-        run: bun run --cwd apps/server test:file integration/git/extended/${{ matrix.suite }}.extended.test.ts --sequence.concurrent --maxConcurrency=4
-      - name: Summarize test reports
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: node scripts/ci-test-summary.ts macos-git
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
-          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
-          retention-days: 7
-          if-no-files-found: ignore
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
           retention-days: 7
           if-no-files-found: ignore
@@ -863,20 +803,6 @@ jobs:
           if-no-files-found: ignore
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-  macos-keep-awake:
-    runs-on: macos-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-      - name: Verify native watchdog and power command safety
-        env:
-          F5_REQUIRE_NATIVE_WATCHDOG_TESTS: "1"
-        run: bun run --cwd apps/desktop test src/keepAwake
   ci-result:
     name: CI result
     runs-on: ubuntu-latest
@@ -892,13 +818,10 @@ jobs:
         desktop,
         windows-build,
         macos-profiles,
-        macos-descriptor-drift,
         macos-workspaces,
         macos-server-unit,
         macos-integration,
-        macos-git,
         macos-desktop,
-        macos-keep-awake,
       ]
     steps:
       - name: Require every job verdict

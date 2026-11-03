@@ -17,11 +17,10 @@ matrices finish every shard, and all jobs have timeouts.
 | desktop             | Code changes            | Sandboxed Electron smoke, profile lifecycle, marketing build                                             | 20 min  |
 | windows-build       | Code changes            | Strict Rust checks, workspace/Git/integration suites, desktop build and smoke, profiles                  | 30 min  |
 | windows-server-unit | Code changes            | Three Windows unit shards, two workers each                                                              | 20 min  |
-| macos-profiles      | Code changes            | Swift, strict universal helper, selected profile tests                                                   | 15 min  |
+| macos-profiles      | Code changes            | Claude descriptor drift, Keep Awake watchdog, Swift, strict universal helper, selected profile tests     | 20 min  |
 | macos-workspaces    | Main, nightly, dispatch | Seven workspace suites                                                                                   | 30 min  |
-| macos-server-unit   | Main, nightly, dispatch | Three duration-balanced server-unit shards                                                               | 30 min  |
-| macos-integration   | Main, nightly, dispatch | Git smoke and server integration                                                                         | 30 min  |
-| macos-git           | Main, nightly, dispatch | Five independent real-Git extended suites                                                                | 30 min  |
+| macos-server-unit   | Main, nightly, dispatch | Two duration-balanced server-unit shards                                                                 | 30 min  |
+| macos-integration   | Main, nightly, dispatch | Git smoke, server integration and the extended real-Git suites                                           | 30 min  |
 | macos-desktop       | Main, nightly, dispatch | Desktop build, smoke and profile lifecycle                                                               | 30 min  |
 | CI result           | Every run               | Aggregate verdict                                                                                        | 5 min   |
 | main-status         | Current main only       | Reconcile the `ci-main-red` issue                                                                        | 5 min   |
@@ -30,7 +29,11 @@ A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static check
 and workspace/Git/integration tests still run, including environment documentation
 drift tests. Main pushes, nightly runs and dispatches always run heavy jobs.
 The complete macOS coverage runs in parallel jobs after merges, nightly and on
-dispatch. Native Swift/helper checks remain in `macos-profiles`. Every job feeds
+dispatch. Native Swift/helper, descriptor and Keep Awake checks run in
+`macos-profiles`. GitHub limits concurrent macOS jobs per account and its macOS
+arm64 pool is often short, so macOS suites are grouped into six jobs per main push
+(one on pull requests) rather than one job per suite: the extended real-Git suites
+took about a minute each and spent most of their time on setup. Every job feeds
 `CI result` and exact-SHA release qualification. Hosted timing targets for
 this optimization are at most six minutes per Windows unit shard with at most 20%
 imbalance, and at most ten minutes per required job excluding queueing. These replace
