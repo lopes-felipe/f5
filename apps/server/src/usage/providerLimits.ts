@@ -394,8 +394,8 @@ export function makeProviderLimits(input: {
       let partial = false;
       if (input.provider === "cursor") {
         const endpoint = (
-          input.apiEndpoint ||
-          env.CURSOR_API_ENDPOINT ||
+          input.apiEndpoint?.trim() ||
+          env.CURSOR_API_ENDPOINT?.trim() ||
           DEFAULT_CURSOR_API_ENDPOINT
         ).replace(/\/$/, "");
         const apiKey = env.CURSOR_API_KEY?.trim();
@@ -439,7 +439,7 @@ export function makeProviderLimits(input: {
             {},
           );
           token = asTrimmedString(asRecord(exchanged)?.accessToken) ?? undefined;
-          if (!token) throw new AccountUsageReadError("temporary-failure");
+          if (!token) throw new AccountUsageReadError("invalid-response");
         } else if (!token) {
           token =
             asTrimmedString(asRecord(await jsonFile(path.join(dir, "auth.json")))?.accessToken) ??

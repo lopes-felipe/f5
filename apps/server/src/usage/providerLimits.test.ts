@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Effect } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -17,6 +20,15 @@ describe("provider limits", () => {
       expectedRequests: 1,
     },
     {
+      environment: { CURSOR_API_KEY: "api-key", CURSOR_API_ENDPOINT: " https://api2.cursor.sh/ " },
+      expectedRequests: 2,
+    },
+    {
+      environment: { CURSOR_API_KEY: "api-key" },
+      apiEndpoint: " https://api2.cursor.sh/ ",
+      expectedRequests: 2,
+    },
+    {
       environment: { CURSOR_API_KEY: "api-key" },
       apiEndpoint: "https://proxy.example",
       expectedRequests: 0,
@@ -29,6 +41,20 @@ describe("provider limits", () => {
   ])(
     "uses the selected Cursor account with safe API-key exchange: %j",
     async ({ environment, apiEndpoint, invalidExchange, expectedRequests }) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "f5-cursor-usage-review-423-"));
+      // Each platform's CLI login names a different account. The selected API
+      // key must win, including when its exchange fails.
+      for (const dir of [
+        path.join(home, ".cursor"),
+        path.join(home, "config", "cursor"),
+        path.join(home, "appdata", "Cursor"),
+      ]) {
+        await mkdir(dir, { recursive: true });
+        await writeFile(
+          path.join(dir, "auth.json"),
+          JSON.stringify({ accessToken: "other-account" }),
+        );
+      }
       const fetchMock = vi.fn(async (url: string) =>
         Response.json(
           url.endsWith("/auth/exchange_user_api_key")
@@ -47,7 +73,14 @@ describe("provider limits", () => {
               instanceId: ProviderInstanceId.make("cursor-test"),
               displayName: "Cursor",
               enabled: true,
-              environment,
+              environment: {
+                HOME: home,
+                USERPROFILE: home,
+                XDG_CONFIG_HOME: path.join(home, "config"),
+                APPDATA: path.join(home, "appdata"),
+                AGENT_CLI_CREDENTIAL_STORE: "file",
+                ...environment,
+              },
               ...(apiEndpoint ? { apiEndpoint } : {}),
             });
             return yield* capability.refreshAccount!(yield* Semaphore.make(1));
@@ -84,9 +117,12 @@ describe("provider limits", () => {
             expect(section.snapshot?.data.windows[0]?.usedPercent).toBe(37);
         } else {
           expect(result.snapshot.sections[0]?.outcome).toBe("unavailable");
+          if (invalidExchange)
+            expect(result.snapshot.sections[0]?.errorCode).toBe("invalid-response");
         }
       } finally {
         vi.unstubAllGlobals();
+        await rm(home, { recursive: true, force: true });
       }
     },
   );
