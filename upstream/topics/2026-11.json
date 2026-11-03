@@ -1650,11 +1650,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:31:42.328Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23456",
-      "status": "port",
+      "reason": "F5 has no shared-session child attachment/unload lifecycle; Codex turn completion keeps its session ready, and native child notifications are excluded from app-thread projections.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "delegation",
