@@ -65,6 +65,7 @@ describe("readPathFromLoginShell", () => {
     expect(options).toEqual({
       encoding: "utf8",
       timeout: 5000,
+      killSignal: "SIGKILL",
       detached: true,
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -72,6 +73,30 @@ describe("readPathFromLoginShell", () => {
 });
 
 describe("readEnvironmentFromLoginShell", () => {
+  it.skipIf(process.platform === "win32")(
+    "force-kills a real probe that ignores SIGTERM",
+    () => {
+      expect(() =>
+        readEnvironmentFromLoginShell("/bin/sh", ["PATH"], (file, _args, options) =>
+          NodeChildProcess.execFileSync(
+            file,
+            // exec keeps the fixture to one process; sleep inherits ignored SIGTERM.
+            ["-c", "trap '' TERM; printf ready; exec sleep 6"],
+            options,
+          ),
+        ),
+      ).toThrow(
+        expect.objectContaining({
+          code: "ETIMEDOUT",
+          signal: "SIGKILL",
+          // Prove startup installed the trap before the timeout fired.
+          stdout: "ready",
+        }),
+      );
+    },
+    10_000,
+  );
+
   it("extracts multiple environment variables from a login shell command", () => {
     const execFile = vi.fn<
       (
@@ -95,6 +120,13 @@ describe("readEnvironmentFromLoginShell", () => {
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     });
     expect(execFile).toHaveBeenCalledTimes(1);
+    expect(execFile).toHaveBeenCalledWith("/bin/zsh", expect.any(Array), {
+      encoding: "utf8",
+      timeout: 5000,
+      killSignal: "SIGKILL",
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
   });
 
   it("omits environment variables that are missing or empty", () => {
