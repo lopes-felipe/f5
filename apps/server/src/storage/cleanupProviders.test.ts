@@ -1,11 +1,42 @@
 import { describe, expect, it } from "vitest";
-import { cleanupProviders, isUngatedProviderTarget } from "./cleanupProviders.ts";
+import {
+  cleanupProviders,
+  discoverProviderCandidates,
+  isUngatedProviderTarget,
+} from "./cleanupProviders.ts";
 import { runStorageTask } from "./storageWorker.ts";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
 
 describe("cleanup provider locations and boundaries", () => {
+  it("offers database snapshots except the newest, and never partial ones", async () => {
+    const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-provider-snapshots-"));
+    try {
+      for (const name of [
+        "snapshot-1790000000000",
+        "snapshot-1790003600000",
+        "snapshot-1790007200000",
+        "snapshot-1790010800000.partial-1b4e28ba-2fa1-11d2-883f-0016d3cca427",
+      ])
+        await FS.mkdir(Path.join(root, name));
+      await FS.writeFile(
+        Path.join(root, "daily-1790000000000-1b4e28ba-2fa1-11d2-883f-0016d3cca427.f5backup"),
+        "",
+      );
+      const candidates = (await discoverProviderCandidates("f5Backups", root))
+        .map((path) => Path.basename(path))
+        .toSorted();
+      expect(candidates).toEqual([
+        "daily-1790000000000-1b4e28ba-2fa1-11d2-883f-0016d3cca427.f5backup",
+        "snapshot-1790000000000",
+        "snapshot-1790003600000",
+      ]);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "f5Backups",
     "f5ApplicationLogs",

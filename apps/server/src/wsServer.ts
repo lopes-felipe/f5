@@ -96,6 +96,9 @@ import {
   type ProjectSkillSyncServiceShape,
 } from "./orchestration/Services/ProjectSkillSyncService.ts";
 import { startScheduledBackups, readScheduledBackupStatus } from "./storage/scheduledBackups.ts";
+import { startDatabaseSnapshots } from "./storage/databaseSnapshots.ts";
+import { startDatabaseDamageTripwire } from "./storage/databaseDamageTripwire.ts";
+import { getDatabaseDamage } from "./persistence/databaseHealth.ts";
 import { rpcBusyTotal, rpcServerStartingTotal } from "./observability/Metrics";
 import { rpcLane, RpcAdmission, rpcRequiresRuntime } from "@t3tools/shared/rpcScheduling";
 import { writeWorkspaceFile } from "./WorkspaceFileWriter";
@@ -1128,6 +1131,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
 
   yield* startScheduledBackups(backupService);
+  yield* startDatabaseSnapshots;
 
   const clients = yield* Ref.make(new Set<WebSocket>());
   const scratchProjectSemaphore = yield* Semaphore.make(1);
@@ -3088,6 +3092,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         storageMaintenance.startScheduledCompaction(
           Deferred.await(orchestrationRuntime).pipe(Effect.ignore),
         ),
+        subscriptionsScope,
+      );
+      // Registered before the reactors start writing, so the first corruption
+      // error still finds the engine's read model intact.
+      yield* Scope.provide(
+        startDatabaseDamageTripwire({
+          stateDir: serverConfig.stateDir,
+          getReadModel: orchestrationEngine.getReadModel(),
+          publish: (damage) =>
+            pushBus.publishAll(WS_CHANNELS.serverDatabaseDamaged, damage).pipe(Effect.asVoid),
+        }),
         subscriptionsScope,
       );
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
@@ -7994,6 +8009,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               providerAccounts: [],
             },
             ...(snapshot.diagnostic ? { profileDiagnostic: snapshot.diagnostic } : {}),
+            ...(getDatabaseDamage() ? { databaseDamage: getDatabaseDamage()! } : {}),
           }),
         ),
         Effect.tap((delivered) =>

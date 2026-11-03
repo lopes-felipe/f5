@@ -110,6 +110,7 @@ import {
 } from "../attachmentStore.ts";
 import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
 import { ServerConfig } from "../config.ts";
+import { getDatabaseDamage } from "../persistence/databaseHealth.ts";
 import { GitCore, type RegisteredWorktree } from "../git/Services/GitCore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
@@ -192,6 +193,23 @@ export class StorageMaintenanceError extends Schema.TaggedErrorClass<StorageMain
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
+
+/**
+ * Deleting files or rewriting the database while it is damaged can destroy
+ * what recovery still needs, so every mutating entry point stands down.
+ */
+const refuseWhileDatabaseDamaged = (operation: string) =>
+  Effect.suspend(() =>
+    getDatabaseDamage() === null
+      ? Effect.void
+      : Effect.fail(
+          new StorageMaintenanceError({
+            operation,
+            message:
+              "The F5 database is damaged. Storage maintenance is paused until it is recovered.",
+          }),
+        ),
+  );
 
 export interface StorageCleanupContext {
   readonly publishProgress?: (
@@ -870,6 +888,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const readPages = withSql(readDatabasePages);
   const compactDatabase = (operationId?: string) =>
     Effect.gen(function* () {
+      yield* refuseWhileDatabaseDamaged("compactDatabase");
       const gate = yield* engine.acquireMaintenanceLock();
       return yield* Effect.scoped(
         Effect.gen(function* () {
@@ -3242,7 +3261,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
       message: event.message.replace(/\s+/g, " ").slice(0, 300),
     });
 
-  const checkCancelled = (operationId: string) => cancelledOperations.has(operationId);
+  // Damage detected mid-cleanup stops every later destructive step, the same
+  // way a user cancel does: recovery may need the files that remain.
+  const checkCancelled = (operationId: string) =>
+    cancelledOperations.has(operationId) || getDatabaseDamage() !== null;
 
   const deleteProviderLogFiles = (
     request: CleanupOperation,
@@ -5660,6 +5682,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
   const purgeThreads: StorageMaintenanceShape["purgeThreads"] = (input) =>
     Effect.gen(function* () {
+      yield* refuseWhileDatabaseDamaged("purgeThreads");
       const allThreads = yield* queryThreadRows();
       const retained = yield* retainedWorkflowThreadIds();
       const busySegments = yield* readBusyThreadSegments(allThreads);
@@ -5730,6 +5753,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
   const reclaimDatabaseSpace: StorageMaintenanceShape["reclaimDatabaseSpace"] = (input) =>
     Effect.gen(function* () {
+      yield* refuseWhileDatabaseDamaged("reclaimDatabaseSpace");
       const pages = yield* readPages;
       if (pages.autoVacuum === AUTO_VACUUM_INCREMENTAL) {
         const before = yield* Effect.promise(() => databaseFileBytes(config.dbPath));
@@ -6070,6 +6094,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       Effect.gen(function* () {
         // A Storage settings cleanup owns the profile while it runs.
         if (cleanupStatus && activeStates.has(cleanupStatus.state)) return null;
+        if (getDatabaseDamage() !== null) return null;
         // Fetch only repositories that own an F5 worktree.
         const owners = new Set<string>();
         for (const { entry, projectRoot } of (yield* listProjectRegistrations()).registrations) {
@@ -6130,6 +6155,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
   const pruneTerminalThreadLogs: StorageMaintenanceShape["pruneTerminalThreadLogs"] = (input) =>
     Effect.gen(function* () {
+      yield* refuseWhileDatabaseDamaged("pruneTerminalThreadLogs");
       // Enumerate outside the engine gate; each unlink revalidates eligibility
       // under provider access and a short maintenance lock.
       const result = yield* Effect.gen(function* () {
@@ -6188,6 +6214,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const acceptanceGate = Semaphore.makeUnsafe(1);
   const acceptCleanup: StorageMaintenanceShape["acceptCleanup"] = (request) =>
     Effect.gen(function* () {
+      yield* refuseWhileDatabaseDamaged("acceptCleanup");
       pruneOperations();
       if (request.backendEpoch !== backendEpoch)
         return yield* new StorageMaintenanceError({

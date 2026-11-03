@@ -32,6 +32,7 @@ import {
 } from "../observability/Metrics.ts";
 
 import { startCheckpointWorker } from "./sqliteCheckpointWorker.ts";
+import { reportDatabaseCorruption } from "./databaseHealth.ts";
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 
@@ -213,6 +214,7 @@ const makeWithDatabase = (
         ) {
           Object.assign(cause, { errno: cause.errcode });
         }
+        reportDatabaseCorruption(options.filename, cause);
         return new SqlError({ cause, message });
       };
       const prepare = (sql: string) =>

@@ -3,6 +3,7 @@ import { HTML_RENDER_REQUEST_CHANNEL, HtmlPreviewHostRequest } from "./threadToo
 import { Schema } from "effect";
 import {
   FilesystemPath,
+  IsoDateTime,
   NonNegativeInt,
   ProjectId,
   ThreadId,
@@ -78,6 +79,7 @@ export const WS_CHANNELS = {
   serverWelcome: "server.welcome",
   serverRuntimeReadiness: "server.runtimeReadiness",
   serverConfigUpdated: "server.configUpdated",
+  serverDatabaseDamaged: "server.databaseDamaged",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
   mcpStatusUpdated: "mcp.statusUpdated",
   storageInvalidated: "storage.invalidated",
@@ -125,6 +127,32 @@ export const ServerRuntimeReadinessPayload = Schema.Struct({
 });
 export type ServerRuntimeReadinessPayload = typeof ServerRuntimeReadinessPayload.Type;
 
+/**
+ * The profile database reported corruption. The backend keeps serving its
+ * in-memory state; quitting would lose whatever the recovery file missed.
+ */
+export const DatabaseDamage = Schema.Struct({
+  detectedAt: IsoDateTime,
+  /** Primary SQLite result code: 11 (SQLITE_CORRUPT) or 26 (SQLITE_NOTADB). */
+  errorCode: NonNegativeInt,
+  message: Schema.String,
+  databasePath: FilesystemPath,
+  /** In-memory read model written for recovery, once the write finishes. */
+  recoveryFile: Schema.NullOr(FilesystemPath),
+  /** Why the recovery copy could not be written, after every retry failed. */
+  recoveryError: Schema.NullOr(Schema.String),
+  /** Newest automatic database snapshot, if any. */
+  latestSnapshot: Schema.NullOr(FilesystemPath),
+  /**
+   * Damage recorded by an earlier backend run. The in-memory state was then
+   * loaded from the damaged file, so it is not a better copy than the file.
+   */
+  fromPreviousRun: Schema.Boolean,
+  /** Marker file that keeps maintenance paused across restarts until removed. */
+  markerPath: FilesystemPath,
+});
+export type DatabaseDamage = typeof DatabaseDamage.Type;
+
 export const WsWelcomePayload = Schema.Struct({
   // Legacy welcomes remain decodable so the protocol check can request an upgrade.
   backendIncarnation: Schema.optional(TrimmedNonEmptyString),
@@ -133,6 +161,7 @@ export const WsWelcomePayload = Schema.Struct({
   bootstrap: Schema.optional(ServerBootstrap),
   profile: Schema.optional(ProfileSummary),
   profileDiagnostic: Schema.optional(ProfileRegistryDiagnostic),
+  databaseDamage: Schema.optional(DatabaseDamage),
   cwd: FilesystemPath,
   projectName: TrimmedNonEmptyString,
   bootstrapProjectId: Schema.optional(ProjectId),
@@ -149,6 +178,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverRuntimeReadiness]: ServerRuntimeReadinessPayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
+  readonly [WS_CHANNELS.serverDatabaseDamaged]: DatabaseDamage;
   readonly [WS_CHANNELS.providerAdvisoriesUpdated]: typeof ServerProviderAdvisoriesUpdatedPayload.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.gitStatusInvalidated]: typeof GitStatusInvalidatedPayload.Type;
@@ -207,6 +237,10 @@ export const WsPushServerWelcome = makeWsPushSchema(WS_CHANNELS.serverWelcome, W
 export const WsPushServerRuntimeReadiness = makeWsPushSchema(
   WS_CHANNELS.serverRuntimeReadiness,
   ServerRuntimeReadinessPayload,
+);
+export const WsPushServerDatabaseDamaged = makeWsPushSchema(
+  WS_CHANNELS.serverDatabaseDamaged,
+  DatabaseDamage,
 );
 export const WsPushAgentsSnapshotUpdated = makeWsPushSchema(
   AGENTS_WS_CHANNELS.snapshotUpdated,
@@ -391,6 +425,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.projectsWatchedPathsChanged,
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
+  WS_CHANNELS.serverDatabaseDamaged,
   WS_CHANNELS.providerAdvisoriesUpdated,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.previewEvent,
@@ -430,6 +465,7 @@ export const WsPush = Schema.Union([
   WsPushAgentBridgeStateChanged,
   WsPushServerWelcome,
   WsPushServerRuntimeReadiness,
+  WsPushServerDatabaseDamaged,
   WsPushServerConfigUpdated,
   WsPushProviderAdvisoriesUpdated,
   WsPushGitActionProgress,
