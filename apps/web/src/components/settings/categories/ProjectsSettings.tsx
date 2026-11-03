@@ -1,11 +1,12 @@
 import { Link } from "@tanstack/react-router";
+import { resolvePastedPath } from "@t3tools/shared/path";
 
 import { buildAppSettingsPatch } from "../../../appSettings";
 import { ProjectIcon } from "../../ProjectIcon";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard } from "../SettingsCard";
 import { Button } from "../../ui/button";
-import { Input } from "../../ui/input";
+import { DraftInput } from "../../ui/draft-input";
 
 export { PROJECTS_SETTINGS_DESCRIPTORS } from "./ProjectsSettings.descriptors";
 
@@ -81,11 +82,12 @@ export function ProjectsSettings() {
         <div className="space-y-3">
           <label htmlFor="add-project-base-directory" className="block space-y-1">
             <span className="text-xs font-medium text-foreground">Base directory</span>
-            <Input
+            <DraftInput
               id="add-project-base-directory"
               className="font-mono"
               value={settings.addProjectBaseDirectory}
-              onChange={(event) => updateSettings({ addProjectBaseDirectory: event.target.value })}
+              onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
+              normalizeDraft={resolvePastedPath}
               placeholder="~/projects"
               spellCheck={false}
             />
@@ -112,11 +114,12 @@ export function ProjectsSettings() {
         <div className="space-y-3">
           <label htmlFor="new-projects-root" className="block space-y-1">
             <span className="text-xs font-medium text-foreground">Projects folder</span>
-            <Input
+            <DraftInput
               id="new-projects-root"
               className="font-mono"
               value={settings.projectsRoot}
-              onChange={(event) => updateSettings({ projectsRoot: event.target.value })}
+              onCommit={(next) => updateSettings({ projectsRoot: next })}
+              normalizeDraft={resolvePastedPath}
               placeholder="~/f5-projects"
               spellCheck={false}
             />

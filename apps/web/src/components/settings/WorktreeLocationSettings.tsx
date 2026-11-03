@@ -1,4 +1,5 @@
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import { useEffect, useState } from "react";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
@@ -50,7 +51,7 @@ export function WorktreeLocationSettings() {
           disabled={saving}
           aria-invalid={error !== null}
           aria-describedby={error ? "worktree-location-error" : undefined}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => setDraft(resolvePastedPath(draft, event.target.value))}
         />
         <Button type="submit" disabled={saving || draft.trim() === directory}>
           Save
