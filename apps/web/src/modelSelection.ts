@@ -41,6 +41,19 @@ const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
 const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER =
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER as Partial<Record<string, string>>;
 
+export function resolveComposerFallbackModel(input: {
+  driver: ProviderDriverKind;
+  candidate: string | null | undefined;
+  instanceDefault: string | undefined;
+  models: ReadonlyArray<ModelEsque>;
+}): string | undefined {
+  return (
+    resolveSelectableModel(input.driver, input.candidate, input.models) ??
+    resolveSelectableModel(input.driver, input.instanceDefault, input.models) ??
+    input.models[0]?.slug
+  );
+}
+
 /** Only static aliases identify the same model across instances. Custom slugs stay exact. */
 export function resolveFallbackModelOptions(input: {
   settings: ModelCatalogSettings;

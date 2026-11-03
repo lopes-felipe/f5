@@ -53,6 +53,7 @@ let active: Awaited<ReturnType<typeof render>> | undefined;
 afterEach(async () => {
   await active?.unmount();
   active = undefined;
+  await page.viewport(1024, 900);
 });
 
 describe("ProviderInstanceModelPicker", () => {
@@ -96,7 +97,6 @@ describe("ProviderInstanceModelPicker", () => {
     expect(popup.getBoundingClientRect().bottom).toBeLessThanOrEqual(300);
     await userEvent.keyboard("{Enter}");
     await expect.poll(() => onChange.mock.calls.length).toBe(1);
-    await page.viewport(1024, 900);
   });
   it("keeps Pi provider/model identities distinct inside an explicit Pi instance", async () => {
     const piId = defaultInstanceIdForDriver(ProviderDriverKind.make("pi"));

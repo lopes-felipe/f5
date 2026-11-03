@@ -13,9 +13,31 @@ import {
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
   resolveFallbackModelOptions,
+  resolveComposerFallbackModel,
 } from "./modelSelection";
 
 describe("composer fallback model options", () => {
+  it("tries the saved model, then the instance default before picker ordering", () => {
+    const base = {
+      driver: ProviderDriverKind.make("codex"),
+      instanceDefault: "gpt-5.4",
+      models: [
+        { slug: "first-custom", name: "First" },
+        { slug: "gpt-5.4", name: "Default" },
+      ],
+    };
+    expect(resolveComposerFallbackModel({ ...base, candidate: "missing-custom" })).toBe("gpt-5.4");
+    expect(resolveComposerFallbackModel({ ...base, candidate: "first-custom" })).toBe(
+      "first-custom",
+    );
+    expect(
+      resolveComposerFallbackModel({
+        ...base,
+        candidate: "missing-custom",
+        instanceDefault: "also-missing",
+      }),
+    ).toBe("first-custom");
+  });
   const requestedInstanceId = ProviderInstanceId.make("codex_old");
   const selectedInstanceId = ProviderInstanceId.make("codex_work");
   const selectedDriver = ProviderDriverKind.make("codex");

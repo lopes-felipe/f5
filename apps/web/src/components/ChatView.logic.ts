@@ -5,6 +5,7 @@ import {
   defaultInstanceIdForDriver,
   type DesktopBridge,
   ProviderDriverKind,
+  type ProviderInstanceId,
   ProjectId,
   type ProjectScript,
   type ProviderInteractionMode,
@@ -41,6 +42,7 @@ import { normalizeAttachedFilePaths, resolveAttachedFileReferencePath } from "..
 import { setupProjectScript } from "~/projectScripts";
 import type { ModelPickerModelOption } from "./chat/providerIconUtils";
 import { resolveRuntimeModelReport } from "./chat/runtimePresentation";
+import { resolveFallbackModelOptions, type ModelCatalogSettings } from "../modelSelection";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 
@@ -742,6 +744,41 @@ export function resolveThreadModelOptionsSeed(input: {
     : draft === null;
   const inSync = follows || areProviderModelOptionsEqual(draft, options);
   return { seed: follows ? options : null, record: { key, options: inSync ? options : null } };
+}
+
+/** Seed inherited fallback options into the same draft the effort controls read.
+ * The existing seed record distinguishes an untouched draft from a later default-effort reset.
+ */
+export function resolveComposerModelOptionsSeed(
+  input: Parameters<typeof resolveThreadModelOptionsSeed>[0] & {
+    readonly fallback: boolean;
+    readonly requestedInstanceId: ProviderInstanceId | undefined;
+    readonly selectedInstanceId: ProviderInstanceId;
+    readonly projectSelection: ModelSelection | null | undefined;
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly settings: ModelCatalogSettings;
+  },
+): ReturnType<typeof resolveThreadModelOptionsSeed> {
+  if (!input.fallback) return resolveThreadModelOptionsSeed(input);
+  const selection = input.threadSelection?.options?.length
+    ? input.threadSelection
+    : input.projectSelection;
+  // Inherit only from the instance the draft requested.
+  if (!selection || selection.instanceId !== input.requestedInstanceId) return null;
+  const options = resolveFallbackModelOptions({
+    ...input,
+    selectedDriver: ProviderDriverKind.make(input.selectedProvider),
+    selection,
+  });
+  if (!options) return null;
+  return resolveThreadModelOptionsSeed({
+    ...input,
+    threadSelection: {
+      instanceId: input.selectedInstanceId,
+      model: input.selectedModel,
+      options,
+    },
+  });
 }
 
 export function resolveClaudeSubagentModel(

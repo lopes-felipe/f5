@@ -6199,9 +6199,14 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it.each(["gpt-5.4", "5.4"])(
-    "keeps draft effort on a same-driver instance fallback from %s",
-    async (model) => {
+  it.each([
+    { model: "gpt-5.4", source: "draft", reset: false },
+    { model: "5.4", source: "draft", reset: false },
+    { model: "gpt-5.4", source: "project", reset: false },
+    { model: "5.4", source: "project", reset: true },
+  ])(
+    "keeps $source effort visible and dispatchable on same-driver fallback from $model (reset=$reset)",
+    async ({ model, source, reset }) => {
       useComposerDraftStore.setState({
         draftThreadsByThreadId: {
           [THREAD_ID]: {
@@ -6217,9 +6222,20 @@ describe("ChatView timeline (full app)", () => {
         projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
       });
       const fallback = ProviderInstanceId.make("codex_work");
+      const snapshot = createDraftOnlySnapshot();
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
-        snapshot: createDraftOnlySnapshot(),
+        snapshot: {
+          ...snapshot,
+          projects: snapshot.projects.map((project) => ({
+            ...project,
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model,
+              options: [{ id: "reasoningEffort", value: "low" }],
+            },
+          })),
+        },
         configureFixture: (fixture) => {
           const stock = createTestServerProvider("codex", {
             models: [
@@ -6264,9 +6280,29 @@ describe("ChatView timeline (full app)", () => {
         draft.setProvider(THREAD_ID, "codex");
         draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
         draft.setModel(THREAD_ID, model);
-        draft.setModelOptions(THREAD_ID, { codex: { reasoningEffort: "low" } });
+        if (source === "draft") {
+          draft.setModelOptions(THREAD_ID, { codex: { reasoningEffort: "low" } });
+        }
         draft.setPrompt(THREAD_ID, "Keep my effort");
         const send = await waitForSendButton();
+        await vi.waitFor(() =>
+          expect(
+            document
+              .querySelector('[data-composer-control="effort"]')
+              ?.getAttribute("data-effort-level"),
+          ).toBe("low"),
+        );
+        if (reset) {
+          // The default effort choice intentionally clears the stored options.
+          draft.setModelOptions(THREAD_ID, null);
+          await vi.waitFor(() =>
+            expect(
+              document
+                .querySelector('[data-composer-control="effort"]')
+                ?.getAttribute("data-effort-level"),
+            ).toBe("high"),
+          );
+        }
         await vi.waitFor(() => expect(send.disabled).toBe(false));
         send.click();
         await vi.waitFor(() =>
@@ -6280,7 +6316,7 @@ describe("ChatView timeline (full app)", () => {
         expect(command.modelSelection).toMatchObject({ instanceId: fallback, model: "gpt-5.4" });
         expect(command.modelSelection?.options).toContainEqual({
           id: "reasoningEffort",
-          value: "low",
+          value: reset ? "high" : "low",
         });
       } finally {
         await mounted.cleanup();
