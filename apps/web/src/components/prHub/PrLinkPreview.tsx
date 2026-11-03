@@ -215,12 +215,10 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
             <Button
               size="xs"
               onClick={() => {
-                useRightPanelStore
-                  .getState()
-                  .openPullRequest(thread, {
-                    key: formatSourceControlPullRequestKey(ref),
-                    url: actionUrl,
-                  });
+                useRightPanelStore.getState().openPullRequest(thread, {
+                  key: formatSourceControlPullRequestKey(ref),
+                  url: actionUrl,
+                });
                 setOpen(false);
               }}
             >
