@@ -10,6 +10,7 @@ import {
 import { Effect } from "effect";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { GitCommandError, GitManagerError } from "./git/Errors.ts";
@@ -930,6 +931,82 @@ describe("WebSocket Server", () => {
       truncated: true,
     });
   });
+
+  it.each(["utf8", "binary", "early-eof"] as const)(
+    "finishes short preview reads for projects.readFile (%s)",
+    async (scenario) => {
+      const workspace = makeTempDir("f5-ws-short-read-");
+      const filePath = path.join(workspace, "short.txt");
+      const bytes = Buffer.from("é".repeat(PROJECT_READ_FILE_MAX_SIZE));
+      if (scenario === "binary") bytes[3] = 0;
+      fs.writeFileSync(filePath, bytes);
+      const target = fs.realpathSync(filePath);
+
+      h.server = await createTestServer({ cwd: "/test" });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+
+      const nativeOpen = fsPromises.open;
+      const reads = vi.fn();
+      const close = vi.fn();
+      const open = vi.spyOn(fsPromises, "open").mockImplementation(async (file, flags, mode) => {
+        const handle = await nativeOpen(file, flags, mode);
+        if (file === target) {
+          const nativeRead = handle.read.bind(handle);
+          const nativeClose = handle.close.bind(handle);
+          Object.defineProperty(handle, "read", {
+            value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+              reads(offset, length, position);
+              if (scenario === "early-eof" && offset > 0) {
+                return { bytesRead: 0, buffer };
+              }
+              return nativeRead(
+                buffer,
+                offset,
+                Math.min(length, offset === 0 ? 2 : 4093),
+                position,
+              );
+            },
+          });
+          Object.defineProperty(handle, "close", {
+            value: async () => {
+              close();
+              await nativeClose();
+            },
+          });
+        }
+        return handle;
+      });
+      try {
+        const response = await sendRequest(ws, WS_METHODS.projectsReadFile, {
+          cwd: workspace,
+          relativePath: "short.txt",
+        });
+        expect(reads).toHaveBeenNthCalledWith(1, 0, PROJECT_READ_FILE_MAX_SIZE, 0);
+        expect(reads).toHaveBeenNthCalledWith(2, 2, PROJECT_READ_FILE_MAX_SIZE - 2, 2);
+        expect(close).toHaveBeenCalledOnce();
+        if (scenario === "binary") {
+          expect(response.result).toBeUndefined();
+          expect(response.error?.message).toContain("Binary file cannot be displayed: short.txt");
+        } else {
+          expect(response.error).toBeUndefined();
+          expect(response.result).toEqual({
+            workspaceIdentity: fs.realpathSync(workspace),
+            fileIdentity: target,
+            relativePath: "short.txt",
+            contents: scenario === "early-eof" ? "é" : "é".repeat(PROJECT_READ_FILE_MAX_SIZE / 2),
+            byteLength: bytes.length,
+            truncated: true,
+          });
+          if (scenario === "early-eof") expect(reads).toHaveBeenCalledTimes(2);
+        }
+      } finally {
+        open.mockRestore();
+      }
+    },
+  );
 
   it("returns not found errors for missing projects.readFile targets", async () => {
     const workspace = makeTempDir("t3code-ws-read-file-missing-");

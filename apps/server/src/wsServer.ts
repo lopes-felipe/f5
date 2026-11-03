@@ -711,8 +711,13 @@ function readFilePrefix(
       const handle = await fsPromises.open(absolutePath, "r");
       try {
         const buffer = Buffer.allocUnsafe(byteLimit);
-        const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
-        return buffer.subarray(0, bytesRead);
+        let offset = 0;
+        while (offset < byteLimit) {
+          const { bytesRead } = await handle.read(buffer, offset, byteLimit - offset, offset);
+          if (bytesRead <= 0) break;
+          offset += bytesRead;
+        }
+        return buffer.subarray(0, offset);
       } finally {
         await handle.close();
       }
