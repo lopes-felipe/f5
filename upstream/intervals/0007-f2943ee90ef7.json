@@ -1,0 +1,221 @@
+{
+  "baseSha": "9826dbb9904b2591bfbf60d1317486b59132f56b",
+  "commits": [
+    {
+      "pr": 26288,
+      "sha": "f2943ee90ef76b1db3fc1c1cd3808252418f5850",
+      "subject": "feat(updates): switch your whole fleet between Stable and Nightly in one step (#26288)",
+      "topic": "pr-26288"
+    },
+    {
+      "pr": 26904,
+      "sha": "d7935f135f50f3798c1e247ebe8b88587dd62adf",
+      "subject": "feat(web): choose what the thread details card shows (#26904)",
+      "topic": "pr-26904"
+    },
+    {
+      "pr": 26876,
+      "sha": "4432fbef71817c279290f86549be660af25005f2",
+      "subject": "feat(antigravity): Claude and GPT models, thinking levels, and diff edits (#26876)",
+      "topic": "pr-26876"
+    },
+    {
+      "pr": 26767,
+      "sha": "58e60bf5e808fc226d9b769d66d1ea9fec014d23",
+      "subject": "feat: turn a No project thread into a project (#26767)",
+      "topic": "pr-26767"
+    },
+    {
+      "pr": 26874,
+      "sha": "35b298a159e14b3cdfd7384de3eb009bb73d3110",
+      "subject": "fix(web): undo notice moves to the sidebar footer so it never covers a thread (#26874)",
+      "topic": "pr-26874"
+    },
+    {
+      "pr": 26875,
+      "sha": "ccaa3ad2956b90484052198af7f0e40996e403ca",
+      "subject": "feat(marketing): hero shows four agents running at once (#26875)",
+      "topic": "pr-26875"
+    },
+    {
+      "pr": 26167,
+      "sha": "da1eab01f712a6c1595ff0f51e7f4fea9b7ebacb",
+      "subject": "chore: make agent mistakes fail early (#26167)",
+      "topic": "pr-26167"
+    },
+    {
+      "pr": 26348,
+      "sha": "6d82a22e9df93f1dd14afa89d820b7dd1b624eef",
+      "subject": "fix(desktop): bump Electron to 44.10.0 for the Node.js Brotli fix (CVE-2026-111497) (#26348)",
+      "topic": "pr-26348"
+    },
+    {
+      "pr": 26859,
+      "sha": "310c12855238cc191021dfbaaa51aef203374769",
+      "subject": "feat(web): Labs toggle keeps 5h, weekly, and context limits in view (#26859)",
+      "topic": "pr-26859"
+    },
+    {
+      "sha": "f855f016b3fe103f0b6cb05f26de08cb735b1f7b",
+      "subject": "chore(release): prepare v0.1.4",
+      "topic": "c-f855f016b3fe"
+    },
+    {
+      "pr": 26812,
+      "sha": "dac8b11ddc25bd5da62a367fdb6c3de777ae2986",
+      "subject": "chore: vouch nexxeln (#26812)",
+      "topic": "pr-26812"
+    },
+    {
+      "pr": 26529,
+      "sha": "eb565e13abebe1a71736b4651e4131f52b1950ba",
+      "subject": "fix(claude): Open diff shows Claude edits as a diff instead of raw JSON (#26529)",
+      "topic": "pr-26529"
+    },
+    {
+      "pr": 26538,
+      "sha": "ab1e221618724177d67ff3d2cf07e5b211a0bfc2",
+      "subject": "fix(server): guest links no longer return file diffs (#26538)",
+      "topic": "pr-26538"
+    },
+    {
+      "pr": 26522,
+      "sha": "7632c3dc7039953cc50282e1bc339e1bf11f2ffc",
+      "subject": "fix(mobile): photo-library PNGs no longer fail after resizing (#26522)",
+      "topic": "pr-26522"
+    },
+    {
+      "pr": 24937,
+      "sha": "fe219c4de18f5ee37c28cbd3914a5569b1579156",
+      "subject": "fix(web): keep tool groups collapsed after a usage-limit pause (#24937)",
+      "topic": "pr-24937"
+    },
+    {
+      "pr": 26234,
+      "sha": "8298664e9e46ad8af2c8966cfb4c08a2a31898a4",
+      "subject": "fix(server,cursor,opencode): refresh provider usage when a turn hits its usage limit (#26234)",
+      "topic": "pr-26234"
+    },
+    {
+      "pr": 26779,
+      "sha": "783581d461dc72cdd8f78fc8abb4ad536dfc4547",
+      "subject": "fix(ci): fork PRs now resolve in workflow_run PR lookups (#26779)",
+      "topic": "pr-26779"
+    },
+    {
+      "pr": 26164,
+      "sha": "861a51a6c4a036a6f14fea2a6f093808de1d96ce",
+      "subject": "feat(server,web,mobile): fall back when the default provider is out of usage (#26164)",
+      "topic": "pr-26164"
+    },
+    {
+      "pr": 26750,
+      "sha": "7b87466731bfe3662fd86689e8754c494567bca8",
+      "subject": "docs: add nixpkgs installation instructions (#26750)",
+      "topic": "pr-26750"
+    },
+    {
+      "pr": 20145,
+      "sha": "5eebf77b373b719ca4456985340707afa267310e",
+      "subject": "fix(claude): command approvals show the command, not Claude's description of it (#20145)",
+      "topic": "pr-20145"
+    },
+    {
+      "pr": 26755,
+      "sha": "d8f4980f6c0ba0b1ea3c52b69f3f3794f6973d3f",
+      "subject": "ci(mobile): fork PRs now get the Native Change label (#26755)",
+      "topic": "pr-26755"
+    },
+    {
+      "pr": 26739,
+      "sha": "8ff9ae1f87e2b7c62cfacffd08921ff40bb089b1",
+      "subject": "fix(mobile): delivered messages no longer reappear at the bottom of long threads (#26739)",
+      "topic": "pr-26739"
+    },
+    {
+      "pr": 26730,
+      "sha": "a5448f4c5030b4f70744db5ecfec4cc06828b621",
+      "subject": "fix(web): pull request diff follows the file tree, with a hide-tests filter (#26730)",
+      "topic": "pr-26730"
+    },
+    {
+      "pr": 26706,
+      "sha": "be7d86fa666780aaf815bd515fb1ab6ecf4826de",
+      "subject": "feat(devices): Simlock setup uses each machine's agent-device token, checks tokens, and lists the pool through worker reconnects (#26706)",
+      "topic": "pr-26706"
+    },
+    {
+      "pr": 26736,
+      "sha": "221610f0caa9f84a94e99e72afe5d305c753c322",
+      "subject": "fix(web): keep settled drop hint inside the sidebar viewport (#26736)",
+      "topic": "pr-26736"
+    },
+    {
+      "pr": 26565,
+      "sha": "a42bdd4e516433a16650b9401ab3c066544ca5cd",
+      "subject": "fix(mobile): a thread opened while reconnecting no longer turns into a new draft (#26565)",
+      "topic": "pr-26565"
+    },
+    {
+      "pr": 26727,
+      "sha": "29f33af7d7e81ced8d0c3098ea0fe0ff1895d6a7",
+      "subject": "perf(web): long-thread timeline rebuilds 45 → 9 ms, tool updates 12 → 0.3 ms (#26727)",
+      "topic": "pr-26727"
+    },
+    {
+      "pr": 26592,
+      "sha": "37a9ca049c9ace251835643f134251d25779eaad",
+      "subject": "fix(cursor): subagent ls, lint and MCP results no longer fail the parent run (#26592)",
+      "topic": "pr-26592"
+    },
+    {
+      "pr": 26647,
+      "sha": "b2871029c9fbd6fab1cb90d245ca9f3e4b661fc7",
+      "subject": "fix(acp): ID-only command approvals keep the tracked command and grant the terminal (#26647)",
+      "topic": "pr-26647"
+    },
+    {
+      "pr": 26639,
+      "sha": "725573f35850b3414f2e71a55ea7b8412fcfac1e",
+      "subject": "fix(web): double-click selects the whole inline code span (#26639)",
+      "topic": "pr-26639"
+    },
+    {
+      "pr": 26642,
+      "sha": "26caea23c0fa849baa99502791a3626ad5a1d4ca",
+      "subject": "fix(server): outside MCP clients get thread links they can open (#26642)",
+      "topic": "pr-26642"
+    },
+    {
+      "pr": 21046,
+      "sha": "e677e9799df44fd33d96890cb80dc0ee64d1221d",
+      "subject": "fix(server): publish local git status before remote lookup (#21046)",
+      "topic": "pr-21046"
+    },
+    {
+      "pr": 26622,
+      "sha": "e34067edef2eba03c1e40bca7d2b2d933ae12b85",
+      "subject": "fix(mobile): align settled and active thread rows (#26622)",
+      "topic": "pr-26622"
+    },
+    {
+      "pr": 26379,
+      "sha": "d46463140776d3d45f0ce705a36e6b411f1d4b5d",
+      "subject": "fix(web): image chips drop the pill and match other chips (#26379)",
+      "topic": "pr-26379"
+    },
+    {
+      "pr": 25588,
+      "sha": "5b89a53585622a3c082b5f5287ab991e88f570b1",
+      "subject": "feat(pull-requests): manage GitHub maintainer edits (#25588)",
+      "topic": "pr-25588"
+    }
+  ],
+  "count": 35,
+  "createdAt": "2026-10-29T11:02:55.890Z",
+  "digest": "7b869381af1f1cb4bc6e530de24a26b818f7cb672e4a3fdd6ec5f8830b601b7f",
+  "interval": 7,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "f2943ee90ef76b1db3fc1c1cd3808252418f5850"
+}

@@ -1,0 +1,298 @@
+{
+  "baseSha": "cefb544af3c98224874419198c0359b652ca3c94",
+  "commits": [
+    {
+      "pr": 26734,
+      "sha": "d1ec71e6ff8b46bacfbe103af72034eba3654e63",
+      "subject": "feat(mobile): add on-device Android dictation (#26734)",
+      "topic": "pr-26734"
+    },
+    {
+      "pr": 29781,
+      "sha": "c3c15f7d3623979e0d93fc1cf0963cc6b9487dcf",
+      "subject": "fix(server): cancelling worktree setup no longer leaves its new branch behind (#29781)",
+      "topic": "pr-29781"
+    },
+    {
+      "sha": "0b5600b1c3df49f705ba245df5aa50c59dc91490",
+      "subject": "perf(server): read pull request metadata from a lightweight snapshot",
+      "topic": "c-0b5600b1c3df"
+    },
+    {
+      "pr": 30357,
+      "sha": "2c9991432f8a25740116c4d2aa8d9e52e6c27cec",
+      "subject": "perf(server): bound streaming recovery reads by active runs (#30357)",
+      "topic": "pr-30357"
+    },
+    {
+      "pr": 29862,
+      "sha": "bd48d8c8f622dfb4ac3a092061f205b85045d244",
+      "subject": "feat(policy): admins set managed policy from a Group Policy template (#29862)",
+      "topic": "pr-27197"
+    },
+    {
+      "pr": 30004,
+      "sha": "260297b55fc97c5b10ff55511967f6d20c622e54",
+      "subject": "fix(server): GPT-6.1 Sol no longer compacts after every tool call on managed Codex (#30004)",
+      "topic": "pr-30004"
+    },
+    {
+      "pr": 29806,
+      "sha": "550c5fa34b6b4f287496f3d725a300347274fbcf",
+      "subject": "perf(server): prune events the projections already cover (#29806)",
+      "topic": "pr-29806"
+    },
+    {
+      "pr": 27840,
+      "sha": "9def583f8e315f644708501ebcf1f3d4bb320444",
+      "subject": "fix(gitlab): a signed-out default glab host no longer hides other signed-in hosts (#27840)",
+      "topic": "pr-27840"
+    },
+    {
+      "pr": 28065,
+      "sha": "58cf69c835bc8346974e67ca53eb80f3dd49ecad",
+      "subject": "fix(usage): label a proxied Claude account by its e-mail, and drop .json from hub rows (#28065)",
+      "topic": "pr-28065"
+    },
+    {
+      "pr": 28097,
+      "sha": "7b666f3780f6ed28a02d29e0176a90a9a6dbe3b8",
+      "subject": "fix(server): Grok usage limits tell Legacy-mode xAI accounts to switch to Privacy Mode (#28097)",
+      "topic": "pr-28097"
+    },
+    {
+      "pr": 28135,
+      "sha": "cf90825f876ceb26058d6433d9d9008d773c5510",
+      "subject": "fix(mobile): settings providers show the ACP registry icon (#28135)",
+      "topic": "pr-28135"
+    },
+    {
+      "pr": 28494,
+      "sha": "3040f91bb5cd320298712b337fa1415079259967",
+      "subject": "fix(server): squash-merged branches no longer offer push & create PR (#28494)",
+      "topic": "pr-28494"
+    },
+    {
+      "pr": 29013,
+      "sha": "31eb1d00765672969b0dc1b27caef78a0c4b2e36",
+      "subject": "fix(web): closing Settings or Usage no longer jumps back to a quote's source (#29013)",
+      "topic": "pr-29013"
+    },
+    {
+      "pr": 29643,
+      "sha": "7239986680d1f0af0e711a68293e3a4a17c8064b",
+      "subject": "fix(web): deleting the open thread no longer opens a snoozed or settled thread (#29643)",
+      "topic": "pr-29643"
+    },
+    {
+      "pr": 29263,
+      "sha": "c756ebaabc0c67dee347a205ab7907a3d1f29622",
+      "subject": "fix(mobile): Android follow-up menu shows in full with the keyboard open (#29263)",
+      "topic": "pr-29263"
+    },
+    {
+      "pr": 29916,
+      "sha": "15707a84b03e27bb257d60e027812ebf94bbda25",
+      "subject": "docs: pin an absolute binary path under a permission cap (#29916)",
+      "topic": "pr-29916"
+    },
+    {
+      "pr": 30319,
+      "sha": "dd24b375f0c94cdeb76d1774ab5022aff2e1406e",
+      "subject": "fix(desktop): a policy that stops startup no longer points at another release (#30319)",
+      "topic": "pr-27197"
+    },
+    {
+      "pr": 29554,
+      "sha": "bff68fb6b6f86346f780024db62ba75873f70854",
+      "subject": "fix(shared): saving one source control token no longer drops the other hosts' tokens (#29554)",
+      "topic": "pr-29554"
+    },
+    {
+      "pr": 30298,
+      "sha": "1a3f76e80afd33785d06c2acaf0e80eb1785c1e6",
+      "subject": "fix(evals): resume browser verification after unavailable status (#30298)",
+      "topic": "pr-30298"
+    },
+    {
+      "pr": 29794,
+      "sha": "a9468dab74df255ce7f1a601ca1a73ef743d51e9",
+      "subject": "fix(server): guests of a forked thread can open files on the messages it inherited (#29794)",
+      "topic": "pr-29794"
+    },
+    {
+      "pr": 29904,
+      "sha": "7f17f515389505a26fe2963e61905cc5d7417963",
+      "subject": "fix(server): idle compaction still runs after a queued message is removed or steered (#29904)",
+      "topic": "pr-29904"
+    },
+    {
+      "pr": 29902,
+      "sha": "3f48896580eb404ae72b5f02e0af61bf16b69adf",
+      "subject": "fix(server): native forks after an undo no longer copy later turns (#29902)",
+      "topic": "pr-29902"
+    },
+    {
+      "pr": 29893,
+      "sha": "a50fe102fb6d7253b03c296636c753a01fd33dda",
+      "subject": "fix(desktop): Ctrl+R on macOS reaches the preview page instead of reloading it (#29893)",
+      "topic": "pr-29893"
+    },
+    {
+      "pr": 29911,
+      "sha": "7681605d7375cfa25e72ca48db56bb76e2025f7e",
+      "subject": "fix(server): t3 update installs from the policy's update mirror (#29911)",
+      "topic": "pr-27197"
+    },
+    {
+      "pr": 29915,
+      "sha": "7ab237fc1d05e2373fbaed6a9250b528c5bd72c2",
+      "subject": "fix(server): managed policy covers Kiro (#29915)",
+      "topic": "pr-27197"
+    },
+    {
+      "pr": 29038,
+      "sha": "ac10bb4aba85156bac5d306b3c288e9d8d7f03ef",
+      "subject": "fix(web): mouse wheel over the thread minimap glides instead of jumping (#29038)",
+      "topic": "pr-29038"
+    },
+    {
+      "pr": 29962,
+      "sha": "499727ddad87468cc22e23e5d8c92b9013f546c0",
+      "subject": "fix(mobile): close and reopen pull requests from the actions menu (#29962)",
+      "topic": "pr-29962"
+    },
+    {
+      "pr": 29908,
+      "sha": "ea68f2a66759fcef6b1673891ece4577ed97bed9",
+      "subject": "fix(web): picking a branch in a subfolder project keeps the thread in the project folder (#29908)",
+      "topic": "pr-29908"
+    },
+    {
+      "pr": 29580,
+      "sha": "4a09502b38e2d30ad23871f85fd629e8c3473e7d",
+      "subject": "fix(server): generated commit and PR text ignores git signature output (#29580)",
+      "topic": "pr-29580"
+    },
+    {
+      "pr": 29721,
+      "sha": "a760f374f9ffd8c2f053850f8a120832722ea2e2",
+      "subject": "perf(server): settled PR lookups stop re-spawning git every sweep (#29721)",
+      "topic": "pr-29721"
+    },
+    {
+      "pr": 25662,
+      "sha": "abf8998b66040cc869339f307be189dd7e3595c7",
+      "subject": "fix(server): changing a task's wake policy no longer reverts a checkpointed parent run (#25662)",
+      "topic": "pr-25662"
+    },
+    {
+      "pr": 29919,
+      "sha": "30724e2e9ae1c2f5da495b590e22e41e425b8db5",
+      "subject": "fix(github): Rebase stack no longer conflicts after a lower layer is squash-merged (#29919)",
+      "topic": "pr-29919"
+    },
+    {
+      "sha": "115739c1e02e181d6c176a4d8b43716f8f83d1d4",
+      "subject": "fix(web): keep the project filter menu aligned with its trigger",
+      "topic": "c-115739c1e02e"
+    },
+    {
+      "pr": 28684,
+      "sha": "e53672d8fc72f0cf2d50420080314b33ff2c6f33",
+      "subject": "fix(web): long server lists in thread details now page 4 at a time (#28684)",
+      "topic": "pr-28684"
+    },
+    {
+      "pr": 30275,
+      "sha": "3d369d55968b09861bf61ba8ebb2eeb6f02973ba",
+      "subject": "feat(web): open full access menu from the new thread context strip (#30275)",
+      "topic": "pr-30275"
+    },
+    {
+      "pr": 29912,
+      "sha": "3ee55151e075441a798094202503087fcf1268f0",
+      "subject": "fix(web): device host checks show the error without a stack trace (#29912)",
+      "topic": "pr-29912"
+    },
+    {
+      "pr": 29891,
+      "sha": "12ec17ce4c6481a8ea1049dedd78d0e56bc48aec",
+      "subject": "fix(web): opening a project from the command palette no longer lands in a subagent or side chat (#29891)",
+      "topic": "pr-29891"
+    },
+    {
+      "pr": 29879,
+      "sha": "e86dc78d6294e99cef47888fe1513b647da48e5d",
+      "subject": "fix(server): commits and PR text see changes outside a subfolder project under diff.relative (#29879)",
+      "topic": "pr-29879"
+    },
+    {
+      "pr": 29905,
+      "sha": "e5d07108760777a8b366c727d01c582cddf27dbc",
+      "subject": "fix(server): handoff context names every file of a multi-file patch (#29905)",
+      "topic": "pr-29905"
+    },
+    {
+      "pr": 29878,
+      "sha": "bec3f2d4dd52b01dabb3991e22d5f75fec3d2bc0",
+      "subject": "fix(mobile): multi-file patches show every changed file (#29878)",
+      "topic": "pr-29878"
+    },
+    {
+      "pr": 29877,
+      "sha": "68c38b959ae89b96c80c3e67402d6cfe5e0c1437",
+      "subject": "fix(opencode): text generation errors explain known provider failures without raw provider text (#29877)",
+      "topic": "pr-29877"
+    },
+    {
+      "pr": 29917,
+      "sha": "171f78b87918e065427a9d45f5a3f27a6738ae78",
+      "subject": "fix(client): project removal counts only listed threads, not side chats or subagents (#29917)",
+      "topic": "pr-29917"
+    },
+    {
+      "pr": 26495,
+      "sha": "911212bf4f60915676ac891345fb325457db957e",
+      "subject": "fix(web): open project picker from boring sidebar's header (#26495)",
+      "topic": "pr-26495"
+    },
+    {
+      "pr": 26415,
+      "sha": "42cf5a168c9228c92cd106c247b76632a78d0910",
+      "subject": "fix(web): compact model picker row indicators (#26415)",
+      "topic": "pr-26415"
+    },
+    {
+      "pr": 29755,
+      "sha": "b7ab02e0f6077a72cadfa5c9a40db4db67bc325f",
+      "subject": "fix(web): copied code blocks keep their blank lines in lists, quotes and longer fences (#29755)",
+      "topic": "pr-29755"
+    },
+    {
+      "pr": 29752,
+      "sha": "55ea365a8f167495e87c76da247be8bf47c5908a",
+      "subject": "fix(server): side chats no longer open with a model switch from the parent's turn (#29752)",
+      "topic": "pr-28995"
+    },
+    {
+      "pr": 24861,
+      "sha": "e27e12d9b4a408496be359e3e0db1844c6ea87af",
+      "subject": "feat(web): add refresh to provider status banners (#24861)",
+      "topic": "pr-24861"
+    },
+    {
+      "pr": 30187,
+      "sha": "8be19ed3f1f22837edb94dfd9324555fae042c24",
+      "subject": "fix(pi): short-lived Pi processes no longer lose rotated OAuth tokens (#30187)",
+      "topic": "pr-30187"
+    }
+  ],
+  "count": 48,
+  "createdAt": "2026-11-03T20:57:03.039Z",
+  "digest": "2770f47e3b994251a2e49c93e89374aa4fc5fc3b9a5d8f6472502426a805f9be",
+  "interval": 14,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "d1ec71e6ff8b46bacfbe103af72034eba3654e63"
+}
