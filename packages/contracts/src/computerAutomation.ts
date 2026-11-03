@@ -839,10 +839,10 @@ export const DesktopComputerHostMessage = Schema.Union([
 ]);
 export type DesktopComputerHostMessage = typeof DesktopComputerHostMessage.Type;
 
-/** User controls only. Execution and grant widening are never exposed over WebSocket. */
 /** Integrations whose consent a profile can always allow in main's dialog. */
 export type AlwaysAllowedIntegration = "codex-chrome" | "claude-chrome";
 
+/** User controls only. Execution and grant widening are never exposed over WebSocket. */
 export interface DesktopComputerAutomationBridge {
   readonly status: () => Promise<ComputerAutomationBackendStatus>;
   readonly requestPermission: (kind: ComputerPermission) => Promise<void>;

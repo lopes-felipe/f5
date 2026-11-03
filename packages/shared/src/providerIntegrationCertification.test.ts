@@ -22,6 +22,7 @@ import {
   type IntegrationEvidenceReport,
   type ProviderIntegrationRecord,
 } from "./providerIntegrationCertification";
+import { CLAUDE_SDK_BASELINE_VERSION } from "./claudeSdkManifest";
 
 const allRecords = Object.values(
   PROVIDER_INTEGRATION_RECORDS,
@@ -161,15 +162,44 @@ describe("provider integration certification records", () => {
     expect(claudeChromeRecordFor("darwin", "arm64", "0.4.9", [at("0.3.0"), unstamped])?.id).toBe(
       "claude-chrome-darwin-arm64-0.3.0",
     );
-    // A withdrawn record never shadows, and never certifies.
+    // Withdrawing the covering record is the off-switch: it shadows older floors for the
+    // builds it covers, and builds below its floor keep the older record.
+    const withdrawn = [at("0.3.0"), at("0.5.0", { withdrawn: "Withdrawn" })];
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.5.1", withdrawn)).toBeUndefined();
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.4.9", withdrawn)?.id).toBe(
+      "claude-chrome-darwin-arm64-0.3.0",
+    );
     expect(
-      claudeChromeRecordFor("darwin", "arm64", "0.5.1", [
-        at("0.3.0"),
-        at("0.5.0", { withdrawn: "Withdrawn" }),
-      ])?.id,
-    ).toBe("claude-chrome-darwin-arm64-0.3.0");
+      claudeChromeRecordFor("darwin", "arm64", "0.3.5", [at("0.3.0", { withdrawn: "W" })]),
+    ).toBe(undefined);
     expect(claudeChromeRecordFor("darwin", "x64", "0.4.0", [at("0.3.0")])).toBeUndefined();
     expect(newestRecordsFirst([at("0.3.0"), at("0.4.0")])[0]?.versions.sdkMin).toBe("0.4.0");
+  });
+
+  it("gives desktop the server's Claude gate: the pinned SDK, with the same shadowing", () => {
+    const at = (sdkMin: string, patch: Partial<ClaudeChromeRecord> = {}): ClaudeChromeRecord => ({
+      ...certified,
+      id: `claude-chrome-darwin-arm64-${sdkMin}`,
+      versions: { sdkMin, cliMin: sdkMin },
+      ...patch,
+    });
+    const { evidenceId: _evidence, ...unstampedAtPin } = at(CLAUDE_SDK_BASELINE_VERSION);
+    // An older certified floor is covered, as the server sees it for the bundled package;
+    // a newer unstamped record at the pin closes both, where "newest certifying" would not.
+    for (const records of [[at("0.0.1")], [at("0.0.1"), unstampedAtPin]])
+      expect(claudeChromeRecordFor("darwin", "arm64", undefined, records)).toEqual(
+        claudeChromeRecordFor("darwin", "arm64", CLAUDE_SDK_BASELINE_VERSION, records),
+      );
+    expect(claudeChromeRecordFor("darwin", "arm64", undefined, [at("0.0.1"), unstampedAtPin])).toBe(
+      undefined,
+    );
+    expect(
+      certifiedIntegrationRecord("claude-chrome", "darwin", "arm64", [at("0.0.1"), unstampedAtPin]),
+    ).toBeDefined();
+    // The shipped gate goes through it too.
+    expect(isIntegrationCertified("claude-chrome", "darwin", "arm64")).toBe(
+      claudeChromeRecordFor("darwin", "arm64") !== undefined,
+    );
   });
 
   it("keeps every gate closed until a live run certifies a record", () => {

@@ -158,9 +158,21 @@ describe("Claude in Chrome floors", () => {
         candidate({ versions: { sdkMin: "0.3.100", cliMin: "2.1.100" } }),
       ),
     ).toBeUndefined();
-    expect(
-      coveringClaudeChromeRecord([{ ...floor, withdrawn: "Withdrawn" }], candidate()),
-    ).toBeUndefined();
+  });
+
+  it("keeps a withdrawn covering record in force instead of adding an unstamped one", () => {
+    // The record the runtime selects, as `claudeChromeRecordFor` does: withdrawn included.
+    const withdrawn = { ...floor, withdrawn: "Withdrawn" };
+    expect(coveringClaudeChromeRecord([withdrawn], candidate())).toBe(withdrawn);
+    const newer = {
+      ...floor,
+      id: "claude-chrome-darwin-arm64-2.1.350",
+      versions: { sdkMin: "0.3.350", cliMin: "2.1.350" },
+    };
+    // A withdrawn newer floor shadows the older one; the candidate falls under it.
+    expect(coveringClaudeChromeRecord([floor, { ...newer, withdrawn: "W" }], candidate())?.id).toBe(
+      newer.id,
+    );
   });
 });
 

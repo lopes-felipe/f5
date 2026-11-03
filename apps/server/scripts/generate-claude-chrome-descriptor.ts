@@ -109,14 +109,21 @@ const evidencePath = argument("--evidence");
 const existing = (
   JSON.parse(await readFile(outputPath, "utf8").catch(() => "[]")) as ClaudeChromeRecord[]
 ).map(claudeRecordWithFloors);
-// Evidence always stamps the exercised floor; otherwise an unchanged descriptor is covered.
-const covering = evidencePath ? undefined : coveringClaudeChromeRecord(existing, record);
-// Retiring a record is explicit (`--withdraw <id> --reason <note>`), so `sdk:audit` keeps
-// failing until a withdrawal with its CHANGELOG note is recorded.
+// Retiring a record is explicit (`--withdraw <id> --reason <note>`), with its CHANGELOG note.
 const withdrawId = argument("--withdraw");
 const withdrawReason = argument("--reason");
 if (withdrawId && !withdrawReason)
   throw new Error("--withdraw needs --reason, matching the CHANGELOG note.");
+// Evidence always stamps the exercised floor; otherwise an unchanged descriptor is covered,
+// judged after this run's withdrawal so the message names the record now in force.
+const covering = evidencePath
+  ? undefined
+  : coveringClaudeChromeRecord(
+      existing.map((entry) =>
+        entry.id === withdrawId ? { ...entry, withdrawn: withdrawReason! } : entry,
+      ),
+      record,
+    );
 const next = mergeIntegrationRecords({
   existing,
   ...(covering ? {} : { record }),
@@ -131,9 +138,12 @@ const next = mergeIntegrationRecords({
   ...(withdrawId ? { withdraw: { id: withdrawId, reason: withdrawReason! } } : {}),
 });
 record = next.find((entry) => entry.id === (covering ?? record).id)!;
-const coverage = covering
-  ? `CLI ${descriptor.cliVersion} is covered by ${record.id} (floor ${record.versions.sdkMin})`
-  : undefined;
+const coverage = !covering
+  ? undefined
+  : record.withdrawn
+    ? `CLI ${descriptor.cliVersion} falls under withdrawn ${record.id} (floor ${record.versions.sdkMin}): Claude in Chrome stays off for it until new evidence is stamped`
+    : `CLI ${descriptor.cliVersion} is covered by ${record.id} (floor ${record.versions.sdkMin})`;
+if (withdrawId) console.log(`Withdrew ${withdrawId}.`);
 const current = await readFile(outputPath, "utf8").catch(() => "");
 // Compared as data: the repository formatter owns the file's layout.
 const canonical = (text: string) => {

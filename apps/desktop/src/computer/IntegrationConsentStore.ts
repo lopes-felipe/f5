@@ -1,24 +1,53 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import type { ComputerAccessRequested } from "@t3tools/contracts";
-import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
+import { userInfo } from "node:os";
+import { dirname, join } from "node:path";
+import type { AlwaysAllowedIntegration, ComputerAccessRequested } from "@t3tools/contracts";
+import {
+  INTEGRATION_DISCLOSURES,
+  PROVIDER_INTEGRATION_RECORDS,
+} from "@t3tools/shared/providerIntegrationCertification";
 
 /**
  * Provider integrations whose consent a profile can allow always: Codex Chrome's
  * per-session consent and Claude in Chrome's setup consent. Each one needs its own
  * Settings row to revoke it.
  */
-export type AlwaysAllowableIntegration = "codex-chrome" | "claude-chrome";
+export type AlwaysAllowableIntegration = AlwaysAllowedIntegration;
 const INTEGRATIONS: ReadonlyArray<AlwaysAllowableIntegration> = ["codex-chrome", "claude-chrome"];
 
-/** The integration a consent request can be always allowed for; undefined for any other. */
+/**
+ * Where a terminal `claude --chrome` points the browser: the native-host wrapper under the
+ * user's own `~/.claude`, for every record's wrapper path.
+ */
+export function claudeTerminalTargets(home: string = userInfo().homedir): ReadonlyArray<string> {
+  return [
+    ...new Set(
+      PROVIDER_INTEGRATION_RECORDS["claude-chrome"].map((record) =>
+        join(home, ".claude", ...record.identity.wrapperPath),
+      ),
+    ),
+  ];
+}
+
+/**
+ * The integration a consent request can be always allowed for; undefined for any other.
+ * Claude's setup qualifies only when every registration it replaces is the user's own
+ * terminal Claude: another F5 profile's, or any other, registration always asks.
+ */
 export function alwaysAllowableIntegration(
   request: Pick<ComputerAccessRequested, "kind" | "chromeSession" | "chromeSetup">,
+  terminalTargets: ReadonlyArray<string> = claudeTerminalTargets(),
 ): AlwaysAllowableIntegration | undefined {
   if (request.kind === "chrome-session" && request.chromeSession?.integration === "codex-chrome")
     return "codex-chrome";
-  if (request.kind === "chrome-setup" && request.chromeSetup?.provider === "claude")
+  const setup = request.chromeSetup;
+  if (
+    request.kind === "chrome-setup" &&
+    setup?.provider === "claude" &&
+    setup.previousTargets.length > 0 &&
+    setup.previousTargets.every((target) => terminalTargets.includes(target))
+  )
     return "claude-chrome";
   return undefined;
 }

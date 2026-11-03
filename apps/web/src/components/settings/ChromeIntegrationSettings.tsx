@@ -81,7 +81,7 @@ const ALWAYS_ALLOWED = {
   claude: {
     integration: "claude-chrome",
     description:
-      "Claude takes over the browser connection without asking, even when another Claude or F5 profile set it up. Revoke to be asked again.",
+      "F5 takes the browser connection back from your terminal Claude without asking; another F5 profile's setup still asks. Revoke to be asked every time.",
   },
   codex: {
     integration: "codex-chrome",

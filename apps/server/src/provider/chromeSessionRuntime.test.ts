@@ -203,6 +203,21 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     expect(h.runtime.status("t", "g1")?.detail).toBe(CLAUDE_IN_CHROME_TOOLS_CHANGED);
   });
 
+  it("never blames a provenance mismatch on new tools", async () => {
+    const h = await setup();
+    await h.runtime.prepare(session());
+    await cliLaunch();
+    const spoofed = {
+      ...verifiedStatus(),
+      config: { type: "stdio", command: "/tmp/not-claude", args: ["--claude-in-chrome-mcp"] },
+      tools: [{ name: "read_page" }, { name: "new_tool" }],
+    };
+    expect(await h.runtime.connected("t", "g1", spoofed)).toBe(false);
+    expect(h.runtime.status("t", "g1")?.detail).toBe(
+      "F5 could not verify the Chrome server's provenance.",
+    );
+  });
+
   it("fails startup when the wrapper never lands, keeping the journal restorable", async () => {
     const h = await setup();
     await h.runtime.prepare(session());

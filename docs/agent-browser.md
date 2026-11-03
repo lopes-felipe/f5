@@ -683,18 +683,22 @@ Installed F5 builds keep accepting later ChatGPT builds until then.
 on drift, comparing parsed JSON so formatting never counts. Writing runs the repository
 formatter. Regenerating keeps older records, because journals reference them, and keeps
 any withdrawal. Claude records are **floors** too (`sdkMin`, `cliMin`, no ceiling;
-legacy `sdkVersion`/`cliVersion` keys are rewritten on the next write). When the bundled
-CLI's descriptor (identity, browsers, profile isolation) equals the newest non-withdrawn
-record's, that record covers it and nothing is added, so a Claude bump keeps Claude in
-Chrome open with no new live run. A changed descriptor appends an unstamped record at the
-new floor; at runtime it shadows every older floor (`claudeChromeRecordFor` picks the
-newest non-withdrawn record at or below the bundled SDK and admits it only if it
-certifies), so the gate closes until that record's own live run. `--evidence` always
-stamps the exercised floor. `--withdraw <id> --reason <note>` retires any record,
-including the current CLI's (the emergency off-switch); `--evidence` refuses a withdrawn
-record unless `--reinstate` is passed. `bun run sdk:audit` fails when no non-withdrawn
-`claude-chrome` record covers the pinned SDK on a target, so support never disappears
-silently on an SDK bump.
+legacy `sdkVersion`/`cliVersion` keys are rewritten on the next write).
+`claudeChromeRecordFor` is the one gate for server, desktop and acceptance: it picks the
+record with the highest floor at or below the bundled SDK, withdrawn and unstamped ones
+included, and admits it only if it certifies. A newer record therefore shadows older
+floors for the builds it covers. When the bundled CLI's descriptor (identity, browsers,
+profile isolation) equals that record's, it covers the CLI and nothing is added, so a
+Claude bump keeps Claude in Chrome open with no new live run. A changed descriptor
+appends an unstamped record at the new floor, which closes the gate until its own live
+run. `--evidence` always stamps the exercised floor. `--withdraw <id> --reason <note>`
+retires any record, including the current CLI's: that is the emergency off-switch, since
+the withdrawn record keeps shadowing older floors and the generator adds nothing for a
+CLI it covers. `--evidence` refuses a withdrawn record unless `--reinstate` is passed.
+Desktop has no bundled package of its own, so it uses the pinned SDK
+(`CLAUDE_SDK_BASELINE_VERSION`), which `sdk:audit` requires the bundled package to match.
+`sdk:audit` also fails when no non-withdrawn `claude-chrome` record covers the pin on a
+target, so support never disappears silently on an SDK bump.
 `COMPUTER_CHROME_APP_IDS` is the union of every record's browser bundle IDs; native
 control of those browsers is excluded while a Chrome lease is held, and other apps stay
 available.
@@ -705,9 +709,11 @@ Identity is the realpath of the bundled CLI, its platform package (name, and a v
 covered by a certified floor) and the instance home; the 240 MB binary is never hashed. A
 custom binary or a mismatched home reports unavailable, and a build no certified floor
 covers reports "isn't certified for this Claude build yet". A live server listing a tool
-outside the stamped `toolNames` fails verification with "Claude in Chrome's tools changed
-in this Claude build; it needs a new certification." Disabled instances do no Chrome I/O, and warm admission reuses
-manifests and wrappers cached by metadata fingerprint. Claude launches with `--chrome`
+outside the stamped `toolNames`, while its command and arguments check out, fails
+verification with "Claude in Chrome's tools changed in this Claude build; it needs a new
+certification."; any other provenance failure keeps its own message. Disabled instances
+do no Chrome I/O, and warm admission reuses manifests and wrappers cached by metadata
+fingerprint. Claude launches with `--chrome`
 only when the record certifies, the toggle is on and setup is approved; otherwise with
 `--no-chrome`, and user overrides of either flag are stripped. Isolated F5 profiles set
 `HOME` to the profile's provider home, where the browser's native-messaging folders do
@@ -733,13 +739,17 @@ standalone `claude --chrome` therefore reclaims the browser connection. In Full 
 Claude skips the extension's per-site permission prompts; the toggle, consent and user
 guide disclose this, along with the seven browser folders that get created.
 
-That setup consent (`chrome-setup`, provider `claude`) is Claude in Chrome's only consent,
-and main's dialog offers "Always allow for this profile" for it, kept and signed exactly
-like Codex Chrome's grant under the `claude-chrome` key. Main then answers the profile's
-Claude setup requests itself, including those already waiting, and the web inbox holds
-them for the same grace period. Settings → Browser & Computer shows "Always allowed for
-this profile" with Revoke under Claude in Chrome. The grant only skips this dialog; the
-toggle, ⌃⌘Esc and Restore are unchanged.
+That setup consent (`chrome-setup`, provider `claude`) is Claude in Chrome's only consent.
+When every registration it would replace points at the user's own terminal Claude (the
+wrapper under `~/.claude`), main's dialog offers "Always allow for this profile", kept
+and signed exactly like Codex Chrome's grant under the `claude-chrome` key; a disclosure
+line says so, so its digest covers it. Main then answers such requests itself, including
+those already waiting, and the web inbox holds them for the same grace period. A setup
+that would replace another F5 profile's or any other registration never offers the
+checkbox and always asks, so the routing isolation that consent provides is kept.
+Settings → Browser & Computer shows "Always allowed for this profile" with Revoke under
+Claude in Chrome. The grant only skips this dialog; the toggle, ⌃⌘Esc and Restore are
+unchanged.
 
 ### Main-owned stop
 
@@ -1087,22 +1097,21 @@ versions (stamped as floors) and `admission: "session"`, and computes:
   (`loopsEndedByChrome`) and started once more;
 - `registrations-unchanged`. The Claude harness records manifest and `connected` timings,
   compares the origins it reads back and the bytes of two real launches, and reports the
-  exercised SDK and CLI as `sdkMin`/`cliMin`. It also observes:
-  - `frozen-server-stop-cancels-queued`: a third launch, in its own process group as F5
-    starts it, is frozen (`SIGSTOP`) right after a call is requested, with a second
-    message queued, then stopped
-    as main does (`SIGTERM`, `SIGKILL` after 1 s); the group is gone within 5 s, the
-    session ends and no call completes;
-  - `terminal-claude-unaffected`: after the first restore, a new F5 session connects and
-    a terminal `claude --chrome -p` (your own `~/.claude`, so `CLAUDE_CONFIG_DIR` must
-    point elsewhere and the terminal Claude must be signed in) takes the registration;
-    F5's launch snapshot no longer matches (what admission reports as
-    `external-cli-conflict`), and F5's restore leaves the terminal's manifests untouched.
-    The terminal's registration stays in place afterwards, as running it yourself would.
+  exercised SDK and CLI as `sdkMin`/`cliMin`. It also observes
+  `terminal-claude-unaffected`: after the first restore, a new F5 session connects and a
+  terminal `claude --chrome -p` (your own `~/.claude`, so `CLAUDE_CONFIG_DIR` must point
+  elsewhere and the terminal Claude must be signed in) takes the registration. F5's
+  launch snapshot no longer matches (what admission reports as `external-cli-conflict`),
+  and F5's restore leaves the terminal's manifests untouched; an incomplete restore of
+  F5's own wrapper keeps the journal. The terminal's registration stays in place
+  afterwards, as running it yourself would.
 
-  Permission-mode behaviour (disclosed in the toggle and consent), routing isolation
-  (foreign-registration consent) and stale native hosts are covered by unit tests, not
-  required of the live run. Never edit a report by hand.
+  Not required of the live run: permission-mode behaviour (disclosed in the toggle and
+  consent), routing isolation (another profile's registration always asks, even with
+  Always allow), stale native hosts (unit-tested), and frozen-server stop. Main's group
+  kill is unit-tested in `ChromeProcessSupervisor`, but proving a queued browser call never
+  completes needs a browser-side mutation fixture the Claude harness doesn't have yet.
+  Never edit a report by hand.
   `bun apps/server/scripts/probe-computer-builtins.ts` prints read-only availability.
 
 ## Observation lifetime and turn ownership

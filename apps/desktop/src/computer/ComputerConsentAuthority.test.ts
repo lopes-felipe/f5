@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ComputerAccessAnswer, ComputerAccessRequested } from "@t3tools/contracts";
 import { ComputerConsentAuthority } from "./ComputerConsentAuthority";
+import { claudeTerminalTargets } from "./IntegrationConsentStore";
 
 const request: ComputerAccessRequested = {
   requestId: "r",
@@ -156,12 +157,16 @@ describe("main-owned computer consent", () => {
     expect(alwaysAllow).toHaveBeenCalledWith("profile", "codex-chrome");
     expect(answer.mock.calls.at(-1)![1]).toMatchObject({ allowChromeSession: true });
   });
-  it("remembers always-allow for Claude in Chrome setup, never for another provider's", async () => {
-    const claudeSetup = (provider: "claude" | "codex"): ComputerAccessRequested => ({
+  it("remembers always-allow for Claude taking over the terminal, never for other setups", async () => {
+    const terminal = claudeTerminalTargets()[0]!;
+    const claudeSetup = (
+      provider: "claude" | "codex",
+      previousTargets = [terminal],
+    ): ComputerAccessRequested => ({
       ...request,
       kind: "chrome-setup",
       apps: [],
-      chromeSetup: { provider, previousTargets: ["/terminal/wrapper"], targetPath: "/f5/wrapper" },
+      chromeSetup: { provider, previousTargets, targetPath: "/f5/wrapper" },
     });
     let current = claudeSetup("claude");
     const alwaysAllow = vi.fn();
@@ -187,6 +192,12 @@ describe("main-owned computer consent", () => {
     current = claudeSetup("codex");
     await authority.review("profile", offered);
     expect(show.mock.calls[1]![1]).not.toHaveProperty("checkboxLabel");
+    // Another F5 profile's wrapper, alone or next to the terminal's, always asks.
+    for (const targets of [["/other-profile/claude/chrome/chrome-native-host"], [terminal, "/x"]]) {
+      current = claudeSetup("claude", targets);
+      await authority.review("profile", offered);
+      expect(show.mock.calls.at(-1)![1]).not.toHaveProperty("checkboxLabel");
+    }
     expect(alwaysAllow).toHaveBeenCalledOnce();
   });
   it("remembers nothing when the request expires while the dialog is open", async () => {

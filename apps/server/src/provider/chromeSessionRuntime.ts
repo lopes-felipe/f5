@@ -258,12 +258,13 @@ export class ChromeSessionRuntime {
     if (!binding || !binding.transaction) return false;
     if (binding.state === "connected") {
       // Live re-check: any provenance mismatch invalidates immediately.
-      if (await this.verifyServer(status)) return true;
+      const check = await this.verifyServerWithReason(status);
+      if (check.ok) return true;
       this.invalidate(
         threadId,
         generation,
         "failed",
-        chromeServerHasUncertifiedTools(status, this.toolNames)
+        check.toolsChanged
           ? CLAUDE_IN_CHROME_TOOLS_CHANGED
           : "Claude in Chrome's connection changed. Reconnect it in F5.",
       );
@@ -271,14 +272,14 @@ export class ChromeSessionRuntime {
     }
     // Failed and conflicted sessions return only through an explicit reconnect.
     if (binding.state !== "pending") return false;
-    const serverOk = await this.verifyServer(status);
+    const check = await this.verifyServerWithReason(status);
     if (this.current(threadId, generation) !== binding) return false;
-    if (!serverOk) {
+    if (!check.ok) {
       this.invalidate(
         threadId,
         generation,
         "failed",
-        chromeServerHasUncertifiedTools(status, this.toolNames)
+        check.toolsChanged
           ? CLAUDE_IN_CHROME_TOOLS_CHANGED
           : "F5 could not verify the Chrome server's provenance.",
       );
@@ -309,6 +310,24 @@ export class ChromeSessionRuntime {
   }
 
   /** Live status re-check; any mismatch invalidates verification immediately. */
+  /**
+   * Verification, and whether a failure is only a tools change: the server lists an
+   * uncertified tool and its provenance passes without the tool list. A command or path
+   * mismatch is never blamed on new tools. One await, so invalidation isn't delayed.
+   */
+  private async verifyServerWithReason(
+    status: ChromeServerStatus | undefined,
+  ): Promise<{ ok: boolean; toolsChanged: boolean }> {
+    const uncertified =
+      status !== undefined && chromeServerHasUncertifiedTools(status, this.toolNames);
+    const { tools: _tools, ...withoutTools } = status ?? {};
+    const [ok, provenanceOk] = await Promise.all([
+      this.verifyServer(status),
+      uncertified ? this.verifyServer(withoutTools as ChromeServerStatus) : false,
+    ]);
+    return { ok, toolsChanged: !ok && uncertified && provenanceOk };
+  }
+
   verifyServer(status: ChromeServerStatus | undefined): Promise<boolean> {
     return (
       this.deps.descriptor.verifyServer?.(status, {

@@ -1,7 +1,6 @@
 import {
-  compareVersions,
   evidenceMismatches,
-  integrationTemplateRecord,
+  recordForVersion,
   type ClaudeChromeRecord,
   type CodexChromeRecord,
   type CodexComputerRecord,
@@ -90,22 +89,30 @@ const canonical = (value: unknown): string =>
   );
 
 /**
- * The existing record that already covers a freshly extracted `candidate`: the newest
- * non-withdrawn record for its target, when its floor is at or below the candidate's and
- * its static identity, browsers and profile isolation are unchanged. A covered CLI needs
- * no new record (or live run); any descriptor change needs one.
+ * The existing record that already covers a freshly extracted `candidate`: the one the
+ * runtime selects for its SDK (`claudeChromeRecordFor`'s rule, withdrawn records
+ * included), when its static identity, browsers and profile isolation are unchanged. A
+ * covered CLI needs no new record (or live run); any descriptor change needs one. A
+ * withdrawn covering record keeps the CLI off until new evidence is stamped.
  */
 export function coveringClaudeChromeRecord(
   existing: ReadonlyArray<ClaudeChromeRecord>,
   candidate: ClaudeChromeRecord,
 ): ClaudeChromeRecord | undefined {
-  const newest = integrationTemplateRecord(existing, candidate.platform, candidate.arch);
-  if (!newest) return undefined;
-  const floor = compareVersions(newest.versions.sdkMin, candidate.versions.sdkMin);
-  if (floor === undefined || floor > 0) return undefined;
+  const sdk = candidate.versions.sdkMin;
+  const selected =
+    sdk === undefined
+      ? undefined
+      : recordForVersion(
+          existing.filter(
+            (record) => record.platform === candidate.platform && record.arch === candidate.arch,
+          ),
+          sdk,
+        );
+  if (!selected) return undefined;
   const statics = (record: ClaudeChromeRecord) =>
     canonical([record.identity, record.browsers, record.profileIsolation]);
-  return statics(newest) === statics(candidate) ? newest : undefined;
+  return statics(selected) === statics(candidate) ? selected : undefined;
 }
 
 /**

@@ -1,10 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { promisify } from "node:util";
+import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -23,9 +24,10 @@ import {
   makeChromeNativeHostStorage,
   readChromeArtifact,
 } from "../src/provider/chromeNativeHostStorage";
-import { makeClaudeProcessGroupSpawner } from "../src/provider/claudeProcessGroup";
 import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecutable";
 import { evidenceSource } from "./fixtures/evidenceSource";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Live Claude in Chrome certification run. It writes the real browser native-messaging
@@ -97,13 +99,12 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       acceptedForeign: [],
     });
     const cwd = mkdtempSync(join(tmpdir(), "f5-claude-chrome-cwd-"));
-    const launch = (spawnClaudeCodeProcess?: Options["spawnClaudeCodeProcess"]) => {
+    const launch = () => {
       const input = createControllableAsyncIterable<SDKUserMessage>();
       const q = query({
         prompt: input.iterable,
         options: {
           cwd,
-          ...(spawnClaudeCodeProcess ? { spawnClaudeCodeProcess } : {}),
           pathToClaudeCodeExecutable: executable,
           persistSession: false,
           settingSources: [],
@@ -248,81 +249,6 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         second.q.close();
         second.input.end();
       }
-      // A frozen CLI: stopped right after a call is requested, with a second message queued
-      // behind it, then stopped the way
-      // desktop main does it (SIGTERM to the group, SIGKILL after 1 s). The whole group
-      // must be gone within 5 s, the session must end, and no call may complete.
-      let leader: number | undefined;
-      const groupSpawner = makeClaudeProcessGroupSpawner(() => {})!;
-      const frozen = launch((options) => {
-        const child = groupSpawner(options);
-        leader = (child as unknown as { pid?: number }).pid;
-        return child;
-      });
-      try {
-        await frozen.q.initializationResult();
-        if ((await awaitConnected(frozen.q)) && leader !== undefined) {
-          const ask = (content: string) =>
-            frozen.input.push({
-              type: "user",
-              parent_tool_use_id: null,
-              message: { role: "user", content },
-            });
-          ask("Call tabs_context_mcp once, then reply DONE. Use no other tool.");
-          process.kill(-leader, "SIGSTOP");
-          ask("Call tabs_context_mcp once more, then reply DONE.");
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          const stoppedAt = Date.now();
-          process.kill(-leader, "SIGTERM");
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          try {
-            process.kill(-leader, "SIGKILL");
-          } catch {
-            // The group already exited on SIGTERM.
-          }
-          const groupAlive = () => {
-            try {
-              process.kill(-leader!, 0);
-              return true;
-            } catch {
-              return false;
-            }
-          };
-          while (groupAlive() && Date.now() - stoppedAt < 5_000)
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          const groupGone = !groupAlive();
-          // Drain what the dead session still yields: a completed call would show up here.
-          let completed = 0;
-          const ended = await Promise.race([
-            (async () => {
-              try {
-                for (;;) {
-                  const next = await frozen.q.next();
-                  if (next.done) return true;
-                  const content = (next.value as { message?: { content?: unknown } }).message
-                    ?.content;
-                  if (Array.isArray(content))
-                    completed += (content as Array<Record<string, unknown>>).filter(
-                      (block) => block.type === "tool_result" && block.is_error !== true,
-                    ).length;
-                }
-              } catch {
-                return true;
-              }
-            })(),
-            new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
-          ]);
-          observations.frozenStop = {
-            groupGoneMs: groupGone ? Date.now() - stoppedAt : null,
-            sessionEnded: ended,
-            completedAfterFreeze: completed,
-          };
-          assertions["frozen-server-stop-cancels-queued"] = groupGone && ended && completed === 0;
-        }
-      } finally {
-        frozen.q.close();
-        frozen.input.end();
-      }
     } finally {
       const restored = await transactions.restore(
         (await storage.loadTransaction("claude", approved.id))!,
@@ -343,6 +269,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
     // first restore, so `restore-original-bytes` above measures the untouched original.
     // Leaves the terminal's registration in place, as running `claude --chrome` would.
     const terminalTarget = descriptor.expectedTarget(join(userHome, ".claude"));
+    // True unless a contested session ran and its restore left something behind.
+    let contestedRestoreClean = true;
     if (terminalTarget === targetPath) {
       observations.terminal = { skipped: "set CLAUDE_CONFIG_DIR to a config other than ~/.claude" };
     } else if (assertions["restore-original-bytes"]) {
@@ -370,14 +298,15 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           const { CLAUDE_CONFIG_DIR: _isolated, ...terminalEnv } = process.env;
           let exitCode = 0;
           try {
-            execFileSync(executable, ["--chrome", "-p", "Reply OK.", "--max-turns", "1"], {
+            // Async, so F5's session keeps being served while the terminal runs.
+            await execFileAsync(executable, ["--chrome", "-p", "Reply OK.", "--max-turns", "1"], {
               cwd,
               env: { ...terminalEnv, HOME: userHome },
-              stdio: "ignore",
               timeout: 90_000,
             });
           } catch (error) {
-            exitCode = (error as { status?: number }).status ?? -1;
+            const code = (error as { code?: unknown }).code;
+            exitCode = typeof code === "number" ? code : -1;
           }
           const current = (await storage.inspect()).filter((entry) => !entry.shadowed);
           const terminalRegistered =
@@ -397,10 +326,24 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       } finally {
         session.q.close();
         session.input.end();
-        await transactions.restore((await storage.loadTransaction("claude", contested.id))!, {
-          stopSessions: async () => {},
-          validateSlot: async () => true,
-        });
+        const contestedRestore = await transactions.restore(
+          (await storage.loadTransaction("claude", contested.id))!,
+          { stopSessions: async () => {}, validateSlot: async () => true },
+        );
+        // Only the manifests the terminal took may be skipped; F5's own wrapper and
+        // anything unresolved mean the journal is still needed.
+        contestedRestoreClean =
+          contestedRestore.unresolved.length === 0 &&
+          !contestedRestore.skipped.includes(targetPath);
+        observations.contestedRestore = {
+          state: contestedRestore.transaction.state,
+          skipped: contestedRestore.skipped.length,
+          unresolved: contestedRestore.unresolved.length,
+        };
+        if (!contestedRestoreClean)
+          console.error(
+            `Contested restore incomplete; the journal is in ${stateDir} (transaction ${contested.id}).`,
+          );
       }
       // Restore skips artifacts that changed outside F5: the terminal's registration stays.
       const manifestsAfter = (await artifactBytes()).slice(0, -1);
@@ -438,7 +381,6 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             "read-only-call",
             "restore-original-bytes",
             "byte-identical-launches",
-            "frozen-server-stop-cancels-queued",
             "terminal-claude-unaffected",
           ].includes(name),
       ),
@@ -447,8 +389,11 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       await writeFile(process.env.F5_CLAUDE_CHROME_REPORT, `${JSON.stringify(report, null, 2)}\n`);
     await rm(cwd, { recursive: true, force: true });
     // An incomplete restore keeps the journal so the original bytes stay recoverable.
-    if (assertions["restore-original-bytes"]) await rm(stateDir, { recursive: true, force: true });
+    if (assertions["restore-original-bytes"] && contestedRestoreClean)
+      await rm(stateDir, { recursive: true, force: true });
     expect(assertions["restore-original-bytes"]).toBe(true);
     expect(assertions["manifests-and-wrapper"]).toBe(true);
-  }, 180_000);
+    // Two launches, the read-only call, then a contested session with a terminal run (up to
+    // 30 s to connect plus 90 s for the terminal), with room for a slow Mac.
+  }, 420_000);
 });

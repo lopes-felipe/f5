@@ -106,10 +106,19 @@ describe("Claude in Chrome executable identity", () => {
     expect(await check({ records: [certified, unstamped] })).toMatchObject({
       unavailable: { reason: "not-certified" },
     });
-    // A withdrawn record never shadows.
+    // Withdrawing the record that covers the bundled SDK closes the gate (the off-switch),
+    // even when an older certified floor would cover it.
+    const newer = {
+      ...certified,
+      id: "claude-chrome-darwin-arm64-99.0.0",
+      versions: { sdkMin: "99.0.0", cliMin: "99.0.0" },
+    };
+    expect(await check({ records: [certified, newer] })).toMatchObject({
+      record: { id: newer.id },
+    });
     expect(
-      await check({ records: [certified, { ...unstamped, withdrawn: "Withdrawn" }] }),
-    ).toMatchObject({ record: { id: certified.id } });
+      await check({ records: [certified, { ...newer, withdrawn: "Withdrawn" }] }),
+    ).toMatchObject({ unavailable: { reason: "not-certified" } });
   });
 
   it.each([

@@ -5,7 +5,7 @@ import { ChromeProcessSupervisor, type ChromeProcessIo } from "./ChromeProcessSu
 import { ComputerHostChannel } from "./ComputerHostChannel";
 import type { ComputerController } from "./ComputerController";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
-import type { AlwaysAllowableIntegration } from "./IntegrationConsentStore";
+import { claudeTerminalTargets, type AlwaysAllowableIntegration } from "./IntegrationConsentStore";
 function setup(
   certified = false,
   advertiseBackground?: boolean,
@@ -720,7 +720,11 @@ describe("background capability negotiation", () => {
       alwaysAllowed: (_profile, integration) => integration === allowed,
     });
     h.hello();
-    const setupRequest = (requestId: string, provider: "claude" | "codex") => ({
+    const setupRequest = (
+      requestId: string,
+      provider: "claude" | "codex",
+      previousTargets = [claudeTerminalTargets()[0]!],
+    ) => ({
       type: "accessRequested",
       request: {
         requestId,
@@ -728,11 +732,7 @@ describe("background capability negotiation", () => {
         sessionGeneration: "s",
         reason: "r",
         kind: "chrome-setup",
-        chromeSetup: {
-          provider,
-          previousTargets: ["/terminal/wrapper"],
-          targetPath: "/f5/wrapper",
-        },
+        chromeSetup: { provider, previousTargets, targetPath: "/f5/wrapper" },
         apps: [],
       },
     });
@@ -758,6 +758,14 @@ describe("background capability negotiation", () => {
         .filter((message) => message.type === "accessAnswer")
         .map((message) => (message as { answer: { requestId: string } }).answer.requestId),
     ).toEqual(["claude", "before"]);
+    // Replacing another F5 profile's registration always asks, grant or not.
+    h.process.emit(
+      "message",
+      setupRequest("other-profile", "claude", ["/other-profile/claude/chrome/chrome-native-host"]),
+    );
+    expect(h.attention).toHaveBeenCalledTimes(2);
+    h.channel.answerPendingAlwaysAllowed("profile");
+    expect(sent(h).filter((message) => message.type === "accessAnswer")).toHaveLength(2);
   });
   it("answers the profile's waiting Codex Chrome requests once it chooses always allow", () => {
     let allowed = false;
