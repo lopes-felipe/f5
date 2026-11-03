@@ -153,7 +153,7 @@ export const RPC_METHOD_POLICY = {
   "nativeOperation.fork": MUTATION_RT,
   "nativeOperation.historyRecovery": MUTATION_RT,
   "nativeOperation.inspect": READ_RT,
-  "nativeOperation.markRead": READ_RT,
+  "nativeOperation.markRead": MUTATION_RT,
   "nativeOperation.list": READ_RT,
   "nativeOperation.resolve": MUTATION_RT,
 

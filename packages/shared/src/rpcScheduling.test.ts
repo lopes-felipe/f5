@@ -159,6 +159,7 @@ describe("RPC method policy", () => {
     expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBe(660_000);
     expect(rpcLongRunningTimeoutMs({ _tag: "server.saveProviderFeedback" })).toBe(130_000);
     expect(isReadOnlyRpc("server.saveProviderFeedback")).toBe(false);
+    expect(isReadOnlyRpc("nativeOperation.markRead")).toBe(false);
     expect(
       rpcLane({ _tag: "nativeOperation.resolve", action: "cancel" } as Parameters<
         typeof rpcLane
