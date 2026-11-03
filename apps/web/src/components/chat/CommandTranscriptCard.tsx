@@ -292,7 +292,7 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
               <span className="text-2xs text-muted-foreground">
                 {`Shortened preview, ${compactCharCountFormatter.format(preview.shownChars)} of ${compactCharCountFormatter.format(props.outputText.length)} characters`}
               </span>
-              <span aria-hidden className="text-muted-foreground/50">
+              <span aria-hidden className="text-faint-foreground">
                 ·
               </span>
             </>
