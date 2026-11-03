@@ -9,6 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   MCP_APP_PROVIDERS,
+  mcpAppReferenceProvider,
   readMcpAppReference,
   readMcpAppToolResult,
   findMcpAppToolPolicy,
@@ -65,6 +66,11 @@ export const makeMcpAppService = Effect.gen(function* () {
         catch: failure,
       });
       if (!reference) return yield* failure();
+      // An app captured under another provider (before a handoff) never reaches this session.
+      if (mcpAppReferenceProvider(reference) !== thread.session?.providerName)
+        return yield* new McpAppError({
+          message: "This app belongs to an earlier provider session in this thread.",
+        });
       return { reference, apps: provider.mcpApps };
     });
   const inspectTool = (input: McpAppToolInfoInput) =>

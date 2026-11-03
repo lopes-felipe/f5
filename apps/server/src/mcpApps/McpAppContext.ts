@@ -14,15 +14,23 @@ export function formatMcpAppContextEntry(
   const escaped = json?.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   return escaped && Buffer.byteLength(escaped) <= MAX_MCP_APP_CONTEXT_BYTES ? escaped : undefined;
 }
-/** Writes reserve the aggregate budget, so every acknowledged app state fits in the next user turn. */
-export const readMcpAppModelContext = (threadId: ThreadId) =>
+/**
+ * Writes reserve the aggregate budget, so every acknowledged app state fits in the next user
+ * turn. With `provider`, only apps that provider captured are delivered, so a handoff never
+ * carries another provider's app state.
+ */
+export const readMcpAppModelContext = (threadId: ThreadId, provider?: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const providerFilter =
+      provider === undefined
+        ? sql``
+        : sql`AND coalesce(json_extract(i.reference_json,'$.provider'),'codex')=${provider}`;
     const rows = yield* sql<{ server: string; tool: string; context: string }>`
     SELECT json_extract(i.reference_json,'$.server') AS server,json_extract(i.reference_json,'$.tool') AS tool,c.context_json AS context
     FROM mcp_app_model_context c JOIN mcp_app_instances i USING(attachment_id)
     JOIN projection_thread_activities a ON a.activity_id=i.activity_id AND a.thread_id=i.thread_id
-    WHERE c.thread_id=${threadId} ORDER BY c.updated_at DESC,c.attachment_id LIMIT 20`;
+    WHERE c.thread_id=${threadId} ${providerFilter} ORDER BY c.updated_at DESC,c.attachment_id LIMIT 20`;
     const parts: string[] = [];
     let bytes = 0;
     for (const row of rows) {

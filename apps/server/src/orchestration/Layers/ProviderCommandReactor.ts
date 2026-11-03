@@ -1,5 +1,6 @@
 import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
 import { readMcpAppModelContext } from "../../mcpApps/McpAppContext.ts";
+import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
 import { registerShutdown } from "../../shutdown.ts";
 import { ProviderControlTarget } from "../../provider/controlTarget.ts";
 import { isControlEvent } from "../commandAdmission.ts";
@@ -443,6 +444,13 @@ function withoutRestoredHistory(
   return rest;
 }
 
+/** The resume cursor without Claude's lost-transcript flag (cleared once a summary is delivered). */
+export function withoutTranscriptIncomplete(cursor: unknown): unknown {
+  if (!cursor || typeof cursor !== "object" || !("transcriptIncomplete" in cursor)) return cursor;
+  const { transcriptIncomplete: _cleared, ...rest } = cursor as Record<string, unknown>;
+  return rest;
+}
+
 function errorText(error: unknown): string {
   const parts: string[] = [];
   const seen = new Set<unknown>();
@@ -486,9 +494,9 @@ const make = Effect.gen(function* () {
   const deliveryRepository = yield* Effect.serviceOption(ProviderTurnDeliveryRepository);
   const instanceRegistry = yield* Effect.serviceOption(ProviderInstanceRegistry);
   const backgroundWork = yield* Effect.serviceOption(ThreadBackgroundWork);
-  const appContextForTurn = (threadId: ThreadId, enabled: boolean) =>
-    enabled && Option.isSome(sqlOption)
-      ? readMcpAppModelContext(threadId).pipe(
+  const appContextForTurn = (threadId: ThreadId, provider: ProviderKind | undefined) =>
+    provider !== undefined && MCP_APP_PROVIDERS.has(provider) && Option.isSome(sqlOption)
+      ? readMcpAppModelContext(threadId, provider).pipe(
           Effect.provideService(SqlClient.SqlClient, sqlOption.value),
         )
       : Effect.succeed("");
@@ -1416,6 +1424,12 @@ const make = Effect.gen(function* () {
             (needsNativeRecovery && input?.resumeCursor === undefined) || transcriptIncomplete
               ? yield* recoverSummary()
               : undefined;
+          // One-shot: once the summary is delivered, the cursor drops the flag so later
+          // starts resume normally instead of paying for another whole-thread summary.
+          const resumeCursor =
+            transcriptIncomplete && recoverySummary
+              ? withoutTranscriptIncomplete(input?.resumeCursor)
+              : input?.resumeCursor;
           const startInput = {
             threadId,
             projectId: thread.projectId,
@@ -1439,7 +1453,7 @@ const make = Effect.gen(function* () {
               : effectiveStartConfig.providerOptions !== undefined
                 ? { providerOptions: effectiveStartConfig.providerOptions }
                 : {}),
-            ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+            ...(resumeCursor !== undefined ? { resumeCursor } : {}),
             ...(options?.unattended ? { unattended: true } : {}),
             runtimeMode: desiredRuntimeMode,
           };
@@ -2453,7 +2467,7 @@ const make = Effect.gen(function* () {
 
     const mcpAppContext = yield* appContextForTurn(
       input.threadId,
-      recoveryProvider === "codex" && input.submissionSource !== "automation",
+      input.submissionSource !== "automation" ? recoveryProvider : undefined,
     );
     yield* providerSessionDirectory.upsert({
       threadId: input.threadId,
@@ -2943,8 +2957,9 @@ const make = Effect.gen(function* () {
         ).pipe(Effect.mapError(toProviderTurnDeliveryError));
       const mcpAppContext = yield* appContextForTurn(
         thread.id,
-        providerFromSessionName(thread.session?.providerName) === "codex" &&
-          submissionSource !== "automation",
+        submissionSource !== "automation"
+          ? providerFromSessionName(thread.session?.providerName)
+          : undefined,
       );
       yield* requireDeliverableThread(thread.id);
       return yield* providerService.sendTurn({

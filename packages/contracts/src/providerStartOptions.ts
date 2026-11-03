@@ -50,7 +50,10 @@ export const ClaudeProviderStartOptions = Schema.Struct({
   subagentModel: Schema.optional(TrimmedNonEmptyString),
   /** Claude effort for sub-agents (`CLAUDE_CODE_SUBAGENT_EFFORT`); unset keeps the CLI default. */
   subagentEffort: Schema.optional(Schema.Literals(CLAUDE_SUBAGENT_EFFORT_OPTIONS)),
-  /** Instance setting; maps to `permissions.blockWritesOutsideWorkingDirectories`. */
+  /**
+   * Instance setting; maps to `permissions.blockWritesOutsideWorkingDirectories`. The adapter
+   * reads it only from the instance's options, never from a thread's start options.
+   */
   confineWritesToWorkspace: Schema.optional(Schema.Boolean),
   launchArgs: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
 });

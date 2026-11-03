@@ -1345,6 +1345,62 @@ describe("ProviderCommandReactor", () => {
     },
   );
 
+  it("summarizes a lost Claude transcript once, then resumes without another summary", async () => {
+    const harness = await createHarness({
+      recoverySummary: "Recovered details from F5 transcript",
+    });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const startTurn = async (id: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe(`turn-${id}`),
+          threadId,
+          message: {
+            messageId: asMessageId(`message-${id}`),
+            role: "user",
+            text: "Continue",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    harness.upsertBinding({
+      threadId,
+      provider: "codex",
+      projectId: asProjectId("project-1"),
+      status: "stopped",
+      resumeCursor: { threadId: "native-1", transcriptIncomplete: true },
+      runtimePayload: { cwd: harness.workspaceRoot },
+    });
+    await startTurn("after-lost-writes");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.runOneOffPrompt).toHaveBeenCalledTimes(1);
+    const first = harness.startSession.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(first).toMatchObject({
+      priorWorkSummary: "Recovered details from F5 transcript",
+      resumeCursor: { threadId: "native-1" },
+    });
+    expect(first.resumeCursor).not.toHaveProperty("transcriptIncomplete");
+
+    // The next start (restart, idle reap, setting change) resumes the cleared cursor.
+    await Effect.runPromise(harness.stopSession({ threadId }));
+    harness.upsertBinding({
+      threadId,
+      provider: "codex",
+      projectId: asProjectId("project-1"),
+      status: "stopped",
+      resumeCursor: first.resumeCursor,
+      runtimePayload: { cwd: harness.workspaceRoot },
+    });
+    await startTurn("next-start");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.runOneOffPrompt).toHaveBeenCalledTimes(1);
+  });
+
   it("composes reactor, ProviderService and Cursor ACP: answers and interrupt reach an unresolved prompt", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-composed-acp-"));
     createdStateDirs.add(directory);

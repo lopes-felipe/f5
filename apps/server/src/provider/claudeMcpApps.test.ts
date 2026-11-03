@@ -77,6 +77,33 @@ describe("Claude MCP App catalog", () => {
     expect(resolveClaudeMcpAppTool(undefined, "mcp__charts__show_chart")).toBeUndefined();
   });
 
+  it("resolves sanitized Claude tool names to the configured server and tool names", () => {
+    const named = buildClaudeMcpAppCatalog(
+      [
+        {
+          name: "claude.ai Figma",
+          tools: [{ name: "get.design", _meta: { ui: { resourceUri: "ui://figma/design" } } }],
+        },
+        { name: "team", tools: [{ name: "x__board", _meta: { ui: { resourceUri: "ui://t/a" } } }] },
+        { name: "team__x", tools: [{ name: "board", _meta: { ui: { resourceUri: "ui://t/b" } } }] },
+      ],
+      1,
+      0,
+    );
+    expect(resolveClaudeMcpAppTool(named, "mcp__claude_ai_Figma__get_design")).toEqual({
+      server: "claude.ai Figma",
+      tool: "get.design",
+      resourceUri: "ui://figma/design",
+    });
+    // A server name containing `__` is matched whole, longest name first, then the shorter one.
+    expect(resolveClaudeMcpAppTool(named, "mcp__team__x__board")).toEqual({
+      server: "team__x",
+      tool: "board",
+      resourceUri: "ui://t/b",
+    });
+    expect(resolveClaudeMcpAppTool(named, "mcp__claude.ai Figma__get.design")).toBeUndefined();
+  });
+
   it("is stale after the max age or a new session epoch", () => {
     expect(
       isClaudeMcpAppCatalogFresh(catalog, 3, 1_000 + CLAUDE_MCP_APP_CATALOG_MAX_AGE_MS - 1),
@@ -121,6 +148,23 @@ describe("Claude MCP App tool results and calls", () => {
         arguments: {},
       }),
     ).rejects.toThrow(CLAUDE_MCP_APP_UNAVAILABLE);
+  });
+
+  it("calls a configured server name under Claude's sanitized tool name", async () => {
+    const calls: unknown[] = [];
+    await callClaudeMcpAppTool({
+      query: {
+        request: async (request: unknown) => {
+          calls.push(request);
+          return { response: {} };
+        },
+      },
+      capabilities: new Set(["mcp_call_result_not_for_model_v1"]),
+      server: "claude.ai Figma",
+      tool: "get.design",
+      arguments: {},
+    });
+    expect(calls).toMatchObject([{ tool: "mcp__claude_ai_Figma__get_design" }]);
   });
 
   it("sends a fully-qualified tool with result_not_for_model and passes the signal", async () => {

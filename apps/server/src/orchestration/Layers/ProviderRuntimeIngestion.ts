@@ -82,7 +82,6 @@ import {
 } from "@t3tools/shared/commandSummary";
 import {
   compactThreadActivityPayload,
-  parseMcpToolName,
   readToolActivityPayload,
   REASONING_STATUS_ACTIVITY_KIND,
 } from "@t3tools/shared/orchestrationActivityPayload";
@@ -2348,15 +2347,19 @@ export function runtimeEventToActivities(
       const normalizedTitle = commandExecutionLifecycleTitle(event);
       const data = asRecord(event.payload.data);
       const native = asRecord(data?.item);
-      // Codex names the server and tool on its native item; Claude in `mcp__<server>__<tool>`.
+      // Codex names the server and tool on its native item. Claude's adapter adds the
+      // configured names, since `mcp__<server>__<tool>` carries sanitized ones.
+      const claudeAppTool = asRecord(data?.mcpAppTool);
       const appTool =
         event.provider === "codex" &&
         native &&
         typeof native.server === "string" &&
         typeof native.tool === "string"
           ? { server: native.server, tool: native.tool }
-          : event.provider === "claudeAgent" && typeof data?.toolName === "string"
-            ? parseMcpToolName(data.toolName)
+          : event.provider === "claudeAgent" &&
+              typeof claudeAppTool?.server === "string" &&
+              typeof claudeAppTool.tool === "string"
+            ? { server: claudeAppTool.server, tool: claudeAppTool.tool }
             : null;
       const reference = appTool
         ? readMcpAppReferenceForTool(data?.mcpApp, appTool.server, appTool.tool)

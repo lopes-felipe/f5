@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 
 import { compareCliVersions } from "./cliVersion.ts";
 import { isDefaultClaudeBinary, resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
@@ -8,16 +8,40 @@ import { parseGenericCliVersion } from "./providerSnapshot.ts";
 /** First Claude Code release that honors `onFailure` on SDK hook matchers. */
 export const CLAUDE_HOOK_ON_FAILURE_MIN_VERSION = "2.1.317";
 const VERSION_TIMEOUT_MS = 10_000;
+/** A wrapper can start another binary without changing itself, so answers expire. */
+const VERSION_TTL_MS = 10 * 60_000;
+/** Failed or hung probes are cached briefly so they cannot add the timeout to every launch. */
+const FAILED_VERSION_TTL_MS = 60_000;
 
-const versions = new Map<string, Promise<string | undefined>>();
+const versions = new Map<
+  string,
+  { readonly version: Promise<string | undefined>; expiresAt: number }
+>();
 
-function cacheKey(file: string): string {
+function fileIdentity(file: string): string {
   try {
-    const stat = statSync(file);
-    return `${file}\0${stat.mtimeMs}\0${stat.size}`;
+    const resolved = realpathSync(file);
+    const stat = statSync(resolved);
+    return `${file}\0${resolved}\0${stat.mtimeMs}\0${stat.size}`;
   } catch {
     return file;
   }
+}
+
+/**
+ * Identity of everything that decides the answer: the runtime and, for a JavaScript entry run
+ * through Node, the script itself (resolved through links, so a symlinked upgrade changes it).
+ */
+export function claudeVersionCacheKey(invocation: {
+  readonly file: string;
+  readonly args: ReadonlyArray<string>;
+}): string {
+  return [invocation.file, ...invocation.args].map(fileIdentity).join("\u0001");
+}
+
+/** Test seam: forget every cached answer. */
+export function clearClaudeExecutableVersionCache(): void {
+  versions.clear();
 }
 
 /**
@@ -40,9 +64,9 @@ export function readClaudeExecutableVersion(
   } catch {
     return Promise.resolve(undefined);
   }
-  const key = cacheKey(invocation.file);
+  const key = claudeVersionCacheKey(invocation);
   const cached = versions.get(key);
-  if (cached) return cached;
+  if (cached && cached.expiresAt > Date.now()) return cached.version;
   const pending = new Promise<string | undefined>((resolve) => {
     const child = execFile(
       invocation.file,
@@ -54,10 +78,11 @@ export function readClaudeExecutableVersion(
     // A wrapper that reads stdin before answering must not hold the launch until the timeout.
     child.stdin?.end();
   });
-  versions.set(key, pending);
-  // A failed probe is retried on the next launch rather than pinned.
+  const entry = { version: pending, expiresAt: Date.now() + VERSION_TIMEOUT_MS + VERSION_TTL_MS };
+  versions.set(key, entry);
+  // A failed probe keeps the older behavior for a minute, then is retried.
   void pending.then((version) => {
-    if (version === undefined) versions.delete(key);
+    if (version === undefined) entry.expiresAt = Date.now() + FAILED_VERSION_TTL_MS;
   });
   return pending;
 }

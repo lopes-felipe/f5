@@ -40,6 +40,13 @@ export interface McpAppReference {
   readonly csp?: McpAppCsp;
   readonly permissions?: McpAppPermissions;
   readonly prefersBorder?: boolean;
+  /** Provider whose session captured the app. Absent on references captured before Claude apps (Codex). */
+  readonly provider?: string;
+}
+
+/** The provider that captured an app; references from before Claude apps were Codex's. */
+export function mcpAppReferenceProvider(reference: McpAppReference): string {
+  return reference.provider ?? "codex";
 }
 
 // Only scheme-qualified origins, optionally with a leading `*.` subdomain
@@ -124,6 +131,7 @@ export function readMcpAppReference(value: unknown): McpAppReference | undefined
     ...(csp === undefined ? {} : { csp }),
     ...(permissions === undefined ? {} : { permissions }),
     ...(typeof value.prefersBorder === "boolean" ? { prefersBorder: value.prefersBorder } : {}),
+    ...(boundedName(value.provider) === undefined ? {} : { provider: value.provider as string }),
   };
 }
 

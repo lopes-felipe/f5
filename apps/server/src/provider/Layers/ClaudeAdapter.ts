@@ -330,6 +330,8 @@ import {
 import { nextClaudeGoal, readClaudeGoal, type ClaudeNativeGoal } from "../claudeGoal.ts";
 
 const PROVIDER = "claudeAgent" as const;
+/** Upper bound for one MCP App tool call, below the client's 60 s request deadline. */
+const CLAUDE_MCP_APP_CALL_TIMEOUT_MS = 55_000;
 const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
@@ -2036,14 +2038,19 @@ function buildPromptText(
   );
   // Claude Code slash commands must remain the leading prompt text so the CLI
   // can recognize them before normal model dispatch.
-  const runtimeContext = userPrompt.startsWith("/")
+  const slashCommand = userPrompt.startsWith("/");
+  const runtimeContext = slashCommand
     ? undefined
     : buildClaudeTurnRuntimeContext(options.activeModel, {
         includeFileEditingReminder: options.allowsWorkspaceEdits,
       });
+  // MCP App model context follows the user's text, as for Codex; a slash command would
+  // read it as arguments, so it waits for the next ordinary turn.
+  const prompt =
+    input.mcpAppContext && !slashCommand ? `${userPrompt}${input.mcpAppContext}` : userPrompt;
   return (
     appendProviderAttachmentRuntimeContext(
-      runtimeContext ? `${runtimeContext}\n\n${userPrompt}` : userPrompt,
+      runtimeContext ? `${runtimeContext}\n\n${prompt}` : prompt,
       input.resolvedAttachments ?? [],
     ) ?? ""
   );
@@ -2941,32 +2948,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       activityId: string,
     ) =>
       Effect.gen(function* () {
-        if (Option.isNone(appSql)) return undefined;
         const query = context.query as ClaudeQueryRuntime & {
           readonly readMcpResource?: (server: string, uri: string) => Promise<unknown>;
         };
-        // A server that connected after startup polling is picked up by a stale-catalog
-        // re-read (at most once per catalog age) rather than missed.
-        const catalog =
-          tool.toolName.startsWith("mcp__") &&
-          !isClaudeMcpAppCatalogFresh(
-            context.mcpAppCatalog,
-            context.mcpObservationEpoch ?? 0,
-            Date.now(),
-          )
-            ? yield* Effect.tryPromise(() => readMcpAppCatalog(context)).pipe(
-                Effect.orElseSucceed(() => context.mcpAppCatalog),
-              )
-            : context.mcpAppCatalog;
-        const target = resolveClaudeMcpAppTool(catalog, tool.toolName);
         const threadId = context.session.threadId;
+        // Cheap checks first: a CLI that cannot capture, or a full cap, never waits on MCP status.
         if (
-          !target ||
+          Option.isNone(appSql) ||
+          !tool.toolName.startsWith("mcp__") ||
           !context.initCapabilities.has("mcp_read_resource_v1") ||
           typeof query.readMcpResource !== "function" ||
           mcpAppCaptureCount >= 8 ||
           (mcpAppCaptures.get(threadId) ?? 0) >= 4
         )
+          return undefined;
+        // A server that connected after startup polling is picked up by a stale-catalog
+        // re-read (at most once per catalog age) rather than missed.
+        const catalog = !isClaudeMcpAppCatalogFresh(
+          context.mcpAppCatalog,
+          context.mcpObservationEpoch ?? 0,
+          Date.now(),
+        )
+          ? yield* Effect.tryPromise(() => readMcpAppCatalog(context)).pipe(
+              Effect.orElseSucceed(() => context.mcpAppCatalog),
+            )
+          : context.mcpAppCatalog;
+        const target = resolveClaudeMcpAppTool(catalog, tool.toolName);
+        // The caps are re-checked: another capture may have started during the refresh.
+        if (!target || mcpAppCaptureCount >= 8 || (mcpAppCaptures.get(threadId) ?? 0) >= 4)
           return undefined;
         const result = readClaudeMcpAppToolResult(
           structuredOutput,
@@ -2991,6 +3000,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               tool: target.tool,
               resourceUri: target.resourceUri,
               response,
+              provider: PROVIDER,
             }),
           ),
           Effect.provideService(SqlClient.SqlClient, appSql.value),
@@ -3012,6 +3022,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         return reference
           ? {
               mcpApp: reference,
+              // Configured names: Claude's tool name carries sanitized ones.
+              mcpAppTool: { server: target.server, tool: target.tool },
               mcpAppBootstrap: JSON.parse(bootstrapJson) as Record<string, unknown>,
             }
           : undefined;
@@ -5825,7 +5837,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* emitSessionConfigured(context, context.configuredBase);
             // A plugin or MCP change can add or remove app tools.
             if (context.query.mcpServerStatus)
-              Effect.runFork(Effect.tryPromise(() => readMcpStatus(context)).pipe(Effect.ignore));
+              yield* Effect.tryPromise(() => readMcpStatus(context)).pipe(
+                Effect.ignore,
+                Effect.forkIn(adapterScope),
+              );
             return;
           }
           case "vcs_state_changed":
@@ -7631,8 +7646,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           promptSuggestions: options?.oneOffProviderOptions?.promptSuggestions,
           enableFileCheckpointing: options?.oneOffProviderOptions?.enableFileCheckpointing,
           nativeCompaction: options?.oneOffProviderOptions?.nativeCompaction,
-          confineWritesToWorkspace: options?.oneOffProviderOptions?.confineWritesToWorkspace,
           ...input.providerOptions?.claudeAgent,
+          // Instance-only: a thread's start options can never loosen write confinement, which
+          // also keeps the launch identity truthful.
+          confineWritesToWorkspace: options?.oneOffProviderOptions?.confineWritesToWorkspace,
         };
 
         /**
@@ -10422,12 +10439,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const mcpAppRequest = <A>(
       threadId: ThreadId,
       method: string,
-      run: (context: ClaudeSessionContext) => Promise<A>,
+      run: (context: ClaudeSessionContext, signal: AbortSignal) => Promise<A>,
     ) =>
       requireSession(threadId).pipe(
         Effect.flatMap((context) =>
           Effect.tryPromise({
-            try: () => run(context),
+            // Interrupting the request (RPC cancel or deadline) aborts the control request.
+            try: (signal) => run(context, signal),
             catch: (cause) =>
               new ProviderAdapterRequestError({
                 provider: PROVIDER,
@@ -10451,7 +10469,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ),
       // Mirrors Codex's checks; McpAppService bounds arguments (64 KiB) and responses (256 KiB).
       callTool: ({ threadId, server, tool, arguments: args, sessionIdentity, approved }) =>
-        mcpAppRequest(threadId, "mcp_call", async (context) => {
+        mcpAppRequest(threadId, "mcp_call", async (context, signal) => {
           if (!server.trim() || server.length > 256 || !tool.trim() || tool.length > 256)
             throw new Error("Invalid MCP app tool request.");
           if (mcpAppSessionIdentity(context) !== sessionIdentity)
@@ -10469,12 +10487,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             mcpAppSessionIdentity(context) !== sessionIdentity
           )
             throw new Error("The MCP app session changed before dispatch.");
+          // A CLI that never answers must not leave the call pending after the app gives up.
+          const deadline = AbortSignal.timeout(CLAUDE_MCP_APP_CALL_TIMEOUT_MS);
           const result = await callClaudeMcpAppTool({
             query,
             capabilities: context.initCapabilities,
             server,
             tool,
             arguments: args,
+            signal: AbortSignal.any([signal, deadline]),
+          }).catch((cause: unknown) => {
+            if (deadline.aborted)
+              throw new Error(
+                "The MCP app tool did not answer in time; its outcome is unknown. Do not retry automatically.",
+              );
+            throw cause;
           });
           if (context.stopped || context.query !== query)
             throw new Error(

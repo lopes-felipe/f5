@@ -9,7 +9,7 @@
  * `ClaudeSdkContract.probe.test.ts` pins that internal so a rename fails CI.
  */
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
-import { parseMcpToolName } from "@t3tools/shared/orchestrationActivityPayload";
+import { normalizeClaudeMcpName } from "@t3tools/shared/mcpTranslation";
 
 export const CLAUDE_MCP_APP_UNAVAILABLE =
   "App tool calls are unavailable with this Claude version.";
@@ -115,18 +115,40 @@ export function isClaudeMcpAppCatalogFresh(
   );
 }
 
+/** Claude's model-facing name for a server's tool (`claude.ai Figma` → `mcp__claude_ai_Figma__…`). */
+export function claudeMcpToolName(server: string, tool: string): string {
+  return `mcp__${normalizeClaudeMcpName(server)}__${normalizeClaudeMcpName(tool)}`;
+}
+
 /**
  * Resolves a completed Claude tool call (`mcp__<server>__<tool>`) to the app resource it
- * should render. SDK-type servers and tools without a `ui://` resource never qualify.
+ * should render, under the configured server and tool names the SDK expects. Claude
+ * sanitizes both names and a server name may itself contain `__`, so the call is matched
+ * against each catalogued name rather than split. SDK-type servers and tools without a
+ * `ui://` resource never qualify.
  */
 export function resolveClaudeMcpAppTool(
   catalog: ClaudeMcpAppCatalog | undefined,
   toolName: string,
 ): { readonly server: string; readonly tool: string; readonly resourceUri: string } | undefined {
-  const parsed = parseMcpToolName(toolName);
-  if (!catalog || !parsed || catalog.sdkServers.has(parsed.server)) return undefined;
-  const resourceUri = catalog.servers.get(parsed.server)?.get(parsed.tool)?.resourceUri;
-  return resourceUri ? { ...parsed, resourceUri } : undefined;
+  if (!catalog || !toolName.startsWith("mcp__")) return undefined;
+  const candidates = [...catalog.servers]
+    .filter(([server]) => !catalog.sdkServers.has(server))
+    .map(([server, tools]) => ({
+      server,
+      tools,
+      prefix: `mcp__${normalizeClaudeMcpName(server)}__`,
+    }))
+    .filter(({ prefix }) => toolName.startsWith(prefix))
+    // The longest server name wins when one sanitized name prefixes another.
+    .toSorted((left, right) => right.prefix.length - left.prefix.length);
+  for (const { server, tools, prefix } of candidates) {
+    const remainder = toolName.slice(prefix.length);
+    for (const tool of tools.values())
+      if (tool.resourceUri && normalizeClaudeMcpName(tool.name) === remainder)
+        return { server, tool: tool.name, resourceUri: tool.resourceUri };
+  }
+  return undefined;
 }
 
 /**
@@ -175,8 +197,7 @@ export async function callClaudeMcpAppTool(input: {
   const reply = await query.request(
     {
       subtype: "mcp_call",
-      // Claude normalizes server names the same way in its fully-qualified tool names.
-      tool: `mcp__${input.server}__${input.tool}`,
+      tool: claudeMcpToolName(input.server, input.tool),
       arguments: input.arguments,
       result_not_for_model: true,
     },

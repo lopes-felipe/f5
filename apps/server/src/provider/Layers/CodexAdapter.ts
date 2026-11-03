@@ -3764,6 +3764,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                             tool,
                             resourceUri: appUri,
                             response,
+                            provider: "codex",
                           }),
                         ),
                         Effect.provideService(SqlClient.SqlClient, appSql.value),

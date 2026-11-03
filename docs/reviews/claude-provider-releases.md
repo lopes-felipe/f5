@@ -666,20 +666,24 @@ certified) and the 2.1.295 record is withdrawn as superseded.
 ### Adopted
 
 - **Fail-closed mandatory hook.** F5's PreToolUse matcher sets `onFailure: "block"` only for the
-  bundled executable or a custom one reporting 2.1.317+ (`claude --version`, cached per file);
-  older executables keep the in-hook deny-on-error path. Tool names pass through
+  bundled executable or a custom one reporting 2.1.317+. The `claude --version` answer is cached
+  per runtime and script identity (resolved through links, so JavaScript entries sharing one Node
+  stay apart) for 10 minutes, and a failed probe for 1 minute; stdin is closed so wrappers cannot
+  stall it. Older executables keep the in-hook deny-on-error path. Tool names pass through
   `LEGACY_TOOL_NAME_ALIASES` before policy checks, and a unit test keeps F5's policy tool names
   inside `BUILTIN_TOOL_NAMES` (or a legacy alias of one). Verified live on 2026-11-03: the bundled
   2.1.317 answers initialize with `hook_on_failure_supported: true`.
 - **`session_writes_lost`.** An actionable thread warning with `error_code` and `lost`. When the
   bound session's transcript is lost, the resume cursor gets `transcriptIncomplete: true`; the
-  next start then recovers F5's prior-work summary first. A compact boundary clears the flag.
+  next start then recovers F5's prior-work summary first. The flag is one-shot: the start that
+  delivers the summary drops it from the cursor, so later starts resume without another paid
+  summary. A compact boundary also clears it.
 - **Startup failure reasons.** `sandbox_required_unavailable` and `initialize_not_first` get F5
   guidance; neither is retried.
 - **Read exemptions and write confinement.** Every launch passes F5's attachments and plans
   directories (as configured and resolved) in `blockReadsExemptPaths`. The opt-in
   `confineWritesToWorkspace` instance setting maps to `blockWritesOutsideWorkingDirectories` and
-  joins the launch identity only when on.
+  joins the launch identity only when on; a thread's start options cannot override it.
 - **AskUserQuestion.** With the capability, a dismissed card answers every question
   `dismissed` and a submit marks blank ones `skipped`. `replied_in_chat` is never sent.
 - **Tasks and tools.** TaskCreate prefers the result's `task.description`. Grep/Glob rows note a
@@ -705,7 +709,18 @@ certified) and the 2.1.295 record is withdrawn as superseded.
 result_not_for_model: true })` only when the session advertises
   `mcp_call_result_not_for_model_v1` and `request` exists. They are never retried, and approval
   rules match Codex. `ClaudeSdkContract.probe.test.ts` pins `Query.request` and the `mcp_call`
-  wire shape.
+  wire shape. App calls are cancelled with the RPC and capped at 55 s.
+  - Claude sanitizes server and tool names in `mcp__<server>__<tool>` (`claude.ai Figma` →
+    `claude_ai_Figma`), and a server name may contain `__`, so captures are matched against
+    each catalogued name (longest first). SDK calls use the configured names; `mcp_call` uses
+    the sanitized tool name.
+  - Each app reference records the capturing provider (older references were Codex's). After
+    a handoff, an app from the other provider can no longer call tools, and its saved model
+    context is not delivered. Claude turns now receive app model context after the user's text
+    (not for slash commands).
+  - Capture checks capability, function and caps before any catalog refresh, so CLIs that
+    cannot capture never wait on MCP status; the `commands_changed` refresh is forked in the
+    adapter scope.
 - **Compaction.** `nativeCompaction: false` also passes `idleCompaction: false`.
 
 ### Not adopted

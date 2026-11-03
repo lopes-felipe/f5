@@ -32,6 +32,7 @@ import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { runtimeEventToActivities } from "../../orchestration/Layers/ProviderRuntimeIngestion.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { MCP_APP_MIME_TYPE } from "@t3tools/shared/mcpApp";
 import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
@@ -2432,6 +2433,12 @@ describe("ClaudeAdapterLive", () => {
           (data?.mcpApp as { resourceUri?: string } | undefined)?.resourceUri,
           "ui://charts/view",
         );
+        assert.deepEqual(data?.mcpAppTool, { server: "charts", tool: "show" });
+        const app = runtimeEventToActivities(captured!).find(
+          (activity) => activity.kind === "mcpApp",
+        );
+        assert.equal(app?.summary, "show");
+        assert.equal((data?.mcpApp as { provider?: string } | undefined)?.provider, "claudeAgent");
         assert.deepEqual(data?.mcpAppBootstrap, {
           arguments: { range: "week" },
           result: { content: [{ type: "text", text: "Rendered" }] },
@@ -2453,6 +2460,53 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("delivers MCP App model context after the user's text", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const appState =
+        '\n\n<untrusted_mcp_app_state>\n{"server":"charts"}\n</untrusted_mcp_app_state>';
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Summarize the chart",
+        attachments: [],
+        mcpAppContext: appState,
+      });
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.ok(promptText?.endsWith(`Summarize the chart${appState}`));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("never lets a thread's start options loosen write confinement", () => {
+    const harness = makeHarness({ oneOffProviderOptions: { confineWritesToWorkspace: true } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        providerOptions: { claudeAgent: { confineWritesToWorkspace: false } },
+      });
+      const settings = harness.getLastCreateQueryInput()?.options.settings as
+        | { permissions?: Record<string, unknown> }
+        | undefined;
+      assert.equal(settings?.permissions?.blockWritesOutsideWorkingDirectories, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("warns on lost transcript writes and marks the resume cursor incomplete", () => {
     const harness = makeHarness();
