@@ -456,7 +456,11 @@ export const INTEGRATION_ACCEPTANCE_CHECKS: Readonly<
       id: "toggle-readiness",
       label: "The toggle is ready in Full access and shows the specific reason otherwise",
     },
-    { id: "consent-once", label: "Consent is asked once per session" },
+    {
+      id: "consent-once",
+      label:
+        "Consent is asked once per session (revoke Always allow in Settings first), and Always allow skips it for the next session",
+    },
     { id: "open-tab-read-title", label: "Codex opens a tab and reads its title" },
     { id: "pause-stops", label: "Pause stops background work Codex started in Chrome", auto: true },
     { id: "emergency-stop", label: "⌃⌘Esc stops Codex's node_repl", auto: true },

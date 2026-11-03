@@ -53,6 +53,8 @@ export class ComputerHostChannel {
       supervisor?: ChromeProcessSupervisor;
       /** Signature check for an adopted process and its parent, by PID; returns why it fails. */
       verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
+      /** The profile chose "always allow" for Codex Chrome sessions in main's dialog. */
+      alwaysAllowed?: (profileId: string, integration: "codex-chrome") => boolean;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -632,10 +634,13 @@ export class ComputerHostChannel {
           break;
         case "resumeRequested":
           break;
-        case "accessRequested":
+        case "accessRequested": {
           backend.pendingAccess.set(message.request.requestId, message.request);
+          // An earlier "always allow" answers here, without a dialog. The grant is main's own.
+          if (this.answerAlwaysAllowed(profileId, message.request)) break;
           this.attention(profileId, message.request);
           break;
+        }
         default:
           child.disconnect();
       }
@@ -731,6 +736,40 @@ export class ComputerHostChannel {
   }
   broadcast(message: DesktopComputerHostMessage): void {
     for (const profileId of this.backends.keys()) this.send(profileId, message);
+  }
+  /** Answers a pending Codex Chrome session request the profile always allows. */
+  private answerAlwaysAllowed(profileId: string, request: ComputerAccessRequested): boolean {
+    const integration = request.chromeSession?.integration;
+    const backend = this.backends.get(profileId);
+    if (
+      !backend ||
+      request.kind !== "chrome-session" ||
+      integration !== "codex-chrome" ||
+      !this.chromeOptions?.alwaysAllowed?.(profileId, integration)
+    )
+      return false;
+    try {
+      this.answerAccess(profileId, {
+        requestId: request.requestId,
+        backendIncarnation: backend.incarnation,
+        decisions: [],
+        allowChromeSession: true,
+      });
+      return true;
+    } catch {
+      // Defensive: answerAccess refuses a request that is no longer pending here.
+      return false;
+    }
+  }
+  /**
+   * The profile just chose "always allow": answer its other Codex Chrome session requests
+   * still waiting, such as those of threads that restarted together.
+   */
+  answerPendingAlwaysAllowed(profileId: string): void {
+    const backend = this.backends.get(profileId);
+    if (!backend) return;
+    for (const request of backend.pendingAccess.values())
+      this.answerAlwaysAllowed(profileId, request);
   }
   accessRequest(profileId: string, answer: ComputerAccessAnswer): ComputerAccessRequested {
     const backend = this.backends.get(profileId);

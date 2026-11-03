@@ -84,6 +84,11 @@ import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
+import {
+  IntegrationConsentStore,
+  fileConsentIo,
+  keychainConsentKey,
+} from "./computer/IntegrationConsentStore";
 import { ComputerHostChannel } from "./computer/ComputerHostChannel";
 import { BrowserOpenAuthority } from "./browser/BrowserOpenAuthority";
 import {
@@ -142,6 +147,7 @@ import {
   nativeTheme,
   protocol,
   Notification,
+  safeStorage,
   shell,
   session as electronSession,
   webContents as electronWebContents,
@@ -531,6 +537,16 @@ function initializeComputerSystem(): void {
   // One owner-aware registration covers native holders, the Chrome lease and a pending
   // takeover. Returns false when the chord could not be registered.
   let killChordRegistered = false;
+  // "Always allow" for a profile's Codex Chrome sessions, owned by main and signed with a
+  // key only the keychain releases to F5.
+  const integrationConsents = new IntegrationConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
+    keychainConsentKey(Path.join(app.getPath("userData"), "computer", "integration-consent.key"), {
+      available: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (plain) => safeStorage.encryptString(plain),
+      decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+    }),
+  );
   // Provider-integration children are registered here so main can stop them and observe
   // their exit without the (possibly frozen) profile server.
   const supervisor = new ChromeProcessSupervisor({
@@ -631,6 +647,8 @@ function initializeComputerSystem(): void {
         isIntegrationCertified("codex-computer", process.platform, process.arch),
       supervisor,
       verifyAdoption: (parentPid, runtimePid) => verifyCodexChromeAdoption(parentPid, runtimePid),
+      alwaysAllowed: (profileId, integration) =>
+        integrationConsents.allowed(profileId, integration),
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
@@ -714,8 +732,16 @@ function initializeComputerSystem(): void {
       );
       return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
     },
+    alwaysAllow: (profileId, integration) => {
+      integrationConsents.allow(profileId, integration);
+      channel.answerPendingAlwaysAllowed(profileId);
+    },
   });
   registerComputerIpc(ipcMain, {
+    integrationConsents: {
+      list: (profileId) => integrationConsents.list(profileId),
+      revoke: (profileId, integration) => integrationConsents.revoke(profileId, integration),
+    },
     authorize: (event) => authorizeAppMainFrame(event, "Computer controls"),
     status: rendererStatus,
     retry: () => {

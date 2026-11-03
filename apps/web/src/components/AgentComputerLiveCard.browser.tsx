@@ -7,6 +7,7 @@ import { render } from "vitest-browser-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { ComputerAccessInbox } from "./ComputerAccessCard";
+import { AUTO_ANSWER_GRACE_MS } from "../hooks/usePendingComputerAccessRequests";
 
 // Component regression only: no desktop host, grants or OS input are executed.
 const nativeMock = vi.hoisted(() => ({
@@ -80,6 +81,37 @@ it("closes the real consent dialog only when its matching settlement arrives", a
     await expect
       .element(page.getByRole("dialog", { name: "Computer access" }))
       .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("holds a Codex Chrome session request briefly so one main answers never flashes a dialog", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
+  const session = (requestId: string) =>
+    store.request({
+      requestId,
+      threadId,
+      backendIncarnation: "fixture-backend",
+      kind: "chrome-session",
+      reason: "Synthetic component test",
+      apps: [],
+      chromeSession: { integration: "codex-chrome" },
+    });
+  const screen = await render(<ComputerAccessInbox />);
+  const dialog = page.getByRole("dialog", { name: "Computer access" });
+  try {
+    session("auto");
+    await new Promise((resolve) => setTimeout(resolve, AUTO_ANSWER_GRACE_MS / 2));
+    expect(dialog.query()).toBeNull();
+    store.settle({ requestId: "auto", threadId, allowed: true });
+    await new Promise((resolve) => setTimeout(resolve, AUTO_ANSWER_GRACE_MS));
+    expect(dialog.query()).toBeNull();
+    // One nobody answers asks once the hold ends.
+    session("asked");
+    expect(dialog.query()).toBeNull();
+    await expect.element(dialog).toBeVisible();
   } finally {
     await screen.unmount();
   }

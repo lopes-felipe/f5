@@ -5,6 +5,10 @@ import {
   type ComputerAutomationBackendStatus,
 } from "@t3tools/contracts";
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import {
+  isAlwaysAllowableIntegration,
+  type AlwaysAllowableIntegration,
+} from "./IntegrationConsentStore";
 import { requestComputerPermission, openComputerPermissionSettings } from "./permissions";
 
 export function registerComputerIpc(
@@ -15,6 +19,11 @@ export function registerComputerIpc(
     retry: () => void | Promise<void>;
     answer: (profileId: string, answer: ComputerAccessAnswer) => void | Promise<void>;
     pause: (profileId: string, threadId: string, paused: boolean) => void | Promise<void>;
+    /** Listing and revoking only: only main's native dialog grants "always allow". */
+    integrationConsents?: {
+      list: (profileId: string) => ReadonlyArray<AlwaysAllowableIntegration>;
+      revoke: (profileId: string, integration: AlwaysAllowableIntegration) => void;
+    };
   },
 ): void {
   const register = (
@@ -44,5 +53,12 @@ export function registerComputerIpc(
     if (!args[1] && args[2] !== true)
       throw new Error("Resuming computer control requires a trusted user gesture.");
     return input.pause(profile, args[0], args[1]);
+  });
+  register("integration-consents", (profile) => [
+    ...(input.integrationConsents?.list(profile) ?? []),
+  ]);
+  register("revoke-integration-consent", (profile, args) => {
+    if (!isAlwaysAllowableIntegration(args[0])) throw new Error("Invalid integration.");
+    input.integrationConsents?.revoke(profile, args[0]);
   });
 }

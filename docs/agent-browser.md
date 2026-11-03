@@ -795,7 +795,22 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
 (`apps/server/src/provider/codexChromeSession.ts`) does it:
 
 - the user consents once per session generation (consent kind `chrome-session`) before
-  the MCP config that starts `node_repl` is built; declining leaves the entry out. A
+  the MCP config that starts `node_repl` is built; declining leaves the entry out. Main's
+  native dialog offers "Always allow for this profile" (Codex Chrome only): main keeps
+  that grant in `<userData>/computer/integration-consent.json`, keyed by profile,
+  integration and a digest of the disclosures shown (changing them asks again), and
+  signed with an HMAC key kept encrypted by the OS keychain (`safeStorage`,
+  `integration-consent.key`). A grant written to the file by another process running as
+  the user is ignored, since only the keychain releases the key to F5; without a
+  keychain a grant lasts for the run. Main then answers the profile's Codex Chrome
+  `chrome-session` requests itself without a dialog, including those already waiting
+  when the user ticks the box, and the web inbox holds such a request for
+  `AUTO_ANSWER_GRACE_MS` (1 s) so an answered one never flashes a dialog. Only that dialog
+  adds a grant; the renderer can list and revoke it (Settings → Browser & Computer,
+  "Always allowed for this profile"), and backends can't touch it. A revocation must
+  reach disk: if the file can't be rewritten it is deleted (every profile is asked
+  again), and if that fails too, Settings shows the error. Revoking doesn't stop sessions
+  already admitted; they keep Chrome until they end. A
   session an automation starts (a scheduled run's turn) asks nothing and gets no
   `node_repl`; the next person's turn restarts it with Chrome, and an automation's turn
   never restarts a session for Chrome;

@@ -4,6 +4,7 @@ import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contrac
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { readNativeApi } from "../../nativeApi";
+import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { SettingsRow } from "./SettingsCard";
 
@@ -76,6 +77,68 @@ function useChromeReadiness(ids: ReadonlyArray<string>, enabled: boolean) {
   return readiness;
 }
 
+/** "Always allow" for Codex Chrome sessions, kept by desktop main for this profile. */
+function CodexChromeAlwaysAllowRow() {
+  const bridge = window.desktopBridge?.computerAutomation;
+  const [allowed, setAllowed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    // Granted in main's dialog, possibly while Settings is open: read again on focus.
+    const load = () =>
+      void bridge
+        ?.integrationConsents?.()
+        .then((list) => current && setAllowed(list.includes("codex-chrome")))
+        .catch(() => undefined);
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      current = false;
+      window.removeEventListener("focus", load);
+    };
+  }, [bridge]);
+  if (!allowed || !bridge?.revokeIntegrationConsent) return null;
+  const revoke = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await bridge.revokeIntegrationConsent?.("codex-chrome");
+      setAllowed(false);
+    } catch (cause) {
+      // Electron prefixes errors thrown in main with the IPC channel.
+      setError(
+        cause instanceof Error
+          ? cause.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "")
+          : "F5 couldn't revoke Always allow.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingsRow
+      title="Always allowed for this profile"
+      description={
+        <>
+          New Codex sessions use Chrome without asking. Revoke to be asked once per session again;
+          sessions already running keep Chrome until they end.
+          {error ? (
+            <span role="alert" className="block text-destructive-foreground">
+              {error}
+            </span>
+          ) : null}
+        </>
+      }
+      control={
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => void revoke()}>
+          {busy ? "Revoking…" : "Revoke"}
+        </Button>
+      }
+    />
+  );
+}
+
 export function ChromeIntegrationRows({ provider }: { provider: keyof typeof INTEGRATIONS }) {
   const integration = INTEGRATIONS[provider];
   const settings = useSettings();
@@ -139,6 +202,7 @@ export function ChromeIntegrationRows({ provider }: { provider: keyof typeof INT
           />
         );
       })}
+      {provider === "codex" ? <CodexChromeAlwaysAllowRow /> : null}
     </>
   );
 }

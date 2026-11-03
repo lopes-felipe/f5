@@ -120,6 +120,108 @@ describe("main-owned computer consent", () => {
       expect(h.answer.mock.calls[0]![1].decisions).toEqual([]);
     },
   );
+  it("remembers always-allow for a Chrome session only from the native dialog's checkbox", async () => {
+    const session: ComputerAccessRequested = {
+      ...request,
+      kind: "chrome-session",
+      apps: [],
+      chromeSession: { integration: "codex-chrome" },
+    };
+    const alwaysAllow = vi.fn();
+    const show = vi.fn(async () => ({ response: 1, checkboxChecked: false }));
+    const answer = vi.fn();
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      request: () => session,
+      answer,
+      show,
+      alwaysAllow,
+    });
+    await authority.review("profile", { ...offered, allowChromeSession: true });
+    expect(show).toHaveBeenLastCalledWith(
+      "profile",
+      expect.objectContaining({
+        checkboxLabel: "Always allow for this profile (revoke in Settings)",
+        checkboxChecked: false,
+      }),
+    );
+    expect(alwaysAllow).not.toHaveBeenCalled();
+    // Denied with the box ticked: nothing is remembered.
+    show.mockResolvedValueOnce({ response: 0, checkboxChecked: true });
+    await authority.review("profile", offered);
+    expect(alwaysAllow).not.toHaveBeenCalled();
+    expect(answer.mock.calls.at(-1)![1]).toMatchObject({ allowChromeSession: false });
+    show.mockResolvedValueOnce({ response: 1, checkboxChecked: true });
+    await authority.review("profile", offered);
+    expect(alwaysAllow).toHaveBeenCalledWith("profile", "codex-chrome");
+    expect(answer.mock.calls.at(-1)![1]).toMatchObject({ allowChromeSession: true });
+  });
+  it("remembers nothing when the request expires while the dialog is open", async () => {
+    const session: ComputerAccessRequested = {
+      ...request,
+      kind: "chrome-session",
+      apps: [],
+      chromeSession: { integration: "codex-chrome" },
+    };
+    const alwaysAllow = vi.fn();
+    const answer = vi.fn();
+    let expired = false;
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      request: () => {
+        if (expired) throw new Error("This request expired or belongs to another backend.");
+        return session;
+      },
+      answer,
+      show: vi.fn(async () => {
+        expired = true;
+        return { response: 1, checkboxChecked: true };
+      }),
+      alwaysAllow,
+    });
+    await expect(authority.review("profile", offered)).rejects.toThrow("expired");
+    expect(answer).not.toHaveBeenCalled();
+    expect(alwaysAllow).not.toHaveBeenCalled();
+  });
+  it("offers no always-allow for Codex Computer Use sessions", async () => {
+    const alwaysAllow = vi.fn();
+    const show = vi.fn(async (_profileId: string, _options: object) => ({
+      response: 1,
+      checkboxChecked: true,
+    }));
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      request: () => ({
+        ...request,
+        kind: "chrome-session",
+        apps: [],
+        chromeSession: { integration: "codex-computer" },
+      }),
+      answer: vi.fn(),
+      show,
+      alwaysAllow,
+    });
+    await authority.review("profile", offered);
+    expect(show.mock.calls[0]![1]).not.toHaveProperty("checkboxLabel");
+    expect(alwaysAllow).not.toHaveBeenCalled();
+  });
+  it("offers no always-allow for other kinds of request", async () => {
+    const alwaysAllow = vi.fn();
+    const show = vi.fn(async (_profileId: string, _options: object) => ({
+      response: 1,
+      checkboxChecked: true,
+    }));
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      request: () => ({ ...request, kind: "session-actions", apps: [] }),
+      answer: vi.fn(),
+      show,
+      alwaysAllow,
+    });
+    await authority.review("profile", offered);
+    expect(show.mock.calls[0]![1]).not.toHaveProperty("checkboxLabel");
+    expect(alwaysAllow).not.toHaveBeenCalled();
+  });
   it("requires independent native confirmation for Resume", async () => {
     const h = make();
     expect(await h.authority.confirmResume("profile", "Trusted thread")).toBe(false);
