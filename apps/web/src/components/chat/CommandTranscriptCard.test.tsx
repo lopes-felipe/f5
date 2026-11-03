@@ -501,7 +501,9 @@ describe("CommandTranscriptCard", () => {
     expect(markup).toContain("preview-start");
     expect(markup).toContain("preview-end");
     expect(markup).toContain("[... output preview shortened ...]");
+    expect(markup).toContain("Shortened preview, 16K of 18K characters");
     expect(markup).toContain("Show full output");
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain("MIDDLE-SENTINEL");
   });
 });
