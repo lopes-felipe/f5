@@ -3787,9 +3787,9 @@ it.layer(
     // probes; Windows CI needs headroom for process startup and NTFS latency.
     process.platform === "win32" ? 60_000 : 30_000,
   );
-  it.effect(
-    "removes inactive F5 worktrees and preserves every branch during manual cleanup",
-    () =>
+  it.effect.each(["ordinary", "protected"] as const)(
+    "removes inactive F5 worktrees and preserves every branch during manual cleanup: %s",
+    (branchKind) =>
       withHomeSandbox(
         Effect.gen(function* () {
           const storage = yield* StorageMaintenance;
@@ -3797,62 +3797,71 @@ it.layer(
           const sql = yield* SqlClient.SqlClient;
           const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-managed-"));
           yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
-          const managed = (name: string) => NodePath.join(config.worktreesDir, "managed", name);
+          const managed = (name: string) =>
+            NodePath.join(config.worktreesDir, "managed-" + branchKind, name);
+          const selected = branchKind === "ordinary" ? ["a", "b", "c"] : ["m", "r", "t"];
           yield* Effect.promise(async () => {
-            runGit(repo.root, "worktree", "add", "-q", "-b", "merged-a", managed("a"), "main");
-            runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
-            await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
-            runGit(managed("b"), "add", ".");
-            runGit(managed("b"), "commit", "-q", "-m", "b");
-            runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
-            runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
+            if (branchKind === "ordinary") {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "merged-a", managed("a"), "main");
+              runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
+              await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
+              runGit(managed("b"), "add", ".");
+              runGit(managed("b"), "commit", "-q", "-m", "b");
+              runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
+              runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
+              // Ignored build output no longer blocks storage cleanup.
+              await writeFile(
+                NodePath.join(repo.root, ".git", "info", "exclude"),
+                "dist/\n*.tsbuildinfo\n",
+              );
+              await writeFile(NodePath.join(managed("a"), "node_modules", "x", "index.js"), "x");
+              await writeFile(NodePath.join(managed("a"), "dist", "index.js"), "x");
+              await writeFile(NodePath.join(managed("a"), "app.tsbuildinfo"), "{}");
+            } else {
+              // Keep default and long-lived branches, as well as a branch tracking origin/main.
+              runGit(repo.root, "checkout", "-q", "-b", "feature-x");
+              runGit(repo.root, "worktree", "add", "-q", managed("m"), "main");
+              runGit(repo.root, "branch", "release-1", "main");
+              runGit(repo.root, "push", "-q", "-u", "origin", "release-1");
+              runGit(repo.root, "worktree", "add", "-q", managed("r"), "release-1");
+              runGit(
+                repo.root,
+                "worktree",
+                "add",
+                "-q",
+                "--track",
+                "-b",
+                "tracks-main",
+                managed("t"),
+                "origin/main",
+              );
+            }
             runGit(repo.root, "worktree", "add", "-q", "-b", "ahead-d", managed("d"), "main");
             await writeFile(NodePath.join(managed("d"), "d.txt"), "d\n");
             runGit(managed("d"), "add", ".");
             runGit(managed("d"), "commit", "-q", "-m", "d");
-            // Ignored build output no longer blocks storage cleanup.
-            await writeFile(
-              NodePath.join(repo.root, ".git", "info", "exclude"),
-              "dist/\n*.tsbuildinfo\n",
-            );
-            await writeFile(NodePath.join(managed("a"), "node_modules", "x", "index.js"), "x");
-            await writeFile(NodePath.join(managed("a"), "dist", "index.js"), "x");
-            await writeFile(NodePath.join(managed("a"), "app.tsbuildinfo"), "{}");
-            // The default branch, and a long-lived branch with a live upstream, are kept even
-            // when merged; a branch that only tracks origin/main is not long-lived.
-            runGit(repo.root, "checkout", "-q", "-b", "feature-x");
-            runGit(repo.root, "worktree", "add", "-q", managed("m"), "main");
-            runGit(repo.root, "branch", "release-1", "main");
-            runGit(repo.root, "push", "-q", "-u", "origin", "release-1");
-            runGit(repo.root, "worktree", "add", "-q", managed("r"), "release-1");
-            runGit(
-              repo.root,
-              "worktree",
-              "add",
-              "-q",
-              "--track",
-              "-b",
-              "tracks-main",
-              managed("t"),
-              "origin/main",
-            );
           });
-          yield* seedProject({ sql, projectId: "project-managed", workspaceRoot: repo.root });
-          yield* seedThread({
+          yield* seedProject({
             sql,
-            threadId: ThreadId.makeUnsafe("thread-archived-managed-c"),
-            archivedAt: "2026-04-01T00:00:00.000Z",
-            deletedAt: null,
-            worktreePath: managed("c"),
+            projectId: "project-managed-" + branchKind,
+            workspaceRoot: repo.root,
           });
+          if (branchKind === "ordinary")
+            yield* seedThread({
+              sql,
+              threadId: ThreadId.makeUnsafe("thread-archived-managed-c"),
+              archivedAt: "2026-04-01T00:00:00.000Z",
+              deletedAt: null,
+              worktreePath: managed("c"),
+            });
 
           const report = yield* storage.inspect({ force: true });
           const category = report.categories.find((entry) => entry.id === "inactiveF5Worktrees");
           const target = (name: string) =>
             category?.targets.find((entry) => entry.path === managed(name));
-          assert.equal(target("a")?.safeToDelete, true, target("a")?.disabledReason);
-          assert.equal(target("b")?.safeToDelete, true, target("b")?.disabledReason);
-          assert.equal(target("c")?.safeToDelete, true, target("c")?.disabledReason);
+          for (const name of selected) {
+            assert.equal(target(name)?.safeToDelete, true, target(name)?.disabledReason);
+          }
           assert.equal(target("d")?.safeToDelete, false);
           assert.equal(
             target("d")?.disabledReason,
@@ -3865,14 +3874,14 @@ it.layer(
           );
 
           const result = yield* storage.cleanup({
-            operationId: "operation-real-managed-worktrees",
+            operationId: "operation-real-managed-worktrees-" + branchKind,
             scanId: report.scanId,
             nonce: report.confirmationNonce,
             categoryIds: ["inactiveF5Worktrees"],
             targetSelections: [
               {
                 categoryId: "inactiveF5Worktrees",
-                targetIds: ["a", "b", "c", "m", "r", "t"].map((name) => target(name)!.id),
+                targetIds: selected.map((name) => target(name)!.id),
               },
             ],
             confirmationText: "DELETE",
@@ -3881,27 +3890,25 @@ it.layer(
 
           const reclaimed = result.results[0]?.perTargetReclaimed ?? [];
           assert.equal(result.results[0]?.status, "Cleaned");
-          assert.deepEqual(reclaimed.map((entry) => [entry.path, entry.branch]).toSorted(), [
-            [managed("a"), "kept"],
-            [managed("b"), "kept"],
-            [managed("c"), "kept"],
-            [managed("m"), "kept"],
-            [managed("r"), "kept"],
-            [managed("t"), "kept"],
-          ]);
+          assert.deepEqual(
+            reclaimed.map((entry) => [entry.path, entry.branch]).toSorted(),
+            selected.map((name) => [managed(name), "kept"]),
+          );
           const branches = localBranches(repo.root);
-          assert.include(branches, "merged-a");
-          assert.include(branches, "tracks-main");
+          for (const branch of branchKind === "ordinary"
+            ? ["merged-a", "pushed-b", "archived-c"]
+            : ["tracks-main", "release-1"])
+            assert.include(branches, branch);
           assert.include(branches, "main");
-          assert.include(branches, "release-1");
-          assert.include(branches, "pushed-b");
-          assert.include(branches, "archived-c");
           assert.include(branches, "ahead-d");
+          for (const name of selected) {
+            assert.equal(yield* Effect.promise(() => pathExists(managed(name))), false);
+          }
           assert.equal(yield* Effect.promise(() => pathExists(managed("d"))), true);
         }),
       ),
-    // Seven real worktrees and six removals, each with real Git and fresh native
-    // probes. PowerShell startup and NTFS Git calls need a larger Windows budget.
+    // Each case keeps batch cleanup coverage with four real worktrees and three
+    // removals. Keep Windows headroom for fresh process probes and NTFS Git calls.
     process.platform === "win32" ? 120_000 : 60_000,
   );
 
