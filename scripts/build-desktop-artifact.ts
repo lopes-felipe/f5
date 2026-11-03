@@ -534,6 +534,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     // The static runtime also launches on distributions without libfuse2.
     buildConfig.toolsets = { appimage: "1.0.3" };
+    buildConfig.afterPack = "linux-after-pack.cjs";
     buildConfig.linux = {
       target: [target],
       icon: "icon.png",
@@ -708,6 +709,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     path.join(repoRoot, "scripts", "verify-claude-runtime.cjs"),
     path.join(stageAppDir, "verify-claude-runtime.cjs"),
   );
+  if (options.platform === "linux") {
+    yield* fs.copyFile(
+      path.join(repoRoot, "scripts", "linux-after-pack.cjs"),
+      path.join(stageAppDir, "linux-after-pack.cjs"),
+    );
+  }
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
