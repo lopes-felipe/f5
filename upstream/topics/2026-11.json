@@ -3,6 +3,46 @@
   "schemaVersion": 7,
   "topics": [
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "c-0b5600b1c3df",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "server",
+          "performance"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "This is a measurable performance improvement in PR status tracking, a surface f5 has. It would need reimplementing in f5's projection layer, because orchestration-v2 doesn't exist here.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "ThreadPullRequestService reads pull request metadata through a new getPullRequestSnapshot projection query. It no longer loads the full thread projection, which cuts read and decode cost for each PR status lookup.",
+      "title": "Thread PR service reads metadata from a lightweight projection snapshot",
+      "upstreamPrs": []
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "c-115739c1e02e",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Small sidebar layout fix in files that exist in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The project filter combobox anchors to its trigger with flip and shift collision avoidance, instead of anchoring to the header search field.",
+      "title": "Sidebar project filter menu stays aligned with its trigger",
+      "upstreamPrs": []
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "llm",
@@ -2601,6 +2641,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-24861",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "providers"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "UX improvement to the thread provider banners, which f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Yellow and red provider status banners in a thread get a Refresh button. It rechecks that provider and its models in the thread's environment, shows a pending state and blocks repeat clicks.",
+      "title": "Provider status banners get a Refresh button",
+      "upstreamPrs": [
+        24861
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "epoch": 1,
       "id": "pr-25002",
@@ -3068,6 +3130,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-25662",
+      "relatedTopics": [
+        "pr-27468"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "delegation"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a delegated-task race that stalls queued work. Reimplement in f5's orchestration.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The delegated_task.wake-policy command updates only the parent run's delegated-completion field inside the transaction. A stale snapshot can no longer put a completed run back to running and stall the queue.",
+      "title": "Changing a task's wake policy no longer reverts a checkpointed parent run",
+      "upstreamPrs": [
+        25662
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "decidedAt": "2026-11-02T10:32:38.196Z",
       "decidedBy": "rule",
@@ -3397,6 +3484,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-26415",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Small visual improvement to the model picker, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The selection check sits right after the selected model's name, and the favorite star moves before the keyboard shortcut. The empty trailing gap after shortcuts is gone.",
+      "title": "Model picker rows drop the reserved check column",
+      "upstreamPrs": [
+        26415
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "epoch": 1,
       "id": "pr-26459",
@@ -3443,6 +3551,29 @@
       "title": "Mobile thread links show their thread's title",
       "upstreamPrs": [
         26485
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-26495",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "threads"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "question": "Should f5's header New thread button open the project picker instead of starting in the current project when the project-grouped sidebar is on?",
+        "reason": "Sidebar UX fix that makes projects without active threads reachable. It applies if f5's sidebar has the same modes.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "With the project-grouped sidebar, the header New thread button and the chat.new shortcut open the project picker when there are several projects, instead of starting in the current project. The legacy sidebar keeps creating local threads.",
+      "title": "Header New thread opens the project picker in the project-grouped sidebar",
+      "upstreamPrs": [
+        26495
       ]
     },
     {
@@ -3613,6 +3744,32 @@
       "title": "Composer serializes each draft doc once per keystroke",
       "upstreamPrs": [
         26720
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-26734",
+      "reason": "This applies to the mobile app only.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.97,
+        "model": "claude-opus-5-5",
+        "reason": "This applies to the mobile app only.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds ML Kit on-device speech recognition to the Android mobile composer, plus an Android microphone settings pane.",
+      "title": "Mobile: on-device Android dictation",
+      "upstreamPrs": [
+        26734
       ]
     },
     {
@@ -5552,6 +5709,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-27840",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "forges",
+          "settings"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "f5 supports GitLab forges. Users with several glab hosts lose GitLab features, so the fix needs reimplementing in f5's forge discovery.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When glab auth status reports signed out, discovery retries across all hosts and counts a sign-in it finds. GitLab is no longer shown as Not authenticated, and publish and add-project stay available.",
+      "title": "A signed-out default glab host no longer hides other signed-in hosts",
+      "upstreamPrs": [
+        27840
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "epoch": 1,
       "id": "pr-27843",
@@ -6115,6 +6294,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-28065",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "This is a labeling fix on f5's Usage surface. It applies if f5 has cliproxy limit sources.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A merged CLIProxyAPI hub account uses its e-mail instead of the default 'Claude' name. /usage-limits hub rows strip the .json suffix.",
+      "title": "Proxied Claude accounts show their e-mail, and hub rows drop .json",
+      "upstreamPrs": [
+        28065
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -6211,6 +6411,28 @@
       "title": "Horizontal scrolling in diff and file panes no longer switches threads",
       "upstreamPrs": [
         28091
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-28097",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage",
+          "providers"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has Grok and usage limits, and this turns a vague failure into a message the user can act on.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A 403 from the billing endpoint that carries the privacy-mode marker shows 'Switch your xAI account to Privacy Mode…' instead of a generic probe failure.",
+      "title": "Grok usage limits tell Legacy-mode xAI accounts to switch to Privacy Mode",
+      "upstreamPrs": [
+        28097
       ]
     },
     {
@@ -6330,6 +6552,21 @@
       "title": "delegate_task accepts the inherited options orchestrator_capabilities reports",
       "upstreamPrs": [
         28133
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28135",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): settings providers show the ACP registry icon (#28135)",
+      "upstreamPrs": [
+        28135
       ]
     },
     {
@@ -7819,6 +8056,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-28494",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "PR hub"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has the same GitManager status and Git action button, so squash-merge workflows hit the failing action.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Remote status uses the branch's last merged PR and its head SHA. After a squash or rebase merge, the Git action no longer offers Push & create PR or Create PR, which failed with 'head invalid'.",
+      "title": "Squash-merged branches no longer offer Push & create PR",
+      "upstreamPrs": [
+        28494
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28499",
@@ -8449,6 +8708,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-28684",
+      "relatedTopics": [
+        "pr-28585"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "panels"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "UX improvement to thread details for threads with many servers.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Servers list in the thread details card shows 4 servers, then 'Show N more' and 'Show less'. Overflow rows are left out of the density measurement, so the card doesn't switch to compact mode.",
+      "title": "Thread details server list pages 4 at a time",
+      "upstreamPrs": [
+        28684
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "decidedAt": "2026-11-02T10:32:38.196Z",
       "decidedBy": "llm",
@@ -8750,6 +9034,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29013",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "settings"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "This applies if f5 has Go to source on quotes and records the modal return href. The bug is a jarring scroll jump.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The saved return location drops the #assistant-citation fragment. Closing Settings or Usage, or going Back from utility pages, no longer scrolls the thread back to a quote's source.",
+      "title": "Closing Settings or Usage no longer jumps back to a quote's source",
+      "upstreamPrs": [
+        29013
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "decidedAt": "2026-11-03T18:46:47.105Z",
       "decidedBy": "user",
@@ -8797,6 +9103,27 @@
       "upstreamPrs": [
         29026,
         29068
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29038",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has timelineMinimapWheel.ts and the same instant scrollBy forwarding, so mouse users see the same jumpy scrolling.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Mouse wheel notches forwarded from the minimap or its preview card to the chat now animate for about 150 ms with an ease-out, and quick notches add up. Trackpad input stays instant.",
+      "title": "Mouse wheel over the thread minimap glides instead of jumping",
+      "upstreamPrs": [
+        29038
       ]
     },
     {
@@ -9356,6 +9683,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-29263",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Android follow-up menu shows in full with the keyboard open (#29263)",
+      "upstreamPrs": [
+        29263
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "epoch": 1,
       "id": "pr-29301",
@@ -9852,6 +10194,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29554",
+      "relatedTopics": [
+        "pr-27756"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "forges"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has the same serverSettings patch logic, and a mismatched client can silently lose forge credentials.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The server merges source control host tokens per host when it applies a settings patch. An older client that sends a partial map no longer wipes the other hosts' saved tokens. An empty string still removes a token.",
+      "title": "Saving one source control token keeps other hosts' tokens",
+      "upstreamPrs": [
+        29554
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "decidedAt": "2026-11-03T10:28:38.430Z",
       "decidedBy": "rule",
@@ -9990,6 +10357,30 @@
       "title": "Diffs keep blank context lines when diff.suppressBlankEmpty is on",
       "upstreamPrs": [
         29579
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29580",
+      "relatedTopics": [
+        "pr-29126"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes polluted git context for commit and PR generation in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The recent commit subjects and the range log --oneline read pass --no-show-signature (and --no-decorate). With log.showSignature on, lines like 'No signature' no longer leak into the prompts.",
+      "title": "Generated commit and PR text ignores git signature output",
+      "upstreamPrs": [
+        29580
       ]
     },
     {
@@ -10175,6 +10566,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29643",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "threads"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has Sidebar.logic with settle and snooze, so the same wrong navigation happens after a delete.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "getFallbackThreadIdAfterDelete skips settled threads and threads that are currently snoozed, so deleting the open thread moves to the next visible one.",
+      "title": "Deleting the open thread no longer opens a snoozed or settled thread",
+      "upstreamPrs": [
+        29643
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "epoch": 1,
       "id": "pr-29644",
@@ -10286,6 +10699,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29721",
+      "relatedTopics": [
+        "pr-24803"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "pr hub"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable performance improvement in git and PR status polling.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A confirmed closed or merged PR for a branch is cached with a branch-ref fingerprint and rechecked every 15 minutes. The settlement sweep no longer spawns about 6 git processes per thread every minute.",
+      "title": "Settled PR lookups stop spawning git every sweep",
+      "upstreamPrs": [
+        29721
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "decidedAt": "2026-11-03T10:30:22.437Z",
       "decidedBy": "user",
@@ -10310,6 +10748,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29755",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes corrupted code when copying from the chat timeline, which f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When a selection is turned back into Markdown on copy, blank-line collapsing skips fenced code. Code inside list items, blockquotes or fences with nested ``` now keeps its blank lines and trailing spaces.",
+      "title": "Copied code blocks keep blank lines in lists, quotes and longer fences",
+      "upstreamPrs": [
+        29755
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "decidedAt": "2026-11-03T10:28:38.430Z",
       "decidedBy": "rule",
@@ -10322,6 +10781,77 @@
       "title": "fix(mobile): shorten the iOS undo toast and balance its insets (#29775)",
       "upstreamPrs": [
         29775
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29781",
+      "relatedTopics": [
+        "pr-28373"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "worktrees",
+          "threads"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This bug can happen in f5's worktree launch flow. It complements the ready topic pr-28373, which cleans up after a failed worktree add. Port it into f5's launch rollback, keeping the t3code/ prefix.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When a new-worktree launch is cancelled or fails before the thread records its workspace, rollback now deletes the branch it created, including a name from a rename that already finished, as well as the worktree. Leftover branches no longer clutter pickers or push later launches to a -1 suffix.",
+      "title": "Cancelling worktree setup no longer leaves its new branch behind",
+      "upstreamPrs": [
+        29781
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29794",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Guest thread sharing is part of upstream's hosted sharing surface, which f5 doesn't have.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "GuestShareService.attachment also searches the fork's timeline, so guests can load images and files on messages the fork inherited from its source.",
+      "title": "Guests of a shared forked thread can open inherited attachments",
+      "upstreamPrs": [
+        29794
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29806",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "persistence",
+          "performance"
+        ],
+        "confidence": 0.4,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 permanently prune orchestration events once its projections cover them, giving up rebuilding projections from the event log?",
+        "reason": "A large storage and performance win, but it permanently drops event history and is built on orchestration-v2. It would ship off by default in f5's own persistence layer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Background maintenance deletes orchestration events that the projections have already applied, not only superseded ones, and removes projection verification from history. Upstream saw a 6+ GB event table.",
+      "title": "Prune event log rows that projections already cover",
+      "upstreamPrs": [
+        29806
       ]
     },
     {
@@ -10355,6 +10885,208 @@
       ]
     },
     {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29877",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "opencode",
+          "git"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Clearer errors for OpenCode text generation in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "OpenCode 1.x commit, PR, branch and title generation errors are built from the typed error name and HTTP status, not from raw provider text such as '<none>'. Users can tell rate limits, outages and rejected credentials apart.",
+      "title": "OpenCode text generation errors describe known provider failures",
+      "upstreamPrs": [
+        29877
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-29878",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): multi-file patches show every changed file (#29878)",
+      "upstreamPrs": [
+        29878
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29879",
+      "relatedTopics": [
+        "pr-28361"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a git bug that can occur in f5's commit and PR generation.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The staged name-status, the staged patch and the range stat and patch run with -c diff.relative=false. In subfolder projects, Commit no longer reports 'no changes', and generated text covers files outside the folder.",
+      "title": "Commit and PR text see changes outside a subfolder project under diff.relative",
+      "upstreamPrs": [
+        29879
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29891",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "command palette",
+          "threads"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes wrong navigation in the command palette.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When the command palette or re-adding a folder opens a project's latest thread, it ignores sidebar-hidden subagent and side-chat threads, so it lands on the main conversation.",
+      "title": "Opening a project from the command palette skips subagents and side chats",
+      "upstreamPrs": [
+        29891
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29893",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "f5 keeps a desktop-hosted preview browser. If its guest input handler uses the same meta-or-control check, the same symptom occurs there.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The preview's refresh shortcut accepts Cmd+R only on macOS and Ctrl+R only elsewhere. Pages that use Ctrl+R, such as web terminals and Emacs-style editors, get the key.",
+      "title": "Ctrl+R on macOS reaches the preview page instead of reloading it",
+      "upstreamPrs": [
+        29893
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29902",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "checkpoints",
+          "providers"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "f5 supports rollback and native forks for Claude and OpenCode, so the agent can get history the fork doesn't show. The fix has to be reimplemented inside f5's fork path.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Turns from rolled-back runs no longer bound a native fork. Claude forks at the pinned head when no terminal turn follows the boundary. A fork from before an undo no longer gives the agent work the user undid.",
+      "title": "Native forks after an undo no longer copy later turns",
+      "upstreamPrs": [
+        29902
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29904",
+      "relatedTopics": [
+        "pr-28102"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "providers"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "This is a reliability fix for idle compaction, if f5 has that feature. It does not touch the declined compact-before-send behavior.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When idle compaction picks the latest run, it ignores cancelled runs that never started. Removing a queued follow-up or turning it into a steer no longer silently skips the pre-expiry /compact.",
+      "title": "Idle compaction still runs after a queued message is removed or steered",
+      "upstreamPrs": [
+        29904
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29905",
+      "relatedTopics": [
+        "pr-29572"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "threads"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes incomplete context when switching providers or opening a side chat. Reimplement in f5's handoff layer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Provider-switch history and side-chat or fork delta summaries list every path of a multi-file change, not just the first. The receiving agent learns about every edited file.",
+      "title": "Handoff context names every file of a multi-file patch",
+      "upstreamPrs": [
+        29905
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29908",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "worktrees",
+          "composer"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a git and worktree bug in monorepo subfolder projects. The files exist in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The branch picker recognizes the checkout that contains a subfolder project as the project's own. Picking its branch no longer moves the thread into worktree mode at the repo root or stops the session.",
+      "title": "Picking a branch in a subfolder project keeps the thread in the project folder",
+      "upstreamPrs": [
+        29908
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "epoch": 1,
       "id": "pr-29909",
@@ -10375,6 +11107,86 @@
       "title": "Subagent questions reach a busy parent agent",
       "upstreamPrs": [
         29909
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29912",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Affects only device hosts, which f5 doesn't have.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The Settings → Device hosts connection test shows the server's error message instead of Cause.pretty output.",
+      "title": "Device host checks show the error without a stack trace",
+      "upstreamPrs": [
+        29912
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-29916",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "docs: pin an absolute binary path under a permission cap (#29916)",
+      "upstreamPrs": [
+        29916
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29917",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a misleading count in Settings › Projects. Reimplement outside client-runtime.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The 'delete its N threads?' count when removing a project or checkout leaves out side chats and subagent threads. Those never appear in thread lists, and they made the number shift.",
+      "title": "Project removal confirm counts only listed threads",
+      "upstreamPrs": [
+        29917
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-29919",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub",
+          "git"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a PR stack action failure in the PR hub. Reimplement in f5's GitHub forge layer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The cascade rebase uses the merged layer's head SHA as the old parent. After a squash or rebase merge, it no longer replays the merged commits and reports false conflicts.",
+      "title": "Rebase stack no longer conflicts after a lower layer is squash-merged",
+      "upstreamPrs": [
+        29919
       ]
     },
     {
@@ -10403,6 +11215,136 @@
       "upstreamPrs": [
         29922,
         29987
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-29962",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): close and reopen pull requests from the actions menu (#29962)",
+      "upstreamPrs": [
+        29962
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-30004",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "On the old runtime, Codex compacts after every tool call with GPT-6.1 Sol. This is high impact if f5 uses the managed Codex runtime.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Bumps the pinned managed Codex to 0.166.0, whose catalog keeps GPT-6.1 Sol tools behind code mode. Existing managed installs below the pin are upgraded at startup.",
+      "title": "Managed Codex runtime moves to 0.166.0 so GPT-6.1 Sol stops compacting",
+      "upstreamPrs": [
+        30004
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-30187",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "pi"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a Pi login loss whose symptom can occur in f5's Pi provider.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Pi RPC processes that T3 stops right after they answer (status, discovery, text generation, forks) launch with --offline. Pi's startup catalog refresh can no longer spend a single-use refresh token and then get killed, which broke ChatGPT sign-in with invalid_grant.",
+      "title": "Short-lived Pi processes run --offline so rotated OAuth tokens aren't lost",
+      "upstreamPrs": [
+        30187
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-30275",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Composer UX fix in a surface f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Clicking the permission mode in a new thread's context strip opens the shared permissions menu above itself, instead of opening the model selector first.",
+      "title": "New-thread context strip opens the permissions menu directly",
+      "upstreamPrs": [
+        30275
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "decidedAt": "2026-11-03T20:57:03.039Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-30298",
+      "reason": "This changes only the contributor skill and the evals.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "evals"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "This changes only the contributor skill and the evals.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Updates the internal test skill and the eval runner so verification continues after an unavailable preview status.",
+      "title": "test-t3-app skill tries preview_open before giving up",
+      "upstreamPrs": [
+        30298
+      ]
+    },
+    {
+      "createdAt": "2026-11-03T20:57:03.039Z",
+      "epoch": 1,
+      "id": "pr-30357",
+      "relatedTopics": [
+        "pr-29429"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "persistence",
+          "performance"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "A startup recovery performance fix with the same results. It needs reimplementing against f5's projection queries.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The runtime recovery query for streaming messages starts from eligible runs and uses the message run index, so it no longer scans a thread's message history.",
+      "title": "Streaming-message recovery reads start from active runs",
+      "upstreamPrs": [
+        30357
       ]
     },
     {
