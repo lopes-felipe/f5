@@ -1,12 +1,16 @@
 /**
  * Static Claude in Chrome descriptor extraction from the shipped Claude CLI. The CLI is a
  * Bun single-file executable: its JavaScript chunks follow the bytecode section, each
- * opening with `// @bun @bytecode` and Anthropic's banner. Earlier bytes (bytecode
+ * opening with `// @bun @bytecode` and Anthropic's banner (2.1.317 replaced the "Beta
+ * product" line with a copyright line; both are accepted). Earlier bytes (bytecode
  * constant pools) can contain stale copies of the same literals, so only the chunk
  * region is scanned. Every anchor is a stable literal; a missing or duplicated anchor
  * is a typed error rather than a guess.
  */
 export const CHUNK_MARKER = "// @bun @bytecode\n// Claude Code is a Beta product";
+export const COPYRIGHT_CHUNK_MARKER =
+  "// @bun @bytecode\n// (c) Anthropic PBC. All rights reserved.";
+const CHUNK_MARKERS = [CHUNK_MARKER, COPYRIGHT_CHUNK_MARKER] as const;
 const VERSION_BANNER = "// Version: ";
 const HOST_DESCRIPTION = 'description:"Claude Code Browser Extension Native Host"';
 const ALLOWED_ORIGINS = "allowed_origins:[";
@@ -110,9 +114,9 @@ function parseStringArray(anchor: string, body: string): string[] {
 export async function extractClaudeChromeDescriptor(
   source: DescriptorSource,
 ): Promise<ExtractedClaudeChromeDescriptor> {
-  const markers = (await scanOffsets(source, [CHUNK_MARKER])).get(CHUNK_MARKER)!;
+  const markers = [...(await scanOffsets(source, CHUNK_MARKERS)).values()].flat();
   if (!markers.length) throw new DescriptorAnchorError(CHUNK_MARKER, "missing");
-  const regionStart = markers[0]!;
+  const regionStart = Math.min(...markers);
   const offsets = await scanOffsets(
     source,
     [

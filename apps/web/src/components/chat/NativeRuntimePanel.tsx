@@ -36,6 +36,7 @@ import { readNativeApi } from "../../nativeApi";
 import { describeBackgroundTask } from "./NativeRuntimeTray.logic";
 import { recentRuntimeNotices, resolveRuntimeModelReport } from "./runtimePresentation";
 import { McpSignInList, needsAuthMcpServers, supportsMcpSignIn } from "./McpSignInTray";
+import { formatExactTokens as formatTokenCount } from "./composer/contextMeter.logic";
 
 /**
  * Same names as the composer tray, plus the agent's own type so finished
@@ -274,6 +275,26 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
                 <>
                   <dt>Latest turn</dt>
                   <dd>{props.outcome}</dd>
+                </>
+              )}
+              {capabilities?.executableVersion && (
+                <>
+                  <dt>Runtime version</dt>
+                  <dd>{capabilities.executableVersion}</dd>
+                </>
+              )}
+              {capabilities?.latestCacheWrites && (
+                <>
+                  <dt>Cache writes</dt>
+                  <dd>
+                    {formatTokenCount(capabilities.latestCacheWrites.ephemeral5mInputTokens)}{" "}
+                    5-minute ·{" "}
+                    {formatTokenCount(capabilities.latestCacheWrites.ephemeral1hInputTokens)} 1-hour
+                    <span className="block text-muted-foreground text-xs">
+                      Session totals for the whole agent tree, as reported by the SDK; not used for
+                      F5 usage or cost.
+                    </span>
+                  </dd>
                 </>
               )}
             </dl>

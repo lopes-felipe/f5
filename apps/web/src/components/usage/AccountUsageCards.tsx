@@ -18,6 +18,7 @@ import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { QuotaMeter } from "./charts/QuotaMeter";
 import { providerLabel } from "./format";
 import { ResetCreditButton } from "./ResetCreditButton";
+import { ClaudeUsageAnalysisPanel } from "./ClaudeUsageAnalysisPanel";
 
 const RESET_MATCH_MS = 10 * 60_000;
 
@@ -387,6 +388,12 @@ export function AccountUsageCards({
                 )}
               </div>
             ))
+          )}
+          {account.enabled && account.provider === "claudeAgent" && account.providerInstanceId && (
+            <ClaudeUsageAnalysisPanel
+              instanceId={account.providerInstanceId}
+              analysis={account.usageAnalysis}
+            />
           )}
         </div>
       ))}

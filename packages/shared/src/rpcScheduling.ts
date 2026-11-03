@@ -413,6 +413,8 @@ export const RPC_METHOD_POLICY = {
   "upstreamPorts.undoDecisions": MUTATION_RT,
   "upstreamPorts.unlinkPort": MUTATION_RT,
 
+  // A 60 s transcript scan after waiting for one of the two shared probe permits.
+  "usage.analyzeClaudeUsage": long(true, 150_000),
   "usage.consumeResetCredit": MUTATION_RT,
   "usage.getAccounts": READ_RT,
   "usage.getQuotaHistory": MUTATION_RT,

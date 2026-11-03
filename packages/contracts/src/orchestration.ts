@@ -31,6 +31,8 @@ import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
 import { UsageTurnFact } from "./usage";
 export {
+  CLAUDE_SUBAGENT_EFFORT_OPTIONS,
+  type ClaudeSubagentEffort,
   ClaudeProviderStartOptions,
   ClaudeThinkingDisplay,
   ClaudeThinkingOption,

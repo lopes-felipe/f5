@@ -139,6 +139,8 @@ export const ClaudeSettings = Schema.Struct({
   enableFileCheckpointing: Schema.optionalKey(Schema.Boolean),
   nativeCompaction: Schema.optionalKey(Schema.Boolean),
   resumeCompactionPrompt: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Maps to Claude's `permissions.blockWritesOutsideWorkingDirectories` flag setting. */
+  confineWritesToWorkspace: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -667,6 +669,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   enableFileCheckpointing: Schema.optionalKey(Schema.Boolean),
   nativeCompaction: Schema.optionalKey(Schema.Boolean),
   resumeCompactionPrompt: Schema.optionalKey(Schema.Boolean),
+  confineWritesToWorkspace: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),

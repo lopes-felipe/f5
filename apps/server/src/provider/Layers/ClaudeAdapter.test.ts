@@ -31,6 +31,10 @@ import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { runtimeEventToActivities } from "../../orchestration/Layers/ProviderRuntimeIngestion.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { MCP_APP_MIME_TYPE } from "@t3tools/shared/mcpApp";
 import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import { clearAnthropicModelContextWindowCatalogCacheForTest } from "../modelContextWindowMetadata.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -39,6 +43,7 @@ import {
   buildInstructionProfile,
 } from "../sharedAssistantContract.ts";
 import {
+  CLAUDE_SESSION_WRITES_LOST_WARNING,
   buildClaudeQueryEnv,
   accumulateClaudeThinkingTokens,
   claudeShowThinkingSummaries,
@@ -256,6 +261,13 @@ function makeRealSdkHarness(config?: {
     },
     getLastCreateQueryInput: () => createInput,
   };
+}
+
+/** Flag settings minus `permissions`, whose read exemptions depend on the host paths. */
+function withoutFlagPermissions(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return settings;
+  const { permissions: _permissions, ...rest } = settings as Record<string, unknown>;
+  return rest;
 }
 
 function makeDeterministicRandomService(seed = 0x1234_5678): {
@@ -2306,6 +2318,246 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "launches with attachment read exemptions, opt-in write confinement, and a fail-closed hook",
+    () => {
+      const harness = makeHarness({
+        oneOffProviderOptions: { confineWritesToWorkspace: true, nativeCompaction: false },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()?.options;
+        const settings = options?.settings as Record<string, unknown> | undefined;
+        const permissions = settings?.permissions as Record<string, unknown> | undefined;
+        // The harness's state dir is `/tmp`; Windows resolves it under a drive letter.
+        assert.ok(
+          (permissions?.blockReadsExemptPaths as string[] | undefined)?.includes(
+            path.resolve("/tmp/attachments"),
+          ),
+        );
+        assert.equal(permissions?.blockWritesOutsideWorkingDirectories, true);
+        assert.equal(settings?.idleCompaction, false);
+        // The bundled runtime honors onFailure, so F5's mandatory matcher blocks on hook errors.
+        assert.equal(options?.hooks?.PreToolUse?.at(-1)?.onFailure, "block");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "captures a Claude MCP App on completion and falls back to a plain row on failure",
+    () => {
+      const stateDir = mkdtempSync(path.join(os.tmpdir(), "f5-claude-mcp-app-"));
+      const harness = makeHarness({ stateDir });
+      const reads: Array<[string, string]> = [];
+      Object.assign(harness.query, {
+        readMcpResource: async (server: string, uri: string) => {
+          reads.push([server, uri]);
+          if (uri === "ui://charts/broken") throw new Error("resources/read failed");
+          return { contents: [{ uri, mimeType: MCP_APP_MIME_TYPE, text: "<p>Chart</p>" }] };
+        },
+      });
+      harness.query.mcpServerStatusValue = [
+        {
+          name: "charts",
+          status: "connected",
+          tools: [
+            { name: "show", _meta: { ui: { resourceUri: "ui://charts/view" } } },
+            { name: "broken", _meta: { ui: { resourceUri: "ui://charts/broken" } } },
+          ],
+        },
+      ] as unknown as typeof harness.query.mcpServerStatusValue;
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        // App attachments belong to a projected thread.
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-03T10:00:00.000Z";
+        yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,default_model,scripts_json,created_at,updated_at,deleted_at) VALUES('mcp-app-project','P','/tmp',NULL,'[]',${at},${at},NULL)`;
+        yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model,branch,worktree_path,latest_turn_id,archived_at,created_at,last_interaction_at,updated_at,deleted_at) VALUES(${THREAD_ID},'mcp-app-project','T','claude-opus-5-5',NULL,NULL,NULL,NULL,${at},${at},${at},NULL)`;
+        const completedFiber = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "item.completed",
+        ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "chart", attachments: [] });
+        harness.query.emit({
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-mcp-app",
+          uuid: "mcp-app-init",
+          model: "claude-opus-5-5",
+          capabilities: ["mcp_read_resource_v1", "mcp_tool_ui_meta_v1"],
+        } as unknown as SDKMessage);
+        ["show", "broken"].forEach((tool, index) => {
+          const id = `tool-mcp-app-${tool}`;
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session-mcp-app",
+            uuid: `stream-${id}`,
+            parent_tool_use_id: null,
+            event: {
+              type: "content_block_start",
+              index,
+              content_block: {
+                type: "mcp_tool_use",
+                id,
+                name: `mcp__charts__${tool}`,
+                input: { range: "week" },
+              },
+            },
+          } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "user",
+            session_id: "sdk-session-mcp-app",
+            uuid: `user-${id}`,
+            parent_tool_use_id: null,
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: id, content: "Rendered" }],
+            },
+          } as unknown as SDKMessage);
+        });
+        const [captured, fallback] = Array.from(yield* Fiber.join(completedFiber));
+        const data = (captured?.payload as { data?: Record<string, unknown> } | undefined)?.data;
+        assert.equal(
+          (data?.mcpApp as { resourceUri?: string } | undefined)?.resourceUri,
+          "ui://charts/view",
+        );
+        assert.deepEqual(data?.mcpAppTool, { server: "charts", tool: "show" });
+        const app = runtimeEventToActivities(captured!).find(
+          (activity) => activity.kind === "mcpApp",
+        );
+        assert.equal(app?.summary, "show");
+        assert.equal((data?.mcpApp as { provider?: string } | undefined)?.provider, "claudeAgent");
+        assert.deepEqual(data?.mcpAppBootstrap, {
+          arguments: { range: "week" },
+          result: { content: [{ type: "text", text: "Rendered" }] },
+        });
+        const plain = (fallback?.payload as { data?: Record<string, unknown> } | undefined)?.data;
+        assert.equal(plain?.mcpApp, undefined);
+        assert.deepEqual(reads, [
+          ["charts", "ui://charts/view"],
+          ["charts", "ui://charts/broken"],
+        ]);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(stateDir, { recursive: true, force: true }))),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(
+          harness.layer.pipe(
+            Layer.provideMerge(SqlitePersistenceMemory.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect("delivers MCP App model context after the user's text", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const appState =
+        '\n\n<untrusted_mcp_app_state>\n{"server":"charts"}\n</untrusted_mcp_app_state>';
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Summarize the chart",
+        attachments: [],
+        mcpAppContext: appState,
+      });
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.ok(promptText?.endsWith(`Summarize the chart${appState}`));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("never lets a thread's start options loosen write confinement", () => {
+    const harness = makeHarness({ oneOffProviderOptions: { confineWritesToWorkspace: true } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        providerOptions: { claudeAgent: { confineWritesToWorkspace: false } },
+      });
+      const settings = harness.getLastCreateQueryInput()?.options.settings as
+        | { permissions?: Record<string, unknown> }
+        | undefined;
+      assert.equal(settings?.permissions?.blockWritesOutsideWorkingDirectories, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("warns on lost transcript writes and marks the resume cursor incomplete", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const sessionId = "6e81554e-5cff-4b37-8a39-f3a9051ac235";
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const warningFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.warning",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+      // A loss limited to another session's transcript leaves this cursor alone.
+      harness.query.emit({
+        type: "system",
+        subtype: "session_writes_lost",
+        error_code: "ENOSPC",
+        lost: ["transcript"],
+        transcript_session_ids: ["9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"],
+        session_id: sessionId,
+        uuid: "writes-lost-other",
+      } as unknown as SDKMessage);
+      const before = (yield* adapter.listSessions())[0]?.resumeCursor as Record<string, unknown>;
+      assert.notEqual(before?.transcriptIncomplete, true);
+      harness.query.emit({
+        type: "system",
+        subtype: "session_writes_lost",
+        error_code: "ENOSPC",
+        lost: ["transcript"],
+        session_id: sessionId,
+        uuid: "writes-lost",
+      } as unknown as SDKMessage);
+      const warnings = Array.from(yield* Fiber.join(warningFiber));
+      assert.equal(warnings.length, 2);
+      const warning = warnings[1];
+      if (warning?.type === "runtime.warning") {
+        assert.equal(warning.payload.message, CLAUDE_SESSION_WRITES_LOST_WARNING);
+        assert.deepEqual(warning.payload.detail, { error_code: "ENOSPC", lost: ["transcript"] });
+      }
+      const cursor = (yield* adapter.listSessions())[0]?.resumeCursor as Record<string, unknown>;
+      assert.equal(cursor?.transcriptIncomplete, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2845,7 +3097,7 @@ describe("ClaudeAdapterLive", () => {
           { type: "text", text: "Ultrathink:\nSummarize" },
         ]);
         assert.equal(request.options.effort, undefined);
-        assert.deepEqual(request.options.settings, {
+        assert.deepEqual(withoutFlagPermissions(request.options.settings), {
           cleanupPeriodDays: 3650,
           ...(fastMode ? { fastMode: true } : {}),
         });
@@ -3182,7 +3434,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(session.model, "claude-opus-5");
       assert.equal(createInput?.options.model, "claude-opus-5");
       assert.equal(createInput?.options.effort, "high");
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         fastMode: true,
         showThinkingSummaries: true,
@@ -4432,7 +4684,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         alwaysThinkingEnabled: false,
       });
@@ -4459,7 +4711,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         showThinkingSummaries: true,
       });
@@ -4469,7 +4721,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("forwards Claude Opus 4.8 Fast Mode into SDK settings", () => {
+  it.effect("no longer forwards the deprecated built-in Opus 4.8 Fast Mode", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -4486,9 +4738,8 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
-        fastMode: true,
         showThinkingSummaries: true,
       });
     }).pipe(
@@ -4514,7 +4765,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         showThinkingSummaries: true,
       });
@@ -4541,7 +4792,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         showThinkingSummaries: true,
       });
@@ -4568,7 +4819,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
+      assert.deepEqual(withoutFlagPermissions(createInput?.options.settings), {
         cleanupPeriodDays: 3650,
         showThinkingSummaries: true,
       });
@@ -12257,10 +12508,13 @@ describe("ClaudeAdapterLive", () => {
         adapter.streamEvents,
         (event) => event.type === "session.configured",
       ).pipe(Stream.take(1), Stream.runCollect);
-      assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
-        cleanupPeriodDays: 3650,
-        alwaysThinkingEnabled: false,
-      });
+      assert.deepEqual(
+        withoutFlagPermissions(harness.getLastCreateQueryInput()?.options.settings),
+        {
+          cleanupPeriodDays: 3650,
+          alwaysThinkingEnabled: false,
+        },
+      );
       assert.equal(
         initial.find((event) => event.type === "session.configured")?.payload.config
           .modelContextWindowTokens,

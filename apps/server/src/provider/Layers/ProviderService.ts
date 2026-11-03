@@ -1,4 +1,5 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
 import { captureRestartTurnMarkers } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { resolveProjectProviderInstanceEnabled } from "@t3tools/shared/serverSettings";
 import { registerProviderRuntimeFanout } from "../../observability/Metrics.ts";
@@ -3082,7 +3083,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             operation: "ProviderService.mcpApps",
             allowRecovery: false,
           });
-          if (!routed.isActive || routed.adapter.provider !== "codex" || !routed.adapter.mcpApps)
+          if (
+            !routed.isActive ||
+            !MCP_APP_PROVIDERS.has(routed.adapter.provider) ||
+            !routed.adapter.mcpApps
+          )
             return yield* toValidationError("McpApps", "Send a message to reconnect.");
           return yield* run(routed.adapter.mcpApps);
         }),

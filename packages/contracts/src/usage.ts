@@ -16,6 +16,7 @@ export const USAGE_WS_METHODS = {
   getAccounts: "usage.getAccounts",
   consumeResetCredit: "usage.consumeResetCredit",
   getQuotaHistory: "usage.getQuotaHistory",
+  analyzeClaudeUsage: "usage.analyzeClaudeUsage",
 } as const;
 
 export const UsageRange = Schema.Literals(["24h", "7d", "30d", "90d"]);
@@ -356,6 +357,45 @@ export const AccountUsageSection = Schema.Union([
   }),
 ]);
 export type AccountUsageSection = typeof AccountUsageSection.Type;
+/** One recommended change from Claude's local usage scan, largest share first. */
+export const ClaudeUsageRecommendation = Schema.Struct({
+  /** A behavior key, or `agent`/`skill`/`plugin`/`mcp_server` for a named source. */
+  key: TrimmedNonEmptyString,
+  /** Share of the weighted local usage this touches, 0-100. */
+  pct: NonNegativeNumber,
+  title: TrimmedNonEmptyString,
+  detail: Schema.optional(TrimmedNonEmptyString),
+});
+export type ClaudeUsageRecommendation = typeof ClaudeUsageRecommendation.Type;
+export const ClaudeUsageBehavior = Schema.Struct({
+  /** Open set (`cache_miss`, `max_effort`, `workflow`, `large_tool_results`, ...). */
+  key: TrimmedNonEmptyString,
+  pct: NonNegativeNumber,
+  count: NonNegativeInt,
+});
+export type ClaudeUsageBehavior = typeof ClaudeUsageBehavior.Type;
+export const ClaudeUsageAnalysisWindow = Schema.Struct({
+  requestCount: NonNegativeInt,
+  sessionCount: NonNegativeInt,
+  behaviors: Schema.Array(ClaudeUsageBehavior),
+  recommendations: Schema.Array(ClaudeUsageRecommendation),
+});
+export type ClaudeUsageAnalysisWindow = typeof ClaudeUsageAnalysisWindow.Type;
+/**
+ * On-demand scan of this machine's Claude transcripts (approximate; other devices and
+ * claude.ai are not included). Held in server memory only.
+ */
+export const ClaudeUsageAnalysis = Schema.Struct({
+  analyzedAt: IsoDateTime,
+  day: Schema.NullOr(ClaudeUsageAnalysisWindow),
+  week: Schema.NullOr(ClaudeUsageAnalysisWindow),
+});
+export type ClaudeUsageAnalysis = typeof ClaudeUsageAnalysis.Type;
+export const UsageAnalyzeClaudeUsageInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+});
+export type UsageAnalyzeClaudeUsageInput = typeof UsageAnalyzeClaudeUsageInput.Type;
+
 export const UsageAccount = Schema.Struct({
   key: TrimmedNonEmptyString,
   provider: ProviderKind,
@@ -364,6 +404,8 @@ export const UsageAccount = Schema.Struct({
   enabled: Schema.Boolean,
   refreshState: Schema.Literals(["idle", "queued", "refreshing"]),
   sections: Schema.Array(AccountUsageSection),
+  /** The latest Analyze usage result for a Claude account, when one ran this server run. */
+  usageAnalysis: Schema.optional(ClaudeUsageAnalysis),
 });
 export type UsageAccount = typeof UsageAccount.Type;
 export const UsageAccounts = Schema.Array(UsageAccount);

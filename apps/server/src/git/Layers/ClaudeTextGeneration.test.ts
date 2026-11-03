@@ -422,7 +422,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             diffSummary: "1 file changed",
             diffPatch: "diff --git a/README.md b/README.md",
             modelSelection: {
-              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-8", [
+              // Opus 4.8's built-in Fast Mode is deprecated; Opus 5 keeps it.
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5", [
                 { id: "effort", value: "max" },
                 { id: "fastMode", value: true },
               ]),

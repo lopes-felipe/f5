@@ -1,4 +1,6 @@
 import {
+  CLAUDE_SUBAGENT_EFFORT_OPTIONS,
+  type ClaudeSubagentEffort,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   THREAD_TITLE_INSTRUCTIONS_MAX_CHARS,
 } from "@t3tools/contracts";
@@ -6,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   CLAUDE_SUBAGENT_MODEL_INHERIT,
+  type ClaudeSubagentSettingsPatch,
   DEFAULT_CLAUDE_PROJECT_SETTINGS,
   getAppModelOptions,
   resolveAuxiliaryAppModelSelection,
@@ -328,7 +331,7 @@ export function ClaudeSubagentControls({
   onChange,
 }: {
   readonly value: typeof DEFAULT_CLAUDE_PROJECT_SETTINGS;
-  readonly onChange: (patch: Partial<typeof DEFAULT_CLAUDE_PROJECT_SETTINGS>) => void;
+  readonly onChange: (patch: ClaudeSubagentSettingsPatch) => void;
 }) {
   const { claudeSubagentModelOptions, claudeSubagentModelLabel } = useSettingsRouteContext();
   const effectiveModel = resolveClaudeSubagentModel(
@@ -377,15 +380,65 @@ export function ClaudeSubagentControls({
           </Select>
         }
       />
+      <SettingsRow
+        title="Claude sub-agent effort"
+        description={
+          <>
+            <span className="font-mono">Default</span> lets a sub-agent on another model use that
+            model&apos;s default effort. Any other choice sets{" "}
+            <span className="font-mono">CLAUDE_CODE_SUBAGENT_EFFORT</span> at the next session
+            start.
+          </>
+        }
+        control={
+          <Select
+            value={value.subagentEffort ?? CLAUDE_SUBAGENT_EFFORT_DEFAULT}
+            onValueChange={(effort) =>
+              onChange({
+                subagentEffort:
+                  effort && effort !== CLAUDE_SUBAGENT_EFFORT_DEFAULT
+                    ? (effort as ClaudeSubagentEffort)
+                    : undefined,
+              })
+            }
+          >
+            <SelectTrigger className="w-56" aria-label="Claude sub-agent effort">
+              <SelectValue>
+                {value.subagentEffort
+                  ? CLAUDE_SUBAGENT_EFFORT_LABELS[value.subagentEffort]
+                  : "Default"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end">
+              <SelectItem value={CLAUDE_SUBAGENT_EFFORT_DEFAULT}>Default</SelectItem>
+              {CLAUDE_SUBAGENT_EFFORT_OPTIONS.map((effort) => (
+                <SelectItem key={effort} value={effort}>
+                  {CLAUDE_SUBAGENT_EFFORT_LABELS[effort]}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
     </>
   );
 }
+
+const CLAUDE_SUBAGENT_EFFORT_DEFAULT = "default";
+const CLAUDE_SUBAGENT_EFFORT_LABELS: Record<ClaudeSubagentEffort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
 
 function ClaudeSubagentSettings() {
   const { claudeSubagentDefaults, updateClaudeSubagentDefaults } = useSettingsRouteContext();
   const changed =
     claudeSubagentDefaults.subagentsEnabled !== DEFAULT_CLAUDE_PROJECT_SETTINGS.subagentsEnabled ||
-    claudeSubagentDefaults.subagentModel !== DEFAULT_CLAUDE_PROJECT_SETTINGS.subagentModel;
+    claudeSubagentDefaults.subagentModel !== DEFAULT_CLAUDE_PROJECT_SETTINGS.subagentModel ||
+    claudeSubagentDefaults.subagentEffort !== undefined;
   return (
     <SettingsCard
       title="Claude sub-agents"
@@ -395,7 +448,12 @@ function ClaudeSubagentSettings() {
           <Button
             size="xs"
             variant="outline"
-            onClick={() => updateClaudeSubagentDefaults(DEFAULT_CLAUDE_PROJECT_SETTINGS)}
+            onClick={() =>
+              updateClaudeSubagentDefaults({
+                ...DEFAULT_CLAUDE_PROJECT_SETTINGS,
+                subagentEffort: undefined,
+              })
+            }
           >
             Restore defaults
           </Button>

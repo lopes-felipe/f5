@@ -25,7 +25,8 @@ import {
 const allRecords = Object.values(
   PROVIDER_INTEGRATION_RECORDS,
 ).flat() as ProviderIntegrationRecord[];
-const claude = PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!;
+// The record for the pinned runtime; superseded records stay listed as withdrawn.
+const claude = PROVIDER_INTEGRATION_RECORDS["claude-chrome"].find((record) => !record.withdrawn)!;
 const certified: ClaudeChromeRecord = {
   ...claude,
   evidenceId: "evidence-1",

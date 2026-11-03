@@ -31,6 +31,10 @@ export const ClaudeThinkingOption = Schema.Union([
 ]);
 export type ClaudeThinkingOption = typeof ClaudeThinkingOption.Type;
 
+/** Claude Code effort levels a sub-agent can run at (`ultrathink` is a prompt prefix, not a level). */
+export const CLAUDE_SUBAGENT_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ClaudeSubagentEffort = (typeof CLAUDE_SUBAGENT_EFFORT_OPTIONS)[number];
+
 export const ClaudeProviderStartOptions = Schema.Struct({
   promptSuggestions: Schema.optional(Schema.Boolean),
   enableFileCheckpointing: Schema.optional(Schema.Boolean),
@@ -44,6 +48,13 @@ export const ClaudeProviderStartOptions = Schema.Struct({
   thinking: Schema.optional(ClaudeThinkingOption),
   subagentsEnabled: Schema.optional(Schema.Boolean),
   subagentModel: Schema.optional(TrimmedNonEmptyString),
+  /** Claude effort for sub-agents (`CLAUDE_CODE_SUBAGENT_EFFORT`); unset keeps the CLI default. */
+  subagentEffort: Schema.optional(Schema.Literals(CLAUDE_SUBAGENT_EFFORT_OPTIONS)),
+  /**
+   * Instance setting; maps to `permissions.blockWritesOutsideWorkingDirectories`. The adapter
+   * reads it only from the instance's options, never from a thread's start options.
+   */
+  confineWritesToWorkspace: Schema.optional(Schema.Boolean),
   launchArgs: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
 });
 

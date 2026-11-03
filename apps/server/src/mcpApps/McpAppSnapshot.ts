@@ -72,6 +72,8 @@ export const snapshotMcpApp = (input: {
   readonly tool: string;
   readonly resourceUri: string;
   readonly response: unknown;
+  /** The capturing provider; app calls are refused once another provider owns the thread. */
+  readonly provider?: string;
 }) =>
   Effect.gen(function* () {
     const document = readMcpAppDocument(input.response, input.resourceUri);
@@ -101,6 +103,7 @@ export const snapshotMcpApp = (input: {
       ...(document.csp ? { csp: document.csp } : {}),
       ...(document.permissions ? { permissions: document.permissions } : {}),
       ...(document.prefersBorder !== undefined ? { prefersBorder: document.prefersBorder } : {}),
+      ...(input.provider ? { provider: input.provider } : {}),
     });
     if (!reference) return undefined;
     const json = JSON.stringify(reference);

@@ -9,11 +9,20 @@ import { makePreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.t
 import { forceClaudeChromeFlag, makeClaudePreviewMcpServer } from "./claudeAgentBrowser.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 import { createClaudeQueryWithPrivateMcp } from "../claudeMcpStartup.ts";
+import { claudeMandatoryPolicyOptions } from "../claudeMandatoryPolicy.ts";
+import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
+import { callClaudeMcpAppTool } from "../claudeMcpApps.ts";
 import { makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
 import { Effect } from "effect";
 
 async function* emptyPrompt(): AsyncGenerator<never> {}
+
+// Keeps stdin open: the SDK ends input once the prompt stream finishes.
+async function* openPrompt(signal: AbortSignal): AsyncGenerator<never> {
+  await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  yield* [];
+}
 
 // The SDK does not export its package.json, so read it next to the resolved entry.
 function installedClaudeSdkVersion(): string {
@@ -204,4 +213,123 @@ describe("Claude SDK host contract transport", () => {
       }
     },
   );
+
+  it.each([true, false])(
+    "sends onFailure: block on F5's mandatory hook and requires CLI support (supported=%s)",
+    async (supported) => {
+      let initialize: Record<string, unknown> | undefined;
+      const runtime = query({
+        prompt: emptyPrompt(),
+        options: {
+          persistSession: false,
+          ...claudeMandatoryPolicyOptions({ failClosed: true }),
+          spawnClaudeCodeProcess: () =>
+            new FakeClaudeCodeProcess((message, child) => {
+              if (
+                respondToInitializeRequest(message, child, {
+                  hook_on_failure_supported: supported,
+                  hooks_applied: true,
+                })
+              )
+                initialize = message.request as Record<string, unknown>;
+            }),
+        },
+      });
+      try {
+        const result = runtime.initializationResult();
+        if (supported) await expect(result).resolves.toBeDefined();
+        else await expect(result).rejects.toThrow(/onFailure/);
+        const preToolUse = (initialize?.hooks as Record<string, Array<Record<string, unknown>>>)
+          ?.PreToolUse;
+        expect(preToolUse?.at(-1)?.onFailure).toBe("block");
+      } finally {
+        runtime.close();
+      }
+    },
+  );
+
+  it("encodes F5's read exemptions and write confinement as flag settings", async () => {
+    let spawn: SpawnOptions | undefined;
+    const permissions = buildClaudeFlagPermissions({
+      readExemptDirectories: ["/f5-probe/attachments", "/f5-probe/claude/plans"],
+      confineWritesToWorkspace: true,
+    });
+    const runtime = query({
+      prompt: emptyPrompt(),
+      options: {
+        persistSession: false,
+        settings: { permissions },
+        spawnClaudeCodeProcess: (args) => {
+          spawn = args;
+          return new FakeClaudeCodeProcess((message, child) => {
+            respondToInitializeRequest(message, child);
+          });
+        },
+      },
+    });
+    try {
+      await runtime.initializationResult();
+      const args = spawn!.args;
+      const settings = JSON.parse(args[args.indexOf("--settings") + 1]!) as {
+        permissions?: Record<string, unknown>;
+      };
+      expect(settings.permissions).toEqual({
+        blockReadsExemptPaths: [
+          path.resolve("/f5-probe/attachments"),
+          path.resolve("/f5-probe/claude/plans"),
+        ],
+        blockWritesOutsideWorkingDirectories: true,
+      });
+    } finally {
+      runtime.close();
+    }
+  });
+
+  it("keeps the internal Query.request that MCP App tool calls depend on", async () => {
+    let call: Record<string, unknown> | undefined;
+    const open = new AbortController();
+    const runtime = query({
+      prompt: openPrompt(open.signal),
+      options: {
+        persistSession: false,
+        spawnClaudeCodeProcess: () =>
+          new FakeClaudeCodeProcess((message, child) => {
+            if (respondToInitializeRequest(message, child)) return;
+            const request = message.request as Record<string, unknown> | undefined;
+            if (message.type === "control_request" && request?.subtype === "mcp_call") {
+              call = request;
+              child.emitJson({
+                type: "control_response",
+                response: {
+                  subtype: "success",
+                  request_id: message.request_id,
+                  response: { content: [{ type: "text", text: "app result" }] },
+                },
+              });
+            }
+          }),
+      },
+    });
+    try {
+      await runtime.initializationResult();
+      expect(typeof (runtime as unknown as { request?: unknown }).request).toBe("function");
+      const result = await callClaudeMcpAppTool({
+        query: runtime,
+        capabilities: new Set(["mcp_call_result_not_for_model_v1"]),
+        server: "apps",
+        tool: "show",
+        arguments: { id: 1 },
+      });
+      expect(call).toEqual({
+        subtype: "mcp_call",
+        tool: "mcp__apps__show",
+        arguments: { id: 1 },
+        result_not_for_model: true,
+      });
+      expect(result).toEqual({ content: [{ type: "text", text: "app result" }] });
+    } finally {
+      open.abort();
+      runtime.close();
+    }
+  });
 });

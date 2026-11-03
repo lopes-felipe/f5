@@ -6,6 +6,8 @@ export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 export const MCP_APP_EXTENSION_ID = "io.modelcontextprotocol/ui";
 export const MCP_APP_RESOURCE_SCHEME = "ui://";
 export const MCP_APP_OUTPUT_KEY = "t3McpApp";
+/** Providers whose adapters capture MCP Apps and route app tool calls/resource reads. */
+export const MCP_APP_PROVIDERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
 const MCP_APP_MIN_HEIGHT = 80;
 export const MCP_APP_DEFAULT_HEIGHT = 320;
@@ -38,6 +40,13 @@ export interface McpAppReference {
   readonly csp?: McpAppCsp;
   readonly permissions?: McpAppPermissions;
   readonly prefersBorder?: boolean;
+  /** Provider whose session captured the app. Absent on references captured before Claude apps (Codex). */
+  readonly provider?: string;
+}
+
+/** The provider that captured an app; references from before Claude apps were Codex's. */
+export function mcpAppReferenceProvider(reference: McpAppReference): string {
+  return reference.provider ?? "codex";
 }
 
 // Only scheme-qualified origins, optionally with a leading `*.` subdomain
@@ -122,6 +131,7 @@ export function readMcpAppReference(value: unknown): McpAppReference | undefined
     ...(csp === undefined ? {} : { csp }),
     ...(permissions === undefined ? {} : { permissions }),
     ...(typeof value.prefersBorder === "boolean" ? { prefersBorder: value.prefersBorder } : {}),
+    ...(boundedName(value.provider) === undefined ? {} : { provider: value.provider as string }),
   };
 }
 

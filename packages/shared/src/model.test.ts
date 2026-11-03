@@ -429,8 +429,9 @@ describe("Claude capability predicates", () => {
     expect(supportsClaudeUltrathinkKeyword("claude-opus-4-7")).toBe(true);
   });
 
-  it("enables Claude Opus 4.8 effort capabilities and Fast Mode", () => {
-    expect(supportsClaudeFastMode("claude-opus-4-8")).toBe(true);
+  it("enables Claude Opus 4.8 effort capabilities without built-in Fast Mode", () => {
+    // Deprecated by Anthropic (removed 2026-11-30); only an executable report enables it.
+    expect(supportsClaudeFastMode("claude-opus-4-8")).toBe(false);
     expect(supportsClaudeMaxEffort("claude-opus-4-8")).toBe(true);
     expect(supportsClaudeAdaptiveReasoning("claude-opus-4-8")).toBe(true);
     expect(supportsClaudeThinkingToggle("claude-opus-4-8")).toBe(false);

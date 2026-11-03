@@ -5,6 +5,8 @@ import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription
 import {
   MODEL_OPTIONS_BY_PROVIDER,
   type ClaudeSettings,
+  type ClaudeUsageAnalysis,
+  type ClaudeUsageAnalysisWindow,
   type ClaudeBuiltInModelSlug,
   type ModelCapabilities,
   type ModelSelection,
@@ -115,6 +117,20 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
   );
   if (!gate) return undefined;
   return `Claude Code v${version} is too old for ${gate.name}. Upgrade to v${gate.minVersion} or newer to access it.`;
+}
+
+/**
+ * Model gating for the version a live session reports (`claude_code_version`), which can
+ * differ from the probed `--version` (wrappers, PATH changes). Undefined when allowed.
+ */
+export function claudeSessionModelGateMessage(
+  model: string | null | undefined,
+  version: string | null | undefined,
+): string | undefined {
+  const slug = normalizeModelSlug(model, "claudeAgent");
+  if (!slug || !version || !isClaudeModelGatedOut(slug, version)) return undefined;
+  const gate = VERSION_GATED_CLAUDE_MODELS.find((candidate) => candidate.slug === slug)!;
+  return `This session runs Claude Code v${version}, which is too old for ${gate.name}. Upgrade to v${gate.minVersion} or newer.`;
 }
 
 function isClaudeModelGatedOut(
@@ -414,7 +430,12 @@ export function withClaudeProbeQuery<A>(
   use: (
     query: ReturnType<typeof claudeQuery>,
   ) => Promise<A> | Effect.Effect<A, AccountUsageReadError>,
-  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+  options: {
+    readonly createQuery?: typeof claudeQuery;
+    readonly cwd?: string;
+    /** Whole-operation budget; the default fits status probes. */
+    readonly timeoutMs?: number;
+  } = {},
 ) {
   return Effect.suspend(() => {
     const abort = new AbortController();
@@ -476,7 +497,7 @@ export function withClaudeProbeQuery<A>(
           if (!abort.signal.aborted) abort.abort();
         }),
       ),
-      Effect.timeoutOption(8_000),
+      Effect.timeoutOption(options.timeoutMs ?? 8_000),
       Effect.flatMap((result) =>
         Option.isSome(result)
           ? Effect.succeed(result.value)
@@ -485,6 +506,85 @@ export function withClaudeProbeQuery<A>(
     );
   });
 }
+
+export const CLAUDE_USAGE_ANALYSIS_TIMEOUT_MS = 60_000;
+
+function normalizeClaudeUsageAnalysisWindow(value: unknown): ClaudeUsageAnalysisWindow | null {
+  if (!value || typeof value !== "object") return null;
+  const window = value as Record<string, unknown>;
+  const count = (raw: unknown) =>
+    typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 0;
+  const pct = (raw: unknown) =>
+    typeof raw === "number" && Number.isFinite(raw) ? Math.min(100, Math.max(0, raw)) : 0;
+  const text = (raw: unknown) =>
+    typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : undefined;
+  const rows = (raw: unknown) =>
+    Array.isArray(raw)
+      ? raw.filter((row): row is Record<string, unknown> => !!row && typeof row === "object")
+      : [];
+  return {
+    requestCount: count(window.request_count),
+    sessionCount: count(window.session_count),
+    behaviors: rows(window.behaviors).flatMap((row) => {
+      const key = text(row.key);
+      return key ? [{ key, pct: pct(row.pct), count: count(row.count) }] : [];
+    }),
+    // `fix` is not offered: the account card has no session, and F5 owns effort.
+    recommendations: rows(window.recommendations).flatMap((row) => {
+      const key = text(row.key);
+      const title = text(row.title);
+      const detail = text(row.detail);
+      return key && title ? [{ key, pct: pct(row.pct), title, ...(detail ? { detail } : {}) }] : [];
+    }),
+  };
+}
+
+/** Reads `behaviors` from the experimental usage response; never its rate limits. */
+export function normalizeClaudeUsageAnalysis(
+  response: unknown,
+  analyzedAt: string,
+): ClaudeUsageAnalysis {
+  const behaviors =
+    response && typeof response === "object"
+      ? (response as { behaviors?: unknown }).behaviors
+      : undefined;
+  const windows =
+    behaviors && typeof behaviors === "object" ? (behaviors as Record<string, unknown>) : {};
+  return {
+    analyzedAt,
+    day: normalizeClaudeUsageAnalysisWindow(windows.day),
+    week: normalizeClaudeUsageAnalysisWindow(windows.week),
+  };
+}
+
+/**
+ * On-demand Analyze usage: the same experimental usage call as the account probe, but
+ * with the local transcript scan that fills `behaviors`, within a 60 s budget.
+ */
+export const analyzeClaudeUsage = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+) =>
+  withClaudeProbeQuery(
+    claudeSettings,
+    environment,
+    (q) =>
+      Effect.gen(function* () {
+        const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+        if (typeof read !== "function")
+          return yield* Effect.fail(new AccountUsageReadError("unsupported"));
+        const response = yield* Effect.tryPromise({
+          try: () => read.call(q, {}),
+          catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+        });
+        return normalizeClaudeUsageAnalysis(
+          response,
+          new Date(yield* Clock.currentTimeMillis).toISOString(),
+        );
+      }),
+    { ...options, timeoutMs: CLAUDE_USAGE_ANALYSIS_TIMEOUT_MS },
+  );
 
 export function claudeCapabilitiesFromInitialization(
   init: Awaited<ReturnType<ReturnType<typeof claudeQuery>["initializationResult"]>>,

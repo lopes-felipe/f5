@@ -116,6 +116,12 @@ Upstream Ports uses version 40. It adds the `upstreamPorts.*` methods (`listProj
 `upstreamPorts.changed` push channel, which carries invalidation only. Older clients have no
 Upstream page, so the bump only forces them to reload before calling the new methods.
 
+Claude Release 5 (Agent SDK 0.3.317) uses version 43. It adds `usage.analyzeClaudeUsage`
+(on-demand Analyze usage for one Claude instance), the optional `usageAnalysis` field on
+usage accounts, and the optional `latestCacheWrites` and observed `executableVersion` fields
+on session capability snapshots. Older clients could not decode the new fields or call the
+analysis, so the bump forces them to reload.
+
 Request scheduling and startup (performance Releases 1 and 2) ship together as version 42.
 Version 41 was reserved for Release 1 on its own and was never released, so no client or
 server speaks it.

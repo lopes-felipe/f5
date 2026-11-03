@@ -17,6 +17,7 @@ import { getReasoningEffortOptions } from "@t3tools/shared/model";
 
 import {
   checkClaudeProviderStatus,
+  claudeSessionModelGateMessage,
   getClaudeModelCapabilities,
   makePendingClaudeProvider,
   resolveClaudeApiModelId,
@@ -548,11 +549,12 @@ describe("getClaudeModelCapabilities", () => {
   });
 
   it("derives corrected Opus 4.x Fast Mode descriptors from shared metadata", () => {
+    // Opus 4.8 fast mode is deprecated (removed 2026-11-30); only an executable report enables it.
     expect(
       getClaudeModelCapabilities("claude-opus-4-8").optionDescriptors?.map(
         (descriptor) => descriptor.id,
       ),
-    ).toEqual(["effort", "fastMode", "contextWindow"]);
+    ).toEqual(["effort", "contextWindow"]);
     expect(
       getClaudeModelCapabilities("claude-opus-4-6").optionDescriptors?.map(
         (descriptor) => descriptor.id,
@@ -645,6 +647,19 @@ describe("current Claude catalog", () => {
       );
     }
     expect(snapshot.modelCatalog?.status).toBe("menu");
+  });
+  it("lists every gated model without an upgrade advisory on the bundled 2.1.317", async () => {
+    const snapshot = await runStatusForVersion("2.1.317");
+    for (const gate of VERSION_GATED_CLAUDE_MODELS)
+      expect(snapshot.models.find((model) => model.slug === gate.slug)?.isUnlisted).not.toBe(true);
+    expect(snapshot.message ?? "").not.toContain("too old");
+  });
+  it("warns a session whose observed runtime is older than its model needs", () => {
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.298")).toBe(
+      "This session runs Claude Code v2.1.298, which is too old for Claude Sonnet 5.5. Upgrade to v2.1.299 or newer.",
+    );
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", "2.1.317")).toBeUndefined();
+    expect(claudeSessionModelGateMessage("claude-sonnet-5-5", undefined)).toBeUndefined();
   });
   it("ignores unresolved bare aliases and formats resolved aliases", () => {
     expect(

@@ -57,6 +57,7 @@ export function resolveProviderOptionsForDispatch(input: {
         projectSettings.subagentModel,
         input.availableModels,
       ),
+      ...(projectSettings.subagentEffort ? { subagentEffort: projectSettings.subagentEffort } : {}),
       ...(launchArgs ? { launchArgs } : {}),
     },
   };

@@ -881,6 +881,33 @@ export function ProviderInstanceCard({
                     />
                   </label>
                 ))}
+                <label className="flex items-center justify-between gap-2 text-xs">
+                  <span>
+                    Confine file edits to the workspace (applies at next session start)
+                    <span className="block text-muted-foreground">
+                      Write, Edit and NotebookEdit refuse paths outside the working directories.
+                      Removes worktree switching; does not limit Bash.
+                    </span>
+                  </span>
+                  <Switch
+                    checked={
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
+                      "confineWritesToWorkspace" in instance.config &&
+                      instance.config.confineWritesToWorkspace === true
+                    }
+                    onCheckedChange={(value) =>
+                      onUpdate({
+                        ...instance,
+                        config: nextConfigBlobWithValue(
+                          instance.config,
+                          "confineWritesToWorkspace",
+                          value,
+                        ),
+                      })
+                    }
+                  />
+                </label>
                 <label className="block text-xs">
                   Auto-compact window (tokens; 0 uses the CLI default)
                   <input

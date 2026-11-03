@@ -1,4 +1,6 @@
 import type {
+  ClaudeUsageAnalysis,
+  UsageAnalyzeClaudeUsageInput,
   UsageConsumeResetCreditInput,
   UsageConsumeResetCreditResult,
   UsageGetAccountsInput,
@@ -35,6 +37,10 @@ export interface UsageServiceShape {
     input: UsageGetSummaryInput,
   ) => Effect.Effect<UsageSummary, ProjectionRepositoryError | UsageQueryError>;
   readonly getQuotaHistory: Effect.Effect<UsageQuotaHistory, UsageQueryError>;
+  /** Claude Analyze usage: single-flight per instance, sharing the account-probe permits. */
+  readonly analyzeClaudeUsage: (
+    input: UsageAnalyzeClaudeUsageInput,
+  ) => Effect.Effect<ClaudeUsageAnalysis, UsageQueryError>;
 }
 
 export class UsageService extends ServiceMap.Service<UsageService, UsageServiceShape>()(

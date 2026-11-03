@@ -148,6 +148,7 @@ describe("RPC method policy", () => {
         "mcp.startOAuthLogin",
         "prHub.analyzeAdvisories",
         "server.runProviderUpdate",
+        "usage.analyzeClaudeUsage",
         "worktrees.moveThread",
         "worktrees.resolveTransition",
         "worktrees.switchWorkspace",

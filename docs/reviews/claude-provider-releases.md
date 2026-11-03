@@ -1,11 +1,11 @@
 # Claude provider: implementation and release notes
 
 Contributor reference for the Claude adapter: SDK pinning, cost accounting, host instructions,
-Release 0–4 behavior and live-verification records. The user guide is [providers/claude.md](../providers/claude.md).
+Release 0–5 behavior and live-verification records. The user guide is [providers/claude.md](../providers/claude.md).
 
 ## Bundled runtime and models
 
-F5 pins Claude Agent SDK 0.3.295, which bundles Claude Code v2.1.295. Claude Fable 5.1
+F5 pins Claude Agent SDK 0.3.317, which bundles Claude Code v2.1.317. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
 F5 defaults `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, which
@@ -636,3 +636,115 @@ a resolved ID are skipped so capabilities cannot attach to the wrong release.
 Reported capabilities flow through the registry to pickers, workflow controls,
 interactive launch, and auxiliary text generation. Catalog retention never
 retains account email, subscription, or token-source identity.
+
+## Release 5: SDK 0.3.317
+
+Release 5 updates the bundled SDK from 0.3.295 to **0.3.317** and Claude Code from 2.1.295 to
+**2.1.317**. Sonnet 5.5 and Haiku 5.5 need 2.1.299+, so the bundled runtime no longer shows
+their upgrade advisory. Peer dependencies are unchanged (`@anthropic-ai/sdk >=0.93`,
+`@modelcontextprotocol/sdk ^1.29`, `zod ^4`). Wire protocol 43.
+
+### Declaration diff and audit
+
+- New message `system/session_writes_lost` (39 discriminators, classified canonical).
+- Hook matcher `onFailure`; the SDK refuses a session whose initialize reply lacks
+  `hook_on_failure_supported` (or reports `hooks_applied: false`) when any matcher blocks.
+- New `startup_failure_reason` values `sandbox_required_unavailable` and `initialize_not_first`.
+- Flag settings `permissions.blockReadsExemptPaths` and `blockWritesOutsideWorkingDirectories`.
+- AskUserQuestion `annotations[q].unanswered` (`ask_user_question_unanswered_v1`).
+- MCP Apps: tool `_meta.ui` in `mcpServerStatus()` (`mcp_tool_ui_meta_v1`),
+  `readMcpResource()` (`mcp_read_resource_v1`) and the `mcp_call` control request with
+  `result_not_for_model` (`mcp_call_result_not_for_model_v1`), which has no public wrapper.
+- `modelUsage` cache-write split, TaskCreate result `task.description`, Grep/Glob `timedOut`,
+  Cron `nextFireAt`, initialize `claude_code_version`, `CLAUDE_CODE_SUBAGENT_EFFORT`,
+  `idleCompaction`, and usage-analysis `recommendations`.
+
+The 2.1.317 executable changed its bundle banner, so the Claude in Chrome descriptor extractor
+accepts both banners. The `claude-chrome-darwin-arm64-2.1.317` record is generated (not yet
+certified) and the 2.1.295 record is withdrawn as superseded.
+
+### Adopted
+
+- **Fail-closed mandatory hook.** F5's PreToolUse matcher sets `onFailure: "block"` only for the
+  bundled executable or a custom one reporting 2.1.317+. The `claude --version` answer is cached
+  per runtime and script identity (resolved through links, so JavaScript entries sharing one Node
+  stay apart) for 10 minutes, and a failed probe for 1 minute; stdin is closed so wrappers cannot
+  stall it. Older executables keep the in-hook deny-on-error path. Tool names pass through
+  `LEGACY_TOOL_NAME_ALIASES` before policy checks, and a unit test keeps F5's policy tool names
+  inside `BUILTIN_TOOL_NAMES` (or a legacy alias of one). Verified live on 2026-11-03: the bundled
+  2.1.317 answers initialize with `hook_on_failure_supported: true`.
+- **`session_writes_lost`.** An actionable thread warning with `error_code` and `lost`. When the
+  bound session's transcript is lost, the resume cursor gets `transcriptIncomplete: true`; the
+  next start then recovers F5's prior-work summary first. The flag is one-shot: the start that
+  delivers the summary drops it from the cursor, so later starts resume without another paid
+  summary. A compact boundary also clears it.
+- **Startup failure reasons.** `sandbox_required_unavailable` and `initialize_not_first` get F5
+  guidance; neither is retried.
+- **Read exemptions and write confinement.** Every launch passes F5's attachments and plans
+  directories (as configured and resolved) in `blockReadsExemptPaths`. The opt-in
+  `confineWritesToWorkspace` instance setting maps to `blockWritesOutsideWorkingDirectories` and
+  joins the launch identity only when on; a thread's start options cannot override it.
+- **AskUserQuestion.** With the capability, a dismissed card answers every question
+  `dismissed` and a submit marks blank ones `skipped`. `replied_in_chat` is never sent.
+- **Tasks and tools.** TaskCreate prefers the result's `task.description`. Grep/Glob rows note a
+  time-limited search; CronCreate/CronList rows show the next run (local time). Fork
+  sub-agents render as "Fork".
+- **Sub-agent effort.** `subagentEffort` maps to `CLAUDE_CODE_SUBAGENT_EFFORT`; an operator value
+  wins, and the environment key changes only when it is set.
+- **Usage and context.** The runtime panel shows the observed runtime version (from
+  `system/init`) and the whole-tree 5-minute/1-hour cache writes from `modelUsage`, which never
+  feed token facts or cost. A session whose observed version is older than its model needs gets
+  a warning. **Analyze usage** (`usage.analyzeClaudeUsage`) runs the experimental usage call
+  without `skipBehaviors`: single-flight per instance, one of the two shared probe permits, a
+  60-second budget after the permit, cancelled with the instance, result kept in memory only
+  (`usageAnalysis` on the account). `fix` messages are not offered.
+- **MCP Apps (Codex parity).** Each `mcpServerStatus()` read (startup polling,
+  `commands_changed`, reconcile, or a stale catalog older than 30 s) rebuilds a per-session
+  catalog from tools' `_meta.ui`. A successful `mcp__<server>__<tool>` call whose tool declares a
+  bounded `ui://` resource is read with `readMcpResource`, snapshotted, and attached as `mcpApp`
+  plus `mcpAppBootstrap` (arguments and result, ≤ 192 KiB) to its `item.completed`. Captures
+  are capped at 8 overall and 4 per thread with a 10 s timeout; any failure leaves a plain row.
+  SDK-type servers are never captured. App tool calls use the Query's internal
+  `request({ subtype: "mcp_call", tool: "mcp__<server>__<tool>", arguments,
+result_not_for_model: true })` only when the session advertises
+  `mcp_call_result_not_for_model_v1` and `request` exists. They are never retried, and approval
+  rules match Codex. `ClaudeSdkContract.probe.test.ts` pins `Query.request` and the `mcp_call`
+  wire shape. App calls are cancelled with the RPC and capped at 55 s.
+  - Claude sanitizes server and tool names in `mcp__<server>__<tool>` (`claude.ai Figma` →
+    `claude_ai_Figma`), and a server name may contain `__`, so captures are matched against
+    each catalogued name (longest first). SDK calls use the configured names; `mcp_call` uses
+    the sanitized tool name.
+  - Each app reference records the capturing provider (older references were Codex's). After
+    a handoff, an app from the other provider can no longer call tools, and its saved model
+    context is not delivered. Claude turns now receive app model context after the user's text
+    (not for slash commands).
+  - Capture checks capability, function and caps before any catalog refresh, so CLIs that
+    cannot capture never wait on MCP status; the `commands_changed` refresh is forked in the
+    adapter scope.
+- **Compaction.** `nativeCompaction: false` also passes `idleCompaction: false`.
+
+### Not adopted
+
+Per-tool `permission_policy` on F5's SDK MCP servers (would double-prompt),
+`reloadPlugins({ addPlugins })` (plugin inventory stays read-only), `prewarm()`/`startup()`
+(alpha), `AgentDefinition.autoCompactWindow` (F5 passes no agents),
+`pending_elicitation_requests` (F5 never joins late), `property_order` (in-process elicitation
+keeps key order), and browser/bridge SDK changes. Built-in Opus 4.8 Fast Mode is dropped
+(deprecated, removed 2026-11-30); an executable report can still enable it until then.
+
+### Behavior changes absorbed
+
+Read's `file_unchanged` result is gone (F5 never read it). `thinking: disabled` runs adaptive
+thinking on models that cannot disable it. Hook `updatedInput` is validated (F5 never returns
+it). Fork sub-agents are on by default; `subagentsEnabled: false` already disallows `Agent`.
+Transcripts also record each request's system prompt, tools and parameters, so they grow faster
+under the 3,650-day retention.
+
+### Live verification status
+
+On 2026-11-03 the bundled 2.1.317 initialized in an isolated home: it reported
+`hook_on_failure_supported: true` and the initialize capabilities `ui_surface_v1` and
+`mcp_call_result_not_for_model_v1`. `test:claude:live` was not run: this environment has no
+authenticated Claude account. Sonnet 5.5/Haiku 5.5 answers, the `dismissed` annotation in a real
+tool result, the `system/init` capability set, and a real MCP App render and approved app call
+are **unverified here**.

@@ -86,6 +86,13 @@ export interface ProviderInstance {
     ProviderDriverError
   >;
   readonly accountUsage?: AccountUsageCapability;
+  /** Claude only: on-demand local usage scan, sharing the account-probe permits. */
+  readonly analyzeClaudeUsage?: (
+    permits: import("effect/Semaphore").Semaphore,
+  ) => Effect.Effect<
+    import("@t3tools/contracts").ClaudeUsageAnalysis,
+    import("../usage/accountUsageErrors.ts").AccountUsageReadError
+  >;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
   readonly invalidateModelCatalog?: Effect.Effect<void>;
   readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;

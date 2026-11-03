@@ -20,6 +20,14 @@ import { makeAccountHistoryRecorder } from "../accountHistory.ts";
 import { buildQuotaHistory, QUOTA_HISTORY_LOOKBACK_MS } from "../quotaHistory.ts";
 import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
+import type { AccountUsageErrorCode } from "@t3tools/contracts";
+
+const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
+  unsupported: "This Claude version cannot analyze usage.",
+  "authentication-required": "Sign in to Claude to analyze usage.",
+  timeout: "Usage analysis took longer than a minute and was stopped.",
+  "process-unavailable": "Claude could not run the usage analysis.",
+};
 import { planUsageBuckets, UsageTimeZoneError, type UsageBucketPlan } from "../usageBuckets.ts";
 import {
   aggregateUsageMetrics,
@@ -114,6 +122,22 @@ const make = Effect.gen(function* () {
         return result;
       }
       return { snapshot: yield* capability.getSnapshot, fresh: false };
+    });
+  const analyzeClaudeUsage: UsageServiceShape["analyzeClaudeUsage"] = (input) =>
+    Effect.gen(function* () {
+      const instance = yield* registry.getInstance(input.providerInstanceId);
+      if (!instance?.enabled || !instance.analyzeClaudeUsage)
+        return yield* new UsageQueryError({
+          message: "This account does not support usage analysis.",
+        });
+      return yield* instance.analyzeClaudeUsage(permits).pipe(
+        Effect.mapError(
+          (error) =>
+            new UsageQueryError({
+              message: CLAUDE_USAGE_ANALYSIS_ERRORS[error.code] ?? "Usage analysis failed.",
+            }),
+        ),
+      );
     });
   const consumeResetCredit: UsageServiceShape["consumeResetCredit"] = (input) =>
     Effect.gen(function* () {
@@ -271,6 +295,7 @@ const make = Effect.gen(function* () {
     consumeResetCredit,
     refreshAccount,
     getQuotaHistory,
+    analyzeClaudeUsage,
   } satisfies UsageServiceShape;
 });
 

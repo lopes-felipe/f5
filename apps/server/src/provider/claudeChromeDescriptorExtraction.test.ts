@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CHUNK_MARKER,
+  COPYRIGHT_CHUNK_MARKER,
   DescriptorAnchorError,
   bufferSource,
   extractClaudeChromeDescriptor,
@@ -92,6 +93,14 @@ describe("Claude in Chrome descriptor extraction", () => {
         },
       ],
     });
+  });
+
+  it("accepts the 2.1.317 copyright chunk banner", async () => {
+    const buffer = Buffer.from(
+      binary().toString("latin1").replaceAll(CHUNK_MARKER, COPYRIGHT_CHUNK_MARKER),
+      "latin1",
+    );
+    expect((await extractClaudeChromeDescriptor(bufferSource(buffer))).cliVersion).toBe("2.1.295");
   });
 
   it.each([

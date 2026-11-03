@@ -104,7 +104,7 @@ const fixture = Effect.gen(function* () {
     ),
   );
   let index = 0;
-  const capture = (resourceUri = "ui://weather/dashboard") =>
+  const capture = (resourceUri = "ui://weather/dashboard", provider?: string) =>
     Effect.gen(function* () {
       const activityId = `app-${index++}`;
       const reference = yield* snapshotMcpApp({
@@ -118,6 +118,7 @@ const fixture = Effect.gen(function* () {
         response: {
           contents: [{ uri: resourceUri, mimeType: MCP_APP_MIME_TYPE, text: "<p>Weather</p>" }],
         },
+        ...(provider ? { provider } : {}),
       });
       assert.isDefined(reference);
       yield* sql`INSERT INTO projection_thread_activities(activity_id,thread_id,turn_id,tone,kind,summary,payload_json,created_at) VALUES(${activityId},${threadId},NULL,'tool','mcpApp','Weather',${JSON.stringify({ reference })},${at})`;
@@ -300,6 +301,55 @@ it.effect("reserves the aggregate formatted context budget and escapes markup bo
       assert.isBelow(Buffer.byteLength(context), 256 * 1024);
       for (let index = 0; index < accepted; index++) assert.include(context, `"index":${index}`);
       assert.notInclude(context, '"index":8');
+    }),
+  ),
+);
+it.effect("authorizes app calls on Claude sessions and refuses providers without MCP Apps", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const app = yield* f.capture("ui://weather/claude", "claudeAgent");
+      const session = f.state.thread.session as { providerName: string };
+      session.providerName = "claudeAgent";
+      assert.equal((yield* f.service.toolInfo({ ...app, name: "forecast" })).readOnlyHint, false);
+      yield* f.service.callTool({
+        ...app,
+        name: "forecast",
+        arguments: {},
+        sessionIdentity: "session-1",
+        approved: true,
+      });
+      assert.equal(f.state.calls, 1);
+      session.providerName = "opencode";
+      assert.equal(
+        (yield* f.service.toolInfo({ ...app, name: "forecast" }).pipe(Effect.result))._tag,
+        "Failure",
+      );
+    }),
+  ),
+);
+it.effect("refuses an app captured under another provider after a handoff", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      // Captured before Claude apps existed: no provider recorded, so it was Codex's.
+      const codexApp = yield* f.capture();
+      const session = f.state.thread.session as { providerName: string };
+      session.providerName = "claudeAgent";
+      const refused = yield* f.service
+        .callTool({
+          ...codexApp,
+          name: "forecast",
+          arguments: {},
+          sessionIdentity: "session-1",
+          approved: true,
+        })
+        .pipe(Effect.flip);
+      assert.include(refused.message, "earlier provider session");
+      assert.equal(f.state.calls, 0);
+      // Its saved model context is not delivered to the Claude turn either.
+      session.providerName = "codex";
+      yield* f.service.updateModelContext({ ...codexApp, structuredContent: { from: "codex" } });
+      assert.include(yield* readMcpAppModelContext(threadId, "codex"), "codex");
+      assert.equal(yield* readMcpAppModelContext(threadId, "claudeAgent"), "");
     }),
   ),
 );

@@ -94,7 +94,7 @@ Codex app-server bump:
   revisions, spike outcomes and any unverified checks. Apply the wire-version policy
   when decoded browser shapes change.
 
-Audit research covers Claude SDK 0.2.113–0.3.295 and Codex 0.89.0–0.162.0. Earlier
+Audit research covers Claude SDK 0.2.113–0.3.317 and Codex 0.89.0–0.162.0. Earlier
 versions are checked only for a specifically retained behavior, and recorded explicitly.
 Release 0 keeps the browser queue contract and wire protocol unchanged; submission
 provenance is stamped and stored solely on the server.

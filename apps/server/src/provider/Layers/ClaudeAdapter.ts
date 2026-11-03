@@ -99,6 +99,19 @@ import {
   resolveClaudeLaunchAppendSystemPrompt,
 } from "../claudeAppendSystemPrompt.ts";
 import * as Path from "effect/Path";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
+import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
+import {
+  buildClaudeMcpAppCatalog,
+  callClaudeMcpAppTool,
+  CLAUDE_MCP_APP_UNAVAILABLE,
+  isClaudeMcpAppCatalogFresh,
+  readClaudeMcpAppToolResult,
+  resolveClaudeMcpAppTool,
+  type ClaudeMcpAppCatalog,
+} from "../claudeMcpApps.ts";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
  *
@@ -276,7 +289,7 @@ import {
   type EventNdjsonLogger,
   makeEventNdjsonLogger,
 } from "./EventNdjsonLogger.ts";
-import { resolveClaudeApiModelId } from "./ClaudeProvider.ts";
+import { claudeSessionModelGateMessage, resolveClaudeApiModelId } from "./ClaudeProvider.ts";
 import type { PreviewAutomationBrokerShape } from "../../mcp/PreviewAutomationBroker.ts";
 import { type AgentBrowserPolicy, DISABLED_AGENT_BROWSER_POLICY } from "../../mcp/browserAccess.ts";
 import {
@@ -297,9 +310,15 @@ import {
   makeClaudeComputerMcpServer,
 } from "./claudeAgentBrowser.ts";
 import {
+  isDefaultClaudeBinary,
   resolveClaudeSdkExecutableOptions,
   resolveBundledClaudeExecutable,
 } from "../claudeSdkExecutable.ts";
+import {
+  claudeHookOnFailureSupported,
+  readClaudeExecutableVersion,
+} from "../claudeExecutableVersion.ts";
+import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
 import {
   isUuid,
@@ -311,6 +330,8 @@ import {
 import { nextClaudeGoal, readClaudeGoal, type ClaudeNativeGoal } from "../claudeGoal.ts";
 
 const PROVIDER = "claudeAgent" as const;
+/** Upper bound for one MCP App tool call, below the client's 60 s request deadline. */
+const CLAUDE_MCP_APP_CALL_TIMEOUT_MS = 55_000;
 const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
@@ -552,6 +573,10 @@ interface ClaudeSessionContext {
   mcpStatusFiber?: Fiber.Fiber<void>;
   mcpStatusEmitted?: Map<string, string>;
   mcpObservationEpoch?: number;
+  /** MCP App tools by server, from the latest `mcpServerStatus()` read. */
+  mcpAppCatalog?: ClaudeMcpAppCatalog;
+  /** App session identity; a new MCP observation epoch invalidates approvals. */
+  mcpAppIdentity?: { readonly epoch: number; readonly id: string };
   readonly internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]>;
   readonly turns: Array<{
     id: TurnId;
@@ -569,6 +594,14 @@ interface ClaudeSessionContext {
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
   resumeLatest: boolean;
+  /** Claude lost transcript writes for the bound session; resumes add F5's summary. */
+  transcriptIncomplete: boolean;
+  /** `system/init.capabilities` of the running CLI, for feature detection. */
+  initCapabilities: ReadonlySet<string>;
+  /** `claude_code_version` the running CLI reported in `system/init`. */
+  observedCliVersion?: string | undefined;
+  /** Whole-tree cache-write split from the latest result's `modelUsage` (display only). */
+  latestCacheWrites?: { ephemeral5mInputTokens: number; ephemeral1hInputTokens: number };
   lastThreadStartedId: string | undefined;
   configuredBase: Record<string, unknown>;
   /**
@@ -1053,11 +1086,112 @@ function resultErrorsText(result: SDKResultMessage): string {
     : "";
 }
 
+/**
+ * 5-minute/1-hour cache-write split summed over `result.modelUsage`. These are SDK
+ * whole-agent-tree session figures for display; they never feed F5 token facts or cost.
+ * Undefined when no model reported the split (CLIs before 2.1.317).
+ */
+export function readClaudeCacheWriteSplit(
+  modelUsage: unknown,
+): { ephemeral5mInputTokens: number; ephemeral1hInputTokens: number } | undefined {
+  const models = asUnknownRecord(modelUsage);
+  if (!models) return undefined;
+  let reported = false;
+  let ephemeral5mInputTokens = 0;
+  let ephemeral1hInputTokens = 0;
+  for (const value of Object.values(models)) {
+    const usage = asUnknownRecord(value);
+    const fiveMinutes = usage?.cacheCreationEphemeral5mInputTokens;
+    const oneHour = usage?.cacheCreationEphemeral1hInputTokens;
+    if (typeof fiveMinutes === "number" && Number.isFinite(fiveMinutes) && fiveMinutes >= 0) {
+      reported = true;
+      ephemeral5mInputTokens += fiveMinutes;
+    }
+    if (typeof oneHour === "number" && Number.isFinite(oneHour) && oneHour >= 0) {
+      reported = true;
+      ephemeral1hInputTokens += oneHour;
+    }
+  }
+  return reported
+    ? {
+        ephemeral5mInputTokens: Math.round(ephemeral5mInputTokens),
+        ephemeral1hInputTokens: Math.round(ephemeral1hInputTokens),
+      }
+    : undefined;
+}
+
+export const CLAUDE_SEARCH_TIMED_OUT_NOTE = "Search stopped at time limit; more matches may exist";
+
+/**
+ * A short note from a tool's structured result for its completed row: Grep/Glob that hit
+ * the time limit, and the next run of a CronCreate/CronList job (local absolute time).
+ */
+export function claudeToolResultNote(
+  toolName: string,
+  structuredOutput: unknown,
+  formatTime: (epochMs: number) => string = (epochMs) => new Date(epochMs).toLocaleString(),
+): string | undefined {
+  const output = asUnknownRecord(structuredOutput);
+  if (!output) return undefined;
+  if ((toolName === "Grep" || toolName === "Glob") && output.timedOut === true)
+    return CLAUDE_SEARCH_TIMED_OUT_NOTE;
+  const fireTimes =
+    toolName === "CronCreate"
+      ? [output.nextFireAt]
+      : toolName === "CronList" && Array.isArray(output.jobs)
+        ? output.jobs.map((job) => asUnknownRecord(job)?.nextFireAt)
+        : [];
+  const next = fireTimes
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    .reduce<number | undefined>((soonest, value) => Math.min(soonest ?? value, value), undefined);
+  return next === undefined ? undefined : `Next run: ${formatTime(next)}`;
+}
+
+/**
+ * `annotations[question].unanswered` for an AskUserQuestion answer, sent only to a CLI
+ * advertising `ask_user_question_unanswered_v1` (older strict hosts refuse the whole
+ * answer). Empty answers mean the card was dismissed; a submit marks blank questions
+ * skipped. F5 never closes a blocking question from chat, so `replied_in_chat` is unused.
+ */
+export function claudeAskUserQuestionAnnotations(
+  questionIds: ReadonlyArray<string>,
+  answers: Readonly<Record<string, string>>,
+  supported: boolean,
+): Record<string, { unanswered: "skipped" | "dismissed" }> | undefined {
+  if (!supported) return undefined;
+  const answered = (id: string) => (answers[id] ?? "").trim().length > 0;
+  const dismissed = !questionIds.some(answered);
+  const entries = questionIds
+    .filter((id) => !answered(id))
+    .map((id) => [id, { unanswered: dismissed ? "dismissed" : "skipped" }] as const);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * F5 guidance for startup failures whose fix lives in F5's launch setup. Other reasons
+ * keep Claude's own message. None of these are retried: the same launch fails again.
+ */
+const CLAUDE_STARTUP_FAILURE_MESSAGES: Partial<Record<string, string>> = {
+  sandbox_required_unavailable:
+    "Claude requires a working sandbox here; install it or change the requirement.",
+  initialize_not_first:
+    "A wrapper between F5 and Claude altered startup; check custom launch arguments/executable.",
+};
+
+export function claudeStartupFailureMessage(result: SDKResultMessage): string | undefined {
+  if (result.subtype !== "error_during_execution") return undefined;
+  const reason = (result as { startup_failure_reason?: unknown }).startup_failure_reason;
+  return typeof reason === "string" ? CLAUDE_STARTUP_FAILURE_MESSAGES[reason] : undefined;
+}
+
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
   if (result.subtype === "success" || !Array.isArray(result.errors)) {
     return undefined;
   }
-  return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
+  return (
+    claudeStartupFailureMessage(result) ??
+    result.errors.find((error) => !error.startsWith("[ede_diagnostic]"))
+  );
 }
 
 function isInterruptedResult(result: SDKResultMessage): boolean {
@@ -1082,6 +1216,8 @@ function isInterruptedResult(result: SDKResultMessage): boolean {
 
 const CLAUDE_CONTEXT_WINDOW_FULL_ERROR =
   "Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
+export const CLAUDE_SESSION_WRITES_LOST_WARNING =
+  "Claude could not save part of this conversation (disk full/quota). Resuming may miss recent messages.";
 
 function asRuntimeItemId(value: string): RuntimeItemId {
   return RuntimeItemId.makeUnsafe(value);
@@ -1802,7 +1938,12 @@ const CLAUDE_SETTING_SOURCES = [
 ] as const satisfies ReadonlyArray<SettingSource>;
 
 export function buildClaudeQueryEnv(
-  providerOptions: { readonly subagentModel?: string | undefined } | undefined,
+  providerOptions:
+    | {
+        readonly subagentModel?: string | undefined;
+        readonly subagentEffort?: string | undefined;
+      }
+    | undefined,
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   // In SDK mode ENABLE_TODO_TOOLS is the master switch for task tracking and
@@ -1815,10 +1956,15 @@ export function buildClaudeQueryEnv(
       ([key]) => !key.toUpperCase().startsWith("F5_PREVIEW_MCP_TOKEN"),
     ),
   );
+  const subagentEffort = normalizeOptionalString(providerOptions?.subagentEffort);
   const taskEnvironment = {
     CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
     CLAUDE_CODE_ENABLE_TODO_TOOLS: environment.CLAUDE_CODE_ENABLE_TODO_TOOLS ?? "1",
     CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "1",
+    // Without it, a sub-agent on another model runs at that model's default effort.
+    ...(subagentEffort
+      ? { CLAUDE_CODE_SUBAGENT_EFFORT: environment.CLAUDE_CODE_SUBAGENT_EFFORT ?? subagentEffort }
+      : {}),
   };
   const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
   if (!rawSubagentModel) {
@@ -1892,14 +2038,19 @@ function buildPromptText(
   );
   // Claude Code slash commands must remain the leading prompt text so the CLI
   // can recognize them before normal model dispatch.
-  const runtimeContext = userPrompt.startsWith("/")
+  const slashCommand = userPrompt.startsWith("/");
+  const runtimeContext = slashCommand
     ? undefined
     : buildClaudeTurnRuntimeContext(options.activeModel, {
         includeFileEditingReminder: options.allowsWorkspaceEdits,
       });
+  // MCP App model context follows the user's text, as for Codex; a slash command would
+  // read it as arguments, so it waits for the next ordinary turn.
+  const prompt =
+    input.mcpAppContext && !slashCommand ? `${userPrompt}${input.mcpAppContext}` : userPrompt;
   return (
     appendProviderAttachmentRuntimeContext(
-      runtimeContext ? `${runtimeContext}\n\n${userPrompt}` : userPrompt,
+      runtimeContext ? `${runtimeContext}\n\n${prompt}` : prompt,
       input.resolvedAttachments ?? [],
     ) ?? ""
   );
@@ -2439,6 +2590,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
     const toolSearchPath = yield* Path.Path;
+    // MCP App snapshots are stored as activity attachments (Codex parity); without SQL
+    // (some tests) completed app tools stay ordinary tool rows.
+    const appSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    // Codex's caps: 8 captures in flight, 4 per thread, each bounded to 10 s.
+    let mcpAppCaptureCount = 0;
+    const mcpAppCaptures = new Map<ThreadId, number>();
     const serverConfig = yield* ServerConfig;
     const reportedCapabilitiesFor = (
       model: string | undefined,
@@ -2751,8 +2908,126 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         result.epoch !== (context.mcpObservationEpoch ?? 0)
       )
         throw new Error("The MCP observation was superseded.");
+      // Every status read (startup polling, reconcile, commands_changed) refreshes the
+      // MCP App catalog from the tools' `_meta.ui`.
+      context.mcpAppCatalog = buildClaudeMcpAppCatalog(result.statuses, epoch, Date.now());
       return result.statuses;
     };
+
+    /** The live catalog, re-read when stale or after an MCP change. */
+    const readMcpAppCatalog = async (context: ClaudeSessionContext) => {
+      if (
+        !isClaudeMcpAppCatalogFresh(
+          context.mcpAppCatalog,
+          context.mcpObservationEpoch ?? 0,
+          Date.now(),
+        )
+      )
+        await readMcpStatus(context);
+      return context.mcpAppCatalog!;
+    };
+
+    const mcpAppSessionIdentity = (context: ClaudeSessionContext) => {
+      const epoch = context.mcpObservationEpoch ?? 0;
+      if (context.mcpAppIdentity?.epoch !== epoch)
+        context.mcpAppIdentity = { epoch, id: randomUUID() };
+      return context.mcpAppIdentity.id;
+    };
+
+    /**
+     * Codex-parity MCP App capture for a successful `mcp__<server>__<tool>` call: read the
+     * tool's `ui://` resource, snapshot it as an activity attachment, and return the
+     * `mcpApp`/`mcpAppBootstrap` data for its `item.completed`. Any failure, cap or
+     * missing capability leaves an ordinary tool row.
+     */
+    const captureClaudeMcpApp = (
+      context: ClaudeSessionContext,
+      tool: ToolInFlight,
+      structuredOutput: unknown,
+      resultBlock: unknown,
+      activityId: string,
+    ) =>
+      Effect.gen(function* () {
+        const query = context.query as ClaudeQueryRuntime & {
+          readonly readMcpResource?: (server: string, uri: string) => Promise<unknown>;
+        };
+        const threadId = context.session.threadId;
+        // Cheap checks first: a CLI that cannot capture, or a full cap, never waits on MCP status.
+        if (
+          Option.isNone(appSql) ||
+          !tool.toolName.startsWith("mcp__") ||
+          !context.initCapabilities.has("mcp_read_resource_v1") ||
+          typeof query.readMcpResource !== "function" ||
+          mcpAppCaptureCount >= 8 ||
+          (mcpAppCaptures.get(threadId) ?? 0) >= 4
+        )
+          return undefined;
+        // A server that connected after startup polling is picked up by a stale-catalog
+        // re-read (at most once per catalog age) rather than missed.
+        const catalog = !isClaudeMcpAppCatalogFresh(
+          context.mcpAppCatalog,
+          context.mcpObservationEpoch ?? 0,
+          Date.now(),
+        )
+          ? yield* Effect.tryPromise(() => readMcpAppCatalog(context)).pipe(
+              Effect.orElseSucceed(() => context.mcpAppCatalog),
+            )
+          : context.mcpAppCatalog;
+        const target = resolveClaudeMcpAppTool(catalog, tool.toolName);
+        // The caps are re-checked: another capture may have started during the refresh.
+        if (!target || mcpAppCaptureCount >= 8 || (mcpAppCaptures.get(threadId) ?? 0) >= 4)
+          return undefined;
+        const result = readClaudeMcpAppToolResult(
+          structuredOutput,
+          asUnknownRecord(resultBlock)?.content,
+        );
+        const bootstrapJson = result
+          ? stringifyWithinBytes({ arguments: tool.input, result }, 192 * 1024)
+          : undefined;
+        if (!bootstrapJson) return undefined;
+        mcpAppCaptureCount += 1;
+        mcpAppCaptures.set(threadId, (mcpAppCaptures.get(threadId) ?? 0) + 1);
+        const reference = yield* Effect.tryPromise(() =>
+          query.readMcpResource!(target.server, target.resourceUri),
+        ).pipe(
+          Effect.flatMap((response) =>
+            snapshotMcpApp({
+              attachmentsDir: serverConfig.attachmentsDir,
+              threadId,
+              activityId,
+              itemKey: `mcp-app:${tool.itemId}`,
+              server: target.server,
+              tool: target.tool,
+              resourceUri: target.resourceUri,
+              response,
+              provider: PROVIDER,
+            }),
+          ),
+          Effect.provideService(SqlClient.SqlClient, appSql.value),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, toolSearchPath),
+          Effect.timeout("10 seconds"),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(undefined),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              mcpAppCaptureCount -= 1;
+              const pending = (mcpAppCaptures.get(threadId) ?? 1) - 1;
+              if (pending > 0) mcpAppCaptures.set(threadId, pending);
+              else mcpAppCaptures.delete(threadId);
+            }),
+          ),
+        );
+        return reference
+          ? {
+              mcpApp: reference,
+              // Configured names: Claude's tool name carries sanitized ones.
+              mcpAppTool: { server: target.server, tool: target.tool },
+              mcpAppBootstrap: JSON.parse(bootstrapJson) as Record<string, unknown>,
+            }
+          : undefined;
+      });
 
     const emitMcpStatuses = (
       context: ClaudeSessionContext,
@@ -3327,6 +3602,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           ...(context.resumeLatest ? { resumeLatest: true } : {}),
+          ...(context.transcriptIncomplete ? { transcriptIncomplete: true } : {}),
           nativeGoal: context.nativeGoal,
           turnCount: context.turns.length,
           turnBoundaries: context.turnBoundaries.slice(-200),
@@ -4123,6 +4399,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           status !== "completed" && Object.keys(result?.modelUsage ?? {}).length === 0
             ? (lastSegmentResult?.modelUsage ?? result?.modelUsage)
             : result?.modelUsage;
+        const cacheWrites = readClaudeCacheWriteSplit(modelUsage);
+        if (cacheWrites) context.latestCacheWrites = cacheWrites;
         // Close admission before publishing the terminal event: its consumers
         // may immediately try to dispatch a queued prompt.
         if (status !== "completed") context.retiring = true;
@@ -4996,7 +5274,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
           }
 
+          const resultNote = completion.semanticSuccess
+            ? claudeToolResultNote(tool.toolName, completion.structuredOutput)
+            : undefined;
+          const completedDetail = [tool.detail, resultNote].filter(Boolean).join(" · ");
           const completedStamp = yield* makeEventStamp(context);
+          // Ingestion files the app under `${eventId}:mcp-app`; the snapshot must match it.
+          const mcpAppData = completion.semanticSuccess
+            ? yield* captureClaudeMcpApp(
+                context,
+                tool,
+                completion.structuredOutput,
+                toolResult.block,
+                `${completedStamp.eventId}:mcp-app`,
+              )
+            : undefined;
           yield* offerRuntimeEvent({
             type: "item.completed",
             ...completedStamp,
@@ -5010,9 +5302,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               itemType: tool.itemType,
               status: itemStatus,
               title: tool.title,
-              ...(tool.detail ? { detail: tool.detail } : {}),
+              ...(completedDetail ? { detail: completedDetail } : {}),
               ...(tool.requestKind ? { requestKind: tool.requestKind } : {}),
-              data: toolData,
+              data: mcpAppData ? { ...toolData, ...mcpAppData } : toolData,
               completion,
             },
             providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
@@ -5543,6 +5835,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.availableSlashCommands = normalizedCommands;
             context.supportedCommandsFingerprint = fingerprint;
             yield* emitSessionConfigured(context, context.configuredBase);
+            // A plugin or MCP change can add or remove app tools.
+            if (context.query.mcpServerStatus)
+              yield* Effect.tryPromise(() => readMcpStatus(context)).pipe(
+                Effect.ignore,
+                Effect.forkIn(adapterScope),
+              );
             return;
           }
           case "vcs_state_changed":
@@ -5612,6 +5910,38 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           }
+          case "session_writes_lost": {
+            const lost = Array.isArray(rawMessage.lost)
+              ? rawMessage.lost.filter((entry): entry is string => typeof entry === "string")
+              : [];
+            const errorCode = normalizeOptionalString(rawMessage.error_code);
+            const boundSessionId =
+              context.resumeSessionId ?? normalizeOptionalString(rawMessage.session_id);
+            const lostSessionIds = Array.isArray(rawMessage.transcript_session_ids)
+              ? rawMessage.transcript_session_ids
+              : [rawMessage.session_id];
+            if (
+              lost.includes("transcript") &&
+              boundSessionId !== undefined &&
+              lostSessionIds.includes(boundSessionId) &&
+              !context.transcriptIncomplete
+            ) {
+              context.transcriptIncomplete = true;
+              yield* updateResumeCursor(context);
+            }
+            yield* emitRuntimeWarning(context, CLAUDE_SESSION_WRITES_LOST_WARNING, {
+              category: "provider",
+              actionable: true,
+              detail: {
+                ...(errorCode ? { error_code: errorCode } : {}),
+                lost,
+                ...(Array.isArray(rawMessage.transcript_session_ids)
+                  ? { transcript_session_ids: rawMessage.transcript_session_ids }
+                  : {}),
+              },
+            });
+            return;
+          }
           case "notification": {
             const priority = normalizeOptionalString(rawMessage.priority);
             const text = normalizeOptionalString(rawMessage.text);
@@ -5632,6 +5962,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "init":
             {
               const previousModel = getClaudeSessionModel(context);
+              const capabilities = (message as { capabilities?: unknown }).capabilities;
+              context.initCapabilities = new Set(
+                Array.isArray(capabilities)
+                  ? capabilities.filter((entry): entry is string => typeof entry === "string")
+                  : [],
+              );
+              const observedVersion = normalizeOptionalString(
+                (message as { claude_code_version?: unknown }).claude_code_version,
+              );
+              if (observedVersion && observedVersion !== context.observedCliVersion) {
+                context.observedCliVersion = observedVersion;
+                // The probed `--version` can differ from the process that runs turns.
+                const gate = claudeSessionModelGateMessage(
+                  normalizeOptionalString(message.model),
+                  observedVersion,
+                );
+                if (gate) yield* emitRuntimeWarning(context, gate, { category: "provider" });
+              }
               yield* emitMcpStatuses(context, message.mcp_servers ?? []);
               context.configuredBase = message as Record<string, unknown>;
               const configuredModel = getClaudeSessionModel(context);
@@ -5667,6 +6015,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.compactionRecommendationEmitted = false;
             context.lastAssistantUuid = undefined;
             context.resumeLatest = true;
+            // Resume starts at the new boundary, so earlier lost lines no longer matter;
+            // a lost boundary write reports session_writes_lost again.
+            context.transcriptIncomplete = false;
             delete context.queryOptions.resumeSessionAt;
             if (context.nativeControl) context.nativeControl.compacted = true;
             yield* updateResumeCursor(context);
@@ -7296,6 +7647,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           enableFileCheckpointing: options?.oneOffProviderOptions?.enableFileCheckpointing,
           nativeCompaction: options?.oneOffProviderOptions?.nativeCompaction,
           ...input.providerOptions?.claudeAgent,
+          // Instance-only: a thread's start options can never loosen write confinement, which
+          // also keeps the launch identity truthful.
+          confineWritesToWorkspace: options?.oneOffProviderOptions?.confineWritesToWorkspace,
         };
 
         /**
@@ -7442,11 +7796,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 Array.isArray(value) ? value.join(", ") : String(value ?? ""),
               ]),
             );
+            const annotations = claudeAskUserQuestionAnnotations(
+              questions.map((question) => question.id),
+              sdkAnswers,
+              context.initCapabilities.has("ask_user_question_unanswered_v1"),
+            );
             return {
               behavior: "allow",
               updatedInput: {
                 questions: toolInput.questions,
                 answers: sdkAnswers,
+                ...(annotations ? { annotations } : {}),
               },
             } satisfies PermissionResult;
           });
@@ -8195,6 +8555,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(providerOptions?.autoCompactWindow
             ? { autoCompactWindow: providerOptions.autoCompactWindow }
             : {}),
+          // With F5's compaction in charge, Claude must not compact behind F5's summaries.
+          ...(providerOptions?.nativeCompaction === false ? { idleCompaction: false } : {}),
+          permissions: buildClaudeFlagPermissions({
+            readExemptDirectories: [serverConfig.attachmentsDir, plansDirectory],
+            confineWritesToWorkspace: providerOptions?.confineWritesToWorkspace === true,
+          }),
           ...claudeRuntimeSettings({
             fastMode,
             ...(typeof thinking === "boolean" ? { thinking } : {}),
@@ -8276,6 +8642,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               cause,
             }),
         });
+        const customBinaryPath = isDefaultClaudeBinary(providerOptions?.binaryPath)
+          ? undefined
+          : providerOptions?.binaryPath?.trim();
+        const hookFailClosed = claudeHookOnFailureSupported(
+          customBinaryPath,
+          customBinaryPath
+            ? yield* Effect.promise(() =>
+                readClaudeExecutableVersion(customBinaryPath, queryEnvironment, input.cwd),
+              )
+            : undefined,
+        );
         const processDiagnostics = { stderrTail: "" };
         const recordStderr = (data: string) => {
           processDiagnostics.stderrTail = appendClaudeStderrTail(
@@ -8356,6 +8733,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 );
               },
               plansDirectory,
+              failClosed: hookFailClosed,
             },
             undefined,
             async (hook, signal) => {
@@ -8722,6 +9100,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           turnState: undefined,
           lastAssistantUuid: resumeState?.resumeLatest ? undefined : resumeState?.resumeSessionAt,
           resumeLatest: resumeState?.resumeLatest ?? false,
+          // Only the transcript that lost lines is incomplete; a new or forked session starts clean.
+          transcriptIncomplete:
+            newSessionId === undefined && resumeState?.transcriptIncomplete === true,
+          initCapabilities: new Set<string>(),
           lastThreadStartedId: undefined,
           configuredBase,
           interruptedTurnIds: new Set<TurnId>(),
@@ -9586,6 +9968,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           fileCheckpointing:
             context.queryOptions.enableFileCheckpointing === true && !!context.query.rewindFiles,
           childTaskStop: !!context.query.stopTask,
+          ...(context.observedCliVersion ? { executableVersion: context.observedCliVersion } : {}),
+          ...(context.latestCacheWrites ? { latestCacheWrites: context.latestCacheWrites } : {}),
         };
         if (context.slashCommandsLoaded)
           return { outcome: "discovered", nativeCommands: true, ...native };
@@ -10052,12 +10436,108 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       ).pipe(Effect.tap(() => Queue.shutdown(runtimeEventQueue))),
     );
 
+    const mcpAppRequest = <A>(
+      threadId: ThreadId,
+      method: string,
+      run: (context: ClaudeSessionContext, signal: AbortSignal) => Promise<A>,
+    ) =>
+      requireSession(threadId).pipe(
+        Effect.flatMap((context) =>
+          Effect.tryPromise({
+            // Interrupting the request (RPC cancel or deadline) aborts the control request.
+            try: (signal) => run(context, signal),
+            catch: (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method,
+                detail: toMessage(cause, "The MCP app request failed."),
+              }),
+          }),
+        ),
+      );
+    const appToolsFor = (catalog: ClaudeMcpAppCatalog, server: string) =>
+      catalog.sdkServers.has(server)
+        ? []
+        : [...(catalog.servers.get(server)?.values() ?? [])].map(
+            ({ resourceUri: _uri, visibility: _visibility, ...tool }) => tool,
+          );
+    const mcpApps: NonNullable<ClaudeAdapterShape["mcpApps"]> = {
+      identity: (threadId) => requireSession(threadId).pipe(Effect.map(mcpAppSessionIdentity)),
+      listTools: ({ threadId, server }) =>
+        mcpAppRequest(threadId, "mcpServerStatus", async (context) =>
+          appToolsFor(await readMcpAppCatalog(context), server),
+        ),
+      // Mirrors Codex's checks; McpAppService bounds arguments (64 KiB) and responses (256 KiB).
+      callTool: ({ threadId, server, tool, arguments: args, sessionIdentity, approved }) =>
+        mcpAppRequest(threadId, "mcp_call", async (context, signal) => {
+          if (!server.trim() || server.length > 256 || !tool.trim() || tool.length > 256)
+            throw new Error("Invalid MCP app tool request.");
+          if (mcpAppSessionIdentity(context) !== sessionIdentity)
+            throw new Error("The MCP app session changed before approval was used.");
+          const query = context.query;
+          const policy = findMcpAppToolPolicy(
+            appToolsFor(await readMcpAppCatalog(context), server),
+            tool,
+          );
+          if (!policy || (!approved && !policy.readOnlyHint))
+            throw new Error("The MCP app tool needs approval or is unavailable.");
+          if (
+            context.stopped ||
+            context.query !== query ||
+            mcpAppSessionIdentity(context) !== sessionIdentity
+          )
+            throw new Error("The MCP app session changed before dispatch.");
+          // A CLI that never answers must not leave the call pending after the app gives up.
+          const deadline = AbortSignal.timeout(CLAUDE_MCP_APP_CALL_TIMEOUT_MS);
+          const result = await callClaudeMcpAppTool({
+            query,
+            capabilities: context.initCapabilities,
+            server,
+            tool,
+            arguments: args,
+            signal: AbortSignal.any([signal, deadline]),
+          }).catch((cause: unknown) => {
+            if (deadline.aborted)
+              throw new Error(
+                "The MCP app tool did not answer in time; its outcome is unknown. Do not retry automatically.",
+              );
+            throw cause;
+          });
+          if (context.stopped || context.query !== query)
+            throw new Error(
+              "The MCP app session changed; the tool outcome is unknown. Do not retry automatically.",
+            );
+          return result;
+        }),
+      readResource: ({ threadId, server, uri }) =>
+        mcpAppRequest(threadId, "mcp_read_resource", async (context) => {
+          if (
+            !server.trim() ||
+            server.length > 256 ||
+            !uri.startsWith("ui://") ||
+            uri.length > 4096
+          )
+            throw new Error("Invalid MCP app resource request.");
+          const query = context.query as ClaudeQueryRuntime & {
+            readonly readMcpResource?: (server: string, uri: string) => Promise<unknown>;
+          };
+          if (
+            context.mcpAppCatalog?.sdkServers.has(server) ||
+            !context.initCapabilities.has("mcp_read_resource_v1") ||
+            typeof query.readMcpResource !== "function"
+          )
+            throw new Error(CLAUDE_MCP_APP_UNAVAILABLE);
+          return await query.readMcpResource(server, uri);
+        }),
+    };
+
     return {
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      mcpApps,
       executeNativeOperation,
       reconcileNativeOperation,
       inspectNativeOperation,

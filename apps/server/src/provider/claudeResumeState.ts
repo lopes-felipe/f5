@@ -14,6 +14,8 @@ export interface ClaudeResumeState {
   readonly resume?: string;
   readonly resumeSessionAt?: string;
   readonly resumeLatest?: boolean;
+  /** Claude reported lost transcript writes (disk full/quota) for this session. */
+  readonly transcriptIncomplete?: boolean;
   readonly turnCount?: number;
   readonly lastTotalCostUsd?: number;
   readonly baseContextChars?: number;
@@ -47,6 +49,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     threadId?: unknown;
     resumeSessionAt?: unknown;
     resumeLatest?: unknown;
+    transcriptIncomplete?: unknown;
     turnCount?: unknown;
     lastTotalCostUsd?: unknown;
     baseContextChars?: unknown;
@@ -112,6 +115,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),
     ...(cursor.resumeLatest === true ? { resumeLatest: true } : {}),
+    ...(cursor.transcriptIncomplete === true ? { transcriptIncomplete: true } : {}),
     ...(turnCount !== undefined ? { turnCount } : {}),
     ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
     ...(baseContextChars !== undefined ? { baseContextChars } : {}),

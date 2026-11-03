@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { Effect, Option, Schema, SchemaTransformation } from "effect";
 import {
+  CLAUDE_SUBAGENT_EFFORT_OPTIONS,
+  type ClaudeSubagentEffort,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
   PROJECT_LIST_ENTRIES_MAX_LIMIT,
@@ -155,8 +157,16 @@ const ClaudeProjectSettingsSchema = Schema.Struct({
   subagentModel: Schema.String.check(Schema.isMaxLength(MAX_CUSTOM_MODEL_LENGTH)).pipe(
     Schema.withConstructorDefault(() => Option.some(CLAUDE_SUBAGENT_MODEL_INHERIT)),
   ),
+  /** Absent keeps Claude's default (a sub-agent on another model uses that model's effort). */
+  subagentEffort: Schema.optionalKey(Schema.Literals(CLAUDE_SUBAGENT_EFFORT_OPTIONS)),
 });
 export type ClaudeProjectSettings = typeof ClaudeProjectSettingsSchema.Type;
+/** A sub-agent settings change; `subagentEffort: undefined` returns to Claude's default. */
+export interface ClaudeSubagentSettingsPatch {
+  readonly subagentsEnabled?: boolean;
+  readonly subagentModel?: string;
+  readonly subagentEffort?: ClaudeSubagentEffort | undefined;
+}
 
 const FavoriteModelSchema = Schema.Struct({
   providerKind: ProviderKindSchema,
@@ -720,6 +730,12 @@ function normalizeClaudeSubagentModel(value: string | null | undefined): string 
   return trimmed;
 }
 
+function claudeSubagentEffortEntry(value: unknown): { subagentEffort?: ClaudeSubagentEffort } {
+  return (CLAUDE_SUBAGENT_EFFORT_OPTIONS as ReadonlyArray<unknown>).includes(value)
+    ? { subagentEffort: value as ClaudeSubagentEffort }
+    : {};
+}
+
 function normalizeClaudeProjectSettingsRecord(
   value: Record<string, ClaudeProjectSettings>,
 ): Record<string, ClaudeProjectSettings> {
@@ -735,6 +751,7 @@ function normalizeClaudeProjectSettingsRecord(
           {
             subagentsEnabled: projectSettings.subagentsEnabled !== false,
             subagentModel: normalizeClaudeSubagentModel(projectSettings.subagentModel),
+            ...claudeSubagentEffortEntry(projectSettings.subagentEffort),
           } satisfies ClaudeProjectSettings,
         ] as const;
       })
@@ -1148,6 +1165,7 @@ export function getClaudeSubagentDefaults(
   return {
     subagentsEnabled: defaults.subagentsEnabled !== false,
     subagentModel: normalizeClaudeSubagentModel(defaults.subagentModel),
+    ...claudeSubagentEffortEntry(defaults.subagentEffort),
   };
 }
 
@@ -1165,6 +1183,7 @@ export function getClaudeProjectSettings(
   return {
     subagentsEnabled: projectSettings.subagentsEnabled !== false,
     subagentModel: normalizeClaudeSubagentModel(projectSettings.subagentModel),
+    ...claudeSubagentEffortEntry(projectSettings.subagentEffort),
   };
 }
 
