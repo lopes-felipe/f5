@@ -43442,11 +43442,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T21:04:52.032Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/codexAppServerManager.ts:3396",
+          "apps/server/src/codexAppServerManager.ts:3491"
+        ],
+        "f5Refs": [
+          "7ba9f81e91da275b04794936d422d01a0d063b4d"
+        ]
+      },
       "id": "pr-23234",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
