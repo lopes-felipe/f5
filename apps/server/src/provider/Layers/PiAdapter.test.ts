@@ -9,91 +9,100 @@ import { PiRpcError } from "../pi/PiRpc.ts";
 import { makePiAdapter, parsePiResumeCursor } from "./PiAdapter.ts";
 
 // "streaming": native work started before its wake reached F5, so Pi must queue the prompt.
-it.each(["normal", "abort", "reject", "crash", "slash", "final-only", "tool", "streaming"])(
-  "owns a Pi child, correlates completion and closes the session: %s",
-  async (mode) =>
-    fixture(async ({ settings, options, trace }) => {
-      options.environment.F5_PI_CASE = mode;
-      await run(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const adapter = yield* makePiAdapter(settings, options);
-            const terminal = yield* Deferred.make<ProviderRuntimeEvent>();
-            const observed: ProviderRuntimeEvent[] = [];
-            yield* adapter.streamEvents.pipe(
-              Stream.runForEach((event) =>
-                Effect.gen(function* () {
-                  observed.push(event);
-                  if (event.type === "turn.completed") yield* Deferred.succeed(terminal, event);
-                }),
-              ),
-              Effect.forkScoped,
-            );
-            const session = yield* adapter.startSession({
-              threadId,
-              cwd: tmpdir(),
-              runtimeMode: "approval-required",
-            });
-            expect(parsePiResumeCursor(session.resumeCursor)).toBeDefined();
-            const turn = yield* adapter.sendTurn({
-              threadId,
-              input: mode === "slash" ? "/reload" : "Hello Pi",
-            });
-            const completed = yield* Deferred.await(terminal).pipe(Effect.timeout("5 seconds"));
-            expect(completed.turnId).toBe(turn.turnId);
-            if (completed.type !== "turn.completed") throw new Error("Expected completion.");
-            expect(completed.payload.state).toBe(
-              mode === "abort"
-                ? "cancelled"
-                : mode === "reject" || mode === "crash"
-                  ? "failed"
-                  : "completed",
-            );
-            expect(JSON.stringify(observed)).not.toContain("PRIVATE_FAILURE");
-            if (
-              mode === "normal" ||
-              mode === "final-only" ||
-              mode === "tool" ||
-              mode === "streaming"
-            ) {
-              expect(
-                observed.filter(
-                  (event) =>
-                    event.type === "item.completed" &&
-                    event.payload.itemType === "assistant_message",
-                ),
-              ).toHaveLength(1);
-              expect(
-                observed.some(
-                  (event) => event.type === "content.delta" && event.payload.delta === "Pi reply",
-                ),
-              ).toBe(true);
-            }
-            if (mode === "tool") {
-              const tools = observed.filter(
+it.each([
+  "normal",
+  "abort",
+  "reject",
+  "crash",
+  "slash",
+  "final-only",
+  "tool",
+  "streaming",
+  "compaction-race",
+])("owns a Pi child, correlates completion and closes the session: %s", async (mode) =>
+  fixture(async ({ settings, options, trace }) => {
+    options.environment.F5_PI_CASE = mode;
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = yield* makePiAdapter(settings, options);
+          const terminal = yield* Deferred.make<ProviderRuntimeEvent>();
+          const observed: ProviderRuntimeEvent[] = [];
+          yield* adapter.streamEvents.pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                observed.push(event);
+                if (event.type === "turn.completed") yield* Deferred.succeed(terminal, event);
+              }),
+            ),
+            Effect.forkScoped,
+          );
+          const session = yield* adapter.startSession({
+            threadId,
+            cwd: tmpdir(),
+            runtimeMode: "approval-required",
+          });
+          expect(parsePiResumeCursor(session.resumeCursor)).toBeDefined();
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: mode === "slash" ? "/reload" : "Hello Pi",
+          });
+          const completed = yield* Deferred.await(terminal).pipe(Effect.timeout("5 seconds"));
+          expect(completed.turnId).toBe(turn.turnId);
+          if (completed.type !== "turn.completed") throw new Error("Expected completion.");
+          expect(completed.payload.state).toBe(
+            mode === "abort"
+              ? "cancelled"
+              : mode === "reject" || mode === "crash"
+                ? "failed"
+                : "completed",
+          );
+          expect(JSON.stringify(observed)).not.toContain("PRIVATE_FAILURE");
+          if (
+            mode === "normal" ||
+            mode === "final-only" ||
+            mode === "tool" ||
+            mode === "streaming"
+          ) {
+            expect(
+              observed.filter(
                 (event) =>
-                  event.type === "item.completed" && event.payload.itemType === "command_execution",
-              );
-              expect(tools).toHaveLength(1);
-              expect(tools[0]).toMatchObject({
-                payload: {
-                  status: "failed",
-                  mcpImagesOmitted: 1,
-                  data: { exitCode: 2 },
-                  completion: { semanticSuccess: false },
-                },
-              });
-              expect(JSON.stringify(observed)).not.toContain("aGVsbG8=");
-            }
-            yield* adapter.stopSession(threadId);
-            expect(yield* adapter.hasSession(threadId)).toBe(false);
-            expect(yield* adapter.listSessions()).toEqual([]);
-          }),
-        ),
-      );
-      for (const record of (await trace()).filter((record) => record.type === "spawn"))
-        expect(() => process.kill(Number(record.pid), 0)).toThrow();
-    }),
+                  event.type === "item.completed" && event.payload.itemType === "assistant_message",
+              ),
+            ).toHaveLength(1);
+            expect(
+              observed.some(
+                (event) => event.type === "content.delta" && event.payload.delta === "Pi reply",
+              ),
+            ).toBe(true);
+          }
+          if (mode === "tool") {
+            const tools = observed.filter(
+              (event) =>
+                event.type === "item.completed" && event.payload.itemType === "command_execution",
+            );
+            expect(tools).toHaveLength(1);
+            expect(tools[0]).toMatchObject({
+              payload: {
+                status: "failed",
+                mcpImagesOmitted: 1,
+                data: { exitCode: 2 },
+                completion: { semanticSuccess: false },
+              },
+            });
+            expect(JSON.stringify(observed)).not.toContain("aGVsbG8=");
+          }
+          yield* adapter.stopSession(threadId);
+          expect(yield* adapter.hasSession(threadId)).toBe(false);
+          expect(yield* adapter.listSessions()).toEqual([]);
+        }),
+      ),
+    );
+    for (const record of (await trace()).filter((record) => record.type === "spawn"))
+      expect(() => process.kill(Number(record.pid), 0)).toThrow();
+    if (mode === "compaction-race")
+      expect((await trace()).filter((record) => record.type === "prompt")).toHaveLength(2);
+  }),
 );
 it("answers a setup dialog while model selection is waiting for its RPC reply", async () =>
   fixture(async ({ settings, options }) => {

@@ -17,7 +17,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 
-const VERSION_PROBE_TIMEOUT_MS = 4_000;
+const VERSION_PROBE_TIMEOUT_MS = 10_000;
 // Older Grok CLIs do not work with F5's ACP integration.
 const MINIMUM_GROK_VERSION = "1.0.13";
 const GROK_MODELS_TIMEOUT_MS = 8_000;

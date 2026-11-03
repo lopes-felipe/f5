@@ -16,6 +16,38 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude process entrypoint", () => {
+    it.effect("removes launching session identity but preserves explicit instance overrides", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const resolve = (instance: { name: string; value: string; sensitive: boolean }[]) =>
+          makeClaudeProcessEnvironment(
+            { homePath: "" },
+            {
+              CLAUDECODE: "1",
+              CLAUDE_CODE_SESSION_ID: "host-session",
+              CLAUDE_CODE_MESSAGING_TOKEN: "host-token",
+              CLAUDE_EFFORT: "low",
+              ANTHROPIC_API_KEY: "account-key",
+            },
+            instance,
+          ).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: () => Effect.succeed("{}"),
+            }),
+          );
+        const clean = yield* resolve([]);
+        expect(clean.CLAUDECODE).toBeUndefined();
+        expect(clean.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+        expect(clean.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined();
+        expect(clean.CLAUDE_EFFORT).toBeUndefined();
+        expect(clean.ANTHROPIC_API_KEY).toBe("account-key");
+        expect(
+          (yield* resolve([{ name: "CLAUDE_EFFORT", value: "high", sensitive: false }]))
+            .CLAUDE_EFFORT,
+        ).toBe("high");
+      }),
+    );
     it.effect("reads POSIX managed settings with a Windows Path service", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

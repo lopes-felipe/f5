@@ -9,7 +9,7 @@ const source = String.raw`
 const fs=require('node:fs');
 const trace=entry=>fs.appendFileSync(process.env.F5_PI_TRACE,JSON.stringify(entry)+'\n');
 trace({type:'spawn',args:process.argv.slice(2),cwd:process.cwd(),pid:process.pid,privateEnvironment:!!process.env.F5_PI_MCP_BEARER_TOKEN});
-if(process.argv.includes('--version')){process.stdout.write(process.env.F5_PI_VERSION||'0.80.5');process.exit(0);}
+if(process.argv.includes('--version')){setTimeout(()=>{process.stdout.write(process.env.F5_PI_VERSION||'0.80.5');process.exit(0);},Number(process.env.F5_PI_VERSION_DELAY||0));}
 const emit=record=>process.stdout.write(JSON.stringify(record)+'\n');
 const reply=(record,data)=>emit({type:'response',id:record.id,command:record.type,success:true,data});
 let pending='';

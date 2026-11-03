@@ -74,6 +74,23 @@ const decodeElicitationComplete = Schema.decodeUnknownEffect(
 const parserFactory = RpcSerialization.ndJsonRpc();
 const decoder = new TextDecoder();
 
+/** Scan only newly received text; incomplete large lines must not be rescanned. */
+export function makeAcpLineFramer() {
+  const utf8 = new TextDecoder();
+  let buffer = "";
+  return (bytes: string | Uint8Array): string => {
+    const chunk = typeof bytes === "string" ? bytes : utf8.decode(bytes, { stream: true });
+    const end = chunk.lastIndexOf("\n");
+    if (end === -1) {
+      buffer += chunk;
+      return "";
+    }
+    const complete = buffer + chunk.slice(0, end + 1);
+    buffer = chunk.slice(end + 1);
+    return complete;
+  };
+}
+
 function preserveZeroValuedRequestIds(
   data: string | Uint8Array,
   messages: ReadonlyArray<RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded>,
@@ -127,6 +144,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();
+  const frameLines = makeAcpLineFramer();
   const serverQueue = yield* Queue.unbounded<RpcMessage.FromClientEncoded>();
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
   // The handler delivers every notification. This secondary diagnostic stream may have no reader.
@@ -452,13 +470,16 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       ).pipe(
         Effect.flatMap(() =>
           Effect.try({
-            try: () =>
-              preserveZeroValuedRequestIds(
-                data,
-                parser.decode(data) as ReadonlyArray<
+            try: () => {
+              const complete = frameLines(data);
+              if (!complete) return [];
+              return preserveZeroValuedRequestIds(
+                complete,
+                parser.decode(complete) as ReadonlyArray<
                   RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
                 >,
-              ),
+              );
+            },
             catch: (cause) =>
               new AcpError.AcpProtocolParseError({
                 detail: "Failed to decode ACP wire message",

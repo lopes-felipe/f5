@@ -46,6 +46,17 @@ const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/acp-mock-peer.ts"),
 );
 
+it("frames large fragmented lines and streaming UTF-8 without losing the tail", () => {
+  const frame = AcpProtocol.makeAcpLineFramer();
+  const chunk = "x".repeat(4096);
+  for (let i = 0; i < 1024; i++) assert.equal(frame(chunk), "");
+  const utf8 = new TextEncoder().encode("🙂");
+  assert.equal(frame(utf8.slice(0, 2)), "");
+  assert.equal(frame(utf8.slice(2)), "");
+  assert.equal(frame("\nsecond\nthird"), chunk.repeat(1024) + "🙂\nsecond\n");
+  assert.equal(frame("\n"), "third\n");
+});
+
 it.effect(
   "bounds an unread diagnostic stream while delivering every notification to its handler",
   () =>

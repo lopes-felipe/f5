@@ -1,4 +1,5 @@
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -3568,6 +3569,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             })
             .catch(() => {});
         };
+        const generatedImages = new CodexGeneratedImages();
         const listener = (event: ProviderEvent) => {
           if (automationGenerations.get(event.threadId) === event.sessionGeneration) {
             const chromeSession = chromeSessions.get(event.threadId)?.session;
@@ -3699,14 +3701,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 : undefined;
               if (chromeSession) observeCodexChrome(chromeSession, event);
               let runtimeEvents = withAgentBrowserPreview(
-                mapToRuntimeEvents(
-                  event,
-                  event.threadId,
-                  limitsByThread.get(key)?.get("codex")?.snapshot,
-                  [...(limitsByThread.get(key)?.values() ?? [])],
-                  turnStartedAtByThread.get(key),
-                  previousFailure,
-                ),
+                generatedImages
+                  .project(event)
+                  .flatMap((projected) =>
+                    mapToRuntimeEvents(
+                      projected,
+                      event.threadId,
+                      limitsByThread.get(key)?.get("codex")?.snapshot,
+                      [...(limitsByThread.get(key)?.values() ?? [])],
+                      turnStartedAtByThread.get(key),
+                      previousFailure,
+                    ),
+                  ),
                 previewServerName,
                 ownsAutomation ? computerMcpSessions.get(event.threadId)?.serverName : undefined,
                 ownsAutomation ? computerDecisions.get(event.threadId) : undefined,
