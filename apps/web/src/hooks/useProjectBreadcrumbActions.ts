@@ -35,5 +35,13 @@ export function useProjectBreadcrumbActions(input: {
     });
   }, [input.project, navigate]);
 
-  return { createThread, openSettings } as const;
+  const openActionsSettings = useCallback(() => {
+    if (!input.project) return;
+    void navigate({
+      to: "/settings",
+      search: { category: "project", item: "project.actions", project: input.project.id },
+    });
+  }, [input.project, navigate]);
+
+  return { createThread, openSettings, openActionsSettings } as const;
 }

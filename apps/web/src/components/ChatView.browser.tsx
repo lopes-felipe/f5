@@ -28,6 +28,7 @@ import {
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
+  type ProjectScript,
   ProviderInstanceId,
   ProviderDriverKind,
   type ServerConfig,
@@ -10113,9 +10114,9 @@ describe("ChatView timeline (full app)", () => {
       );
     }
 
-    async function mountIsolatedChatView() {
+    async function mountIsolatedChatView(options: { projectScripts?: ProjectScript[] } = {}) {
       let connectedClient: TestWsClient | null = null;
-      const snapshot = addThreadToSnapshot(
+      const baseSnapshot = addThreadToSnapshot(
         createSnapshotForTargetUser({
           targetMessageId: "msg-render-isolation" as MessageId,
           targetText: "render isolation",
@@ -10125,6 +10126,15 @@ describe("ChatView timeline (full app)", () => {
         }),
         OTHER_THREAD_ID,
       );
+      const snapshot = options.projectScripts
+        ? Object.assign({}, baseSnapshot, {
+            projects: baseSnapshot.projects.map((project) =>
+              project.id === PROJECT_ID
+                ? Object.assign({}, project, { scripts: options.projectScripts })
+                : project,
+            ),
+          })
+        : baseSnapshot;
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
         snapshot,
@@ -10271,9 +10281,31 @@ describe("ChatView timeline (full app)", () => {
     });
 
     it("does not commit the conversation when a dialog opens", async () => {
-      const { mounted } = await mountIsolatedChatView();
+      const { mounted } = await mountIsolatedChatView({
+        projectScripts: [
+          {
+            id: "test",
+            name: "Test",
+            command: "bun test",
+            icon: "test",
+            runOnWorktreeCreate: false,
+          },
+        ],
+      });
       try {
-        const addAction = await waitForButtonContainingText("Add action");
+        const scriptMenu = await waitForElement(
+          () => document.querySelector<HTMLButtonElement>('[aria-label="Script actions"]'),
+          "The project actions menu should render once the project has an action.",
+        );
+        scriptMenu.click();
+        const addAction = await waitForElement(
+          () =>
+            Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) =>
+              item.textContent?.includes("Add action"),
+            ) ?? null,
+          "The actions menu should offer Add action.",
+        );
+        await waitForRenderQuiet();
         resetRenderCommits();
         addAction.click();
         await waitForElement(

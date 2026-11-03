@@ -109,6 +109,9 @@ describe("settings item descriptors", () => {
     expect(filterSettingsItems("project memory", { scope: "project" })[0]?.id).toBe(
       "project.memory",
     );
+    expect(filterSettingsItems("setup script", { scope: "project" })[0]?.id).toBe(
+      "project.actions",
+    );
     expect(filterSettingsItems("timestamp", { scope: "project" })).toEqual([]);
     expect(filterSettingsItems("merge method", { scope: "project" })[0]?.id).toBe(
       "git.merge-method",
