@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
 import { ZoomableImage } from "./chat/ZoomableImage";
+import { isSvgPreview } from "@t3tools/shared/filePreview";
 export interface AssetGalleryState {
-  images: Array<{ src: string; name: string }>;
+  images: Array<{ src: string; name: string; mimeType?: string; path?: string | undefined }>;
   index: number;
 }
 export function AssetImageGallery({
@@ -74,6 +75,11 @@ export function AssetImageGallery({
           key={current.src}
           src={current.src}
           name={current.name}
+          mimeType={
+            isSvgPreview({ ...current, name: current.path ?? current.name })
+              ? "image/svg+xml"
+              : current.mimeType
+          }
           onContextMenu={() => {}}
         />
         {gallery.images.length > 1 && (

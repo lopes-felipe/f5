@@ -117,8 +117,12 @@ export function ChatAssetImage({
             const images = container
               ? Array.from(
                   container.querySelectorAll<HTMLImageElement>("img[data-chat-asset]"),
-                ).map((image) => ({ src: image.src, name: image.alt }))
-              : [{ src: url, name: alt }];
+                ).map((image) => ({
+                  src: image.src,
+                  name: image.alt,
+                  path: image.dataset.assetPath,
+                }))
+              : [{ src: url, name: alt, path: target?.path }];
             setGallery({
               images,
               index: Math.max(
@@ -130,6 +134,7 @@ export function ChatAssetImage({
         >
           <img
             data-chat-asset
+            data-asset-path={target?.path}
             src={url}
             alt={alt}
             width={grant.data?.width}

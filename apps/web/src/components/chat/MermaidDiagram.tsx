@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { peekRenderedMermaid, renderMermaid } from "../../lib/renderMermaid";
+import { AssetImageGallery } from "../AssetImageGallery";
 
 export function MermaidDiagram({
   source,
@@ -22,6 +23,7 @@ export function MermaidDiagram({
   );
   const [visible, setVisible] = useState(result !== null);
   const [showCode, setShowCode] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const current = result?.key === key ? result : null;
   const svg = current?.svg;
@@ -103,12 +105,14 @@ export function MermaidDiagram({
           {code}
         </div>
       ) : url ? (
-        <img
-          src={url}
-          alt="Mermaid diagram"
-          className="mx-auto h-auto max-w-full p-3"
-          onError={() => setResult({ key, failed: true })}
-        />
+        <button type="button" aria-label="Expand Mermaid diagram" onClick={() => setExpanded(true)}>
+          <img
+            src={url}
+            alt="Mermaid diagram"
+            className="mx-auto h-auto max-w-full p-3"
+            onError={() => setResult({ key, failed: true })}
+          />
+        </button>
       ) : (
         // The source holds its own height, so streamed text below does not jump twice.
         <>
@@ -119,6 +123,16 @@ export function MermaidDiagram({
             {code}
           </div>
         </>
+      )}
+      {expanded && url && (
+        <AssetImageGallery
+          gallery={{
+            images: [{ src: url, name: "Mermaid diagram", mimeType: "image/svg+xml" }],
+            index: 0,
+          }}
+          onChange={() => {}}
+          onClose={() => setExpanded(false)}
+        />
       )}
     </div>
   );
