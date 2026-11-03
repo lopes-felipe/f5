@@ -1482,12 +1482,27 @@ export default memo(function ChatView({
   useEffect(() => {
     if (!activeThread || sessionProvider !== "codex") return;
     const threadId = activeThread.id;
-    const timer = window.setTimeout(() => {
-      void readNativeApi()
-        ?.nativeOperations?.markRead?.({ threadId })
-        .catch(() => undefined);
-    }, 1000);
-    return () => window.clearTimeout(timer);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      timer = setTimeout(() => {
+        if (document.visibilityState === "visible" && document.hasFocus())
+          void readNativeApi()
+            ?.nativeOperations?.markRead?.({ threadId })
+            .catch(() => undefined);
+      }, 1000);
+    };
+    schedule();
+    document.addEventListener("visibilitychange", schedule);
+    window.addEventListener("focus", schedule);
+    window.addEventListener("blur", schedule);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", schedule);
+      window.removeEventListener("focus", schedule);
+      window.removeEventListener("blur", schedule);
+    };
   }, [
     activeThread?.id,
     activeThread?.lastVisitedAt,
@@ -2106,7 +2121,10 @@ export default memo(function ChatView({
     return {
       ...resolved,
       commands: resolved.commands.filter(
-        (command) => command.name !== "aside" || latestTurnSettled,
+        (command) =>
+          command.name !== "aside" ||
+          command.description !== CODEX_NATIVE_ASIDE_COMMAND.description ||
+          latestTurnSettled,
       ),
     };
   }, [
@@ -5335,7 +5353,12 @@ export default memo(function ChatView({
     if (noProviderAvailable) return;
     if (
       /^\/aside(?:\s|$)/u.test(promptRef.current.trim()) &&
-      activeThread.session?.provider === "codex"
+      activeThread.session?.provider === "codex" &&
+      composerNativeSlashCommands.commands.some(
+        (command) =>
+          command.name === "aside" &&
+          command.description === CODEX_NATIVE_ASIDE_COMMAND.description,
+      )
     ) {
       const session = activeThread.session;
       const question = promptRef.current.trim().slice(6).trim();
@@ -8560,3 +8583,4 @@ export default memo(function ChatView({
     </OpenLinkThread.Provider>
   );
 });
+import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";

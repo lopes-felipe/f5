@@ -154,7 +154,6 @@ const CODEX_MODEL_METADATA: Record<string, CodexModelMetadata> = {
     effortOptions: ["max", "xhigh", "high", "medium", "low"],
   },
   "gpt-6.1-sol": { contextWindowTokens: 1_050_000 },
-  "gpt-6.1-terra": { contextWindowTokens: 1_050_000 },
   "gpt-6-astra": {
     contextWindowTokens: 1_050_000,
     effortOptions: ["max", "xhigh", "high", "medium", "low"],

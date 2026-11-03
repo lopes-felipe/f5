@@ -509,6 +509,55 @@ describe("ProviderRuntimeIngestion", () => {
     };
   }
 
+  it("persists aside usage with the source model without adding conversation messages or turns", async () => {
+    const harness = await createHarness();
+    const before = (await Effect.runPromise(harness.engine.getReadModel())).threads[0]!;
+    const event: ProviderRuntimeEvent = {
+      type: "thread.metadata.updated",
+      eventId: asEventId("aside-usage"),
+      provider: "codex",
+      threadId: before.id,
+      createdAt: new Date().toISOString(),
+      payload: {
+        metadata: {
+          nativeAside: {
+            question: "Why?",
+            text: "Because.",
+            model: "source-model",
+            inputTokens: 100,
+            cachedInputTokens: 80,
+            outputTokens: 10,
+          },
+        },
+      },
+    };
+    harness.emit(event);
+    const after = await waitForThread(harness.engine, (thread) =>
+      thread.activities.some((activity) => activity.kind === "native.aside"),
+    );
+    expect(after.messages).toEqual(before.messages);
+    expect(after.latestTurn).toEqual(before.latestTurn);
+    const rows = await Effect.runPromise(harness.sql<{
+      model: string;
+      input_tokens: number;
+      cache_read_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+    }>`
+      SELECT model, input_tokens, cache_read_tokens, output_tokens, total_tokens
+      FROM projection_turn_usage_facts WHERE source_event_id = 'aside-usage'
+    `);
+    expect(rows).toEqual([
+      {
+        model: "source-model",
+        input_tokens: 100,
+        cache_read_tokens: 80,
+        output_tokens: 10,
+        total_tokens: 110,
+      },
+    ]);
+  });
+
   it("never infers the failed provider instance from the current composer selection", async () => {
     const harness = await createHarness();
     const readModel = await Effect.runPromise(harness.engine.getReadModel());

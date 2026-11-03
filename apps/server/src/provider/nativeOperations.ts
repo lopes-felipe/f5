@@ -250,6 +250,12 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
           if (Exit.isSuccess(exit)) return Effect.void;
           // A lost response, timeout or shutdown never implies the provider did nothing.
           const error = Cause.squash(exit.cause);
+          const cancelled =
+            input.command.kind === "aside" &&
+            error !== null &&
+            typeof error === "object" &&
+            "nativeOperationCancelled" in error &&
+            error.nativeOperationCancelled === true;
           const notSent =
             record.result === undefined &&
             error !== null &&
@@ -262,7 +268,11 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
                   "ProviderAdapterValidationError",
                 ].includes(String(error._tag))));
           return transition(
-            dispatched && !notSent && input.command.kind !== "aside" ? "indeterminate" : "failed",
+            cancelled
+              ? "cancelled"
+              : dispatched && !notSent && input.command.kind !== "aside"
+                ? "indeterminate"
+                : "failed",
             {
               error:
                 input.command.kind === "aside" && Cause.hasInterruptsOnly(exit.cause)

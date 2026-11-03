@@ -6668,6 +6668,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
       }
 
+      case WS_METHODS.serverSaveProviderFeedback: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.saveFeedback)
+          return yield* new RouteRequestError({
+            message: "Feedback bundles are only available for a configured Codex provider.",
+          });
+        return yield* instance
+          .saveFeedback()
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
+      }
       case WS_METHODS.serverGetProviderInventory: {
         const body = stripRequestTag(request.body);
         const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
@@ -6684,32 +6699,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           if (!project) return yield* new RouteRequestError({ message: "Project not found." });
           projectRoot = project.workspaceRoot;
         }
-        let feedbackPath: string | undefined;
-        if (body.saveFeedback) {
-          if (instance.driverKind !== "codex")
-            return yield* new RouteRequestError({
-              message: "Feedback bundles are only available for Codex.",
-            });
-          const directory = NodePath.join(serverConfig.stateDir, "diagnostics");
-          yield* Effect.tryPromise({
-            try: () => fsPromises.mkdir(directory, { recursive: true }),
-            catch: () =>
-              new RouteRequestError({ message: "Could not create diagnostics directory." }),
-          });
-          feedbackPath = NodePath.join(
-            directory,
-            "codex-feedback-" +
-              createHash("sha256").update(String(body.instanceId)).digest("hex").slice(0, 16) +
-              "-" +
-              new Date().toISOString().replaceAll(":", "-") +
-              "-" +
-              randomUUID() +
-              ".zip",
-          );
-        }
         const entries = instance.inventory
           ? yield* instance
-              .inventory({ projectRoot, feedbackPath })
+              .inventory({ projectRoot })
               .pipe(
                 Effect.mapError(
                   (error) => new RouteRequestError({ message: error.detail ?? error.message }),

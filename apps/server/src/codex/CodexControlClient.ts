@@ -637,12 +637,16 @@ export class CodexControlClient extends EventEmitter<{
     return this.sendRequest("accountSession/list", {});
   }
 
-  async saveFeedback(savePath: string): Promise<unknown> {
-    return this.sendRequest("feedback/save", {
-      savePath,
-      classification: "bug",
-      includeLogs: true,
-    });
+  async saveFeedback(savePath: string, timeoutMs = 120_000): Promise<unknown> {
+    return this.sendRequest(
+      "feedback/save",
+      {
+        savePath,
+        classification: "bug",
+        includeLogs: true,
+      },
+      timeoutMs,
+    );
   }
 
   /** Installed plugins only; F5 never queries remote marketplaces. */

@@ -103,9 +103,9 @@ export interface ProviderInstance {
    * home/config dir only.
    */
   readonly inventory?: (input: {
-    readonly feedbackPath?: string | undefined;
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
+  readonly saveFeedback?: () => Effect.Effect<{ path: string }, ProviderDriverError>;
   /**
    * Remove a native session's local transcript from this instance's own
    * store (never the server-global home). Best-effort; callers log failures.
@@ -124,7 +124,6 @@ export type ProviderInstanceInventoryEntries = Pick<
   | "agents"
   | "warnings"
   | "accountWorkspaces"
-  | "feedbackPath"
   | "feedbackSupported"
   | "account"
 >;

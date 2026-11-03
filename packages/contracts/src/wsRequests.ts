@@ -280,7 +280,10 @@ import {
   ProjectSetWatchedPathsInput,
   ProjectWriteFileInput,
 } from "./project";
-import { ServerGetProviderInventoryInput } from "./providerInventory";
+import {
+  ServerGetProviderInventoryInput,
+  ServerSaveProviderFeedbackInput,
+} from "./providerInventory";
 import { ReviewPreviewDiffInput } from "./review";
 import {
   ServerAddKeybindingInput,
@@ -612,6 +615,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverRunProviderUpdate, ServerRunProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
+  tagRequestBody(WS_METHODS.serverSaveProviderFeedback, ServerSaveProviderFeedbackInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
   tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),

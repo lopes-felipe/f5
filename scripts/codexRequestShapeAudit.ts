@@ -5,6 +5,7 @@ export function codexRequestShapeProbe(
   available: ReadonlySet<string>,
 ): string {
   const methods = [
+    ["account/usage/read", "v2/GetAccountTokenUsageParams", 'buildCodexUsageReadParams("thread")'],
     ["thread/goal/set", "v2/ThreadGoalSetParams", 'buildCodexGoalPauseParams("thread", "user")'],
     ["thread/goal/clear", "v2/ThreadGoalClearParams", 'buildCodexGoalClearParams("thread")'],
     [
@@ -49,7 +50,7 @@ export function codexRequestShapeProbe(
   const lines = [
     `import { buildCodexInitializeParams, buildCodexThreadOpenRequestParams, buildCodexThreadRevertParams, buildCodexThreadForkParams, buildCodexTurnStartParams, buildCodexTurnSteerParams } from ${JSON.stringify(builderPath)};`,
     'import { ThreadId } from "@t3tools/contracts";',
-    `import { buildCodexSampleParams, buildCodexReadMarkParams, buildCodexMemoryReadParams, buildCodexGoalPauseParams, buildCodexGoalClearParams } from ${JSON.stringify(builderPath)};`,
+    `import { buildCodexSampleParams, buildCodexReadMarkParams, buildCodexMemoryReadParams, buildCodexUsageReadParams, buildCodexGoalPauseParams, buildCodexGoalClearParams } from ${JSON.stringify(builderPath)};`,
   ];
   for (const [method, file, expression] of methods) {
     if (!available.has(method)) continue;

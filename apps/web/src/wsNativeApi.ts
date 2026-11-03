@@ -854,6 +854,8 @@ export function createWsNativeApi(): NativeApi {
       runProviderUpdate: requestMethod(WS_METHODS.serverRunProviderUpdate),
       getProviderInventory: (input) =>
         transport.request(WS_METHODS.serverGetProviderInventory, input),
+      saveProviderFeedback: (input) =>
+        transport.request(WS_METHODS.serverSaveProviderFeedback, input),
       validateHarnesses: requestMethod(WS_METHODS.serverValidateHarnesses),
       upsertKeybinding: requestKeybindingMutation(WS_METHODS.serverUpsertKeybinding),
       addKeybinding: requestKeybindingMutation(WS_METHODS.serverAddKeybinding),

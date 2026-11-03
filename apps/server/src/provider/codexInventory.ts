@@ -31,7 +31,6 @@ export interface CodexInventory {
     workspaceName?: string;
   };
   readonly accountWorkspaces?: ReadonlyArray<{ name: string; kind?: string; active: boolean }>;
-  readonly feedbackPath?: string;
   readonly hooks: ReadonlyArray<ProviderInventoryHook>;
   readonly plugins: ReadonlyArray<ProviderInventoryPlugin>;
   readonly connectors: ReadonlyArray<ProviderInventoryConnector>;
@@ -264,7 +263,7 @@ async function attempt<T>(
  */
 export async function readCodexInventory(
   environment: CodexControlEnvironmentConfig,
-  input: { readonly projectRoot?: string | undefined; readonly feedbackPath?: string | undefined },
+  input: { readonly projectRoot?: string | undefined },
   timeoutMs = CODEX_INVENTORY_TIMEOUT_MS,
 ): Promise<CodexInventory> {
   const signal = AbortSignal.timeout(timeoutMs);
@@ -283,7 +282,6 @@ export async function readCodexInventory(
       const apps = await attempt(warnings, "app/list", () => opened.listApps());
       const config = await attempt(warnings, "config/read", () => opened.readConfig());
       let accountWorkspaces: CodexInventory["accountWorkspaces"];
-      let feedbackPath: string | undefined;
       const accountResponse = await attempt(warnings, "account/read", () => opened.readAccount());
       const account = parseCodexInventoryAccount(accountResponse);
       if (supportsCodexRelease5(opened.cliVersion)) {
@@ -293,17 +291,11 @@ export async function readCodexInventory(
           );
           accountWorkspaces = parseCodexAccountWorkspaces(listed);
         }
-        if (input.feedbackPath) {
-          await opened.saveFeedback(input.feedbackPath);
-          feedbackPath = input.feedbackPath;
-        }
-      } else if (input.feedbackPath)
-        throw new Error("Feedback bundles require Codex 0.166.0 or later.");
+      }
       return {
         feedbackSupported: supportsCodexRelease5(opened.cliVersion),
         ...(account ? { account } : {}),
         ...(accountWorkspaces ? { accountWorkspaces } : {}),
-        ...(feedbackPath ? { feedbackPath } : {}),
         hooks: parseCodexHooks(hooks ?? []),
         plugins: parseCodexPlugins(plugins),
         connectors: [

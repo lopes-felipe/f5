@@ -6024,7 +6024,7 @@ const make = Effect.gen(function* () {
               provider: event.provider,
               providerInstanceId:
                 event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
-              model: thread.model || null,
+              model: typeof value.model === "string" && value.model.trim() ? value.model : null,
               inputTokens,
               outputTokens,
               cacheReadTokens: tokens(value.cachedInputTokens),

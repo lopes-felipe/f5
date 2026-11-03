@@ -2,6 +2,7 @@ import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
+import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
 import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/lineReader.ts";
 
@@ -125,6 +126,10 @@ export function buildCodexMemoryReadParams(threadId: string) {
   return { threadId };
 }
 
+export function buildCodexUsageReadParams(threadId: string) {
+  return { threadId };
+}
+
 export function buildCodexGoalPauseParams(threadId: string, origin: "user" | "automatic") {
   return { threadId, status: "paused" as const, origin };
 }
@@ -139,7 +144,7 @@ interface PendingRequest {
   method: string;
   wasWritten?: boolean;
   cancelWrite?: () => void;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout: ReturnType<typeof setTimeout> | undefined;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 }
@@ -234,6 +239,10 @@ interface CodexSessionContext {
   readState?: { firstUnread: unknown; revision: string } | null;
   readMarkInFlight?: boolean;
   sampleRequestId?: number;
+  sampleCompletion?: Promise<unknown>;
+  sampleCancellation?: Promise<void>;
+  samplePreparing?: boolean;
+  sampleCancelled?: boolean;
   protocolDecodeFailureCount: number;
   nextRequestId: number;
   stopping: boolean;
@@ -400,6 +409,9 @@ export const CODEX_ELICITATION_OPENED_METHOD = "f5/elicitation/opened";
 export const CODEX_ELICITATION_SETTLED_METHOD = "f5/elicitation/settled";
 
 export function codexRequestTimeoutMs(method: string): number {
+  // Inference ends on response, cancellation or exit, not the control RPC clock.
+  // Its stdin write still has the normal bounded deadline.
+  if (method === "thread/sample") return 0;
   return method === "thread/start" || method === "thread/resume"
     ? CODEX_THREAD_OPEN_TIMEOUT_MS
     : CODEX_JSON_RPC_TIMEOUT_MS;
@@ -1514,6 +1526,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         status: "ready",
         resumeCursor: { ...asObject(input.resumeCursor), threadId: providerThreadId },
       });
+      if (supportsCodexRelease5(context.cliVersion) && context.readState === undefined) {
+        void this.sendRequest(
+          context,
+          "thread/read",
+          {
+            threadId: providerThreadId,
+            includeTurns: false,
+          },
+          2000,
+        ).catch(() => undefined);
+      }
       // Only skip replaying restored context when Codex actually reopened the
       // original provider thread. Fallback thread/start still needs that
       // context on the first follow-up turn.
@@ -2020,7 +2043,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (input.kind === "usage") {
       if (!supportsCodexNativeOperations(context.cliVersion))
         throw new Error("Usage requires Codex 0.162.0 or later.");
-      return this.sendRequest(context, "account/usage/read", { threadId });
+      return this.sendRequest(context, "account/usage/read", buildCodexUsageReadParams(threadId));
     }
     if (input.kind === "goal") return this.sendRequest(context, "thread/goal/get", { threadId });
     if (input.kind === "attachments") {
@@ -2108,11 +2131,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (command.kind === "aside") {
       if (!supportsCodexRelease5(context.cliVersion) || context.session.activeTurnId)
         throw new Error("Ask aside requires an idle Codex 0.166.0 session.");
+      context.samplePreparing = true;
+      context.sampleCancelled = false;
       const history = asObject(
         await this.sendRequest(context, "thread/turns/list", {
           threadId,
           limit: 1,
           sortDirection: "desc",
+        }).finally(() => {
+          context.samplePreparing = false;
         }),
       );
       const latest = Array.isArray(history?.data) ? asObject(history.data[0]) : undefined;
@@ -2123,41 +2150,42 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         !["completed", "failed", "interrupted"].includes(latest.status)
       )
         throw new Error("Ask aside requires a settled native turn.");
-      if (signal?.aborted) throw new Error("Aside cancelled.");
+      if (signal?.aborted || context.sampleCancelled) throw new Error("Aside cancelled.");
       const requestId = context.nextRequestId;
+      const sampleModel = context.session.model ?? null;
       context.sampleRequestId = requestId;
       const cancel = () => {
-        void this.sendRequest(context, "thread/sample/cancel", { requestId }).catch(
-          () => undefined,
-        );
+        void this.cancelSample(context).catch(() => undefined);
       };
       signal?.addEventListener("abort", cancel, { once: true });
       try {
-        const result = asObject(
-          await request(
-            "thread/sample",
-            buildCodexSampleParams(
-              threadId,
-              latest.id,
-              command.question,
-              typeof context.requestedRuntime?.effort === "string"
-                ? context.requestedRuntime.effort
-                : undefined,
-            ),
+        context.sampleCompletion = request(
+          "thread/sample",
+          buildCodexSampleParams(
+            threadId,
+            latest.id,
+            command.question,
+            typeof context.requestedRuntime?.effort === "string"
+              ? context.requestedRuntime.effort
+              : undefined,
           ),
         );
+        const result = asObject(await context.sampleCompletion);
+        if (context.sampleCancelled) throw new Error("Aside cancelled.");
         const aside = {
           question: command.question,
           text:
             typeof result?.text === "string"
               ? Buffer.byteLength(result.text, "utf8") > 32000
-                ? Buffer.from(result.text, "utf8").subarray(0, 32000).toString("utf8") +
-                  "\n[Answer truncated]"
+                ? new TextDecoder().decode(Buffer.from(result.text, "utf8").subarray(0, 32000), {
+                    stream: true,
+                  }) + "\n[Answer truncated]"
                 : result.text
               : null,
           inputTokens: result?.inputTokens,
           cachedInputTokens: result?.cachedInputTokens,
           outputTokens: result?.outputTokens,
+          model: sampleModel,
         };
         this.emitEvent({
           ...context.mcpEventIdentity,
@@ -2170,8 +2198,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           payload: aside,
         });
         return aside;
+      } catch (cause) {
+        if (context.sampleCancelled)
+          throw Object.assign(new Error("Aside cancelled.", { cause }), {
+            nativeOperationCancelled: true,
+          });
+        throw cause;
       } finally {
         delete context.sampleRequestId;
+        delete context.sampleCompletion;
+        delete context.sampleCancellation;
         signal?.removeEventListener("abort", cancel);
       }
     }
@@ -2482,12 +2518,47 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return { state: "indeterminate" };
   }
 
+  private cancelSample(context: CodexSessionContext): Promise<void> {
+    if (context.sampleCancellation) return context.sampleCancellation;
+    if (context.sampleRequestId === undefined) return Promise.resolve();
+    const requestId = context.sampleRequestId;
+    context.sampleCancelled = true;
+    const completion = context.sampleCompletion;
+    context.sampleCancellation = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await this.sendRequest(context, "thread/sample/cancel", { requestId });
+        if (completion)
+          await Promise.race([
+            completion.catch(() => undefined),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error("Codex did not settle the cancelled sample.")),
+                5000,
+              );
+            }),
+          ]);
+      } catch (cause) {
+        // A cancellation acknowledgement alone is insufficient: end the process
+        // if work cannot be confirmed settled before releasing its reservation.
+        this.stopSession(context.session.threadId);
+        if (completion) await completion.catch(() => undefined);
+        throw cause;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    return context.sampleCancellation;
+  }
+
   async interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
     const context = this.requireSession(threadId);
+    if (context.samplePreparing) {
+      context.sampleCancelled = true;
+      return;
+    }
     if (context.sampleRequestId !== undefined) {
-      await this.sendRequest(context, "thread/sample/cancel", {
-        requestId: context.sampleRequestId,
-      });
+      await this.cancelSample(context);
       return;
     }
     if (context.nativeGoalActive) {
@@ -4249,16 +4320,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         reject,
         wasWritten: false,
         cancelWrite: () => controller.abort(),
-        timeout: setTimeout(() => {
-          context.pending.delete(String(id));
-          controller.abort();
-          reject(
-            new JsonRpcDeliveryError(
-              `Timed out waiting for ${method}.`,
-              pending.wasWritten ? "unknown" : "not_sent",
-            ),
-          );
-        }, timeoutMs),
+        timeout:
+          timeoutMs === 0
+            ? undefined
+            : setTimeout(() => {
+                context.pending.delete(String(id));
+                controller.abort();
+                reject(
+                  new JsonRpcDeliveryError(
+                    `Timed out waiting for ${method}.`,
+                    pending.wasWritten ? "unknown" : "not_sent",
+                  ),
+                );
+              }, timeoutMs),
       };
       context.pending.set(String(id), pending);
       void this.writeMessage(
@@ -4266,8 +4340,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         { method, id, params },
         {
           signal: controller.signal,
-          deadline: Date.now() + timeoutMs,
-          lane: method === "turn/interrupt" ? "control" : "ordinary",
+          deadline: Date.now() + (timeoutMs || CODEX_JSON_RPC_TIMEOUT_MS),
+          lane: jsonRpcWriteLane({ method }),
           onWrite: () => {
             pending.wasWritten = true;
           },
@@ -4300,14 +4374,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ...config,
           slashCommands: [
             ...context.availableSkills,
-            ...(supportsCodexRelease5(context.cliVersion)
-              ? [
-                  {
-                    name: "aside",
-                    description: "Ask a side question without changing the conversation",
-                    argumentHint: "<question>",
-                  },
-                ]
+            ...(supportsCodexRelease5(context.cliVersion) &&
+            !context.availableSkills.some((skill) => skill.name === "aside")
+              ? [CODEX_NATIVE_ASIDE_COMMAND]
               : []),
           ],
         }

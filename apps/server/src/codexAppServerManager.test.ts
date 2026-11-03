@@ -4268,6 +4268,59 @@ it("ends the session when codex app-server sends a message over the size cap", (
   expect(internal.sessions.has("oversized")).toBe(false);
 });
 describe("Release 5 native operations", () => {
+  it("keeps the actual sample RPC pending past the control timeout and accepts a late response", async () => {
+    vi.useFakeTimers();
+    const manager = new CodexAppServerManager();
+    const context = { nextRequestId: 1, pending: new Map() };
+    const internal = manager as unknown as {
+      sendRequest(context: unknown, method: string, params: unknown): Promise<unknown>;
+      handleResponse(context: unknown, response: unknown): void;
+      writeMessage(...args: unknown[]): Promise<void>;
+    };
+    const write = vi.spyOn(internal, "writeMessage").mockResolvedValue();
+    try {
+      let settled = false;
+      const pending = internal.sendRequest(context, "thread/sample", {}).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(false);
+      expect(context.pending.size).toBe(1);
+      internal.handleResponse(context, { id: 1, result: { text: "Late answer" } });
+      expect(await pending).toEqual({ text: "Late answer" });
+      expect(context.pending.size).toBe(0);
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      write.mockRestore();
+    }
+  });
+  it("interrupts an aside and waits for its sample response before releasing the waiter", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+    let finish!: (value: unknown) => void;
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "thread/turns/list") return { data: [{ id: "last", status: "completed" }] };
+      if (method === "thread/sample")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return {};
+    });
+    const result = manager.executeNativeOperation(asideInput).catch((error) => error);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    let settled = false;
+    const cancel = manager.interruptTurn(asThreadId("thread_1")).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample/cancel", { requestId: 12 });
+    finish({ text: null });
+    await cancel;
+    expect(await result).toMatchObject({ nativeOperationCancelled: true });
+  });
   it.each(["memory", "usage"] as const)(
     "reads %s only through the existing session",
     async (kind) => {
@@ -4287,7 +4340,7 @@ describe("Release 5 native operations", () => {
       );
     },
   );
-  it("preserves null sample text and cancels with the JSON-RPC request id", async () => {
+  it("aborting the waiter cancels with the JSON-RPC request id", async () => {
     const { manager, context, sendRequest } = createThreadControlHarness();
     Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
     let finish!: (value: unknown) => void;
@@ -4300,12 +4353,14 @@ describe("Release 5 native operations", () => {
       return {};
     });
     const controller = new AbortController();
-    const pending = manager.executeNativeOperation(asideInput, undefined, controller.signal);
+    const pending = manager
+      .executeNativeOperation(asideInput, undefined, controller.signal)
+      .catch((error) => error);
     await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
     controller.abort();
     expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample/cancel", { requestId: 12 });
     finish({ text: null, inputTokens: 4, outputTokens: 1, cachedInputTokens: 2 });
-    expect(await pending).toMatchObject({ text: null, inputTokens: 4 });
+    expect(await pending).toMatchObject({ nativeOperationCancelled: true });
   });
   const asideInput = {
     threadId: asThreadId("thread_1"),

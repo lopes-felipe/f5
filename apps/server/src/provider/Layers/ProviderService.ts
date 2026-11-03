@@ -2078,7 +2078,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         Effect.gen(function* () {
           const routed = yield* resolveRoutableSession({
             threadId,
-            operation: "provider.markNativeThreadRead",
+            operation: "nativeOperation.markRead",
             allowRecovery: false,
           });
           if (routed.adapter.markNativeThreadRead)
@@ -2169,10 +2169,31 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             const record = (yield* nativeCoordinator.list(input.threadId)).find(
               (entry) => entry.operationId === input.operationId,
             );
-            if (!record || (yield* nativeGeneration(input.threadId)) !== input.generation)
+            if (
+              !record ||
+              record.generation !== input.generation ||
+              (yield* nativeGeneration(input.threadId)) !== input.generation
+            )
               return yield* nativeError(
                 "The provider session changed. Reload before resolving this outcome.",
               );
+            if (input.action === "cancel") {
+              if (record.command.kind !== "aside")
+                return yield* nativeError("Only aside sampling can be cancelled here.");
+              if (!["requested", "dispatched", "running"].includes(record.state)) return record;
+              yield* assertSessionAction({
+                threadId: input.threadId,
+                action: "nativeAside",
+                expectedGeneration: input.generation,
+              });
+              const routed = yield* resolveRoutableSession({
+                threadId: input.threadId,
+                operation: "nativeOperation.cancel",
+                allowRecovery: false,
+              });
+              yield* routed.adapter.interruptTurn(input.threadId);
+              return record;
+            }
             if (input.action === "reconcile") {
               yield* nativeCoordinator
                 .reconcileThread(input.threadId, checkNativeOperation)

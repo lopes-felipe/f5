@@ -19,7 +19,9 @@ The audited version is **0.166.0**. To install that version explicitly, run
 
 On Codex 0.166.0 or later, use `/aside <question>` after a turn finishes to ask
 a side question using the thread context. The answer appears in an expandable Aside
-card and stays out of the provider conversation history. Stop cancels the sample.
+card and stays out of the provider conversation history. Use **Cancel aside** in the
+composer tray to cancel the sample. A user skill named `aside` keeps its command;
+F5 does not install its own shortcut when that name is already in use.
 A response that contains no text suggests asking as a normal message instead.
 
 Open **Runtime details** to load the thread's memory summary (0.166.0+) or dollar

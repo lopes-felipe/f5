@@ -57,6 +57,33 @@ const props = {
   prompt: "",
   onSuggestion: () => {},
 };
+
+it("cancels a running aside without requiring an active turn", async () => {
+  mocks.list.mockResolvedValue([
+    record("running", { command: { kind: "aside", question: "Why?" } }),
+  ]);
+  mocks.resolve.mockImplementation(async () => {
+    mocks.list.mockResolvedValue([
+      record("cancelled", { command: { kind: "aside", question: "Why?" } }),
+    ]);
+    return record("cancelled", { command: { kind: "aside", question: "Why?" } });
+  });
+  const screen = await render(<NativeRuntimeTray {...props} />);
+  try {
+    await page.getByRole("button", { name: "Cancel aside" }).click();
+    expect(mocks.resolve).toHaveBeenCalledWith({
+      threadId,
+      operationId: "operation",
+      generation: 1,
+      action: "cancel",
+    });
+    await expect
+      .element(page.getByRole("button", { name: "Cancel aside" }))
+      .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 const taskProps = {
   ...props,

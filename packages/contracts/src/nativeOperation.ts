@@ -127,11 +127,11 @@ export const NativeOperationResolutionInput = /* @__PURE__ */ Schema.Struct({
   threadId: ThreadId,
   operationId: /* @__PURE__ */ TrimmedNonEmptyString.check(/* @__PURE__ */ Schema.isMaxLength(200)),
   generation: NonNegativeInt,
-  action: /* @__PURE__ */ Schema.Literals(["reconcile", "acknowledge"]),
+  action: /* @__PURE__ */ Schema.Literals(["reconcile", "acknowledge", "cancel"]),
 });
 export type NativeOperationResolutionInput = typeof NativeOperationResolutionInput.Type;
 export const NATIVE_OPERATION_WS_METHODS = {
-  markRead: "provider.markNativeThreadRead",
+  markRead: "nativeOperation.markRead",
   historyRecovery: "nativeOperation.historyRecovery",
   resolve: "nativeOperation.resolve",
   fork: "nativeOperation.fork",

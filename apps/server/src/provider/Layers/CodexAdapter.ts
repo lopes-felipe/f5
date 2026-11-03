@@ -3989,6 +3989,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         Effect.tryPromise({
           try: (signal) => manager.executeNativeOperation(input, onReceipt, signal),
           catch: (cause) => {
+            if (
+              input.command.kind === "aside" &&
+              asObject(cause)?.nativeOperationCancelled === true
+            )
+              return Object.assign(toRequestError(input.threadId, input.command.kind, cause), {
+                nativeOperationCancelled: true,
+              });
             const error = toRequestError(input.threadId, input.command.kind, cause);
             if (
               cause &&
@@ -4003,7 +4010,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               });
             return error;
           },
-        }),
+        }).pipe(
+          Effect.onInterrupt(() =>
+            input.command.kind === "aside"
+              ? Effect.promise(() => manager.interruptTurn(input.threadId).catch(() => undefined))
+              : Effect.void,
+          ),
+        ),
       markNativeThreadRead: (threadId) =>
         Effect.promise(() => manager.markNativeThreadRead(threadId)),
       inspectNativeOperation: (input) =>

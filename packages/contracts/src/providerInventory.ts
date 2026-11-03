@@ -90,7 +90,6 @@ export const ProviderInstanceInventory = Schema.Struct({
       }),
     ),
   ),
-  feedbackPath: Schema.optional(TrimmedNonEmptyString),
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
   generatedAt: IsoDateTime,
@@ -105,9 +104,11 @@ export const ProviderInstanceInventory = Schema.Struct({
 export type ProviderInstanceInventory = typeof ProviderInstanceInventory.Type;
 
 export const ServerGetProviderInventoryInput = Schema.Struct({
-  saveFeedback: Schema.optional(Schema.Boolean),
   instanceId: ProviderInstanceId,
   /** Resolved server-side to the project's workspace root; paths are never accepted. */
   projectId: Schema.optional(ProjectId),
 });
 export type ServerGetProviderInventoryInput = typeof ServerGetProviderInventoryInput.Type;
+
+export const ServerSaveProviderFeedbackInput = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ServerSaveProviderFeedbackInput = typeof ServerSaveProviderFeedbackInput.Type;

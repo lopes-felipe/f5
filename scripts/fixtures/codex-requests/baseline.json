@@ -14,6 +14,7 @@
     "v2/ThreadReadStateUpdateParams.ts": "5376152464eb7cc86663216524458794c9eeff9b54f97816ce6e4c098796fcd0",
     "v2/ThreadMemoryReadParams.ts": "1c7f1bf8978b084e421b418218703fee282999c44f4f4c1c7fdb946f344bcaef",
     "v2/ThreadGoalSetParams.ts": "0f6628f08fbe8b2adc0b4cab51d3e4728b41cccfeb2a4b005214efa71c6bc08e",
-    "v2/ThreadGoalClearParams.ts": "46d060d7e6674db1aa4637c2084f35199e8e653a0a9a40e4fcdc56b1b324e079"
+    "v2/ThreadGoalClearParams.ts": "46d060d7e6674db1aa4637c2084f35199e8e653a0a9a40e4fcdc56b1b324e079",
+    "v2/GetAccountTokenUsageParams.ts": "1a7a313f8a64fb038abfff5360e61f7e27019d708c37190840e1689633363892"
   }
 }

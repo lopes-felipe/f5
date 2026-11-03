@@ -125,6 +125,7 @@ export const WS_METHODS = {
   serverRunProviderUpdate: "server.runProviderUpdate",
   serverValidateHarnesses: "server.validateHarnesses",
   serverGetProviderInventory: "server.getProviderInventory",
+  serverSaveProviderFeedback: "server.saveProviderFeedback",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverAddKeybinding: "server.addKeybinding",
   serverUpdateKeybinding: "server.updateKeybinding",

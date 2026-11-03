@@ -257,9 +257,14 @@ export function ProviderInventorySection({
                   onClick={() => {
                     setSavingFeedback(true);
                     setFeedbackError(null);
-                    void ensureNativeApi()
-                      .server.getProviderInventory({ instanceId, saveFeedback: true })
-                      .then((inventory) => setFeedbackPath(inventory.feedbackPath ?? null))
+                    const save = ensureNativeApi().server.saveProviderFeedback;
+                    if (!save) {
+                      setSavingFeedback(false);
+                      setFeedbackError("Feedback save is unavailable.");
+                      return;
+                    }
+                    void save({ instanceId })
+                      .then((result) => setFeedbackPath(result.path))
                       .catch((cause) => setFeedbackError(String(cause)))
                       .finally(() => setSavingFeedback(false));
                   }}

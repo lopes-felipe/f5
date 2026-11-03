@@ -614,6 +614,43 @@ function NativeRuntimeTrayContent(props: NativeRuntimeTrayProps) {
               >
                 <Spinner aria-hidden className="size-3.5 shrink-0" />
                 {nativeOperationLabel(row.record.command.kind)} running…
+                {row.record.command.kind === "aside" && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      const api = readNativeApi()?.nativeOperations;
+                      if (!api?.resolve || !capabilities) return;
+                      setBusy(true);
+                      void api
+                        .resolve({
+                          threadId,
+                          operationId: row.record.operationId,
+                          generation: capabilities.generation,
+                          action: "cancel",
+                        })
+                        .then(() => api.list({ threadId }))
+                        .then((next) => {
+                          if (mounted.current) {
+                            mutationVersion.current += 1;
+                            setRecords(next);
+                          }
+                        })
+                        .catch((cause) =>
+                          showError(
+                            "Could not cancel aside",
+                            errorMessage(cause, "Cancellation failed."),
+                          ),
+                        )
+                        .finally(() => {
+                          if (mounted.current) setBusy(false);
+                        });
+                    }}
+                  >
+                    Cancel aside
+                  </Button>
+                )}
               </div>
             );
           case "tasks": {

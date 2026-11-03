@@ -7,7 +7,7 @@ Release 0–5 behavior. The user guide is [providers/codex.md](../providers/code
 
 Baseline: `rust-v0.166.0`, source revision
 `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The previous full-surface baseline
-remains 0.144.3, with the 0.162.0 fixture retained as history. Wire protocol is 43.
+remains 0.144.3, with the 0.162.0 fixture retained as history. Wire protocol is 44.
 
 The generated experimental protocol audit certifies 87 notifications, 11 server
 requests, 19 item variants and 85 decoded response fields. No previously consumed
