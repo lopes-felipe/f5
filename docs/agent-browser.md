@@ -641,30 +641,23 @@ certification). A report supports a record only when every required assertion is
 versions and inventory match, its `sourceCommit` equals the record's `evidenceCommit` and
 it is not `dirty`; a unit test re-checks every cited report with `evidenceMismatches`.
 
-Certification has two phases, because stamping a record changes the bundle that embeds
-it:
+Certification is a one-time **evidence** run: a live harness runs outside F5 on a clean
+checkout of main and writes a report; the stamper validates it and stamps the record,
+which lands on main by PR. Publication (the release publisher and
+`bun run release:promote --tag vX.Y.Z`) then only requires every certifying record's
+`evidenceCommit` to be in the tag's history; it reads records at the commit the remote
+tag names and refuses a local tag that differs.
 
-1. **Evidence.** A live harness runs outside F5 on a clean checkout of main and writes a
-   report; the stamper validates it and stamps the record, which lands on main by PR.
-2. **Acceptance.** The release workflow builds the signed **draft** that embeds the
-   stamped record. The operator installs that draft's DMG and runs
-   `bun run integrations:accept --integration <i> --tag vX.Y.Z --artifact <dmg>`, which
-   hashes the DMG, requires the installed app's cdhash and version to match it, and walks
-   the `INTEGRATION_ACCEPTANCE_CHECKS` list: process stops, idle stop, background work
-   (fixture hits) and manifest bytes are observed; the rest are confirmed. Its report,
-   `docs/computer-certification/acceptance-<version>-<integration>-darwin-<arch>.json`
-   (one per architecture's DMG), is committed to
-   main. `bun run release:promote --tag vX.Y.Z` then publishes the draft only when, for
-   every certifying record in the tag, main holds an all-passed acceptance report for the
-   draft's exact DMG digest, the tag's commit and those record IDs, and every
-   `evidenceCommit` is in the tag's history. Both scripts read records at the commit the
-   remote tag names and refuse a local tag that differs; acceptance also requires
-   `codesign --verify --deep --strict` on the installed and the mounted app before
-   comparing their CDHash. It is the only supported way to undraft (by policy: a
-   maintainer can still run `gh release edit --draft=false`).
+Per-build **acceptance** is optional and never blocks a release. To check a build by
+hand, install its DMG and run
+`bun run integrations:accept --integration <i> --candidate-run <run-id> --artifact <dmg>`,
+which hashes the DMG, requires the installed app's cdhash and version to match it, and
+walks the `INTEGRATION_ACCEPTANCE_CHECKS` list: process stops, idle stop, background work
+(fixture hits) and manifest bytes are observed; the rest are confirmed. It writes
+`docs/computer-certification/acceptance-<version>-<integration>-darwin-<arch>.json`.
 
-On any acceptance failure the draft is not published: withdraw the record
-(`--withdraw <id> --reason <note>`), note it in the CHANGELOG and cut a new release.
+If a check fails, withdraw the record (`--withdraw <id> --reason <note>`), note it in
+the CHANGELOG and cut a new release.
 
 Codex records hold a **certified floor**: the stamper writes the exercised ChatGPT app,
 plugin or service versions (and, for Codex Chrome, the Codex CLI version) as `appMin`,

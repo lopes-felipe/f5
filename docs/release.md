@@ -155,24 +155,21 @@ The desktop profile and asset contract remain in `scripts/lib/release-profile.ts
 `release-profile.json` currently ships `all`. Once any public Mac/Linux feed
 exists, neither preparation nor publication may revert to Windows-only.
 
-The existing certification gates remain mandatory. A certifying integration record
-requires exact-source/exact-DMG acceptance evidence on main. Missing evidence blocks
-shadow verification and publication; an agent must not fabricate or weaken it.
-Certification runs before any tag or draft is created, then again after uploads.
-The mounted runtime smoke is not authenticated provider or physical-input evidence.
-When a record certifies an integration, download/install the retained candidate
-DMG and run the existing acceptance checklist against its trusted build run:
+Publication checks that every certifying integration record's evidence commit is in
+the candidate's history, before any tag or draft is created and again after uploads.
+Per-build operator acceptance is not required: a certified record ships in every build
+that embeds it, and its runtime checks (signatures, identity, inventory digest) still
+close the integration when anything drifts. The mounted runtime smoke is not
+authenticated provider or physical-input evidence.
+
+The acceptance checklist remains available for a manual check of a candidate DMG:
 
 ```sh
 bun run integrations:accept --integration codex-chrome --candidate-run <run-id> --artifact <candidate.dmg>
 ```
 
-This binds the report to the candidate SHA and DMG receipt before a tag exists.
-Merge only the resulting acceptance JSON reports under
-`docs/computer-certification/acceptance-*.json`. Such evidence-only commits do
-not supersede the candidate they certify; code or other documentation changes
-still produce a newer eligible beta. Existing certification policy can hold a
-candidate until its required operator evidence exists; it is never skipped.
+Its report under `docs/computer-certification/acceptance-*.json` is informational;
+such evidence-only commits do not supersede the current candidate.
 See [agent-browser.md](agent-browser.md) for certification procedures.
 
 ## One-time maintainer setup
