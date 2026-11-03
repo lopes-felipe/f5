@@ -1327,6 +1327,14 @@ function backgroundTaskResult(input: {
   };
 }
 
+/** Claude cache reads/writes are separate from input_tokens; zero totals are placeholders. */
+function claudeInputTokens(usage: Readonly<Record<string, unknown>> | undefined): number {
+  return ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].reduce(
+    (total, key) => total + (typeof usage?.[key] === "number" ? (usage[key] as number) : 0),
+    0,
+  );
+}
+
 function usageFromClaudeStreamEvent(
   message: SDKMessage,
 ): { readonly rawMethod: string; readonly usage: unknown } | undefined {
@@ -3901,20 +3909,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const inputUsage = context.latestUsage;
-        const estimatedTokens = inputUsage
-          ? [
-              "input_tokens",
-              "cache_read_input_tokens",
-              "cache_creation_input_tokens",
-              "output_tokens",
-            ].reduce(
-              (total, key) =>
-                total + (typeof inputUsage[key] === "number" ? (inputUsage[key] as number) : 0),
-              0,
-            )
-          : roughTokenEstimateFromCharacters(
-              context.baseContextChars + context.approximateConversationChars,
-            );
+        const estimatedTokens =
+          inputUsage && claudeInputTokens(inputUsage) > 0
+            ? [
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "output_tokens",
+              ].reduce(
+                (total, key) =>
+                  total + (typeof inputUsage[key] === "number" ? (inputUsage[key] as number) : 0),
+                0,
+              )
+            : roughTokenEstimateFromCharacters(
+                context.baseContextChars + context.approximateConversationChars,
+              );
         const thresholdTokens = Math.floor(context.modelContextWindowTokens * 0.8);
         if (estimatedTokens < thresholdTokens) {
           return;
@@ -4297,17 +4306,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (value !== null && value !== undefined) mergedUsage[key] = value;
           }
           context.latestUsage = mergedUsage;
-          const inputTokens = [
-            "input_tokens",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-          ].reduce(
-            (sum, key) =>
-              sum + (typeof mergedUsage[key] === "number" ? (mergedUsage[key] as number) : 0),
-            0,
-          );
           // Zero-input starts are proxy placeholders, not context measurements.
-          if (inputTokens <= 0) return;
+          if (claudeInputTokens(mergedUsage) <= 0) return;
           const modelContextWindowTokens = emittedModelContextWindowTokens(context);
           const stamp = yield* makeEventStamp(context);
           yield* offerRuntimeEvent({
@@ -8949,9 +8949,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             fallbackContextWindow: getConfiguredClaudeContextWindow(context.configuredBase),
           });
           if (runtimeModelSelection.apiModel && runtimeModelSelection.baseModel) {
-            if (context.autoRejectedForModel !== runtimeModelSelection.baseModel) {
-              context.autoRejectedForModel = undefined;
-            }
             const previousModel = getClaudeSessionModel(context);
             const previousContextWindow = getConfiguredClaudeContextWindow(context.configuredBase);
             const nextReported = yield* reportedCapabilitiesFor(runtimeModelSelection.baseModel);
@@ -8997,6 +8994,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ...context.session,
               model: runtimeModelSelection.baseModel,
             };
+            // A committed model switch renegotiates Auto, as a different model
+            // may support it. A failed switch must retain the old model's rejection.
+            if (context.autoRejectedForModel !== runtimeModelSelection.baseModel) {
+              context.autoRejectedForModel = undefined;
+            }
             context.configuredBase = withClaudeRuntimeTraitsConfig(
               withClaudeRuntimeSelectionConfig(context.configuredBase, runtimeModelSelection),
               runtimeTraits,

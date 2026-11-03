@@ -22,6 +22,7 @@ export interface ComposerPathSearchTarget {
   readonly query: string;
 }
 
+/** Match the exact query sent to search, preserving whitespace in quoted paths. */
 export function isPathSuggestionCurrent(
   searchedTarget: ComposerPathSearchTarget,
   trigger: ComposerTrigger | null,
@@ -31,7 +32,7 @@ export function isPathSuggestionCurrent(
     cwd !== null &&
     trigger?.kind === "path" &&
     searchedTarget.cwd === cwd &&
-    searchedTarget.query.trim() === trigger.query.trim()
+    searchedTarget.query === trigger.query
   );
 }
 
@@ -60,6 +61,7 @@ function tokenStartForCursor(text: string, cursor: number): number {
   return index + 1;
 }
 
+/** Check the whole slash word, including text after the caret, for a second slash. */
 function isPathWord(text: string, start: number, cursor: number): boolean {
   let end = cursor;
   while (end < text.length && !isWhitespace(text[end] ?? "")) end += 1;

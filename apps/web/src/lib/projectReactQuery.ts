@@ -7,6 +7,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
+import type { ComposerPathSearchTarget } from "../composer-logic";
 import { ensureNativeApi } from "~/nativeApi";
 import { randomUUID } from "./utils";
 
@@ -78,6 +79,7 @@ export function projectListEntriesQueryOptions(input: {
   });
 }
 
+/** Keep each result's search identity when TanStack reuses it as placeholder data. */
 export function projectSearchEntriesQueryOptions(input: {
   cwd: string | null;
   query: string;
@@ -88,7 +90,9 @@ export function projectSearchEntriesQueryOptions(input: {
   const limit = input.limit ?? DEFAULT_SEARCH_ENTRIES_LIMIT;
   return queryOptions({
     queryKey: projectQueryKeys.searchEntries(input.cwd, input.query, limit),
-    queryFn: async () => {
+    queryFn: async (): Promise<
+      ProjectSearchEntriesResult & { searchedTarget: ComposerPathSearchTarget }
+    > => {
       const api = ensureNativeApi();
       if (!input.cwd) {
         throw new Error("Workspace entry search is unavailable.");
@@ -105,7 +109,7 @@ export function projectSearchEntriesQueryOptions(input: {
     placeholderData: (previous) =>
       previous ?? {
         ...EMPTY_SEARCH_ENTRIES_RESULT,
-        searchedTarget: { cwd: input.cwd ?? "", query: input.query },
+        searchedTarget: { cwd: input.cwd, query: input.query },
       },
   });
 }

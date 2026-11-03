@@ -203,6 +203,8 @@ describe("isPathSuggestionCurrent", () => {
 
   it.each([
     ["@beta", "/repo"],
+    ['@"alpha ', "/repo"],
+    ['@" alpha', "/repo"],
     ["@alpha", "/other"],
     ["@alpha", null],
     ["/alpha", "/repo"],
@@ -211,6 +213,17 @@ describe("isPathSuggestionCurrent", () => {
     expect(isPathSuggestionCurrent(target, detectComposerTrigger(text, text.length), cwd)).toBe(
       false,
     );
+  });
+
+  it("accepts an exact quoted query including its trailing whitespace", () => {
+    const text = '@"alpha ';
+    expect(
+      isPathSuggestionCurrent(
+        { ...target, query: "alpha " },
+        detectComposerTrigger(text, text.length),
+        "/repo",
+      ),
+    ).toBe(true);
   });
 });
 

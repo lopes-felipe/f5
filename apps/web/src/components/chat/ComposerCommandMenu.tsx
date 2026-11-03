@@ -87,7 +87,11 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         <CommandList
           id={props.listId}
           aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
-          className="max-h-64"
+          className={cn(
+            "max-h-64",
+            props.isLoading && props.triggerKind === "path" && "opacity-50",
+          )}
+          aria-busy={props.isLoading}
         >
           {props.items.map((item) => (
             <ComposerCommandMenuItem

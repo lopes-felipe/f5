@@ -3787,7 +3787,7 @@ it.layer(
     // probes; Windows CI needs headroom for process startup and NTFS latency.
     process.platform === "win32" ? 60_000 : 30_000,
   );
-  it.effect.each(["ordinary", "protected"] as const)(
+  it.effect.each(["merged", "pushed"] as const)(
     "removes inactive F5 worktrees and preserves every branch during manual cleanup: %s",
     (branchKind) =>
       withHomeSandbox(
@@ -3799,16 +3799,12 @@ it.layer(
           yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
           const managed = (name: string) =>
             NodePath.join(config.worktreesDir, "managed-" + branchKind, name);
-          const selected = branchKind === "ordinary" ? ["a", "b", "c"] : ["m", "r", "t"];
+          // Each batch mixes ordinary and protected branches without returning
+          // to the seven-worktree fixture that exceeded the Windows timeout.
+          const selected = branchKind === "merged" ? ["a", "c", "m"] : ["b", "r", "t"];
           yield* Effect.promise(async () => {
-            if (branchKind === "ordinary") {
+            if (selected.includes("a")) {
               runGit(repo.root, "worktree", "add", "-q", "-b", "merged-a", managed("a"), "main");
-              runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
-              await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
-              runGit(managed("b"), "add", ".");
-              runGit(managed("b"), "commit", "-q", "-m", "b");
-              runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
-              runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
               // Ignored build output no longer blocks storage cleanup.
               await writeFile(
                 NodePath.join(repo.root, ".git", "info", "exclude"),
@@ -3817,13 +3813,27 @@ it.layer(
               await writeFile(NodePath.join(managed("a"), "node_modules", "x", "index.js"), "x");
               await writeFile(NodePath.join(managed("a"), "dist", "index.js"), "x");
               await writeFile(NodePath.join(managed("a"), "app.tsbuildinfo"), "{}");
-            } else {
-              // Keep default and long-lived branches, as well as a branch tracking origin/main.
+            }
+            if (selected.includes("b")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
+              await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
+              runGit(managed("b"), "add", ".");
+              runGit(managed("b"), "commit", "-q", "-m", "b");
+              runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
+            }
+            if (selected.includes("c")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
+            }
+            if (selected.includes("m")) {
               runGit(repo.root, "checkout", "-q", "-b", "feature-x");
               runGit(repo.root, "worktree", "add", "-q", managed("m"), "main");
+            }
+            if (selected.includes("r")) {
               runGit(repo.root, "branch", "release-1", "main");
               runGit(repo.root, "push", "-q", "-u", "origin", "release-1");
               runGit(repo.root, "worktree", "add", "-q", managed("r"), "release-1");
+            }
+            if (selected.includes("t")) {
               runGit(
                 repo.root,
                 "worktree",
@@ -3846,7 +3856,7 @@ it.layer(
             projectId: "project-managed-" + branchKind,
             workspaceRoot: repo.root,
           });
-          if (branchKind === "ordinary")
+          if (selected.includes("c"))
             yield* seedThread({
               sql,
               threadId: ThreadId.makeUnsafe("thread-archived-managed-c"),
@@ -3895,9 +3905,9 @@ it.layer(
             selected.map((name) => [managed(name), "kept"]),
           );
           const branches = localBranches(repo.root);
-          for (const branch of branchKind === "ordinary"
-            ? ["merged-a", "pushed-b", "archived-c"]
-            : ["tracks-main", "release-1"])
+          for (const branch of branchKind === "merged"
+            ? ["merged-a", "archived-c"]
+            : ["pushed-b", "tracks-main", "release-1"])
             assert.include(branches, branch);
           assert.include(branches, "main");
           assert.include(branches, "ahead-d");
