@@ -7,6 +7,7 @@ import {
   injectMcpAppCsp,
   injectMcpAppThemeBootstrap,
   injectMcpAppCookieBootstrap,
+  injectMcpAppDocumentGuard,
   mcpAppAllowAttribute,
   mcpAppContentSecurityPolicy,
   mcpAppToolCallableByApp,
@@ -14,6 +15,46 @@ import {
   readMcpAppReference,
   readMcpAppResourceUri,
 } from "./mcpApp";
+
+describe("injectMcpAppDocumentGuard", () => {
+  it("attests native frame activation through its private port despite app property overrides", () => {
+    const html = injectMcpAppDocumentGuard("<!doctype html><script>app()</script>", "nonce");
+    const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>"));
+    let userActive = false;
+    const activation = Object.create({
+      get isActive() {
+        return userActive;
+      },
+    });
+    const navigator = { userActivation: activation };
+    const sent: unknown[] = [];
+    const port = {
+      onmessage: undefined as ((event: { isTrusted: boolean; data: unknown }) => void) | undefined,
+      postMessage: (data: unknown) => sent.push(data),
+      close: () => undefined,
+      start: () => undefined,
+    };
+    const context = {
+      navigator,
+      MessageChannel: class {
+        port1 = port;
+        port2 = {};
+      },
+      window: { addEventListener: () => undefined },
+      parent: { postMessage: () => undefined },
+    };
+    NodeVM.runInNewContext(script, context);
+    // The untrusted app's public navigator property is unrelated to the native getter.
+    navigator.userActivation = { isActive: true };
+    port.onmessage!({ isTrusted: true, data: { ping: "inactive" } });
+    expect(sent).toEqual([{ pong: "inactive", userActive: false }]);
+    userActive = true;
+    port.onmessage!({ isTrusted: true, data: { ping: "active" } });
+    expect(sent.at(-1)).toEqual({ pong: "active", userActive: true });
+    port.onmessage!({ isTrusted: false, data: { ping: "forged" } });
+    expect(sent).toHaveLength(2);
+  });
+});
 
 describe("mcpAppContentSecurityPolicy", () => {
   it("blocks the network and T3's own origin when the app declares nothing", () => {

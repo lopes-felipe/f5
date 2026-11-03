@@ -16,6 +16,32 @@ const api = vi.hoisted(() => ({
   openExternal: vi.fn(),
   submit: vi.fn(),
 }));
+const documentChecks = vi.hoisted(() => ({
+  pauseNext: false,
+  resume: undefined as (() => void) | undefined,
+}));
+vi.mock("../../lib/mcpAppDocumentGuard", async (original) => {
+  const { makeMcpAppDocumentGuard } =
+    await original<typeof import("../../lib/mcpAppDocumentGuard")>();
+  return {
+    makeMcpAppDocumentGuard: (...args: Parameters<typeof makeMcpAppDocumentGuard>) => {
+      const guard = makeMcpAppDocumentGuard(...args);
+      return {
+        ...guard,
+        check: async () => {
+          const valid = await guard.check();
+          if (documentChecks.pauseNext) {
+            documentChecks.pauseNext = false;
+            await new Promise<void>((resolve) => {
+              documentChecks.resume = resolve;
+            });
+          }
+          return valid;
+        },
+      };
+    },
+  };
+});
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ mcpApps: api, shell: api, nextTurnQueue: api }),
 }));
@@ -70,6 +96,8 @@ const originalFetch = globalThis.fetch;
 let mode = "tool",
   reports: unknown[] = [];
 let active: Awaited<ReturnType<typeof render>> | undefined;
+let skew = 0;
+let elsewhere: HTMLButtonElement | undefined;
 const source = () =>
   injectMcpAppCsp(
     `<!doctype html><style>html,body{margin:0;height:100%}button{display:block;width:100%;height:100vh}</style><button id="act">Weather action</button><script>
@@ -77,7 +105,31 @@ const pending=new Map();let next=1;
 const request=(method,params)=>new Promise(resolve=>{const id=next++;pending.set(id,resolve);parent.postMessage({jsonrpc:'2.0',id,method,params},'*');});
 window.addEventListener('message',event=>{if(event.source===parent&&event.data?.jsonrpc==='2.0'&&pending.has(event.data.id)){pending.get(event.data.id)(event.data);pending.delete(event.data.id);}});
 const ready=request('ui/initialize',{protocolVersion:'2026-01-26'}).then((reply)=>{parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized'},'*');parent.postMessage({mcpProbe:'ready',hostContext:reply.result?.hostContext},'*');});
+const fullscreenMode=${JSON.stringify(mode)}==='fullscreen';
+let displayMode='inline';
+const askFullscreen=async(source,mode='fullscreen')=>{
+ const reply=await request('ui/request-display-mode',{mode});
+ displayMode=reply.result?.mode;
+ parent.postMessage({mcpProbe:source,mode:displayMode},'*');
+};
+if(fullscreenMode){
+ ready.then(()=>{document.getElementById('act').focus();void askFullscreen('load');});
+ window.addEventListener('message',({data})=>{
+  if(data==='retry'){document.getElementById('act').focus();void askFullscreen('retry');}
+  if(data==='forge-retry'){
+   Object.defineProperty(navigator,'userActivation',{value:{isActive:true},configurable:true});
+   document.getElementById('act').focus();void askFullscreen('forge-retry');
+  }
+  if(data==='inline')void askFullscreen('inline','inline');
+  if(data?.method==='ui/notifications/host-context-changed'){
+   const left=displayMode==='fullscreen'&&data.params.displayMode==='inline';
+   displayMode=data.params.displayMode??displayMode;
+   if(left){document.getElementById('act').focus();void askFullscreen('exit');}
+  }
+ });
+}
 document.getElementById('act').onclick=async()=>{await ready; const mode=${JSON.stringify(mode)};
+if(mode==='fullscreen'){void askFullscreen('tap');return;}
 if(mode==='noop')return;
 if(mode==='link'){const reply=await request('ui/open-link',{url:'https://example.com/weather'});parent.postMessage({mcpProbe:'done',reply},'*');return;}
 if(mode==='navigate'){location.href='data:text/html,'+encodeURIComponent('<script>parent.postMessage({jsonrpc:"2.0",id:999,method:"tools/call",params:{name:"forecast",arguments:{city:"foreign"}}},"*");<\\/script>');return;}
@@ -86,9 +138,19 @@ const reply=await request(mode==='message'?'ui/message':'tools/call',mode==='mes
     undefined,
   );
 const receive = (event: MessageEvent) => {
-  if (event.data?.mcpProbe) reports.push(event.data);
+  if (event.data?.mcpProbe) {
+    const frame = [...document.querySelectorAll("iframe")].find(
+      (frame) => frame.contentWindow === event.source,
+    );
+    reports.push({ ...event.data, frameTitle: frame?.title });
+  }
 };
 beforeEach(() => {
+  documentChecks.pauseNext = false;
+  documentChecks.resume = undefined;
+  skew = 0;
+  const now = performance.now.bind(performance);
+  vi.spyOn(performance, "now").mockImplementation(() => now() + skew);
   mode = "tool";
   reports = [];
   useStore.setState({ threads: [thread] });
@@ -111,16 +173,32 @@ beforeEach(() => {
   window.addEventListener("message", receive);
 });
 afterEach(async () => {
+  documentChecks.resume?.();
+  elsewhere?.remove();
+  elsewhere = undefined;
   await active?.unmount();
   active = undefined;
   window.removeEventListener("message", receive);
   vi.restoreAllMocks();
   useStore.setState({ threads: [] });
 });
-async function mount() {
+async function mount(withSibling = false) {
   active = await render(
     <QueryClientProvider client={new QueryClient()}>
       <McpAppFrame app={app} threadId={threadId} />
+      {withSibling && (
+        <McpAppFrame
+          app={{
+            ...app,
+            reference: {
+              ...app.reference,
+              attachmentId: "mcp-app-document-sibling",
+              tool: "sibling",
+            },
+          }}
+          threadId={threadId}
+        />
+      )}
     </QueryClientProvider>,
   );
 }
@@ -333,4 +411,104 @@ it("keeps long approval payloads scrollable with both decisions visible", async 
   }
   expect(api.callTool).not.toHaveBeenCalled();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+async function expectMode(probe: string, mode: string, frameTitle = "forecast app") {
+  await expect
+    .poll(() =>
+      reports
+        .filter((report) => {
+          const value = report as { mcpProbe?: string; frameTitle?: string };
+          return value.mcpProbe === probe && value.frameTitle === frameTitle;
+        })
+        .at(-1),
+    )
+    .toMatchObject({ mcpProbe: probe, mode });
+}
+function tellApp(message: string, title = "forecast app") {
+  [...document.querySelectorAll("iframe")]
+    .find((frame) => frame.title === title)!
+    .contentWindow!.postMessage(message, "*");
+}
+function outsideButton() {
+  elsewhere ??= document.body.appendChild(document.createElement("button"));
+  elsewhere.textContent = "Elsewhere";
+  return elsewhere;
+}
+it("denies fullscreen on load and idle retries, but permits app input and always permits exit", async () => {
+  mode = "fullscreen";
+  await userEvent.click(outsideButton());
+  await mount();
+  await ready();
+  await expectMode("load", "inline");
+  skew += 5_000;
+  tellApp("retry");
+  await expectMode("retry", "inline");
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expectMode("tap", "fullscreen");
+  await expect.element(page.getByRole("button", { name: "Return to conversation" })).toBeVisible();
+  outsideButton().focus();
+  await userEvent.keyboard("a");
+  tellApp("inline");
+  await expectMode("inline", "inline");
+  await expect.element(page.getByRole("button", { name: "Expand app", exact: true })).toBeVisible();
+});
+it("does not accept a sibling frame's activation or an app-forged activation property", async () => {
+  mode = "fullscreen";
+  await mount(true);
+  await expectMode("load", "inline");
+  await expectMode("load", "inline", "sibling app");
+  skew += 5_000;
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expectMode("tap", "fullscreen");
+  expect(navigator.userActivation.isActive).toBe(true);
+  tellApp("retry", "sibling app");
+  await expectMode("retry", "inline", "sibling app");
+  expect(document.activeElement).toBe(page.getByTitle("sibling app", { exact: true }).element());
+  tellApp("forge-retry", "sibling app");
+  await expectMode("forge-retry", "inline", "sibling app");
+});
+it("rejects parent input arriving during a document check", async () => {
+  mode = "fullscreen";
+  await mount();
+  await expectMode("load", "inline");
+  skew += 5_000;
+  documentChecks.pauseNext = true;
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expect.poll(() => documentChecks.resume).toBeTypeOf("function");
+  outsideButton().focus();
+  await userEvent.keyboard("a");
+  documentChecks.resume!();
+  await expectMode("tap", "inline");
+  await expect.element(page.getByRole("button", { name: "Expand app", exact: true })).toBeVisible();
+});
+it("cannot reopen after Escape on the parent page", async () => {
+  mode = "fullscreen";
+  await mount();
+  await expectMode("load", "inline");
+  skew += 5_000;
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expectMode("tap", "fullscreen");
+  page.getByRole("button", { name: "Return to conversation" }).element().focus();
+  await userEvent.keyboard("{Escape}");
+  await expectMode("exit", "inline");
+  await expect.element(page.getByRole("button", { name: "Expand app", exact: true })).toBeVisible();
+});
+it("rejects activation elsewhere and cannot reopen after the exit button or Escape", async () => {
+  mode = "fullscreen";
+  await mount();
+  await ready();
+  await expectMode("load", "inline");
+  await page.getByRole("button", { name: "Expand app", exact: true }).click();
+  await page.getByRole("button", { name: "Return to conversation" }).click();
+  await expectMode("exit", "inline");
+  reports = [];
+  tellApp("retry");
+  await expectMode("retry", "inline");
+  skew += 5_000;
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expectMode("tap", "fullscreen");
+  await userEvent.keyboard("{Escape}");
+  await expectMode("exit", "inline");
+  await expect.element(page.getByRole("button", { name: "Expand app", exact: true })).toBeVisible();
 });
