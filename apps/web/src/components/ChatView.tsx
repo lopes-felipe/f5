@@ -107,7 +107,6 @@ import {
   type OrchestrationFileChangeId,
   type OrchestrationFileChangeSummary,
   type ProjectId,
-  type ProjectEntry,
   type ProjectScript,
   type ModelSlug,
   type ModelSelection,
@@ -179,6 +178,7 @@ import {
   type ComposerTrigger,
   collapseExpandedComposerCursor,
   detectComposerTrigger,
+  isPathSuggestionCurrent,
   expandCollapsedComposerCursor,
   isStandaloneModelPickerSlashCommand,
   parseStandaloneComposerSlashCommand,
@@ -504,7 +504,6 @@ const EMPTY_COMMAND_EXECUTIONS: OrchestrationCommandExecutionSummary[] = [];
 const EMPTY_TASKS: ThreadTaskItem[] = [];
 const EMPTY_TIMELINE_MESSAGES: ChatMessage[] = [];
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
-const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
@@ -2941,16 +2940,18 @@ export default memo(function ChatView({
       limit: 80,
     }),
   );
-  const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger || (composerTrigger.kind === "skill" && selectedProvider !== "codex"))
       return [];
     if (composerTrigger.kind === "path") {
-      return workspaceEntries.map((entry) => ({
+      const search = workspaceEntriesQuery.data;
+      if (!search) return [];
+      return search.entries.map((entry) => ({
         id: `path:${entry.kind}:${entry.path}`,
         type: "path",
         path: entry.path,
         pathKind: entry.kind,
+        searchTarget: search.searchedTarget,
         label: basenameOfPath(entry.path),
         description: entry.parentPath ?? "",
       }));
@@ -2973,7 +2974,7 @@ export default memo(function ChatView({
     composerTrigger,
     composerNativeSlashCommands,
     selectedProvider,
-    workspaceEntries,
+    workspaceEntriesQuery.data,
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
@@ -7032,12 +7033,17 @@ export default memo(function ChatView({
         return;
       }
       if (composerSelectLockRef.current) return;
+      const { snapshot, trigger } = resolveActiveComposerTrigger();
+      if (!trigger) return;
+      if (
+        item.type === "path" &&
+        !isPathSuggestionCurrent(item.searchTarget, trigger, workspaceCwd)
+      )
+        return;
       composerSelectLockRef.current = true;
       window.requestAnimationFrame(() => {
         composerSelectLockRef.current = false;
       });
-      const { snapshot, trigger } = resolveActiveComposerTrigger();
-      if (!trigger) return;
       if (item.type === "path") {
         const replacement = `@${serializeComposerMentionPath(item.path)} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
@@ -7104,6 +7110,7 @@ export default memo(function ChatView({
       isPendingTurnDispatchBlocked,
       resolveActiveComposerTrigger,
       selectedProvider,
+      workspaceCwd,
     ],
   );
   const onComposerMenuItemHighlighted = useCallback((itemId: string | null) => {

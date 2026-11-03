@@ -28,7 +28,7 @@ export function claudeRuntimePermissionMode(
 }
 
 /**
- * Re-checks auto support after a live model change. Returns undefined when
+ * Re-checks discovered auto support unless this model's CLI rejected it. Returns undefined when
  * nothing changes. In plan or workflow sessions only the base mode moves
  * (`setLive` is undefined) so the live plan mode is never left early.
  */
@@ -38,6 +38,7 @@ export function claudeAutoModeRecheck(input: {
   readonly supportsAutoMode: boolean | undefined;
   readonly livePlan: boolean;
   readonly workflow: boolean;
+  readonly autoRejected: boolean;
 }):
   | {
       readonly base: PermissionMode;
@@ -45,8 +46,8 @@ export function claudeAutoModeRecheck(input: {
       readonly downgraded: boolean;
     }
   | undefined {
-  // A workflow's base is plan; its runtime mode never becomes live.
-  if (!input.autoRequested || input.workflow) return undefined;
+  // Discovery may arrive after launch, but cannot override a CLI rejection.
+  if (!input.autoRequested || input.workflow || input.autoRejected) return undefined;
   const next: PermissionMode = input.supportsAutoMode === true ? "auto" : "default";
   if (next === input.base) return undefined;
   return {

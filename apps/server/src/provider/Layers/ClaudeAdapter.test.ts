@@ -9207,6 +9207,178 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "merges root stream usage and ignores zero placeholders, child usage and stale compacted deltas",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const collector = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "thread.token-usage.updated"),
+          Stream.take(5),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        let serial = 0;
+        const emit = (
+          type: "message_start" | "message_delta",
+          usage: unknown,
+          parent: string | null = null,
+        ) => {
+          serial += 1;
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-stream-usage",
+            uuid: "usage-" + serial,
+            parent_tool_use_id: parent,
+            event:
+              type === "message_start"
+                ? { type, message: { id: "msg-" + serial, usage } }
+                : { type, delta: { stop_reason: null, stop_sequence: null }, usage },
+          } as unknown as SDKMessage);
+        };
+        emit("message_start", {
+          input_tokens: 100,
+          output_tokens: 1,
+          cache_creation_input_tokens: 200,
+          cache_read_input_tokens: 300,
+        });
+        emit("message_delta", {
+          input_tokens: 25,
+          output_tokens: 10,
+          cache_creation_input_tokens: null,
+        });
+        emit("message_start", {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        });
+        emit("message_delta", { input_tokens: null, output_tokens: 12 });
+        emit("message_delta", { input_tokens: 200, output_tokens: 20 });
+        emit("message_delta", { input_tokens: 999999, output_tokens: 100 }, "child-tool");
+        emit("message_delta", { input_tokens: null, output_tokens: 30 });
+        harness.query.emit({
+          type: "system",
+          subtype: "compact_boundary",
+          uuid: "compact-usage",
+          session_id: "sdk-stream-usage",
+          compact_metadata: { trigger: "auto", pre_tokens: 230 },
+        } as unknown as SDKMessage);
+        emit("message_delta", { input_tokens: 999, output_tokens: 50 });
+        emit("message_start", { input_tokens: 50, output_tokens: 1 });
+        const events = Array.from(yield* Fiber.join(collector));
+        const usages = events.flatMap((event) =>
+          event.type === "thread.token-usage.updated"
+            ? [event.payload.usage as Record<string, number>]
+            : [],
+        );
+        assert.deepEqual(
+          usages.map(
+            (usage) =>
+              (usage.input_tokens ?? 0) +
+              (usage.output_tokens ?? 0) +
+              (usage.cache_creation_input_tokens ?? 0) +
+              (usage.cache_read_input_tokens ?? 0),
+          ),
+          [601, 535, 220, 230, 51],
+        );
+        assert.equal(usages[1]?.cache_creation_input_tokens, 200);
+        assert.equal(usages[1]?.cache_read_input_tokens, 300);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "uses the character estimate for compaction when a proxy reports no input usage",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const recommendation = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "compaction.recommended"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          model: "claude-haiku-4-5",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "x".repeat(900_000),
+          attachments: [],
+        });
+        // Conversation estimates count the CLI's transcript echo, not queued prompts.
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-prompt",
+          parent_tool_use_id: null,
+          message: { role: "user", content: "x".repeat(900_000) },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-start",
+          parent_tool_use_id: null,
+          event: {
+            type: "message_start",
+            message: {
+              id: "proxy-message",
+              usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+              },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-delta",
+          parent_tool_use_id: null,
+          event: {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 10 },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-proxy-compaction",
+          uuid: "proxy-result",
+        } as unknown as SDKMessage);
+        const event = yield* Fiber.join(recommendation);
+        assert.equal(event._tag, "Some");
+        if (event._tag === "Some" && event.value.type === "compaction.recommended")
+          assert.isAtLeast(
+            event.value.payload.estimatedTokens,
+            event.value.payload.thresholdTokens,
+          );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("emits a thinking-tokens update for Claude thinking_tokens system messages", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -12577,7 +12749,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   describe("Claude auto permission mode", () => {
-    const AUTO_MODEL = "claude-auto-supported";
+    const AUTO_MODEL = "claude-haiku-4-5";
     const NO_AUTO_MODEL = "claude-auto-unsupported";
     const makeAutoHarness = () =>
       makeHarness({
@@ -12761,6 +12933,158 @@ describe("ClaudeAdapterLive", () => {
         Effect.provide(harness.layer),
       );
     });
+
+    it.effect.each([AUTO_MODEL, AUTO_MODEL + "-20251001", AUTO_MODEL + "[1m]"])(
+      "keeps the CLI fallback with init model %s and retries after a model change",
+      (reportedModel) => {
+        const harness = makeAutoHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const events = yield* collectEvents(adapter);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: AUTO_MODEL,
+            runtimeMode: "auto",
+          });
+          harness.query.emit({
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-auto",
+            uuid: "init-auto-fallback",
+            model: reportedModel,
+            permissionMode: "default",
+          } as unknown as SDKMessage);
+          for (let attempt = 0; attempt < 100 && warningsIn(events).length === 0; attempt += 1)
+            yield* settle;
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          harness.query.setPermissionModeCalls.length = 0;
+
+          for (const interactionMode of ["default", undefined] as const) {
+            yield* adapter.sendTurn({
+              threadId: THREAD_ID,
+              input: "continue",
+              model: AUTO_MODEL,
+              ...(interactionMode ? { interactionMode } : {}),
+              attachments: [],
+            });
+            yield* completeTurn(harness, events);
+          }
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["default"]);
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "switch model",
+            model: NO_AUTO_MODEL,
+            attachments: [],
+          });
+          yield* completeTurn(harness, events);
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "retry auto on a supported model",
+            model: AUTO_MODEL,
+            attachments: [],
+          });
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["default", "auto"]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
+    it.effect.each(["init", "status"] as const)(
+      "retains the %s Auto rejection if a model switch fails",
+      (subtype) => {
+        const harness = makeAutoHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const events = yield* collectEvents(adapter);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: AUTO_MODEL,
+            runtimeMode: "auto",
+          });
+          harness.query.emit({
+            type: "system",
+            subtype,
+            session_id: "sdk-session-auto",
+            uuid: "rejected-mode-" + subtype,
+            model: AUTO_MODEL,
+            permissionMode: "default",
+          } as unknown as SDKMessage);
+          for (let attempt = 0; attempt < 100 && warningsIn(events).length === 0; attempt += 1)
+            yield* settle;
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          const rejectSwitch = vi
+            .spyOn(harness.query, "setModel")
+            .mockRejectedValueOnce(new Error("model switch rejected"));
+          try {
+            const result = yield* adapter
+              .sendTurn({
+                threadId: THREAD_ID,
+                model: NO_AUTO_MODEL,
+                input: "switch",
+                attachments: [],
+              })
+              .pipe(Effect.result);
+            assert.equal(result._tag, "Failure");
+            harness.query.setPermissionModeCalls.length = 0;
+            yield* adapter.sendTurn({
+              threadId: THREAD_ID,
+              model: AUTO_MODEL,
+              input: "continue",
+              attachments: [],
+            });
+            assert.deepEqual(harness.query.setPermissionModeCalls, []);
+            assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          } finally {
+            rejectSwitch.mockRestore();
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
+    it.effect(
+      "upgrades on the same model when capabilities arrive after launch without a rejection",
+      () => {
+        let supported = false;
+        const harness = makeHarness({
+          reportedModelCapabilities: (model) =>
+            Effect.succeed(
+              supported
+                ? createReportedClaudeModelCapabilities({ value: model, supportsAutoMode: true })
+                : undefined,
+            ),
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: "custom-late-capabilities",
+            runtimeMode: "auto",
+          });
+          assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "default");
+          supported = true;
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            model: "custom-late-capabilities",
+            input: "continue",
+            attachments: [],
+          });
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["auto"]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
 
     it.effect("fails closed when the CLI reports a mode other than auto", () => {
       const harness = makeAutoHarness();

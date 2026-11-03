@@ -4,6 +4,7 @@ import {
   clampCollapsedComposerCursor,
   collapseExpandedComposerCursor,
   detectComposerTrigger,
+  isPathSuggestionCurrent,
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
   isStandaloneModelPickerSlashCommand,
@@ -14,6 +15,15 @@ import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 import { createComposerMention } from "./composer-editor-mentions";
 
 describe("detectComposerTrigger", () => {
+  it.each([
+    ["Run /tmp/build.sh", "Run /tmp/build.sh".length],
+    ["/etc/hosts", "/etc/hosts".length],
+    ["Use /etc/hosts now", "Use /et".length],
+    ["/etc/hosts", 3],
+    ["  /tmp/build.sh", 6],
+  ])("keeps the whole path word out of the slash menu: %s", (text, cursor) => {
+    expect(detectComposerTrigger(text, cursor)).toBeNull();
+  });
   it.each(["Use ", "Use\t"])("detects an inline slash skill search after %j", (prefix) => {
     const text = `${prefix}/skill:review later`;
     const cursor = `${prefix}/skill:review`.length;
@@ -181,6 +191,39 @@ describe("detectComposerTrigger", () => {
     const text = 'Please inspect @"My File.md"';
 
     expect(detectComposerTrigger(text, text.length)).toBeNull();
+  });
+});
+
+describe("isPathSuggestionCurrent", () => {
+  const target = { cwd: "/repo", query: "alpha" };
+
+  it("accepts the result matching the live editor", () => {
+    expect(isPathSuggestionCurrent(target, detectComposerTrigger("@alpha", 6), "/repo")).toBe(true);
+  });
+
+  it.each([
+    ["@beta", "/repo"],
+    ['@"alpha ', "/repo"],
+    ['@" alpha', "/repo"],
+    ["@alpha", "/other"],
+    ["@alpha", null],
+    ["/alpha", "/repo"],
+    ["plain", "/repo"],
+  ])("rejects stale results for %s in %s", (text, cwd) => {
+    expect(isPathSuggestionCurrent(target, detectComposerTrigger(text, text.length), cwd)).toBe(
+      false,
+    );
+  });
+
+  it("accepts an exact quoted query including its trailing whitespace", () => {
+    const text = '@"alpha ';
+    expect(
+      isPathSuggestionCurrent(
+        { ...target, query: "alpha " },
+        detectComposerTrigger(text, text.length),
+        "/repo",
+      ),
+    ).toBe(true);
   });
 });
 

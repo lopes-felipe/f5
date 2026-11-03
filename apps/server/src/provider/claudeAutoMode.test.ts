@@ -47,7 +47,23 @@ describe("claudeAutoModeRejected (escalation fixtures)", () => {
 });
 
 describe("claudeAutoModeRecheck", () => {
-  const base = { autoRequested: true, livePlan: false, workflow: false } as const;
+  const base = {
+    autoRequested: true,
+    livePlan: false,
+    workflow: false,
+    autoRejected: false,
+  } as const;
+
+  it("keeps the CLI's fallback for follow-ups on the same model", () => {
+    expect(
+      claudeAutoModeRecheck({
+        ...base,
+        base: "default",
+        supportsAutoMode: true,
+        autoRejected: true,
+      }),
+    ).toBeUndefined();
+  });
 
   it("downgrades on an unsupported model and restores on a supported one", () => {
     expect(claudeAutoModeRecheck({ ...base, base: "auto", supportsAutoMode: false })).toEqual({

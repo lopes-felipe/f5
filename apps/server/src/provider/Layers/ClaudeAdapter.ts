@@ -510,6 +510,9 @@ interface ClaudeSessionContext {
   readonly startInput: ProviderAdapterSessionStartInput;
   readonly turnBoundaries: Array<import("../claudeResumeState.ts").ClaudeTurnBoundary>;
   latestUsage?: Record<string, unknown> | undefined;
+  streamUsageInvalidated?: boolean;
+  /** Selected base model whose CLI rejected auto; independent of raw init model spelling. */
+  autoRejectedForModel?: string | undefined;
   requestedRuntime?: Record<string, unknown>;
   lastProviderTitle?: string;
   nativeControl?:
@@ -1323,6 +1326,14 @@ function backgroundTaskResult(input: {
     backgroundStatus: input.backgroundStatus,
     ...(input.backgroundEndedAt ? { backgroundEndedAt: input.backgroundEndedAt } : {}),
   };
+}
+
+/** Claude cache reads/writes are separate from input_tokens; zero totals are placeholders. */
+function claudeInputTokens(usage: Readonly<Record<string, unknown>> | undefined): number {
+  return ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].reduce(
+    (total, key) => total + (typeof usage?.[key] === "number" ? (usage[key] as number) : 0),
+    0,
+  );
 }
 
 function usageFromClaudeStreamEvent(
@@ -3578,6 +3589,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         )
           return;
         context.basePermissionMode = "default";
+        context.autoRejectedForModel = context.session.model;
         context.configuredBase = { ...context.configuredBase, permissionMode: "default" };
         // Not awaited inside the message loop; approvals already ask in this mode.
         void context.query.setPermissionMode("default").catch(() => undefined);
@@ -3898,20 +3910,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const inputUsage = context.latestUsage;
-        const estimatedTokens = inputUsage
-          ? [
-              "input_tokens",
-              "cache_read_input_tokens",
-              "cache_creation_input_tokens",
-              "output_tokens",
-            ].reduce(
-              (total, key) =>
-                total + (typeof inputUsage[key] === "number" ? (inputUsage[key] as number) : 0),
-              0,
-            )
-          : roughTokenEstimateFromCharacters(
-              context.baseContextChars + context.approximateConversationChars,
-            );
+        const estimatedTokens =
+          inputUsage && claudeInputTokens(inputUsage) > 0
+            ? [
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "output_tokens",
+              ].reduce(
+                (total, key) =>
+                  total + (typeof inputUsage[key] === "number" ? (inputUsage[key] as number) : 0),
+                0,
+              )
+            : roughTokenEstimateFromCharacters(
+                context.baseContextChars + context.approximateConversationChars,
+              );
         const thresholdTokens = Math.floor(context.modelContextWindowTokens * 0.8);
         if (estimatedTokens < thresholdTokens) {
           return;
@@ -4279,14 +4292,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const { event } = message;
         if (event.type === "message_start") {
           reduceClaudeTurnLifecycle(context.lifecycle, { type: "parent-activity" });
+          context.streamUsageInvalidated = false;
+          context.latestUsage = undefined;
         }
         const usageSnapshot = usageFromClaudeStreamEvent(message);
 
         if (usageSnapshot) {
           const usage = asUnknownRecord(usageSnapshot.usage);
-          if (usage)
-            context.latestUsage =
-              event.type === "message_start" ? usage : { ...context.latestUsage, ...usage };
+          if (!usage || (event.type !== "message_start" && context.streamUsageInvalidated)) return;
+          const mergedUsage = { ...context.latestUsage };
+          // Delta counts are cumulative. Null/absent fields retain the start's
+          // counts, while explicit zeros replace them.
+          for (const [key, value] of Object.entries(usage)) {
+            if (value !== null && value !== undefined) mergedUsage[key] = value;
+          }
+          context.latestUsage = mergedUsage;
+          // Zero-input starts are proxy placeholders, not context measurements.
+          if (claudeInputTokens(mergedUsage) <= 0) return;
           const modelContextWindowTokens = emittedModelContextWindowTokens(context);
           const stamp = yield* makeEventStamp(context);
           yield* offerRuntimeEvent({
@@ -4298,7 +4320,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             threadId: context.session.threadId,
             ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
             payload: {
-              usage: usageSnapshot.usage,
+              usage: mergedUsage,
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
             },
             providerRefs: nativeProviderRefs(context),
@@ -5639,6 +5661,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "compact_boundary":
+            context.streamUsageInvalidated = true;
             context.approximateConversationChars = 0;
             context.latestUsage = undefined;
             context.compactionRecommendationEmitted = false;
@@ -8948,6 +8971,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 (input.interactionMode === undefined &&
                   context.configuredBase?.permissionMode === "plan"),
               workflow: context.workflowExecutionProfile !== undefined,
+              autoRejected: context.autoRejectedForModel === runtimeModelSelection.baseModel,
             });
             const shouldSetModel =
               runtimeModelSelection.baseModel !== previousModel ||
@@ -8971,6 +8995,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ...context.session,
               model: runtimeModelSelection.baseModel,
             };
+            // A committed model switch renegotiates Auto, as a different model
+            // may support it. A failed switch must retain the old model's rejection.
+            if (context.autoRejectedForModel !== runtimeModelSelection.baseModel) {
+              context.autoRejectedForModel = undefined;
+            }
             context.configuredBase = withClaudeRuntimeTraitsConfig(
               withClaudeRuntimeSelectionConfig(context.configuredBase, runtimeModelSelection),
               runtimeTraits,
