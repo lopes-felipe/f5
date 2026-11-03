@@ -380,6 +380,40 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("toggles a large output between the preview and the full transcript", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          output: ["A".repeat(9_000), "MIDDLE-SENTINEL", "B".repeat(9_000)].join("\n"),
+        })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      const showFull = page.getByRole("button", { name: "Show full output" });
+      expect(showFull.element().getAttribute("aria-expanded")).toBe("false");
+      expect(host.textContent).toContain("Shortened preview");
+      await showFull.click();
+
+      const showPreview = page.getByRole("button", { name: "Show preview" });
+      await vi.waitFor(() => {
+        expect(showPreview.element().getAttribute("aria-expanded")).toBe("true");
+      });
+      expect(host.textContent).toContain("MIDDLE-SENTINEL");
+      expect(host.textContent).not.toContain("Shortened preview");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("copies the command instead of a distinct summary title", async () => {
     const host = document.createElement("div");
     document.body.append(host);

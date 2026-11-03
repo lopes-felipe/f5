@@ -16,7 +16,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleStopIcon,
-  CopyIcon,
   LoaderCircleIcon,
   XIcon,
   type LucideIcon,
@@ -37,8 +36,8 @@ import { formatTimestamp } from "../../timestampFormat";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { useNowIso } from "../../lib/nowTicker";
-import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
+import { CopyIconButton } from "./CopyIconButton";
 
 interface CommandTranscriptCardProps {
   threadId?: ThreadId | null;
@@ -114,6 +113,10 @@ const COMMAND_TOKEN_CLASS_NAME: Record<DisplayCommandTokenKind, string> = {
   whitespace: "text-inherit",
 };
 
+// Matches the MCP card's section headers.
+const SECTION_LABEL_CLASS_NAME =
+  "text-2xs font-semibold tracking-widest text-muted-foreground uppercase";
+
 const INLINE_OUTPUT_PREVIEW_CHAR_LIMIT = 16_000;
 const INLINE_OUTPUT_PREVIEW_HEAD_CHARS = 8_000;
 const INLINE_OUTPUT_PREVIEW_MARKER = "\n\n[... output preview shortened ...]\n\n";
@@ -154,9 +157,18 @@ function resolveExecutionOutputTruncated(
   return "outputTruncated" in execution ? execution.outputTruncated : false;
 }
 
-function buildInlineOutputPreview(output: string): { text: string; shortened: boolean } {
+const compactCharCountFormatter = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+function buildInlineOutputPreview(output: string): {
+  text: string;
+  shortened: boolean;
+  shownChars: number;
+} {
   if (output.length <= INLINE_OUTPUT_PREVIEW_CHAR_LIMIT) {
-    return { text: output, shortened: false };
+    return { text: output, shortened: false, shownChars: output.length };
   }
 
   const headChars = Math.min(INLINE_OUTPUT_PREVIEW_HEAD_CHARS, INLINE_OUTPUT_PREVIEW_CHAR_LIMIT);
@@ -169,6 +181,7 @@ function buildInlineOutputPreview(output: string): { text: string; shortened: bo
   return {
     text: `${head}${INLINE_OUTPUT_PREVIEW_MARKER}${tail}`,
     shortened: true,
+    shownChars: head.length + tail.length,
   };
 }
 
@@ -249,25 +262,16 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
 
   return (
     <div>
-      <div className="flex min-h-6 items-center justify-between gap-2">
-        <p className="text-2xs uppercase tracking-wider text-muted-foreground">Output</p>
+      <div className="flex min-h-5 items-center justify-between gap-2">
+        <p className={SECTION_LABEL_CLASS_NAME}>Output</p>
         {canCopyOutput && (
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            aria-label={isCopied ? "Output copied" : "Copy output"}
+          <CopyIconButton
+            label={isCopied ? "Output copied" : "Copy output"}
+            copied={isCopied}
             onClick={() => {
               copyToClipboard(props.outputText);
             }}
-          >
-            {isCopied ? (
-              <CheckIcon className="size-3 text-success" />
-            ) : (
-              <CopyIcon className="size-3" />
-            )}
-            {isCopied ? "Copied" : "Copy output"}
-          </Button>
+          />
         )}
       </div>
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
@@ -282,20 +286,27 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
         </pre>
       </div>
       {showPreviewToggle && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <p className="text-2xs text-muted-foreground">
-            Showing a compact preview for this large transcript.
-          </p>
-          <Button
+        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs">
+          {!showFullOutput && (
+            <>
+              <span className="text-2xs text-muted-foreground">
+                {`Shortened preview, ${compactCharCountFormatter.format(preview.shownChars)} of ${compactCharCountFormatter.format(props.outputText.length)} characters`}
+              </span>
+              <span aria-hidden className="text-muted-foreground/50">
+                ·
+              </span>
+            </>
+          )}
+          <button
             type="button"
-            size="xs"
-            variant="outline"
+            className="rounded-sm text-info-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            aria-expanded={showFullOutput}
             onClick={() => {
               setShowFullOutput((current) => !current);
             }}
           >
             {showFullOutput ? "Show preview" : "Show full output"}
-          </Button>
+          </button>
         </div>
       )}
       {props.outputTruncated && (
@@ -498,23 +509,14 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
           </div>
         </button>
         <div className="shrink-0 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            title={isCopied ? "Copied" : "Copy command"}
-            aria-label={isCopied ? "Copied" : "Copy command"}
+          <CopyIconButton
+            label={isCopied ? "Copied" : "Copy command"}
+            copied={isCopied}
             onClick={(event) => {
               event.stopPropagation();
               copyToClipboard(displayCommand);
             }}
-          >
-            {isCopied ? (
-              <CheckIcon className="size-3 text-success" />
-            ) : (
-              <CopyIcon className="size-3" />
-            )}
-          </Button>
+          />
         </div>
       </div>
 
@@ -545,7 +547,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
 
             {showCommandSection && (
               <div>
-                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Command</p>
+                <p className={SECTION_LABEL_CLASS_NAME}>Command</p>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
                   <HighlightedCommandText command={displayCommand} />
                 </pre>
@@ -562,7 +564,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
 
             {showDetailSection && (
               <div>
-                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Detail</p>
+                <p className={SECTION_LABEL_CLASS_NAME}>Detail</p>
                 <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
                   {normalizedDetail}
                 </p>

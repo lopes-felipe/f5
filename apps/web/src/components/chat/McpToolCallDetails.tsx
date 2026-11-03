@@ -1,10 +1,10 @@
-import { CheckIcon, CopyIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
 import { toastManager } from "../ui/toast";
+import { CopyIconButton } from "./CopyIconButton";
 import { parseJsonObject } from "./MessagesTimeline.logic";
 
 /** Ingestion cuts long MCP payloads and marks the cut with an ellipsis. */
@@ -48,19 +48,12 @@ function SectionHeader(props: { label: string; copyText: string; truncated: bool
           truncated
         </span>
       ) : null}
-      <button
-        type="button"
-        className="ml-auto flex size-5 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        aria-label={`Copy ${props.label.toLowerCase()}`}
-        title={`Copy ${props.label.toLowerCase()}`}
+      <CopyIconButton
+        className="ml-auto"
+        label={`Copy ${props.label.toLowerCase()}`}
+        copied={isCopied}
         onClick={() => copyToClipboard(props.copyText)}
-      >
-        {isCopied ? (
-          <CheckIcon aria-hidden="true" className="size-3 text-success" />
-        ) : (
-          <CopyIcon aria-hidden="true" className="size-3" />
-        )}
-      </button>
+      />
     </div>
   );
 }
