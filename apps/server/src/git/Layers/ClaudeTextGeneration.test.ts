@@ -19,7 +19,7 @@ const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-function makeFakeClaudeBinary(dir: string, stalled: boolean) {
+function makeFakeClaudeBinary(dir: string, stalled: boolean, rejectsNoSessionPersistence = false) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
@@ -35,6 +35,14 @@ const fs = require("node:fs");
 const env = process.env;
 const argv = process.argv.slice(2);
 const args = argv.join(" ");
+if (${rejectsNoSessionPersistence}) {
+  if (argv.includes("--no-session-persistence")) {
+    console.error("error: unknown option '--no-session-persistence'");
+    process.exit(1);
+  }
+} else if (!argv.includes("--no-session-persistence")) {
+  throw new Error("metadata session persistence enabled");
+}
 const value = (flag) => argv[argv.indexOf(flag) + 1];
 if (!argv.includes("--tools") || value("--tools") !== "" || !argv.includes("--disable-slash-commands") || !argv.includes("--strict-mcp-config") || value("--permission-mode") !== "dontAsk" || argv.includes("--dangerously-skip-permissions")) throw new Error("unsafe metadata capabilities");
 if (JSON.parse(value("--settings")).disableAllHooks !== true) throw new Error("hooks enabled");
@@ -60,6 +68,7 @@ process.exitCode = Number(env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);
 function withFakeClaudeEnv<A, E, R>(
   input: {
     output: string;
+    rejectsNoSessionPersistence?: boolean;
     exitCode?: number;
     stderr?: string;
     argsMustContain?: string;
@@ -83,6 +92,7 @@ function withFakeClaudeEnv<A, E, R>(
     const { binDir, claudePath, pidPath } = yield* makeFakeClaudeBinary(
       tempDir,
       input.stalled === true,
+      input.rejectsNoSessionPersistence,
     );
     const previousPath = process.env.PATH;
     const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
@@ -338,7 +348,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
       {
         output: JSON.stringify({ structured_output: { groups: [] } }),
         // The fake CLI also rejects any call without empty tools, strict MCP and dontAsk.
-        argsMustContain: "--tools  --disable-slash-commands --permission-mode dontAsk",
+        argsMustContain:
+          "--tools  --disable-slash-commands --no-session-persistence --permission-mode dontAsk",
       },
       (generation, lastCwdPath) =>
         Effect.gen(function* () {
@@ -552,6 +563,45 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
         ),
     );
   }
+
+  it.effect("retries without session persistence flag for older Claude versions", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Reconnect failures" } }),
+        rejectsNoSessionPersistence: true,
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Investigate reconnect failures",
+          });
+          expect(result.title).toBe("Reconnect failures");
+        }),
+    ),
+  );
+
+  it.effect("does not retry a model error that names the session persistence flag", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          is_error: true,
+          result: "error: unknown option '--no-session-persistence'",
+        }),
+        exitCode: 1,
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const error = yield* generation
+            .generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Investigate reconnect failures",
+            })
+            .pipe(Effect.flip);
+          expect(error.detail).toContain("error: unknown option '--no-session-persistence'");
+        }),
+    ),
+  );
 
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(
