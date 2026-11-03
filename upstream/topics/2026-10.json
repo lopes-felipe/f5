@@ -36926,9 +36926,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22010",
-      "status": "inbox",
+      "reason": "Only affects development builds served from t3code-dev://. Packaged desktop builds are unaffected.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -37495,9 +37499,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22100",
-      "status": "inbox",
+      "reason": "These controls belong to upstream's lineage and workflow UI, which f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -37870,9 +37878,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22141",
-      "status": "inbox",
+      "reason": "Applies to orchestration-v2 delegated-task notifications from upstream's lineage and delegation subsystem, which f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -41962,9 +41974,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22887",
-      "status": "inbox",
+      "reason": "The symptom needs several environments with one offline, which f5 does not support.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
@@ -42050,12 +42066,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22893",
+      "reason": "The crash only happens in dev servers and tests. Production behavior doesn't change.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-22883"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "markdown"
@@ -43501,9 +43521,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23244",
-      "status": "inbox",
+      "reason": "This only affects multi-environment selection in the scheduled tasks settings.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -43794,9 +43818,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23340",
-      "status": "inbox",
+      "reason": "Only affects labels for paired remote clients, which belongs to upstream's pairing and auth surface.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -43816,9 +43844,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23343",
-      "status": "inbox",
+      "reason": "The policy puts pairing grants under relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -44258,9 +44290,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23446",
-      "status": "inbox",
+      "reason": "This only affects upstream's rich-text (Tiptap) composer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -44388,9 +44424,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23464",
-      "status": "inbox",
+      "reason": "A mobile-only fix in client-runtime, which f5 does not have.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr hub"
@@ -44572,9 +44612,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23491",
-      "status": "inbox",
+      "reason": "An upstream build script fix with no effect on what f5 users see.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -44819,9 +44863,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23554",
-      "status": "inbox",
+      "reason": "The fork merge-back flow belongs to upstream's lineage and orchestration-v2, which f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -45512,9 +45560,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23738",
-      "status": "inbox",
+      "reason": "The prompt only runs during T3 Connect onboarding.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -45751,12 +45803,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23753",
+      "reason": "Merge-back and disconnect belong to upstream's lineage panel, which f5 doesn't have.",
+      "reasonKey": "upstream-only:lineage-delegation",
       "relatedTopics": [
         "pr-22100"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -47708,9 +47764,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24046",
-      "status": "inbox",
+      "reason": "Only affects webhook-triggered scheduled tasks, which the policy classifies as relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "scheduled tasks"
@@ -47955,9 +48015,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24092",
-      "status": "inbox",
+      "reason": "Only upstream's published npm launcher script is affected, and f5 does not have that script.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -49383,9 +49447,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24358",
-      "status": "inbox",
+      "reason": "Tied to upstream's GitHub release feed format. f5 has its own update channel.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -49558,9 +49626,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24434",
-      "status": "inbox",
+      "reason": "Build tooling change with no user-visible behavior.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -50951,9 +51023,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24691",
-      "status": "inbox",
+      "reason": "Only affects paired secondary environments that were switched off, which is upstream's multi-environment connection model.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -51162,9 +51238,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24716",
-      "status": "inbox",
+      "reason": "Environment connection routes belong to upstream's multi-environment and client-runtime connection settings. The mobile part is not relevant.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -52402,12 +52482,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24955",
+      "reason": "Changes only how issues are filed to upstream's pingdotgg/t3code repo. f5 users see no product behavior change.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-22753"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -54765,9 +54849,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25187",
-      "status": "inbox",
+      "reason": "SSH host discovery feeds upstream's remote environment setup. The packages/ssh package does not exist in f5.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -55250,9 +55338,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25222",
-      "status": "inbox",
+      "reason": "Outside-agent OAuth and pairing grants are relay-cloud under the policy.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -55527,9 +55619,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25236",
-      "status": "inbox",
+      "reason": "Only triggers when projects with the same ID exist in several environments.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "command-palette"
@@ -55589,9 +55685,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25240",
-      "status": "inbox",
+      "reason": "Changes only upstream's release install script, which the fork does not have.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "install"
@@ -55813,9 +55913,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25286",
-      "status": "inbox",
+      "reason": "The bug comes from orchestration-v2 shell changes (#25122) that skip automatic compactions. f5 does not have that path.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -55836,9 +55940,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25291",
-      "status": "inbox",
+      "reason": "Policy classifies webhook triggers as relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "scheduled-tasks"
@@ -55917,9 +56025,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25301",
-      "status": "inbox",
+      "reason": "The v2 database import belongs to upstream's orchestration-v2 migration, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "persistence"
@@ -57528,9 +57640,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25560",
-      "status": "inbox",
+      "reason": "Developer tooling only. Users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dev tooling"
@@ -62397,9 +62513,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26399",
-      "status": "inbox",
+      "reason": "Copy in the pairing onboarding flow, which falls under relay-cloud pairing.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "onboarding"
@@ -62493,9 +62613,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26441",
-      "status": "inbox",
+      "reason": "Only affects multi-environment settings surfaces.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -62589,9 +62713,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26502",
-      "status": "inbox",
+      "reason": "Fixes a regression from upstream #26448's capability model search in OrchestratorMcpService. That file is not in f5, so f5 likely lacks the feature.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -62634,9 +62762,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26511",
-      "status": "inbox",
+      "reason": "This is the client-runtime connection registry for environment registrations, which f5 does not have.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "observability"
@@ -63874,9 +64006,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26893",
-      "status": "inbox",
+      "reason": "This mostly belongs to upstream's release pipeline (OpenAI summary, Discord notify). The popover change only helps if f5's releases carry the same notes format.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -63995,12 +64131,16 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26917",
+      "reason": "This relies on upstream's release ordering (draft-then-publish GitHub Releases ahead of npm). It helps f5 only if f5's update feed and release assets work the same way.",
+      "reasonKey": "release-ci",
       "relatedTopics": [
         "pr-26210"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "updates",
@@ -64200,9 +64340,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27008",
-      "status": "inbox",
+      "reason": "This is upstream's session-permission and auth-scope UI in client-runtime, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -64237,9 +64381,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27033",
-      "status": "inbox",
+      "reason": "The chip belongs to the compact-before-send feature, which f5 policy declines.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -64423,9 +64571,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27099",
-      "status": "inbox",
+      "reason": "The indexes target orchestration-v2 projection tables, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -64472,9 +64624,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27101",
-      "status": "inbox",
+      "reason": "Multi-route remote environment connections in client-runtime only.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connection"
@@ -64563,9 +64719,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27105",
-      "status": "inbox",
+      "reason": "This is orchestration-v2's ThreadLaunchService only.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -64585,9 +64745,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27106",
-      "status": "inbox",
+      "reason": "Built entirely on orchestration-v2's ShellStream and ProjectionStore.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -65034,9 +65198,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27313",
-      "status": "inbox",
+      "reason": "This only changes an upstream dev script for linked environments. Users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dev-tooling"
@@ -65262,9 +65430,13 @@
     },
     {
       "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27465",
-      "status": "inbox",
+      "reason": "The command lives under upstream's cloud and service CLI, and its files do not exist in f5. The fit with relay-cloud is uncertain.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli",
@@ -65451,12 +65623,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27711",
+      "reason": "The change is tied to the v2 projection store, its schema and its adapters, which f5 doesn't have. The hotspot it fixes is specific to v2's canonical projection reads.",
+      "reasonKey": "upstream-only:orchestration-v2",
       "relatedTopics": [
         "pr-27098"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -65520,9 +65696,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27796",
-      "status": "inbox",
+      "reason": "This is a dependency bump with no measured user-visible change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web"
@@ -65614,9 +65794,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27831",
-      "status": "inbox",
+      "reason": "Fixes a test flake in orchestration-v2, which f5 lacks. No user-visible change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration"
@@ -65636,9 +65820,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27832",
-      "status": "inbox",
+      "reason": "Promotes upstream's repository and behaves like the declined nags. It does not fit f5.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -65866,9 +66054,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-03T23:41:19.414Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27996",
-      "status": "inbox",
+      "reason": "Mostly T3 Connect onboarding that reshapes connect and service commands. The LAN-exposure prompt is the only part f5 could use.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli",
