@@ -49,6 +49,12 @@ it("returns unknown hardware on process execution failure", async () => {
   reply("", "EPERM", true);
   expect(await createMacPower().lidHardware()).toBe("unknown");
 });
+it("requires both enable and reset permission before accepting an existing rule", async () => {
+  reply("", "not permitted", true); // reset denied
+  reply(""); // enabling allowed
+  expect(await createMacPower().sudoRuleAvailable()).toBe(false);
+  expect(mocks.exec.mock.calls.map((call) => call[1].at(-1))).toEqual(["0", "1"]);
+});
 it("pins process identity to UTC regardless of the host timezone", async () => {
   const original = process.env.TZ;
   try {

@@ -17,6 +17,7 @@ function harness(prefs: Preferences = { mode: "always", closedLid: true }) {
     watchdogPid: 2,
     watchdogStart: "watchdog",
     engagedAt: 0,
+    protocol: 2,
   };
   const started = new Set<number>();
   const d: KeepAwakeDependencies = {
@@ -482,6 +483,48 @@ describe("KeepAwakeController", () => {
     vi.mocked(h.d.pollDemand).mockResolvedValue(1);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(h.controller.getState().lid).toMatchObject({ engaged: true, blockedReason: null });
+    await h.controller.dispose();
+  });
+  it("does not engage with a rule that cannot reset sleep", async () => {
+    const h = harness();
+    vi.mocked(h.d.power.sudoRuleAvailable).mockResolvedValue(false);
+    await h.controller.start();
+    expect(h.controller.getState().lid.permission).toBe("missing");
+    expect(h.d.power.setSleepDisabled).not.toHaveBeenCalled();
+    await h.controller.dispose();
+  });
+  it("does not arm a second watchdog while engagement is still arming", async () => {
+    const h = harness({ mode: "always", closedLid: false });
+    await h.controller.start();
+    vi.mocked(h.d.ownership.newMarker).mockResolvedValue({
+      ...h.identity,
+      watchdogPid: 0,
+      watchdogStart: "",
+    });
+    let complete!: () => void;
+    vi.mocked(h.d.ownership.armWatchdog).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      return h.identity;
+    });
+    const engage = h.controller.setPreferences({ closedLid: true });
+    await flush();
+    const dispose = h.controller.dispose();
+    await flush();
+    expect(h.d.ownership.armWatchdog).toHaveBeenCalledTimes(1);
+    complete();
+    await Promise.all([engage, dispose]);
+    expect(h.d.power.setSleepDisabled).not.toHaveBeenCalled();
+  });
+  it("hides lid-only pause reasons when only idle prevention is requested", async () => {
+    const h = harness({ mode: "always", closedLid: false });
+    h.battery(15);
+    h.flag(1);
+    await h.controller.start();
+    expect(h.controller.getState()).toMatchObject({ active: true, lid: { blockedReason: null } });
+    await h.controller.setPreferences({ mode: "off" });
+    expect(h.controller.getState().lid.blockedReason).toBeNull();
     await h.controller.dispose();
   });
 });

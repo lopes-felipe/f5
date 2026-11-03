@@ -20,9 +20,13 @@ process identities. Agent sandbox restrictions can skip those tests.
 Watchdogs wait for a commitment over stdin after their process group is
 persisted. Startup fences all new sleep writes until the previous watchdog's
 entire process group has exited, including privileged reset children. If that
-cannot be verified, recovery remains pending. Legacy markers without a recorded
-watchdog identity require manual intervention rather than risking an old reset
-overwriting a new engagement.
+cannot be verified, recovery remains pending. Markers from before the current
+system boot bypass obsolete process identities because those processes cannot
+survive a reboot. Markers require protocol 2.
+
+Each main-process power write also has a durably registered process group. The
+watchdog waits for that group to exit before resetting sleep. A command timeout
+requests termination but never claims that a privileged child has stopped.
 
 A corrupt recovery marker is deliberately fail-closed: permission checks still
 run and recovery is retried, but F5 cannot safely infer ownership from corrupt

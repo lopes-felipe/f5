@@ -2800,6 +2800,7 @@ const updateInstaller = createUpdateInstaller({
         cleanupStarted: installCleanupStarted,
         initializePreview: () => previewRuntime.initialize(),
         initializeComputer: initializeComputerSystem,
+        initializeKeepAwake,
         runningBeforeInstall,
         startBackend,
         restoreWindows: restoreInstallWindows,
@@ -4568,6 +4569,24 @@ app.on("will-quit", (event) => {
   });
 });
 
+async function initializeKeepAwake(): Promise<void> {
+  keepAwake = await installKeepAwake({
+    authorize: (event) => authorizeAppMainFrame(event, "Keep awake settings"),
+    backends: () =>
+      [...backends.values()]
+        .filter((runtime) => runtime.backendProcess !== null && runtime.startupReady)
+        .map((runtime) => ({
+          origin: getDesktopBackendHttpOrigin(runtime.backendPort),
+          token: runtime.backendAuthToken,
+        })),
+    broadcast: (state) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed() && appRendererWebContentsIds.has(window.webContents.id))
+          window.webContents.send("desktop:keep-awake-state", state);
+    },
+  });
+}
+
 app
   .whenReady()
   .then(async () => {
@@ -4598,21 +4617,7 @@ app
     registerDesktopProtocol();
     registerPromptLinkProtocol();
     configureAutoUpdater();
-    keepAwake = await installKeepAwake({
-      authorize: (event) => authorizeAppMainFrame(event, "Keep awake settings"),
-      backends: () =>
-        [...backends.values()]
-          .filter((runtime) => runtime.backendProcess !== null && runtime.startupReady)
-          .map((runtime) => ({
-            origin: getDesktopBackendHttpOrigin(runtime.backendPort),
-            token: runtime.backendAuthToken,
-          })),
-      broadcast: (state) => {
-        for (const window of BrowserWindow.getAllWindows())
-          if (!window.isDestroyed() && appRendererWebContentsIds.has(window.webContents.id))
-            window.webContents.send("desktop:keep-awake-state", state);
-      },
-    });
+    await initializeKeepAwake();
     const bootstrapReady = bootstrapGate.start(bootstrap);
     void bootstrapReady.catch((error) => {
       handleFatalStartupError("bootstrap", error);

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("electron", () => ({
   app: { getPath: () => "/tmp/f5-keep-awake-nonexistent" },
   ipcMain: {
+    removeHandler: (channel: string) => mocks.handlers.delete(channel),
     handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
       mocks.handlers.set(channel, handler),
   },
@@ -24,6 +25,7 @@ it("validates all fields strictly", () => {
   for (const input of [
     null,
     [],
+    {},
     { mode: "invalid" },
     { closedLid: 1 },
     { unexpected: true },
@@ -63,4 +65,17 @@ it("authorizes every IPC request and gates only escalating mutations", async () 
     await request("trusted-frame", true);
   }
   expect(permission).toHaveBeenCalledTimes(2);
+});
+it("replaces stale IPC handlers after an update recovery", async () => {
+  vi.spyOn(KeepAwakeController.prototype, "dispose").mockResolvedValue();
+  const first = await installKeepAwake({
+    authorize: vi.fn(),
+    backends: () => [],
+    broadcast: vi.fn(),
+  });
+  const original = mocks.handlers.get("desktop:keep-awake-set");
+  await first.dispose();
+  await installKeepAwake({ authorize: vi.fn(), backends: () => [], broadcast: vi.fn() });
+  expect(mocks.handlers.size).toBe(4);
+  expect(mocks.handlers.get("desktop:keep-awake-set")).not.toBe(original);
 });

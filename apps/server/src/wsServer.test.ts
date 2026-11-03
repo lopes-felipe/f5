@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -907,11 +908,15 @@ describe("WebSocket Server", () => {
       addr = h.server.address();
       port = typeof addr === "object" && addr !== null ? addr.port : 0;
       expect(port).toBeGreaterThan(0);
-      const activity = await fetch(`http://127.0.0.1:${port}/api/desktop/activity`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      expect(activity.status).toBe(503);
-      expect(await activity.json()).toEqual({ state: runtimeState });
+      const assertActivity = async () => {
+        const activity = await fetch(`http://127.0.0.1:${port}/api/desktop/activity`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        expect(activity.status).toBe(503);
+        expect(await activity.json()).toEqual({ state: runtimeState });
+      };
+      if (runtimeState === "failed") await vi.waitFor(assertActivity, { timeout: 2000 });
+      else await assertActivity();
 
       const [ws] = await connectAndAwaitWelcome(port);
       connections.push(ws);
@@ -1656,6 +1661,59 @@ describe("WebSocket Server", () => {
       expect(welcome.data.bootstrap).toEqual(SERVER_BOOTSTRAP);
     },
   );
+
+  it("counts an accepted pending start before any provider session exists", async () => {
+    const stateDir = makeTempDir("f5-desktop-activity-");
+    const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    h.server = await createTestServer({ cwd: stateDir, stateDir, persistenceLayer });
+    const address = h.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const createdAt = new Date().toISOString();
+    for (const body of [
+      {
+        type: "project.create",
+        commandId: "activity-project",
+        projectId: "activity-project",
+        title: "Activity",
+        workspaceRoot: stateDir,
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      },
+      {
+        type: "thread.create",
+        commandId: "activity-thread",
+        projectId: "activity-project",
+        threadId: "activity-thread",
+        title: "Activity",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      },
+    ]) {
+      const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, body);
+      expect(response.error).toBeUndefined();
+    }
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_turns
+        (thread_id, turn_id, pending_message_id, state, requested_at, checkpoint_files_json)
+        VALUES ('activity-thread', NULL, 'accepted-pending-message', 'pending', ${createdAt}, '[]')`;
+      }).pipe(Effect.provide(persistenceLayer)),
+    );
+    const response = await fetch(`http://127.0.0.1:${port}/api/desktop/activity`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ busyThreadCount: 1 });
+  });
 
   it("authenticates bootstrap metadata and rejects stale upload protocols before consuming bytes", async () => {
     h.server = await createTestServer({ cwd: "/test", authToken: "secret-token" });

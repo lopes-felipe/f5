@@ -16,7 +16,7 @@ export interface KeepAwakeDependencies {
   };
   pollDemand(): Promise<number>;
   power: MacPower;
-  ownership: LidOwnership;
+  ownership: Omit<LidOwnership, "runWrite">;
   environment: { isOnBattery(): boolean; thermalState(): string; hasExternalDisplay(): boolean };
   save(preferences: Preferences): Promise<void>;
   broadcast(state: DesktopKeepAwakeState): void;
@@ -30,7 +30,8 @@ export class KeepAwakeController {
   private cooldown: number | null = null;
   private marker: LidMarker | null = null;
   private permission: DesktopKeepAwakeState["lid"]["permission"] = "unknown";
-  private hardware = true;
+  private hardware = false;
+  private resetVerified = false;
   private installed = false;
   private sleepDisabled: 0 | 1 | null = null;
   private batteryHold = false;
@@ -73,7 +74,7 @@ export class KeepAwakeController {
     );
   }
   getState = (): DesktopKeepAwakeState => {
-    const reason =
+    const lidReason =
       this.failure === "stale-override"
         ? this.failure
         : this.failure === "reset-failed"
@@ -96,6 +97,14 @@ export class KeepAwakeController {
                           : this.blockerFailed
                             ? "blocker-failed"
                             : null));
+    const reason =
+      this.failure === "stale-override" || this.failure === "reset-failed"
+        ? this.failure
+        : this.lidDemand() || this.marker
+          ? lidReason
+          : this.blockerFailed
+            ? "blocker-failed"
+            : null;
     return {
       revision: this.revision,
       ...this.prefs,
@@ -146,7 +155,7 @@ export class KeepAwakeController {
       .then(operation)
       .catch((error) => {
         this.d.log(error);
-        this.failure = this.marker ? "reset-failed" : "command-failed";
+        this.failure = this.marker && !this.resetVerified ? "reset-failed" : "command-failed";
       })
       .finally(() => {
         this.pending--;
@@ -160,12 +169,14 @@ export class KeepAwakeController {
     await this.d.ownership.remove();
     this.marker = null;
     this.failure = null;
+    this.resetVerified = false;
     this.displayDone = false;
   }
   private async reset(stale = false) {
     const result = await this.d.power.setSleepDisabled(0);
     this.sleepDisabled = result === "ok" ? 0 : await this.d.power.readSleepDisabled();
     if (result === "ok") {
+      this.resetVerified = true;
       await this.clearOwnership();
       return true;
     }
@@ -262,11 +273,20 @@ export class KeepAwakeController {
   private async reconcileLid() {
     if (this.d.platform !== "darwin") return;
     if (!(await this.recoverStartup())) return;
+    if (!this.lidDemand() && !this.marker) {
+      this.thermalHold = false;
+      this.batteryHold = false;
+      this.batteryUnknown = false;
+      this.external = false;
+      this.readFailed = false;
+      return;
+    }
     await this.guards();
     this.sleepDisabled = await this.d.power.readSleepDisabled();
     this.readFailed = this.sleepDisabled === null;
     if (this.marker && this.sleepDisabled === 0) {
-      const unresolved = this.failure === "reset-failed" || this.failure === "stale-override";
+      const unresolved =
+        this.resetVerified || this.failure === "reset-failed" || this.failure === "stale-override";
       await this.clearOwnership();
       this.suppressed = !unresolved && this.lidDemand();
     }
@@ -471,13 +491,13 @@ export class KeepAwakeController {
   }
   private async ensureWatchdog() {
     const marker = this.marker;
+    if (marker?.watchdogPid === 0) return; // The in-flight arm owns commitment and cleanup.
     if (
       marker &&
       !(await this.d.ownership.watchdogAlive(marker)) &&
       this.marker?.gen === marker.gen
     ) {
       try {
-        await this.d.ownership.killWatchdog(marker);
         const armed = await this.d.ownership.armWatchdog(marker);
         // Reset may have completed while the watchdog was arming.
         if (this.marker?.gen === marker.gen) this.marker = armed;

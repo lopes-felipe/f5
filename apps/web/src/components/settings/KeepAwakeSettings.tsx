@@ -45,20 +45,26 @@ export function KeepAwakeSettings() {
   const recovery =
     state.lid.blockedReason === "stale-override" ||
     (state.lid.engaged &&
-      (state.lid.sleepDisabled !== 1 || state.lid.blockedReason === "reset-failed"));
+      !state.lid.pending &&
+      (state.lid.sleepDisabled === null ||
+        (state.lid.sleepDisabled !== 0 && state.lid.blockedReason === "reset-failed")));
   const status = recovery
     ? "Recovery required: sleep may still be disabled"
-    : state.lid.engaged && !state.active
-      ? "Releasing closed-lid keep awake…"
-      : state.active
-        ? state.busyThreadCount > 0
-          ? "Awake: " + state.busyThreadCount + " agents working"
+    : state.lid.engaged && state.lid.sleepDisabled === 0 && !state.lid.pending
+      ? "Sleep restored; finishing recovery…"
+      : state.lid.engaged && !state.active
+        ? "Releasing closed-lid keep awake…"
+        : state.active
+          ? state.busyThreadCount > 0
+            ? "Awake: " +
+              state.busyThreadCount +
+              (state.busyThreadCount === 1 ? " agent working" : " agents working")
+            : state.mode === "agents"
+              ? "Awake until a few minutes after agents finish"
+              : "Awake"
           : state.mode === "agents"
-            ? "Awake until a few minutes after agents finish"
-            : "Awake"
-        : state.mode === "agents"
-          ? "Waiting for agents"
-          : "Off";
+            ? "Waiting for agents"
+            : "Off";
   return (
     <>
       <SettingsRow
@@ -138,7 +144,12 @@ export function KeepAwakeSettings() {
       )}
       {(state.lid.blockedReason || error) && (
         <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
-          {error ?? REASONS[state.lid.blockedReason!]}
+          {error ??
+            (state.lid.engaged &&
+            state.lid.sleepDisabled === 0 &&
+            state.lid.blockedReason === "command-failed"
+              ? "Could not finish sleep recovery. Retrying."
+              : REASONS[state.lid.blockedReason!])}
         </p>
       )}
     </>

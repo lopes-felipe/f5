@@ -37,7 +37,7 @@ describe("macOS power parsers", () => {
   it("validates usernames and shell syntax", () => {
     expect(() => sudoersText("bad;name")).toThrow();
     expect(sudoersText("test_user")).toContain("test_user ALL=(root) NOPASSWD:");
-    for (const script of [installScript("test_user"), WATCHDOG])
+    for (const script of process.platform === "win32" ? [] : [installScript("test_user"), WATCHDOG])
       expect(spawnSync("/bin/sh", ["-n"], { input: script }).status).toBe(0);
-  });
+  }, 30_000);
 });

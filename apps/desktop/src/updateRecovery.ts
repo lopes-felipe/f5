@@ -21,6 +21,7 @@ export async function recoverUpdateSession<Runtime extends { stopped: boolean }>
   cleanupStarted: boolean;
   initializePreview(): Promise<void>;
   initializeComputer(): void;
+  initializeKeepAwake?(): Promise<void>;
   runningBeforeInstall: readonly Runtime[];
   startBackend(runtime: Runtime): void;
   restoreWindows(): void;
@@ -37,6 +38,7 @@ export async function recoverUpdateSession<Runtime extends { stopped: boolean }>
   if (options.cleanupStarted) {
     await attempt(options.initializePreview);
     await attempt(options.initializeComputer);
+    if (options.initializeKeepAwake) await attempt(options.initializeKeepAwake);
   }
   for (const runtime of options.runningBeforeInstall) {
     runtime.stopped = false;

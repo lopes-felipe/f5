@@ -12,6 +12,7 @@ export function validatePreferences(input: unknown): Partial<Preferences> {
     throw new Error("Invalid preferences");
   const value = input as Record<string, unknown>;
   if (
+    Object.keys(value).length === 0 ||
     Object.keys(value).some((key) => key !== "mode" && key !== "closedLid") ||
     ("mode" in value && !["off", "agents", "always"].includes(value.mode as string)) ||
     ("closedLid" in value && typeof value.closedLid !== "boolean")
@@ -27,13 +28,14 @@ export async function installKeepAwake(options: {
   const path = join(app.getPath("userData"), "keep-awake.json");
   // Serialize persistence independently of the lid queue; Off is accepted immediately.
   let writes = Promise.resolve();
+  const ownership = createLidOwnership(join(app.getPath("userData"), "keep-awake-lid.json"));
   const controller = new KeepAwakeController(await readPreferences(path), {
     platform: process.platform,
     now: Date.now,
     blocker: powerSaveBlocker,
     pollDemand: () => pollActivity(options.backends()),
-    power: createMacPower(),
-    ownership: createLidOwnership(join(app.getPath("userData"), "keep-awake-lid.json")),
+    power: createMacPower(ownership.runWrite),
+    ownership,
     environment: {
       isOnBattery: () => powerMonitor.isOnBatteryPower(),
       thermalState: () => powerMonitor.getCurrentThermalState(),
@@ -49,6 +51,8 @@ export async function installKeepAwake(options: {
   const requireGesture = (trusted: unknown) => {
     if (trusted !== true) throw new Error("Keep awake requires a trusted user gesture");
   };
+  for (const suffix of ["get", "set", "install", "remove"])
+    ipcMain.removeHandler("desktop:keep-awake-" + suffix);
   ipcMain.handle("desktop:keep-awake-get", (event) => {
     options.authorize(event);
     return controller.getState();

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { userInfo } from "node:os";
+import { POWER_COMMAND_ENV } from "./powerWrite";
 
 export const RULE_PATH = "/etc/sudoers.d/f5-keep-awake";
 export type WriteResult = "ok" | "denied" | "unknown";
@@ -18,7 +19,7 @@ export function run(
         {
           timeout,
           maxBuffer: 64 * 1024,
-          env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", LC_ALL: "C", TZ: "UTC" },
+          env: POWER_COMMAND_ENV,
         },
         (error, stdout, stderr) => resolve({ ok: !error, output: stdout, error: stderr }),
       );
@@ -83,7 +84,7 @@ async function authorize(script: string): Promise<RuleResult> {
   );
   return result.ok ? "ok" : result.error.includes("(-128)") ? "cancelled" : "failed";
 }
-export function createMacPower() {
+export function createMacPower(writeCommand = run) {
   const readSleepDisabled = async () => {
     const result = await run("/usr/bin/pmset", ["-g"]);
     return result.ok ? parseSleepDisabled(result.output) : null;
@@ -91,7 +92,7 @@ export function createMacPower() {
   return {
     readSleepDisabled,
     async setSleepDisabled(value: 0 | 1): Promise<WriteResult> {
-      const result = await run("/usr/bin/sudo", [
+      const result = await writeCommand("/usr/bin/sudo", [
         "-n",
         "/usr/bin/pmset",
         "-a",
@@ -104,8 +105,12 @@ export function createMacPower() {
       return "unknown";
     },
     async sudoRuleAvailable() {
-      return (await run("/usr/bin/sudo", ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "1"]))
-        .ok;
+      const results = await Promise.all(
+        [0, 1].map((value) =>
+          run("/usr/bin/sudo", ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", String(value)]),
+        ),
+      );
+      return results.every((result) => result.ok);
     },
     async readBatteryPercent() {
       const result = await run("/usr/bin/pmset", ["-g", "batt"]);

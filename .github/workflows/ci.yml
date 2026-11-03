@@ -863,6 +863,20 @@ jobs:
           if-no-files-found: ignore
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-keep-awake:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Verify native watchdog and power command safety
+        env:
+          F5_REQUIRE_NATIVE_WATCHDOG_TESTS: "1"
+        run: bun run --cwd apps/desktop test src/keepAwake
   ci-result:
     name: CI result
     runs-on: ubuntu-latest
@@ -884,6 +898,7 @@ jobs:
         macos-integration,
         macos-git,
         macos-desktop,
+        macos-keep-awake,
       ]
     steps:
       - name: Require every job verdict
