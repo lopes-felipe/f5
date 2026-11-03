@@ -3672,6 +3672,222 @@ describe("Thread sidebar", () => {
     }
   });
 
+  describe("peek card", () => {
+    const otherId = "thread-sidebar-peek-other" as ThreadId;
+    const otherTitle = "Other peek thread";
+    const peekCard = () => document.querySelector<HTMLElement>('[data-testid="sidebar-peek-card"]');
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const mountWithPeekRpc = (extraThreads: SnapshotThread[] = []) =>
+      mountApp({
+        width: 1_400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = {
+            ...createSnapshot([
+              createSnapshotThread({ id: THREAD_ID }),
+              createSnapshotThread({ id: otherId, title: otherTitle }),
+              ...extraThreads,
+            ]),
+            pinRevision: 7,
+          };
+          nextFixture.resolveWsRequest = (body) =>
+            body._tag === ORCHESTRATION_WS_METHODS.getThreadPeek
+              ? {
+                  type: "result",
+                  result: {
+                    threadId: body.threadId,
+                    lastUserText: "Fix the login bug",
+                    lastAssistantText: "**Done.** I fixed `auth.ts`.",
+                    latestTurnDiff: { files: 2, additions: 10, deletions: 3 },
+                  },
+                }
+              : null;
+        },
+      });
+
+    it("opens after the hover delay, swaps between rows, and reads the RPC only when needed", async () => {
+      const mounted = await mountWithPeekRpc();
+      try {
+        const otherRow = await waitForSidebarThreadRow(otherTitle);
+        const ownRow = await waitForSidebarThreadRow(LONG_THREAD_TITLE);
+        // Like a thread never opened in this session: only its summary is on the client.
+        useStore.getState().evictThreadDetails([otherId]);
+        await userEvent.hover(otherRow);
+        // Nothing opens before the delay.
+        await sleep(200);
+        expect(peekCard()).toBeNull();
+        const card = await waitForElement(peekCard, "The peek card should open after the delay.");
+        await vi.waitFor(() => {
+          expect(card.querySelector(`[data-peek-thread="${otherId}"]`)).not.toBeNull();
+          expect(card.textContent).toContain("Fix the login bug");
+          expect(card.textContent).toContain("Done. I fixed auth.ts.");
+          expect(card.textContent).toContain("2 files +10 −3");
+        });
+
+        // A neighbouring row swaps the open card in place.
+        await userEvent.hover(ownRow);
+        await vi.waitFor(
+          () => expect(card.querySelector(`[data-peek-thread="${THREAD_ID}"]`)).not.toBeNull(),
+          { timeout: 2_000, interval: 16 },
+        );
+        expect(card.isConnected).toBe(true);
+        // The open thread's details are loaded, so its card is local.
+        await vi.waitFor(() => expect(card.textContent).toContain("hello"));
+        expect(
+          wsRequests
+            .filter((request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadPeek)
+            .map((request) => request.threadId),
+        ).toEqual([otherId]);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("opens on keyboard focus and stays closed with several threads selected or while renaming", async () => {
+      const mounted = await mountWithPeekRpc();
+      try {
+        const otherRow = await waitForSidebarThreadRow(otherTitle);
+        const ownRow = await waitForSidebarThreadRow(LONG_THREAD_TITLE);
+        await userEvent.keyboard("{Shift}");
+        otherRow.focus();
+        const card = await waitForElement(peekCard, "Keyboard focus should open the card.");
+        await vi.waitFor(() =>
+          expect(card.querySelector(`[data-peek-thread="${otherId}"]`)).not.toBeNull(),
+        );
+        otherRow.blur();
+        await userEvent.hover(document.body);
+        await vi.waitFor(() => expect(peekCard()).toBeNull());
+
+        const modifier = navigator.platform.includes("Mac") ? { metaKey: true } : { ctrlKey: true };
+        for (const row of [otherRow, ownRow]) {
+          row.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, ...modifier }),
+          );
+        }
+        expect(useThreadSelectionStore.getState().selectedThreadIds.size).toBe(2);
+        await userEvent.hover(otherRow);
+        await sleep(900);
+        expect(peekCard()).toBeNull();
+        useThreadSelectionStore.getState().clearSelection();
+        await userEvent.hover(document.body);
+
+        document
+          .querySelector<HTMLElement>(`[data-testid="thread-title-${otherId}"]`)!
+          .dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+        await waitForElement(
+          () => otherRow.querySelector<HTMLInputElement>("input"),
+          "Double-click should start renaming.",
+        );
+        await userEvent.hover(ownRow);
+        await sleep(900);
+        expect(peekCard()).toBeNull();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("lists a workflow's phases and steps", async () => {
+      const workflowTitle = "Peek workflow";
+      const branchAThreadId = "peek-workflow-branch-a" as ThreadId;
+      const branchBThreadId = "peek-workflow-branch-b" as ThreadId;
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = {
+            ...createSnapshot([
+              createSnapshotThread({ id: THREAD_ID }),
+              createSnapshotThread({ id: branchAThreadId, title: `${workflowTitle} Branch A` }),
+              createSnapshotThread({ id: branchBThreadId, title: `${workflowTitle} Branch B` }),
+            ]),
+            planningWorkflows: [
+              createPlanningWorkflow({ title: workflowTitle, branchAThreadId, branchBThreadId }),
+            ],
+          };
+        },
+      });
+      try {
+        await userEvent.hover(await waitForSidebarThreadRow(workflowTitle));
+        const card = await waitForElement(peekCard, "The workflow card should open.");
+        const workflowCard = card.querySelector<HTMLElement>(
+          '[data-testid="sidebar-peek-workflow"]',
+        );
+        expect(workflowCard?.textContent).toContain(workflowTitle);
+        const phases = [...card.querySelectorAll<HTMLElement>("[data-peek-phase]")];
+        expect(phases.length).toBeGreaterThan(1);
+        expect(phases[0]!.dataset.peekPhase).toBe("active");
+        expect(phases[0]!.textContent).toContain("Authoring");
+        expect(phases[0]!.textContent).toContain("Branch A");
+        expect(phases[0]!.textContent).toContain("Branch B");
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("pins, archives and snoozes the hovered thread from its quick actions", async () => {
+      const snoozeId = "thread-sidebar-peek-snooze" as ThreadId;
+      const showContextMenu = vi.fn(
+        async (items: ReadonlyArray<{ id: string }>) => items[0]?.id ?? null,
+      );
+      installDesktopBridgeMock({
+        showContextMenu: showContextMenu as unknown as DesktopBridge["showContextMenu"],
+      });
+      const mounted = await mountWithPeekRpc([
+        createSnapshotThread({ id: snoozeId, title: "Snooze me" }),
+      ]);
+      const dispatched = (type: string, from: number) =>
+        wsRequests
+          .slice(from)
+          .find(
+            (entry) =>
+              entry._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (entry.command as { type?: string } | undefined)?.type === type,
+          )?.command;
+      try {
+        const row = await waitForSidebarThreadRow(otherTitle);
+        await userEvent.hover(row);
+        const quickActions = row.querySelector<HTMLElement>(
+          '[data-testid="thread-row-quick-actions"]',
+        )!;
+        await vi.waitFor(() => expect(getComputedStyle(quickActions).display).not.toBe("none"));
+        const button = (label: string) =>
+          row.querySelector<HTMLButtonElement>(`button[aria-label="${label} ${otherTitle}"]`);
+        expect(button("Snooze")).not.toBeNull();
+
+        let from = wsRequests.length;
+        button("Pin")!.click();
+        await vi.waitFor(() =>
+          expect(dispatched("thread.pins.replace", from)).toMatchObject({
+            pinnedThreadIds: [otherId],
+            expectedRevision: 7,
+          }),
+        );
+
+        from = wsRequests.length;
+        button("Archive")!.click();
+        await vi.waitFor(() =>
+          expect(dispatched("thread.archive", from)).toMatchObject({ threadId: otherId }),
+        );
+
+        const snoozeRow = await waitForSidebarThreadRow("Snooze me");
+        await userEvent.hover(snoozeRow);
+        from = wsRequests.length;
+        snoozeRow
+          .querySelector<HTMLButtonElement>('button[aria-label="Snooze Snooze me"]')!
+          .click();
+        await vi.waitFor(() => expect(showContextMenu).toHaveBeenCalled());
+        const items = showContextMenu.mock.calls[0]![0];
+        expect(items.length).toBeGreaterThan(0);
+        expect(items.every((item) => item.id.startsWith("snooze:"))).toBe(true);
+        await vi.waitFor(() =>
+          expect(dispatched("thread.snooze", from)).toMatchObject({ threadId: snoozeId }),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+  });
+
   it("keeps workflow subthreads collapsed by default until the workflow is expanded", async () => {
     const workflowTitle = "Collapsed workflow";
     const branchAThreadId = "collapsed-workflow-branch-a" as ThreadId;

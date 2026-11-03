@@ -56,9 +56,18 @@ export function threadOrderFromPhases(phases: ReadonlyArray<WorkflowTimelinePhas
   return order;
 }
 
+export interface WorkflowPhaseStepSummary {
+  label: string;
+  state: Exclude<WorkflowTimelineStepState, "skipped">;
+  threadId: ThreadId | null;
+  modelSlot: WorkflowModelSlot | null;
+}
+
 export interface WorkflowPhaseSummary {
   label: string;
   state: Exclude<WorkflowTimelinePhaseState, "skipped">;
+  /** The phase's steps that were not skipped, for the workflow hover card. */
+  steps: readonly WorkflowPhaseStepSummary[];
 }
 
 /** The phases a workflow row's phase strip shows: every phase that was not skipped. */
@@ -66,7 +75,26 @@ export function phaseSummariesFromPhases(
   phases: ReadonlyArray<WorkflowTimelinePhase>,
 ): WorkflowPhaseSummary[] {
   return phases.flatMap((phase) =>
-    phase.state === "skipped" ? [] : [{ label: phase.label, state: phase.state }],
+    phase.state === "skipped"
+      ? []
+      : [
+          {
+            label: phase.label,
+            state: phase.state,
+            steps: phase.steps.flatMap((step) =>
+              step.state === "skipped"
+                ? []
+                : [
+                    {
+                      label: step.label,
+                      state: step.state,
+                      threadId: step.threadId,
+                      modelSlot: step.modelSlot,
+                    },
+                  ],
+            ),
+          },
+        ],
   );
 }
 

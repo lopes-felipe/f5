@@ -44,6 +44,7 @@ import {
   workflowRouteForType,
   workflowTypeLabel,
 } from "./sidebarLists";
+import { useSidebarPeekTrigger } from "./SidebarPeekCard";
 import { SIDEBAR_ROW_REVEAL_CLASS_NAME, SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
@@ -262,19 +263,31 @@ export function SidebarWorkflowItem(props: {
     currentStep?.threadId != null
       ? workflowThreads.find((thread) => thread.id === currentStep.threadId)
       : undefined;
+  const peekTrigger = useSidebarPeekTrigger(
+    {
+      kind: "workflow",
+      title: workflow.title,
+      typeLabel,
+      projectId: workflow.projectId,
+      phases: props.phases ?? [],
+      currentStep,
+      threads: workflowThreads,
+    },
+    { prefetchThreadId: currentStep?.threadId ?? null },
+  );
 
   return (
     <SidebarMenuSubItem className="group/workflow-row relative w-full">
       <SidebarMenuSubButton
-        render={
+        render={peekTrigger(
           <div
             role="button"
             tabIndex={0}
             {...treeRowProps}
             // In the tree the row is a group of its threads; Right and Left use its chevron.
             aria-expanded={isTreeRow && workflowThreads.length > 0 ? !workflowCollapsed : undefined}
-          />
-        }
+          />,
+        )}
         size="md"
         isActive={isWorkflowActive}
         className={cn(
@@ -386,6 +399,7 @@ export function SidebarWorkflowItem(props: {
                     ? workflowThreadDisplayTitle(entry.workflow, thread.title)
                     : thread.title)
                 }
+                workflowTitle={workflow.title}
                 trailingMeta={
                   <ModelChip
                     model={thread.modelSelection?.model ?? thread.model}

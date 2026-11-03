@@ -52,13 +52,17 @@ describe("phaseSummariesFromPhases", () => {
   it("drops skipped phases", () => {
     expect(
       phaseSummariesFromPhases([
-        phase("Plan", "completed", []),
+        phase("Plan", "completed", [step("Draft", "completed", "a"), step("Extra", "skipped")]),
         phase("Optional", "skipped", []),
         phase("Merge", "pending", []),
       ]),
     ).toEqual([
-      { label: "Plan", state: "completed" },
-      { label: "Merge", state: "pending" },
+      {
+        label: "Plan",
+        state: "completed",
+        steps: [{ label: "Draft", state: "completed", threadId: "a", modelSlot: null }],
+      },
+      { label: "Merge", state: "pending", steps: [] },
     ]);
   });
 });

@@ -117,6 +117,7 @@ import {
   reconcileChromeSessionSetups,
 } from "./provider/chromeSessionRuntimeFactory";
 import { finishAcknowledgedNativeRewind } from "./orchestration/nativeRewindAcknowledgement.ts";
+import { readThreadPeek } from "./orchestration/threadPeek.ts";
 import { ProviderValidationError } from "./provider/Errors.ts";
 import { NATIVE_OPERATION_WS_METHODS, ThreadId as NativeForkThreadId } from "@t3tools/contracts";
 import {
@@ -4646,6 +4647,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.getRewindDrafts: {
         const body = stripRequestTag(request.body);
         return yield* projectionReadModelQuery.getRewindDrafts(body);
+      }
+
+      case ORCHESTRATION_WS_METHODS.getThreadPeek: {
+        const body = stripRequestTag(request.body);
+        return yield* readThreadPeek(sql, body.threadId);
       }
 
       case ORCHESTRATION_WS_METHODS.getThreadTailDetails: {

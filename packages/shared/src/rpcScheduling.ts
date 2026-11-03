@@ -198,6 +198,7 @@ export const RPC_METHOD_POLICY = {
   "orchestration.getThreadFileChange": READ,
   "orchestration.getThreadFileChanges": READ,
   "orchestration.getThreadHistoryPage": READ,
+  "orchestration.getThreadPeek": READ,
   "orchestration.getThreadTailDetails": READ,
   "orchestration.getTurnDiff": READ,
   "orchestration.retryCodeReviewWorkflow": MUTATION_RT,
