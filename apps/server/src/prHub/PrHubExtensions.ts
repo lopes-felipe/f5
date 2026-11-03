@@ -96,11 +96,38 @@ export const makePrHubExtensions = Effect.gen(function* () {
         if (!ref) return null;
         const runtime = yield* federation.resolve(input);
         if (runtime.account.provider !== ref.provider || runtime.account.host !== ref.host)
-          return yield* failure("Link preview account mismatch.", "forbidden");
+          return yield* new SourceControlProviderError({
+            provider: ref.provider,
+            operation: "prHub.peek",
+            kind: "forbidden",
+            detail: "Link preview account mismatch.",
+            code: "PrHubAccountMismatch",
+          });
         const identity = JSON.stringify([runtime.account.id, runtime.account.generation, ref]);
         const cached = peekCache.get(identity);
-        if (cached && cached.expires > Date.now()) return cached.value;
-        const detail = yield* runtime.provider.getDetail(ref);
+        const value =
+          cached && cached.expires > Date.now()
+            ? cached.value
+            : yield* Effect.gen(function* () {
+                const detail = yield* runtime.provider.getDetail(ref);
+                const facts = yield* Schema.decodeUnknownEffect(PrHubPeek)({
+                  provider: ref.provider,
+                  host: ref.host,
+                  repository: ref.repository,
+                  number: ref.number,
+                  title: detail.title.slice(0, 1000),
+                  url: detail.url,
+                  state: detail.state ?? "open",
+                  ...peekFactsFromRaw(detail.raw),
+                  updatedAt: peekIsoDate(detail.updatedAt),
+                }).pipe(
+                  Effect.mapError(() => failure("Invalid link preview.", "invalid_response")),
+                );
+                peekCache.delete(identity);
+                peekCache.set(identity, { expires: Date.now() + 60000, value: facts });
+                while (peekCache.size > 128) peekCache.delete(peekCache.keys().next().value!);
+                return facts;
+              });
         const snapshot = yield* runtime.hub.getSnapshot.pipe(
           Effect.catchCause(() => Effect.succeed(null)),
         );
@@ -110,16 +137,8 @@ export const makePrHubExtensions = Effect.gen(function* () {
           [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((pr) =>
             sourceControlPullRequestKeysEqual(pr.key, key),
           );
-        const value = yield* Schema.decodeUnknownEffect(PrHubPeek)({
-          provider: ref.provider,
-          host: ref.host,
-          repository: ref.repository,
-          number: ref.number,
-          title: detail.title.slice(0, 1000),
-          url: detail.url,
-          state: detail.state ?? "open",
-          ...peekFactsFromRaw(detail.raw),
-          updatedAt: peekIsoDate(detail.updatedAt),
+        return {
+          ...value,
           ...(tracked
             ? {
                 isDraft: tracked.isDraft,
@@ -131,11 +150,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
                 },
               }
             : {}),
-        }).pipe(Effect.mapError(() => failure("Invalid link preview.", "invalid_response")));
-        peekCache.delete(identity);
-        peekCache.set(identity, { expires: Date.now() + 60000, value });
-        while (peekCache.size > 128) peekCache.delete(peekCache.keys().next().value!);
-        return value;
+        };
       }),
     );
   const getStack = (input: PrHubStackInput) =>

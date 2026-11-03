@@ -1,4 +1,4 @@
-import { useContext, useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatSourceControlPullRequestKey } from "@t3tools/shared/sourceControl";
 import type { PrHubPeek } from "@t3tools/contracts";
@@ -16,7 +16,13 @@ import { Button } from "../ui/button";
 import { PreviewCard, PreviewCardTrigger, PreviewCardPopup } from "../ui/preview-card";
 import { checkIconFor, checkLabel, reviewDecisionLabel, mergeableLabel } from "./prHubPresentation";
 
-function StatusChips({ status }: { status: NonNullable<PrHubPeek["status"]> }) {
+function StatusChips({
+  status,
+  isOpen,
+}: {
+  status: NonNullable<PrHubPeek["status"]>;
+  isOpen: boolean;
+}) {
   const { Icon, className } = checkIconFor(status.checkRollup);
   const chip = (label: string, children: ReactNode) => (
     <Badge variant="secondary" size="sm" title={label} aria-label={label}>
@@ -25,13 +31,14 @@ function StatusChips({ status }: { status: NonNullable<PrHubPeek["status"]> }) {
   );
   return (
     <div className="flex flex-wrap gap-1">
-      {chip(
-        checkLabel(status.checkRollup),
-        <>
-          <Icon className={className} />
-          CI
-        </>,
-      )}
+      {isOpen &&
+        chip(
+          checkLabel(status.checkRollup),
+          <>
+            <Icon className={className} />
+            CI
+          </>,
+        )}
       {status.reviewDecision !== "none" &&
         chip(
           reviewDecisionLabel(status.reviewDecision),
@@ -45,7 +52,8 @@ function StatusChips({ status }: { status: NonNullable<PrHubPeek["status"]> }) {
             {status.unresolvedThreadCount}
           </>,
         )}
-      {status.mergeable !== "unknown" &&
+      {isOpen &&
+        status.mergeable !== "unknown" &&
         chip(mergeableLabel(status.mergeable), mergeableLabel(status.mergeable))}
     </div>
   );
@@ -87,17 +95,25 @@ function PreviewFacts({ value }: { value: PrHubPeek }) {
           </span>
         )}
       </div>
-      {value.status && <StatusChips status={value.status} />}
+      {value.status && <StatusChips status={value.status} isOpen={value.state === "open"} />}
     </>
   );
 }
 
 function previewError(error: unknown, host: string): string {
-  const message = error instanceof Error ? error.message : "";
-  const kind = error && typeof error === "object" && "kind" in error ? error.kind : undefined;
-  return kind === "forbidden" || /forbidden|account mismatch|account changed/i.test(message)
-    ? "Connect a " + host + " account in PR Hub to preview this pull request."
-    : "Preview unavailable";
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  switch (code) {
+    case "PrHubAccountRequired":
+      return "Connect a " + host + " account in PR Hub to preview this pull request.";
+    case "PrHubAccountMismatch":
+      return "Select the account for this repository in PR Hub to preview this pull request.";
+    case "PrHubAccountChanged":
+      return "Refresh PR Hub and select an account to preview this pull request.";
+    case "PrHubAccessDenied":
+      return "Your account does not have access to this pull request.";
+    default:
+      return "Preview unavailable";
+  }
 }
 
 export function PrLinkPreview({ url, children }: { url: string; children: ReactNode }) {
@@ -109,24 +125,45 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
   const options = prHubPeekQueryOptions(url);
   const query = useQuery({ ...options, enabled: open });
   const value = query.data;
-  const ref = parsePullRequestReference(url);
-  const host = ref?.host ?? value?.host ?? "forge";
+  const actionUrl = value?.url ?? url;
+  const ref = value ?? parsePullRequestReference(url);
+  const host = ref?.host;
   const { copyToClipboard, isCopied } = useCopyToClipboard({ timeout: 1500 });
   const prefetch = () => {
     void client.prefetchQuery(options);
   };
+  const prefetchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelPrefetch = () => {
+    clearTimeout(prefetchTimer.current);
+    prefetchTimer.current = undefined;
+  };
+  useEffect(() => cancelPrefetch, [url]);
   const state = value?.state === "open" && value.isDraft ? "draft" : value?.state;
   return (
-    <PreviewCard open={open} onOpenChange={setOpen}>
+    <PreviewCard
+      open={open}
+      onOpenChange={(next, details) => {
+        // Clicking the link keeps its normal navigation behavior.
+        if (details.reason === "trigger-press") return;
+        setOpen(next);
+      }}
+    >
       <PreviewCardTrigger
         render={<OpenLinkAnchor />}
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        onPointerEnter={prefetch}
-        onFocus={() => {
-          prefetch();
-          setOpen(true);
+        onPointerEnter={() => {
+          cancelPrefetch();
+          prefetchTimer.current = setTimeout(prefetch, 150);
+        }}
+        onPointerLeave={cancelPrefetch}
+        onFocus={(event) => {
+          if (event.currentTarget.matches(":focus-visible")) {
+            cancelPrefetch();
+            prefetch();
+            setOpen(true);
+          }
         }}
         onContextMenu={(event) => contextMenu(event, url)}
       >
@@ -138,7 +175,7 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
       >
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-xs text-muted-foreground">
-            {ref?.repository ?? value?.repository} #{ref?.number ?? value?.number}
+            {ref ? ref.repository + " #" + ref.number : "Pull request preview"}
           </span>
           {state ? (
             <Badge
@@ -163,7 +200,9 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
         {value ? (
           <PreviewFacts value={value} />
         ) : query.isError || !query.isPending ? (
-          <p className="text-xs text-muted-foreground">{previewError(query.error, host)}</p>
+          <p className="text-xs text-muted-foreground">
+            {previewError(query.error, host ?? "forge")}
+          </p>
         ) : (
           <div aria-label="Loading pull request" className="animate-pulse space-y-2">
             <div className="h-4 rounded bg-muted" />
@@ -178,7 +217,10 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
               onClick={() => {
                 useRightPanelStore
                   .getState()
-                  .openPullRequest(thread, { key: formatSourceControlPullRequestKey(ref), url });
+                  .openPullRequest(thread, {
+                    key: formatSourceControlPullRequestKey(ref),
+                    url: actionUrl,
+                  });
                 setOpen(false);
               }}
             >
@@ -190,16 +232,16 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
             variant="ghost"
             className="ml-auto"
             aria-label={isCopied ? "Copied link" : "Copy link"}
-            onClick={() => copyToClipboard(url, undefined)}
+            onClick={() => copyToClipboard(actionUrl, undefined)}
           >
             {isCopied ? <CheckIcon /> : <CopyIcon />}
           </Button>
           <Button
             size="xs"
             variant="ghost"
-            aria-label={"Open on " + host}
+            aria-label={host ? "Open on " + host : "Open on forge"}
             onClick={() => {
-              void openLink(url, { external: true });
+              void openLink(actionUrl, { external: true });
             }}
           >
             <ExternalLinkIcon />

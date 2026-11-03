@@ -119,8 +119,6 @@ const fixture = Effect.gen(function* () {
         diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
         web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
         author: { username: "alice" },
-        additions: 12,
-        deletions: 3,
         created_at: "2026-10-19T12:00:00.000Z",
       })) as unknown as typeof fetch,
   });
@@ -245,7 +243,7 @@ it.effect("enriches and caches untracked previews without adding tracked status"
       const input = { url: "https://gitlab.example/team/repo/-/merge_requests/7" };
       const value = yield* engine.peek(input);
       assert.strictEqual(value?.author, "alice");
-      assert.strictEqual(value?.additions, 12);
+      assert.strictEqual(value?.additions, null);
       assert.strictEqual(value?.status, undefined);
       state.lifecycle = "closed";
       assert.deepStrictEqual(yield* engine.peek(input), value);
@@ -266,7 +264,8 @@ it.effect("uses tracked draft and status facts, including recently resolved PRs"
         unresolvedThreadCount: 2,
       } as TrackedPullRequest;
       for (const bucket of ["pullRequests", "recentlyResolved"] as const) {
-        const engine = yield* create(Effect.succeed({ ...snapshot, [bucket]: [tracked] }));
+        let current = { ...snapshot, [bucket]: [tracked] };
+        const engine = yield* create(Effect.sync(() => current));
         const value = yield* engine.peek({
           url: "https://gitlab.example/team/repo/-/merge_requests/7",
         });
@@ -277,6 +276,21 @@ it.effect("uses tracked draft and status facts, including recently resolved PRs"
           mergeable: "mergeable",
           unresolvedThreadCount: 2,
         });
+        current = {
+          ...snapshot,
+          [bucket]: [{ ...tracked, isDraft: false, checkRollup: "failure" as const }],
+        };
+        const refreshed = yield* engine.peek({
+          url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        });
+        assert.strictEqual(refreshed?.isDraft, false);
+        assert.strictEqual(refreshed?.status?.checkRollup, "failure");
+        current = snapshot;
+        assert.strictEqual(
+          (yield* engine.peek({ url: "https://gitlab.example/team/repo/-/merge_requests/7" }))
+            ?.status,
+          undefined,
+        );
       }
     }),
   ),
