@@ -6029,11 +6029,21 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.103Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:12:15.429Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/codexAppServerManager.ts:3762",
+          "apps/server/src/codexAppServerManager.ts:4422"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-28040",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "codex",
@@ -9100,11 +9110,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:12:15.429Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29168",
-      "status": "port",
+      "reason": "F5 has no Codex background-command wake text truncation path.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -9940,11 +9952,22 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:12:15.429Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ProviderService.ts:3164",
+          "apps/server/src/provider/Layers/ProviderService.ts:1440",
+          "apps/server/src/codexAppServerManager.ts:1413"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-29582",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
