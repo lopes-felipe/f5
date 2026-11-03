@@ -274,7 +274,10 @@ describe("Claude SDK host contract transport", () => {
         permissions?: Record<string, unknown>;
       };
       expect(settings.permissions).toEqual({
-        blockReadsExemptPaths: ["/f5-probe/attachments", "/f5-probe/claude/plans"],
+        blockReadsExemptPaths: [
+          path.resolve("/f5-probe/attachments"),
+          path.resolve("/f5-probe/claude/plans"),
+        ],
         blockWritesOutsideWorkingDirectories: true,
       });
     } finally {

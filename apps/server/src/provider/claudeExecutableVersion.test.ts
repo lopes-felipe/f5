@@ -33,21 +33,25 @@ describe("readClaudeExecutableVersion", () => {
     ).not.toBe(claudeVersionCacheKey({ file: process.execPath, args: [older, "--version"] }));
   });
 
-  it("re-reads after the script changes or a link points elsewhere", async () => {
-    const script = versionScript("claude", "2.1.295");
-    const link = join(root, "claude-link.cjs");
-    symlinkSync(script, link);
-    expect(await readClaudeExecutableVersion(link, process.env)).toBe("2.1.295");
-    writeFileSync(
-      script,
-      `#!/usr/bin/env node\nprocess.stdout.write("2.1.317 (Claude Code) upgraded\\n");\n`,
-    );
-    expect(await readClaudeExecutableVersion(link, process.env)).toBe("2.1.317");
-    const other = versionScript("other", "2.1.320");
-    rmSync(link);
-    symlinkSync(other, link);
-    expect(await readClaudeExecutableVersion(link, process.env)).toBe("2.1.320");
-  });
+  // File symlinks need elevated rights on Windows.
+  it.skipIf(process.platform === "win32")(
+    "re-reads after the script changes or a link points elsewhere",
+    async () => {
+      const script = versionScript("claude", "2.1.295");
+      const link = join(root, "claude-link.cjs");
+      symlinkSync(script, link);
+      expect(await readClaudeExecutableVersion(link, process.env)).toBe("2.1.295");
+      writeFileSync(
+        script,
+        `#!/usr/bin/env node\nprocess.stdout.write("2.1.317 (Claude Code) upgraded\\n");\n`,
+      );
+      expect(await readClaudeExecutableVersion(link, process.env)).toBe("2.1.317");
+      const other = versionScript("other", "2.1.320");
+      rmSync(link);
+      symlinkSync(other, link);
+      expect(await readClaudeExecutableVersion(link, process.env)).toBe("2.1.320");
+    },
+  );
 
   it("does not wait for a wrapper that reads stdin before answering", async () => {
     const reader = writeCliScript(

@@ -19,14 +19,14 @@ describe("buildClaudeFlagPermissions", () => {
     const root = mkdtempSync(NodePath.join(tmpdir(), "f5-flag-permissions-"));
     roots.push(root);
     const link = NodePath.join(root, "attachments-link");
-    symlinkSync(root, link);
+    symlinkSync(root, link, process.platform === "win32" ? "junction" : "dir");
     const permissions = buildClaudeFlagPermissions({
       readExemptDirectories: [link, "/", "relative/plans", undefined, "/f5-missing/plans"],
     });
     expect(permissions.blockReadsExemptPaths).toEqual([
       link,
       realpathSync(root),
-      "/f5-missing/plans",
+      NodePath.resolve("/f5-missing/plans"),
     ]);
     expect(permissions).not.toHaveProperty("blockWritesOutsideWorkingDirectories");
   });

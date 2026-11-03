@@ -2334,9 +2334,10 @@ describe("ClaudeAdapterLive", () => {
         const options = harness.getLastCreateQueryInput()?.options;
         const settings = options?.settings as Record<string, unknown> | undefined;
         const permissions = settings?.permissions as Record<string, unknown> | undefined;
+        // The harness's state dir is `/tmp`; Windows resolves it under a drive letter.
         assert.ok(
           (permissions?.blockReadsExemptPaths as string[] | undefined)?.includes(
-            "/tmp/attachments",
+            path.resolve("/tmp/attachments"),
           ),
         );
         assert.equal(permissions?.blockWritesOutsideWorkingDirectories, true);
