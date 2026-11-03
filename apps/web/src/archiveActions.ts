@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 
 import { isArchivedThread, sortThreadsByActivity } from "./lib/threadOrdering";
+import { normalizeProjectPathForComparison } from "./lib/projectPaths";
 import { newCommandId } from "./lib/utils";
 import { readNativeApi } from "./nativeApi";
 import { useRightPanelStore } from "./rightPanelStore";
@@ -242,8 +243,10 @@ export async function deleteThreadsWithCleanup(
     const thread = input.threads.find((entry) => entry.id === threadId)!;
     const project = input.projects.find((entry) => entry.id === thread.projectId);
     const orphanedPath = getOrphanedWorktreePathForThread([...survivors(), thread], threadId);
-    if (!project || !orphanedPath || checkedPaths.has(orphanedPath)) continue;
-    checkedPaths.add(orphanedPath);
+    if (!project || !orphanedPath) continue;
+    const pathKey = normalizeProjectPathForComparison(orphanedPath);
+    if (checkedPaths.has(pathKey)) continue;
+    checkedPaths.add(pathKey);
     removalRows.push({ projectId: project.id, path: orphanedPath });
   }
   void useWorktreeRemovalDialogStore.getState().request(removalRows);
