@@ -1839,11 +1839,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:31:23.837Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23690",
-      "status": "port",
+      "reason": "F5 has no transcript-based agent session scanner or equivalent scan that reads Git configuration from transcript working directories.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
