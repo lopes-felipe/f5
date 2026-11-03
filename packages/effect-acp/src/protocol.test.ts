@@ -46,6 +46,44 @@ const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/acp-mock-peer.ts"),
 );
 
+it.effect("delivers cancelled tool notifications as failed through the wire decoder", () =>
+  Effect.gen(function* () {
+    const { stdio, input } = yield* makeInMemoryStdio();
+    const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+      stdio,
+      serverRequestMethods: new Set(),
+    });
+    for (const sessionUpdate of ["tool_call", "tool_call_update"] as const) {
+      yield* Queue.offer(
+        input,
+        new TextEncoder().encode(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "session-1",
+              update: {
+                sessionUpdate,
+                toolCallId: "tool-1",
+                title: "Run sleep 60",
+                kind: "execute",
+                status: "cancelled",
+              },
+            },
+          }) + "\n",
+        ),
+      );
+    }
+    const notifications = yield* transport.incoming.pipe(Stream.take(2), Stream.runCollect);
+    assert.equal(notifications.length, 2);
+    for (const notification of notifications) {
+      assert.equal(notification._tag, "SessionUpdate");
+      const params = notification.params as AcpSchema.SessionNotification;
+      assert.equal((params.update as { status?: string }).status, "failed");
+    }
+  }).pipe(Effect.scoped),
+);
+
 it("frames large fragmented lines and streaming UTF-8 without losing the tail", () => {
   const frame = AcpProtocol.makeAcpLineFramer();
   const chunk = "x".repeat(4096);

@@ -67,7 +67,25 @@ export interface AcpPatchedProtocol {
   readonly notify: (method: string, payload: unknown) => Effect.Effect<void, AcpError.AcpError>;
 }
 
-const decodeSessionUpdate = Schema.decodeUnknownEffect(AcpSchema.SessionNotification);
+const decodeSessionUpdateSchema = Schema.decodeUnknownEffect(AcpSchema.SessionNotification);
+const decodeSessionUpdate = (payload: unknown) => {
+  // Some agents send cancelled even though the pinned ACP schema has no such status.
+  // Keep the compatibility mapping specific to tool calls; validate everything else.
+  if (typeof payload === "object" && payload !== null && "update" in payload) {
+    const update = payload.update;
+    if (
+      typeof update === "object" &&
+      update !== null &&
+      "sessionUpdate" in update &&
+      (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+      "status" in update &&
+      update.status === "cancelled"
+    ) {
+      return decodeSessionUpdateSchema({ ...payload, update: { ...update, status: "failed" } });
+    }
+  }
+  return decodeSessionUpdateSchema(payload);
+};
 const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
