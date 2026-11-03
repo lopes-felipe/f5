@@ -289,9 +289,17 @@ it("runs every macOS real-Git extended suite in the gated integration job", () =
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
   // The whole-directory script picks up new suites without a matrix to maintain.
-  expect(
-    workflow.jobs["macos-integration"].steps.map((step: { run?: string }) => step.run),
-  ).toEqual(expect.arrayContaining(["bun run --cwd apps/server test:git:extended"]));
+  const step = workflow.jobs["macos-integration"].steps.find(
+    (candidate: { run?: string }) =>
+      candidate.run === "bun run --cwd apps/server test:git:extended",
+  );
+  expect(step?.env?.F5_CI_SUITE_ID).toBe("server-git-extended");
+  const script = JSON.parse(
+    readFileSync(new URL("../apps/server/package.json", import.meta.url), "utf8"),
+  ).scripts["test:git:extended"] as string;
+  // A file list or pinned shard would silently drop suites from macOS coverage.
+  expect(script).toMatch(/ run integration\/git\/extended(?: --|$)/);
+  expect(script).not.toMatch(/--shard|\.test\.ts/);
   expect(workflow.jobs["ci-result"].needs).toEqual(
     expect.arrayContaining([
       "macos-workspaces",
