@@ -1,8 +1,5 @@
+import { normalizeProjectPathForComparison } from "./lib/projectPaths";
 import type { Thread } from "./types";
-
-function normalizeWorktreePath(path: string | null): string | null {
-  return path || null;
-}
 
 export function getOrphanedWorktreePathForThread(
   threads: readonly Thread[],
@@ -13,17 +10,19 @@ export function getOrphanedWorktreePathForThread(
     return null;
   }
 
-  const targetWorktreePath = normalizeWorktreePath(targetThread.worktreePath);
+  const targetWorktreePath = targetThread.worktreePath?.trim();
   if (!targetWorktreePath) {
     return null;
   }
 
-  const isShared = threads.some((thread) => {
-    if (thread.id === threadId) {
-      return false;
-    }
-    return normalizeWorktreePath(thread.worktreePath) === targetWorktreePath;
-  });
+  // Removing a checkout affects every thread using it, even when stored paths differ.
+  const targetKey = normalizeProjectPathForComparison(targetWorktreePath);
+  const isShared = threads.some(
+    (thread) =>
+      thread.id !== threadId &&
+      thread.worktreePath !== null &&
+      normalizeProjectPathForComparison(thread.worktreePath) === targetKey,
+  );
 
   return isShared ? null : targetWorktreePath;
 }
