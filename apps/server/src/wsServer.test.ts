@@ -853,7 +853,9 @@ describe("WebSocket Server", () => {
           Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
           Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
           Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
-          Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+          Layer.succeed(storageMaintenanceModule.StorageMaintenance, {
+            startScheduledCompaction: () => Effect.void,
+          } as any),
           Layer.succeed(WorktreePreparation, {
             prepare: () => Effect.void,
             needsPreparation: () => Effect.succeed(false),
