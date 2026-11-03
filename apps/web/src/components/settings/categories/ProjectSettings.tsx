@@ -87,7 +87,7 @@ function CheckedInProjectConfigSummary({ projectId }: { readonly projectId: Proj
   );
 }
 
-/** The project-scope "Project" page: icon, memory, and checked-in defaults for one project. */
+/** The project-scope "Project" page: actions, icon, memory, and checked-in defaults for one project. */
 export function ProjectSettings() {
   const {
     selectedProject,

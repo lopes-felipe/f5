@@ -7919,6 +7919,11 @@ export default memo(function ChatView({
               onOpenProjectSettings={
                 isScratchProject(activeProject) ? undefined : projectBreadcrumbActions.openSettings
               }
+              onOpenProjectActions={
+                isScratchProject(activeProject)
+                  ? undefined
+                  : projectBreadcrumbActions.openActionsSettings
+              }
               workflowTitle={activeWorkflow?.workflow.title}
               workflowType={
                 activeWorkflow

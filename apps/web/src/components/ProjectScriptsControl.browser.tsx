@@ -1,6 +1,6 @@
 import "../index.css";
 
-import type { ComponentProps } from "react";
+import { type ComponentProps, useState } from "react";
 import type { ProjectScript } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import { page } from "vitest/browser";
@@ -51,5 +51,37 @@ describe("ProjectScriptsControl", () => {
     await expect.element(page.getByRole("menuitem", { name: "Test" })).toBeVisible();
     await page.getByRole("menuitem", { name: "Add action" }).click();
     await expect.element(page.getByRole("dialog", { name: "Add Action" })).toBeVisible();
+  });
+
+  it("closes its dialogs cleanly when the last action is deleted from the header", async () => {
+    function Harness() {
+      const [scripts, setScripts] = useState<ProjectScript[]>([TEST_SCRIPT]);
+      return (
+        <ProjectScriptsControl
+          scripts={scripts}
+          keybindings={[]}
+          onRunScript={() => {}}
+          onAddScript={() => {}}
+          onUpdateScript={() => {}}
+          onDeleteScript={(scriptId) =>
+            setScripts((current) => current.filter((script) => script.id !== scriptId))
+          }
+        />
+      );
+    }
+    await render(<Harness />);
+
+    await page.getByRole("button", { name: "Script actions" }).click();
+    await page.getByRole("button", { name: "Edit Test" }).click();
+    await expect.element(page.getByRole("dialog", { name: "Edit Action" })).toBeVisible();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete action" }).click();
+
+    await expect
+      .element(page.getByRole("button", { name: "Script actions" }))
+      .not.toBeInTheDocument();
+    await expect
+      .poll(() => document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length)
+      .toBe(0);
   });
 });
