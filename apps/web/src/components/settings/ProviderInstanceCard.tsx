@@ -12,7 +12,7 @@ import {
 import { Link } from "@tanstack/react-router";
 
 import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   isProviderDriverKind,
   type ProviderInstanceConfig,
@@ -222,6 +222,7 @@ export function ProviderEnvironmentSection(props: {
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
 }) {
+  const hintId = useId();
   const [rows, setRows] = useState<ReadonlyArray<EnvironmentDraftRow>>(() =>
     props.environment.map(makeEnvironmentDraftRow),
   );
@@ -277,6 +278,7 @@ export function ProviderEnvironmentSection(props: {
         <span className="text-xs font-medium text-foreground">Environment variables</span>
         <Button
           type="button"
+          aria-label="Add environment variable"
           size="sm"
           variant="outline"
           className="h-7 gap-1.5 px-2 text-xs"
@@ -311,6 +313,7 @@ export function ProviderEnvironmentSection(props: {
                 value={variable.name}
                 onCommit={(name) => updateVariable(variable.id, { name: name.trim() })}
                 disabled={variable.valueRedacted === true}
+                aria-describedby={variable.valueRedacted === true ? hintId : undefined}
                 placeholder="VARIABLE_NAME"
                 spellCheck={false}
                 aria-label={`Environment variable name ${index + 1}`}
@@ -332,6 +335,7 @@ export function ProviderEnvironmentSection(props: {
                   className="size-3.5"
                   checked={variable.sensitive}
                   disabled={variable.valueRedacted === true}
+                  aria-describedby={variable.valueRedacted === true ? hintId : undefined}
                   onChange={(event) => {
                     const sensitive = event.currentTarget.checked;
                     updateVariable(variable.id, {
@@ -358,10 +362,10 @@ export function ProviderEnvironmentSection(props: {
           ))}
         </div>
       )}
-      <span className="text-xs text-muted-foreground">
+      <span id={hintId} className="text-xs text-muted-foreground">
         Sensitive values are stored separately and are not returned to the app after saving.
         {rows.some((row) => row.valueRedacted === true)
-          ? " Enter a new value to rename a saved one or make it plain text."
+          ? " Remove and re-add a saved variable to rename it or make it plain text."
           : null}
       </span>
     </div>

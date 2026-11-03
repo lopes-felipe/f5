@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
 
 import { createTestRouter, TestRouterContext } from "../../test/routerContext";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
@@ -82,9 +83,13 @@ function card(overrides: Partial<React.ComponentProps<typeof ProviderInstanceCar
   );
 }
 function renderCard(overrides: Partial<React.ComponentProps<typeof ProviderInstanceCard>> = {}) {
+  return renderCardContent(card(overrides));
+}
+
+function renderCardContent(content: ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createTestRouter();
-  return render(card(overrides), {
+  return render(content, {
     wrapper: ({ children }) => (
       <QueryClientProvider client={queryClient}>
         <TestRouterContext router={router}>{children}</TestRouterContext>
@@ -94,6 +99,84 @@ function renderCard(overrides: Partial<React.ComponentProps<typeof ProviderInsta
 }
 
 describe("ProviderInstanceCard advisory", () => {
+  it("explains how to edit a saved secret after the server redacts a replacement", async () => {
+    const savedSecret = {
+      name: "FAKE_API_KEY",
+      value: "",
+      sensitive: true,
+      valueRedacted: true,
+    } as const;
+    const onUpdate = vi.fn();
+    function RedactedSettingsCard() {
+      const [instance, setInstance] = useState(makeInstance({ environment: [savedSecret] }));
+      return card({
+        instance,
+        isExpanded: true,
+        onUpdate: (next) => {
+          onUpdate(next);
+          // Match the server's settings response: sensitive values never return to the client.
+          setInstance({
+            ...next,
+            environment: (next.environment ?? []).map((variable) =>
+              variable.sensitive && variable.value.length > 0
+                ? { ...variable, value: "", valueRedacted: true }
+                : variable,
+            ),
+          });
+        },
+      });
+    }
+    const screen = await renderCardContent(<RedactedSettingsCard />);
+    try {
+      const name = page.getByRole("textbox", { name: "Environment variable name 1" });
+      const value = page.getByLabelText("Environment variable value 1");
+      const sensitive = page.getByRole("checkbox", { name: "Sensitive" });
+      const hint = /Remove and re-add a saved variable to rename it or make it plain text/;
+
+      await expect.element(name).toBeDisabled();
+      await expect.element(sensitive).toBeDisabled();
+      await expect.element(name).toHaveAccessibleDescription(hint);
+      await expect.element(sensitive).toHaveAccessibleDescription(hint);
+      await value.fill("fake-replacement");
+      await userEvent.tab();
+      expect(onUpdate).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          environment: [{ ...savedSecret, value: "fake-replacement", valueRedacted: false }],
+        }),
+      );
+      await expect.element(name).toBeDisabled();
+      await expect.element(sensitive).toBeDisabled();
+      await expect.element(value).toHaveValue("");
+      await expect.element(name).toHaveAccessibleDescription(hint);
+      await page.getByRole("button", { name: "Remove environment variable FAKE_API_KEY" }).click();
+      expect(onUpdate).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ environment: expect.anything() }),
+      );
+      await page.getByRole("button", { name: "Add environment variable" }).click();
+      await expect.element(name).toBeEnabled();
+      await expect.element(sensitive).toBeEnabled();
+      await name.fill("RENAMED_KEY");
+      await userEvent.tab();
+      await sensitive.click();
+      await value.fill("fake-replacement");
+      await userEvent.tab();
+      expect(onUpdate).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          environment: [
+            {
+              name: "RENAMED_KEY",
+              value: "fake-replacement",
+              sensitive: false,
+              valueRedacted: false,
+            },
+          ],
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("defaults Claude native compaction on and persists an explicit opt-out", async () => {
     const onUpdate = vi.fn();
     const screen = await renderCard({

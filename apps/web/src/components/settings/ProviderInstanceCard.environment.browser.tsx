@@ -24,7 +24,9 @@ describe("ProviderEnvironmentSection saved secrets", () => {
     await expect.element(name).toBeDisabled();
     await expect.element(sensitive).toBeDisabled();
     await expect
-      .element(screen.getByText(/Enter a new value to rename a saved one or make it plain text/))
+      .element(
+        screen.getByText(/Remove and re-add a saved variable to rename it or make it plain text/),
+      )
       .toBeVisible();
     await value.fill("unused-draft");
     await value.fill("");
