@@ -420,15 +420,15 @@ describe("agent transcripts", () => {
   it("resets mid-line, replacement and out-of-range cursors", async () => {
     const f = await fixture();
     await fs.writeFile(f.file, record(0));
-    const stat = await fs.stat(f.file);
-    for (const extra of [{ o: 1 }, { o: stat.size + 5 }, { ino: stat.ino + 1 }]) {
+    const stat = await fs.stat(f.file, { bigint: true });
+    for (const extra of [{ o: 1 }, { o: Number(stat.size) + 5 }, { ino: String(stat.ino + 1n) }]) {
       const cursor = encodeCursor({
         v: 1,
         p: "claude",
         dir: "fwd",
         o: 0,
-        ino: stat.ino,
-        dev: stat.dev,
+        ino: String(stat.ino),
+        dev: String(stat.dev),
         ...extra,
       });
       expect((await readClaudeAgentTranscript({ ...input, cursor }, f)).reset).toBe(true);
