@@ -1,4 +1,5 @@
 import { backgroundWorkSessionIdentity } from "../backgroundWorkIdentity.ts";
+import { readAgentTranscript } from "../agentTranscript/readAgentTranscript.ts";
 import { readIncompleteHistory } from "../runtimePayload.ts";
 import { ProviderSessionDirectoryPersistenceError } from "../Errors.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -481,6 +482,65 @@ it.effect("reads child transcripts without recovering stopped or replacement ses
     assert.equal(codex.sendTurn.mock.calls.length, 0);
   }).pipe(Effect.provide(layer));
 });
+
+it.effect(
+  "routes a grouped Codex transcript through the live provider service without sending",
+  () => {
+    const codex = makeFakeCodexAdapter();
+    const read = vi.fn(() =>
+      Effect.succeed({
+        data: [{ id: "message", type: "agentMessage", text: "Child output" }],
+        nextCursor: null,
+      }),
+    );
+    const adapter = {
+      ...codex.adapter,
+      readChildThreadItems: read,
+      getSessionDiscovery: () =>
+        Effect.succeed({
+          outcome: "discovered" as const,
+          executableVersion: "0.166.0",
+        }),
+    };
+    const layer = makeProviderServiceLayerForAdapters(new Map([["codex", adapter]]));
+    return Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = asThreadId("grouped-transcript");
+      const instanceId = ProviderInstanceId.make("codex");
+      yield* directory.upsert({ threadId, provider: "codex", providerInstanceId: instanceId });
+      codex.hasSession.mockReturnValue(Effect.succeed(true));
+      const row = {
+        workItemId: "subagent:child",
+        provider: "codex" as const,
+        providerInstanceId: instanceId,
+        kind: "agent" as const,
+        active: true,
+        status: "running" as const,
+        nativeParentSessionId: null,
+        providerSessionIdentity: "session",
+      };
+      const result = yield* readAgentTranscript(
+        { threadId, workItemIds: ["call-spawn", "subagent:child"] },
+        {
+          service,
+          directory,
+          work: {
+            getOwnedEntries: () => Effect.succeed([{ ...row, workItemId: "call-spawn" }, row]),
+          },
+          resolveAccount: async () => {
+            throw new Error("Unexpected Claude account lookup");
+          },
+        },
+      );
+      assert.equal(result.availability, "ok");
+      assert.equal(result.items[0]?.id, "message");
+      assert.deepEqual(read.mock.calls[0], [threadId, "child", null, 50]);
+      assert.equal(codex.startSession.mock.calls.length, 0);
+      assert.equal(codex.sendTurn.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect(
   "reads capabilities from exact explicit instances without requiring a legacy default",

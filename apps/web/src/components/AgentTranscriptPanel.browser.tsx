@@ -31,6 +31,14 @@ const empty: AgentTranscriptPage = {
   pendingTail: false,
   reset: false,
 };
+const reasonText = {
+  "not-started": "Waiting for the subagent to write its transcript…",
+  "not-found": "This transcript is no longer available.",
+  "identity-unavailable": "The original provider session could not be identified.",
+  "unsupported-provider": "This provider does not support subagent transcripts.",
+  "session-not-running":
+    "Codex transcripts are readable while this thread's Codex session is running.",
+} as const;
 const props = {
   threadId: ThreadId.makeUnsafe("parent"),
   nativeWorkItemId: "agent",
@@ -212,6 +220,7 @@ describe("AgentTranscriptPanel", () => {
     mocks.read.mockResolvedValue({ ...empty, availability: "unavailable", reason });
     const screen = await mount();
     try {
+      await expect.element(page.getByText(reasonText[reason], { exact: true })).toBeVisible();
       await expect
         .poll(() => useAgentTranscriptStore.getState().entries["parent\u0000agent"]?.reason)
         .toBe(reason);

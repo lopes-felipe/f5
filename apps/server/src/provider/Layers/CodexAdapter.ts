@@ -1,4 +1,11 @@
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import {
+  normalizeCodexThreadItemType,
+  itemTitle,
+  itemDetail,
+  itemLifecycleStatus,
+} from "../codexItemPresentation.ts";
+export { normalizeCodexThreadItemType } from "../codexItemPresentation.ts";
 import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
 import { makeCodexGeneratedImageStore } from "../codexGeneratedImageStore.ts";
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
@@ -3941,10 +3948,3 @@ export const CodexAdapterLive = Layer.effect(CodexAdapter, makeCodexAdapter());
 export function makeCodexAdapterLive(options?: CodexAdapterLiveOptions) {
   return Layer.effect(CodexAdapter, makeCodexAdapter(options));
 }
-import {
-  normalizeCodexThreadItemType,
-  itemTitle,
-  itemDetail,
-  itemLifecycleStatus,
-} from "../codexItemPresentation.ts";
-export { normalizeCodexThreadItemType } from "../codexItemPresentation.ts";

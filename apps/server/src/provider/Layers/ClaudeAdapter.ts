@@ -10146,6 +10146,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               configDir,
               sessionId: context.resumeSessionId!,
               agentId: agent,
+            }).catch((cause: unknown) => {
+              // Preserve inspection's native owned-task fallback when lookup
+              // is ambiguous or unreadable. Never read a rejected file path.
+              if (context.nativeTaskIds.has(agent) && context.query.getTaskOutput)
+                return { kind: "missing" as const };
+              throw cause;
             });
             if (resolved.kind === "missing") return readShellOutput();
             return readClaudeTranscriptPage(resolved.path, offset, input.limit ?? 20);

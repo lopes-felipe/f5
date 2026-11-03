@@ -209,9 +209,6 @@ function closeWithHistory(
     selectThreadRightPanelState(byThreadId, threadId).surfaces.map((surface) => surface.id),
   );
   const removed = before.surfaces.filter((surface) => !remaining.has(surface.id));
-  for (const surface of removed)
-    if (surface.kind === "agent-transcript")
-      useAgentTranscriptStore.getState().evict(transcriptKey(threadId, surface.id.slice(6)));
   if (!removed.length) return { byThreadId };
   const removedIds = new Set(removed.map((surface) => surface.id));
   const closedHistory = [
@@ -422,9 +419,6 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set, get) => (
     })),
   removeThread: (threadId) =>
     set((state) => {
-      for (const surface of selectThreadRightPanelState(state.byThreadId, threadId).surfaces)
-        if (surface.kind === "agent-transcript")
-          useAgentTranscriptStore.getState().evict(transcriptKey(threadId, surface.id.slice(6)));
       const key = threadKey(threadId);
       const { [key]: _panel, ...byThreadId } = state.byThreadId;
       return {
@@ -434,3 +428,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set, get) => (
       };
     }),
 }));
+
+// Dispose transcript caches after the panel update has committed, outside its
+// reducers. This covers individual/bulk closes and removal of an entire thread.
+useRightPanelStore.subscribe((state, previous) => {
+  if (state.byThreadId === previous.byThreadId) return;
+  for (const [threadId, before] of Object.entries(previous.byThreadId)) {
+    const after = state.byThreadId[threadId];
+    if (before === after) continue;
+    const remaining = new Set(after?.surfaces.map((surface) => surface.id));
+    for (const surface of before.surfaces)
+      if (surface.kind === "agent-transcript" && !remaining.has(surface.id))
+        useAgentTranscriptStore.getState().evict(transcriptKey(threadId, surface.id.slice(6)));
+  }
+});

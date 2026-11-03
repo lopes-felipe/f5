@@ -76,6 +76,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderSessionAction,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -3101,10 +3102,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       });
 
     // Read-only viewers use current support without imposing a mutation generation fence.
-    const isSessionActionAvailable = (
-      threadId: ThreadId,
-      action: import("@t3tools/contracts").ProviderSessionAction,
-    ) =>
+    const isSessionActionAvailable = (threadId: ThreadId, action: ProviderSessionAction) =>
       getSessionCapabilities(threadId).pipe(
         Effect.map(
           (capabilities) =>

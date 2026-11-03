@@ -26,18 +26,22 @@ export function useAgentTranscript(input: {
   const ids = input.workItemIds.join("\u0000");
   const lastRequest = useRef(0);
   const request = useCallback(
-    (mode: "tail" | "earlier" | "latest" = "tail") =>
+    (mode: "tail" | "earlier" | "latest" | "drain" = "tail") =>
       runAgentTranscriptRequest(key, async () => {
         const store = useAgentTranscriptStore.getState();
         let current = store.entries[key] ?? newTranscriptState();
         if (current.inFlight) return;
-        if (mode === "tail" && current.detachedFromLatest) return;
+        if ((mode === "tail" || mode === "drain") && current.detachedFromLatest) return;
         if (mode === "latest") current = newTranscriptState();
         const requestId = ++requestSequence;
         store.update(key, () => ({ ...current, inFlight: true, requestId }));
         lastRequest.current = Date.now();
         let cursor =
           mode === "earlier" ? current.earlierCursor : (current.nextCursor ?? current.tailCursor);
+        // Initial opens and settlement drain fully. Each live refresh yields
+        // after four requests so catch-up cannot monopolize the connection.
+        const maxRequests = mode === "tail" && current.loaded ? 4 : Infinity;
+        let requests = 0;
         try {
           do {
             const args: AgentsReadTranscriptInput = {
@@ -47,6 +51,7 @@ export function useAgentTranscript(input: {
               ...(cursor && mode !== "latest" ? { cursor } : { anchor: "latest" }),
             };
             const page = await ensureNativeApi().agents.readTranscript(args);
+            requests++;
             // Closing a tab evicts it; a late response must not resurrect it.
             if (useAgentTranscriptStore.getState().entries[key]?.requestId !== requestId) return;
             store.update(key, (existing) => ({
@@ -69,7 +74,7 @@ export function useAgentTranscript(input: {
                 "The transcript reader could not advance. Retry after the provider finishes writing.",
               );
             mode = mode === "latest" ? "tail" : mode;
-            if (!cursor) break;
+            if (!cursor || requests >= maxRequests) break;
           } while (useAgentTranscriptStore.getState().entries[key]);
           store.update(key, (existing) => ({ ...existing, inFlight: false }));
         } catch (cause) {
@@ -92,10 +97,15 @@ export function useAgentTranscript(input: {
       !input.live ||
       connection.phase !== "connected" ||
       state.detachedFromLatest ||
-      (state.availability === "unavailable" && state.reason !== "not-started")
+      (state.availability === "unavailable" &&
+        state.reason !== "not-started" &&
+        state.reason !== "session-not-running")
     )
       return;
-    const interval = setInterval(() => void request(), 2000);
+    const interval = setInterval(
+      () => void request(),
+      state.reason === "session-not-running" ? 10000 : 2000,
+    );
     const timeout = setTimeout(
       () => void request(),
       Math.max(0, 1000 - (Date.now() - lastRequest.current)),
@@ -114,27 +124,60 @@ export function useAgentTranscript(input: {
     state.availability,
     state.reason,
   ]);
-  const wasLive = useRef(input.live);
-  const settlementPending = useRef(false);
   useEffect(() => {
-    if (wasLive.current && !input.live) settlementPending.current = true;
-    if (input.live) settlementPending.current = false;
-    wasLive.current = input.live;
+    const current = useAgentTranscriptStore.getState().entries[key];
+    if (!current) return;
+    const settlement = input.live
+      ? "idle"
+      : current.observedLive || (current.pendingTail && current.settlement === "idle")
+        ? "pending"
+        : current.settlement;
+    if (current.observedLive !== input.live || current.settlement !== settlement)
+      useAgentTranscriptStore.getState().update(key, (existing) => ({
+        ...existing,
+        observedLive: input.live,
+        settlement,
+      }));
+  }, [key, input.live, state.observedLive, state.settlement, state.pendingTail, state.loaded]);
+  useEffect(() => {
     if (
-      !settlementPending.current ||
+      state.settlement !== "pending" ||
+      input.live ||
       !input.visible ||
       state.detachedFromLatest ||
       connection.phase !== "connected"
     )
       return;
     return settleAgentTranscript({
-      drain: () => request(),
-      refresh: () => request(),
+      drain: async () => {
+        // The first call may join an already-running bounded live refresh.
+        do {
+          await request("drain");
+        } while (
+          useAgentTranscriptStore.getState().entries[key]?.nextCursor &&
+          !useAgentTranscriptStore.getState().entries[key]?.error &&
+          useAgentTranscriptStore.getState().entries[key]?.availability === "ok" &&
+          !useAgentTranscriptStore.getState().entries[key]?.detachedFromLatest
+        );
+      },
+      refresh: () => request("drain"),
       onSettled: () => {
-        settlementPending.current = false;
+        if (useAgentTranscriptStore.getState().entries[key])
+          useAgentTranscriptStore.getState().update(key, (existing) => ({
+            ...existing,
+            settlement: "complete",
+          }));
       },
     });
-  }, [input.live, input.visible, request, state.detachedFromLatest, connection.phase]);
+  }, [
+    key,
+    input.live,
+    input.visible,
+    request,
+    state.settlement,
+    state.detachedFromLatest,
+    connection.phase,
+  ]);
   return {
     state,
     refresh: () => request(),

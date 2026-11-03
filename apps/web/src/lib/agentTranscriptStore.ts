@@ -16,6 +16,8 @@ export interface TranscriptState {
   requestId: number;
   loaded: boolean;
   error: string | null;
+  observedLive: boolean;
+  settlement: "idle" | "pending" | "complete";
 }
 export const newTranscriptState = (): TranscriptState => ({
   items: [],
@@ -30,6 +32,8 @@ export const newTranscriptState = (): TranscriptState => ({
   requestId: 0,
   loaded: false,
   error: null,
+  observedLive: false,
+  settlement: "idle",
 });
 export const transcriptKey = (threadId: string, nativeWorkItemId: string) =>
   threadId + "\u0000" + nativeWorkItemId;

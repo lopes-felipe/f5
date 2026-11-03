@@ -14,6 +14,7 @@ import { transcriptRecord } from "../claudeTranscript.ts";
 import { boundedText } from "./normalizeClaudeSubagentRecord.ts";
 import { decodeCursor, encodeCursor } from "./agentTranscriptCursor.ts";
 import { emptyTranscriptPage, unavailable } from "./readClaudeAgentTranscript.ts";
+import { fitTranscriptItems, TRANSCRIPT_PAGE_BYTES } from "./transcriptPageBudget.ts";
 
 function textContent(value: unknown): string {
   if (typeof value === "string") return value;
@@ -118,7 +119,7 @@ export function readCodexAgentTranscript<E>(
       lastStartOrdinal = ordinal;
       const page = yield* read(current);
       if (page.kind !== "page") return unavailable(page.kind);
-      let normalizedPage = page.data.flatMap((raw, index) =>
+      let normalizedPage: AgentTranscriptItem[] = page.data.flatMap((raw, index) =>
         normalizeCodexThreadItem(raw, "omitted:" + (current ?? "start") + ":" + index).map(
           (item) => ({
             ...item,
@@ -129,35 +130,14 @@ export function readCodexAgentTranscript<E>(
       let pageBytes = Buffer.byteLength(JSON.stringify(normalizedPage));
       if (
         items.length &&
-        (bytes + pageBytes > 1024 * 1024 ||
+        (bytes + pageBytes > TRANSCRIPT_PAGE_BYTES - 16 * 1024 ||
           items.length + normalizedPage.length > (input.limit ?? 200))
       ) {
         next = current;
         break;
       }
-      // JSON escaping can expand control characters, so measure the wire budget
-      // after normalization and shrink only presentation fields as needed.
-      for (
-        let fieldBudget = 16384;
-        pageBytes > 1024 * 1024 && fieldBudget >= 128;
-        fieldBudget /= 2
-      ) {
-        normalizedPage = normalizedPage.map((item) => {
-          const text = "text" in item ? boundedText(item.text, fieldBudget) : null;
-          return item.kind === "message" || item.kind === "reasoning"
-            ? { ...item, text: text!.text, truncated: item.truncated || text!.truncated }
-            : item.kind === "tool-call"
-              ? {
-                  ...item,
-                  detail: boundedText(item.detail, Math.min(1024, fieldBudget)).text,
-                  output: boundedText(item.output, fieldBudget).text,
-                  outputTruncated:
-                    item.outputTruncated || Buffer.byteLength(item.output) > fieldBudget,
-                }
-              : item;
-        });
-        pageBytes = Buffer.byteLength(JSON.stringify(normalizedPage));
-      }
+      normalizedPage = fitTranscriptItems(normalizedPage);
+      pageBytes = Buffer.byteLength(JSON.stringify(normalizedPage));
       for (const item of normalizedPage) {
         if (!floorSet && item.kind === "tool-call" && item.status === "running") {
           floor = current ?? "";

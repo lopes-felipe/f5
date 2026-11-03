@@ -4,14 +4,20 @@ const Offset = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 );
+// Keep safe numeric identities readable for tabs opened before this change.
+// New cursors use exact decimal strings, including NTFS ids above 2^53.
+const FileIdentity = Schema.Union([
+  Offset,
+  Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]{0,31})$/)),
+]);
 const Cursor = Schema.Union([
   Schema.Struct({
     v: Schema.Literal(1),
     p: Schema.Literal("claude"),
     dir: Schema.Literals(["fwd", "back"]),
     o: Offset,
-    ino: Offset,
-    dev: Offset,
+    ino: FileIdentity,
+    dev: FileIdentity,
   }),
   Schema.Struct({
     v: Schema.Literal(1),

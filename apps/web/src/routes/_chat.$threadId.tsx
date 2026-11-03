@@ -760,7 +760,9 @@ function ChatThreadRouteView() {
               </Suspense>
             );
           case "agent-transcript":
-            return (
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading agent transcript..." />
+            ) : (
               <AgentTranscriptPanel
                 threadId={threadId}
                 nativeWorkItemId={surface.id.slice(6)}

@@ -15054,6 +15054,41 @@ describe("Claude Release 4 launch and file checkpoint controls", () => {
   });
 });
 
+it.effect("inspects an owned native task when transcript lookup is ambiguous", () => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), "claude-inspect-ambiguous-"));
+  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+  for (const project of ["first", "second"]) {
+    const directory = path.join(configDir, "projects", project);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, sessionId + ".jsonl"), "");
+  }
+  const h = makeHarness({ processEnvironment: { CLAUDE_CONFIG_DIR: configDir } });
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: { resume: sessionId, nativeTaskIds: ["agent-task"] },
+    });
+    const output = yield* adapter.inspectNativeOperation!({
+      threadId: THREAD_ID,
+      generation: 1,
+      kind: "task",
+      nativeId: "agent-task",
+    });
+    assert.deepEqual(output, {
+      entries: [{ output: "isolated shell output", totalBytes: 30, omitted: true }],
+      nextCursor: null,
+    });
+    assert.deepEqual(h.query.getTaskOutputCalls, ["agent-task"]);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(
+    Effect.provide(h.layer),
+    Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+  );
+});
+
 it.effect("reads a persisted native shell task and refuses an older run", () => {
   const h = makeHarness();
   return Effect.gen(function* () {

@@ -26,7 +26,15 @@ export function readAgentTranscript(
     const rows = yield* deps.work.getOwnedEntries(input);
     const provider = rows[0]?.provider;
     if (!provider || rows.some((row) => row.provider !== provider)) return unavailable("not-found");
-    const row = rows.find((row) => row.kind !== "shell" && !row.workItemId.startsWith("toolu_"));
+    const eligible = rows.filter(
+      (row) => row.kind !== "shell" && !row.workItemId.startsWith("toolu_"),
+    );
+    // Grouped Codex entries also contain the collab call; only the subagent
+    // row identifies the receiver thread owned by the parent session.
+    const row =
+      provider === "codex"
+        ? eligible.find((row) => row.workItemId.startsWith("subagent:"))
+        : eligible[0];
     if (!row) return unavailable("not-found");
     const expected = provider === "claudeAgent" ? "claude" : provider === "codex" ? "codex" : null;
     if (input.cursor && decodeCursor(input.cursor).p !== expected)

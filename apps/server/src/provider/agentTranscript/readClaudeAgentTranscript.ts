@@ -10,6 +10,7 @@ import { decodeCursor, encodeCursor } from "./agentTranscriptCursor.ts";
 import { readBoundedJsonlLines } from "./boundedJsonl.ts";
 import { resolveClaudeSubagentFile } from "./claudeSubagentTranscript.ts";
 import { normalizeClaudeSubagentRecord } from "./normalizeClaudeSubagentRecord.ts";
+import { fitTranscriptItems, TRANSCRIPT_PAGE_BYTES } from "./transcriptPageBudget.ts";
 
 const cache = new Map<string, { path: string | null; expires: number }>();
 export const emptyTranscriptPage = (): AgentTranscriptPage => ({
@@ -80,23 +81,27 @@ export async function readClaudeAgentTranscript(
     throw cause;
   }
   try {
-    const stat = await file.stat();
+    const stat = await file.stat({ bigint: true });
     if (!stat.isFile()) throw new Error("Invalid transcript.");
+    if (stat.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Transcript is too large.");
+    const size = Number(stat.size);
+    const ino = String(stat.ino),
+      dev = String(stat.dev);
     const cursor = input.cursor ? decodeCursor(input.cursor) : null;
     if (cursor && cursor.p !== "claude") throw new Error("Wrong provider cursor.");
     if (cursor) {
       const byte = Buffer.alloc(1);
       if (cursor.o) await file.read(byte, 0, 1, cursor.o - 1);
       if (
-        cursor.ino !== stat.ino ||
-        cursor.dev !== stat.dev ||
-        cursor.o > stat.size ||
+        String(cursor.ino) !== ino ||
+        String(cursor.dev) !== dev ||
+        cursor.o > size ||
         (cursor.o !== 0 && byte[0] !== 10)
       )
         return { ...emptyTranscriptPage(), reset: true };
     }
     const dir = cursor?.dir ?? (input.anchor === "start" ? "fwd" : "back");
-    let offset = cursor?.o ?? (dir === "back" ? stat.size : 0);
+    let offset = cursor?.o ?? (dir === "back" ? size : 0);
     let first = offset,
       last = offset,
       bytes = 0,
@@ -116,8 +121,7 @@ export async function readClaudeAgentTranscript(
         if (dir === "fwd") break;
         continue;
       }
-      const atRecord = (o: number) =>
-        encodeCursor({ v: 1, p: "claude", dir: "back", o, ino: stat.ino, dev: stat.dev });
+      const atRecord = (o: number) => encodeCursor({ v: 1, p: "claude", dir: "back", o, ino, dev });
       let recordItems: AgentTranscriptItem[];
       try {
         recordItems =
@@ -164,7 +168,11 @@ export async function readClaudeAgentTranscript(
             : atRecord(line.endOffset),
       }));
       const cost = Buffer.byteLength(JSON.stringify(recordItems));
-      if (items.length && (items.length + recordItems.length > limit || bytes + cost > 1024 * 1024))
+      if (
+        items.length &&
+        (items.length + recordItems.length > limit ||
+          bytes + cost > TRANSCRIPT_PAGE_BYTES - 16 * 1024)
+      )
         break;
       if (dir === "back") items.unshift(...recordItems);
       else items.push(...recordItems);
@@ -175,13 +183,13 @@ export async function readClaudeAgentTranscript(
       if (items.length >= limit) break;
     }
     const at = (o: number, direction: "fwd" | "back" = "fwd") =>
-      encodeCursor({ v: 1, p: "claude", dir: direction, o, ino: stat.ino, dev: stat.dev });
+      encodeCursor({ v: 1, p: "claude", dir: direction, o, ino, dev });
     return {
       ...emptyTranscriptPage(),
-      items,
+      items: fitTranscriptItems(items),
       pendingTail,
       earlierCursor: first > 0 ? at(first, "back") : null,
-      nextCursor: dir === "fwd" && last < stat.size && !pendingTail ? at(offset) : null,
+      nextCursor: dir === "fwd" && last < size && !pendingTail ? at(offset) : null,
       tailCursor: at(last),
     };
   } finally {

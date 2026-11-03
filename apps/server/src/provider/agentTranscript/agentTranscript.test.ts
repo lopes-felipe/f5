@@ -39,6 +39,84 @@ const record = (n: number) =>
     message: { content: [{ type: "text", text: "message " + n }] },
   }) + "\n";
 describe("agent transcripts", () => {
+  it.each([false, true])(
+    "routes the grouped Codex child row in either order (%s)",
+    async (reverse) => {
+      const row = {
+        workItemId: "subagent:child-thread",
+        provider: "codex" as const,
+        providerInstanceId: ProviderInstanceId.makeUnsafe("codex-account"),
+        kind: "agent" as const,
+        active: true,
+        status: "running" as const,
+        nativeParentSessionId: null,
+        providerSessionIdentity: "session",
+      };
+      const rows = [{ ...row, workItemId: "call-spawn" }, row];
+      const read = vi.fn(() =>
+        Effect.succeed({
+          kind: "page" as const,
+          data: [{ id: "child-message", type: "agentMessage", text: "child output" }],
+          nextCursor: null,
+        }),
+      );
+      const result = await Effect.runPromise(
+        readAgentTranscript(
+          { ...input, workItemIds: rows.map((row) => row.workItemId) },
+          {
+            work: { getOwnedEntries: () => Effect.succeed(reverse ? rows.toReversed() : rows) },
+            directory: { getBinding: () => Effect.succeed(Option.none()) },
+            service: { readChildThreadItems: read },
+            resolveAccount: async () => {
+              throw new Error("Codex must not resolve Claude accounts");
+            },
+          },
+        ),
+      );
+      expect(read).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: input.threadId,
+          childId: "child-thread",
+          providerInstanceId: row.providerInstanceId,
+        }),
+      );
+      expect(result.items[0]?.id).toBe("child-message");
+    },
+  );
+  it("round-trips exact Windows file identities above the safe integer limit", () => {
+    const cursor = {
+      v: 1,
+      p: "claude",
+      dir: "fwd",
+      o: 100,
+      ino: String(18014398509481985n),
+      dev: String(9007199254740993n),
+    } as const;
+    expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
+  });
+  it("bounds a first Claude record after JSON escaping without skipping the next record", async () => {
+    const f = await fixture();
+    const large =
+      JSON.stringify({
+        type: "assistant",
+        uuid: "large",
+        message: {
+          content: Array.from({ length: 64 }, (_, i) => ({
+            type: "text",
+            text: i === 0 ? "short" : "\u0001".repeat(2745),
+          })),
+        },
+      }) + "\n";
+    expect(Buffer.byteLength(large)).toBeLessThan(1024 * 1024);
+    await fs.writeFile(f.file, large + record(1));
+    const first = await readClaudeAgentTranscript({ ...input, anchor: "start", limit: 64 }, f);
+    expect(first.items).toHaveLength(64);
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(1024 * 1024);
+    expect(first.items[0]).toMatchObject({ id: "large:0", truncated: false });
+    expect(first.items[1]).toMatchObject({ truncated: true });
+    const next = await readClaudeAgentTranscript({ ...input, cursor: first.nextCursor! }, f);
+    expect(next.items[0]?.id).toBe("m1:0");
+  });
   it("opens a large transcript using only a tail chunk", async () => {
     const f = await fixture();
     await fs.writeFile(f.file, "x".repeat(9 * 1024 * 1024) + "\n" + record(1));
@@ -171,6 +249,13 @@ describe("agent transcripts", () => {
       readCodexAgentTranscript({ ...input, limit: 200, cursor: result.nextCursor! }, read),
     );
     const tail = result.tailCursor!;
+    reads.length = 0;
+    result = await Effect.runPromise(
+      readCodexAgentTranscript({ ...input, limit: 200, cursor: tail }, read),
+    );
+    expect(reads).toEqual([null, "p1", "p2", "p3"]);
+    expect(result.items.map((item) => item.id)).toEqual(["tool", "m1", "m2", "m3"]);
+    expect(result.items[1]?.position).toEqual({ offset: 1, index: 0 });
     active = false;
     reads.length = 0;
     result = await Effect.runPromise(
@@ -178,6 +263,12 @@ describe("agent transcripts", () => {
     );
     expect(reads[0]).toBeNull();
     expect(result.items[0]).toMatchObject({ id: "tool", status: "completed" });
+    while (result.nextCursor)
+      result = await Effect.runPromise(
+        readCodexAgentTranscript({ ...input, limit: 200, cursor: result.nextCursor }, read),
+      );
+    expect(reads).toEqual([null, "p1", "p2", "p3", "p4", "p5", "p6"]);
+    expect(decodeCursor(result.tailCursor!)).toMatchObject({ floor: null });
   });
   it("bounds a native page only after preserving normalized item metadata", async () => {
     const result = await Effect.runPromise(
