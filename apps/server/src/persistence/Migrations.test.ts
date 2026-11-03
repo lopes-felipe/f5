@@ -124,6 +124,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 145, name: "UpstreamPortReviews" },
       { migration_id: 146, name: "ProjectionThreadMessagesReasoningTokens" },
       { migration_id: 147, name: "StorageMachineCleanupAudit" },
+      { migration_id: 148, name: "DesktopActivityPendingIndex" },
     ]);
     expect(
       yield* sql`SELECT event_id,attempt,origin_session_generation,next_due_at IS NOT NULL AS retry FROM provider_terminal_events`,

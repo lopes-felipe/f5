@@ -1,4 +1,5 @@
 import "./stdioErrors";
+import { installKeepAwake } from "./keepAwake/install";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import {
   appZoomMenu,
@@ -298,6 +299,7 @@ const PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS: ReadonlySet<string> = new Set([
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
 let mainWindow: BrowserWindow | null = null;
+let keepAwake: Awaited<ReturnType<typeof installKeepAwake>> | undefined;
 interface BackendRuntime {
   profile: ProfileRecord;
   backendProcess: ChildProcess.ChildProcess | null;
@@ -4380,6 +4382,7 @@ async function cleanupBeforeExit(): Promise<void> {
         ...[...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
         previewRuntime.dispose(),
         integrationsStopped,
+        keepAwake?.dispose(),
       ]),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 6000);
@@ -4446,6 +4449,21 @@ app
     registerDesktopProtocol();
     registerPromptLinkProtocol();
     configureAutoUpdater();
+    keepAwake = await installKeepAwake({
+      authorize: (event) => authorizeAppMainFrame(event, "Keep awake settings"),
+      backends: () =>
+        [...backends.values()]
+          .filter((runtime) => runtime.backendProcess !== null && runtime.startupReady)
+          .map((runtime) => ({
+            origin: getDesktopBackendHttpOrigin(runtime.backendPort),
+            token: runtime.backendAuthToken,
+          })),
+      broadcast: (state) => {
+        for (const window of BrowserWindow.getAllWindows())
+          if (!window.isDestroyed() && appRendererWebContentsIds.has(window.webContents.id))
+            window.webContents.send("desktop:keep-awake-state", state);
+      },
+    });
     const bootstrapReady = bootstrapGate.start(bootstrap);
     void bootstrapReady.catch((error) => {
       handleFatalStartupError("bootstrap", error);

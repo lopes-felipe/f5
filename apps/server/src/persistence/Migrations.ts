@@ -1,4 +1,5 @@
 import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
+import Migration0148 from "./Migrations/148_DesktopActivityPendingIndex.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
 import Migration0135 from "./Migrations/135_RestartBackgroundWork.ts";
@@ -180,6 +181,7 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "148_DesktopActivityPendingIndex": Migration0148,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.
   "137_UpstreamPorts": Migration0137,

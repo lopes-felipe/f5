@@ -3,6 +3,20 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const GENERAL_SETTINGS_DESCRIPTORS = [
   {
+    ...SETTINGS_ITEM_ROUTES["general.keep-awake"],
+    label: "Keep computer awake",
+    description: "Prevent idle sleep while agents work or while F5 is open.",
+    keywords: ["desktop", "sleep", "power", "awake", "amphetamine"],
+    targetSelector: '[aria-label="Keep computer awake"]',
+  },
+  {
+    ...SETTINGS_ITEM_ROUTES["general.keep-awake-lid"],
+    label: "Also when the lid is closed",
+    description: "Keep a Mac awake with its lid closed.",
+    keywords: ["desktop", "sleep", "lid", "battery", "permission"],
+    targetSelector: '[aria-label="Also when the lid is closed"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["general.diagnostics"],
     label: "Diagnostics",
     description: "Configure OpenTelemetry traces, metrics and collector headers.",

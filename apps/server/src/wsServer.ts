@@ -1,3 +1,5 @@
+import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
+import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
@@ -1087,6 +1089,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
+  let desktopActivityReadiness: "starting" | "ready" | "failed" = "starting";
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
@@ -2179,6 +2182,29 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           yield* Effect.promise(() => proxy(req, res));
           return;
         }
+        if (url.pathname === DESKTOP_ACTIVITY_PATH && req.method === "GET") {
+          const headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+          };
+          if (desktopActivityReadiness !== "ready") {
+            respond(503, headers, JSON.stringify({ state: desktopActivityReadiness }));
+            return;
+          }
+          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+          const model = yield* orchestrationEngine.getReadModel();
+          const pending = yield* agentBridgeTurns.listRecentPendingTurnStartThreadIds({
+            since: new Date(Date.now() - 600_000).toISOString(),
+          });
+          respond(
+            200,
+            headers,
+            JSON.stringify({
+              busyThreadCount: desktopBusyThreadCount(model, pending),
+            } satisfies DesktopBackendActivity),
+          );
+          return;
+        }
         if (url.pathname === "/api/bootstrap" && req.method === "GET") {
           respond(
             200,
@@ -3038,6 +3064,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
+      desktopActivityReadiness = "ready";
       yield* Deferred.succeed(orchestrationRuntime, {
         mcpApps,
         threadSettlement,
@@ -3075,6 +3102,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   ).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
+        desktopActivityReadiness = "failed";
         yield* Deferred.fail(
           orchestrationPrepared,
           new ServerLifecycleError({ operation: "orchestrationPrepare", cause }),

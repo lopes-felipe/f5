@@ -1,3 +1,4 @@
+import { isBusySession } from "../orchestration/sessionBusy.ts";
 import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
 import {
   retainedWorkflowThreadIds as workflowRetention,
@@ -486,13 +487,6 @@ function providerLogSegmentFromName(name: string): string | null {
 
 function isEventsLogRotation(file: EnumeratedFile): boolean {
   return /^events\.log\.\d+$/.test(file.name);
-}
-
-function isBusySession(input: {
-  readonly status: string | null;
-  readonly activeTurnId: string | null;
-}) {
-  return input.status === "starting" || input.status === "running" || input.activeTurnId !== null;
 }
 
 function isActiveStorageThread(thread: ThreadRow): boolean {
