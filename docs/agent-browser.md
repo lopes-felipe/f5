@@ -1051,8 +1051,9 @@ and the browser folders are unreachable. Each writes a scrubbed report (no crede
 DOM text or screenshots) for the operator gate and never stamps a record:
 
 - `F5_CLAUDE_CHROME_LIVE=1 bun run --cwd apps/server test:file integration/claudeChromeNative.live.test.ts`
-  with `CLAUDE_CONFIG_DIR` set to an authenticated isolated config and
-  `F5_CLAUDE_CHROME_REPORT=<file>`;
+  with `F5_CLAUDE_CHROME_CONFIG_DIR=<dir>` (an isolated Claude config signed in once to
+  claude.ai with `CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`; Vitest drops an
+  inherited `CLAUDE_CONFIG_DIR`) and `F5_CLAUDE_CHROME_REPORT=<file>`;
 - `F5_CODEX_NATIVE_LIVE=chrome … integration/codexChromeNative.live.test.ts` with
   `F5_CODEX_CHROME_HOME=<dir>` (a Codex home signed in once with
   `CODEX_HOME=<dir> codex login`), `F5_CODEX_CHROME_REPORT=<file>` and, optionally,
@@ -1102,8 +1103,8 @@ versions (stamped as floors) and `admission: "session"`, and computes:
   compares the origins it reads back and the bytes of two real launches, and reports the
   exercised SDK and CLI as `sdkMin`/`cliMin`. It also observes
   `terminal-claude-unaffected`: after the first restore, a new F5 session connects and a
-  terminal `claude --chrome -p` (your own `~/.claude`, so `CLAUDE_CONFIG_DIR` must point
-  elsewhere and the terminal Claude must be signed in) takes the registration. F5's
+  terminal `claude --chrome -p` (your own `~/.claude`, so `F5_CLAUDE_CHROME_CONFIG_DIR`
+  must point elsewhere and the terminal Claude must be signed in) takes the registration. F5's
   launch snapshot no longer matches (what admission reports as `external-cli-conflict`),
   and F5's restore leaves the terminal's manifests untouched; an incomplete restore of
   F5's own wrapper keeps the journal. The terminal's registration stays in place
