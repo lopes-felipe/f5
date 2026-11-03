@@ -1,4 +1,15 @@
+self-hosted-runner:
+  labels:
+    - f5-computer-interactive
+    - windows-10
+    - windows-11
 paths:
+  .github/workflows/ci-main-status.yml:
+    ignore:
+      # GitHub supports concurrency.queue; pinned actionlint 1.7.12 predates it.
+      # The workflow policy test checks queue=max and cancel-in-progress=false.
+      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
   .github/workflows/release.yml:
     ignore:
       # Single-quoted node -e template literals intentionally reach Node unchanged.

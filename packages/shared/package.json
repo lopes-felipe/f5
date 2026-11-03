@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./turnAssistantMessage": {
+      "types": "./src/turnAssistantMessage.ts",
+      "import": "./src/turnAssistantMessage.ts"
+    },
     "./upstreamPortsOutcomes": {
       "types": "./src/upstreamPortsOutcomes.ts",
       "import": "./src/upstreamPortsOutcomes.ts"
@@ -208,9 +212,17 @@
       "types": "./src/scratchProject.ts",
       "import": "./src/scratchProject.ts"
     },
+    "./conversationHandoff": {
+      "types": "./src/conversationHandoff.ts",
+      "import": "./src/conversationHandoff.ts"
+    },
     "./promptLinks": {
       "types": "./src/promptLinks.ts",
       "import": "./src/promptLinks.ts"
+    },
+    "./threadReferences": {
+      "types": "./src/threadReferences.ts",
+      "import": "./src/threadReferences.ts"
     },
     "./threadWorkspace": {
       "types": "./src/threadWorkspace.ts",
@@ -407,6 +419,10 @@
       "types": "./src/htmlRender.ts",
       "import": "./src/htmlRender.ts"
     },
+    "./themeTokens": {
+      "types": "./src/themeTokens.ts",
+      "import": "./src/themeTokens.ts"
+    },
     "./mcpApp": {
       "types": "./src/mcpApp.ts",
       "import": "./src/mcpApp.ts"
@@ -422,6 +438,10 @@
     "./threadFindText": {
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"
+    },
+    "./composerSendText": {
+      "types": "./src/composerSendText.ts",
+      "import": "./src/composerSendText.ts"
     },
     "./markdownAlerts": {
       "types": "./src/markdownAlerts.ts",

@@ -25,6 +25,29 @@ const context = (
 
 const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
 
+it("keeps activation context attached to each request across asynchronous handlers", async () => {
+  const seen: boolean[] = [];
+  const { host } = setup({
+    requestDisplayMode: async (_mode, context) => {
+      await flush();
+      seen.push(context.userActive);
+      return "inline";
+    },
+  });
+  initialize(host);
+  const request = {
+    jsonrpc: "2.0",
+    id: "trusted",
+    method: "ui/request-display-mode",
+    params: { mode: "fullscreen", userActive: true },
+    userActive: true,
+  };
+  host.receive(request, { userActive: true });
+  host.receive({ ...request, id: "unattested" });
+  await vi.waitFor(() => expect(seen).toEqual([true, false]));
+  host.dispose();
+});
+
 const initialize = (
   host: ReturnType<typeof makeMcpAppHost>,
   appCapabilities: Record<string, unknown> = {},

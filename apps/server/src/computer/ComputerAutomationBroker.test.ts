@@ -68,7 +68,7 @@ class Ipc extends EventEmitter {
       });
   }
 }
-async function harness() {
+async function harness(platform: "darwin" | "win32" = "darwin") {
   const ipc = new Ipc();
   const host = new DesktopComputerHost("p", "backend", ipc, true);
   let context: ComputerInvocationContext = {
@@ -90,7 +90,7 @@ async function harness() {
   };
   const broker = new ComputerAutomationBrokerRuntime(host, {
     resolve: async (_thread, generation) => ({ ...context, sessionGeneration: generation }),
-    platform: "darwin",
+    platform,
     storage: {
       load: async () => [
         { projectId: "project", appId: "com.apple.TextEdit", tier: "full", allowTyping: false },
@@ -553,8 +553,8 @@ describe("computer broker safety boundaries", () => {
 });
 
 describe("background delivery", () => {
-  async function backgroundHarness() {
-    const h = await harness();
+  async function backgroundHarness(platform: "darwin" | "win32" = "darwin") {
+    const h = await harness(platform);
     h.set({
       policy: {
         previewAutomation: true,
@@ -572,6 +572,49 @@ describe("background delivery", () => {
     });
     return h;
   }
+  it("negotiates Windows background control and forwards host metadata to remote clients", async () => {
+    const h = await backgroundHarness("win32");
+    try {
+      expect(h.broker.backgroundStatus()).toEqual({ available: true });
+      h.ipc.emit("message", {
+        type: "status",
+        status: {
+          available: true,
+          background: { available: true },
+          hostPlatform: "win32",
+          stopShortcut: "Ctrl+Alt+Shift+F12",
+        },
+      });
+      expect(h.broker.computerUse()).toMatchObject({
+        hostPlatform: "win32",
+        stopShortcut: "Ctrl+Alt+Shift+F12",
+      });
+      const events: unknown[] = [];
+      const off = h.broker.subscribe((event) => events.push(event));
+      h.ipc.emit("message", {
+        type: "status",
+        status: {
+          available: false,
+          reason: "monitor-unhealthy",
+          hostPlatform: "win32",
+          stopShortcut: "Ctrl+Alt+Shift+F12",
+        },
+      });
+      expect(
+        events.filter((event) => (event as { channel: string }).channel === "computer.use.changed"),
+      ).toHaveLength(0);
+      h.ipc.emit("message", {
+        type: "status",
+        status: { available: true, hostPlatform: "win32", stopShortcut: "Updated shortcut" },
+      });
+      expect(
+        events.filter((event) => (event as { channel: string }).channel === "computer.use.changed"),
+      ).toHaveLength(1);
+      off();
+    } finally {
+      h.broker.close();
+    }
+  });
   async function approveBackgroundSession(h: Awaited<ReturnType<typeof harness>>) {
     await vi.waitFor(() =>
       expect(h.ipc.messages.some((m) => m.type === "accessRequested")).toBe(true),

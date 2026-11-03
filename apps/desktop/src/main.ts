@@ -32,8 +32,10 @@ import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
 import { createUpdateController } from "./updateController";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
+import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
+import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
   finderRevealArgs,
@@ -68,6 +70,8 @@ import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
+import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
+import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
 import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
@@ -190,6 +194,7 @@ import {
   reduceDesktopUpdateStateOnDownloadComplete,
   reduceDesktopUpdateStateOnDownloadProgress,
   reduceDesktopUpdateStateOnInstallFailure,
+  claimRecentInstall,
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
@@ -201,10 +206,15 @@ import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendere
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 
+const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
+/** Resolves with the capture's duration; the log sink opens later, so bootstrap logs it. */
 const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
   shellEnvironmentPrepared = prepared;
+  return performance.now() - shellEnvironmentStartedAt;
 });
+/** Main windows awaiting their first composer-ready marker, by renderer id. */
+const windowCreatedAtByWebContentsId = new Map<number, number>();
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -219,12 +229,14 @@ const MAX_DESKTOP_WINDOWS = 12;
 const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
 const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
+const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const lastPreviewStateEmissionByTabId = new Map<
@@ -422,7 +434,7 @@ function initializeComputerSystem(): void {
   );
   const lease = new ComputerLeaseAuthority();
   const overlay = new ComputerOverlay();
-  const status = () => {
+  const nativeStatus = () => {
     const gate = computerCertificationStatus(
       process.platform,
       app.isPackaged,
@@ -447,6 +459,7 @@ function initializeComputerSystem(): void {
     }
     return native;
   };
+  const status = () => ({ ...nativeStatus(), ...computerHostMetadata(process.platform) });
   // Desktop + helper half of background availability; each backend adds its own capability.
   const backgroundStatus = (): ComputerBackgroundStatus => {
     const gate = computerBackgroundGate(
@@ -750,6 +763,13 @@ function initializeComputerSystem(): void {
     helper.start();
 }
 let isQuitting = false;
+const quitStall = makeQuitStallTracker();
+/** Set while the update installer closes windows and cleans up for its own quit. */
+let updateInstallOwnsQuit = false;
+function beginQuitting(): void {
+  isQuitting = true;
+  quitStall.begin();
+}
 
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
@@ -2305,6 +2325,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
   writeDesktopLogHeader(`fatal startup error stage=${stage} message=${message}`);
   console.error(`[desktop] fatal startup error (${stage})`, error);
   if (!isQuitting) {
+    // The stall clock starts at before-quit, not while this dialog blocks.
     isQuitting = true;
     dialog.showErrorBox("F5 failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
@@ -2426,7 +2447,18 @@ function handleCheckForUpdatesMenuClick(): void {
 async function checkForUpdatesFromMenu(): Promise<void> {
   await checkForUpdates("menu");
 
-  if (updateState.status === "up-to-date") {
+  if (updateState.status === "available" && updateState.availableVersion) {
+    const choice = await dialog.showMessageBox({
+      type: "info",
+      title: "Update available",
+      message: `F5 ${updateState.availableVersion} is available.`,
+      detail: `You have ${updateState.currentVersion}. The download runs in the background and you can keep working.`,
+      buttons: ["Download", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (choice.response === 0) void downloadAvailableUpdate();
+  } else if (updateState.status === "up-to-date") {
     void dialog.showMessageBox({
       type: "info",
       title: "You're up to date!",
@@ -2683,9 +2715,9 @@ const updateInstaller = createUpdateInstaller({
   stage: () => updaterInstallerAdapter.stage(),
   onStageStart: () => {
     writeDesktopLogHeader("update install confirmed");
-    setUpdateState({ status: "preparing", message: null });
+    setUpdateState({ status: "preparing", installPhase: "staging", message: null });
   },
-  onCancel: () => setUpdateState({ status: "downloaded" }),
+  onCancel: () => setUpdateState({ status: "downloaded", installPhase: null }),
   resetAttempt: () => updaterInstallerAdapter.resetAttempt(),
   watchdogEnabled: updaterInstallerAdapter.watchdogEnabled,
   canInstall: () => !isQuitting && updaterConfigured && updateState.status === "downloaded",
@@ -2723,7 +2755,10 @@ const updateInstaller = createUpdateInstaller({
           bounds: window.getBounds(),
         };
       });
+    setUpdateState({ installPhase: "stopping" });
+    // The installer owns this quit: repeats must not cut its cleanup short.
     isQuitting = true;
+    updateInstallOwnsQuit = true;
     if (!(await closeWindowsForQuit(BrowserWindow.getAllWindows()))) {
       cancelQuit();
       restoreInstallWindows();
@@ -2736,6 +2771,21 @@ const updateInstaller = createUpdateInstaller({
     shutdownComplete = true;
     restoreStdIoCapture?.();
     return true;
+  },
+  // A marker left by a failed install is dropped at startup because the
+  // running version will not match, so recovery does not need to clear it.
+  onPrepared: () => {
+    const toVersion = updateState.downloadedVersion;
+    if (!toVersion) return;
+    try {
+      writeUpdateInstallMarker(updateInstallMarkerPath(), {
+        fromVersion: updateState.currentVersion,
+        toVersion,
+        releaseNotes: updateState.releaseNotes ?? null,
+      });
+    } catch (error) {
+      console.warn("[desktop-updater] Could not record the pending update", error);
+    }
   },
   install: async () => {
     writeDesktopLogHeader("update install: launching installer");
@@ -2776,9 +2826,14 @@ async function installDownloadedUpdate() {
   return updateInstaller.request();
 }
 
+function updateInstallMarkerPath(): string {
+  return Path.join(app.getPath("userData"), "update-pending.json");
+}
+
 function configureAutoUpdater(): void {
   const preferencesPath = Path.join(app.getPath("userData"), "update-preferences.json");
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
+  const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
   const disabledReason = getAutoUpdateDisabledReason({
     isDevelopment,
     isPackaged: app.isPackaged,
@@ -2797,6 +2852,7 @@ function configureAutoUpdater(): void {
     status: enabled ? "idle" : "disabled",
     channel,
     message: disabledReason,
+    recentlyInstalled,
   });
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -2865,7 +2921,7 @@ function configureAutoUpdater(): void {
       shouldBroadcastDownloadProgress(updateState, progress.percent) ||
       updateState.message !== null
     ) {
-      setUpdateState(reduceDesktopUpdateStateOnDownloadProgress(updateState, progress.percent));
+      setUpdateState(reduceDesktopUpdateStateOnDownloadProgress(updateState, progress));
     }
     const milestone = percent - (percent % 10);
     if (milestone > lastLoggedDownloadMilestone) {
@@ -3491,6 +3547,13 @@ function registerIpcHandlers(): void {
       throw new Error("Untrusted HTML preview origin.");
     runtimeForRenderer(event.sender.id);
   });
+  // Startup diagnostics: only the first marker per main window is logged.
+  ipcMain.on("desktop:startup-marker", (event, marker: unknown) => {
+    const createdAt = windowCreatedAtByWebContentsId.get(event.sender.id);
+    if (marker !== "composer-ready" || createdAt === undefined) return;
+    windowCreatedAtByWebContentsId.delete(event.sender.id);
+    writeDesktopLogHeader(`window composer ready ms=${Math.round(performance.now() - createdAt)}`);
+  });
   ipcMain.on("desktop:get-ws-url", (event) => {
     try {
       if (event.senderFrame !== event.sender.mainFrame)
@@ -3758,6 +3821,13 @@ function registerIpcHandlers(): void {
         state: updateState,
       }
     );
+  });
+  ipcMain.removeHandler(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL);
+  ipcMain.handle(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL, async (event) => {
+    assertUpdateSender(event);
+    const { claimed, state } = claimRecentInstall(updateState);
+    if (claimed) setUpdateState(state);
+    return claimed;
   });
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {
@@ -4094,6 +4164,7 @@ function createWindow(
   registerDesktopProtocol(appSession);
   installAppFramePermissionPolicy(appSession);
   const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
+  const createdAt = performance.now();
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
@@ -4194,6 +4265,29 @@ function createWindow(
     return { action: "deny" };
   });
 
+  // Wheel events carry no phase; the renderer's swipe navigation needs to know when fingers lift.
+  // Two-finger page swipes are a macOS trackpad convention, so other platforms get none.
+  if (process.platform === "darwin") {
+    // Read from the wheel event that starts each scroll; the gesture events do not carry it.
+    let wheelPrecise: boolean | undefined;
+    window.webContents.on("input-event", (_event, input) => {
+      if (input.type === "mouseWheel") {
+        const precise = (input as { hasPreciseScrollingDeltas?: unknown })
+          .hasPreciseScrollingDeltas;
+        wheelPrecise = typeof precise === "boolean" ? precise : undefined;
+      } else if (input.type === "gestureScrollBegin") {
+        window.webContents.send(
+          TRACKPAD_SCROLL_CHANNEL,
+          wheelPrecise === undefined
+            ? { phase: "begin" }
+            : { phase: "begin", precise: wheelPrecise },
+        );
+      } else if (input.type === "gestureScrollEnd") {
+        window.webContents.send(TRACKPAD_SCROLL_CHANNEL, { phase: "end" });
+      }
+    });
+  }
+
   const rendererWebContentsId = window.webContents.id;
   const rendererCrashRecovery = new MainRendererCrashRecovery({
     cleanupRendererResources: () => resetRendererOwnedPreviewResources(rendererWebContentsId),
@@ -4251,7 +4345,9 @@ function createWindow(
     applyWindowTitle(window.webContents.getTitle());
     emitUpdateState();
   });
+  windowCreatedAtByWebContentsId.set(rendererWebContentsId, createdAt);
   window.once("ready-to-show", () => {
+    writeDesktopLogHeader(`window first paint ms=${Math.round(performance.now() - createdAt)}`);
     if (activate) window.show();
     else window.showInactive();
   });
@@ -4263,6 +4359,7 @@ function createWindow(
 
   window.on("closed", () => {
     profileByWebContentsId.delete(rendererWebContentsId);
+    windowCreatedAtByWebContentsId.delete(rendererWebContentsId);
     rendererCrashRecovery.dispose();
     lastOpenThreadWindowAtByRenderer.delete(rendererWebContentsId);
     void resetRendererOwnedPreviewResources(rendererWebContentsId);
@@ -4278,6 +4375,27 @@ function createWindow(
 // Chromium session data uses a filesystem-friendly directory name.
 // Must be called synchronously at the top level — before `app.whenReady()`.
 app.setPath("userData", resolveUserDataPath());
+
+if (process.platform === "linux") {
+  const switchValue = (name: string) =>
+    app.commandLine.hasSwitch(name) ? app.commandLine.getSwitchValue(name) : null;
+  // Chromium keeps only the last --disable-features value, so pass the merged list.
+  const disableFeatures = resolveLinuxDisableFeaturesSwitch({
+    env: process.env,
+    ozonePlatform: switchValue("ozone-platform"),
+    enableFeatures: switchValue("enable-features"),
+    disableFeatures: switchValue("disable-features"),
+    // Runs only on Hyprland Wayland sessions without an explicit feature override.
+    readHyprctlVersionJson: () =>
+      ChildProcess.execFileSync("hyprctl", ["version", "-j"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1000,
+        maxBuffer: 64 * 1024,
+      }),
+  });
+  if (disableFeatures !== null) app.commandLine.appendSwitch("disable-features", disableFeatures);
+}
 
 if (!app.requestSingleInstanceLock()) app.exit(0);
 app.on("second-instance", (_event, argv) => {
@@ -4339,8 +4457,10 @@ async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap backend request authentication configured");
   mainWindow = createWindow();
   writeDesktopLogHeader("bootstrap main window created");
-  await shellEnvironmentReady;
-  writeDesktopLogHeader("bootstrap shell environment ready");
+  const shellEnvironmentMs = await shellEnvironmentReady;
+  writeDesktopLogHeader(
+    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
+  );
   if (!isQuitting) {
     try {
       await ensureBackendRunning(defaultBackend);
@@ -4360,7 +4480,30 @@ function cancelQuit(): void {
   shutdownPending = false;
   shutdownComplete = false;
   isQuitting = false;
+  updateInstallOwnsQuit = false;
+  quitStall.reset();
   for (const window of BrowserWindow.getAllWindows()) window.show();
+}
+
+function classifyCurrentQuitRequest(): QuitRequestDecision {
+  return classifyQuitRequest({ tracker: quitStall, shutdownComplete, updateInstallOwnsQuit });
+}
+
+/** Handles a Quit or signal that arrived while a quit is already in progress. */
+function handleRepeatedQuitRequest(source: string, decision: QuitRequestDecision): void {
+  if (decision.kind === "stalled") {
+    writeDesktopLogHeader(
+      `desktop shutdown stalled; exiting without it source=${source} pendingMs=${decision.pendingMs}`,
+    );
+    restoreStdIoCapture?.();
+    app.exit(0);
+    return;
+  }
+  writeDesktopLogHeader(
+    decision.kind === "pending"
+      ? `quit already in progress source=${source} pendingMs=${decision.pendingMs}`
+      : `quit already in progress source=${source} state=${decision.kind}`,
+  );
 }
 
 async function cleanupBeforeExit(): Promise<void> {
@@ -4401,15 +4544,21 @@ app.on("web-contents-created", (_event, contents) => {
   });
 });
 app.on("before-quit", () => {
+  const decision = classifyCurrentQuitRequest();
+  // Shutdown's own final app.quit() arrives as "complete".
+  if (decision.kind !== "begin" && decision.kind !== "complete") {
+    handleRepeatedQuitRequest("before-quit", decision);
+    return;
+  }
   writeDesktopLogHeader("before-quit received");
-  isQuitting = true;
+  beginQuitting();
 });
 app.on("will-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (shutdownPending) return;
   shutdownPending = true;
-  isQuitting = true;
+  beginQuitting();
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
     shutdownComplete = true;
@@ -4483,16 +4632,24 @@ app.on("window-all-closed", () => {
 
 if (process.platform !== "win32") {
   process.on("SIGINT", () => {
-    if (isQuitting) return;
-    isQuitting = true;
+    const decision = classifyCurrentQuitRequest();
+    if (decision.kind !== "begin") {
+      handleRepeatedQuitRequest("SIGINT", decision);
+      return;
+    }
+    beginQuitting();
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
     app.quit();
   });
 
   process.on("SIGTERM", () => {
-    if (isQuitting) return;
-    isQuitting = true;
+    const decision = classifyCurrentQuitRequest();
+    if (decision.kind !== "begin") {
+      handleRepeatedQuitRequest("SIGTERM", decision);
+      return;
+    }
+    beginQuitting();
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
     app.quit();

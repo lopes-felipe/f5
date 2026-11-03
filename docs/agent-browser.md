@@ -2,7 +2,7 @@
 
 > Contributors: the technical reference for agent browser and computer-use automation. For setup, see [Agent browser and computer use](user/agent-browser-and-computer-use.md).
 
-**Contents:** [macOS opt-in preview](#macos-opt-in-preview) · [Rule: tools installed, execution gated](#rule-tools-installed-execution-gated) · [F5 preview](#f5-preview) · [External sites allowlist](#external-sites-allowlist) · [Computer use v2 architecture](#computer-use-v2-architecture) · [Provider-native integrations](#provider-native-integrations) · [Certification and validation](#certification-and-validation)
+**Contents:** [Native computer preview](#native-computer-preview) · [Rule: tools installed, execution gated](#rule-tools-installed-execution-gated) · [F5 preview](#f5-preview) · [External sites allowlist](#external-sites-allowlist) · [Computer use v2 architecture](#computer-use-v2-architecture) · [Provider-native integrations](#provider-native-integrations) · [Certification and validation](#certification-and-validation)
 
 How agents (Claude and Codex) see and drive web pages and, optionally, this computer, and
 the safety rules each path follows. Settings live in **Settings → Browser & Computer** and
@@ -11,20 +11,25 @@ per project in the Browser & Computer category of project settings. Every flag b
 `enableClaudeInChrome`, `enableCodexChrome`, or `enableAgentComputerUse`
 (`USER_ONLY_PROJECT_SETTING_KEYS`).
 
-## macOS opt-in preview
+## Native computer preview
 
-macOS 14+ native computer control is available in development and packaged builds as
-an **uncertified, opt-in preview**. In Settings → Browser & Computer, enable Agent
-browser access and Computer use (preview), grant Screen Recording and Accessibility
-in System Settings, then start a new Claude or Codex turn and approve each app in
-F5's native dialog. Defaults remain off. Your input pauses control; ⌃⌘Esc stops it.
+Native computer control is available on macOS 14+ and Windows x64 build 19041+ in
+development and packaged builds as an **uncertified preview**. Browser access and
+computer use default to enabled, with background computer execution; saved choices
+are preserved. On macOS, grant Screen Recording and Accessibility in System
+Settings. On Windows, run F5 unelevated in an unlocked interactive session.
+Start a new Claude or Codex turn and approve each app in F5's native dialog.
+Interacting with a background target pauses that app; your input pauses foreground
+control. ⌃⌘Esc on macOS or Ctrl+Alt+Shift+F12 on Windows stops every scope.
 Pause blocks screenshots, zoom and inspection as well as input. Status/app metadata
 remain available to explain the pause.
 
 This availability change does **not** certify the existing or new binaries. All
 `COMPUTER_CONTROL_CERTIFIED` constants remain false. Signed installed-build/TCC,
-full protection/display coverage and Windows interactive evidence remain pending.
-Windows and provider built-in computer control stay unavailable. Provider-native Chrome
+full protection/display coverage and additional Windows acceptance remain pending;
+the [Windows rollout record](computer-certification/windows-preview.md#rollout-record)
+separates passed native checks from pending scenarios.
+Provider built-in computer control stays unavailable. Provider-native Chrome
 integrations open only through a certification record (see
 [Provider-native integrations](#provider-native-integrations)); no record certifies yet.
 Prior machine receipts remain evidence for their recorded binaries only.
@@ -227,19 +232,22 @@ Sign-in popups stay with the user; the agent sees `popupOpen` in status and snap
 
 ## Computer use v2 architecture
 
-Computer control is opt-in and currently **awaiting certification** on both macOS and
-Windows. Linux reports `unsupported-platform`. The native implementation targets macOS
+Computer control defaults to enabled with background execution and is currently
+**awaiting certification** on both macOS and Windows. Linux reports
+`unsupported-platform`. The native implementation targets macOS
 14+ and Windows 10 2004+. Setting `F5_COMPUTER_CONTROL_DEV=1` enables local engineering
-validation only in unpackaged builds; it cannot enable a certified release. The macOS preview now has a separate explicit availability flag.
+validation only in unpackaged builds; it cannot enable a certified release. Both
+platforms have preview availability flags separate from certification.
 
 For local use from this checkout, build with `bun run build:desktop`, quit any
 existing F5 instance, then launch with
-`F5_COMPUTER_CONTROL_DEV=1 bun run --cwd apps/desktop start`. Enable **Computer use**
-in Settings → Browser & Computer, grant the missing OS permissions, and start a new
+`F5_COMPUTER_CONTROL_DEV=1 bun run --cwd apps/desktop start`. Check **Computer use**
+in Settings → Browser & Computer, grant the missing macOS permissions if needed, and start a new
 provider session. The root desktop launch also passes this development flag
 through Turbo. A running app must be restarted to receive the flag; setting it
 in a different shell cannot change the existing process. This remains an
-uncertified development path, and the flag is ignored by packaged builds. macOS preview availability is explicitly enabled by `COMPUTER_CONTROL_PREVIEW`, independently of certification.
+uncertified development path, and the flag is ignored by packaged builds. Native
+preview availability is enabled by `COMPUTER_CONTROL_PREVIEW`, independently of certification.
 
 Electron main is the device authority. Every profile backend inherits a private Node IPC
 channel with an incarnation UUID and a versioned hello. There is no network computer host
@@ -494,13 +502,13 @@ helper permission identities must agree before release certification.
 
 ### Background delivery and per-app leases
 
-Settings → Browser & Computer → Computer use → Execution mode chooses `foreground` (default) or `background`
+Settings → Browser & Computer → Computer use → Execution mode chooses `background` (default) or `foreground`
 (`computerUseExecutionMode`, machine-wide, no project override). Background lets each agent
 act inside one named, granted app through Accessibility without moving the pointer or
-changing focus, so the user keeps working. It is a macOS-only preview, open by default
+changing focus, so the user keeps working. The preview is available on macOS and Windows
 (`COMPUTER_BACKGROUND_PREVIEW` in `apps/desktop/src/computer/certification.ts`; with the gate
 closed, unpackaged builds can still opt in with `F5_COMPUTER_BACKGROUND_DEV=1`). Foreground
-remains the default execution mode. When the preference is background but delivery is unavailable, tools
+is available as an explicit setting. When the preference is background but delivery is unavailable, tools
 fail with the reason (`unsupported-platform`, `peer-capability`, `preview-off`,
 `permissions`, `monitor-unhealthy`) instead of silently using the foreground.
 
@@ -793,10 +801,14 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
   never restarts a session for Chrome;
 - when Codex reports `node_repl` ready (`mcpServer/startupStatus/updated`), the server
   asks main to adopt it (`chromeProcessAdopt`), naming the launch token first so a stop
-  reaches a runtime main adopts after the request timed out. Main takes one `ps` snapshot
+  reaches a runtime main adopts after the request timed out. Main takes a `ps` snapshot
   and requires exactly one live child of the session's Codex process running the
   verified `node_repl`, leading its own process group, under a parent that descends from
-  the backend. `codesign` then checks both running processes by PID (`ps` reports
+  the backend. While it sees more than one, it re-reads every 250 ms for up to 5 s before
+  refusing: Codex 0.165.0's `config/mcpServer/reload` starts its own short-lived set of
+  servers, cancelled about a second later, while the thread refreshes and starts its own
+  `node_repl` (seen in the beta.19 acceptance run, where an immediate refusal killed
+  both and left Chrome unavailable after every restart). `codesign` then checks both running processes by PID (`ps` reports
   `argv[0]`, a bare `codex` when it was found on PATH): `node_repl` and a parent signed
   by team `2DC432GLL2` as `codex` or `com.openai.codex.*`. Then main registers the group
   as it would a spawned child. The listing comes first, so every refusal (recovery
@@ -832,6 +844,15 @@ and verified under the lease already held, and a repeated `ready` for the superv
 process changes nothing. When a turn completes or is interrupted, F5 calls
 `turn_ended` (`{hook_event_name: "Stop", session_id, turn_id}`) through
 `mcpServer/tool/call`, once per turn, so the runtime releases that turn's browser session.
+Codex ends an interrupted turn at once, but `node_repl` keeps running a call in flight,
+still driving Chrome, until `turn_ended` returns (29 s in certification). So when a
+model call to `node_repl` was running at the interrupt (Codex reported it started and
+not completed), F5 stops the runtime before sending the interrupt, so it stops even if
+the interrupt fails. Calls are tracked as Codex reports them, ahead of the session's
+ordered output preparation, which an MCP app capture can hold. The cost: the REPL's
+state is gone, and the next turn waits for the reload (every MCP server of the session,
+as above) and the adoption. A completion F5 hasn't seen yet errs the same way: an
+unneeded restart, never a missed stop.
 The `node_repl` source and output are fully masked in F5's activity. A user MCP server
 already named `node_repl` blocks the integration with that reason.
 
@@ -1018,13 +1039,18 @@ versions (stamped as floors) and `admission: "session"`, and computes:
 - `tool-inventory`: Codex lists exactly the enabled tools, with schemas;
 - `open-tab-read-title`: the model's call opens a loopback fixture page and reads its
   title;
-- `interrupt-drains`: a turn interrupted during a hanging call completes as
-  `interrupted`, `turn_ended` succeeds, and a fresh tab claim works afterwards;
+- `interrupt-drains`: a turn interrupted during a call's tab loop completes as
+  `interrupted`, the session stops the runtime (or, with no call running, `turn_ended`
+  succeeds), the loop goes quiet within 2 s and stays quiet for 5 s, and a fresh tab
+  claim works on the next turn's runtime. The id predates the stop; the report's
+  `interrupt.path` says which of the two (`stopped` or `drained`) happened;
 - `background-work-stops-on-pause`: a `fetch` timer and a tab loop in a call still in
   flight drive the fixture, the session is paused, `node_repl` is gone and the fixture
   goes quiet within 2 s and stays quiet for 5 s;
 - `policy-off-kills`: after the next turn restarts the runtime, turning the integration
-  off does the same, and the following turn doesn't restart it;
+  off does the same, and the following turn doesn't restart it. For this and the pause
+  check, a tab loop that Chrome ends before it is observably running is recorded
+  (`loopsEndedByChrome`) and started once more;
 - `registrations-unchanged`. The Claude harness records manifest and `connected` timings,
   compares the origins it reads back and the bytes of two real launches, and lists the
   assertions it cannot yet observe (permission mode, routing isolation, stale native host,

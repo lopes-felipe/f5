@@ -12,12 +12,14 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("Codex Chrome adoption", () => {
   it("verifies nothing and adopts nothing while Codex Chrome is uncertified", async () => {
+    vi.spyOn(certification, "certifiedIntegrationRecord").mockReturnValue(undefined);
     let verified = 0;
     const verify = async () => {
       verified += 1;
       return { ok: true as const, teamId: "2DC432GLL2", identifier: "codex" };
     };
-    await expect(verifyCodexChromeAdoption(4242, 4343, verify, "darwin", "arm64")).resolves.toBe(
+    // darwin-arm64 is certified (#394); Windows has no Codex Chrome record yet.
+    await expect(verifyCodexChromeAdoption(4242, 4343, verify, "win32", "x64")).resolves.toBe(
       "Codex Chrome control isn't certified.",
     );
     expect(verified).toBe(0);
@@ -51,7 +53,7 @@ describe("Codex Chrome adoption", () => {
   });
 });
 describe("preview availability is not certification", () => {
-  it("permits macOS 14+ packaged opt-in preview without a development bypass", () => {
+  it("permits macOS 14+ packaged preview without a development bypass", () => {
     expect(COMPUTER_CONTROL_CERTIFIED).toEqual({ darwin: false, win32: false });
     expect(computerCertificationStatus("darwin", true, undefined, "23.0.0")).toEqual({
       available: true,
@@ -60,18 +62,43 @@ describe("preview availability is not certification", () => {
       reason: "os-too-old",
     });
   });
-  it("keeps Windows packaged and Linux unavailable", () => {
-    expect(computerCertificationStatus("win32", true, "1", "10.0.22631")).toMatchObject({
-      reason: "not-certified",
+  it("permits Windows 19041+ packaged preview without a development bypass", () => {
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.19041", "x64")).toEqual({
+      available: true,
     });
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.26340", "x64")).toEqual({
+      available: true,
+    });
+    expect(
+      computerCertificationStatus("win32", true, undefined, "10.0.18363", "x64"),
+    ).toMatchObject({
+      reason: "os-too-old",
+    });
+  });
+  it("keeps Linux unavailable", () => {
     expect(computerCertificationStatus("linux", false, "1", "6.0.0")).toMatchObject({
       reason: "unsupported-platform",
     });
   });
-  it("opens background control on macOS by default, including packaged builds", () => {
-    expect(computerBackgroundGate("darwin", true, undefined)).toEqual({ available: true });
-    expect(computerBackgroundGate("darwin", false, undefined)).toEqual({ available: true });
-    expect(computerBackgroundGate("win32", true, "1")).toEqual({
+  it.each(["darwin", "win32"])("offers background preview on %s in packaged builds", (platform) => {
+    expect(computerBackgroundGate(platform, true, undefined, "x64")).toEqual({ available: true });
+    expect(computerBackgroundGate(platform, false, undefined, "x64")).toEqual({ available: true });
+  });
+  it.each(["arm64", "ia32"])(
+    "keeps Windows %s preview unavailable even with a dev override",
+    (arch) => {
+      expect(computerCertificationStatus("win32", false, "1", "10.0.26340", arch)).toMatchObject({
+        available: false,
+        reason: "unsupported-platform",
+      });
+      expect(computerBackgroundGate("win32", false, "1", arch)).toEqual({
+        available: false,
+        reason: "unsupported-platform",
+      });
+    },
+  );
+  it("keeps background control unavailable on unsupported platforms", () => {
+    expect(computerBackgroundGate("linux", false, "1")).toEqual({
       available: false,
       reason: "unsupported-platform",
     });

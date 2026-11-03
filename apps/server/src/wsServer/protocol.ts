@@ -38,6 +38,8 @@ export const SERVER_BOOTSTRAP: ServerBootstrap = {
     "custom-model-metadata",
     "assistant-quotes",
     "repository-issue-links",
+    // A started thread may switch providers; the server hands the conversation off.
+    "provider-context-handoff",
     // On by default. The two open transport/retained-heap gates fail identically
     // without the redesign (docs/reviews/phase-ten-composer-validation.md).
     // `F5_COMPOSER_REDESIGN=0` omits the capability and keeps the legacy layout.

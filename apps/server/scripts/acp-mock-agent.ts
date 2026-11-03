@@ -19,6 +19,7 @@ const emitBackgroundToolDuringAnswer =
   process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const secondModelOption = process.env.T3_ACP_SECOND_MODEL_OPTION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const exitDuringPrompt = process.env.T3_ACP_EXIT_DURING_PROMPT === "1";
@@ -72,7 +73,7 @@ process.once("exit", (code) => {
   logExit(`exit:${code}`);
 });
 
-function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+function primaryConfigOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
   if (parameterizedModelPicker) {
     const baseOptions: Array<AcpSchema.SessionConfigOption> = [
       {
@@ -201,6 +202,23 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
       ],
     },
   ];
+}
+
+function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  const options = primaryConfigOptions();
+  return secondModelOption
+    ? [
+        ...options,
+        {
+          id: "subagent_model",
+          name: "Subagent model",
+          category: "model",
+          type: "select",
+          currentValue: "default",
+          options: [{ value: "default", name: "Auto" }],
+        },
+      ]
+    : options;
 }
 
 const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [

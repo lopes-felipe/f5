@@ -2,7 +2,12 @@ import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
 import { ThreadId } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { pauseComputerThread, pausePreviewThread, stopComputerTurn } from "./computerControls";
+import {
+  computerStopShortcutLabel,
+  pauseComputerThread,
+  pausePreviewThread,
+  stopComputerTurn,
+} from "./computerControls";
 const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), pause: vi.fn() }));
 vi.mock("../nativeApi", () => ({
   readNativeApi: () => ({
@@ -16,6 +21,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("computer controls", () => {
+  it("uses the host shortcut, including remote Windows hosts and legacy peers", () => {
+    expect(computerStopShortcutLabel({ hostPlatform: "win32" })).toBe("Ctrl+Alt+Shift+F12");
+    expect(computerStopShortcutLabel({ hostPlatform: "darwin" })).toBe("⌃⌘Esc");
+    expect(computerStopShortcutLabel({ hostPlatform: "win32", stopShortcut: "Custom chord" })).toBe(
+      "Custom chord",
+    );
+    expect(computerStopShortcutLabel()).toBe("Stop in F5");
+  });
   it("confirms a successful Stop when there is no lease to release", async () => {
     vi.stubGlobal("window", {
       desktopBridge: { computerAutomation: { setPaused: vi.fn(async () => {}) } },

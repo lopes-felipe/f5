@@ -12,10 +12,85 @@ import type {
 import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/AccountUsageService.ts";
 import { accountUsageIdentity } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
+import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
+
+// The capability has an eight-second deadline; leave one second to publish collected quotas.
+const ANTIGRAVITY_READ_BUDGET_MS = 7_000;
+const ANTIGRAVITY_DISCOVERY_TIMEOUT_MS = 6_000;
+const ANTIGRAVITY_QUOTA_TIMEOUT_MS = 3_000;
+// Gemini requires this upstream client version: https://github.com/pingdotgg/t3code/commit/79f1fadfc6020b820d541ca4691d2feebb15dd1b
+const ANTIGRAVITY_USER_AGENT = `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch}; cl=963137146)`;
+
+function antigravitySummaryWindows(
+  body: Record<string, unknown>,
+  requestedAt: number,
+): ReadonlyArray<ProviderUsageWindow> {
+  const groups = Array.isArray(body.groups) ? body.groups.map(asRecord) : [];
+  const buckets = groups.some((group) => Array.isArray(group?.buckets) && group.buckets.length)
+    ? groups.flatMap((group) =>
+        (Array.isArray(group?.buckets) ? group.buckets : []).map((bucket) => ({
+          bucket: asRecord(bucket),
+          groupName: asTrimmedString(group?.displayName),
+        })),
+      )
+    : (Array.isArray(body.buckets) ? body.buckets : []).map((bucket) => ({
+        bucket: asRecord(bucket),
+        groupName: null,
+      }));
+  return mergeProviderUsageWindows([
+    buckets.flatMap(({ bucket, groupName }) => {
+      const id = asTrimmedString(bucket?.bucketId);
+      const remaining = bucket?.remainingFraction;
+      if (
+        !id ||
+        typeof remaining !== "number" ||
+        !Number.isFinite(remaining) ||
+        bucket?.disabled === true
+      )
+        return [];
+      const family = id.startsWith("gemini-argon-")
+        ? (groupName ?? "Gemini Argon")
+        : id.startsWith("gemini-")
+          ? "Gemini"
+          : id.startsWith("3p-")
+            ? "Claude & GPT (shared)"
+            : (groupName ?? id);
+      const durationMs =
+        bucket?.window === "weekly"
+          ? 7 * 24 * 60 * 60_000
+          : bucket?.window === "5h"
+            ? 5 * 60 * 60_000
+            : null;
+      const reset = resetDate(bucket?.resetTime);
+      // Untouched buckets can report a reset that merely rolls forward with the request.
+      const untouched =
+        remaining === 1 &&
+        bucket?.description === undefined &&
+        durationMs !== null &&
+        reset !== null &&
+        Math.abs(Date.parse(reset) - requestedAt - durationMs) <= 60_000;
+      const label =
+        bucket?.window === "weekly"
+          ? "Weekly"
+          : bucket?.window === "5h"
+            ? "5-hour"
+            : (asTrimmedString(bucket?.displayName) ?? "Quota");
+      return [
+        {
+          id,
+          label: `${family} · ${label}`,
+          usedPercent: Math.max(0, Math.min(100, (1 - remaining) * 100)),
+          resetsAt: untouched ? null : reset,
+        },
+      ];
+    }),
+  ]);
+}
 
 export function normalizeProviderLimits(
   provider: ProviderKind,
   value: unknown,
+  requestedAt = Date.now(),
 ): ReadonlyArray<ProviderUsageWindow> {
   const body = asRecord(value);
   if (!body) return [];
@@ -78,6 +153,9 @@ export function normalizeProviderLimits(
             },
           ];
     });
+  }
+  if (provider === "antigravity" && (Array.isArray(body.groups) || Array.isArray(body.buckets))) {
+    return antigravitySummaryWindows(body, requestedAt);
   }
   if (provider === "antigravity" && asRecord(body.models)) {
     return Object.entries(asRecord(body.models)!).flatMap(([id, value]) => {
@@ -173,12 +251,41 @@ async function fetchJson(url: string, token: string, signal: AbortSignal, body?:
     reader.releaseLock();
   }
 }
+async function fetchJsonWithTimeout(
+  url: string,
+  token: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  body?: unknown,
+) {
+  signal.throwIfAborted();
+  if (timeoutMs <= 0) throw new AccountUsageReadError("timeout");
+  const controller = new AbortController();
+  const requestSignal = AbortSignal.any([signal, controller.signal]);
+  const cancelled = Promise.withResolvers<never>();
+  const onAbort = () => cancelled.reject(requestSignal.reason);
+  requestSignal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new AccountUsageReadError("timeout")), timeoutMs);
+  try {
+    // Bound the promise too, so a transport that ignores abort cannot hold the read open.
+    return await Promise.race([fetchJson(url, token, requestSignal, body), cancelled.promise]);
+  } finally {
+    clearTimeout(timer);
+    requestSignal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** A configured hub selects an exact auth-file ID; email and display name never route accounts. */
-async function readAntigravityHub(env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<unknown> {
+async function readAntigravityHub(
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+): Promise<{ readonly windows: ReadonlyArray<ProviderUsageWindow>; readonly partial: boolean }> {
+  const deadline = performance.now() + ANTIGRAVITY_READ_BUDGET_MS;
+  const remainingMs = () => Math.max(0, deadline - performance.now());
   const endpoint = env.F5_CLIPROXY_HUB_URL;
   const key = env.F5_CLIPROXY_API_KEY;
   const accountId = env.F5_CLIPROXY_ACCOUNT_ID;
-  if (!endpoint || !key || !accountId) return {};
+  if (!endpoint || !key || !accountId) return { windows: [], partial: false };
   const hub = new URL(endpoint);
   if (
     hub.protocol !== "https:" &&
@@ -186,7 +293,12 @@ async function readAntigravityHub(env: NodeJS.ProcessEnv, signal: AbortSignal): 
   )
     throw new Error("Invalid hub URL.");
   const files = asRecord(
-    await fetchJson(new URL("/v0/management/auth-files", hub).toString(), key, signal),
+    await fetchJsonWithTimeout(
+      new URL("/v0/management/auth-files", hub).toString(),
+      key,
+      signal,
+      Math.min(ANTIGRAVITY_DISCOVERY_TIMEOUT_MS, remainingMs()),
+    ),
   );
   const account = (Array.isArray(files?.files) ? files.files : [])
     .map(asRecord)
@@ -194,26 +306,74 @@ async function readAntigravityHub(env: NodeJS.ProcessEnv, signal: AbortSignal): 
       (file) => file?.id === accountId && file.provider === "antigravity" && file.disabled !== true,
     );
   const authIndex = asTrimmedString(account?.auth_index);
-  if (!authIndex) return {};
-  const response = asRecord(
-    await fetchJson(new URL("/v0/management/api-call", hub).toString(), key, signal, {
-      auth_index: authIndex,
-      method: "POST",
-      url: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-      header: { Authorization: "Bearer $TOKEN$", "Content-Type": "application/json" },
-      data: JSON.stringify(
-        env.F5_ANTIGRAVITY_PROJECT ? { project: env.F5_ANTIGRAVITY_PROJECT } : {},
-      ),
+  if (!authIndex) return { windows: [], partial: false };
+  const fetchWindows = async (host: string, operation: string, timeoutMs: number) => {
+    try {
+      const requestedAt = Date.now();
+      const response = asRecord(
+        await fetchJsonWithTimeout(
+          new URL("/v0/management/api-call", hub).toString(),
+          key,
+          signal,
+          timeoutMs,
+          {
+            auth_index: authIndex,
+            method: "POST",
+            url: `https://${host}/v1internal:${operation}`,
+            header: {
+              Authorization: "Bearer $TOKEN$",
+              "Content-Type": "application/json",
+              "User-Agent": ANTIGRAVITY_USER_AGENT,
+            },
+            data: JSON.stringify(
+              env.F5_ANTIGRAVITY_PROJECT ? { project: env.F5_ANTIGRAVITY_PROJECT } : {},
+            ),
+          },
+        ),
+      );
+      if (
+        typeof response?.status_code !== "number" ||
+        response.status_code < 200 ||
+        response.status_code >= 300 ||
+        typeof response.body !== "string"
+      )
+        throw new Error("Hub quota request failed.");
+      return {
+        windows: normalizeProviderLimits("antigravity", JSON.parse(response.body), requestedAt),
+        failed: false,
+      };
+    } catch {
+      signal.throwIfAborted();
+      return { windows: [], failed: true };
+    }
+  };
+  const responses = await Promise.all(
+    ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"].map(async (host) => {
+      // Each host owns its fallback; another host's shared buckets cannot suppress Gemini.
+      const summary = await fetchWindows(
+        host,
+        "retrieveUserQuotaSummary",
+        Math.min(ANTIGRAVITY_QUOTA_TIMEOUT_MS, remainingMs() / 2),
+      );
+      if (summary.windows.length) return summary;
+      const models = await fetchWindows(
+        host,
+        "fetchAvailableModels",
+        Math.min(ANTIGRAVITY_QUOTA_TIMEOUT_MS, remainingMs()),
+      );
+      return { windows: models.windows, failed: summary.failed || models.failed };
     }),
   );
-  if (
-    typeof response?.status_code !== "number" ||
-    response.status_code < 200 ||
-    response.status_code >= 300 ||
-    typeof response.body !== "string"
-  )
-    throw new Error("Hub quota request failed.");
-  return JSON.parse(response.body) as unknown;
+  signal.throwIfAborted();
+  const windows = mergeProviderUsageWindows(responses.map((response) => response.windows));
+  if (!windows.length && responses.some((response) => response.failed))
+    throw new AccountUsageReadError("temporary-failure");
+  return {
+    windows,
+    partial:
+      windows.length > 0 &&
+      responses.some((response) => response.failed || !response.windows.length),
+  };
 }
 
 export function makeProviderLimits(input: {
@@ -230,6 +390,7 @@ export function makeProviderLimits(input: {
       const env = input.environment;
       const home = env.HOME || env.USERPROFILE || os.homedir();
       let value: unknown;
+      let partial = false;
       if (input.provider === "cursor") {
         if (env.CURSOR_API_KEY && !env.CURSOR_AUTH_TOKEN)
           return [
@@ -389,7 +550,9 @@ export function makeProviderLimits(input: {
           ];
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
       } else if (env.F5_CLIPROXY_HUB_URL) {
-        value = await readAntigravityHub(env, signal);
+        const result = await readAntigravityHub(env, signal);
+        value = { windows: result.windows };
+        partial = result.partial;
       } else {
         const endpoint = env.F5_CLIPROXY_USAGE_URL;
         const token = env.F5_CLIPROXY_API_KEY;
@@ -415,14 +578,17 @@ export function makeProviderLimits(input: {
       return [
         {
           kind: "provider-limits",
-          outcome: windows.length ? "available" : "unsupported",
-          errorCode: windows.length ? null : "unsupported",
+          outcome: partial ? "unavailable" : windows.length ? "available" : "unsupported",
+          errorCode: partial ? "temporary-failure" : windows.length ? null : "unsupported",
           lastAttemptAt: fetchedAt,
           snapshot: { fetchedAt, data: { windows } },
         },
       ];
     },
-    catch: () => new AccountUsageReadError("temporary-failure"),
+    catch: (error) =>
+      error instanceof AccountUsageReadError
+        ? error
+        : new AccountUsageReadError("temporary-failure"),
   });
   return makeAccountUsageCapability(
     {
@@ -435,7 +601,11 @@ export function makeProviderLimits(input: {
       sections: [emptyAccountSection("provider-limits")],
     },
     read,
-    { identity: providerLimitsIdentity(input) },
+    {
+      identity: providerLimitsIdentity(input),
+      retryFailedReads:
+        input.provider === "antigravity" && Boolean(input.environment.F5_CLIPROXY_HUB_URL),
+    },
   );
 }
 

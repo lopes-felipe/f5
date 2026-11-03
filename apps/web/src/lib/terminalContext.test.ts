@@ -1,4 +1,5 @@
 import { ThreadId } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { describe, expect, it } from "vitest";
 
 import { appendAttachedFilesToPrompt } from "./attachedFiles";
@@ -291,5 +292,15 @@ describe("terminalContext", () => {
       ["Inspect this", "", "Attached files:", "- /outside/repo/notes.md"].join("\n"),
     );
     expect(displayed.copyText).not.toContain("<attached_files>");
+  });
+
+  it("hides the prompt that stands in for an image-only message", () => {
+    const displayed = deriveDisplayedUserMessageState(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+
+    expect(displayed.visibleText).toBe("");
+    expect(displayed.copyText).toBe("");
+    expect(
+      deriveDisplayedUserMessageState(`Look: ${IMAGE_ONLY_BOOTSTRAP_PROMPT}`).visibleText,
+    ).toBe(`Look: ${IMAGE_ONLY_BOOTSTRAP_PROMPT}`);
   });
 });

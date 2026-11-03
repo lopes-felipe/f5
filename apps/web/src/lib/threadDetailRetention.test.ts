@@ -82,6 +82,7 @@ function makeTailDetails(threadId: ThreadId, text: string): OrchestrationThreadT
     checkpoints: [],
     activities: [],
     commandExecutions: [],
+    proposedPlans: [],
     tasks: [],
     tasksTurnId: null,
     tasksUpdatedAt: null,

@@ -557,6 +557,10 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "threads.title-model": {
     category: "threads",
   },
+  "threads.title-instructions": {
+    category: "threads",
+    scope: "both",
+  },
   "threads.claude-subagents": {
     category: "threads",
     scope: "both",

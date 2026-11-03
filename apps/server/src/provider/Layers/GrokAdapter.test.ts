@@ -51,6 +51,20 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
 );
 
 it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) => {
+  it.effect("classifies only a leading slash command as native for a provider switch", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.makeUnsafe("grok-classify");
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "/compact"), "native-command");
+      assert.strictEqual(
+        adapter.classifyTurnInput?.(threadId, " /skill:review x"),
+        "native-command",
+      );
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "/Users/me/app.ts fails"), "prompt");
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "run /compact later"), "prompt");
+    }),
+  );
+
   it.effect("ignores a late prompt from an older context with the same resumed session ID", () =>
     Effect.gen(function* () {
       const original = GrokAcpSupport.makeGrokAcpRuntime;
@@ -310,8 +324,13 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         false,
       );
       const request = question!;
+      assert.equal(request.payload.questions[0]?.allowCustomAnswer, false);
+      assert.deepEqual(
+        request.payload.questions[0]?.options.map((option) => option.value),
+        ["dev", "prod"],
+      );
       yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(request.requestId!), {
-        interaction_test: "Development",
+        interaction_test: "dev",
       });
       yield* Fiber.join(turn);
       assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);

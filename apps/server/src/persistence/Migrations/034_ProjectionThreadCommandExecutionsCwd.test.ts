@@ -184,7 +184,8 @@ const expectCommandExecutionsTable = (
     assert.deepEqual(
       columns
         .map((column) => column.name)
-        .slice()
+        // Migration 153 adds description on full runs; this suite covers the 034/044 shape.
+        .filter((name) => name !== "description")
         .sort(),
       requiredColumnNames,
     );

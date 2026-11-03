@@ -20,9 +20,9 @@ import {
 import { useAppSettingsSelector } from "../appSettings";
 import {
   gitBranchesQueryOptions,
-  gitQueryKeys,
   gitStatusQueryOptions,
   invalidateGitQueries,
+  refreshCheckedOutGitBranch,
 } from "../lib/gitReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { WsRequestError } from "../wsTransport";
@@ -435,9 +435,7 @@ export function BranchToolbarBranchSelector({
         setBranchQuery("");
         return;
       }
-      void queryClient.invalidateQueries({
-        queryKey: gitQueryKeys.branches(branchCwd),
-      });
+      void refreshCheckedOutGitBranch(queryClient, branchCwd);
     },
     [branchCwd, queryClient],
   );

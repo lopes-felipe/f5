@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
 
 interface Job {
+  environment?: string;
   needs?: string[];
   if?: string;
   "continue-on-error"?: boolean;
@@ -11,7 +12,14 @@ interface Job {
   concurrency?: unknown;
   permissions?: Record<string, string>;
   strategy?: { matrix?: unknown; "fail-fast"?: boolean };
-  steps?: { id?: string; uses?: string; if?: string; name?: string; run?: string }[];
+  steps?: {
+    id?: string;
+    uses?: string;
+    if?: string;
+    name?: string;
+    run?: string;
+    env?: Record<string, string>;
+  }[];
 }
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -29,6 +37,104 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("keeps push runs per SHA and delegates queue cleanup to an isolated workflow", () => {
+    const ci = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
+    expect(ci.concurrency).toEqual({
+      group:
+        "ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}",
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    });
+    const cleanup = readWorkflow("ci-supersede.yml");
+    expect(cleanup.on).toEqual({
+      workflow_run: { workflows: ["CI"], types: ["requested"], branches: ["main"] },
+      workflow_dispatch: null,
+    });
+    expect(cleanup.permissions).toEqual({ contents: "read" });
+    expect(cleanup.concurrency).toEqual({
+      group: "ci-queue-cleanup",
+      "cancel-in-progress": false,
+    });
+    const job = cleanup.jobs.supersede!;
+    expect(job.permissions).toEqual({ contents: "read", actions: "write" });
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    expect(job.if).toContain("workflow_run.event == 'push'");
+    expect(job.if).toContain("workflow_run.path == '.github/workflows/ci.yml'");
+    expect(job.if).toContain("workflow_run.head_repository.full_name == github.repository");
+    const checkout = job.steps!.find((step) => step.uses?.startsWith("actions/checkout@")) as {
+      with: Record<string, unknown>;
+    };
+    expect(checkout.with).toMatchObject({ ref: "main", "persist-credentials": false });
+    expect(job.steps!.some((step) => step.run === "node scripts/supersede-queued-ci.ts")).toBe(
+      true,
+    );
+    const commands = job.steps!.map((step) => step.run ?? "").join("\n");
+    expect(commands).not.toContain("${{");
+    expect(commands).not.toMatch(/\bbun (install|run)\b|npm |npx /);
+  });
+  it("uses status functions only in composite action conditions", () => {
+    const visit = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      } else if (value !== null && typeof value === "object") {
+        for (const [key, item] of Object.entries(value))
+          if (key !== "if") visit(item, path + "." + key);
+      } else if (typeof value === "string") {
+        expect(value, path).not.toMatch(/\b(?:cancelled|success|failure|always)\s*\(/);
+      }
+    };
+    const files = globSync("**/action.yml", {
+      cwd: new URL("../.github/actions/", import.meta.url),
+    });
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const action = parse(
+        readFileSync(new URL("../.github/actions/" + file, import.meta.url), "utf8"),
+      );
+      if (action.runs?.using === "composite") visit(action, file);
+    }
+  });
+  it("isolates release App credentials in a main-only environment for both privileged jobs", () => {
+    for (const [file, id] of [
+      ["release-publish.yml", "reconcile"],
+      ["release-prepare.yml", "prepare"],
+    ]) {
+      const job = readWorkflow(file!).jobs[id!]!;
+      expect(job.environment).toBe("release-publish");
+      expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    }
+  });
+  it("gates intent validation on the merge result through required static CI", () => {
+    expect(
+      workflow.jobs.static!.steps!.some(
+        (step) => step.run === "node scripts/check-release-intent.ts",
+      ),
+    ).toBe(true);
+    const owners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
+    expect(owners).toContain("/release-intent.json @lopes-felipe");
+  });
+  it("installs dependencies before minting the preparation App token and never persists credentials", () => {
+    const preparation = readWorkflow("release-prepare.yml");
+    const steps = preparation.jobs.prepare!.steps!;
+    const setup = steps.findIndex((s) => s.uses === "./.github/actions/setup");
+    const token = steps.findIndex((s) => s.uses?.startsWith("actions/create-github-app-token@"));
+    expect(setup).toBeGreaterThan(-1);
+    expect(token).toBeGreaterThan(setup);
+    const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@")) as {
+      with: Record<string, unknown>;
+    };
+    expect(checkout.with["persist-credentials"]).toBe(false);
+    expect(checkout.with.token).toBeUndefined();
+    const prepare = steps.find((s) => s.run?.includes("create-stable-release-pr.ts"))!;
+    expect(prepare.env?.GIT_CONFIG_VALUE_0).toBe("!gh auth git-credential");
+    expect(prepare.env?.GH_TOKEN).toBe("${{ steps.app.outputs.token }}");
+  });
+  it("lets each workspace preserve its package report identity without overwriting sibling reports", () => {
+    for (const [id, job] of Object.entries(workflow.jobs))
+      for (const step of job.steps ?? [])
+        if (step.run?.includes("test:ci:workspaces"))
+          expect(step.env?.F5_CI_SUITE_ID, id).toBeUndefined();
+  });
   it("gates every job and bounds all jobs and matrices", () => assertWorkflowPolicy(workflow.jobs));
   it("has a report inventory for every configured server unit shard", () => {
     expect(workflow.jobs["server-unit"]!.strategy!.matrix).toEqual({ shard: [1, 2] });
@@ -70,7 +176,37 @@ describe("CI workflow policy", () => {
     expect(runs.filter((run) => run.includes("ci-retry-once"))).toEqual(smoke);
   });
   it("keeps the notifier outside concurrency groups that can cancel push runs", () => {
-    expect(workflow.jobs["main-status"]!.concurrency).toBeUndefined();
+    expect(workflow.jobs["main-status"]).toBeUndefined();
+    const reporter = readWorkflow("ci-main-status.yml").jobs.report!;
+    expect(readWorkflow("ci-main-status.yml").permissions.actions).toBe("read");
+    expect(reporter.concurrency).toEqual({
+      group: "main-ci-status-reporting",
+      "cancel-in-progress": false,
+      queue: "max",
+    });
+    expect(reporter.if).toContain("workflow_run.head_repository.full_name == github.repository");
+    expect(reporter.if).toContain("workflow_run.event == 'push'");
+    expect(reporter.steps?.some((step) => step.uses || step.run?.includes("download"))).toBe(false);
+  });
+  it("disables cancellation in shadow mode and publishes no-candidate selection markers", () => {
+    const coordinator = readWorkflow("release-coordinate.yml").jobs.coordinate!;
+    expect(coordinator.if).toContain("vars.F5_RELEASE_AUTOMATION_MODE == 'beta'");
+    expect(coordinator.if).toContain("vars.F5_RELEASE_AUTOMATION_MODE == 'all'");
+    expect(
+      coordinator.steps!.find((step) => step.run?.includes("coordinate-releases.ts"))!.env,
+    ).toHaveProperty(
+      "RELEASE_AUTOMATION_MODE",
+      "${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}",
+    );
+    const publisher = readWorkflow("release-publish.yml").jobs.reconcile!;
+    const marker = publisher.steps!.find((step) => step.uses === "actions/upload-artifact@v4")!;
+    expect(marker.if).toBe("steps.lease.outputs.selection_ready == 'true'");
+    expect(
+      publisher.steps!.find((step) => step.name === "Reconcile obsolete beta work")!.if,
+    ).toContain("steps.lease.outputs.selection_ready == 'true'");
+    expect(publisher.steps!.find((step) => step.id === "reconcile")!.if).toBe(
+      "steps.lease.outputs.candidate_run != ''",
+    );
   });
   it("classifies changes inside every heavy job without a scheduling prerequisite", () => {
     expect(workflow.jobs.changes).toBeUndefined();
@@ -162,7 +298,7 @@ describe("CI workflow policy", () => {
       with?: { path: string; key: string };
     }[];
     expect(steps.find((step) => step.name === "Install dependencies")!.run).toBe(
-      "bun install --frozen-lockfile",
+      "node scripts/retry-install.ts",
     );
     expect(steps.find((step) => step.name === "Verify Electron installation")!.run).toContain(
       "fs.existsSync(resolved)",

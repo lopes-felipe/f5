@@ -28,6 +28,8 @@ import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 
 const approvalsByActivities = new WeakMap<Thread["activities"], boolean>();
+// Parent input also activates the page; frame focus alone can be forged by the app.
+const PAGE_ACTIVATION_MS = 5_000;
 interface Approval {
   title: string;
   detail: string;
@@ -63,6 +65,18 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
   const [approval, setApproval] = useState<Approval | null>(null);
   const approvalRef = useRef<Approval | null>(null);
   const loads = useRef(0);
+  const lastPageInputAt = useRef(Number.NEGATIVE_INFINITY);
+  useEffect(() => {
+    const note = () => {
+      lastPageInputAt.current = performance.now();
+    };
+    if (navigator.userActivation?.isActive) note();
+    const types = ["pointerdown", "pointerup", "touchend", "keydown"] as const;
+    for (const type of types) window.addEventListener(type, note, true);
+    return () => {
+      for (const type of types) window.removeEventListener(type, note, true);
+    };
+  }, []);
   const current = useRef({ theme, live, width, fullscreen, awaitingApproval });
   current.current = { theme, live, width, fullscreen, awaitingApproval };
   useEffect(() => {
@@ -131,7 +145,11 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
       nonce,
       frameWindow: () => frame.current?.contentWindow ?? null,
       onLeave: stop,
-      onEscape: () => setFullscreen(false),
+      onEscape: () => {
+        // Escape inside the opaque frame does not reach the parent input listeners.
+        lastPageInputAt.current = performance.now();
+        setFullscreen(false);
+      },
     });
     const active = async () => {
       if (controller.signal.aborted || !current.current.live || !(await guard.check()))
@@ -239,8 +257,16 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
         if (["canceled", "cleared", "rejected"].includes(result.disposition))
           throw new McpAppHostRefusal("The message was not accepted.");
       },
-      requestDisplayMode: async (mode) => {
+      requestDisplayMode: async (mode, context) => {
+        if (mode === "fullscreen" && !context.userActive)
+          return current.current.fullscreen ? "fullscreen" : "inline";
         await active();
+        // An exit or other parent input may occur during the asynchronous document checks.
+        if (
+          mode === "fullscreen" &&
+          performance.now() - lastPageInputAt.current < PAGE_ACTIVATION_MS
+        )
+          return current.current.fullscreen ? "fullscreen" : "inline";
         if (approvalRef.current || current.current.awaitingApproval) return "inline";
         setFullscreen(mode === "fullscreen");
         return mode === "fullscreen" ? "fullscreen" : "inline";
@@ -292,8 +318,14 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
       )
         return;
       if (guard.accept(event)) return;
-      void guard.check().then((valid) => {
-        if (valid && !controller.signal.aborted) bridge.receive(event.data);
+      const userActive =
+        document.activeElement === frame.current &&
+        navigator.userActivation?.isActive === true &&
+        performance.now() - lastPageInputAt.current >= PAGE_ACTIVATION_MS;
+      void guard.inspect().then((status) => {
+        if (status.valid && !controller.signal.aborted) {
+          bridge.receive(event.data, { userActive: userActive && status.userActive });
+        }
       });
     };
     const escape = (event: KeyboardEvent) => {

@@ -1,5 +1,5 @@
 import { rememberAcpSetupFailure } from "./AcpAdapterSupport";
-import { redactAcpLogPayload } from "./AcpNativeLogging";
+import { redactAcpLogPayload, redactAcpDiagnosticText } from "./AcpNativeLogging";
 import {
   Cause,
   Clock,
@@ -33,6 +33,7 @@ import {
   collectSessionConfigOptionValues,
   decideToolCallUpdateEmission,
   extractModelConfigId,
+  findModelConfigOption,
   findSessionConfigOption,
   mergeToolCallState,
   parseSessionModeState,
@@ -321,6 +322,8 @@ const makeAcpSessionRuntime = (
     let memoizedMcpServers: ReadonlyArray<EffectAcpSchema.McpServer> | undefined;
     const redactLog = (value: unknown) =>
       options.logWritersRedact ? value : redactAcpLogPayload(value);
+    const sanitizeDiagnostic = (text: string) =>
+      redactAcpDiagnosticText(options.sanitizeStderr?.(text) ?? text);
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger
         ? options.requestLogger({
@@ -341,10 +344,8 @@ const makeAcpSessionRuntime = (
                         : {}),
                       message: setup
                         ? "ACP_REQUEST_FAILED"
-                        : (
-                            options.sanitizeStderr?.(
-                              String(error instanceof Error ? error.message : "ACP_REQUEST_FAILED"),
-                            ) ?? (error instanceof Error ? error.message : "ACP_REQUEST_FAILED")
+                        : sanitizeDiagnostic(
+                            error instanceof Error ? error.message : "ACP_REQUEST_FAILED",
                           ).slice(0, 2000),
                     };
                   })(),
@@ -404,7 +405,7 @@ const makeAcpSessionRuntime = (
           ? { transformStdoutLine: options.transformStdoutLine }
           : {}),
         ...(options.onStderr ? { onStderr: options.onStderr } : {}),
-        ...(options.sanitizeStderr ? { sanitizeStderr: options.sanitizeStderr } : {}),
+        sanitizeStderr: sanitizeDiagnostic,
         ...(options.protocolLogging?.logIncoming !== undefined
           ? { logIncoming: options.protocolLogging.logIncoming }
           : {}),
@@ -508,7 +509,8 @@ const makeAcpSessionRuntime = (
       value: string | boolean,
     ): Effect.Effect<void, EffectAcpErrors.AcpError> =>
       Effect.gen(function* () {
-        const configOption = findSessionConfigOption(yield* Ref.get(configOptionsRef), configId);
+        const configOptions = yield* Ref.get(configOptionsRef);
+        const configOption = findSessionConfigOption(configOptions, configId);
         if (!configOption) {
           return;
         }
@@ -541,7 +543,10 @@ const makeAcpSessionRuntime = (
         if (allowedValues.includes(value)) {
           return;
         }
-        if (configOption.category === "model" && options.customModels?.includes(value)) {
+        if (
+          configOption === findModelConfigOption(configOptions) &&
+          options.customModels?.includes(value)
+        ) {
           return;
         }
         return yield* new EffectAcpErrors.AcpRequestError({

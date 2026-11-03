@@ -384,6 +384,7 @@ function OpenCommandPaletteDialog(props: {
   const newThreadProjectId = useMemo(
     () =>
       resolvePrimaryNewThreadProjectId({
+        projects,
         activeThreadProjectId: activeThread?.projectId,
         activeDraftProjectId: activeDraftThread?.projectId,
         mostRecentProjectId:
@@ -403,6 +404,7 @@ function OpenCommandPaletteDialog(props: {
       investigationWorkflows,
       listedProjects,
       planningWorkflows,
+      projects,
       threads,
     ],
   );
@@ -606,6 +608,7 @@ function OpenCommandPaletteDialog(props: {
     (project: (typeof projects)[number]) => (
       <ProjectIcon
         projectId={project.id}
+        kind={project.kind}
         name={project.name}
         icon={project.icon}
         className={ITEM_ICON_CLASS}
@@ -694,6 +697,7 @@ function OpenCommandPaletteDialog(props: {
       if (!targetThreadId) {
         if (!searchProject) return;
         const created = await handleNewThread(searchProject.id);
+        if (!created) return;
         targetThreadId = created.threadId;
       }
       const surface = openFileRightPanelSurface(targetThreadId, {
@@ -947,7 +951,7 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: ["new thread", "no project", "without a project", "scratch"],
       title: "New thread without a project",
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
-      shortcutCommand: "chat.newScratch",
+      shortcutCommand: newThreadProjectId === null ? "chat.new" : "chat.newScratch",
       run: async () => {
         await startScratchThread();
       },

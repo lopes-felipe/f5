@@ -4,21 +4,32 @@ import * as OS from "node:os";
 import type {
   StorageCleanupCategoryId,
   StorageCleanupCategoryUsage,
+  StorageCleanupImpact,
   StoragePathWarning,
   StorageDiscoverySettings,
 } from "@t3tools/contracts";
 import { runStorageTask, type StorageFileInspection } from "./storageWorker.ts";
 import { type FileIdentity } from "./diskUsage.ts";
 
+/** Categories scanned by {@link cleanupProviders} and removed through reviewed file deletion. */
 export const MACHINE_CATEGORY_IDS: ReadonlySet<StorageCleanupCategoryId> = new Set([
   "f5Backups",
   "f5ApplicationLogs",
+  "f5UpdaterCache",
+  "claudePluginTrash",
   "bunDownloadCache",
   "npmDownloadCache",
   "uvDiscardedCaches",
   "chromeCaches",
   "bambuStudioLogs",
+  "devboxWarmupCache",
+  "playwrightBrowsers",
+  "electronDownloadCache",
+  "nodeGypCache",
 ]);
+/** Directories written by storage/databaseSnapshots.ts. */
+const DATABASE_SNAPSHOT_DIR = /^snapshot-\d{13}$/;
+const DAY_MS = 86400_000;
 export interface CleanupFileReview {
   providerId: StorageCleanupCategoryId;
   path: string;
@@ -32,14 +43,44 @@ interface Provider {
   title: string;
   description: string;
   roots: string[];
+  section: Extract<
+    StorageCleanupCategoryUsage["section"],
+    "database" | "logs" | "providers" | "machine"
+  >;
+  impact: StorageCleanupImpact;
   application?: "chrome" | "bambu";
   files?: (name: string, mtimeMs: number) => boolean;
   children?: RegExp;
+  /** Matching children must be older than this; seven days unless set. */
+  childMinAgeMs?: (name: string) => number;
+  /** Never offer the newest matching child (by name) for deletion. */
+  keepNewestChild?: boolean;
+}
+/**
+ * Whether a reviewed path may be removed without machine cleanup enabled:
+ * F5's own data, including the F5 Claude provider home.
+ */
+export function isUngatedProviderTarget(input: {
+  categoryId: StorageCleanupCategoryId;
+  path: string;
+  providerHomesDir?: string;
+}): boolean {
+  if (
+    input.categoryId === "f5Backups" ||
+    input.categoryId === "f5ApplicationLogs" ||
+    input.categoryId === "f5UpdaterCache"
+  )
+    return true;
+  if (input.categoryId !== "claudePluginTrash" || !input.providerHomesDir) return false;
+  const relative = Path.relative(input.providerHomesDir, input.path);
+  return relative !== "" && !relative.startsWith("..") && !Path.isAbsolute(relative);
 }
 /** Platform/config resolution is kept separate from scanning and deletion. */
 export function cleanupProviders(input: {
   stateDirs: string[];
   enabled: boolean;
+  /** F5's provider homes; the Claude home's plugin trash is always offered. */
+  providerHomesDir?: string;
   home?: string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -62,7 +103,12 @@ export function cleanupProviders(input: {
       : platform === "darwin"
         ? join(home, "Library", "Application Support")
         : (env.XDG_CONFIG_HOME ?? join(home, ".config"));
-  const old = (mtime: number) => mtime < (input.now ?? Date.now()) - 7 * 86400_000;
+  const now = input.now ?? Date.now();
+  const old = (mtime: number) => mtime < now - 7 * DAY_MS;
+  const claudeTrash = (configDir: string) => join(configDir, "plugins", ".trash");
+  const providerClaudeTrash = input.providerHomesDir
+    ? claudeTrash(join(input.providerHomesDir, "claude", ".claude"))
+    : null;
   const result: Provider[] = [
     {
       id: "f5Backups",
@@ -70,8 +116,15 @@ export function cleanupProviders(input: {
       description:
         "Permanently removes selected recovery copies. Deleting the last backup removes that recovery option.",
       roots: input.stateDirs.map((p) => join(p, "backups")),
+      section: "database",
+      impact: "high",
       files: (name) =>
         /^(?:state-before-[\w.-]+\.sqlite|daily-\d{13}-[a-f0-9-]{36}\.f5backup)$/.test(name),
+      // Automatic database snapshots; storage/databaseSnapshots.ts prunes them itself.
+      // The newest one is the copy most likely to be needed, so it is never offered.
+      children: DATABASE_SNAPSHOT_DIR,
+      childMinAgeMs: () => 0,
+      keepNewestChild: true,
     },
     {
       id: "f5ApplicationLogs",
@@ -79,10 +132,40 @@ export function cleanupProviders(input: {
       description:
         "Application log rotations older than seven days. Conversation/provider logs are protected by their own retention rules.",
       roots: input.stateDirs.map((p) => join(p, "logs")),
+      section: "logs",
+      impact: "low",
       files: (name, mtime) =>
         /^(?:desktop-main|server|server-child)\.log\.\d+$/.test(name) && old(mtime),
     },
+    {
+      id: "f5UpdaterCache",
+      title: "F5 update downloads",
+      description:
+        "Downloaded F5 update packages older than a day. A downloaded update waiting for a restart is kept for seven days; later updates download in full.",
+      roots: [join(cache, "f5-desktop-updater")],
+      section: "machine",
+      impact: "low",
+      files: (_name, mtime) => mtime < now - DAY_MS,
+      children: /^[^.]/,
+      childMinAgeMs: (name) => (name === "pending" ? 7 * DAY_MS : DAY_MS),
+    },
   ];
+  const claudeTrashRoots = [
+    ...(providerClaudeTrash ? [providerClaudeTrash] : []),
+    ...(input.enabled ? [claudeTrash(env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))] : []),
+  ];
+  if (claudeTrashRoots.length)
+    result.push({
+      id: "claudePluginTrash",
+      title: "Claude plugin trash",
+      description:
+        "Plugin versions Claude moved to its plugins trash more than a day ago. Installed plugins are retained.",
+      roots: [...new Set(claudeTrashRoots)],
+      section: "providers",
+      impact: "none",
+      children: /^[^.]/,
+      childMinAgeMs: () => DAY_MS,
+    });
   if (!input.enabled) return result;
   result.push(
     {
@@ -94,6 +177,8 @@ export function cleanupProviders(input: {
         env.BUN_INSTALL_CACHE_DIR ??
           join(env.BUN_INSTALL ?? join(home, ".bun"), "install", "cache"),
       ],
+      section: "machine",
+      impact: "low",
     },
     {
       id: "npmDownloadCache",
@@ -107,6 +192,8 @@ export function cleanupProviders(input: {
           "_cacache",
         ),
       ],
+      section: "machine",
+      impact: "low",
     },
     {
       id: "uvDiscardedCaches",
@@ -121,6 +208,8 @@ export function cleanupProviders(input: {
               : join(env.XDG_CACHE_HOME ?? join(home, ".cache"), "uv")),
         ),
       ],
+      section: "machine",
+      impact: "low",
       children: /^uv\.trash-[\w.-]+$/,
     },
     {
@@ -128,8 +217,59 @@ export function cleanupProviders(input: {
       title: "Old BambuStudio logs",
       description: "Logs older than seven days. Close BambuStudio before cleanup.",
       roots: [join(config, "BambuStudio", "log")],
+      section: "machine",
+      impact: "low",
       application: "bambu",
       files: (_name, mtime) => old(mtime),
+    },
+    {
+      id: "devboxWarmupCache",
+      title: "devbox warm-up cache",
+      description:
+        "Prefetched devbox tool images and IDE backends. devbox downloads them again when it next warms up.",
+      roots: [join(home, ".devbox", "warmupcache")],
+      section: "machine",
+      impact: "low",
+      children: /^[^.]/,
+      childMinAgeMs: () => DAY_MS,
+    },
+    {
+      id: "playwrightBrowsers",
+      title: "Playwright browsers",
+      description: "Downloaded browser builds. Re-download with npx playwright install.",
+      roots: [
+        env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0"
+          ? env.PLAYWRIGHT_BROWSERS_PATH
+          : join(cache, "ms-playwright"),
+      ],
+      section: "machine",
+      impact: "low",
+      // Only Playwright's own browser folders, so a mis-set
+      // PLAYWRIGHT_BROWSERS_PATH offers nothing else.
+      children:
+        /^(?:chromium|chromium_headless_shell|chromium-headless-shell|firefox|firefox-beta|webkit|ffmpeg|winldd|android)-\d+$/,
+      childMinAgeMs: () => 0,
+    },
+    {
+      id: "electronDownloadCache",
+      title: "Electron download cache",
+      description: "Downloaded Electron releases. They are fetched again on the next install.",
+      roots: [env.ELECTRON_CACHE ?? join(cache, "electron")],
+      section: "machine",
+      impact: "low",
+      // @electron/get's URL-hash folders and older flat downloads only, so a
+      // mis-set ELECTRON_CACHE offers nothing else.
+      children:
+        /^(?:[0-9a-f]{64}|https?github\.com.+|(?:electron|chromedriver|ffmpeg|mksnapshot)-v.+|SHASUMS256\.txt.*)$/,
+      childMinAgeMs: () => DAY_MS,
+    },
+    {
+      id: "nodeGypCache",
+      title: "node-gyp headers",
+      description: "Node.js headers for native addon builds. They are fetched again when needed.",
+      roots: [join(cache, "node-gyp")],
+      section: "machine",
+      impact: "low",
     },
   );
   const chromeRoot =
@@ -145,6 +285,8 @@ export function cleanupProviders(input: {
     description:
       "Browser cache only; history, cookies, passwords and profiles remain. Close Chrome before cleanup.",
     roots: [chromeRoot],
+    section: "machine",
+    impact: "low",
     children: /^(?:Default|Profile \d+)$/,
     application: "chrome",
   });
@@ -184,6 +326,7 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error("Cleanup root is not a real directory.");
   const candidates: string[] = [];
+  const children: string[] = [];
   if (provider.files || provider.children) {
     for (const entry of await FS.readdir(root, { withFileTypes: true })) {
       const path = Path.join(root, entry.name);
@@ -201,16 +344,27 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
             if (cache?.isDirectory() && !cache.isSymbolicLink())
               candidates.push(Path.join(path, name));
           }
-        } else if ((await FS.lstat(path)).mtimeMs < Date.now() - 7 * 86400_000)
-          candidates.push(path);
+        } else {
+          children.push(path);
+          if (
+            (await FS.lstat(path)).mtimeMs <
+            Date.now() - (provider.childMinAgeMs?.(entry.name) ?? 7 * DAY_MS)
+          )
+            candidates.push(path);
+        }
       }
     }
   } else candidates.push(root);
+  if (provider.keepNewestChild && children.length > 0) {
+    const newest = children.toSorted().at(-1);
+    return candidates.filter((path) => path !== newest);
+  }
   return candidates;
 }
 
 export async function scanCleanupProviders(input: {
   stateDirs: string[];
+  providerHomesDir?: string;
   settings: StorageDiscoverySettings;
   signal?: AbortSignal;
 }) {
@@ -219,6 +373,7 @@ export async function scanCleanupProviders(input: {
   for (const provider of cleanupProviders({
     stateDirs: input.stateDirs,
     enabled: input.settings.machineCleanupEnabled,
+    ...(input.providerHomesDir ? { providerHomesDir: input.providerHomesDir } : {}),
   })) {
     const targets: StorageCleanupCategoryUsage["targets"][number][] = [],
       warnings: StoragePathWarning[] = [];
@@ -296,9 +451,13 @@ export async function scanCleanupProviders(input: {
               : {}),
             detail:
               provider.id === "f5Backups"
-                ? (candidates.length === 1
-                    ? "Last recovery copy in this folder · "
-                    : "Recovery copy · ") +
+                ? (DATABASE_SNAPSHOT_DIR.test(Path.basename(path))
+                    ? "Automatic database snapshot. It shares unchanged data with the live database, so deleting it may free less than shown · "
+                    : candidates.filter(
+                          (other) => !DATABASE_SNAPSHOT_DIR.test(Path.basename(other)),
+                        ).length === 1
+                      ? "Last recovery copy in this folder · "
+                      : "Recovery copy · ") +
                   Math.max(
                     0,
                     Math.floor(
@@ -317,12 +476,7 @@ export async function scanCleanupProviders(input: {
     }
     categories.push({
       id: provider.id,
-      section:
-        provider.id === "f5Backups"
-          ? "database"
-          : provider.id === "f5ApplicationLogs"
-            ? "logs"
-            : "machine",
+      section: provider.section,
       title: provider.title,
       description: provider.description,
       bytes: targets.reduce((n, t) => n + t.bytes, 0),
@@ -336,7 +490,7 @@ export async function scanCleanupProviders(input: {
           : "complete",
       eligibleThreadCount: 0,
       defaultSelected: false,
-      impact: provider.id === "f5Backups" ? "high" : "low",
+      impact: provider.impact,
       availability: targets.length ? "ready" : "disabled",
       ...(!targets.length
         ? {

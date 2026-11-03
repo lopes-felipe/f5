@@ -1,14 +1,21 @@
-import { RocketIcon, ScrollTextIcon, TriangleAlertIcon } from "lucide-react";
+import { useRouter } from "@tanstack/react-router";
+import { ArrowLeftIcon, ArrowRightIcon, TriangleAlertIcon } from "lucide-react";
 
 import { APP_STAGE_LABEL, APP_VERSION } from "../../branding";
 import { isElectron } from "../../env";
+import { shortcutLabelForCommand, useServerKeybindings } from "../../keybindings";
 import { cn } from "../../lib/utils";
+import {
+  navigateHistory,
+  useCanNavigateHistory,
+  type HistoryDirection,
+} from "../../navigationHistory";
 import { ProfileSwitcher } from "../ProfileSwitcher";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
-import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
 import { SidebarHeader, SidebarTrigger } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { DesktopUpdateInstalledNotesDialog, DesktopUpdatePill } from "./DesktopUpdatePill";
 import type { DesktopUpdateController } from "./useDesktopUpdate";
 
 function F5Wordmark() {
@@ -56,60 +63,41 @@ function SidebarWordmark() {
   );
 }
 
-function DesktopUpdateButtons({ update }: { update: DesktopUpdateController }) {
+function HistoryNavigationButton({ direction }: { direction: HistoryDirection }) {
+  const router = useRouter();
+  const keybindings = useServerKeybindings();
+  const enabled = useCanNavigateHistory(direction);
+  const label = direction === "back" ? "Go back" : "Go forward";
+  const shortcutLabel = shortcutLabelForCommand(
+    keybindings,
+    direction === "back" ? "navigation.back" : "navigation.forward",
+  );
+  const Icon = direction === "back" ? ArrowLeftIcon : ArrowRightIcon;
   return (
-    <div className="flex items-center gap-0.5">
-      {update.releaseNotes ? (
-        <Popover>
-          <PopoverTrigger
-            render={
-              <button
-                type="button"
-                aria-label="Show update release notes"
-                className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <ScrollTextIcon className="size-4" />
-              </button>
-            }
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={label}
+            className="text-muted-foreground"
+            disabled={!enabled}
+            onClick={() => navigateHistory(router.history, direction)}
+            size="icon-xs"
+            variant="ghost"
           />
-          <PopoverPopup align="end" className="w-80 max-w-[calc(100vw-2rem)]">
-            <div className="space-y-2">
-              <PopoverTitle className="text-sm">
-                What’s new in {update.state?.availableVersion ?? "this update"}
-              </PopoverTitle>
-              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-                {update.releaseNotes}
-              </div>
-            </div>
-          </PopoverPopup>
-        </Popover>
-      ) : null}
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              aria-label={update.tooltip}
-              aria-disabled={update.buttonDisabled || undefined}
-              disabled={update.buttonDisabled}
-              className={cn(
-                "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                update.buttonInteractivityClasses,
-                update.buttonToneClasses,
-              )}
-              onClick={update.handleButtonClick}
-            >
-              <RocketIcon className="size-4" />
-            </button>
-          }
-        />
-        <TooltipPopup side="bottom">{update.tooltip}</TooltipPopup>
-      </Tooltip>
-    </div>
+        }
+      >
+        <Icon className="size-3.5" />
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">
+        {label}
+        {shortcutLabel ? ` (${shortcutLabel})` : ""}
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
-/** Wordmark, profile switcher and (desktop) update controls. */
+/** Wordmark, history navigation (desktop), profile switcher and update controls. */
 export function SidebarBrandHeader({ update }: { update: DesktopUpdateController }) {
   return (
     <SidebarHeader
@@ -119,10 +107,17 @@ export function SidebarBrandHeader({ update }: { update: DesktopUpdateController
       )}
     >
       <SidebarWordmark />
+      {isElectron ? (
+        <div className="hidden shrink-0 items-center md:flex">
+          <HistoryNavigationButton direction="back" />
+          <HistoryNavigationButton direction="forward" />
+        </div>
+      ) : null}
       <div className="ml-auto flex min-w-0 items-center gap-1">
-        {isElectron && update.showButton ? <DesktopUpdateButtons update={update} /> : null}
+        {isElectron && update.showButton ? <DesktopUpdatePill update={update} /> : null}
         <ProfileSwitcher />
       </div>
+      {isElectron ? <DesktopUpdateInstalledNotesDialog update={update} /> : null}
     </SidebarHeader>
   );
 }

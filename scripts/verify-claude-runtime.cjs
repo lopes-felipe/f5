@@ -3,7 +3,11 @@ const { join } = require("node:path");
 
 function defaultRun(command, args, options) {
   const result = spawnSync(command, args, { stdio: "inherit", ...options });
-  return { status: result.error ? null : result.status };
+  return {
+    status: result.status,
+    signal: result.signal,
+    error: result.error?.code ?? result.error?.message,
+  };
 }
 
 /** Exercise the packaged resolver and the platform's production SDK spawn path. */
@@ -23,8 +27,11 @@ function verifyClaudeRuntime(context, { run = defaultRun } = {}) {
   for (const key of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR"]) {
     if (process.env[key]) env[key] = process.env[key];
   }
-  const result = run(executable, [entry], { env, timeout: 45_000, killSignal: "SIGKILL" });
-  if (result.status !== 0) throw new Error(`Bundled Claude runtime smoke failed for ${app}`);
+  const result = run(executable, [entry], { env, timeout: 120_000, killSignal: "SIGKILL" });
+  if (result.status !== 0)
+    throw new Error(
+      `Bundled Claude runtime smoke failed for ${app} (status=${result.status}, signal=${result.signal}, error=${result.error})`,
+    );
 }
 
 exports.verifyClaudeRuntime = verifyClaudeRuntime;

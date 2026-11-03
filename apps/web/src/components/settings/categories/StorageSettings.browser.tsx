@@ -254,6 +254,9 @@ function createNativeApiMock(
     return operation;
   });
   const cancelCleanup = vi.fn(async () => undefined);
+  const scheduleCompaction = vi.fn(async ({ when }: { when: "restart" | "cancel" }) => ({
+    scheduledForRestart: when === "restart",
+  }));
   const confirm = vi.fn(async () => true);
   const onInvalidated = vi.fn(() => () => undefined);
   const statusListeners = new Set<(status: StorageStatus) => void>();
@@ -346,6 +349,7 @@ function createNativeApiMock(
       onDiskSpaceUpdated: () => () => {},
       cleanup,
       cancelCleanup,
+      scheduleCompaction,
       onInvalidated,
       onStatusUpdated,
       automationDryRun,
@@ -368,6 +372,7 @@ function createNativeApiMock(
     emitStatus,
     cleanup,
     cancelCleanup,
+    scheduleCompaction,
     confirm,
     onInvalidated,
     onStatusUpdated,
@@ -582,6 +587,7 @@ describe("StorageSettings", () => {
           storageDiscovery: {
             machineCleanupEnabled: true,
             repositoryRoots: ["/work/repos", "/work/other"],
+            searchProjectFolders: true,
           },
         }),
       );
@@ -1134,13 +1140,191 @@ describe("StorageSettings", () => {
     );
 
     try {
-      expect(document.body.textContent).toContain("Worktrees (7 GB)");
+      expect(document.body.textContent).toContain("Repositories and worktrees (7 GB)");
       expect(document.body.textContent).toContain("project/dirty");
       expect(document.body.textContent).toContain("Worktree has uncommitted changes.");
       const reclaimButtons = Array.from(document.querySelectorAll("button")).filter((button) =>
         button.textContent?.includes("Reclaim"),
       );
       expect(reclaimButtons.some((button) => getDisabledState(button))).toBe(true);
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("lists dependency folders unselected and interrupted Git downloads selected", async () => {
+    const { screen, queryClient } = await renderStorageSettings(
+      usageReport({
+        categories: [
+          category({
+            id: "dependencyFolders",
+            section: "worktrees",
+            title: "Delete dependency and build folders",
+            bytes: 3 * GIB,
+            reclaimableBytes: 2 * GIB,
+            impact: "medium",
+            targetCount: 2,
+            targets: [
+              {
+                id: "/work/app/node_modules",
+                label: "app/node_modules",
+                path: "/work/app/node_modules",
+                bytes: 2 * GIB,
+                safeToDelete: true,
+                detail: "/work/app · restore with bun install",
+              },
+              {
+                id: "/work/busy/node_modules",
+                label: "busy/node_modules",
+                path: "/work/busy/node_modules",
+                bytes: GIB,
+                safeToDelete: false,
+                disabledReason: "A thread used this checkout in the last 24 hours.",
+              },
+            ],
+          }),
+          category({
+            id: "gitTemporaryPacks",
+            section: "worktrees",
+            title: "Delete interrupted Git downloads",
+            bytes: 512 * 1024 * 1024,
+            reclaimableBytes: 512 * 1024 * 1024,
+            defaultSelected: true,
+            targetCount: 1,
+            targets: [
+              {
+                id: "/work/app/.git/objects/pack/tmp_pack_abc",
+                label: "app/tmp_pack_abc",
+                path: "/work/app/.git/objects/pack/tmp_pack_abc",
+                bytes: 512 * 1024 * 1024,
+                safeToDelete: true,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    try {
+      expect(document.body.textContent).toContain("Repositories and worktrees");
+      expect(document.body.textContent).toContain(
+        "A thread used this checkout in the last 24 hours.",
+      );
+      await expect
+        .element(page.getByRole("checkbox", { name: "Select app/node_modules" }))
+        .not.toBeChecked();
+      await expect
+        .element(page.getByRole("checkbox", { name: "Select app/tmp_pack_abc" }))
+        .toBeChecked();
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("offers a stuck compaction now or on the next restart", async () => {
+    const vacuum = category({
+      id: "databaseVacuum",
+      section: "database",
+      title: "Compact database",
+      bytes: 10 * GIB,
+      reclaimableBytes: 10 * GIB,
+    });
+    const pendingCompaction = {
+      freeBytes: 10 * GIB,
+      liveBytes: 4 * GIB,
+      requiredFreeDiskBytes: 8 * GIB,
+      availableDiskBytes: 50 * GIB,
+      waitingSince: "2026-05-01T12:00:00.000Z",
+      lastSkipReason: "an agent is working",
+      scheduledForRestart: false,
+    };
+    const { screen, nativeApi, queryClient } = await renderStorageSettings(
+      usageReport({ categories: [vacuum], pendingCompaction }),
+    );
+    try {
+      await expect.element(page.getByText(/Compaction pending: 10 GB stuck since/)).toBeVisible();
+      expect(document.body.textContent).toContain("(an agent is working)");
+      await page.getByRole("button", { name: "Compact on next restart" }).click();
+      await vi.waitFor(() =>
+        expect(nativeApi.scheduleCompaction).toHaveBeenCalledWith({ when: "restart" }),
+      );
+      await page.getByRole("button", { name: "Compact now" }).click();
+      await expect.element(page.getByRole("dialog")).toBeVisible();
+      expect(document.querySelector('[role="dialog"]')!.textContent).toContain("Compact database");
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("disables compaction while disk space is short and offers to cancel a scheduled run", async () => {
+    const vacuum = category({
+      id: "databaseVacuum",
+      section: "database",
+      title: "Compact database",
+      bytes: 10 * GIB,
+      reclaimableBytes: 10 * GIB,
+    });
+    const pendingCompaction = {
+      freeBytes: 10 * GIB,
+      liveBytes: 4 * GIB,
+      requiredFreeDiskBytes: 8 * GIB,
+      availableDiskBytes: 3 * GIB,
+      waitingSince: "2026-05-01T12:00:00.000Z",
+      lastSkipReason: null,
+      scheduledForRestart: false,
+    };
+    const short = await renderStorageSettings(
+      usageReport({ categories: [vacuum], pendingCompaction }),
+    );
+    try {
+      await expect
+        .element(page.getByText("Needs 8 GB free; 3 GB available.", { exact: false }))
+        .toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Compact now" })).toBeDisabled();
+      await expect
+        .element(page.getByRole("button", { name: "Compact on next restart" }))
+        .toBeDisabled();
+    } finally {
+      short.queryClient.clear();
+      await short.screen.unmount();
+    }
+
+    const scheduled = await renderStorageSettings(
+      usageReport({
+        categories: [vacuum],
+        pendingCompaction: {
+          ...pendingCompaction,
+          availableDiskBytes: 50 * GIB,
+          scheduledForRestart: true,
+        },
+      }),
+    );
+    try {
+      await expect.element(page.getByText("Compaction runs when F5 next starts.")).toBeVisible();
+      await page.getByRole("button", { name: "Cancel scheduled compaction" }).click();
+      await vi.waitFor(() =>
+        expect(scheduled.nativeApi.scheduleCompaction).toHaveBeenCalledWith({ when: "cancel" }),
+      );
+    } finally {
+      scheduled.queryClient.clear();
+      await scheduled.screen.unmount();
+    }
+  });
+
+  it("shows project folders searched for repositories as read-only roots", async () => {
+    const { screen, queryClient } = await renderStorageSettings(
+      usageReport({ discoveryRoots: [], implicitDiscoveryRoots: ["/work/wolt"] }),
+    );
+    try {
+      await expect
+        .element(page.getByRole("list", { name: "Repository search folders from projects" }))
+        .toHaveTextContent("/work/wolt");
+      expect(document.body.textContent).toContain("Repository search coverage: /work/wolt");
+      await expect
+        .element(page.getByRole("textbox", { name: "Repository search folders" }))
+        .toHaveValue("");
     } finally {
       queryClient.clear();
       await screen.unmount();

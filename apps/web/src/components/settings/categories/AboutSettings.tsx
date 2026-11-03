@@ -5,6 +5,10 @@ import {
   isAboutUpdateActionDisabled,
   resolveAboutUpdateAction,
 } from "../../desktopUpdate.logic";
+import {
+  DesktopUpdateDownloadProgress,
+  DesktopUpdateInstallProgress,
+} from "../../DesktopUpdateProgress";
 import { Switch } from "../../ui/switch";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -51,6 +55,15 @@ export function AboutSettings() {
           <p className="text-xs text-muted-foreground" role="status">
             {getDesktopUpdateStatusSummary(state)}
           </p>
+          {state.status === "downloading" ? (
+            <div className="mt-2 max-w-sm">
+              <DesktopUpdateDownloadProgress state={state} />
+            </div>
+          ) : state.status === "preparing" ? (
+            <div className="mt-2 max-w-sm">
+              <DesktopUpdateInstallProgress state={state} />
+            </div>
+          ) : null}
           {state.availableVersion && state.releaseNotes ? (
             <p className="my-2 whitespace-pre-wrap text-xs">{state.releaseNotes}</p>
           ) : null}

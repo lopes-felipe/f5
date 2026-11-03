@@ -1,3 +1,9 @@
+interface DocumentStatus {
+  readonly valid: boolean;
+  readonly userActive: boolean;
+}
+const inactive: DocumentStatus = { valid: false, userActive: false };
+
 /** A navigation keeps the iframe WindowProxy, so source equality alone cannot authorize app calls. */
 export function makeMcpAppDocumentGuard(options: {
   nonce: string;
@@ -10,7 +16,7 @@ export function makeMcpAppDocumentGuard(options: {
   let next = 0;
   const pending = new Map<
     string,
-    { finish: (value: boolean) => void; timer: ReturnType<typeof setTimeout> }
+    { finish: (value: DocumentStatus) => void; timer: ReturnType<typeof setTimeout> }
   >();
   const dispose = () => {
     disposed = true;
@@ -18,7 +24,7 @@ export function makeMcpAppDocumentGuard(options: {
     port = null;
     for (const { finish, timer } of pending.values()) {
       clearTimeout(timer);
-      finish(false);
+      finish(inactive);
     }
     pending.clear();
   };
@@ -47,22 +53,22 @@ export function makeMcpAppDocumentGuard(options: {
       if (request) {
         pending.delete(id);
         clearTimeout(request.timer);
-        request.finish(true);
+        request.finish({ valid: true, userActive: event.data.userActive === true });
       }
     };
     port.start();
     return true;
   };
-  const check = () =>
-    new Promise<boolean>((finish) => {
+  const inspect = () =>
+    new Promise<DocumentStatus>((finish) => {
       if (disposed || !port || pending.size >= 16) {
-        finish(false);
+        finish(inactive);
         return;
       }
       const id = String(next++);
       const timer = setTimeout(() => {
         pending.delete(id);
-        finish(false);
+        finish(inactive);
       }, 1000);
       pending.set(id, { finish, timer });
       try {
@@ -70,8 +76,9 @@ export function makeMcpAppDocumentGuard(options: {
       } catch {
         clearTimeout(timer);
         pending.delete(id);
-        finish(false);
+        finish(inactive);
       }
     });
-  return { accept, check, dispose };
+  const check = async () => (await inspect()).valid;
+  return { accept, check, inspect, dispose };
 }

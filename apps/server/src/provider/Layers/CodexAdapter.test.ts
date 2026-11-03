@@ -39,8 +39,11 @@ import {
   makeCodexAdapterLive,
   normalizeCodexThreadItemType,
   observeCodexChrome,
+  trackCodexChromeCall,
   withAgentBrowserPreview,
+  type CodexAdapterLiveOptions,
 } from "./CodexAdapter.ts";
+import { CodexChromeSession } from "../codexChromeSession.ts";
 
 it("reports Codex's preview as verified, so its chip can reach ready", () => {
   const [event] = withAgentBrowserPreview(
@@ -274,6 +277,35 @@ class FakeCodexManager extends CodexAppServerManager {
     this.stopAllImpl();
   }
 }
+
+it.effect(
+  "matches the reactor's disabled computer fingerprint in web mode despite enabled settings",
+  () => {
+    const manager = new FakeCodexManager();
+    const policy = vi
+      .spyOn(browserAccess, "resolveAgentBrowserPolicy")
+      .mockReturnValue(Effect.succeed({ computerUse: true, codexChrome: false } as never));
+    const layer = makeCodexAdapterLive({ manager }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-web-computer-" }, { mode: "web" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() => Effect.sync(() => policy.mockRestore()));
+      const adapter = yield* CodexAdapter;
+      const session = yield* adapter.startSession({
+        threadId: asThreadId("web-computer"),
+        runtimeMode: "full-access",
+      });
+      // Reconciliation compares this recorded launch fingerprint on every turn.
+      assert.equal(JSON.parse(session.computerConfigurationFingerprint!).enabled, false);
+      assert.equal(session.computerToolsInstalled, false);
+      assert.equal(session.computerBackendSelection, undefined);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
 
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
   upsert: () => Effect.void,
@@ -3165,8 +3197,8 @@ afterAll(() => {
   assert.ok(lifecycleManager.stopAllImpl.mock.calls.length >= 1);
 });
 
-it("feeds Codex's node_repl startup, tool calls and turn ends to the Chrome session", () => {
-  const session = { startupStatus: vi.fn(), toolActivity: vi.fn(), turnEnded: vi.fn() };
+it("feeds Codex's node_repl startup and turn ends to the Chrome session", () => {
+  const session = { startupStatus: vi.fn(), turnEnded: vi.fn() };
   const observe = (method: string, payload: unknown, turnId?: string) =>
     observeCodexChrome(session, {
       method,
@@ -3180,17 +3212,29 @@ it("feeds Codex's node_repl startup, tool calls and turn ends to the Chrome sess
     status: "failed",
     error: "boom",
   });
-  observe("item/started", { item: { type: "mcpToolCall", server: "node_repl" } });
-  observe("item/completed", { item: { type: "mcpToolCall", server: "other" } });
-  observe("item/completed", { item: { type: "commandExecution" } });
   observe("turn/completed", {}, "turn-1");
   observe("turn/completed", {});
   assert.deepEqual(session.startupStatus.mock.calls, [
     ["ready", undefined],
     ["failed", "boom"],
   ]);
-  assert.equal(session.toolActivity.mock.calls.length, 1);
   assert.deepEqual(session.turnEnded.mock.calls, [["turn-1"]]);
+});
+
+it("tracks only node_repl calls that have an id", () => {
+  const session = { toolCall: vi.fn() };
+  const track = (method: string, item: unknown) =>
+    trackCodexChromeCall(session, { method, payload: { item } });
+  track("item/started", { type: "mcpToolCall", server: "node_repl", id: "call-1" });
+  track("item/completed", { type: "mcpToolCall", server: "node_repl", id: "call-1" });
+  track("item/started", { type: "mcpToolCall", server: "node_repl" });
+  track("item/completed", { type: "mcpToolCall", server: "other", id: "call-2" });
+  track("item/completed", { type: "commandExecution", id: "call-3" });
+  track("turn/completed", { type: "mcpToolCall", server: "node_repl", id: "call-4" });
+  assert.deepEqual(session.toolCall.mock.calls, [
+    ["call-1", true],
+    ["call-1", false],
+  ]);
 });
 
 it("reports computer fallback and unavailability without installing both tool catalogs", () => {
@@ -3412,6 +3456,161 @@ it.effect(
     }).pipe(Effect.scoped);
   },
 );
+
+it.effect(
+  "stops Codex Chrome's runtime for a call Codex reported running, ahead of queued output and whether or not the interrupt succeeds",
+  () => {
+    const manager = new FakeCodexManager();
+    const broker = {
+      host: { status: () => ({ available: false, reason: "no-host" }) },
+      generation: vi.fn(() => undefined),
+      bindSession: vi.fn(),
+      releaseSession: vi.fn(),
+      requestChromeSession: vi.fn(async () => true),
+      pause: { subscribe: () => () => undefined, has: () => false },
+      onChromeDisabled: () => () => undefined,
+      chromeRecoveryRequired: () => false,
+    };
+    const spies = [
+      vi
+        .spyOn(browserAccess, "resolveAgentBrowserPolicy")
+        .mockReturnValue(Effect.succeed({ codexChrome: true } as never)),
+      vi
+        .spyOn(codexChromeIntegration, "inspectCodexBinary")
+        .mockResolvedValue({ path: "/opt/codex", version: "0.163.0" }),
+      vi.spyOn(codexChromeIntegration, "codexChromeEligibility").mockResolvedValue({
+        eligible: true,
+        installation: { nodeRepl: "/plugin/bin/node_repl", skillPath: "/plugin/SKILL.md" },
+        codexHome: "/isolated",
+      } as never),
+      vi
+        .spyOn(codexChromeIntegration, "codexChromeMcpServer")
+        .mockReturnValue({ type: "stdio", command: "/plugin/bin/node_repl", enabledTools: ["js"] }),
+    ];
+    const interrupted = vi
+      .spyOn(CodexChromeSession.prototype, "turnInterrupted")
+      .mockImplementation(() => undefined);
+    return Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>(),
+        release = yield* Deferred.make<void>();
+      const layer = makeCodexAdapterLive({
+        manager,
+        computerAutomationBroker: broker as never,
+        nativeEventLogger: {
+          filePath: "test-events.ndjson",
+          close: () => Effect.void,
+          write: (value) =>
+            Effect.gen(function* () {
+              if ((value as ProviderEvent).id !== "hold") return;
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }),
+        },
+      }).pipe(
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "codex-chrome-" }, { mode: "desktop" }),
+        ),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      yield* Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const threadId = asThreadId("chrome-interrupt");
+        yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+        const base = {
+          provider: "codex" as const,
+          threadId,
+          createdAt: "2026-11-02T12:00:00.000Z",
+          kind: "notification" as const,
+        };
+        const call = (id: string, method: "item/started" | "item/completed") =>
+          manager.emit("event", {
+            ...base,
+            id: asEventId(`${id}:${method}`),
+            method,
+            payload: { item: { type: "mcpToolCall", server: "node_repl", id } },
+          });
+        // Earlier output (an MCP app capture, say) holds the session's ordered preparation.
+        manager.emit("event", {
+          ...base,
+          id: asEventId("hold"),
+          method: "item/agentMessage/delta",
+          itemId: asItemId("message"),
+          textDelta: "x",
+          payload: { delta: "x" },
+        });
+        yield* Deferred.await(entered);
+        call("call-1", "item/started");
+        // Codex reports the call completed before the interrupt resolves.
+        manager.interruptTurnImpl.mockImplementationOnce(async () => {
+          call("call-1", "item/completed");
+        });
+        yield* adapter.interruptTurn(threadId, asTurnId("turn-1"));
+        assert.deepEqual(interrupted.mock.calls, [["turn-1", true]]);
+        // Stopped before the interrupt was sent.
+        assert.ok(
+          interrupted.mock.invocationCallOrder[0]! <
+            manager.interruptTurnImpl.mock.invocationCallOrder.at(-1)!,
+        );
+
+        // No call running: drained once Codex interrupted the turn, with or without its id.
+        yield* adapter.interruptTurn(threadId);
+        assert.deepEqual(interrupted.mock.calls.at(-1), [undefined, false]);
+
+        // A failed interrupt still stops a running call's runtime.
+        call("call-2", "item/started");
+        manager.interruptTurnImpl.mockRejectedValueOnce(new Error("interrupt failed"));
+        const failure = yield* adapter
+          .interruptTurn(threadId, asTurnId("turn-2"))
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderAdapterRequestError");
+        assert.deepEqual(interrupted.mock.calls.at(-1), ["turn-2", true]);
+        yield* Deferred.succeed(release, undefined);
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.scoped,
+      Effect.ensuring(
+        Effect.sync(() => {
+          for (const spy of [...spies, interrupted]) spy.mockRestore();
+        }),
+      ),
+    );
+  },
+);
+
+it.effect("gives a read-only Codex workflow stage a read-only thread catalog", () => {
+  const manager = new FakeCodexManager();
+  const createSessionConfig = vi.fn((input: { readonly threadId: string }) => ({
+    serverName: "f5_thread",
+    serverDefinition: { type: "http" as const, url: `http://127.0.0.1/mcp/${input.threadId}` },
+    env: {},
+    dispose: () => undefined,
+  }));
+  const previewMcpHttpServer = {
+    supportsThreadCatalog: true,
+    createSessionConfig,
+  } as unknown as NonNullable<CodexAdapterLiveOptions["previewMcpHttpServer"]>;
+  const layer = makeCodexAdapterLive({ manager, previewMcpHttpServer }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "codex-thread-catalog-" })),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  const threadCatalogCall = () =>
+    createSessionConfig.mock.calls
+      .map(([input]) => input as { catalog?: string; threadAccess?: string })
+      .findLast((input) => input.catalog === "thread");
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    yield* adapter.startSession({
+      threadId: asThreadId("workflow-stage"),
+      runtimeMode: "full-access",
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    assert.equal(threadCatalogCall()?.threadAccess, "read-only");
+    yield* adapter.startSession({ threadId: asThreadId("normal"), runtimeMode: "full-access" });
+    assert.equal(threadCatalogCall()?.threadAccess, "full");
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
 
 it.effect(
   "has Codex start node_repl only for consented, interactive desktop sessions without a node_repl of their own",

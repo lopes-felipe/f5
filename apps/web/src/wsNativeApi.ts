@@ -60,12 +60,12 @@ import {
   WS_CHANNELS,
   WS_METHODS,
   type WsWelcomePayload,
+  type DatabaseDamage,
 } from "@t3tools/contracts";
-import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
 import { Schema } from "effect";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
-import { WsTransport } from "./wsTransport";
+import { WsTransport, type RequestContext } from "./wsTransport";
 import {
   assertPrHubAccountGeneration,
   getPrHubAccountGeneration,
@@ -107,6 +107,7 @@ const previewAutomationRequestListeners = new Set<(payload: PreviewAutomationReq
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageStatusUpdatedListeners = new Set<(payload: StorageStatus) => void>();
+const databaseDamagedListeners = new Set<(payload: DatabaseDamage) => void>();
 const storageDiskSpaceUpdatedListeners = new Set<(payload: DiskSpaceStatus) => void>();
 const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) => void>();
 const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
@@ -157,6 +158,25 @@ export function onServerWelcome(listener: (payload: WsWelcomePayload) => void): 
 
   return () => {
     welcomeListeners.delete(listener);
+  };
+}
+
+/**
+ * Subscribe to profile database damage reports. Replays the latest report so a
+ * window opened after the damage still shows it.
+ */
+export function onDatabaseDamaged(listener: (payload: DatabaseDamage) => void): () => void {
+  databaseDamagedListeners.add(listener);
+  const latest = instance?.transport.getLatestPush(WS_CHANNELS.serverDatabaseDamaged)?.data;
+  if (latest) {
+    try {
+      listener(latest);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+  return () => {
+    databaseDamagedListeners.delete(listener);
   };
 }
 
@@ -320,6 +340,15 @@ export function createWsNativeApi(): NativeApi {
     for (const listener of agentsSnapshotUpdatedListeners) {
       try {
         listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.serverDatabaseDamaged, (message) => {
+    for (const listener of databaseDamagedListeners) {
+      try {
+        listener(message.data);
       } catch {
         // Swallow listener errors
       }
@@ -500,8 +529,8 @@ export function createWsNativeApi(): NativeApi {
 
   const requestMethod =
     <Input, Result>(method: string) =>
-    (input: Input): Promise<Result> =>
-      transport.request(method, input);
+    (input: Input, context?: RequestContext): Promise<Result> =>
+      context ? transport.request(method, input, context) : transport.request(method, input);
 
   const requestKeybindingMutation =
     <Input>(method: string) =>
@@ -760,12 +789,11 @@ export function createWsNativeApi(): NativeApi {
     git: {
       pull: requestMethod(WS_METHODS.gitPull),
       status: requestMethod(WS_METHODS.gitStatus),
-      runStackedAction: (input) =>
-        transport.request(WS_METHODS.gitRunStackedAction, input, { timeoutMs: null }),
+      // Long-lane deadlines come from the RPC method policy.
+      runStackedAction: requestMethod(WS_METHODS.gitRunStackedAction),
       listBranches: requestMethod(WS_METHODS.gitListBranches),
       createWorktree: requestMethod(WS_METHODS.gitCreateWorktree),
-      prepareWorktree: (input) =>
-        transport.request(WS_METHODS.gitPrepareWorktree, input, { timeoutMs: null }),
+      prepareWorktree: requestMethod(WS_METHODS.gitPrepareWorktree),
       removeWorktree: requestMethod(WS_METHODS.gitRemoveWorktree),
       createBranch: requestMethod(WS_METHODS.gitCreateBranch),
       checkout: requestMethod(WS_METHODS.gitCheckout),
@@ -823,8 +851,7 @@ export function createWsNativeApi(): NativeApi {
       refreshProviders: (input = {}) => transport.request(WS_METHODS.serverRefreshProviders, input),
       checkProviderUpdates: (input = {}) =>
         transport.request(WS_METHODS.serverCheckProviderUpdates, input),
-      runProviderUpdate: (input) =>
-        transport.request(WS_METHODS.serverRunProviderUpdate, input, { timeoutMs: 660_000 }),
+      runProviderUpdate: requestMethod(WS_METHODS.serverRunProviderUpdate),
       getProviderInventory: (input) =>
         transport.request(WS_METHODS.serverGetProviderInventory, input),
       validateHarnesses: requestMethod(WS_METHODS.serverValidateHarnesses),
@@ -844,27 +871,17 @@ export function createWsNativeApi(): NativeApi {
       getProviderStatus: requestMethod(WS_METHODS.mcpGetProviderStatus),
       getServerStatuses: requestMethod(WS_METHODS.mcpGetServerStatuses),
       listImportCandidates: requestMethod(WS_METHODS.mcpListImportCandidates),
-      probeServer: (input) =>
-        transport.request(WS_METHODS.mcpProbeServer, input, { timeoutMs: 75_000 }),
+      probeServer: requestMethod(WS_METHODS.mcpProbeServer),
       storeSecret: requestMethod(WS_METHODS.mcpStoreSecret),
       inspectServer: requestMethod(WS_METHODS.mcpInspectServer),
       reconnectServer: requestMethod(WS_METHODS.mcpReconnectServer),
-      startLogin: (input) =>
-        transport.request(
-          WS_METHODS.mcpStartLogin,
-          input,
-          input.provider === "codex"
-            ? { timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS }
-            : undefined,
-        ),
+      // The policy gives Codex logins the OAuth window and others the default deadline.
+      startLogin: requestMethod(WS_METHODS.mcpStartLogin),
       getLoginStatus: requestMethod(WS_METHODS.mcpGetLoginStatus),
       getCodexStatus: requestMethod(WS_METHODS.mcpGetCodexStatus),
       reloadProject: requestMethod(WS_METHODS.mcpReloadProject),
       applyToLiveSessions: requestMethod(WS_METHODS.mcpApplyToLiveSessions),
-      startOAuthLogin: (input) =>
-        transport.request(WS_METHODS.mcpStartOAuthLogin, input, {
-          timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
-        }),
+      startOAuthLogin: requestMethod(WS_METHODS.mcpStartOAuthLogin),
       getOAuthStatus: requestMethod(WS_METHODS.mcpGetOAuthStatus),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
@@ -877,11 +894,14 @@ export function createWsNativeApi(): NativeApi {
       getUsage: (input = {}) => transport.request(WS_METHODS.storageGetUsage, input),
       getStatus: () => transport.request(WS_METHODS.storageGetStatus, {}),
       getTargets: (input) => transport.request(WS_METHODS.storageGetTargets, input),
-      getOperation: (input) => transport.request(WS_METHODS.storageGetOperation, input),
+      getOperation: (input, context) =>
+        transport.request(WS_METHODS.storageGetOperation, input, context),
       cleanup: (input) => transport.request(WS_METHODS.storageCleanup, input),
       cancelCleanup: (input) => transport.request(WS_METHODS.storageCancelCleanup, input),
+      scheduleCompaction: (input) => transport.request(WS_METHODS.storageScheduleCompaction, input),
       automationDryRun: () => transport.request(WS_METHODS.storageAutomationDryRun, {}),
-      automationAudit: (input = {}) => transport.request(WS_METHODS.storageAutomationAudit, input),
+      automationAudit: (input = {}, context) =>
+        transport.request(WS_METHODS.storageAutomationAudit, input, context),
       onInvalidated: (callback) => {
         storageInvalidatedListeners.add(callback);
         return () => {
@@ -947,7 +967,7 @@ export function createWsNativeApi(): NativeApi {
     nextTurnQueue: {
       list: requestMethod(WS_METHODS.nextTurnQueueList),
       submit: requestMethod(WS_METHODS.nextTurnQueueSubmit),
-      summary: () => transport.request(WS_METHODS.nextTurnQueueSummary),
+      summary: (context) => transport.request(WS_METHODS.nextTurnQueueSummary, undefined, context),
       update: requestMethod(WS_METHODS.nextTurnQueueUpdate),
       cancel: requestMethod(WS_METHODS.nextTurnQueueCancel),
       reorder: requestMethod(WS_METHODS.nextTurnQueueReorder),
@@ -1011,7 +1031,8 @@ export function createWsNativeApi(): NativeApi {
       ...(Object.fromEntries(
         Object.entries(UPSTREAM_PORTS_WS_METHODS).map(([name, method]) => [
           name,
-          (input?: unknown) => transport.request(method, input ?? {}),
+          (input?: unknown, context?: RequestContext) =>
+            transport.request(method, input ?? {}, context),
         ]),
       ) as {
         [Name in keyof typeof UPSTREAM_PORTS_WS_METHODS]: NativeApi["upstreamPorts"][Name];
@@ -1037,8 +1058,10 @@ export function createWsNativeApi(): NativeApi {
     },
     usage: {
       consumeResetCredit: (input) => transport.request(USAGE_WS_METHODS.consumeResetCredit, input),
-      getAccounts: (input) => transport.request(USAGE_WS_METHODS.getAccounts, input),
-      getSummary: (input) => transport.request(USAGE_WS_METHODS.getSummary, input),
+      getAccounts: (input, context) =>
+        transport.request(USAGE_WS_METHODS.getAccounts, input, context),
+      getSummary: (input, context) =>
+        transport.request(USAGE_WS_METHODS.getSummary, input, context),
       getQuotaHistory: () => transport.request(USAGE_WS_METHODS.getQuotaHistory, {}),
     },
     nativeOperations: {
@@ -1098,8 +1121,7 @@ export function createWsNativeApi(): NativeApi {
       acknowledgeAttention: (input) => requestPrHub(PR_HUB_WS_METHODS.acknowledgeAttention, input),
       markSeen: (input) => requestPrHub(PR_HUB_WS_METHODS.markSeen, input),
       markNotified: (input) => requestPrHub(PR_HUB_WS_METHODS.markNotified, input),
-      analyzeAdvisories: (input = {}) =>
-        requestPrHub(PR_HUB_WS_METHODS.analyzeAdvisories, input, { timeoutMs: null }),
+      analyzeAdvisories: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.analyzeAdvisories, input),
       getAdvisories: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.getAdvisories, input),
       getReviewGuide: (input) => requestPrHub(PR_HUB_WS_METHODS.getReviewGuide, input),
       generateReviewGuide: (input) => requestPrHub(PR_HUB_WS_METHODS.generateReviewGuide, input),
@@ -1145,8 +1167,8 @@ export function createWsNativeApi(): NativeApi {
       getStartupSnapshot: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getStartupSnapshot, input),
       searchThread: (input) => transport.request(ORCHESTRATION_WS_METHODS.searchThread, input),
-      getThreadTailDetails: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.getThreadTailDetails, input),
+      getThreadTailDetails: (input, context) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getThreadTailDetails, input, context),
       getRewindDrafts: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getRewindDrafts, input),
       getThreadHistoryPage: (input) =>

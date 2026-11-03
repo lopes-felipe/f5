@@ -848,6 +848,27 @@ describe("CheckpointReactor", () => {
       );
 
       fs.writeFileSync(path.join(harness.cwd, "README.md"), "v4\n");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.makeUnsafe("actual-reply-text"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          messageId: MessageId.makeUnsafe("actual-final-reply"),
+          delta: "Final answer",
+          turnId: asTurnId("turn-refresh"),
+          createdAt: "2026-04-23T10:00:02.500Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.makeUnsafe("actual-reply-before-checkpoint"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          messageId: MessageId.makeUnsafe("actual-final-reply"),
+          turnId: asTurnId("turn-refresh"),
+          createdAt: "2026-04-23T10:00:02.500Z",
+        }),
+      );
       harness.provider.emit({
         type: terminalType,
         eventId: EventId.makeUnsafe("terminal-final-edits"),
@@ -874,6 +895,8 @@ describe("CheckpointReactor", () => {
           entry.checkpoints[0]?.checkpointTurnCount === 1,
       );
       expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+      expect(thread.checkpoints[0]?.assistantMessageId).toBe("actual-final-reply");
+      expect(thread.latestTurn?.assistantMessageId).toBe("actual-final-reply");
     },
   );
 

@@ -138,6 +138,7 @@ export const WS_METHODS = {
   storageGetOperation: "storage.getOperation",
   storageCleanup: "storage.cleanup",
   storageCancelCleanup: "storage.cancelCleanup",
+  storageScheduleCompaction: "storage.scheduleCompaction",
   // Automatic cleanup and auto-pull: read-only preview and the audit trail
   storageAutomationDryRun: "storage.automationDryRun",
   storageAutomationAudit: "storage.automationAudit",

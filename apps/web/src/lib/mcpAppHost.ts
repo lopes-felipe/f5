@@ -75,6 +75,11 @@ export interface McpAppCallToolResult {
 
 export class McpAppHostRefusal extends Error {}
 
+export interface McpAppRequestContext {
+  /** Attested by the host, never read from the app's JSON-RPC payload. */
+  readonly userActive: boolean;
+}
+
 export interface McpAppHostOptions {
   readonly app: McpAppReference;
   readonly hostVersion: string;
@@ -93,7 +98,10 @@ export interface McpAppHostOptions {
     readonly content?: ReadonlyArray<unknown>;
     readonly structuredContent?: Record<string, unknown>;
   }) => Promise<void>;
-  readonly requestDisplayMode: (mode: McpAppDisplayMode) => Promise<McpAppDisplayMode>;
+  readonly requestDisplayMode: (
+    mode: McpAppDisplayMode,
+    context: McpAppRequestContext,
+  ) => Promise<McpAppDisplayMode>;
   readonly downloadFile: (files: ReadonlyArray<McpAppDownload>) => Promise<void>;
   readonly onRequestTeardown: () => void;
   readonly onSizeChanged: (size: { readonly width?: number; readonly height?: number }) => void;
@@ -101,7 +109,7 @@ export interface McpAppHostOptions {
 
 export interface McpAppHost {
   /** Handles one message the app posted; the caller has already checked its source. */
-  readonly receive: (data: unknown) => void;
+  readonly receive: (data: unknown, context?: McpAppRequestContext) => void;
   readonly setToolCall: (call: {
     readonly arguments: unknown;
     readonly result: McpAppCallToolResult | undefined;
@@ -204,7 +212,12 @@ export function makeMcpAppHost(options: McpAppHostOptions): McpAppHost {
     })();
   };
 
-  const handleRequest = (id: JsonRpcId, method: string, params: Record<PropertyKey, unknown>) => {
+  const handleRequest = (
+    id: JsonRpcId,
+    method: string,
+    params: Record<PropertyKey, unknown>,
+    context: McpAppRequestContext,
+  ) => {
     switch (method) {
       case "ui/initialize": {
         const requested = params.protocolVersion;
@@ -308,7 +321,7 @@ export function makeMcpAppHost(options: McpAppHostOptions): McpAppHost {
         }
         answer(id, () =>
           options
-            .requestDisplayMode(mode as McpAppDisplayMode)
+            .requestDisplayMode(mode as McpAppDisplayMode, context)
             .then((result) => ({ mode: result })),
         );
         return;
@@ -400,7 +413,7 @@ export function makeMcpAppHost(options: McpAppHostOptions): McpAppHost {
   };
 
   const hostHandle: McpAppHost = {
-    receive: (data) => {
+    receive: (data, context = { userActive: false }) => {
       if (disposed || !Predicate.isObject(data) || data.jsonrpc !== "2.0") return;
       if (jsonBytes(data) > MAX_MESSAGE_BYTES) {
         if (isId(data.id) && typeof data.method === "string") {
@@ -414,7 +427,7 @@ export function makeMcpAppHost(options: McpAppHostOptions): McpAppHost {
         return;
       }
       const params = Predicate.isObject(data.params) ? data.params : {};
-      if (isId(data.id)) handleRequest(data.id, method, params);
+      if (isId(data.id)) handleRequest(data.id, method, params, context);
       else handleNotification(method, params);
     },
     setToolCall: (call) => {

@@ -201,6 +201,115 @@ function now() {
 }
 
 describe("OrchestrationEngine", () => {
+  it("preserves automated message authorship in live events, history and restarted snapshots", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-message-authorship-"));
+    const dbPath = path.join(directory, "state.sqlite");
+    let system = await createPersistentOrchestrationSystem({ dbPath });
+    const threadId = ThreadId.makeUnsafe("authorship-thread");
+    const projectId = ProjectId.makeUnsafe("authorship-project");
+    const at = "2026-10-22T12:00:00.000Z";
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("authorship-project"),
+          projectId,
+          title: "Authorship",
+          workspaceRoot: process.cwd(),
+          createdAt: at,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("authorship-thread"),
+          threadId,
+          projectId,
+          title: "Authorship",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: at,
+        }),
+      );
+      for (const [index, source] of ["human", "automation", "continuation", "legacy"].entries()) {
+        const commandId = CommandId.makeUnsafe("authorship-" + index);
+        if (source === "human" || source === "automation") {
+          await system.run(system.sql`
+            INSERT INTO provider_submission_provenance(command_id,thread_id,source,created_at)
+            VALUES(${commandId},${threadId},${source},${at})
+          `);
+        }
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.turn.start",
+            commandId,
+            threadId,
+            message: {
+              messageId: MessageId.makeUnsafe("message-" + index),
+              role: "user",
+              text: source,
+              attachments: [],
+            },
+            ...(source === "continuation" ? { presentation: "continuation" as const } : {}),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: new Date(Date.parse(at) + index * 1000).toISOString(),
+          }),
+        );
+      }
+      const authors = (messages: readonly { authorship?: "human" | "automation" | undefined }[]) =>
+        messages.map((message) => message.authorship);
+      const expected = [undefined, "automation", "automation", undefined];
+      expect(
+        authors((await system.run(system.engine.getReadModel())).threads[0]!.messages),
+      ).toEqual(expected);
+      const events = await system.run(Stream.runCollect(system.engine.readEvents(0)));
+      expect(
+        events
+          .filter((event) => event.type === "thread.message-sent")
+          .map((event) => event.payload.authorship),
+      ).toEqual(expected);
+      let replayed = createEmptyReadModel(at);
+      for (const event of events) replayed = await Effect.runPromise(projectEvent(replayed, event));
+      expect(authors(replayed.threads[0]!.messages)).toEqual(expected);
+      // History reads also recognize old events whose provenance was projected
+      // before the authorship field was introduced.
+      await system.run(system.sql`
+        UPDATE orchestration_events SET payload_json = json_remove(payload_json, '$.authorship')
+        WHERE command_id = 'authorship-1' AND event_type = 'thread.message-sent'
+      `);
+      for (const details of [
+        await system.run(system.snapshotQuery.getThreadDetails({ threadId })),
+        await system.run(system.snapshotQuery.getThreadTailDetails({ threadId })),
+        await system.run(
+          system.snapshotQuery.getThreadHistoryPage({
+            threadId,
+            anchorMessageId: MessageId.makeUnsafe("message-3"),
+            beforeMessageCursor: null,
+            beforeCheckpointTurnCount: null,
+            beforeCommandExecutionCursor: null,
+            activityCursor: null,
+          }),
+        ),
+      ])
+        expect(authors(details.messages)).toEqual(expected);
+      expect(
+        authors((await system.run(system.snapshotQuery.getSnapshot())).threads[0]!.messages),
+      ).toEqual(expected);
+      await system.dispose();
+      system = await createPersistentOrchestrationSystem({ dbPath });
+      expect(
+        authors((await system.run(system.engine.getReadModel())).threads[0]!.messages),
+      ).toEqual(expected);
+    } finally {
+      await system.dispose();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("retains a retried message consistently in live, SQL, and replayed conversations", async () => {
     const system = await createOrchestrationSystem();
     const threadId = ThreadId.makeUnsafe("retried-revert");

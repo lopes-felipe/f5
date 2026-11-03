@@ -32,6 +32,7 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
+import { resolveTurnAssistantMessage } from "../turnAssistantMessage.ts";
 
 type ReactorInput =
   | {
@@ -256,6 +257,8 @@ const make = Effect.gen(function* () {
         readonly id: MessageId;
         readonly role: string;
         readonly turnId: TurnId | null;
+        readonly text: string;
+        readonly streaming: boolean;
       }>;
     };
     readonly cwd: string;
@@ -398,10 +401,8 @@ const make = Effect.gen(function* () {
     );
 
     const assistantMessageId =
+      resolveTurnAssistantMessage(input.thread.messages, input.turnId)?.id ??
       input.assistantMessageId ??
-      input.thread.messages
-        .toReversed()
-        .find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)?.id ??
       MessageId.makeUnsafe(`assistant:${input.turnId}`);
 
     yield* orchestrationEngine.dispatch({

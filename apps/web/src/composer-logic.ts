@@ -17,6 +17,25 @@ export interface ComposerTrigger {
   inline?: true;
 }
 
+export interface ComposerPathSearchTarget {
+  readonly cwd: string | null;
+  readonly query: string;
+}
+
+/** Match the exact query sent to search, preserving whitespace in quoted paths. */
+export function isPathSuggestionCurrent(
+  searchedTarget: ComposerPathSearchTarget,
+  trigger: ComposerTrigger | null,
+  cwd: string | null,
+): boolean {
+  return (
+    cwd !== null &&
+    trigger?.kind === "path" &&
+    searchedTarget.cwd === cwd &&
+    searchedTarget.query === trigger.query
+  );
+}
+
 const isInlineTokenSegment = (segment: ComposerPromptSegment): boolean => segment.type !== "text";
 
 function clampCursor(text: string, cursor: number): number {
@@ -40,6 +59,13 @@ function tokenStartForCursor(text: string, cursor: number): number {
     index -= 1;
   }
   return index + 1;
+}
+
+/** Check the whole slash word, including text after the caret, for a second slash. */
+function isPathWord(text: string, start: number, cursor: number): boolean {
+  let end = cursor;
+  while (end < text.length && !isWhitespace(text[end] ?? "")) end += 1;
+  return text.slice(start + 1, end).includes("/");
 }
 
 function unescapeQuotedMentionQuery(query: string): string {
@@ -105,7 +131,11 @@ export function expandCollapsedComposerCursor(
   let expandedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention" || segment.type === "pull-request") {
+    if (
+      segment.type === "mention" ||
+      segment.type === "pull-request" ||
+      segment.type === "thread-reference"
+    ) {
       const expandedLength = segment.raw.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
@@ -181,7 +211,11 @@ export function collapseExpandedComposerCursor(
   let collapsedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention" || segment.type === "pull-request") {
+    if (
+      segment.type === "mention" ||
+      segment.type === "pull-request" ||
+      segment.type === "thread-reference"
+    ) {
       const expandedLength = segment.raw.length;
       if (remaining === 0) {
         return collapsedCursor;
@@ -252,6 +286,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   if (linePrefix.startsWith("/")) {
     const commandMatch = /^\/(\S*)$/.exec(linePrefix);
     if (commandMatch) {
+      if (isPathWord(text, lineStart, cursor)) return null;
       const commandQuery = commandMatch[1] ?? "";
       return {
         kind: "slash-command",
@@ -274,6 +309,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
     return { kind: "skill", query: skillMatch[1] ?? "", rangeStart: tokenStart, rangeEnd: cursor };
   }
   if (token.startsWith("/")) {
+    if (isPathWord(text, tokenStart, cursor)) return null;
     const inline = text.slice(lineStart, tokenStart).trim() !== "";
     return {
       kind: "slash-command",

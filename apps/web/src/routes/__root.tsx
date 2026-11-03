@@ -26,6 +26,7 @@ import {
   WebSocketConnectionSurface,
 } from "../components/WebSocketConnectionSurface";
 import { Button } from "../components/ui/button";
+import { DatabaseDamageBanner } from "../components/DatabaseDamageBanner";
 import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
 
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -39,6 +40,7 @@ import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../
 import { HtmlPreviewHost } from "../components/HtmlPreviewHost";
 
 import { useAppearanceSettingsSync } from "../hooks/useAppearanceSettings";
+import { HtmlRenderThemeProvider } from "../hooks/useHtmlRenderTheme";
 import { useTheme } from "../hooks/useTheme";
 import { useThemePaletteSync } from "../hooks/useThemePalette";
 import { type ThreadWarmProfile } from "../lib/threadPreload";
@@ -59,10 +61,10 @@ export const Route = createRootRouteWithContext<{
 
 function RootRouteView() {
   useMigrateClientSettings();
-  useAppearanceSettingsSync();
+  const appearanceSettings = useAppearanceSettingsSync();
   usePreviewArtifactRetentionSync();
   const { resolvedTheme } = useTheme();
-  useThemePaletteSync(resolvedTheme);
+  const { palette } = useThemePaletteSync(resolvedTheme);
 
   useEffect(() => {
     const showPersistenceError = () => {
@@ -90,17 +92,24 @@ function RootRouteView() {
   }
 
   return (
-    <ToastProvider>
-      <AnchoredToastProvider>
-        <EventRouter />
-        <DesktopProjectBootstrap />
-        <HtmlPreviewHost />
-        <SlowRpcWarningToastCoordinator />
-        <WebSocketConnectionSurface>
-          <Outlet />
-        </WebSocketConnectionSurface>
-      </AnchoredToastProvider>
-    </ToastProvider>
+    <HtmlRenderThemeProvider
+      palette={palette}
+      settings={appearanceSettings}
+      appearance={resolvedTheme}
+    >
+      <ToastProvider>
+        <AnchoredToastProvider>
+          <EventRouter />
+          <DesktopProjectBootstrap />
+          <HtmlPreviewHost />
+          <SlowRpcWarningToastCoordinator />
+          <DatabaseDamageBanner />
+          <WebSocketConnectionSurface>
+            <Outlet />
+          </WebSocketConnectionSurface>
+        </AnchoredToastProvider>
+      </ToastProvider>
+    </HtmlRenderThemeProvider>
   );
 }
 

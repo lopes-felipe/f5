@@ -34,6 +34,37 @@ it("cancel and a second-window veto preserve the payload", async () => {
   expect(f.options.install).not.toHaveBeenCalled();
   expect(f.installer.pending).toBe(false);
 });
+it("runs onPrepared only after cleanup succeeds and before the installer handoff", async () => {
+  const order: string[] = [];
+  const onPrepared = vi.fn(() => order.push("prepared"));
+  const options = {
+    canInstall: () => true,
+    confirm: vi.fn(async () => true),
+    prepare: vi.fn(async () => {
+      order.push("cleanup");
+      return true;
+    }),
+    onPrepared,
+    install: vi.fn(() => {
+      order.push("install");
+    }),
+    recover: vi.fn(async (_message: string) => {}),
+    watchdogEnabled: false,
+  };
+  const installer = createUpdateInstaller(options);
+
+  options.confirm.mockResolvedValueOnce(false);
+  await installer.request();
+  options.prepare.mockResolvedValueOnce(false);
+  await installer.request();
+  options.prepare.mockRejectedValueOnce(new Error("cleanup failed"));
+  await installer.request();
+  expect(onPrepared).not.toHaveBeenCalled();
+
+  order.length = 0;
+  expect(await installer.request()).toEqual({ accepted: true, completed: true });
+  expect(order).toEqual(["cleanup", "prepared", "install"]);
+});
 it("serializes requests and recovers once for thrown plus emitted errors", async () => {
   const f = fixture();
   f.options.install.mockImplementation(() => {

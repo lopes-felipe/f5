@@ -1,4 +1,12 @@
 import { vi } from "vitest";
+import {
+  removeScratchThreadFolder,
+  scratchThreadCleanupPath,
+} from "../project/scratchFolderCleanup.ts";
+vi.mock("../project/scratchFolderCleanup.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../project/scratchFolderCleanup.ts")>();
+  return { ...actual, removeScratchThreadFolder: vi.fn(actual.removeScratchThreadFolder) };
+});
 import { removeFileIfSafe } from "./storagePathSafety.ts";
 vi.mock("./storagePathSafety.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./storagePathSafety.ts")>();
@@ -45,7 +53,11 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
-import { withHomeSandbox } from "../testing/homeSandbox.ts";
+import {
+  reportDatabaseCorruption,
+  resetDatabaseHealthForTest,
+} from "../persistence/databaseHealth.ts";
+import { assertOutsideRealUserState, withHomeSandbox } from "../testing/homeSandbox.ts";
 import { workflowArchiveFixture } from "../orchestration/workflowArchive.testUtils.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -161,6 +173,7 @@ function makeGitCoreStub(input?: {
 
 function makeOrchestrationEngineStub(input?: {
   readonly dispatch?: OrchestrationEngineShape["dispatch"];
+  readonly omitDeletedScratchThreads?: boolean;
   readonly getWorkflows?: () => Pick<
     OrchestrationReadModel,
     "planningWorkflows" | "codeReviewWorkflows" | "investigationWorkflows"
@@ -171,13 +184,24 @@ function makeOrchestrationEngineStub(input?: {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const projects =
-          yield* sql`SELECT project_id AS id, title, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
+          yield* sql`SELECT project_id AS id, title, kind, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
         const threads =
-          yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
+          yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", scratch_path AS "scratchPath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
         return {
           ...input?.getWorkflows?.(),
-          projects,
-          threads: threads.map((thread) => ({ ...thread, session: null, activities: [] })),
+          projects: input?.omitDeletedScratchThreads
+            ? projects.filter((project) => project.kind !== "scratch")
+            : projects,
+          threads: threads
+            .filter(
+              (thread) =>
+                !input?.omitDeletedScratchThreads ||
+                thread.deletedAt === null ||
+                !projects.some(
+                  (project) => project.id === thread.projectId && project.kind === "scratch",
+                ),
+            )
+            .map((thread) => ({ ...thread, session: null, activities: [] })),
         } as never;
       }),
     readEvents: () => Stream.empty,
@@ -293,6 +317,8 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function writeFile(path: string, contents: string) {
+  // Several fixtures write placeholder bytes over `~/.f5/userdata/state.sqlite`.
+  assertOutsideRealUserState(path);
   await NodeFS.mkdir(NodePath.dirname(path), { recursive: true });
   await NodeFS.writeFile(path, contents);
 }
@@ -301,6 +327,8 @@ async function writeGitWorktreeMetadata(input: {
   readonly worktreePath: string;
   readonly mainWorktreePath: string;
 }) {
+  assertOutsideRealUserState(input.worktreePath);
+  assertOutsideRealUserState(input.mainWorktreePath);
   metadataWorktrees.set(input.mainWorktreePath, [
     ...(metadataWorktrees.get(input.mainWorktreePath) ?? []),
     input.worktreePath,
@@ -446,6 +474,144 @@ it.effect(
         ),
       ),
     ),
+);
+
+for (const mode of [
+  "failure",
+  "remove-failure",
+  "refusal",
+  "foreign-project",
+  "outside-root",
+  "removed-before-purge",
+  "archived",
+  "missing-metadata",
+  "missing-metadata-unallocated",
+] as const) {
+  it.effect(`handles guarded scratch folder purge (${mode})`, () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const config = yield* ServerConfig;
+        const threadId = ThreadId.makeUnsafe(`scratch-purge-${mode}`);
+        const scratchRoot = NodePath.join(config.stateDir, "scratch");
+        const folder = NodePath.join(
+          mode === "outside-root" ? config.stateDir : scratchRoot,
+          "research-12345678",
+        );
+        const tombstone = scratchThreadCleanupPath(folder, threadId);
+        yield* seedThread({
+          sql,
+          threadId,
+          deletedAt: mode === "archived" ? null : daysAgo(90),
+          ...(mode === "archived" ? { archivedAt: daysAgo(90) } : {}),
+        });
+        yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+        if (mode !== "missing-metadata-unallocated") {
+          yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+          yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "research"));
+        }
+        if (mode === "removed-before-purge") {
+          yield* Effect.promise(() => NodeFS.rm(folder, { recursive: true }));
+        }
+        if (mode === "refusal") {
+          yield* Effect.promise(async () => {
+            await NodeFS.rm(folder, { recursive: true });
+            await NodeFS.symlink(config.stateDir, folder, "dir");
+          });
+        }
+        if (mode === "failure")
+          vi.mocked(removeScratchThreadFolder).mockRejectedValueOnce(new Error("EBUSY"));
+        if (mode === "remove-failure") {
+          const original = vi.mocked(removeScratchThreadFolder).getMockImplementation()!;
+          vi.mocked(removeScratchThreadFolder)
+            .mockImplementationOnce(original)
+            .mockRejectedValueOnce(new Error("EBUSY"));
+        }
+        if (mode === "foreign-project")
+          yield* sql`UPDATE projection_projects SET kind='standard' WHERE project_id='project-storage-maintenance'`;
+        const purge = (suffix: string) =>
+          storage.purgeThreads({
+            operationId: `scratch-${mode}-${suffix}`,
+            deletedBefore: daysAgo(30),
+            archivedBefore: mode === "archived" ? daysAgo(30) : null,
+            maxThreads: 1,
+          });
+        const result = yield* purge("first");
+        if (mode === "failure" || mode === "remove-failure") {
+          assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+          assert.isTrue(
+            yield* Effect.promise(() => pathExists(mode === "remove-failure" ? tombstone : folder)),
+          );
+          yield* purge("retry");
+        }
+        assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
+        const retained =
+          mode === "refusal" || mode === "foreign-project" || mode === "outside-root";
+        assert.equal(yield* Effect.promise(() => pathExists(folder)), retained);
+        assert.isFalse(yield* Effect.promise(() => pathExists(tombstone)));
+        if (retained)
+          assert.isTrue(
+            result.warnings.some((warning) => warning.reason.includes("Workspace retained")),
+          );
+      }).pipe(
+        Effect.provide(
+          makeStorageTestLayer({
+            orchestrationEngine: makeOrchestrationEngineStub({
+              omitDeletedScratchThreads: mode.startsWith("missing-metadata"),
+            }),
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+it.effect("keeps an authorized archived purge deleted and retryable after SQL rollback", () =>
+  withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.makeUnsafe("archived-scratch-sql-rollback");
+      const scratchRoot = NodePath.join(config.stateDir, "scratch");
+      const folder = NodePath.join(scratchRoot, "rollback-12345678");
+      yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+      yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+      yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+      yield* Effect.promise(() =>
+        writeFile(NodePath.join(folder, "notes.txt"), "authorized deletion"),
+      );
+      yield* sql`CREATE TRIGGER block_scratch_purge BEFORE DELETE ON projection_threads WHEN OLD.thread_id = 'archived-scratch-sql-rollback' BEGIN SELECT RAISE(ABORT, 'test SQL failure'); END`;
+      const result = yield* storage.purgeThreads({
+        operationId: "archived-scratch-sql-failure",
+        archivedBefore: daysAgo(30),
+        deletedBefore: daysAgo(0),
+        maxThreads: 1,
+      });
+      assert.deepEqual(result.purgedThreadIds, []);
+      const rows = yield* sql<{
+        deletedAt: string | null;
+      }>`SELECT deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id=${threadId}`;
+      assert.lengthOf(rows, 1);
+      assert.isString(rows[0]?.deletedAt);
+      assert.isFalse(yield* Effect.promise(() => pathExists(folder)));
+      assert.isFalse(
+        yield* Effect.promise(() => pathExists(scratchThreadCleanupPath(folder, threadId))),
+      );
+      assert.isTrue(
+        result.warnings.some((warning) => warning.reason.startsWith("Deleted, cleanup incomplete")),
+      );
+      yield* sql`DROP TRIGGER block_scratch_purge`;
+      const retry = yield* storage.purgeThreads({
+        operationId: "archived-scratch-sql-retry",
+        archivedBefore: null,
+        deletedBefore: daysAgo(0),
+        maxThreads: 1,
+      });
+      assert.deepEqual(retry.purgedThreadIds, [threadId]);
+    }).pipe(Effect.provide(makeStorageTestLayer())),
+  ),
 );
 
 for (const mode of ["fallback", "another-copy", "remaining"] as const) {
@@ -1858,6 +2024,7 @@ for (const kind of ["planning", "codeReview", "investigation"] as const) {
 it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", () => {
   let gateHeld = false;
   let removals = 0;
+  let scratchRemovals = 0;
   const base = makeOrchestrationEngineStub();
   const engine = {
     ...base,
@@ -1875,6 +2042,7 @@ it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", (
       }),
   };
   const original = vi.mocked(removeFileIfSafe).getMockImplementation()!;
+  const originalScratch = vi.mocked(removeScratchThreadFolder).getMockImplementation()!;
   return withHomeSandbox(
     Effect.gen(function* () {
       const storage = yield* StorageMaintenance;
@@ -1882,6 +2050,22 @@ it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", (
       const config = yield* ServerConfig;
       const threadId = ThreadId.makeUnsafe("slow-purge-outside-gate");
       yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+      const scratchRoot = NodePath.join(config.stateDir, "scratch");
+      const folder = NodePath.join(scratchRoot, "slow-12345678");
+      yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+      yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+      yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "cleanup bytes"));
+      vi.mocked(removeScratchThreadFolder).mockImplementation((input) =>
+        originalScratch({
+          ...input,
+          remove: async (path) => {
+            assert.isFalse(gateHeld, "Recursive scratch cleanup must not freeze command writes");
+            scratchRemovals++;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            await NodeFS.rm(path, { recursive: true, force: true });
+          },
+        }),
+      );
       const file = NodePath.join(
         config.providerLogsDir,
         toSafeThreadAttachmentSegment(threadId)! + ".log",
@@ -1900,10 +2084,16 @@ it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", (
       });
       assert.deepEqual(result.purgedThreadIds, [threadId]);
       assert.equal(removals, 1);
+      assert.equal(scratchRemovals, 1);
       assert.isFalse(gateHeld);
     }).pipe(
       Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine })),
-      Effect.ensuring(Effect.sync(() => vi.mocked(removeFileIfSafe).mockImplementation(original))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          vi.mocked(removeFileIfSafe).mockImplementation(original);
+          vi.mocked(removeScratchThreadFolder).mockImplementation(originalScratch);
+        }),
+      ),
     ),
   );
 });
@@ -2608,6 +2798,52 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
       });
     }),
   );
+
+  it.effect("refuses every mutating entry point while the database is damaged", () =>
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const usage = yield* storage.getUsage();
+      reportDatabaseCorruption(
+        "/tmp/f5-storage-damaged/state.sqlite",
+        Object.assign(new Error("database disk image is malformed"), { errcode: 11 }),
+      );
+      try {
+        const attempts: ReadonlyArray<Effect.Effect<unknown, { readonly message: string }>> = [
+          storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 }),
+          storage.purgeThreads({
+            operationId: "damaged-purge",
+            deletedBefore: daysAgo(30),
+            archivedBefore: null,
+            maxThreads: 1,
+          }),
+          storage.pruneTerminalThreadLogs({
+            operationId: "damaged-logs",
+            modifiedBefore: daysAgo(1),
+            includeArchived: true,
+          }),
+          storage.acceptCleanup({
+            operationId: "damaged-cleanup",
+            backendEpoch: usage.status.backendEpoch,
+            scanId: "scan",
+            nonce: "nonce",
+            categoryIds: ["purgeDeletedThreads"],
+          }),
+        ];
+        for (const attempt of attempts) {
+          const outcome = yield* attempt.pipe(
+            Effect.as("succeeded"),
+            Effect.catch((error) => Effect.succeed(error.message)),
+          );
+          assert.include(outcome, "damaged");
+        }
+        assert.isNull(
+          yield* storage.cleanInactiveWorktreesAutomatically({ operationId: "damaged-worktrees" }),
+        );
+      } finally {
+        resetDatabaseHealthForTest();
+      }
+    }),
+  );
 });
 
 it.effect("successful compaction without file-size reduction stays succeeded", () =>
@@ -2642,6 +2878,67 @@ it.effect("successful compaction without file-size reduction stays succeeded", (
     }),
   ).pipe(Effect.provide(makeStorageTestLayer())),
 );
+
+it.effect("schedules a compaction for the next start and runs it once the server is ready", () => {
+  let locks = 0;
+  const base = makeOrchestrationEngineStub();
+  const engine = {
+    ...base,
+    acquireMaintenanceLock: () => {
+      locks += 1;
+      return base.acquireMaintenanceLock();
+    },
+  } as OrchestrationEngineShape;
+  return withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance,
+        config = yield* ServerConfig,
+        sql = yield* SqlClient.SqlClient;
+      const marker = NodePath.join(config.stateDir, "storage", "compact-on-restart");
+      assert.deepStrictEqual(yield* storage.scheduleCompaction("restart"), {
+        scheduledForRestart: true,
+      });
+      assert.isTrue(yield* Effect.promise(() => pathExists(marker)));
+      assert.deepStrictEqual(yield* storage.scheduleCompaction("cancel"), {
+        scheduledForRestart: false,
+      });
+      assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
+
+      // Nothing scheduled: startup takes no lock.
+      yield* Effect.scoped(storage.startScheduledCompaction(Effect.void));
+      assert.equal(locks, 0);
+
+      yield* storage.scheduleCompaction("restart");
+      const ready = yield* Deferred.make<void>();
+      const audits = () => sql<{ readonly result: string; readonly reason: string }>`
+        SELECT result, reason FROM storage_automation_audit
+        WHERE job = 'database-vacuum' AND operation_id LIKE 'scheduled-compaction-%'
+      `;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* storage.startScheduledCompaction(Deferred.await(ready));
+          // The request is gone before compaction starts. No lock is taken until
+          // the server is ready, so startup repairs can still dispatch commands.
+          assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
+          assert.equal(locks, 0);
+          assert.lengthOf(yield* audits(), 0);
+          yield* Deferred.succeed(ready, undefined);
+          for (let attempt = 0; attempt < 1000 && (yield* audits()).length === 0; attempt++)
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 2)));
+        }),
+      );
+      // The in-memory test database is already incremental.
+      assert.deepStrictEqual(
+        (yield* audits()).map((row) => row.result),
+        ["skipped"],
+      );
+      assert.match((yield* audits())[0]!.reason, /already returns free space in steps/);
+      assert.equal(locks, 0);
+      // A compaction that is not stuck is not offered.
+      assert.isNull(yield* storage.getPendingCompaction);
+    }),
+  ).pipe(Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine })));
+});
 
 it.layer(makeStorageTestLayer())("StorageMaintenance scan and operation safety", (it) => {
   for (const afterMark of [false, true]) {
@@ -3301,7 +3598,11 @@ it.layer(
         runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
         const previous = (yield* settings.getSettings).storageDiscovery;
         yield* settings.updateSettings({
-          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: [repo.root, target] },
+          storageDiscovery: {
+            machineCleanupEnabled: false,
+            repositoryRoots: [repo.root, target],
+            searchProjectFolders: true,
+          },
         });
         yield* Effect.addFinalizer(() =>
           settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
@@ -3326,6 +3627,147 @@ it.layer(
         const projects =
           yield* sql`SELECT project_id FROM projection_projects WHERE workspace_root = ${repo.root}`;
         assert.lengthOf(projects, 0);
+      }),
+    ),
+  );
+  it.effect(
+    "searches a registered folder of repositories and cleans its dependency folders and leftover packs",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-folder-of-repos-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const worktree = NodePath.join(repo.dir, "topic-worktree");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "topic-worktree", worktree, "main");
+          const rootModules = NodePath.join(repo.root, "node_modules");
+          const worktreeModules = NodePath.join(worktree, "node_modules");
+          const pack = NodePath.join(repo.root, ".git", "objects", "pack", "tmp_pack_interrupted");
+          yield* Effect.promise(async () => {
+            await writeFile(NodePath.join(rootModules, "pkg", "index.js"), "x".repeat(8192));
+            await writeFile(NodePath.join(worktreeModules, "pkg", "index.js"), "x");
+            await writeFile(pack, "x".repeat(4096));
+            const old = new Date(Date.now() - 2 * 86400_000);
+            await NodeFS.utimes(pack, old, old);
+          });
+          // The project is the folder holding the repositories, not a repository itself.
+          yield* seedProject({ sql, projectId: "folder-of-repos", workspaceRoot: repo.dir });
+          const report = yield* storage.inspect({ force: true });
+          assert.include(report.implicitDiscoveryRoots ?? [], repo.dir);
+          assert.include(
+            report.categories
+              .find((c) => c.id === "externalWorktrees")
+              ?.targets.map((t) => t.path) ?? [],
+            worktree,
+          );
+          const folders = report.categories.find((c) => c.id === "dependencyFolders")!;
+          assert.includeMembers(
+            folders.targets.map((t) => t.path),
+            [rootModules, worktreeModules],
+          );
+          const rootTarget = folders.targets.find((t) => t.path === rootModules)!;
+          assert.isTrue(rootTarget.safeToDelete, rootTarget.disabledReason);
+          assert.match(rootTarget.detail ?? "", /reinstalling dependencies/);
+          const packs = report.categories.find((c) => c.id === "gitTemporaryPacks")!;
+          assert.deepStrictEqual(
+            packs.targets.map((t) => t.path),
+            [pack],
+          );
+          assert.isTrue(packs.defaultSelected);
+          const result = yield* storage.cleanup({
+            operationId: "folder-of-repos-cleanup",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["dependencyFolders", "gitTemporaryPacks"],
+            targetSelections: [{ categoryId: "dependencyFolders", targetIds: [rootTarget.id] }],
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.deepStrictEqual(
+            result.results.map((r) => [r.categoryId, r.status]),
+            [
+              ["dependencyFolders", "Cleaned"],
+              ["gitTemporaryPacks", "Cleaned"],
+            ],
+            JSON.stringify(result.warnings),
+          );
+          assert.isFalse(yield* Effect.promise(() => pathExists(rootModules)));
+          assert.isTrue(yield* Effect.promise(() => pathExists(worktreeModules)));
+          assert.isFalse(yield* Effect.promise(() => pathExists(pack)));
+          assert.deepStrictEqual(
+            (yield* Effect.promise(() => NodeFS.readdir(repo.root))).filter((name) =>
+              name.startsWith(".f5-deps-trash-"),
+            ),
+            [],
+          );
+
+          // Turned off, the folder is no longer searched.
+          const settings = yield* ServerSettingsService;
+          const previous = (yield* settings.getSettings).storageDiscovery;
+          yield* settings.updateSettings({
+            storageDiscovery: { ...previous, searchProjectFolders: false },
+          });
+          yield* Effect.addFinalizer(() =>
+            settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+          );
+          const off = yield* storage.inspect({ force: true });
+          assert.deepStrictEqual(off.implicitDiscoveryRoots, []);
+          assert.notInclude(
+            off.categories.find((c) => c.id === "dependencyFolders")?.targets.map((t) => t.path) ??
+              [],
+            worktreeModules,
+          );
+        }),
+      ),
+  );
+  it.effect("keeps dependency folders of a checkout a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-recent-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "recent-checkout", workspaceRoot: repo.root });
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-recent-checkout"),
+          worktreePath: repo.root,
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
+      }),
+    ),
+  );
+  it.effect("keeps dependency folders of checkouts inside a folder a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-parent-folder-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "parent-folder-checkout", workspaceRoot: repo.root });
+        // The thread works in the folder holding the checkout, as in a folder-of-repositories project.
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-parent-folder"),
+          worktreePath: NodePath.dirname(repo.root),
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
       }),
     ),
   );
@@ -3399,9 +3841,9 @@ it.layer(
     // probes; Windows CI needs headroom for process startup and NTFS latency.
     process.platform === "win32" ? 60_000 : 30_000,
   );
-  it.effect(
-    "removes inactive F5 worktrees and preserves every branch during manual cleanup",
-    () =>
+  it.effect.each(["merged", "pushed"] as const)(
+    "removes inactive F5 worktrees and preserves every branch during manual cleanup: %s",
+    (branchKind) =>
       withHomeSandbox(
         Effect.gen(function* () {
           const storage = yield* StorageMaintenance;
@@ -3409,62 +3851,81 @@ it.layer(
           const sql = yield* SqlClient.SqlClient;
           const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-managed-"));
           yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
-          const managed = (name: string) => NodePath.join(config.worktreesDir, "managed", name);
+          const managed = (name: string) =>
+            NodePath.join(config.worktreesDir, "managed-" + branchKind, name);
+          // Each batch mixes ordinary and protected branches without returning
+          // to the seven-worktree fixture that exceeded the Windows timeout.
+          const selected = branchKind === "merged" ? ["a", "c", "m"] : ["b", "r", "t"];
           yield* Effect.promise(async () => {
-            runGit(repo.root, "worktree", "add", "-q", "-b", "merged-a", managed("a"), "main");
-            runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
-            await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
-            runGit(managed("b"), "add", ".");
-            runGit(managed("b"), "commit", "-q", "-m", "b");
-            runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
-            runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
+            if (selected.includes("a")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "merged-a", managed("a"), "main");
+              // Ignored build output no longer blocks storage cleanup.
+              await writeFile(
+                NodePath.join(repo.root, ".git", "info", "exclude"),
+                "dist/\n*.tsbuildinfo\n",
+              );
+              await writeFile(NodePath.join(managed("a"), "node_modules", "x", "index.js"), "x");
+              await writeFile(NodePath.join(managed("a"), "dist", "index.js"), "x");
+              await writeFile(NodePath.join(managed("a"), "app.tsbuildinfo"), "{}");
+            }
+            if (selected.includes("b")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "pushed-b", managed("b"), "main");
+              await writeFile(NodePath.join(managed("b"), "b.txt"), "b\n");
+              runGit(managed("b"), "add", ".");
+              runGit(managed("b"), "commit", "-q", "-m", "b");
+              runGit(managed("b"), "push", "-q", "-u", "origin", "pushed-b");
+            }
+            if (selected.includes("c")) {
+              runGit(repo.root, "worktree", "add", "-q", "-b", "archived-c", managed("c"), "main");
+            }
+            if (selected.includes("m")) {
+              runGit(repo.root, "checkout", "-q", "-b", "feature-x");
+              runGit(repo.root, "worktree", "add", "-q", managed("m"), "main");
+            }
+            if (selected.includes("r")) {
+              runGit(repo.root, "branch", "release-1", "main");
+              runGit(repo.root, "push", "-q", "-u", "origin", "release-1");
+              runGit(repo.root, "worktree", "add", "-q", managed("r"), "release-1");
+            }
+            if (selected.includes("t")) {
+              runGit(
+                repo.root,
+                "worktree",
+                "add",
+                "-q",
+                "--track",
+                "-b",
+                "tracks-main",
+                managed("t"),
+                "origin/main",
+              );
+            }
             runGit(repo.root, "worktree", "add", "-q", "-b", "ahead-d", managed("d"), "main");
             await writeFile(NodePath.join(managed("d"), "d.txt"), "d\n");
             runGit(managed("d"), "add", ".");
             runGit(managed("d"), "commit", "-q", "-m", "d");
-            // Ignored build output no longer blocks storage cleanup.
-            await writeFile(
-              NodePath.join(repo.root, ".git", "info", "exclude"),
-              "dist/\n*.tsbuildinfo\n",
-            );
-            await writeFile(NodePath.join(managed("a"), "node_modules", "x", "index.js"), "x");
-            await writeFile(NodePath.join(managed("a"), "dist", "index.js"), "x");
-            await writeFile(NodePath.join(managed("a"), "app.tsbuildinfo"), "{}");
-            // The default branch, and a long-lived branch with a live upstream, are kept even
-            // when merged; a branch that only tracks origin/main is not long-lived.
-            runGit(repo.root, "checkout", "-q", "-b", "feature-x");
-            runGit(repo.root, "worktree", "add", "-q", managed("m"), "main");
-            runGit(repo.root, "branch", "release-1", "main");
-            runGit(repo.root, "push", "-q", "-u", "origin", "release-1");
-            runGit(repo.root, "worktree", "add", "-q", managed("r"), "release-1");
-            runGit(
-              repo.root,
-              "worktree",
-              "add",
-              "-q",
-              "--track",
-              "-b",
-              "tracks-main",
-              managed("t"),
-              "origin/main",
-            );
           });
-          yield* seedProject({ sql, projectId: "project-managed", workspaceRoot: repo.root });
-          yield* seedThread({
+          yield* seedProject({
             sql,
-            threadId: ThreadId.makeUnsafe("thread-archived-managed-c"),
-            archivedAt: "2026-04-01T00:00:00.000Z",
-            deletedAt: null,
-            worktreePath: managed("c"),
+            projectId: "project-managed-" + branchKind,
+            workspaceRoot: repo.root,
           });
+          if (selected.includes("c"))
+            yield* seedThread({
+              sql,
+              threadId: ThreadId.makeUnsafe("thread-archived-managed-c"),
+              archivedAt: "2026-04-01T00:00:00.000Z",
+              deletedAt: null,
+              worktreePath: managed("c"),
+            });
 
           const report = yield* storage.inspect({ force: true });
           const category = report.categories.find((entry) => entry.id === "inactiveF5Worktrees");
           const target = (name: string) =>
             category?.targets.find((entry) => entry.path === managed(name));
-          assert.equal(target("a")?.safeToDelete, true, target("a")?.disabledReason);
-          assert.equal(target("b")?.safeToDelete, true, target("b")?.disabledReason);
-          assert.equal(target("c")?.safeToDelete, true, target("c")?.disabledReason);
+          for (const name of selected) {
+            assert.equal(target(name)?.safeToDelete, true, target(name)?.disabledReason);
+          }
           assert.equal(target("d")?.safeToDelete, false);
           assert.equal(
             target("d")?.disabledReason,
@@ -3477,14 +3938,14 @@ it.layer(
           );
 
           const result = yield* storage.cleanup({
-            operationId: "operation-real-managed-worktrees",
+            operationId: "operation-real-managed-worktrees-" + branchKind,
             scanId: report.scanId,
             nonce: report.confirmationNonce,
             categoryIds: ["inactiveF5Worktrees"],
             targetSelections: [
               {
                 categoryId: "inactiveF5Worktrees",
-                targetIds: ["a", "b", "c", "m", "r", "t"].map((name) => target(name)!.id),
+                targetIds: selected.map((name) => target(name)!.id),
               },
             ],
             confirmationText: "DELETE",
@@ -3493,27 +3954,25 @@ it.layer(
 
           const reclaimed = result.results[0]?.perTargetReclaimed ?? [];
           assert.equal(result.results[0]?.status, "Cleaned");
-          assert.deepEqual(reclaimed.map((entry) => [entry.path, entry.branch]).toSorted(), [
-            [managed("a"), "kept"],
-            [managed("b"), "kept"],
-            [managed("c"), "kept"],
-            [managed("m"), "kept"],
-            [managed("r"), "kept"],
-            [managed("t"), "kept"],
-          ]);
+          assert.deepEqual(
+            reclaimed.map((entry) => [entry.path, entry.branch]).toSorted(),
+            selected.map((name) => [managed(name), "kept"]),
+          );
           const branches = localBranches(repo.root);
-          assert.include(branches, "merged-a");
-          assert.include(branches, "tracks-main");
+          for (const branch of branchKind === "merged"
+            ? ["merged-a", "archived-c"]
+            : ["pushed-b", "tracks-main", "release-1"])
+            assert.include(branches, branch);
           assert.include(branches, "main");
-          assert.include(branches, "release-1");
-          assert.include(branches, "pushed-b");
-          assert.include(branches, "archived-c");
           assert.include(branches, "ahead-d");
+          for (const name of selected) {
+            assert.equal(yield* Effect.promise(() => pathExists(managed(name))), false);
+          }
           assert.equal(yield* Effect.promise(() => pathExists(managed("d"))), true);
         }),
       ),
-    // Seven real worktrees and six removals, each with real Git and fresh native
-    // probes. PowerShell startup and NTFS Git calls need a larger Windows budget.
+    // Each case keeps batch cleanup coverage with four real worktrees and three
+    // removals. Keep Windows headroom for fresh process probes and NTFS Git calls.
     process.platform === "win32" ? 120_000 : 60_000,
   );
 
@@ -3593,6 +4052,8 @@ it.layer(
           assert.include(localBranches(repo.root), "external-e");
         }),
       ),
+    // Several real worktrees, two scans and a cleanup: well over 15 s on CI runners.
+    60_000,
   );
 
   it.effect("refuses external cleanup when local changes differ from the reviewed ones", () =>

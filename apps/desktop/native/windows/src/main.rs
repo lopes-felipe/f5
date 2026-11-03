@@ -4,11 +4,15 @@ mod composition;
 mod desktop;
 #[cfg(any(windows, test))]
 mod geometry;
-mod permit;
+mod permits;
 #[cfg(any(windows, test))]
 mod protocol;
 #[cfg(any(windows, test))]
 mod safety;
+#[cfg(any(windows, test))]
+mod scheduler;
+#[cfg(any(windows, test))]
+mod traversal;
 #[cfg(windows)]
 fn main() {
     desktop::run();

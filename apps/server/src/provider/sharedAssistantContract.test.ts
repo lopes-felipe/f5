@@ -18,6 +18,11 @@ import {
 } from "./sharedAssistantContract";
 
 describe("buildCodexAdditionalContext", () => {
+  it("uses tool availability in Default mode instead of claiming questions are unavailable", () => {
+    const text = buildCodexModeInstructions({ interactionMode: "default" });
+    expect(text).toContain("only when it is listed in the available tools");
+    expect(text).not.toContain("tool is unavailable in Default mode");
+  });
   it("keeps every entry under Codex's per-entry cap and in section order", () => {
     const memoryBody = Array.from({ length: 150 }, (_, index) => `- memory fact ${index} é`).join(
       "\n",

@@ -32,6 +32,19 @@ describe("agent browser policy", () => {
 });
 
 describe("project settings", () => {
+  it("uses background computer control by default and honors project disablement", () => {
+    const policy = agentBrowserPolicyFromSettings(DEFAULT_SERVER_SETTINGS, id);
+    expect(policy.computerUse).toBe(true);
+    expect(policy.computerUseExecutionMode).toBe("background");
+    expect(
+      agentBrowserPolicyFromSettings(
+        applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+          projectSettingsOverrides: { [id]: { enableAgentComputerUse: false } },
+        }),
+        id,
+      ).computerUse,
+    ).toBe(false);
+  });
   it("persists global password masking without allowing project or checked-in overrides", () => {
     const global = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       computerUsePasswordMasking: "conservative",
@@ -110,6 +123,7 @@ describe("project settings", () => {
   it("never lets a checked-in file widen agent browser or computer reach", () => {
     const result = resolveProjectSettings({
       projectId: id,
+      global: { ...DEFAULT_SERVER_SETTINGS, enableAgentComputerUse: false },
       checkedIn: {
         previewExternalHosts: ["*"],
         enableClaudeInChrome: true,
@@ -120,7 +134,21 @@ describe("project settings", () => {
     expect(result.settings.previewExternalHosts).toEqual([]);
     expect(result.settings.enableClaudeInChrome).toBe(false);
     expect(result.settings.enableAgentComputerUse).toBe(false);
-    expect(result.sources.previewExternalHosts).toBe("default");
+    expect(result.sources.previewExternalHosts).toBe("global");
+  });
+  it("ignores checked-in computer disablement and execution mode under the new defaults", () => {
+    const result = resolveProjectSettings({
+      projectId: id,
+      global: DEFAULT_SERVER_SETTINGS,
+      checkedIn: Schema.decodeUnknownSync(ProjectSettingsOverrides)({
+        enableAgentComputerUse: false,
+        computerUseExecutionMode: "foreground",
+      }),
+      sourceFile: "f5.json",
+    });
+    expect(result.settings.enableAgentComputerUse).toBe(true);
+    expect(result.settings.computerUseExecutionMode).toBe("background");
+    expect(result.sources.enableAgentComputerUse).toBe("global");
   });
   it("resolves override, legacy, file, global and built-in defaults in order", () => {
     const global = { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" as const };

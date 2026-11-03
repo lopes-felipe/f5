@@ -12,6 +12,7 @@ import { Link } from "@tanstack/react-router";
 import { useSettings } from "../../hooks/useSettings";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { ensureNativeApi } from "../../nativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "../../lib/rpcQueryContext";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
@@ -55,6 +56,7 @@ function errorMessage(error: unknown): string {
 
 export function StorageAutomationSettings() {
   const scheduledBackupsEnabled = useSettings((settings) => settings.scheduledBackupsEnabled);
+  const databaseSnapshotsEnabled = useSettings((settings) => settings.databaseSnapshotsEnabled);
   const storageCleanup = useSettings((settings) => settings.storageCleanup);
   const autoPullDefaultBranch = useSettings((settings) => settings.autoPullDefaultBranch);
   const queryClient = useQueryClient();
@@ -70,6 +72,21 @@ export function StorageAutomationSettings() {
         toastManager.add({
           type: "error",
           title: "Could not save scheduled backups",
+          description: errorMessage(error),
+        }),
+      );
+  const saveDatabaseSnapshots = (enabled: boolean) =>
+    void ensureNativeApi()
+      .server.updateSettings({ databaseSnapshotsEnabled: enabled })
+      .then((settings) =>
+        queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+          existing ? { ...existing, settings } : existing,
+        ),
+      )
+      .catch((error: unknown) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not save database snapshots",
           description: errorMessage(error),
         }),
       );
@@ -105,11 +122,15 @@ export function StorageAutomationSettings() {
   const [activitySource, setActivitySource] = useState<"automatic" | "manual" | "all">("all");
   const audit = useQuery({
     queryKey: [...auditQueryKey, activityLimit, activitySource],
-    queryFn: () =>
-      ensureNativeApi().storage.automationAudit({
-        limit: activityLimit,
-        ...(activitySource !== "all" ? { source: activitySource } : {}),
-      }),
+    queryFn: (context) =>
+      ensureNativeApi().storage.automationAudit(
+        {
+          limit: activityLimit,
+          ...(activitySource !== "all" ? { source: activitySource } : {}),
+        },
+        rpcQueryContext(context),
+      ),
+    meta: rpcQueryMeta("refresh-background"),
     refetchInterval: 30_000,
   });
 
@@ -136,6 +157,22 @@ export function StorageAutomationSettings() {
           aria-label="Automatic storage cleanup"
           checked={storageCleanup.enabled}
           onCheckedChange={(enabled) => saveCleanup({ enabled })}
+        />
+      </label>
+
+      <label className="flex items-center justify-between gap-4 py-2 text-sm">
+        <span>
+          Database snapshots
+          <span className="block text-xs text-muted-foreground">
+            Hourly copy-on-write copies of this profile’s database in its backups folder, keeping 24
+            hourly and 7 daily copies. They take almost no space on APFS and are skipped on volumes
+            that cannot clone files.
+          </span>
+        </span>
+        <Switch
+          aria-label="Database snapshots"
+          checked={databaseSnapshotsEnabled}
+          onCheckedChange={saveDatabaseSnapshots}
         />
       </label>
 

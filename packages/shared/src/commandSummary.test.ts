@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyCompactCommand,
+  commandExecutionBackgroundStatus,
+  deriveCommandExecutionLabel,
   deriveNarratedActivityDisplayHints,
   deriveSearchCommandSummary,
   detectFileReadCommand,
   displayCommandExecutionCommand,
+  isGenericCommandTitle,
   normalizeCommandExecutionDetail,
+  parseCommandExecutionTitle,
   resolveCommandExecutionDisplayCommand,
   resolveCommandExecutionSummaryText,
 } from "./commandSummary";
@@ -166,6 +170,50 @@ describe("commandSummary", () => {
     ).toBe("Searching apps, packages for chat.newLocal, chat.scrollToBottom, workflow.new, …");
   });
 
+  it.each(["running", "completed", "failed", "stopped"] as const)(
+    "treats Claude background titles ending in '%s' as generic",
+    (status) => {
+      const title = `Command run — ${status}`;
+      expect(isGenericCommandTitle(title)).toBe(true);
+      expect(parseCommandExecutionTitle(title)).toEqual({
+        baseTitle: "Command run",
+        backgroundStatus: status,
+      });
+      expect(commandExecutionBackgroundStatus({ title })).toBe(status);
+    },
+  );
+
+  it("leaves titles without a known background suffix untouched", () => {
+    expect(parseCommandExecutionTitle("Command run")).toEqual({
+      baseTitle: "Command run",
+      backgroundStatus: null,
+    });
+    expect(parseCommandExecutionTitle("Deploy — paused")).toEqual({
+      baseTitle: "Deploy — paused",
+      backgroundStatus: null,
+    });
+    expect(commandExecutionBackgroundStatus({ title: null })).toBeNull();
+    expect(isGenericCommandTitle("Deploy — completed")).toBe(false);
+  });
+
+  it("shows the command instead of a generic background title", () => {
+    expect(
+      resolveCommandExecutionSummaryText({
+        command: "/bin/zsh -lc 'df -h'",
+        title: "Command run — completed",
+      }),
+    ).toBe("df -h");
+  });
+
+  it("drops the background suffix from specific titles", () => {
+    expect(
+      resolveCommandExecutionSummaryText({
+        command: "/bin/zsh -lc 'bun run build'",
+        title: "Build web — running",
+      }),
+    ).toBe("Build web");
+  });
+
   it("normalizes Claude shell tool detail summaries", () => {
     expect(normalizeCommandExecutionDetail('Bash: echo "Hello" && date')).toBe(
       'echo "Hello" && date',
@@ -193,5 +241,75 @@ describe("commandSummary", () => {
     expect(deriveNarratedActivityDisplayHints("Running fd --glob '*.tsx' apps/web/src")).toEqual({
       searchSummary: "Searching apps/web/src for *.tsx",
     });
+  });
+});
+
+describe("deriveCommandExecutionLabel", () => {
+  it.each([
+    ["cargo fmt --manifest-path apps/desktop/native/windows/Cargo.toml", "Format code"],
+    ["bun fmt > /tmp/f5-uia-fmt.log 2>&1", "Format code"],
+    [
+      "cargo test --locked --manifest-path apps/desktop/native/windows/Cargo.toml > /tmp/rust.log 2>&1",
+      "Run tests",
+    ],
+    [
+      "cargo check --locked --target x86_64-pc-windows-msvc --manifest-path apps/desktop/native/windows/Cargo.toml",
+      "Check build",
+    ],
+    ["bun lint > /tmp/f5-uia-lint.log 2>&1", "Lint"],
+    ["bun typecheck > /tmp/f5-uia-typecheck.log 2>&1", "Typecheck"],
+    ["bun run test:full > /tmp/f5-uia-full.log 2>&1", "Run tests"],
+    ["bun run upstream-ports:check > /tmp/f5-uia-upstream.log 2>&1", "Run upstream-ports:check"],
+    [
+      "bun run --cwd apps/desktop test -- src/computer/a.test.ts src/computer/b.test.ts",
+      "Run tests",
+    ],
+  ])("labels %s", (command, label) => {
+    expect(deriveCommandExecutionLabel(command)).toBe(label);
+  });
+
+  it.each([
+    ["cd /x && gh pr checks 385 2>/dev/null", "Check PR CI"],
+    ["/bin/zsh -lc 'git status'", "Git status"],
+    ["git -C /repo worktree list", "Manage worktrees"],
+    ["git rev-parse HEAD", "Run git rev-parse"],
+    ["FOO=1 env -i HOME=/tmp bun test", "Run tests"],
+    ["timeout 30 npx vitest run src/a.test.ts", "Run tests"],
+    ["bun fmt && bun lint", "Format code, Lint"],
+    ["bun fmt && bun lint && bun typecheck", "Format code, Lint"],
+    ["bun fmt; bun fmt", "Format code"],
+    ["pnpm --filter web add zod", "Add zod"],
+    ["npm ci", "Install dependencies"],
+    ["bun scripts/build-release.ts --dry-run", "Run build-release.ts"],
+    ["gh run view 41476031033 --log-failed", "Inspect CI run"],
+    ["gh api repos/o/r/actions/jobs/1 -q '.steps'", "Call GitHub API"],
+    ["curl -fsSL https://example.com/install.sh", "Fetch example.com"],
+    ["make -C build test", "Make test"],
+    ["command -v codex", "Locate codex"],
+    ["python3 -m pytest tests", "Run tests"],
+    ["node --import tsx scripts/audit.ts", "Run audit.ts"],
+    ["sed -n 1,20p a.ts", "Read a.ts"],
+    ["# run the suite\nbun run test", "Run tests"],
+  ])("labels %s", (command, label) => {
+    expect(deriveCommandExecutionLabel(command)).toBe(label);
+  });
+
+  it.each([
+    "./scripts/foo --x",
+    "",
+    "   ",
+    "echo hello",
+    "cd /tmp",
+    "date",
+    "python3 -I -c 'print(1)'",
+    "bun --watch $HOME ./script.sh",
+    "gh auth status",
+  ])("returns null for %j", (command) => {
+    expect(deriveCommandExecutionLabel(command)).toBeNull();
+  });
+
+  it("matches the search summary for search commands", () => {
+    const command = "rg -n 'foo' apps packages";
+    expect(deriveCommandExecutionLabel(command)).toBe(deriveSearchCommandSummary(command));
   });
 });

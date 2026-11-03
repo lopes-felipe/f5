@@ -190,6 +190,15 @@ export class ComputerHelperClient implements ComputerHelper {
         this.child?.kill("SIGKILL");
         return;
       }
+      if (message.startupFailure !== undefined) {
+        const status = Schema.decodeUnknownSync(BackendStatusSchema)(message.startupFailure);
+        if (status.available) throw new Error("Invalid helper startup refusal.");
+        // The helper exits without reading stdin. Latch its actionable refusal
+        // before any handshake write can fail or exit can overwrite it as a crash.
+        this.terminalFailure = true;
+        this.fail(status);
+        return;
+      }
       this.ready = true;
       this.helperCapabilities = Array.isArray(message.capabilities)
         ? message.capabilities.filter((entry): entry is string => typeof entry === "string")

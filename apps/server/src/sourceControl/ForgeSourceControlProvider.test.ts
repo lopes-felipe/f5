@@ -544,6 +544,22 @@ it("continues native Bitbucket metadata pagination without following arbitrary n
   expect(calls.every((call) => !call.url.includes("untrusted"))).toBe(true);
 });
 
+it("pages GitLab merge request diffs 30 files at a time so GitLab 15.7 to 17.10 answer", async () => {
+  const page = (offset: number, count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      new_path: `file-${offset + index}.ts`,
+      old_path: `file-${offset + index}.ts`,
+      diff: "@@ -1 +1 @@\n-a\n+b\n",
+    }));
+  const { provider, ref, calls } = fixture("gitlab", [page(0, 30), page(30, 5)]);
+  const files = await Effect.runPromise(provider.getFiles(ref));
+  expect(files).toHaveLength(35);
+  expect(calls.map((call) => new URL(call.url).search)).toEqual([
+    "?per_page=30&page=1",
+    "?per_page=30&page=2",
+  ]);
+});
+
 it.each(["gitlab", "bitbucket", "azure-devops", "forgejo"] as const)(
   "lists terminal %s branch PRs when all states are requested",
   async (kind) => {

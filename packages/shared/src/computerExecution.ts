@@ -6,10 +6,21 @@ import type {
 } from "@t3tools/contracts";
 import { integrationBrowserBundleIds } from "./providerIntegrationCertification";
 
+export function computerHostMetadata(platform: string): {
+  hostPlatform?: "darwin" | "win32";
+  stopShortcut?: string;
+} {
+  return platform === "win32"
+    ? { hostPlatform: platform, stopShortcut: "Ctrl+Alt+Shift+F12" }
+    : platform === "darwin"
+      ? { hostPlatform: platform, stopShortcut: "⌃⌘Esc" }
+      : {};
+}
+
 /**
  * Operations a background (accessibility-only) generation may execute. Everything else needs
  * the foreground: coordinate input, keys and activation reach whatever app is frontmost.
- * Mirrors `computerBackgroundOpAllowed` in the macOS helper.
+ * Mirrors the scope checks in both native helpers.
  */
 const BACKGROUND_OPS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "status",

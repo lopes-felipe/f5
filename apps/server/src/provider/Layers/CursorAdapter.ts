@@ -11,6 +11,7 @@ import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAut
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 /**
  * CursorAdapterLive — Cursor CLI (`agent acp`) via ACP.
  *
@@ -1721,6 +1722,10 @@ export function makeCursorAdapter(
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      // ACP agents read a slash command only as the leading prompt text, and learn
+      // their commands after the session starts, so any leading `/name` may be one.
+      classifyTurnInput: (_threadId, text) =>
+        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
       startSession,
       sendTurn,
       steerTurn: sendTurnUnlocked,

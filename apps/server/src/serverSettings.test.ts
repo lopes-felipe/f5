@@ -47,17 +47,67 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("preserves legacy sparse off/foreground settings through saves and reloads", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(config.settingsPath!, "{}");
+      const legacy = yield* service.getSettings;
+      assert.equal(legacy.enableAgentComputerUse, false);
+      assert.equal(legacy.computerUseExecutionMode, "foreground");
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.equal(saved.enableAgentComputerUse, false);
+      assert.equal(saved.computerUseExecutionMode, "foreground");
+      assert.ok(saved.clientSettingMigrations.computerUseDefaultsV2);
+      // An explicit choice of the new defaults is sparse but must survive reload.
+      yield* service.updateSettings({
+        enableAgentComputerUse: true,
+        computerUseExecutionMode: "background",
+      });
+      const optedIn = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.equal(optedIn.enableAgentComputerUse, undefined);
+      assert.equal(optedIn.computerUseExecutionMode, undefined);
+      const reloaded = yield* service.updateSettings({ enableAssistantStreaming: true });
+      assert.equal(reloaded.enableAgentComputerUse, true);
+      assert.equal(reloaded.computerUseExecutionMode, "background");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("persists the new defaults marker for new profiles before an unrelated save", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      assert.equal((yield* service.getSettings).enableAgentComputerUse, true);
+      assert.equal((yield* service.getSettings).computerUseExecutionMode, "background");
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.ok(saved.clientSettingMigrations.computerUseDefaultsV2);
+      const reloaded = yield* service.updateSettings({ enableAssistantStreaming: true });
+      assert.equal(reloaded.enableAgentComputerUse, true);
+      assert.equal(reloaded.computerUseExecutionMode, "background");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("validates repository search folders before saving storage discovery", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsService;
       const denied = yield* settings
         .updateSettings({
-          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["relative"] },
+          storageDiscovery: {
+            machineCleanupEnabled: false,
+            repositoryRoots: ["relative"],
+            searchProjectFolders: true,
+          },
         })
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(denied));
       const saved = yield* settings.updateSettings({
-        storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["~/code", "~/code"] },
+        storageDiscovery: {
+          machineCleanupEnabled: false,
+          repositoryRoots: ["~/code", "~/code"],
+          searchProjectFolders: true,
+        },
       });
       assert.deepEqual(saved.storageDiscovery.repositoryRoots, [NodePath.join(homedir(), "code")]);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
@@ -880,7 +930,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.ok(serverConfig.settingsPath);
       const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
-      assert.deepEqual(JSON.parse(raw), {
+      const saved = JSON.parse(raw);
+      assert.isString(saved.clientSettingMigrations.computerUseDefaultsV2);
+      assert.deepEqual(saved, {
+        clientSettingMigrations: saved.clientSettingMigrations,
         addProjectBaseDirectory: "~/Development",
         observability: {
           otlpTracesUrl: "http://localhost:4318/v1/traces",

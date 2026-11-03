@@ -69,6 +69,107 @@ const projectionLayer = it.layer(makeProjectionPipelineTestLayer(process.cwd()))
 
 projectionLayer("OrchestrationProjectionPipeline", (it) => {
   it.effect(
+    "preserves the actual reply through late synthetic checkpoints in live projection and replay",
+    () =>
+      runWithProjectionPipelineLayer(
+        process.cwd(),
+        Effect.gen(function* () {
+          const pipeline = yield* OrchestrationProjectionPipeline;
+          const store = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.makeUnsafe("checkpoint-reply");
+          const turnId = TurnId.makeUnsafe("checkpoint-turn");
+          const at = "2026-10-22T12:00:00.000Z";
+          const common = {
+            aggregateKind: "thread" as const,
+            aggregateId: threadId,
+            occurredAt: at,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+          };
+          const created = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-thread"),
+            type: "thread.created",
+            payload: {
+              threadId,
+              projectId: ProjectId.makeUnsafe("checkpoint-project"),
+              title: "Port",
+              model: "model",
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: at,
+              updatedAt: at,
+            },
+          });
+          yield* pipeline.projectEvent(created);
+          const checkpoint = {
+            threadId,
+            turnId,
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/reply/1"),
+            files: [],
+            assistantMessageId: MessageId.makeUnsafe("assistant:toolu_placeholder"),
+            completedAt: at,
+          };
+          const placeholder = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-placeholder"),
+            type: "thread.turn-diff-completed",
+            payload: { ...checkpoint, status: "missing" },
+          });
+          yield* pipeline.projectEvent(placeholder);
+          const message = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-message"),
+            type: "thread.message-sent",
+            payload: {
+              threadId,
+              turnId,
+              messageId: MessageId.makeUnsafe("actual-reply"),
+              role: "assistant",
+              text: "Final answer",
+              streaming: false,
+              createdAt: at,
+              updatedAt: at,
+            },
+          });
+          yield* pipeline.projectEvent(message);
+          const ready = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-ready"),
+            type: "thread.turn-diff-completed",
+            payload: { ...checkpoint, status: "ready" },
+          });
+          yield* pipeline.projectEvent(ready);
+          const expected = [
+            {
+              assistant_message_id: "actual-reply",
+              checkpoint_status: "ready",
+              state: "completed",
+            },
+          ];
+          assert.deepStrictEqual(
+            yield* sql`SELECT assistant_message_id,checkpoint_status,state
+        FROM projection_turns WHERE thread_id = ${threadId}`,
+            expected,
+          );
+          yield* sql`DELETE FROM projection_turns WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_state WHERE projector = 'projection.thread-turns'`;
+          yield* pipeline.bootstrap;
+          assert.deepStrictEqual(
+            yield* sql`SELECT assistant_message_id,checkpoint_status,state
+        FROM projection_turns WHERE thread_id = ${threadId}`,
+            expected,
+          );
+        }),
+      ),
+  );
+
+  it.effect(
     "commits cursors once per command, including ignored projectors, and rolls the entire command back on cursor failure",
     () =>
       runWithProjectionPipelineLayer(
@@ -3973,4 +4074,100 @@ it.effect(
         { deliveryId: "reservation-settled-turn", releasedAt: at },
       ]);
     }).pipe(Effect.provide(makeProjectionPipelineTestLayer(process.cwd()))),
+);
+
+it.effect("writes thread reference grants only for explicitly human-stamped messages", () =>
+  Effect.gen(function* () {
+    const projectionPipeline = yield* OrchestrationProjectionPipeline;
+    const eventStore = yield* OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("grant-thread");
+    const base = (id: string) => ({
+      eventId: EventId.makeUnsafe(`evt-${id}`),
+      occurredAt: now,
+      causationEventId: null,
+      correlationId: CommandId.makeUnsafe(`cmd-${id}`),
+      metadata: {},
+    });
+    yield* eventStore.append({
+      ...base("project"),
+      type: "project.created",
+      aggregateKind: "project",
+      aggregateId: ProjectId.makeUnsafe("grant-project"),
+      commandId: CommandId.makeUnsafe("cmd-project"),
+      payload: {
+        projectId: ProjectId.makeUnsafe("grant-project"),
+        title: "Project",
+        workspaceRoot: "/tmp/grant-project",
+        defaultModel: null,
+        scripts: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* eventStore.append({
+      ...base("thread"),
+      type: "thread.created",
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      commandId: CommandId.makeUnsafe("cmd-thread"),
+      payload: {
+        threadId,
+        projectId: ProjectId.makeUnsafe("grant-project"),
+        title: "Thread",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    // Each projector catches up on its own, so the thread row must exist before messages project.
+    yield* projectionPipeline.bootstrap;
+    const refs =
+      "[Self](f5://thread/grant-thread) [Source](f5://thread/source) [Other](f5-dev://thread/other)";
+    // A human slash command never grants: the provider parses it, so no block reaches the agent.
+    const stamps = [
+      ["human", "human", `Use ${refs}`],
+      ["command", "human", `/compact ${refs}`],
+      ["bot", "automation", `Use ${refs}`],
+      ["unstamped", null, `Use ${refs}`],
+    ] as const;
+    for (const [id, source, text] of stamps) {
+      const commandId = CommandId.makeUnsafe(`cmd-${id}`);
+      if (source)
+        yield* sql`INSERT INTO provider_submission_provenance(command_id, thread_id, source, created_at)
+          VALUES(${commandId}, ${threadId}, ${source}, ${now})`;
+      yield* eventStore.append({
+        ...base(id),
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        commandId,
+        payload: {
+          threadId,
+          messageId: MessageId.makeUnsafe(`message-${id}`),
+          role: "user",
+          text,
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+    }
+    yield* projectionPipeline.bootstrap;
+    assert.deepStrictEqual(
+      yield* sql`SELECT thread_id, target_thread_id, message_id FROM thread_reference_grants ORDER BY target_thread_id`,
+      [
+        { thread_id: "grant-thread", target_thread_id: "other", message_id: "message-human" },
+        { thread_id: "grant-thread", target_thread_id: "source", message_id: "message-human" },
+      ],
+    );
+    // Purging the thread cascades to its grants.
+    yield* sql`DELETE FROM projection_threads WHERE thread_id = ${threadId}`;
+    assert.deepStrictEqual(yield* sql`SELECT * FROM thread_reference_grants`, []);
+  }).pipe(Effect.provide(makeProjectionPipelineTestLayer(process.cwd()))),
 );

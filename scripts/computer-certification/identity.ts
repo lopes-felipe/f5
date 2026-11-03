@@ -139,6 +139,13 @@ export async function identify(target: Target): Promise<Identity> {
     "rehearsalFixture",
     "rehearsalResponses",
     "rehearsalProfileIsolation",
+    "rehearsalWindowsFreeze",
+    "rehearsalWindowsAcceptance",
+    "rehearsalWindowsDiagnostics",
+    "rehearsalWindowsTrace",
+    "rehearseCaptureWindows",
+    "rehearseDisplaysWindows",
+    "rehearseLifecycleWindows",
   ])
     files[name] = await hashFile(join(target.repo, "apps/desktop/src/computer", name + ".ts"));
   files["profile-limits"] = await hashFile(
@@ -150,6 +157,9 @@ export async function identify(target: Target): Promise<Identity> {
       "apps/desktop/native",
       target.platform === "darwin" ? "macos/Fixtures" : "windows/src",
     ),
+  );
+  files["windows-helper-runner"] = await hashFile(
+    join(target.repo, "apps/desktop/src/computer/rehearseHelperWindows.ts"),
   );
   const commit = (await exec("git", ["rev-parse", "HEAD"], { cwd: target.repo })).stdout.trim();
   const dirty = Boolean(

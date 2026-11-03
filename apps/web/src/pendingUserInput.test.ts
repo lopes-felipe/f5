@@ -14,6 +14,26 @@ import {
 } from "./pendingUserInput";
 
 describe("resolvePendingUserInputAnswer", () => {
+  it("sends option values and rejects stale custom drafts for option-only questions", () => {
+    const question = {
+      id: "branch",
+      header: "Branch",
+      question: "Choose",
+      allowCustomAnswer: false,
+      options: [{ label: "Main", description: "Main", value: "opt-main" }],
+    };
+    expect(
+      buildPendingUserInputAnswers([question], {
+        branch: { selectedOptionLabels: ["Main"], customAnswer: "stale" },
+      }),
+    ).toEqual({ branch: "opt-main" });
+    expect(
+      buildPendingUserInputAnswers([question], { branch: { customAnswer: "typed" } }),
+    ).toBeNull();
+    expect(
+      buildPendingUserInputAnswers([question], { branch: { selectedOptionLabels: ["stale"] } }),
+    ).toBeNull();
+  });
   it("keeps selected custom-answer mentions local and invalidates changed references", () => {
     const answer = "Use @src/a.ts";
     const mentions = [createComposerMention("src/a.ts", 4)];

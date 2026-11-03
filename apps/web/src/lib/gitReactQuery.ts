@@ -1,7 +1,8 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
-import type { GitStackedAction } from "@t3tools/contracts";
+import type { GitListBranchesResult, GitStackedAction, GitStatusResult } from "@t3tools/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
+import { rpcQueryContext, rpcQueryMeta, type RpcQueryPriority } from "./rpcQueryContext";
 
 const GIT_STATUS_STALE_TIME_MS = 5_000;
 const GIT_STATUS_REFETCH_INTERVAL_MS = 60_000;
@@ -85,23 +86,38 @@ export function gitStatusQueryOptions({
   autoRefresh = true,
   staleTimeMs,
   refetchIntervalMs,
-  includeRemote = true,
+  includeRemote = autoRefresh,
+  refetchOnFocus = "always",
+  refetchOnReconnect = "always",
+  priority = "refresh-background",
 }: GitAutoRefreshQueryOptionsInput & {
-  /** false reads local status only, without fetching a stale upstream. */
+  /**
+   * false reads local status only, without fetching a stale upstream. Defaults to
+   * `autoRefresh`: with automatic refresh off, opening a checkout never fetches either.
+   */
   includeRemote?: boolean;
+  /** `true` respects `staleTime`; `"always"` refetches on every focus. */
+  refetchOnFocus?: boolean | "always";
+  refetchOnReconnect?: boolean | "always";
+  /** Polling and reconnect refreshes are background reads once a status is loaded. */
+  priority?: RpcQueryPriority;
 }) {
   return queryOptions({
     // Local-only results stay under their own key so they never stand in for a refreshed status.
     queryKey: includeRemote ? gitQueryKeys.status(cwd) : [...gitQueryKeys.status(cwd), "local"],
-    queryFn: async () => {
+    queryFn: async (context) => {
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git status is unavailable.");
-      return api.git.status(includeRemote ? { cwd } : { cwd, includeRemote: false });
+      return api.git.status(
+        includeRemote ? { cwd } : { cwd, includeRemote: false },
+        rpcQueryContext(context),
+      );
     },
+    meta: rpcQueryMeta(priority),
     enabled: cwd !== null,
     staleTime: autoRefresh ? (staleTimeMs ?? GIT_STATUS_STALE_TIME_MS) : Infinity,
-    refetchOnWindowFocus: autoRefresh ? "always" : false,
-    refetchOnReconnect: autoRefresh ? "always" : false,
+    refetchOnWindowFocus: autoRefresh ? refetchOnFocus : false,
+    refetchOnReconnect: autoRefresh ? refetchOnReconnect : false,
     refetchInterval: autoRefresh ? (refetchIntervalMs ?? GIT_STATUS_REFETCH_INTERVAL_MS) : false,
   });
 }
@@ -126,6 +142,51 @@ export function gitBranchesQueryOptions({
     refetchOnReconnect: autoRefresh ? "always" : false,
     refetchInterval: false,
   });
+}
+
+/**
+ * Re-reads local refs (no fetch, no PR lookup). When another branch is checked out than the
+ * cached status shows, or HEAD is detached, the status moves to it with remote counts and the
+ * PR cleared, so the previous branch and its PR are not shown. The next status refresh fills
+ * remote state in. A failed refs read changes nothing: cached refs may be older than status.
+ */
+export async function refreshCheckedOutGitBranch(queryClient: QueryClient, cwd: string | null) {
+  if (cwd === null) return;
+  let refs: GitListBranchesResult;
+  try {
+    refs = await queryClient.fetchQuery({ ...gitBranchesQueryOptions({ cwd }), staleTime: 0 });
+  } catch {
+    return;
+  }
+  const localRefs = refs.branches.filter((ref) => !ref.isRemote);
+  if (!refs.isRepo || refs.worktreeMissing === true || localRefs.length === 0) return;
+  // HEAD is read per checkout, so no current local ref means a detached HEAD.
+  const branch = localRefs.find((ref) => ref.current)?.name ?? null;
+  const statusKey = gitQueryKeys.status(cwd);
+  for (const queryKey of [statusKey, [...statusKey, "local"]]) {
+    const state = queryClient.getQueryState<GitStatusResult>(queryKey);
+    const status = state?.data;
+    if (!state || !status || status.worktreeMissing === true || status.branch === branch) continue;
+    // A status read that started before the refs read must not restore the previous branch.
+    await queryClient.cancelQueries({ queryKey, exact: true });
+    queryClient.setQueryData<GitStatusResult>(
+      queryKey,
+      (current) =>
+        !current || current.branch === branch
+          ? current
+          : {
+              ...current,
+              branch,
+              hasUpstream: false,
+              aheadCount: 0,
+              behindCount: 0,
+              pr: null,
+              changeRequest: null,
+            },
+      // Keep its age, so the moved status refreshes on the usual schedule.
+      { updatedAt: state.dataUpdatedAt },
+    );
+  }
 }
 
 export function gitResolvePullRequestQueryOptions(input: {

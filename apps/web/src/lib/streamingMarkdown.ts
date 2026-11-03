@@ -139,6 +139,16 @@ export function isFenceClosingLine(
   return index >= fence.length && trimmedStart.slice(index).trim().length === 0;
 }
 
+/**
+ * Whether the fence that opens `block` has a closing line. A fence the stream ends on, or
+ * one followed by text the parser has not committed yet, is complete but still active.
+ */
+export function startsWithClosedFence(block: string): boolean {
+  const lines = splitLines(block);
+  const fence = matchFence(lines[0]?.content ?? "");
+  return fence !== null && lines.slice(1).some((line) => isFenceClosingLine(line.content, fence));
+}
+
 function isListLine(content: string): boolean {
   return /^ {0,3}(?:[*+-]|\d+[.)])\s+/.test(content);
 }

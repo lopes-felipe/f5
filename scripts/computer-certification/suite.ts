@@ -119,7 +119,7 @@ export async function runSuite(options: {
       };
       const output = join(directory, attemptName(scenario.key, attempt) + ".raw.json");
       const paired =
-        scenario.id === "fixture-workflow"
+        target.platform === "darwin" && scenario.id === "fixture-workflow"
           ? inventory(manifest.identity.platform, manifest.providers).find(
               (s) =>
                 s.id === "real-apps" &&
@@ -144,6 +144,12 @@ export async function runSuite(options: {
           blocker = "fixture-prerequisites-unavailable";
       }
       if (blocker) {
+        if (blocker === "helper-prerequisites-unavailable" && observed) {
+          const status = observed.helperStatus;
+          process.stdout.write(
+            "Helper readiness: " + (status.available ? "available" : status.reason) + "\n",
+          );
+        }
         const result: ScenarioResult = { ...base, state: "blocked", reason: blocker };
         await saveResult(directory, manifest, result);
         results.push(result);

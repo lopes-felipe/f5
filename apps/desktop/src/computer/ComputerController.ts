@@ -593,12 +593,6 @@ export class ComputerController {
     }
   }
   private validate(request: ComputerAutomationRequest): void {
-    if (
-      request.op === "inspect" &&
-      (request.snapshotId || request.elementRef) &&
-      this.options.platform !== "darwin"
-    )
-      throw new ComputerControlError({ _tag: "UnsupportedAction" });
     if (request.deadlineAtMs <= this.now())
       throw new ComputerControlError({
         _tag: "Execution",

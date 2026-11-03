@@ -85,6 +85,7 @@ export const HomeThreadRow = forwardRef<HTMLButtonElement, HomeThreadRowProps>(
         {project ? (
           <ProjectIcon
             projectId={project.id}
+            kind={project.kind}
             name={project.name}
             icon={project.icon}
             className="size-4 shrink-0"

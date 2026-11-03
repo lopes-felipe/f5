@@ -1,6 +1,10 @@
 import { type ProjectEntry } from "@t3tools/contracts";
 import { memo } from "react";
-import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
+import {
+  type ComposerPathSearchTarget,
+  type ComposerSlashCommand,
+  type ComposerTriggerKind,
+} from "../../composer-logic";
 import { BotIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Command, CommandItem, CommandList } from "../ui/command";
@@ -12,6 +16,7 @@ export type ComposerCommandItem =
       type: "path";
       path: string;
       pathKind: ProjectEntry["kind"];
+      searchTarget: ComposerPathSearchTarget;
       label: string;
       description: string;
     }
@@ -82,7 +87,11 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         <CommandList
           id={props.listId}
           aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
-          className="max-h-64"
+          className={cn(
+            "max-h-64",
+            props.isLoading && props.triggerKind === "path" && "opacity-50",
+          )}
+          aria-busy={props.isLoading}
         >
           {props.items.map((item) => (
             <ComposerCommandMenuItem

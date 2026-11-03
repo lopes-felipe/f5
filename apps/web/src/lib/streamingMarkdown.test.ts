@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { EMPTY_STREAMING_MARKDOWN_STATE, advanceStreamingMarkdown } from "./streamingMarkdown";
+import {
+  EMPTY_STREAMING_MARKDOWN_STATE,
+  advanceStreamingMarkdown,
+  startsWithClosedFence,
+} from "./streamingMarkdown";
 
 describe("advanceStreamingMarkdown", () => {
   it("keeps an append-only paragraph active until a boundary seals it", () => {
@@ -98,5 +102,28 @@ describe("advanceStreamingMarkdown", () => {
 
   it("returns the shared empty state for empty initial input", () => {
     expect(advanceStreamingMarkdown(null, "")).toBe(EMPTY_STREAMING_MARKDOWN_STATE);
+  });
+});
+
+describe("startsWithClosedFence", () => {
+  it("recognizes a leading fence that has closed, even with text after it", () => {
+    for (const block of [
+      "```mermaid\nA --> B\n```",
+      "~~~~\nx\n~~~~~",
+      "```\r\nx\r\n```",
+      "```\nx\n```\n\nMore prose",
+    ]) {
+      expect(startsWithClosedFence(block)).toBe(true);
+    }
+    for (const block of [
+      "```mermaid\nA --> B",
+      "```",
+      "````\nx\n```",
+      "```\nx\n~~~",
+      "```\nx\n    ```",
+      "```\nx\n```js",
+    ]) {
+      expect(startsWithClosedFence(block)).toBe(false);
+    }
   });
 });

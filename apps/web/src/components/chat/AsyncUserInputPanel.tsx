@@ -16,9 +16,12 @@ import { Button } from "../ui/button";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 import { UserInputAttachments } from "./UserInputAttachments";
 import { UserInputQuestionStep } from "./UserInputQuestionStep";
+import { resolvePendingUserInputOptionValues } from "../../pendingUserInput";
 
 function initialAsyncDraft(questions: ReadonlyArray<UserInputQuestion>): AsyncUserInputDraft {
-  const prefilled = questions.filter((question) => question.initialAnswer !== undefined);
+  const prefilled = questions.filter(
+    (question) => question.allowCustomAnswer !== false && question.initialAnswer !== undefined,
+  );
   return {
     answers: {},
     custom: Object.fromEntries(prefilled.map((question) => [question.id, question.initialAnswer!])),
@@ -69,12 +72,14 @@ export function AsyncUserInputPanel({
   const isLastQuestion = activeIndex >= questions.length - 1;
   // Typed text counts only while its field is open; options-free questions always are.
   const customTextFor = (question: UserInputQuestion) =>
-    customOpen[question.id] || question.options.length === 0
+    question.allowCustomAnswer !== false &&
+    (customOpen[question.id] || question.options.length === 0)
       ? (custom[question.id]?.trim() ?? "")
       : "";
   const answerFor = (question: UserInputQuestion) => {
     const text = customTextFor(question);
-    return [...(answers[question.id] ?? []), ...(text ? [text] : [])];
+    const selected = resolvePendingUserInputOptionValues(question, answers[question.id]);
+    return [...selected, ...(text ? [text] : [])];
   };
   const isAnswered = (question: UserInputQuestion) => answerFor(question).length > 0;
   const canSend = questions.every((question) => question.optional || isAnswered(question));

@@ -18,8 +18,8 @@ it.effect("ANDs every agent capability with the browser access master switch", (
       externalHosts: [],
       claudeInChrome: false,
       codexChrome: false,
-      computerUse: false,
-      computerUseExecutionMode: "foreground",
+      computerUse: true,
+      computerUseExecutionMode: "background",
       computerUsePasswordMasking: "fast",
     });
     yield* settings.updateSettings({
@@ -38,7 +38,7 @@ it.effect("ANDs every agent capability with the browser access master switch", (
       claudeInChrome: true,
       codexChrome: false,
       computerUse: true,
-      computerUseExecutionMode: "foreground",
+      computerUseExecutionMode: "background",
       computerUsePasswordMasking: "fast",
     });
     yield* settings.updateSettings({ enableAgentBrowserAccess: false });

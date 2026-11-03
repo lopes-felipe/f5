@@ -78,6 +78,7 @@ import {
   deriveNarratedActivityDisplayHints,
   deriveSearchCommandSummary,
   isGenericCommandTitle,
+  parseCommandExecutionTitle,
 } from "@t3tools/shared/commandSummary";
 import {
   compactThreadActivityPayload,
@@ -119,6 +120,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
+import { isSupersedableToolUpdate, makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import {
   extractToolResultImages,
@@ -329,7 +331,9 @@ type RuntimeIngestionInput =
     }
   | {
       source: "command-output-flush-all";
-    };
+    }
+  | { source: "tool-update-flush"; threadId: ThreadId }
+  | { source: "tool-update-flush-all" };
 
 interface OpenCommandExecutionState {
   readonly id: OrchestrationCommandExecutionId;
@@ -338,6 +342,7 @@ interface OpenCommandExecutionState {
   readonly providerItemId: ProviderItemId;
   readonly command: string;
   cwd: string | undefined;
+  description: string | undefined;
   title: string | null;
   detail: string | null;
   status: OrchestrationCommandExecutionStatus;
@@ -665,7 +670,16 @@ function normalizeLifecycleCommandExecutionTitle(
   // Providers use generic titles like "Ran command" for shell fallbacks. When
   // that happens we replace the placeholder with a derived search summary, but
   // preserve any provider-authored specific title verbatim.
-  return isGenericCommandTitle(title) ? (deriveSearchCommandSummary(command) ?? title) : title;
+  if (!isGenericCommandTitle(title)) {
+    return title;
+  }
+  const searchSummary = deriveSearchCommandSummary(command);
+  if (!searchSummary) {
+    return title;
+  }
+  // The background suffix is the stored background marker; keep it on the summary.
+  const { backgroundStatus } = parseCommandExecutionTitle(title);
+  return backgroundStatus ? `${searchSummary} — ${backgroundStatus}` : searchSummary;
 }
 
 function extractCommandExecutionCommand(
@@ -739,6 +753,30 @@ function extractCommandExecutionCwd(
     asTrimmedNonEmptyString(rawPayload?.cwd) ??
     asTrimmedNonEmptyString(asRecord(rawPayload?.run)?.cwd)
   );
+}
+
+const COMMAND_EXECUTION_DESCRIPTION_MAX_CHARS = 200;
+
+function extractCommandExecutionDescription(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+): string | undefined {
+  const payloadData = asRecord(event.payload.data);
+  const payloadItem = asRecord(payloadData?.item);
+  const rawPayload = runtimeRawPayloadRecord(event);
+  const rawItem = asRecord(rawPayload?.item);
+  const description =
+    asTrimmedNonEmptyString(asRecord(payloadData?.input)?.description) ??
+    asTrimmedNonEmptyString(asRecord(payloadItem?.input)?.description) ??
+    asTrimmedNonEmptyString(asRecord(rawItem?.input ?? rawPayload?.input)?.description);
+  if (!description) {
+    return undefined;
+  }
+  return description.length > COMMAND_EXECUTION_DESCRIPTION_MAX_CHARS
+    ? `${description.slice(0, COMMAND_EXECUTION_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`
+    : description;
 }
 
 function parseExitCodeFromDetail(detail: string | undefined): number | null {
@@ -1440,6 +1478,9 @@ function buildCompactToolLifecyclePayload(
   return {
     ...toolImages,
     ...(computerTool ? { computerTool: true } : {}),
+    ...(computerTool && event.payload.computerStep
+      ? { computerStep: event.payload.computerStep }
+      : {}),
     itemType: event.payload.itemType,
     ...(event.itemId ? { providerItemId: event.itemId } : {}),
     ...(event.payload.status ? { status: event.payload.status } : {}),
@@ -2405,6 +2446,68 @@ const make = Effect.gen(function* () {
   // Last tool.updated activity appended per open tool item. Providers such as OpenCode resend
   // the whole tool state on every part update, so a repeat that matches it is not stored again.
   const lastToolUpdates = new Map<string, string>();
+  const recordToolUpdate = (trackingKey: string, signature: string) => {
+    lastToolUpdates.delete(trackingKey);
+    lastToolUpdates.set(trackingKey, signature);
+    if (lastToolUpdates.size > MAX_TRACKED_TOOL_UPDATES)
+      lastToolUpdates.delete(lastToolUpdates.keys().next().value!);
+  };
+  // Tool updates wait briefly so a chatty call appends only its newest state. Every other
+  // event for the thread flushes them first, so the completion still follows the last update.
+  const toolUpdateCoalescingEnabled = process.env.F5_COALESCE_TOOL_UPDATES !== "false";
+  let enqueueToolUpdateFlush: ((threadId: ThreadId) => void) | null = null;
+  const pendingToolUpdates = makeToolUpdateCoalescer<{
+    readonly event: ProviderRuntimeEvent;
+    readonly activity: OrchestrationThreadActivity;
+    readonly trackingKey: string;
+    readonly signature: string;
+  }>({ onWindowClosed: (threadId) => enqueueToolUpdateFlush?.(threadId) });
+  const flushToolUpdates = (threadId: ThreadId) =>
+    Effect.forEach(
+      pendingToolUpdates.take(threadId),
+      (update) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(
+              update.event,
+              `thread-activity-append:${update.activity.id}`,
+            ),
+            threadId,
+            activity: update.activity,
+            createdAt: update.activity.createdAt,
+          })
+          .pipe(
+            // Recorded only after the append succeeds, so a retried event is not skipped.
+            Effect.tap(() =>
+              Effect.sync(() => recordToolUpdate(update.trackingKey, update.signature)),
+            ),
+            // The superseded states were never stored, so a lost append needs a history repair.
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("failed to append coalesced tool update", {
+                    threadId,
+                    activityId: update.activity.id,
+                    cause: Cause.pretty(cause),
+                  }).pipe(
+                    Effect.andThen(
+                      providerService.requireHistoryReconciliation?.(update.event) ?? Effect.void,
+                    ),
+                    Effect.catchCause((markCause) =>
+                      Effect.logError("could not persist incomplete provider history marker", {
+                        eventId: update.event.eventId,
+                        cause: Cause.pretty(markCause),
+                      }),
+                    ),
+                  ),
+            ),
+          ),
+      { discard: true },
+    );
+  const flushAllToolUpdates = Effect.suspend(() =>
+    Effect.forEach(pendingToolUpdates.threadIds(), flushToolUpdates, { discard: true }),
+  );
   // Runtime error and terminal reports share one refresh, without blocking the serial worker.
   const refreshedUsageFailures = new Map<ThreadId, string>();
   let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
@@ -3849,6 +3952,7 @@ const make = Effect.gen(function* () {
     const pendingOutput = pendingCommandExecutionOutput.get(input.commandExecutionId);
     const status = commandExecutionStatusFromLifecycleEvent(input.event);
     const eventCwd = extractCommandExecutionCwd(input.event);
+    const eventDescription = extractCommandExecutionDescription(input.event);
     const command = extractCommandExecutionCommand(input.event);
     const normalizedTitle = normalizeLifecycleCommandExecutionTitle(
       input.event.payload.title,
@@ -3865,6 +3969,7 @@ const make = Effect.gen(function* () {
         providerItemId: input.providerItemId,
         command,
         cwd: fallbackCwd,
+        description: eventDescription,
         title: normalizedTitle ?? null,
         detail: input.event.payload.detail ?? null,
         status,
@@ -3880,6 +3985,7 @@ const make = Effect.gen(function* () {
       } satisfies OpenCommandExecutionState);
 
     commandExecution.cwd = eventCwd ?? commandExecution.cwd ?? fallbackCwd;
+    commandExecution.description = eventDescription ?? commandExecution.description;
     commandExecution.title = normalizedTitle ?? commandExecution.title;
     commandExecution.detail = input.event.payload.detail ?? commandExecution.detail;
     commandExecution.status = status;
@@ -3903,6 +4009,7 @@ const make = Effect.gen(function* () {
         providerItemId: commandExecution.providerItemId,
         command: commandExecution.command,
         cwd: commandExecution.cwd,
+        ...(commandExecution.description ? { description: commandExecution.description } : {}),
         title: commandExecution.title,
         status: commandExecution.status,
         detail: commandExecution.detail,
@@ -3983,6 +4090,7 @@ const make = Effect.gen(function* () {
           providerItemId: commandExecution.providerItemId,
           command: commandExecution.command,
           cwd: commandExecution.cwd,
+          ...(commandExecution.description ? { description: commandExecution.description } : {}),
           title: commandExecution.title,
           status: commandExecution.status,
           detail: commandExecution.detail,
@@ -4301,6 +4409,8 @@ const make = Effect.gen(function* () {
                 }),
           ),
         );
+      // An item update decides per activity below; anything else closes the update window.
+      if (incomingEvent.type !== "item.updated") yield* flushToolUpdates(incomingEvent.threadId);
       let event = incomingEvent;
       const lookupStarted = probe ? performance.now() : 0;
       const readModel = yield* orchestrationEngine.getReadModel();
@@ -6121,12 +6231,36 @@ const make = Effect.gen(function* () {
       );
       const toolUpdateKey = event.itemId ? `${thread.id}\u0000${event.itemId}` : undefined;
       if (toolUpdateKey && event.type === "item.completed") lastToolUpdates.delete(toolUpdateKey);
+      // Updates that own extracted images or computer evidence are never superseded.
+      const canCoalesceToolUpdate =
+        toolUpdateCoalescingEnabled &&
+        event.type === "item.updated" &&
+        !lifecycle.images?.mcpImages?.length &&
+        !isPreparedComputerEvent(event);
       yield* Effect.forEach(activities, (activity) =>
         Effect.gen(function* () {
           const signature =
             toolUpdateKey && activity.kind === "tool.updated"
               ? JSON.stringify([activity.tone, activity.summary, activity.turnId, activity.payload])
               : undefined;
+          if (signature && canCoalesceToolUpdate && isSupersedableToolUpdate(activity.payload)) {
+            const coalescingKey = `${activity.turnId ?? ""}\u0000${toolUpdateKey!}`;
+            // A repeat of the last append drops the pending state it supersedes. Otherwise the
+            // offer replaces it in place, so the open window keeps its original deadline.
+            if (lastToolUpdates.get(toolUpdateKey!) === signature) {
+              pendingToolUpdates.discard(thread.id, coalescingKey);
+              return;
+            }
+            const full = pendingToolUpdates.offer(thread.id, coalescingKey, {
+              event,
+              activity,
+              trackingKey: toolUpdateKey!,
+              signature,
+            });
+            if (full) yield* flushToolUpdates(thread.id);
+            return;
+          }
+          yield* flushToolUpdates(thread.id);
           if (signature && lastToolUpdates.get(toolUpdateKey!) === signature) return;
           yield* orchestrationEngine.dispatch({
             type: "thread.activity.append",
@@ -6136,11 +6270,7 @@ const make = Effect.gen(function* () {
             createdAt: activity.createdAt,
           });
           // Recorded only after the append succeeds, so a retried event is not skipped.
-          if (!signature) return;
-          lastToolUpdates.delete(toolUpdateKey!);
-          lastToolUpdates.set(toolUpdateKey!, signature);
-          if (lastToolUpdates.size > MAX_TRACKED_TOOL_UPDATES)
-            lastToolUpdates.delete(lastToolUpdates.keys().next().value!);
+          if (signature) recordToolUpdate(toolUpdateKey!, signature);
         }),
       ).pipe(Effect.asVoid);
 
@@ -6295,10 +6425,16 @@ const make = Effect.gen(function* () {
             : input.source === "runtime"
               ? processRuntimeEvent(input.event)
               : input.source === "domain"
-                ? processDomainEvent(input.event)
+                ? flushToolUpdates(input.event.payload.threadId).pipe(
+                    Effect.andThen(processDomainEvent(input.event)),
+                  )
                 : input.source === "command-output-flush"
                   ? flushCommandExecutionOutput(input.commandExecutionId).pipe(Effect.asVoid)
-                  : flushAllCommandExecutionOutput();
+                  : input.source === "command-output-flush-all"
+                    ? flushAllCommandExecutionOutput()
+                    : input.source === "tool-update-flush"
+                      ? flushToolUpdates(input.threadId)
+                      : flushAllToolUpdates;
 
   const pendingTerminalEventIds = new Set<string>();
   const processInputSafely = (
@@ -6427,12 +6563,17 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       streamingDeltas.cancelTimers();
+      pendingToolUpdates.cancelTimers();
+      yield* worker.enqueue({ source: "tool-update-flush-all" });
       yield* worker.enqueue({ source: "assistant-delta-flush-all" });
       yield* worker.drain.pipe(Effect.orDie);
     }),
   );
   enqueueCommandOutputFlush = (commandExecutionId) => {
     enqueueBackgroundWork(worker.enqueue({ source: "command-output-flush", commandExecutionId }));
+  };
+  enqueueToolUpdateFlush = (threadId) => {
+    enqueueBackgroundWork(worker.enqueue({ source: "tool-update-flush", threadId }));
   };
 
   const surfaceExhaustedTerminalReceipts = (threadIds?: ReadonlySet<ThreadId>) =>
@@ -6697,10 +6838,16 @@ const make = Effect.gen(function* () {
           event.type === "thread.turn-interrupt-requested" ||
           event.type === "thread.session-stop-requested"
         ) {
-          return worker.enqueue({
-            source: "assistant-delta-flush-thread",
-            threadId: event.payload.threadId,
-          });
+          return worker
+            .enqueue({ source: "tool-update-flush", threadId: event.payload.threadId })
+            .pipe(
+              Effect.andThen(
+                worker.enqueue({
+                  source: "assistant-delta-flush-thread",
+                  threadId: event.payload.threadId,
+                }),
+              ),
+            );
         }
         if (event.type !== "thread.turn-start-requested") return Effect.void;
         return worker.enqueue({ source: "domain", event });
@@ -6714,6 +6861,7 @@ const make = Effect.gen(function* () {
       yield* worker.drain;
       yield* Effect.yieldNow;
     }
+    yield* worker.enqueue({ source: "tool-update-flush-all" });
     yield* worker.enqueue({ source: "command-output-flush-all" });
     yield* worker.enqueue({ source: "assistant-delta-flush-all" });
     yield* worker.drain;
@@ -6724,6 +6872,7 @@ const make = Effect.gen(function* () {
     () =>
       Effect.sync(() => {
         streamingDeltas.cancelTimers();
+        pendingToolUpdates.cancelTimers();
         clearAllCommandExecutionFlushTimers();
       }).pipe(Effect.andThen(drain)),
     ["provider-event-delivery"],

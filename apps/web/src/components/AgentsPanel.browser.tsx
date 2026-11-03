@@ -247,7 +247,7 @@ describe("AgentsPanelView", () => {
     const onStop = vi.fn();
     const withCapability = await render(<Harness canStop={(item) => item.live} onStop={onStop} />);
     try {
-      await page.getByRole("button", { name: "Expand Review pagination" }).hover();
+      await page.getByRole("button", { name: "Expand Review pagination" }).click();
       await page.getByRole("button", { name: "Stop Review pagination" }).click();
       expect(onStop).toHaveBeenCalledWith(expect.objectContaining({ id: "work-1" }));
     } finally {
@@ -285,7 +285,7 @@ describe("AgentsPanelView", () => {
       await expect
         .element(page.getByRole("button", { name: "Dismiss Review pagination" }))
         .not.toBeInTheDocument();
-      await page.getByRole("button", { name: "Expand Summarize findings" }).hover();
+      await page.getByRole("button", { name: "Expand Summarize findings" }).click();
       await page.getByRole("button", { name: "Dismiss Summarize findings" }).click();
       expect(onDismiss).toHaveBeenCalledWith(expect.objectContaining({ id: "work-2" }));
 

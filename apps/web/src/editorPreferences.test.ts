@@ -33,6 +33,31 @@ it("captures authorization before a getConfig request longer than the old gestur
   expect(open).toHaveBeenCalledWith("/repo/report.json", "vscode", "native-token");
 });
 
+it("captures authorization before a workspace lookup longer than the old gesture deadline", async () => {
+  vi.useFakeTimers();
+  const prepare = vi.fn().mockResolvedValue("native-token");
+  vi.stubGlobal("window", { desktopBridge: { prepareEditorOpen: prepare } });
+  const resolveTarget = vi.fn(
+    () =>
+      new Promise<string>((resolve) => setTimeout(() => resolve("/repo/src/report.ts:3"), 1500)),
+  );
+  const open = vi.fn();
+  const api = {
+    server: { getConfig: vi.fn().mockResolvedValue({ availableEditors: ["vscode"] }) },
+    shell: { openInEditor: open },
+  } as unknown as NativeApi;
+  const pending = openInPreferredEditor(api, "/repo/report.ts:3", resolveTarget);
+  await vi.advanceTimersByTimeAsync(0);
+  // The final path is unknown when the grant is taken, so the grant names no target.
+  expect(prepare).toHaveBeenCalledWith(undefined);
+  expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(
+    resolveTarget.mock.invocationCallOrder[0]!,
+  );
+  await vi.advanceTimersByTimeAsync(1500);
+  await pending;
+  expect(open).toHaveBeenCalledWith("/repo/src/report.ts:3", "vscode", "native-token");
+});
+
 it("carries the selected native file-menu target into preferred-editor authorization", async () => {
   const prepare = vi.fn().mockResolvedValue("menu-token");
   vi.stubGlobal("window", { desktopBridge: { prepareEditorOpen: prepare } });

@@ -57,7 +57,7 @@ import {
 } from "./codexMarketplaceStaging.ts";
 import { DiskSpaceMonitor } from "./DiskSpaceMonitor.ts";
 import { compactThreadEvents } from "./eventCompaction.ts";
-import { StorageMaintenance } from "./StorageMaintenance.ts";
+import { AUTO_CONVERT_SKIP_PREFIX, StorageMaintenance } from "./StorageMaintenance.ts";
 
 /**
  * Automatic storage cleanup: removes idle managed worktrees under the rules a
@@ -932,7 +932,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
             job: "database-vacuum",
             target: "state database",
             result: "skipped",
-            reason: `switching to incremental auto-vacuum waits: ${space.skippedReason}`,
+            reason: `${AUTO_CONVERT_SKIP_PREFIX}${space.skippedReason}`,
           },
           { skipIfRepeated: true },
         );

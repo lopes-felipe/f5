@@ -1,6 +1,8 @@
 //! Synthetic fixture state only. No helper protocol, grants or input injection.
 pub const EXPECTED_TEXT: &str = "F5_WINDOWS_REHEARSAL Ω🙂";
+pub const ELECTRON_TEXT: &str = "F5_ELECTRON_REHEARSAL Ω🙂";
 pub const SECURE_TEXT: &str = "F5_SYNTHETIC_PASSWORD_SENTINEL";
+pub mod capture;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mode {
@@ -14,6 +16,8 @@ pub enum Mode {
 pub enum Command {
     Check,
     Run(Mode),
+    Stop,
+    VerifyCapture,
 }
 
 pub fn command(args: &[String]) -> Result<Command, &'static str> {
@@ -24,11 +28,52 @@ pub fn command(args: &[String]) -> Result<Command, &'static str> {
         .as_slice()
     {
         ["--check"] => Ok(Command::Check),
+        ["--run-stop"] => Ok(Command::Stop),
+        ["--verify-capture"] => Ok(Command::VerifyCapture),
         ["--run"] => Ok(Command::Run(Mode::Granted)),
         ["--run", "--ungranted"] => Ok(Command::Run(Mode::Ungranted)),
         ["--run", "--shaped"] => Ok(Command::Run(Mode::Shaped)),
         ["--run", "--transparent"] => Ok(Command::Run(Mode::Transparent)),
         _ => Err("Explicit --check or --run [--ungranted|--shaped|--transparent] required"),
+    }
+}
+
+/// Commands can affect this synthetic window only, never a supplied HWND or app.
+#[derive(Debug, PartialEq)]
+pub enum WindowCommand {
+    Status,
+    Close,
+    Place { x: i32, y: i32 },
+    Fullscreen,
+    Restore,
+    ReplaceInput,
+    Cue(&'static str),
+}
+impl WindowCommand {
+    pub fn parse(line: &str) -> Option<Self> {
+        match line.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["status"] => Some(Self::Status),
+            ["close"] => Some(Self::Close),
+            ["fullscreen"] => Some(Self::Fullscreen),
+            ["restore"] => Some(Self::Restore),
+            ["replace-input"] => Some(Self::ReplaceInput),
+            ["PROFILE_HOLD"] => Some(Self::Cue("Isolation waiting")),
+            ["PROFILE_RELEASE"] => Some(Self::Cue("Isolation released")),
+            ["WINDOWLESS_READY"] => Some(Self::Cue("Ready: keep input idle")),
+            ["WINDOWLESS_COUNTDOWN_3"] => Some(Self::Cue("Starting in 3")),
+            ["WINDOWLESS_COUNTDOWN_2"] => Some(Self::Cue("Starting in 2")),
+            ["WINDOWLESS_COUNTDOWN_1"] => Some(Self::Cue("Starting in 1")),
+            ["WINDOWLESS_RUNNING"] => Some(Self::Cue("Running: keep input idle")),
+            ["WINDOWLESS_FINISHED"] => Some(Self::Cue("Finished: click Finish check")),
+            ["place", x, y] => {
+                let (x, y): (i32, i32) = (x.parse().ok()?, y.parse().ok()?);
+                if x.unsigned_abs() > 65536 || y.unsigned_abs() > 65536 {
+                    return None;
+                }
+                Some(Self::Place { x, y })
+            }
+            _ => None,
+        }
     }
 }
 
@@ -50,7 +95,8 @@ impl Receipt {
             self.secure_events = self.secure_events.saturating_add(1);
         } else {
             self.input_events = self.input_events.saturating_add(1);
-            self.expected_text_received |= text.iter().copied().eq(EXPECTED_TEXT.encode_utf16());
+            self.expected_text_received |= text.iter().copied().eq(EXPECTED_TEXT.encode_utf16())
+                || text.iter().copied().eq(ELECTRON_TEXT.encode_utf16());
         }
         self.overflow |=
             text.len() > 10_000 || self.input_events > 10_000 || self.secure_events > 10_000;
@@ -69,6 +115,22 @@ impl Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_commands_accept_only_bounded_fixture_operations() {
+        assert_eq!(
+            WindowCommand::parse("place -1920 40"),
+            Some(WindowCommand::Place { x: -1920, y: 40 })
+        );
+        for command in [
+            "place -2147483648 0",
+            "place 65537 0",
+            "place 0 1 2",
+            "focus 123",
+            "shell x",
+        ] {
+            assert_eq!(WindowCommand::parse(command), None);
+        }
+    }
     #[test]
     fn check_cannot_launch_and_run_requires_explicit_scope() {
         assert_eq!(command(&["--check".into()]), Ok(Command::Check));

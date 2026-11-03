@@ -337,6 +337,8 @@ import type {
   StorageGetDiskSpaceRequest,
   StorageGetUsageRequest,
   StorageInvalidatedPayload,
+  StorageScheduleCompactionRequest,
+  StorageScheduleCompactionResult,
   DiskSpaceStatus,
 } from "./storage";
 import type {
@@ -508,6 +510,14 @@ import type {
 } from "./orchestration";
 import { EditorId, type RevealInFileManagerInput } from "./editor";
 
+/** Per-call scheduling hints for WebSocket-backed methods. */
+export interface NativeRequestContext {
+  /** Background reads yield ordinary request slots to interactive work and may be shed. */
+  readonly priority?: "interactive" | "background";
+  /** Aborting drops an unsent request; a sent request only detaches its caller. */
+  readonly signal?: AbortSignal;
+}
+
 export interface ContextMenuItem<T extends string = string> {
   id: T;
   label: string;
@@ -625,10 +635,25 @@ export interface DesktopUpdateState {
   /** Sanitized plain-text notes supplied by the update provider. */
   releaseNotes?: string | null;
   downloadPercent: number | null;
+  downloadTransferredBytes?: number | null;
+  downloadTotalBytes?: number | null;
+  downloadBytesPerSecond?: number | null;
+  /** What install preparation is doing while status is "preparing". */
+  installPhase?: DesktopUpdateInstallPhase | null;
+  /** Set on the first launch after an update was installed. */
+  recentlyInstalled?: DesktopUpdateRecentInstall | null;
   checkedAt: string | null;
   message: string | null;
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
+}
+
+export type DesktopUpdateInstallPhase = "staging" | "stopping";
+
+export interface DesktopUpdateRecentInstall {
+  fromVersion: string;
+  toVersion: string;
+  releaseNotes: string | null;
 }
 
 export interface DesktopUpdateActionResult {
@@ -717,6 +742,9 @@ export interface DesktopKeepAwakeBridge {
   removeLidPermission(): Promise<DesktopKeepAwakeState>;
   onState(listener: (state: DesktopKeepAwakeState) => void): () => void;
 }
+export type DesktopTrackpadScrollEvent =
+  // `precise` is false for a mouse wheel, and absent when Chromium did not report it.
+  { readonly phase: "begin"; readonly precise?: boolean } | { readonly phase: "end" };
 
 export interface DesktopBridge {
   readonly keepAwake?: DesktopKeepAwakeBridge;
@@ -732,6 +760,8 @@ export interface DesktopBridge {
   setQuitShortcutMode?: (mode: QuitShortcutMode) => Promise<void>;
   onQuitShortcut?: (listener: (event: QuitShortcutHintEvent) => void) => () => void;
   setAttentionBadge?: (count: number) => Promise<void>;
+  /** Startup diagnostics: the main process logs the time since the window was created. */
+  markStartup?: (marker: "composer-ready") => void;
   getSystemLocale?: () => string | null;
   getProfileId?: () => string | null;
   switchProfile?: (profileId: string) => Promise<boolean>;
@@ -766,8 +796,12 @@ export interface DesktopBridge {
   revealFile?: (filePath: string) => Promise<void>;
   openThreadInNewWindow?: (threadId: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
+  /** macOS only. Chromium brackets each scroll, momentum included, with a begin and an end. */
+  onTrackpadScroll?: (listener: (event: DesktopTrackpadScrollEvent) => void) => () => void;
   checkForUpdates?: () => Promise<DesktopUpdateActionResult>;
   setUpdateChannel?: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateActionResult>;
+  /** Returns the recent install once across all windows and profiles, then null. */
+  claimRecentUpdateInstall?: () => Promise<DesktopUpdateRecentInstall | null>;
   getUpdateState: () => Promise<DesktopUpdateState>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
@@ -1072,13 +1106,16 @@ export interface NativeApi {
     ) => Promise<GitPreparePullRequestThreadResult>;
     // Stacked action API
     pull: (input: GitPullInput) => Promise<GitPullResult>;
-    status: (input: GitStatusInput) => Promise<GitStatusResult>;
+    status: (input: GitStatusInput, context?: NativeRequestContext) => Promise<GitStatusResult>;
     runStackedAction: (input: GitRunStackedActionInput) => Promise<GitRunStackedActionResult>;
     onActionProgress: (callback: (event: GitActionProgressEvent) => void) => () => void;
     onStatusInvalidated: (callback: (event: GitStatusInvalidatedPayload) => void) => () => void;
   };
   review: {
-    previewDiff: (input: ReviewPreviewDiffInput) => Promise<ReviewPreviewDiffResult>;
+    previewDiff: (
+      input: ReviewPreviewDiffInput,
+      context?: NativeRequestContext,
+    ) => Promise<ReviewPreviewDiffResult>;
   };
   contextMenu: {
     show: <T extends string>(
@@ -1139,8 +1176,14 @@ export interface NativeApi {
       input: McpReplaceProjectConfigRequest,
     ) => Promise<McpProjectConfigResult>;
     getEffectiveConfig: (input: McpGetEffectiveConfigRequest) => Promise<McpEffectiveConfigResult>;
-    getProviderStatus: (input: McpGetProviderStatusRequest) => Promise<McpProviderStatusResult>;
-    getServerStatuses: (input: McpGetServerStatusesRequest) => Promise<McpServerStatusesResult>;
+    getProviderStatus: (
+      input: McpGetProviderStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpProviderStatusResult>;
+    getServerStatuses: (
+      input: McpGetServerStatusesRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpServerStatusesResult>;
     listImportCandidates: (
       input: McpListImportCandidatesRequest,
     ) => Promise<McpListImportCandidatesResult>;
@@ -1150,7 +1193,10 @@ export interface NativeApi {
     reconnectServer: (input: McpReconnectServerRequest) => Promise<McpReconnectServerResult>;
     startLogin: (input: McpStartLoginRequest) => Promise<McpLoginStatusResult>;
     getLoginStatus: (input: McpGetLoginStatusRequest) => Promise<McpLoginStatusResult>;
-    getCodexStatus: (input: McpGetCodexStatusRequest) => Promise<McpCodexStatusResult>;
+    getCodexStatus: (
+      input: McpGetCodexStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpCodexStatusResult>;
     reloadProject: (input: McpReloadProjectRequest) => Promise<McpCodexStatusResult>;
     applyToLiveSessions: (
       input: McpApplyToLiveSessionsRequest,
@@ -1163,13 +1209,23 @@ export interface NativeApi {
     getUsage: (input?: StorageGetUsageRequest) => Promise<StorageGetUsageResult>;
     cleanup: (input: StorageCleanupRequest) => Promise<StorageCleanupStatus>;
     cancelCleanup: (input: StorageCancelCleanupRequest) => Promise<void>;
+    /** Runs the pending one-time database compaction on the next server start, or cancels it. */
+    scheduleCompaction: (
+      input: StorageScheduleCompactionRequest,
+    ) => Promise<StorageScheduleCompactionResult>;
     /** What automatic cleanup and auto-pull would do now, with exact skip reasons. */
     automationDryRun: () => Promise<StorageAutomationDryRunResult>;
-    automationAudit: (input?: StorageAutomationAuditInput) => Promise<StorageAutomationAuditResult>;
+    automationAudit: (
+      input?: StorageAutomationAuditInput,
+      context?: NativeRequestContext,
+    ) => Promise<StorageAutomationAuditResult>;
     onInvalidated: (callback: (payload: StorageInvalidatedPayload) => void) => () => void;
     getStatus: () => Promise<StorageStatus>;
     getTargets: (input: StorageGetTargetsRequest) => Promise<StorageGetTargetsResult>;
-    getOperation: (input: StorageGetOperationRequest) => Promise<StorageGetOperationResult>;
+    getOperation: (
+      input: StorageGetOperationRequest,
+      context?: NativeRequestContext,
+    ) => Promise<StorageGetOperationResult>;
     onStatusUpdated: (callback: (payload: StorageStatus) => void) => () => void;
     /** Free space on the volumes F5 and its providers write to. */
     getDiskSpace: (input?: StorageGetDiskSpaceRequest) => Promise<DiskSpaceStatus>;
@@ -1178,7 +1234,7 @@ export interface NativeApi {
   nextTurnQueue: {
     list: (input: NextTurnQueueListInput) => Promise<NextTurnQueueSnapshot>;
     submit: (input: NextTurnQueueSubmitInput) => Promise<TurnSubmissionResult>;
-    summary: () => Promise<NextTurnQueueSummary>;
+    summary: (context?: NativeRequestContext) => Promise<NextTurnQueueSummary>;
     update: (input: NextTurnQueueUpdateInput) => Promise<NextTurnQueueSnapshot>;
     cancel: (input: NextTurnQueueCancelInput) => Promise<NextTurnQueueMutationResult>;
     reorder: (input: NextTurnQueueReorderInput) => Promise<NextTurnQueueSnapshot>;
@@ -1266,8 +1322,14 @@ export interface NativeApi {
     consumeResetCredit: (
       input: UsageConsumeResetCreditInput,
     ) => Promise<UsageConsumeResetCreditResult>;
-    getAccounts: (input: UsageGetAccountsInput) => Promise<UsageAccounts>;
-    getSummary: (input: UsageGetSummaryInput) => Promise<UsageSummary>;
+    getAccounts: (
+      input: UsageGetAccountsInput,
+      context?: NativeRequestContext,
+    ) => Promise<UsageAccounts>;
+    getSummary: (
+      input: UsageGetSummaryInput,
+      context?: NativeRequestContext,
+    ) => Promise<UsageSummary>;
     getQuotaHistory: () => Promise<UsageQuotaHistory>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
@@ -1291,11 +1353,23 @@ export interface NativeApi {
   };
   upstreamPorts: {
     listProjects: () => Promise<UpstreamPortsListProjectsResult>;
-    getOverview: (input: UpstreamPortsProjectInput) => Promise<UpstreamOverview>;
-    listTopics: (input: UpstreamListTopicsInput) => Promise<UpstreamListTopicsResult>;
+    getOverview: (
+      input: UpstreamPortsProjectInput,
+      context?: NativeRequestContext,
+    ) => Promise<UpstreamOverview>;
+    listTopics: (
+      input: UpstreamListTopicsInput,
+      context?: NativeRequestContext,
+    ) => Promise<UpstreamListTopicsResult>;
     listTopicIds: (input: UpstreamListTopicIdsInput) => Promise<UpstreamListTopicIdsResult>;
-    getTopic: (input: UpstreamGetTopicInput) => Promise<UpstreamTopicDetail>;
-    getTopicFiles: (input: UpstreamGetTopicInput) => Promise<UpstreamTopicFiles>;
+    getTopic: (
+      input: UpstreamGetTopicInput,
+      context?: NativeRequestContext,
+    ) => Promise<UpstreamTopicDetail>;
+    getTopicFiles: (
+      input: UpstreamGetTopicInput,
+      context?: NativeRequestContext,
+    ) => Promise<UpstreamTopicFiles>;
     decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
     acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
     undoDecisions: (input: UpstreamUndoDecisionsInput) => Promise<UpstreamDecideResult>;
@@ -1305,7 +1379,10 @@ export interface NativeApi {
       input: UpstreamPreviewPortGroupsInput,
     ) => Promise<UpstreamPreviewPortGroupsResult>;
     enqueuePort: (input: UpstreamEnqueuePortInput) => Promise<UpstreamEnqueuePortResult>;
-    getPortQueue: (input: UpstreamGetPortQueueInput) => Promise<UpstreamGetPortQueueResult>;
+    getPortQueue: (
+      input: UpstreamGetPortQueueInput,
+      context?: NativeRequestContext,
+    ) => Promise<UpstreamGetPortQueueResult>;
     dequeuePort: (input: UpstreamDequeuePortInput) => Promise<UpstreamRevisionResult>;
     controlPortQueue: (input: UpstreamControlPortQueueInput) => Promise<UpstreamRevisionResult>;
     unlinkPort: (input: UpstreamUnlinkPortInput) => Promise<UpstreamRevisionResult>;
@@ -1407,6 +1484,7 @@ export interface NativeApi {
     ) => Promise<OrchestrationGetStartupSnapshotResult>;
     getThreadTailDetails: (
       input: OrchestrationGetThreadTailDetailsInput,
+      context?: NativeRequestContext,
     ) => Promise<OrchestrationThreadTailDetails>;
     getRewindDrafts: (
       input: OrchestrationGetRewindDraftsInput,

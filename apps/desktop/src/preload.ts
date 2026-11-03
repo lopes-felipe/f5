@@ -12,12 +12,14 @@ const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
+const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 const PREVIEW_GET_CONFIG_CHANNEL = "desktop-preview:get-config";
 const PREVIEW_CREATE_TAB_CHANNEL = "desktop-preview:create-tab";
 const PREVIEW_CLOSE_TAB_CHANNEL = "desktop-preview:close-tab";
@@ -151,6 +153,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
+  markStartup: (marker) => ipcRenderer.send("desktop:startup-marker", marker),
   onQuitShortcut: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, hint: Parameters<typeof listener>[0]) =>
       listener(hint);
@@ -215,8 +218,22 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(MENU_ACTION_CHANNEL, wrappedListener);
     };
   },
+  onTrackpadScroll: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+      if (typeof event !== "object" || event === null) return;
+      const { phase, precise } = event as { phase?: unknown; precise?: unknown };
+      if (phase === "end") listener({ phase });
+      else if (phase === "begin")
+        listener(typeof precise === "boolean" ? { phase, precise } : { phase });
+    };
+    ipcRenderer.on(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
+    };
+  },
   checkForUpdates: () => ipcRenderer.invoke(UPDATE_CHECK_CHANNEL),
   setUpdateChannel: (channel) => ipcRenderer.invoke(UPDATE_SET_CHANNEL_CHANNEL, channel),
+  claimRecentUpdateInstall: () => ipcRenderer.invoke(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL),
   getUpdateState: () => ipcRenderer.invoke(UPDATE_GET_STATE_CHANNEL),
   downloadUpdate: () => ipcRenderer.invoke(UPDATE_DOWNLOAD_CHANNEL),
   installUpdate: () => ipcRenderer.invoke(UPDATE_INSTALL_CHANNEL),

@@ -81,7 +81,12 @@ export async function runProfileIsolation(o) {
   )
     throw new Error("Isolation account prerequisite incomplete.");
   const ids = [threadId, randomUUID()];
-  const apps = [appId, `org.example.computer-isolation.${randomUUID()}`];
+  const apps = [
+    appId,
+    process.platform === "win32"
+      ? join(root, "isolation-fixture", "ComputerControlFixture.exe").toLowerCase()
+      : `org.example.computer-isolation.${randomUUID()}`,
+  ];
   const titles = [`PRIVATE_ISOLATION_A_${randomUUID()}`, `PRIVATE_ISOLATION_B_${randomUUID()}`];
   const primaryId = await page.evaluate(() => window.desktopBridge.getProfileId());
   await application.evaluate(
