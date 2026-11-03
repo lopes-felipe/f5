@@ -49,42 +49,54 @@ export async function linkAntigravityUserSkills(home: string, userHome: string):
   for (const directory of ["config", "antigravity-cli"]) {
     const source = path.join(userHome, ".gemini", directory, "skills");
     const target = path.join(home, directory, "skills");
-    const sourceExists = await fs.stat(source).then(
-      (stat) => stat.isDirectory(),
-      (error: unknown) => {
-        if (hasCode(error, ["ENOENT"])) return false;
+    try {
+      const sourceExists = await fs.stat(source).then(
+        (stat) => stat.isDirectory(),
+        (error: unknown) => {
+          if (hasCode(error, ["ENOENT"])) return false;
+          throw error;
+        },
+      );
+      const existing = await fs.lstat(target).catch((error: unknown) => {
+        if (hasCode(error, ["ENOENT"])) return undefined;
         throw error;
-      },
-    );
-    const existing = await fs.lstat(target).catch((error: unknown) => {
-      if (hasCode(error, ["ENOENT"])) return undefined;
-      throw error;
-    });
-    if (!sourceExists) {
-      // The harness creates its own directory; a dangling link would break mkdir.
-      if (existing?.isSymbolicLink()) await fs.unlink(target);
-      continue;
-    }
-    if (existing?.isSymbolicLink()) {
-      if (path.resolve(path.dirname(target), await fs.readlink(target)) === source) continue;
-      await fs.unlink(target);
-    } else if (existing?.isDirectory()) {
-      // Only replace empty harness placeholders, never user content.
-      try {
-        await fs.rmdir(target);
-      } catch (error) {
-        if (hasCode(error, ["ENOTEMPTY", "EEXIST"])) continue;
-        throw error;
-      }
-    } else if (existing) {
-      continue;
-    }
-    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    await fs
-      .symlink(source, target, process.platform === "win32" ? "junction" : "dir")
-      .catch((error: unknown) => {
-        if (!hasCode(error, ["EEXIST"])) throw error;
       });
+      if (!sourceExists) {
+        // The harness creates its own directory; a dangling link would break mkdir.
+        if (existing?.isSymbolicLink()) await fs.unlink(target);
+        continue;
+      }
+      if (existing?.isSymbolicLink()) {
+        if (path.resolve(path.dirname(target), await fs.readlink(target)) === source) continue;
+        await fs.unlink(target);
+      } else if (existing?.isDirectory()) {
+        // Only replace empty harness placeholders, never user content.
+        try {
+          await fs.rmdir(target);
+        } catch (error) {
+          if (hasCode(error, ["ENOTEMPTY", "EEXIST"])) continue;
+          throw error;
+        }
+      } else if (existing) {
+        continue;
+      }
+      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      await fs
+        .symlink(source, target, process.platform === "win32" ? "junction" : "dir")
+        .catch((error: unknown) => {
+          if (!hasCode(error, ["EEXIST"])) throw error;
+        });
+    } catch (error) {
+      // Skills are optional. Concurrent preparations and filesystem contention
+      // must not prevent sign-in or session startup, or skip the other directory.
+      await Effect.runPromise(
+        Effect.logWarning("Antigravity user skills are not linked into the profile.", {
+          source,
+          target,
+          error,
+        }),
+      );
+    }
   }
 }
 
