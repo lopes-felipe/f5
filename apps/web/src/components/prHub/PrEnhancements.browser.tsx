@@ -1,7 +1,8 @@
 import "../../index.css";
 import { beforeEach, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThreadId, PullRequestKey, type TrackedPullRequest } from "@t3tools/contracts";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrSendToAgent } from "./PrSendToAgent";
@@ -35,7 +36,18 @@ beforeEach(() => {
   useComposerDraftStore.getState().clearDraftThread(thread);
   api.getThreadsForPr.mockResolvedValue([{ threadId: thread, title: "Linked thread" }]);
   api.navigate.mockResolvedValue(undefined);
-  api.peek.mockResolvedValue({ ...pr, repository: "team/repo", state: "open", author: "alice" });
+  api.peek.mockResolvedValue({
+    ...pr,
+    repository: "team/repo",
+    state: "open",
+    author: "alice",
+    isDraft: false,
+    additions: 12,
+    deletions: 3,
+    createdAt: null,
+    updatedAt: null,
+    mergedAt: null,
+  });
 });
 it("places a diff request in the existing composer once and preserves the draft without sending a turn", async () => {
   useComposerDraftStore.getState().setPrompt(thread, "Existing draft");
@@ -74,11 +86,65 @@ it("proxies authenticated UUID video HTML and images without enabling arbitrary 
   ).toBe(false);
 });
 it("loads link previews on focus and exposes copy without submitting a write", async () => {
-  render(<PrMarkdown host="github.com" body="[Linked PR](https://github.com/team/repo/pull/7)" />);
+  await renderPreview();
   const link = page.getByRole("link", { name: "Linked PR" });
-  await link.click({ modifiers: ["Control"] });
   await link.element().focus();
-  await expect.element(page.getByRole("tooltip")).toHaveTextContent("Pinned PR");
-  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeVisible();
+  await expect.element(page.getByText("Pinned PR", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("Open", { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  expect(document.querySelector('[aria-label="CI passed"]')).toBeNull();
+  await page.getByRole("button", { name: "Copy link" }).click();
   expect(api.dispatchCommand).not.toHaveBeenCalled();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByText("Pinned PR", { exact: true })).not.toBeInTheDocument();
+});
+
+function renderPreview() {
+  return render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PrMarkdown host="github.com" body="[Linked PR](https://github.com/team/repo/pull/7)" />
+    </QueryClientProvider>,
+  );
+}
+
+it("shows the URL header and usable actions while the preview loads", async () => {
+  api.peek.mockImplementation(() => new Promise(() => {}));
+  await renderPreview();
+  page.getByRole("link", { name: "Linked PR" }).element().focus();
+  await expect.element(page.getByText("team/repo #7", { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  await expect.element(page.getByRole("button", { name: "Open on github.com" })).toBeEnabled();
+});
+
+it("shows tracked status chips", async () => {
+  const value = await api.peek();
+  api.peek.mockResolvedValue({
+    ...value,
+    status: {
+      checkRollup: "success",
+      reviewDecision: "approved",
+      mergeable: "mergeable",
+      unresolvedThreadCount: 2,
+    },
+  });
+  await renderPreview();
+  page.getByRole("link", { name: "Linked PR" }).element().focus();
+  await expect.poll(() => document.querySelector('[aria-label="CI passed"]')).not.toBeNull();
+  await expect
+    .poll(() => document.querySelector('[aria-label="2 unresolved threads"]'))
+    .not.toBeNull();
+});
+
+it.each([
+  [new Error("network"), "Preview unavailable"],
+  [
+    new Error("Link preview account mismatch."),
+    "Connect a github.com account in PR Hub to preview this pull request.",
+  ],
+])("keeps actions available on preview failure %s", async (error, message) => {
+  api.peek.mockRejectedValue(error);
+  await renderPreview();
+  page.getByRole("link", { name: "Linked PR" }).element().focus();
+  await expect.element(page.getByText(message, { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
 });

@@ -21,6 +21,7 @@ import {
 import {
   parseSourceControlPullRequestKey,
   formatSourceControlPullRequestKey,
+  sourceControlPullRequestKeysEqual,
 } from "@t3tools/shared/sourceControl";
 import { resolvePrReviewPosition, type PrReviewPosition } from "@t3tools/shared/prReview";
 import { ServerConfig } from "../config.ts";
@@ -35,6 +36,7 @@ import {
 import { readGitHubStack } from "./githubStacks.ts";
 import { mapGitHubCliError } from "../sourceControl/GitHubSourceControlProvider.ts";
 import { readThreadPullRequestLinks } from "./threadLinks.ts";
+import { peekFactsFromRaw, peekIsoDate } from "./prHubPeekFacts.ts";
 
 const failure = (detail: string, kind: SourceControlProviderError["kind"] = "generic") =>
   new SourceControlProviderError({
@@ -99,6 +101,15 @@ export const makePrHubExtensions = Effect.gen(function* () {
         const cached = peekCache.get(identity);
         if (cached && cached.expires > Date.now()) return cached.value;
         const detail = yield* runtime.provider.getDetail(ref);
+        const snapshot = yield* runtime.hub.getSnapshot.pipe(
+          Effect.catchCause(() => Effect.succeed(null)),
+        );
+        const key = formatSourceControlPullRequestKey(ref);
+        const tracked =
+          snapshot &&
+          [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((pr) =>
+            sourceControlPullRequestKeysEqual(pr.key, key),
+          );
         const value = yield* Schema.decodeUnknownEffect(PrHubPeek)({
           provider: ref.provider,
           host: ref.host,
@@ -107,7 +118,19 @@ export const makePrHubExtensions = Effect.gen(function* () {
           title: detail.title.slice(0, 1000),
           url: detail.url,
           state: detail.state ?? "open",
-          author: null,
+          ...peekFactsFromRaw(detail.raw),
+          updatedAt: peekIsoDate(detail.updatedAt),
+          ...(tracked
+            ? {
+                isDraft: tracked.isDraft,
+                status: {
+                  checkRollup: tracked.checkRollup,
+                  reviewDecision: tracked.reviewDecision,
+                  mergeable: tracked.mergeable,
+                  unresolvedThreadCount: tracked.unresolvedThreadCount,
+                },
+              }
+            : {}),
         }).pipe(Effect.mapError(() => failure("Invalid link preview.", "invalid_response")));
         peekCache.delete(identity);
         peekCache.set(identity, { expires: Date.now() + 60000, value });
