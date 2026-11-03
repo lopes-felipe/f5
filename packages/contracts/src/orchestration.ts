@@ -70,6 +70,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getStartupSnapshot: "orchestration.getStartupSnapshot",
   getThreadTailDetails: "orchestration.getThreadTailDetails",
   getRewindDrafts: "orchestration.getRewindDrafts",
+  getThreadPeek: "orchestration.getThreadPeek",
   getThreadHistoryPage: "orchestration.getThreadHistoryPage",
   getThreadDetails: "orchestration.getThreadDetails",
   dispatchCommand: "orchestration.dispatchCommand",
@@ -3038,6 +3039,34 @@ export const OrchestrationGetRewindDraftsResult = Schema.Struct({
 });
 export type OrchestrationGetRewindDraftsResult = typeof OrchestrationGetRewindDraftsResult.Type;
 
+/** Max length of `OrchestrationThreadPeek.lastUserText`. */
+export const THREAD_PEEK_USER_TEXT_MAX_CHARS = 200;
+/** Max length of `OrchestrationThreadPeek.lastAssistantText`. */
+export const THREAD_PEEK_ASSISTANT_TEXT_MAX_CHARS = 600;
+
+export const OrchestrationGetThreadPeekInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationGetThreadPeekInput = typeof OrchestrationGetThreadPeekInput.Type;
+/**
+ * What the sidebar's hover card shows for a thread whose messages are not loaded: the
+ * last prompt, the latest completed turn's reply, and the latest checkpoint's diff totals.
+ * Texts are truncated server-side.
+ */
+export const OrchestrationThreadPeek = Schema.Struct({
+  threadId: ThreadId,
+  lastUserText: Schema.NullOr(Schema.String),
+  lastAssistantText: Schema.NullOr(Schema.String),
+  latestTurnDiff: Schema.NullOr(
+    Schema.Struct({
+      files: NonNegativeInt,
+      additions: NonNegativeInt,
+      deletions: NonNegativeInt,
+    }),
+  ),
+});
+export type OrchestrationThreadPeek = typeof OrchestrationThreadPeek.Type;
+
 export const OrchestrationGetThreadTailDetailsInput = Schema.Struct({
   threadId: ThreadId,
   messageLimit: Schema.optional(NonNegativeInt),
@@ -3468,6 +3497,10 @@ export const OrchestrationRpcSchemas = {
   getRewindDrafts: {
     input: OrchestrationGetRewindDraftsInput,
     output: OrchestrationGetRewindDraftsResult,
+  },
+  getThreadPeek: {
+    input: OrchestrationGetThreadPeekInput,
+    output: OrchestrationThreadPeek,
   },
   getThreadHistoryPage: {
     input: OrchestrationGetThreadHistoryPageInput,

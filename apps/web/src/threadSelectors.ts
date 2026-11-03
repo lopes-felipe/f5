@@ -395,6 +395,29 @@ export function selectLiveActivityBuckets(
   );
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Each thread's live activity time, floored to the hour, by id. Summaries keep
+ * `lastInteractionAt` as an ordering key that can lag (a lone thread never reorders),
+ * so the sidebar's day buckets and idle folding read this instead. Re-renders only
+ * when a thread's activity crosses an hour.
+ */
+export function useLiveActivityHours(): Readonly<Record<ThreadId, number>> {
+  return useStore(useShallow(selectLiveActivityHours));
+}
+
+export function selectLiveActivityHours(
+  state: Pick<AppState, "threads">,
+): Record<ThreadId, number> {
+  const hours: Record<ThreadId, number> = {};
+  for (const thread of state.threads) {
+    const activityMs = Date.parse(thread.lastInteractionAt);
+    if (Number.isFinite(activityMs)) hours[thread.id] = Math.floor(activityMs / HOUR_MS) * HOUR_MS;
+  }
+  return hours;
+}
+
 /** The full thread; re-renders whenever that thread changes. */
 export function useThread(threadId: ThreadId | null | undefined): Thread | undefined {
   return useStore((state) => selectThreadById(state, threadId));

@@ -1,6 +1,8 @@
 import { DiagnosticsSettings } from "../DiagnosticsSettings";
 import { KeepAwakeSettings } from "../KeepAwakeSettings";
 import {
+  SIDEBAR_OLDER_THREAD_DAYS_OPTIONS,
+  type SidebarOlderThreadDays,
   SIDEBAR_THREAD_PREVIEW_COUNT_MAX,
   SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
   WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX,
@@ -29,8 +31,13 @@ const WINDOW_TITLE_DETAIL_LABELS = {
 
 const SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15] as const;
 
+function olderThreadDaysLabel(days: SidebarOlderThreadDays): string {
+  return days === 0 ? "Off" : `${days} days`;
+}
+
 const SIDEBAR_AND_PANEL_KEYS = [
   "sidebarThreadPreviewCount",
+  "sidebarOlderThreadDays",
   "tasksPanelAutoOpen",
   "workspaceFileTreeEntryLimit",
   "openFileLinksInPanel",
@@ -85,6 +92,33 @@ export function GeneralSettings() {
                 {SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS.map((option) => (
                   <SelectItem key={option} value={String(option)}>
                     {option}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Fold idle sidebar threads"
+          description='Threads idle this long fold into an "older" row in each project. Pinned, running, unread and open threads never fold.'
+          control={
+            <Select
+              value={String(settings.sidebarOlderThreadDays)}
+              onValueChange={(value) => {
+                if (value === null) return;
+                const next = SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.find(
+                  (option) => String(option) === value,
+                );
+                if (next !== undefined) updateSettings({ sidebarOlderThreadDays: next });
+              }}
+            >
+              <SelectTrigger className="w-24" aria-label="Fold idle sidebar threads">
+                <SelectValue>{olderThreadDaysLabel(settings.sidebarOlderThreadDays)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                {SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {olderThreadDaysLabel(option)}
                   </SelectItem>
                 ))}
               </SelectPopup>

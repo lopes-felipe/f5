@@ -107,6 +107,10 @@ const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MIN = 1;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MAX = 15;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT = 6;
+/** Days without activity before a sidebar thread folds into "N older"; 0 turns folding off. */
+export const SIDEBAR_OLDER_THREAD_DAYS_OPTIONS = [0, 3, 7, 14, 30] as const;
+export type SidebarOlderThreadDays = (typeof SIDEBAR_OLDER_THREAD_DAYS_OPTIONS)[number];
+export const SIDEBAR_OLDER_THREAD_DAYS_DEFAULT: SidebarOlderThreadDays = 7;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN = 5_000;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT = PROJECT_LIST_ENTRIES_DEFAULT_LIMIT;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX = PROJECT_LIST_ENTRIES_MAX_LIMIT;
@@ -272,6 +276,13 @@ function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibi
     return value;
   }
   return DEFAULT_RUNTIME_WARNING_VISIBILITY;
+}
+
+function normalizeSidebarOlderThreadDays(value: unknown): SidebarOlderThreadDays {
+  return (
+    SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.find((option) => option === value) ??
+    SIDEBAR_OLDER_THREAD_DAYS_DEFAULT
+  );
 }
 
 function normalizeGitStatusAutoRefreshIntervalSeconds(value: unknown): number {
@@ -525,6 +536,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(() => "stacked" as const),
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCountSchema,
+  sidebarOlderThreadDays: Schema.Literals(SIDEBAR_OLDER_THREAD_DAYS_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some(SIDEBAR_OLDER_THREAD_DAYS_DEFAULT)),
+    Schema.withDecodingDefault(() => SIDEBAR_OLDER_THREAD_DAYS_DEFAULT),
+  ),
   showReasoningExpanded: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_SHOW_REASONING_EXPANDED)),
   ),
@@ -870,6 +885,7 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
+        sidebarOlderThreadDays: normalizeSidebarOlderThreadDays(migrated.sidebarOlderThreadDays),
         // One bad stored option must not reset every other setting.
         snoozePresets: normalizeSnoozePresets(migrated.snoozePresets ?? DEFAULT_SNOOZE_PRESETS),
         uiFontFamily: normalizeFontFamilyPreference(

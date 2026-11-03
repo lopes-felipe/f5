@@ -24,6 +24,13 @@ export const GENERAL_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Sidebar thread preview count"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["general.sidebar-older-threads"],
+    label: "Fold idle sidebar threads",
+    description: "Fold threads idle for a number of days into an older row.",
+    keywords: ["sidebar", "threads", "older", "idle", "age", "fold", "collapse"],
+    targetSelector: '[aria-label="Fold idle sidebar threads"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["general.task-sidebar"],
     label: "Open task sidebar automatically",
     description: "Show task and plan sidebars when a thread starts tracking steps.",

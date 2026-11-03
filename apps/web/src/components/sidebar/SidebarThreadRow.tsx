@@ -2,12 +2,14 @@ import type { ThreadId } from "@t3tools/contracts";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  AlarmClockIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   GitPullRequestIcon,
   LoaderCircleIcon,
   MoonIcon,
   PinIcon,
+  PinOffIcon,
   SquarePenIcon,
   SunriseIcon,
   TerminalIcon,
@@ -21,7 +23,6 @@ import {
 import { useStore } from "../../store";
 import { ProjectIcon } from "../ProjectIcon";
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { synchronizeStatusPulse } from "../../lib/statusPulse";
 import { writeThreadReferenceDrag } from "../../lib/threadReferenceDrag";
 import { selectThreadById } from "../../threadSelectors";
@@ -43,6 +44,7 @@ import {
   type TerminalStatusIndicator,
   pinnedThreadSortableId,
 } from "./sidebarLists";
+import { useSidebarPeekTrigger } from "./SidebarPeekCard";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { useSidebarTreeRowProps } from "./sidebarTreeRow";
 
@@ -54,10 +56,12 @@ import { useSidebarTreeRowProps } from "./sidebarTreeRow";
  * - `archived`: rename and unarchive.
  * - `settled`: quiet completed work, with an explicit Unsettle action.
  * - `attention`: "Needs you"; plain navigation, no multi-select, shows the project.
+ * - `recent`: the Recent view; like `active` (it shows the project instead), no pin drag.
  */
 export type SidebarThreadRowSection =
   | "workflow"
   | "active"
+  | "recent"
   | "snoozed"
   | "archived"
   | "settled"
@@ -70,8 +74,10 @@ export interface SidebarThreadRowProps {
   isDraft?: boolean | undefined;
   /** Visible thread ids for shift-click range selection. */
   orderedIds: readonly ThreadId[];
-  /** Overrides the visible title (workflow role label); the full title stays in the tooltip. */
+  /** Overrides the visible title (workflow role label); the full title stays in the peek card. */
   displayTitle?: string | undefined;
+  /** A workflow child's workflow title, for its peek card. */
+  workflowTitle?: string | undefined;
   /** Extra trailing content before the timestamp (model chip, project name). */
   trailingMeta?: ReactNode;
   threadStatus: ThreadStatusPill | null;
@@ -138,13 +144,15 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     (state) => selectable && state.selectedThreadIds.has(thread.id),
   );
   const isHighlighted = isActive || isSelected;
+  // Recent rows behave like a project's active rows; only one of the two views renders.
+  const activeLike = section === "active" || section === "recent";
   const testId =
-    section === "active" || section === "archived" || section === "settled"
+    activeLike || section === "archived" || section === "settled"
       ? `thread-row-${thread.id}`
       : section === "attention"
         ? `attention-thread-row-${thread.id}`
         : undefined;
-  const canRename = section === "active" || section === "archived" || section === "settled";
+  const canRename = activeLike || section === "archived" || section === "settled";
   const treeRowProps = useSidebarTreeRowProps(`thread:${section}:${thread.id}`);
   // Dragging a row onto a composer references the thread; it never navigates or reorders.
   const draggable = !isDraft && !(canRename && isRenaming) && isThreadReferenceId(thread.id);
@@ -165,35 +173,71 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     });
     if (!writeThreadReferenceDrag(event.dataTransfer, items)) event.preventDefault();
   };
-  const action =
-    section === "active" && !isDraft
-      ? {
-          label: "Archive",
-          ariaLabel: `Archive ${thread.title}`,
-          icon: ArchiveIcon,
-          onClick: () => {
-            void actions.archiveThread(thread.id, true);
+  const pinned = thread.pinnedAt != null;
+  const quickActions: ThreadRowQuickAction[] =
+    activeLike && !isDraft
+      ? [
+          {
+            label: pinned ? "Unpin" : "Pin",
+            ariaLabel: `${pinned ? "Unpin" : "Pin"} ${thread.title}`,
+            icon: pinned ? PinOffIcon : PinIcon,
+            onClick: () => actions.togglePinThread(thread.id),
           },
-        }
-      : section === "archived"
-        ? {
-            label: "Unarchive",
-            ariaLabel: `Unarchive ${thread.title}`,
-            icon: ArchiveRestoreIcon,
-            onClick: () => {
-              void actions.archiveThread(thread.id, false);
+          {
+            label: "Snooze",
+            ariaLabel: `Snooze ${thread.title}`,
+            icon: AlarmClockIcon,
+            onClick: (button) => {
+              const rect = button.getBoundingClientRect();
+              void actions.openSnoozeMenu(thread.id, {
+                x: Math.round(rect.left),
+                y: Math.round(rect.bottom),
+              });
             },
-          }
-        : section === "settled"
-          ? {
-              label: "Unsettle",
-              ariaLabel: `Unsettle ${thread.title}`,
-              icon: SunriseIcon,
+          },
+          {
+            label: "Archive",
+            ariaLabel: `Archive ${thread.title}`,
+            icon: ArchiveIcon,
+            onClick: () => {
+              void actions.archiveThread(thread.id, true);
+            },
+          },
+        ]
+      : section === "archived"
+        ? [
+            {
+              label: "Unarchive",
+              ariaLabel: `Unarchive ${thread.title}`,
+              icon: ArchiveRestoreIcon,
               onClick: () => {
-                void actions.unsettleThread(thread.id);
+                void actions.archiveThread(thread.id, false);
               },
-            }
-          : null;
+            },
+          ]
+        : section === "settled"
+          ? [
+              {
+                label: "Unsettle",
+                ariaLabel: `Unsettle ${thread.title}`,
+                icon: SunriseIcon,
+                onClick: () => {
+                  void actions.unsettleThread(thread.id);
+                },
+              },
+            ]
+          : [];
+  const peekTrigger = useSidebarPeekTrigger(
+    {
+      kind: "thread",
+      threadId: thread.id,
+      roleLabel: section === "workflow" ? props.displayTitle : undefined,
+      workflowTitle: section === "workflow" ? props.workflowTitle : undefined,
+      indicators: { threadStatus, prStatus, terminalStatus, isUnread },
+    },
+    // A draft has no server thread to describe yet.
+    { disabled: isDraft },
+  );
 
   return (
     <SidebarMenuSubItem
@@ -211,14 +255,14 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
       <SidebarMenuSubButton
         // Inside a project the row is a tree item, reached with the arrow keys from the
         // tree's single Tab stop; attention rows outside the tree keep their own stop.
-        render={
+        render={peekTrigger(
           <div
             role="button"
             tabIndex={0}
             {...treeRowProps}
             {...(draggable ? { draggable: true, onDragStart: onThreadDragStart } : {})}
-          />
-        }
+          />,
+        )}
         size="md"
         isActive={isActive}
         {...(testId ? { "data-testid": testId } : {})}
@@ -236,7 +280,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             actions.openThread(thread.id);
             return;
           }
-          if (section === "workflow" || section === "active") {
+          if (section === "workflow" || activeLike) {
             actions.handleThreadClick(event, thread.id, orderedIds, { isDraft });
             return;
           }
@@ -248,7 +292,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
                 actions.handleThreadRowDoubleClick(
                   event,
                   thread,
-                  section === "active" ? { isDraft } : undefined,
+                  activeLike ? { isDraft } : undefined,
                 );
               },
             }
@@ -322,7 +366,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
           </Tooltip>
         ) : null}
-        {section === "active" ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
+        {activeLike ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
         {canRename && !isDraft && isRenaming ? (
           <InlineTitleEditor
             initialValue={thread.title}
@@ -336,7 +380,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           <SidebarThreadTitle
             thread={thread}
             {...(props.displayTitle ? { displayTitle: props.displayTitle } : {})}
-            withTestId={section === "active" || section === "snoozed"}
+            withTestId={activeLike || section === "snoozed"}
           />
         )}
         {props.trailingMeta}
@@ -348,14 +392,15 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           lastInteractionAt={thread.lastInteractionAt}
           terminalStatus={section === "snoozed" ? null : terminalStatus}
           isHighlighted={isHighlighted}
-          {...(section === "active" ? { showDraftIndicator: !isDraft } : {})}
-          action={action}
+          {...(activeLike ? { showDraftIndicator: !isDraft } : {})}
+          actions={quickActions}
         />
       </SidebarMenuSubButton>
     </SidebarMenuSubItem>
   );
 }
 
+/** The row title; the full title (and a workflow child's thread title) is in the peek card. */
 export function SidebarThreadTitle({
   thread,
   displayTitle,
@@ -365,31 +410,16 @@ export function SidebarThreadTitle({
   displayTitle?: string | undefined;
   withTestId?: boolean | undefined;
 }) {
-  "use memo";
-  const suppressTooltip = useMediaQuery("(hover: none), (pointer: coarse)");
   const visibleTitle = displayTitle ?? thread.title;
-  const tooltip = displayTitle && displayTitle !== thread.title ? thread.title : visibleTitle;
-  const title = (
+  const fullTitle = displayTitle && displayTitle !== thread.title ? thread.title : visibleTitle;
+  return (
     <span
       className="min-w-0 flex-1 truncate"
       {...(withTestId ? { "data-testid": `thread-title-${thread.id}` } : {})}
     >
       {visibleTitle}
-      {tooltip !== visibleTitle ? <span className="sr-only">{`, ${tooltip}`}</span> : null}
+      {fullTitle !== visibleTitle ? <span className="sr-only">{`, ${fullTitle}`}</span> : null}
     </span>
-  );
-
-  if (suppressTooltip) {
-    return title;
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger delay={250} render={title} />
-      <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-        {tooltip}
-      </TooltipPopup>
-    </Tooltip>
   );
 }
 
@@ -430,25 +460,31 @@ function revealRunningTerminal(threadId: ThreadId) {
   store.setTerminalOpen(threadId, true);
 }
 
+export interface ThreadRowQuickAction {
+  label: string;
+  ariaLabel: string;
+  icon: typeof ArchiveIcon;
+  onClick: (button: HTMLButtonElement) => void;
+}
+
 export function ThreadRowTrailingMeta(props: {
   thread: Pick<ThreadListItem, "id" | "branch" | "worktreePath" | "titleRegeneration">;
   lastInteractionAt: string;
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
   showDraftIndicator?: boolean | undefined;
-  action?: {
-    label: string;
-    ariaLabel: string;
-    icon: typeof ArchiveIcon;
-    onClick: () => void;
-  } | null;
+  /**
+   * Shown in the timestamp's place on hover and focus. Touch screens always show the last
+   * one, the row's main action; the others stay in the context menu there.
+   */
+  actions?: readonly ThreadRowQuickAction[] | undefined;
 }) {
   "use memo";
-  const action = props.action ?? null;
+  const actions = props.actions ?? [];
+  const hasActions = actions.length > 0;
   const draft = useComposerDraftStore((store) => store.draftsByThreadId[props.thread.id]);
   const draftPreview =
     props.showDraftIndicator === false ? null : resolveSidebarComposerDraftPreview(draft);
-  const ActionIcon = action?.icon;
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -498,13 +534,13 @@ export function ThreadRowTrailingMeta(props: {
           />
         </button>
       ) : null}
-      <span className="relative flex shrink-0 items-center justify-end">
+      <span className="flex shrink-0 items-center justify-end">
         <span
           className={cn(
             "text-2xs font-normal tabular-nums",
             props.isHighlighted ? "text-foreground" : "text-muted-foreground",
-            action &&
-              "group-hover/thread-row:invisible group-focus-within/thread-row:invisible pointer-coarse:invisible",
+            hasActions &&
+              "group-hover/thread-row:hidden group-focus-within/thread-row:hidden pointer-coarse:hidden",
           )}
         >
           <ThreadRelativeActivityTime
@@ -512,36 +548,42 @@ export function ThreadRowTrailingMeta(props: {
             fallback={props.lastInteractionAt}
           />
         </span>
-        {action && ActionIcon ? (
-          <span className="absolute inset-y-0 right-0 flex items-center">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={action.ariaLabel}
-                    className={cn(
-                      "-mr-1 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-                      SIDEBAR_ROW_REVEAL_CLASS_NAME,
-                    )}
-                    onMouseDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      action.onClick();
-                    }}
-                    onKeyDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                  >
-                    <ActionIcon className="size-3.5" />
-                  </button>
-                }
-              />
-              <TooltipPopup side="top">{action.label}</TooltipPopup>
-            </Tooltip>
+        {hasActions ? (
+          <span
+            className="-mr-1 hidden items-center group-hover/thread-row:flex group-focus-within/thread-row:flex pointer-coarse:flex"
+            data-testid="thread-row-quick-actions"
+          >
+            {actions.map((action, index) => (
+              <Tooltip key={action.label}>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={action.ariaLabel}
+                      className={cn(
+                        "inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+                        // Touch screens keep only the row's main action, the last one.
+                        index < actions.length - 1 && "pointer-coarse:hidden",
+                      )}
+                      onMouseDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        action.onClick(event.currentTarget);
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
+                      <action.icon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">{action.label}</TooltipPopup>
+              </Tooltip>
+            ))}
           </span>
         ) : null}
       </span>
