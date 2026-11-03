@@ -5,6 +5,20 @@ export function codexRequestShapeProbe(
   available: ReadonlySet<string>,
 ): string {
   const methods = [
+    ["account/usage/read", "v2/GetAccountTokenUsageParams", 'buildCodexUsageReadParams("thread")'],
+    ["thread/goal/set", "v2/ThreadGoalSetParams", 'buildCodexGoalPauseParams("thread", "user")'],
+    ["thread/goal/clear", "v2/ThreadGoalClearParams", 'buildCodexGoalClearParams("thread")'],
+    [
+      "thread/sample",
+      "v2/ThreadSampleParams",
+      'buildCodexSampleParams("thread", "turn", "question")',
+    ],
+    [
+      "thread/readState/update",
+      "v2/ThreadReadStateUpdateParams",
+      'buildCodexReadMarkParams("thread", "revision")',
+    ],
+    ["thread/memory/read", "v2/ThreadMemoryReadParams", 'buildCodexMemoryReadParams("thread")'],
     ["initialize", "InitializeParams", "buildCodexInitializeParams()"],
     [
       "thread/start",
@@ -36,6 +50,7 @@ export function codexRequestShapeProbe(
   const lines = [
     `import { buildCodexInitializeParams, buildCodexThreadOpenRequestParams, buildCodexThreadRevertParams, buildCodexThreadForkParams, buildCodexTurnStartParams, buildCodexTurnSteerParams } from ${JSON.stringify(builderPath)};`,
     'import { ThreadId } from "@t3tools/contracts";',
+    `import { buildCodexSampleParams, buildCodexReadMarkParams, buildCodexMemoryReadParams, buildCodexUsageReadParams, buildCodexGoalPauseParams, buildCodexGoalClearParams } from ${JSON.stringify(builderPath)};`,
   ];
   for (const [method, file, expression] of methods) {
     if (!available.has(method)) continue;

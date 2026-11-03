@@ -278,7 +278,11 @@ export function createJsonRpcStdinWriter(input: {
 export function jsonRpcWriteLane(message: unknown): "ordinary" | "control" {
   if (message && typeof message === "object") {
     const frame = message as Record<string, unknown>;
-    if (frame.method === "turn/interrupt" || (frame.id !== undefined && frame.method === undefined))
+    if (
+      frame.method === "turn/interrupt" ||
+      frame.method === "thread/sample/cancel" ||
+      (frame.id !== undefined && frame.method === undefined)
+    )
       return "control";
   }
   return "ordinary";

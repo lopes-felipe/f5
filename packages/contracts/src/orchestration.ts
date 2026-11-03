@@ -788,6 +788,7 @@ export const CompactToolActivityPayload = Schema.Struct({
   subagentPrompt: Schema.optional(Schema.String),
   subagentResult: Schema.optional(Schema.String),
   subagentModel: Schema.optional(TrimmedNonEmptyString),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
   subagentThreadId: Schema.optional(TrimmedNonEmptyString),
   subagentPath: Schema.optional(TrimmedNonEmptyString),
   subagentSenderThreadId: Schema.optional(TrimmedNonEmptyString),

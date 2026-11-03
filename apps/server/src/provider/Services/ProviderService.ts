@@ -77,6 +77,7 @@ export interface ProviderServiceShape {
   readonly submitTurn?: (input: ProviderSendTurnInput) => Effect.Effect<ProviderSubmissionHandle>;
 
   readonly nativeOperations?: {
+    readonly markRead?: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
     readonly historyRecovery?: (
       input: import("@t3tools/contracts").NativeHistoryRecoveryInput,
     ) => Effect.Effect<

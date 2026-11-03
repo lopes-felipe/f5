@@ -27,6 +27,10 @@ export function supportsCodexNativeOperations(version: string | null | undefined
   return codexVersionAtLeast(version, "0.162.0");
 }
 
+export function supportsCodexRelease5(version: string | null | undefined): boolean {
+  return codexVersionAtLeast(version, "0.166.0");
+}
+
 export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,

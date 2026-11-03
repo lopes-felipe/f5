@@ -3,10 +3,10 @@
  * audited. Keep this list exhaustive: a new method or item must receive an
  * explicit disposition before it can be treated as understood.
  */
-export const CODEX_PROTOCOL_BASELINE_VERSION = "0.162.0" as const;
+export const CODEX_PROTOCOL_BASELINE_VERSION = "0.166.0" as const;
 
 /**
- * Oldest release whose full surface F5 audited before 0.162.0. Older CLIs are
+ * Oldest release whose full surface F5 audited before 0.166.0. Older CLIs are
  * still permitted (the runtime minimum lives in codexCliVersion.ts) but their
  * behavior is unverified. Runtime handlers for methods removed after this
  * release stay in place for those CLIs.
@@ -27,6 +27,7 @@ export type CodexProtocolDisposition = (typeof CODEX_PROTOCOL_DISPOSITIONS)[numb
 export const CODEX_NOTIFICATION_METHODS = [
   "error",
   "thread/started",
+  "thread/readState/changed",
   "thread/status/changed",
   "thread/archived",
   "thread/deleted",
@@ -118,6 +119,7 @@ export type CodexNotificationMethod = (typeof CODEX_NOTIFICATION_METHODS)[number
 export const CODEX_NOTIFICATION_DISPOSITIONS = {
   error: "canonical",
   "thread/started": "canonical",
+  "thread/readState/changed": "state-only",
   "thread/status/changed": "canonical",
   "thread/archived": "state-only",
   "thread/deleted": "state-only",
@@ -254,6 +256,12 @@ export const CODEX_SERVER_REQUEST_DISPOSITIONS = {
  * so a renamed or removed method is caught before users hit it.
  */
 export const CODEX_CLIENT_REQUEST_METHODS = [
+  ["thread/sample"],
+  ["thread/sample/cancel"],
+  ["thread/memory/read"],
+  ["thread/readState/update"],
+  ["accountSession/list"],
+  ["feedback/save"],
   ["review/start"],
   ["thread/name/set"],
   ["thread/compact/start"],
@@ -308,7 +316,7 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
   "thread/revert": { schema: "v2/ThreadRevertResponse.json", fields: ["thread.id"] },
   "thread/read": {
     schema: "v2/ThreadReadResponse.json",
-    fields: ["thread.id", "thread.turns[].id", "thread.turns[].items"],
+    fields: ["thread.id", "thread.turns[].id", "thread.turns[].items", "readState"],
   },
   "thread/turns/list": {
     schema: "v2/ThreadTurnsListResponse.json",
@@ -335,7 +343,7 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
   },
   "account/read": {
     schema: "v2/GetAccountResponse.json",
-    fields: ["account.type", "account.planType"],
+    fields: ["account.type", "account.planType", "account.workspaceName"],
   },
   "skills/list": {
     schema: "v2/SkillsListResponse.json",
@@ -353,7 +361,31 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
     schema: "v2/GetAccountRateLimitsResponse.json",
     fields: ["rateLimits"],
   },
-  "account/usage/read": { schema: "v2/GetAccountTokenUsageResponse.json", fields: ["summary"] },
+  "account/usage/read": {
+    schema: "v2/GetAccountTokenUsageResponse.json",
+    fields: ["summary", "threadUsage.nativeUsageUsdMicros", "threadUsage.estimatedUsageUsdMicros"],
+  },
+  "thread/sample": {
+    schema: "v2/ThreadSampleResponse.json",
+    fields: ["sourceTurnId", "text", "inputTokens", "cachedInputTokens", "outputTokens"],
+  },
+  "thread/memory/read": { schema: "v2/ThreadMemoryReadResponse.json", fields: ["summary"] },
+  "thread/readState/update": {
+    schema: "v2/ThreadReadStateUpdateResponse.json",
+    fields: ["readState.firstUnread", "readState.revision"],
+  },
+  "accountSession/list": {
+    schema: "v2/AccountSessionsResponse.json",
+    fields: [
+      "activeSessionId",
+      "sessions[].email",
+      "sessions[].isActive",
+      "sessions[].selectedWorkspaceAccountId",
+      "sessions[].workspaces[].accountId",
+      "sessions[].workspaces[].name",
+      "sessions[].workspaces[].kind",
+    ],
+  },
   "config/read": { schema: "v2/ConfigReadResponse.json", fields: ["config", "origins", "layers"] },
   "config/batchWrite": {
     schema: "v2/ConfigWriteResponse.json",

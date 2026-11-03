@@ -250,6 +250,12 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
           if (Exit.isSuccess(exit)) return Effect.void;
           // A lost response, timeout or shutdown never implies the provider did nothing.
           const error = Cause.squash(exit.cause);
+          const cancelled =
+            input.command.kind === "aside" &&
+            error !== null &&
+            typeof error === "object" &&
+            "nativeOperationCancelled" in error &&
+            error.nativeOperationCancelled === true;
           const notSent =
             record.result === undefined &&
             error !== null &&
@@ -261,11 +267,21 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
                   "ProviderAdapterSessionClosedError",
                   "ProviderAdapterValidationError",
                 ].includes(String(error._tag))));
-          return transition(dispatched && !notSent ? "indeterminate" : "failed", {
-            error: Cause.hasInterruptsOnly(exit.cause)
-              ? "Server shutdown cancelled the waiter; provider outcome requires reconciliation."
-              : String(Cause.squash(exit.cause)).slice(0, 400),
-          });
+          return transition(
+            cancelled
+              ? "cancelled"
+              : dispatched && !notSent && input.command.kind !== "aside"
+                ? "indeterminate"
+                : "failed",
+            {
+              error:
+                input.command.kind === "aside" && Cause.hasInterruptsOnly(exit.cause)
+                  ? "Aside cancelled."
+                  : Cause.hasInterruptsOnly(exit.cause)
+                    ? "Server shutdown cancelled the waiter; provider outcome requires reconciliation."
+                    : String(Cause.squash(exit.cause)).slice(0, 400),
+            },
+          );
         }),
         Effect.catchCause(() => Effect.void),
         Effect.ensuring(Effect.sync(() => executing.delete(input.operationId))),
@@ -287,12 +303,14 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
         const current = yield* repository.get(record.operationId);
         if (!current || !active(current.state) || executing.has(current.operationId)) return;
         const outcome =
-          current.state === "requested"
-            ? { state: "cancelled" as const }
-            : yield* check(current).pipe(
-                Effect.timeout("10 seconds"),
-                Effect.catchCause(() => Effect.succeed({ state: "indeterminate" as const })),
-              );
+          current.command.kind === "aside"
+            ? { state: "failed" as const }
+            : current.state === "requested"
+              ? { state: "cancelled" as const }
+              : yield* check(current).pipe(
+                  Effect.timeout("10 seconds"),
+                  Effect.catchCause(() => Effect.succeed({ state: "indeterminate" as const })),
+                );
         yield* persist({
           ...current,
           ...outcome,

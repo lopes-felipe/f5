@@ -18,11 +18,19 @@ import {
   type CodexControlEnvironmentConfig,
 } from "../codex/CodexControlClient.ts";
 import { hookProgramName } from "./claudeInventory.ts";
+import { supportsCodexRelease5 } from "@t3tools/shared/providerRuntimeCapabilities";
 
 export const CODEX_INVENTORY_TIMEOUT_MS = 10_000;
 const MAX_TEXT = 512;
 
 export interface CodexInventory {
+  readonly feedbackSupported?: boolean;
+  readonly account?: {
+    type: "apiKey" | "chatgpt" | "gcp" | "unknown";
+    email?: string;
+    workspaceName?: string;
+  };
+  readonly accountWorkspaces?: ReadonlyArray<{ name: string; kind?: string; active: boolean }>;
   readonly hooks: ReadonlyArray<ProviderInventoryHook>;
   readonly plugins: ReadonlyArray<ProviderInventoryPlugin>;
   readonly connectors: ReadonlyArray<ProviderInventoryConnector>;
@@ -88,10 +96,14 @@ export function parseCodexHooks(
       const pluginId = bounded(hook.pluginId);
       result.push({
         event,
+        ...(bounded(hook.environmentId) ? { environmentId: bounded(hook.environmentId)! } : {}),
         ...(matcher ? { matcher } : {}),
         ...(handlerType ? { handlerType } : {}),
         ...(program ? { program } : {}),
-        source: hook.isManaged === true ? "managed" : codexInventorySource(hook.source),
+        source:
+          hook.isManaged === true || bounded(hook.environmentId)
+            ? "managed"
+            : codexInventorySource(hook.source),
         ...(sourcePath ? { sourcePath } : {}),
         ...(typeof hook.enabled === "boolean" ? { enabled: hook.enabled } : {}),
         ...(pluginId ? { pluginId } : {}),
@@ -194,6 +206,43 @@ export function parseCodexMcpServersFromLayers(
   return result;
 }
 
+export function parseCodexInventoryAccount(response: unknown): CodexInventory["account"] {
+  const account = isRecord(response) && isRecord(response.account) ? response.account : undefined;
+  if (!account) return undefined;
+  const type =
+    account.type === "apiKey" || account.type === "chatgpt" || account.type === "gcp"
+      ? account.type
+      : "unknown";
+  const email = bounded(account.email);
+  const workspaceName = bounded(account.workspaceName);
+  return { type, ...(email ? { email } : {}), ...(workspaceName ? { workspaceName } : {}) };
+}
+
+export function parseCodexAccountWorkspaces(
+  response: unknown,
+): NonNullable<CodexInventory["accountWorkspaces"]> {
+  if (!isRecord(response) || !Array.isArray(response.sessions)) return [];
+  return response.sessions.slice(0, 100).flatMap((session) => {
+    if (!isRecord(session) || !Array.isArray(session.workspaces)) return [];
+    return session.workspaces.slice(0, 100).flatMap((workspace) => {
+      if (!isRecord(workspace)) return [];
+      const name = bounded(workspace.name) ?? bounded(workspace.accountId);
+      const kind = bounded(workspace.kind);
+      return name
+        ? [
+            {
+              name,
+              ...(kind ? { kind } : {}),
+              active:
+                session.isActive === true &&
+                session.selectedWorkspaceAccountId === workspace.accountId,
+            },
+          ]
+        : [];
+    });
+  });
+}
+
 async function attempt<T>(
   warnings: string[],
   label: string,
@@ -232,7 +281,21 @@ export async function readCodexInventory(
       const plugins = await attempt(warnings, "plugin/list", () => opened.listPlugins(cwds));
       const apps = await attempt(warnings, "app/list", () => opened.listApps());
       const config = await attempt(warnings, "config/read", () => opened.readConfig());
+      let accountWorkspaces: CodexInventory["accountWorkspaces"];
+      const accountResponse = await attempt(warnings, "account/read", () => opened.readAccount());
+      const account = parseCodexInventoryAccount(accountResponse);
+      if (supportsCodexRelease5(opened.cliVersion)) {
+        if (account?.type === "chatgpt") {
+          const listed = await attempt(warnings, "accountSession/list", () =>
+            opened.listAccountSessions(),
+          );
+          accountWorkspaces = parseCodexAccountWorkspaces(listed);
+        }
+      }
       return {
+        feedbackSupported: supportsCodexRelease5(opened.cliVersion),
+        ...(account ? { account } : {}),
+        ...(accountWorkspaces ? { accountWorkspaces } : {}),
         hooks: parseCodexHooks(hooks ?? []),
         plugins: parseCodexPlugins(plugins),
         connectors: [

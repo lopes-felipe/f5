@@ -101,6 +101,21 @@ export function shouldRunNativeReviewShortcut(input: {
   );
 }
 
+export function shouldRunNativeAsideShortcut(input: {
+  readonly prompt: string;
+  readonly sessionProvider: string;
+  readonly sessionInstanceId: string | null;
+  readonly selectedInstanceId: string;
+  readonly nativeAsideSupported: boolean;
+}): boolean {
+  return (
+    /^\/aside(?:\s|$)/u.test(input.prompt.trim()) &&
+    input.sessionProvider === "codex" &&
+    input.sessionInstanceId === input.selectedInstanceId &&
+    input.nativeAsideSupported
+  );
+}
+
 export function shouldRenderTimelineContent(input: {
   detailsLoaded: boolean;
   hasRenderableMessage: boolean;

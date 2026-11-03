@@ -1029,6 +1029,15 @@ describe("WebSocket Server", () => {
       { retryServerStarting: false },
     );
     expect(globalInventory.error?.message).toBe("Provider instance not found.");
+    const invalidFeedback = await sendRequest(
+      ws,
+      WS_METHODS.serverSaveProviderFeedback,
+      { instanceId: "missing" },
+      { retryServerStarting: false },
+    );
+    expect(invalidFeedback.error?.message).toBe(
+      "Feedback bundles are only available for a configured Codex provider.",
+    );
     const probe = await sendRequest(ws, WS_METHODS.serverProbe);
     expect(probe.result).toEqual({ runtime: expect.objectContaining({ state: "starting" }) });
   });

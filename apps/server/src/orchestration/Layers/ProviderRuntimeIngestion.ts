@@ -1886,6 +1886,9 @@ export function runtimeEventToActivities(
             subagentThreadId: event.payload.agentThreadId,
             subagentPath: event.payload.agentPath,
             ...(event.payload.model ? { subagentModel: event.payload.model } : {}),
+            ...(event.payload.reasoningEffort
+              ? { reasoningEffort: event.payload.reasoningEffort }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -5999,17 +6002,54 @@ const make = Effect.gen(function* () {
       if (
         event.type === "thread.metadata.updated" &&
         event.payload.metadata &&
-        ("nativeAttachment" in event.payload.metadata || "nativeGoal" in event.payload.metadata)
+        ("nativeAttachment" in event.payload.metadata ||
+          "nativeGoal" in event.payload.metadata ||
+          "nativeAside" in event.payload.metadata)
       ) {
+        const aside = event.payload.metadata.nativeAside;
+        if (aside && typeof aside === "object") {
+          const value = aside as Record<string, unknown>;
+          const tokens = (input: unknown) =>
+            typeof input === "number" && Number.isSafeInteger(input) && input >= 0 ? input : null;
+          const inputTokens = tokens(value.inputTokens);
+          const outputTokens = tokens(value.outputTokens);
+          yield* orchestrationEngine.dispatch({
+            type: "thread.usage.record",
+            commandId: providerCommandId(event, "aside-usage"),
+            threadId: thread.id,
+            usageFact: {
+              turnId: TurnId.makeUnsafe("aside:" + event.eventId),
+              threadId: thread.id,
+              projectId: thread.projectId,
+              provider: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
+              model: typeof value.model === "string" && value.model.trim() ? value.model : null,
+              inputTokens,
+              outputTokens,
+              cacheReadTokens: tokens(value.cachedInputTokens),
+              cacheWriteTokens: null,
+              totalTokens:
+                inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null,
+              providerReportedCostUsd: null,
+              tokenProvenance: "provider-reported",
+              costProvenance: "unreported",
+              completedAt: now,
+              sourceEventId: event.eventId,
+            },
+            createdAt: now,
+          });
+        }
         yield* orchestrationEngine.dispatch({
           type: "thread.activity.append",
           commandId: providerCommandId(event, "native-metadata"),
           threadId: thread.id,
           activity: {
             id: EventId.makeUnsafe(`${event.eventId}:native-metadata`),
-            kind: "native.metadata",
+            kind: "nativeAside" in event.payload.metadata ? "native.aside" : "native.metadata",
             tone: "info",
-            summary: "Provider metadata updated",
+            summary:
+              "nativeAside" in event.payload.metadata ? "Aside" : "Provider metadata updated",
             payload: event.payload.metadata,
             turnId: null,
             createdAt: now,

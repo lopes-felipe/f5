@@ -44,7 +44,7 @@ it("refreshes compatibility notices without disabling sessions or replacing auth
     message: expect.stringContaining("0.147.0"),
   });
   expect(
-    withCodexIsolationCompatibility({ ...status, version: "0.162.0" }, true).message,
+    withCodexIsolationCompatibility({ ...status, version: "0.166.0" }, true).message,
   ).toBeUndefined();
   const signedOut = withCodexIsolationCompatibility(
     { ...status, status: "error", authStatus: "unauthenticated", message: "Please sign in." },

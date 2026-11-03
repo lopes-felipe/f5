@@ -1338,7 +1338,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             type: "imageGeneration",
             id: "image-1",
             status: "completed",
-            result: "image-result",
+            fileId: "image-result",
             savedPath: "/tmp/generated.png",
           },
         },
@@ -1353,7 +1353,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         createdAt,
         method: "item/completed",
         payload: {
-          item: { type: "sleep", id: "sleep-1", durationMs: 1_500 },
+          item: { type: "sleep", id: "sleep-1", startedAtMs: 100, completedAtMs: 1600 },
         },
       } satisfies ProviderEvent);
       lifecycleManager.emit("event", {
@@ -1373,6 +1373,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             agentThreadId: "agent-thread-1",
             agentPath: "/root/reviewer",
             model: "openai.gpt-6-sol",
+            reasoningEffort: "high",
           },
         },
       } satisfies ProviderEvent);
@@ -1385,6 +1386,14 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       );
       assert.equal(events[1]?.type, "item.completed");
       assert.equal(
+        events[0]?.type === "item.completed" ? events[0].payload.detail : undefined,
+        "/tmp/generated.png",
+      );
+      assert.equal(
+        events[1]?.type === "item.completed" ? events[1].payload.detail : undefined,
+        "1.5s",
+      );
+      assert.equal(
         events[1]?.type === "item.completed" ? events[1].payload.itemType : undefined,
         "sleep",
       );
@@ -1395,6 +1404,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           agentThreadId: "agent-thread-1",
           agentPath: "/root/reviewer",
           model: "openai.gpt-6-sol",
+          reasoningEffort: "high",
         });
       }
     }),

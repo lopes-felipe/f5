@@ -1,4 +1,5 @@
 import { makeCodexCatalogCache } from "../codexCatalogCache";
+import { saveCodexFeedback } from "../codexFeedback";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -474,6 +475,15 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ),
       );
 
+      const controlEnvironment = {
+        binaryPath: effectiveConfig.binaryPath,
+        homePath: effectiveConfig.homePath,
+        ...(defaultProviderOptions.codex?.launchArgs
+          ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+          : {}),
+        cwd: serverConfig.cwd,
+        processEnvironment,
+      };
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -500,21 +510,20 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         resetCreditIdentity,
         consumeResetCredit,
         accountUsage,
+        saveFeedback: () =>
+          Effect.tryPromise({
+            try: () => saveCodexFeedback(controlEnvironment, serverConfig.stateDir, instanceId),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: cause instanceof Error ? cause.message : "Could not save Codex feedback.",
+                cause,
+              }),
+          }),
         inventory: ({ projectRoot }) =>
           Effect.tryPromise({
-            try: () =>
-              readCodexInventory(
-                {
-                  binaryPath: effectiveConfig.binaryPath,
-                  homePath: effectiveConfig.homePath,
-                  ...(defaultProviderOptions.codex?.launchArgs
-                    ? { launchArgs: defaultProviderOptions.codex.launchArgs }
-                    : {}),
-                  cwd: serverConfig.cwd,
-                  processEnvironment,
-                },
-                { projectRoot },
-              ),
+            try: () => readCodexInventory(controlEnvironment, { projectRoot }),
             catch: (cause) =>
               new ProviderDriverError({
                 driver: DRIVER_KIND,

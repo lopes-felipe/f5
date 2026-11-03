@@ -13,8 +13,8 @@ export function isUnsupportedCodexModelError(reason: string): boolean {
   );
 }
 
-export function formatCodexUnsupportedModelError(message: string): string {
-  return isUnsupportedCodexModelError(message)
+export function formatCodexUnsupportedModelError(message: string, errorInfo?: unknown): string {
+  return errorInfo === "modelNotFound" || isUnsupportedCodexModelError(message)
     ? `${message} ${UNSUPPORTED_MODEL_RECOVERY_HINT}`
     : message;
 }
@@ -60,7 +60,12 @@ export function formatCodexUsageError(
   const exhausted = (snapshot ? exhaustedCodexWindows(snapshot) : [])
     .filter((window) => window.resetsAt !== null && Date.parse(window.resetsAt) > Date.parse(at))
     .sort((left, right) => Date.parse(right.resetsAt!) - Date.parse(left.resetsAt!))[0];
-  if (errorInfo !== "usageLimitReached") return message;
+  if (errorInfo === "modelNotFound") return formatCodexUnsupportedModelError(message, errorInfo);
+  if (errorInfo === "policyCapacityUnavailable" || errorInfo === "flexUnavailable")
+    return message + " Capacity temporarily unavailable. Retry shortly.";
+  if (errorInfo === "tooManyDenials")
+    return message + " The automatic approval review denial limit was reached.";
+  if (errorInfo !== "usageLimitReached" && errorInfo !== "usageLimitExceeded") return message;
   const label = exhausted?.label ?? undefined;
   const reset = exhausted?.resetsAt ? Date.parse(exhausted.resetsAt) / 1000 : undefined;
   let result = usageLimitMessage("Codex", label, reset);
@@ -201,6 +206,7 @@ export function detectCodexUsageLimit(input: {
   )
     return null;
   const typed =
+    input.errorInfo === "usageLimitExceeded" ||
     input.errorInfo === "usageLimitReached" ||
     (input.errorInfo !== null &&
       typeof input.errorInfo === "object" &&

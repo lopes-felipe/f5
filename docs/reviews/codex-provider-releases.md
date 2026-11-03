@@ -1,7 +1,55 @@
 # Codex provider: implementation and release notes
 
 Contributor reference for the Codex adapter: rewind compatibility, protocol baselines and
-Release 0–4 behavior. The user guide is [providers/codex.md](../providers/codex.md).
+Release 0–5 behavior. The user guide is [providers/codex.md](../providers/codex.md).
+
+## Release 5: codex-cli 0.166.0
+
+Baseline: `rust-v0.166.0`, source revision
+`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The previous full-surface baseline
+remains 0.144.3, with the 0.162.0 fixture retained as history. Wire protocol is 44.
+
+The generated experimental protocol audit certifies 87 notifications, 11 server
+requests, 19 item variants and 85 decoded response fields. No previously consumed
+method or field was removed. Request-shape checks also cover sample, memory, read marks
+and goal provenance. The new read-state notification is state-only.
+
+Version gates retain compaction at 0.159.2 and Release 4 operations at 0.162.0.
+Read marks, aside, memory, account workspaces and feedback bundles require 0.166.0.
+Read marks use the cached revision, never create a session, and replace conflicting
+state without retry. Incoming state never changes F5's sidebar.
+
+Aside uses a reserved native operation and the last settled native turn. Cancellation
+uses its JSON-RPC request ID. Failure cannot leave an indeterminate provider mutation.
+Answers persist as `native.aside` activities rather than messages or turns, so
+message-based summaries, compaction and provider transcripts exclude them.
+
+Additional integration includes workspace and Vertex AI account display, managed
+environment hooks, pre/post model hook labels, local feedback ZIPs, goal mutation
+origins, typed model/capacity/denial/usage-limit errors, shutdown recognition, item
+timestamp duration fallback and subagent reasoning effort.
+
+Live certification on macOS arm64 with an isolated home passed sample history
+preservation, memory reads, read-mark conflicts and goal origins. Sample cancellation
+was dispatched and settled (it can race a successful sample). The existing Release 4
+spike passed, including compaction and review, and rewind certification passed with a
+follow-up turn on GPT-6.1 Sol.
+
+Credential-free initialize/start/unsubscribe regressions passed with isolated homes
+on both 0.162.0 and 0.147.0. The runtime-panel Chromium suite passed memory and usage
+inspection. Full workspace and real-Git test runs are required separately; live
+certification is not a substitute for those checks.
+
+Deliberately excluded:
+
+- Account workspace switching stops all loaded threads in a shared home.
+- GCP setup writes provider configuration, which F5 does not own.
+- Prediction forks would introduce another prompt producer.
+- Attached forks are hidden from native lists and block source deletion.
+- Parent/root turn lineage has no delegated Codex-to-Codex consumer.
+- Additional-context names apply to untrusted context; F5 sends application context.
+- Item reads, excluded thread IDs, response metadata patches, retained tool outputs and
+  process output-drain timeout flags have no current F5 consumer.
 
 ## Release 0 rewind compatibility
 

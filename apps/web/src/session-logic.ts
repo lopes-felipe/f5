@@ -125,6 +125,7 @@ export interface WorkLogEntry {
   subagentPrompt?: string;
   subagentResult?: string;
   subagentModel?: string;
+  reasoningEffort?: string;
   mcpServerName?: string;
   /** The server's display name ("Claude Docs"); the raw name stays in `mcpServerName`. */
   mcpServerLabel?: string;
@@ -770,7 +771,12 @@ function shouldKeepHistoricalWorkEntry(
   latestTurnId: TurnId | undefined,
   terminalCallKeys: ReadonlySet<string>,
 ): boolean {
-  if (!latestTurnId || activity.kind === "htmlRender" || activity.kind === "mcpApp") {
+  if (
+    !latestTurnId ||
+    activity.kind === "htmlRender" ||
+    activity.kind === "mcpApp" ||
+    activity.kind === "native.aside"
+  ) {
     return true;
   }
   if (
@@ -848,6 +854,7 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     subagentPrompt: entry.subagentPrompt,
     subagentResult: entry.subagentResult,
     subagentModel: entry.subagentModel,
+    reasoningEffort: entry.reasoningEffort,
     subagentThreadId: entry.subagentThreadId,
     subagentPath: entry.subagentPath,
     subagentSenderThreadId: entry.subagentSenderThreadId,
@@ -1954,6 +1961,14 @@ export function deriveWorkLogEntries(
         ...(userInput ? { userInput } : {}),
         ...(startedAt ? { startedAt } : {}),
       };
+      if (activity.kind === "native.aside") {
+        const aside = payload?.nativeAside as Record<string, unknown> | undefined;
+        entry.label = "Aside: " + String(aside?.question ?? "");
+        entry.detail =
+          typeof aside?.text === "string"
+            ? aside.text
+            : "No text answer; ask as a normal message instead.";
+      }
       if (activity.kind === "mcpApp") {
         const app = readMcpAppView(payload);
         if (app) entry.mcpApp = app;
@@ -2043,6 +2058,7 @@ export function deriveWorkLogEntries(
       if (toolPayload?.subagentModel) {
         entry.subagentModel = toolPayload.subagentModel;
       }
+      if (toolPayload?.reasoningEffort) entry.reasoningEffort = toolPayload.reasoningEffort;
       if (toolPayload?.subagentThreadId) {
         entry.subagentThreadId = toolPayload.subagentThreadId;
       }

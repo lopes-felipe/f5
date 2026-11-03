@@ -854,6 +854,8 @@ export function createWsNativeApi(): NativeApi {
       runProviderUpdate: requestMethod(WS_METHODS.serverRunProviderUpdate),
       getProviderInventory: (input) =>
         transport.request(WS_METHODS.serverGetProviderInventory, input),
+      saveProviderFeedback: (input) =>
+        transport.request(WS_METHODS.serverSaveProviderFeedback, input),
       validateHarnesses: requestMethod(WS_METHODS.serverValidateHarnesses),
       upsertKeybinding: requestKeybindingMutation(WS_METHODS.serverUpsertKeybinding),
       addKeybinding: requestKeybindingMutation(WS_METHODS.serverAddKeybinding),
@@ -1066,6 +1068,7 @@ export function createWsNativeApi(): NativeApi {
       analyzeClaudeUsage: (input) => transport.request(USAGE_WS_METHODS.analyzeClaudeUsage, input),
     },
     nativeOperations: {
+      markRead: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.markRead, input),
       historyRecovery: (input) =>
         transport.request(NATIVE_OPERATION_WS_METHODS.historyRecovery, input),
       resolve: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.resolve, input),
