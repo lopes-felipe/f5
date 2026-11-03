@@ -16,6 +16,7 @@ import {
   ProjectProviderControls,
   ProjectScopeGate,
 } from "../ProjectSettingsScope";
+import { ProjectActionsSettings } from "../ProjectActionsSettings";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
@@ -86,7 +87,7 @@ function CheckedInProjectConfigSummary({ projectId }: { readonly projectId: Proj
   );
 }
 
-/** The project-scope "Project" page: icon, memory, and checked-in defaults for one project. */
+/** The project-scope "Project" page: actions, icon, memory, and checked-in defaults for one project. */
 export function ProjectSettings() {
   const {
     selectedProject,
@@ -124,6 +125,8 @@ export function ProjectSettings() {
         <ProjectOverridesResetCard />
         <ProjectProviderControls />
       </ProjectScopeGate>
+
+      <ProjectActionsSettings />
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">

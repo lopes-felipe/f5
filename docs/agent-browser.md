@@ -866,8 +866,11 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
   (`reportChromeCalls`), from just before it acquires the lease (idle) until it releases
   it (idle while main drains); the broker drops the report when the lease ends. Every
   Chrome holder carries `browser` (`idle`, `working`, or `unknown` for sessions that
-  don't report). The banner says "An agent is using Chrome" during a call and, in its
-  quieter style, "An agent can use Chrome" otherwise, never "controlling this computer";
+  don't report). The banner says "An agent is using Chrome" during a call and for 3 s
+  after it (`CHROME_BANNER_LINGER_MS`, so back-to-back calls don't flicker), shows
+  nothing while the runtime is idle (the thread's card still says "Chrome ready · not in
+  use"), says "An agent may be using Chrome" for `unknown`, and never says "controlling
+  this computer";
 - a turn waits up to 20 s for that adoption. A runtime still not supervised then is
   stopped for the turn (and swept through main), so the model never reaches an
   unverified, unleased runtime; the next turn starts it again.

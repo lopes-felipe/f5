@@ -229,32 +229,40 @@ describe("computer use banner text", () => {
   });
   it("says whether an agent is using Chrome, not that it controls the computer", () => {
     const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
-    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(
-      "An agent can use Chrome",
+    // An idle runtime shows nothing, except just after a call ended.
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBeNull();
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false, true)).toBe(
+      "An agent is using Chrome",
     );
     expect(computerUseBannerText({ holders: [{ ...chrome, browser: "working" }] }, false)).toBe(
       "An agent is using Chrome",
     );
     expect(computerUseBannerText({ holders: [{ ...chrome, browser: "unknown" }] }, false)).toBe(
-      "An agent can use Chrome",
+      "An agent may be using Chrome",
     );
     // Without the Chrome marker (an older server), the holder keeps the louder wording.
     expect(computerUseBannerText({ holders: [chrome] }, false)).toBe(
       "An agent is controlling this computer",
     );
-    // Only an idle runtime gets the quieter style.
-    const ambient = (browser: "idle" | "working" | "unknown", paused = false) =>
-      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, paused);
-    expect(ambient("idle")).toBe(true);
-    expect(ambient("working")).toBe(false);
-    expect(ambient("unknown")).toBe(false);
-    expect(ambient("idle", true)).toBe(false);
+    // A local pause still shows on an idle runtime.
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, true)).toBe(
+      "Computer control paused",
+    );
     expect(
-      computerUseBannerAmbient(
+      computerUseBannerText(
         { holders: [{ ...chrome, browser: "idle" }], otherProfile: true },
         false,
       ),
-    ).toBe(false);
+    ).toBe("An agent in another F5 profile is controlling this computer");
+    // Chrome never gets the quieter style; background control does.
+    const ambient = (browser: "idle" | "working" | "unknown") =>
+      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, false);
+    expect(ambient("idle")).toBe(false);
+    expect(ambient("working")).toBe(false);
+    expect(ambient("unknown")).toBe(false);
+    expect(computerUseBannerAmbient({ holders: [holder] }, false)).toBe(true);
+    expect(computerUseBannerAmbient({ holders: [holder] }, true)).toBe(false);
+    expect(computerUseBannerAmbient({ holders: [holder], otherProfile: true }, false)).toBe(false);
     // An idle Chrome runtime doesn't outrank an agent working in an app.
     const idle = { ...chrome, threadId: ThreadId.makeUnsafe("b"), browser: "idle" as const };
     expect(primaryComputerHolder({ holders: [idle, holder] })).toBe(holder);

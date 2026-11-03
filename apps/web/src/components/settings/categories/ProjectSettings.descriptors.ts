@@ -11,6 +11,13 @@ export const PROJECT_SETTINGS_DESCRIPTORS = [
     targetSelector: '[data-settings-search-target="project.providers"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["project.actions"],
+    label: "Project actions",
+    description: "Add, edit, or remove project commands, setup scripts, and their shortcuts.",
+    keywords: ["scripts", "setup", "worktree", "command", "run", "shortcut", "keybinding"],
+    targetSelector: '[data-settings-search-target="project.actions"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["project.icon"],
     label: "Project icon",
     description: "Choose an automatic favicon, emoji, or colored symbol for a project.",

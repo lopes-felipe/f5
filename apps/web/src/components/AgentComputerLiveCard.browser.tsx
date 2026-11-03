@@ -1,4 +1,4 @@
-import { ComputerUseBanner } from "./ComputerUseBanner";
+import { CHROME_BANNER_LINGER_MS, ComputerUseBanner } from "./ComputerUseBanner";
 import "../index.css";
 import { ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -438,5 +438,33 @@ it("keeps a failed suspension unconfirmed after successful interruption and expo
     await expect.element(page.getByRole("button", { name: "Retry Stop" })).not.toBeInTheDocument();
   } finally {
     await screen.unmount();
+  }
+});
+it("keeps the Chrome banner up between calls and hides it once the runtime stays idle", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
+  const banner = () => document.querySelector('[data-testid="computer-use-banner"]');
+  // Lets the banner's effect schedule (or cancel) its linger timer before time moves.
+  const settle = (browser: "idle" | "working") => {
+    store.setLeases({ holders: [{ ...chrome, browser }] });
+    return vi.waitFor(() => expect(vi.getTimerCount()).toBe(browser === "idle" ? 1 : 0));
+  };
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  store.setLeases({ holders: [{ ...chrome, browser: "working" }] });
+  const screen = await render(<ComputerUseBanner />);
+  try {
+    await vi.waitFor(() => expect(banner()?.textContent).toContain("An agent is using Chrome"));
+    await settle("idle");
+    await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS - 500);
+    expect(banner()?.textContent).toContain("An agent is using Chrome");
+    await settle("working");
+    await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS);
+    expect(banner()?.textContent).toContain("An agent is using Chrome");
+    await settle("idle");
+    await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS);
+    await vi.waitFor(() => expect(banner()).toBeNull());
+  } finally {
+    await screen.unmount();
+    vi.useRealTimers();
   }
 });

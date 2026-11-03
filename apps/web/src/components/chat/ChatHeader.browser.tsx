@@ -330,10 +330,12 @@ describe("ChatHeader", () => {
   it("offers project-scoped actions from the project badge", async () => {
     const onNewThreadInProject = vi.fn();
     const onOpenProjectSettings = vi.fn();
+    const onOpenProjectActions = vi.fn();
     const screen = await renderHeader({
       activeProjectName: "Project Alpha",
       onNewThreadInProject,
       onOpenProjectSettings,
+      onOpenProjectActions,
     });
 
     try {
@@ -344,6 +346,10 @@ describe("ChatHeader", () => {
       await page.getByRole("button", { name: "Project actions for Project Alpha" }).click();
       await page.getByRole("menuitem", { name: "Project settings" }).click();
       expect(onOpenProjectSettings).toHaveBeenCalledTimes(1);
+
+      await page.getByRole("button", { name: "Project actions for Project Alpha" }).click();
+      await page.getByRole("menuitem", { name: "Manage actions" }).click();
+      expect(onOpenProjectActions).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
     }
