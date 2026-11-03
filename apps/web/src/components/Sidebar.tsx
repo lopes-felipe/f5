@@ -111,12 +111,24 @@ import {
   workflowEntryKey,
 } from "./sidebar/sidebarLists";
 import { useDesktopUpdate } from "./sidebar/useDesktopUpdate";
+import { SidebarRecentView } from "./sidebar/SidebarRecentView";
+import { bucketRecentSidebarItems, collectRecentSidebarItems } from "./sidebar/sidebarRecent";
+import { useLocalStorage } from "../hooks/useLocalStorage";
+import { Schema } from "effect";
 import { useSidebarThreadActions } from "./sidebar/useSidebarThreadActions";
 import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { useStartScratchThread } from "../hooks/useStartScratchThread";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
+
+/** Which list the sidebar shows; a per-viewer convenience, so it lives in localStorage. */
+const SIDEBAR_VIEW_STORAGE_KEY = "f5:sidebar:view";
+const SidebarViewSchema = Schema.Literals(["projects", "recent"]);
+const SIDEBAR_VIEW_OPTIONS = [
+  { value: "projects", label: "Projects" },
+  { value: "recent", label: "Recent" },
+] as const;
 
 /** Deletes a project's threads, then the project; throws the first failure. */
 async function deleteProjectWithThreads(input: {
@@ -215,6 +227,11 @@ export default function Sidebar() {
   const suppressProjectClickAfterDragRef = useRef(false);
   const sidebarHoverAnchorRef = useRef<HTMLDivElement | null>(null);
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
+  const [sidebarView, setSidebarView] = useLocalStorage(
+    SIDEBAR_VIEW_STORAGE_KEY,
+    "projects",
+    SidebarViewSchema,
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
   const firstProjectId = listedProjects[0]?.id ?? null;
@@ -431,6 +448,13 @@ export default function Sidebar() {
       scheduledThreadIdsByProjectId,
       archivedItemKeysByProjectId,
       attentionThreadIds: liveAttentionThreads.map((thread) => thread.id),
+      recentItemKeys: Object.values(
+        bucketRecentSidebarItems(
+          collectRecentSidebarItems(projectSidebarListsById),
+          threadStatusById,
+          nowHour,
+        ),
+      ).flatMap((items) => items.map((item) => item.key)),
     };
   });
   // Hover freezes the "Needs you" order so rows do not reshuffle under the
@@ -1160,8 +1184,26 @@ export default function Sidebar() {
         <SidebarGroup
           className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
         >
-          <div className="flex h-7 items-center justify-between px-2">
-            <span className="text-2xs font-medium text-muted-foreground">Threads and projects</span>
+          <div className="flex h-8 items-center justify-between gap-2 pr-2 pb-1 pl-1">
+            <div
+              role="radiogroup"
+              aria-label="Sidebar view"
+              className="flex min-w-0 flex-1 rounded-lg border border-border p-0.5"
+            >
+              {SIDEBAR_VIEW_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={sidebarView === option.value}
+                  data-testid={`sidebar-view-${option.value}`}
+                  className="h-6 min-w-0 flex-1 truncate rounded-md px-2 text-2xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:font-medium aria-checked:text-foreground"
+                  onClick={() => setSidebarView(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1182,29 +1224,49 @@ export default function Sidebar() {
 
           {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
 
-          <DndContext
-            sensors={projectDnDSensors}
-            collisionDetection={projectCollisionDetection}
-            modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-            onDragStart={handleProjectDragStart}
-            onDragEnd={handleProjectDragEnd}
-            onDragCancel={handleProjectDragCancel}
-          >
-            <SidebarMenu
-              {...SIDEBAR_TREE_PROPS}
-              aria-label="Threads and projects"
-              ref={attachSidebarTree}
-              className="gap-px"
+          {sidebarView === "recent" ? (
+            <SidebarRecentView
+              projects={projects}
+              listsByProjectId={projectSidebarListsById}
+              statusById={threadStatusById}
+              now={nowHour}
+              frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
+              threadPreviewLimit={threadPreviewLimit}
+              draftThreadsByThreadId={draftThreadsByThreadId}
+              persistedThreadIds={persistedThreadIds}
+              routeThreadId={routeThreadId}
+              pathname={pathname}
+              expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
+              workflowExpandedById={workflowExpandedById}
+              indicatorsForThread={indicatorsForThread}
+              threadActions={threadActions}
+              projectActions={projectActions}
+            />
+          ) : (
+            <DndContext
+              sensors={projectDnDSensors}
+              collisionDetection={projectCollisionDetection}
+              modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+              onDragStart={handleProjectDragStart}
+              onDragEnd={handleProjectDragEnd}
+              onDragCancel={handleProjectDragCancel}
             >
-              {projects.filter(isScratchProject).map(renderProjectItem)}
-              <SortableContext
-                items={listedProjects.map((project) => project.id)}
-                strategy={verticalListSortingStrategy}
+              <SidebarMenu
+                {...SIDEBAR_TREE_PROPS}
+                aria-label="Threads and projects"
+                ref={attachSidebarTree}
+                className="gap-px"
               >
-                {listedProjects.map(renderProjectItem)}
-              </SortableContext>
-            </SidebarMenu>
-          </DndContext>
+                {projects.filter(isScratchProject).map(renderProjectItem)}
+                <SortableContext
+                  items={listedProjects.map((project) => project.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {listedProjects.map(renderProjectItem)}
+                </SortableContext>
+              </SidebarMenu>
+            </DndContext>
+          )}
 
           {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
             <StartupSidebarSkeleton />

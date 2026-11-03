@@ -125,6 +125,8 @@ export interface SidebarHoverFreezeSnapshot {
   scheduledThreadIdsByProjectId: Readonly<Record<string, readonly ThreadId[]>>;
   archivedItemKeysByProjectId: Readonly<Record<string, readonly string[]>>;
   attentionThreadIds: readonly ThreadId[];
+  /** The Recent view's item keys, in display order across its buckets. */
+  recentItemKeys: readonly string[];
 }
 
 export function workflowEntryKey(entry: SidebarWorkflowEntry): string {

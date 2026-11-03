@@ -54,10 +54,12 @@ import { useSidebarTreeRowProps } from "./sidebarTreeRow";
  * - `archived`: rename and unarchive.
  * - `settled`: quiet completed work, with an explicit Unsettle action.
  * - `attention`: "Needs you"; plain navigation, no multi-select, shows the project.
+ * - `recent`: the Recent view; like `active` (it shows the project instead), no pin drag.
  */
 export type SidebarThreadRowSection =
   | "workflow"
   | "active"
+  | "recent"
   | "snoozed"
   | "archived"
   | "settled"
@@ -138,13 +140,15 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     (state) => selectable && state.selectedThreadIds.has(thread.id),
   );
   const isHighlighted = isActive || isSelected;
+  // Recent rows behave like a project's active rows; only one of the two views renders.
+  const activeLike = section === "active" || section === "recent";
   const testId =
-    section === "active" || section === "archived" || section === "settled"
+    activeLike || section === "archived" || section === "settled"
       ? `thread-row-${thread.id}`
       : section === "attention"
         ? `attention-thread-row-${thread.id}`
         : undefined;
-  const canRename = section === "active" || section === "archived" || section === "settled";
+  const canRename = activeLike || section === "archived" || section === "settled";
   const treeRowProps = useSidebarTreeRowProps(`thread:${section}:${thread.id}`);
   // Dragging a row onto a composer references the thread; it never navigates or reorders.
   const draggable = !isDraft && !(canRename && isRenaming) && isThreadReferenceId(thread.id);
@@ -166,7 +170,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     if (!writeThreadReferenceDrag(event.dataTransfer, items)) event.preventDefault();
   };
   const action =
-    section === "active" && !isDraft
+    activeLike && !isDraft
       ? {
           label: "Archive",
           ariaLabel: `Archive ${thread.title}`,
@@ -236,7 +240,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             actions.openThread(thread.id);
             return;
           }
-          if (section === "workflow" || section === "active") {
+          if (section === "workflow" || activeLike) {
             actions.handleThreadClick(event, thread.id, orderedIds, { isDraft });
             return;
           }
@@ -248,7 +252,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
                 actions.handleThreadRowDoubleClick(
                   event,
                   thread,
-                  section === "active" ? { isDraft } : undefined,
+                  activeLike ? { isDraft } : undefined,
                 );
               },
             }
@@ -322,7 +326,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
           </Tooltip>
         ) : null}
-        {section === "active" ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
+        {activeLike ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
         {canRename && !isDraft && isRenaming ? (
           <InlineTitleEditor
             initialValue={thread.title}
@@ -336,7 +340,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           <SidebarThreadTitle
             thread={thread}
             {...(props.displayTitle ? { displayTitle: props.displayTitle } : {})}
-            withTestId={section === "active" || section === "snoozed"}
+            withTestId={activeLike || section === "snoozed"}
           />
         )}
         {props.trailingMeta}
@@ -348,7 +352,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           lastInteractionAt={thread.lastInteractionAt}
           terminalStatus={section === "snoozed" ? null : terminalStatus}
           isHighlighted={isHighlighted}
-          {...(section === "active" ? { showDraftIndicator: !isDraft } : {})}
+          {...(activeLike ? { showDraftIndicator: !isDraft } : {})}
           action={action}
         />
       </SidebarMenuSubButton>

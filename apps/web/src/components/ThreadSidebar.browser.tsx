@@ -3332,6 +3332,131 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("switches to a Recent view that buckets, filters by project and remembers both", async () => {
+    const otherProjectId = "recent-beta" as ProjectId;
+    const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    const thread = (id: string, title: string, at: string, projectId = PROJECT_ID) =>
+      createSnapshotThread({
+        id: id as ThreadId,
+        title,
+        projectId,
+        createdAt: at,
+        lastInteractionAt: at,
+        updatedAt: at,
+      });
+    const configureFixture = (nextFixture: TestFixture) => {
+      const snapshot = createSnapshot([
+        thread("recent-alpha-now", "Alpha now", hoursAgo(0)),
+        thread("recent-beta-now", "Beta now", hoursAgo(0), otherProjectId),
+        thread("recent-alpha-old", "Alpha old", hoursAgo(24 * 30)),
+      ]);
+      nextFixture.snapshot = {
+        ...snapshot,
+        projects: [...snapshot.projects, createSnapshotProject(otherProjectId, "Beta")],
+      };
+      nextFixture.welcome = {
+        ...nextFixture.welcome,
+        bootstrapThreadId: "recent-alpha-now" as ThreadId,
+      };
+    };
+    let mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/recent-alpha-now"],
+      configureFixture,
+    });
+    try {
+      await waitForSidebarThreadRow("Alpha now");
+      const recentToggle = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-view-recent"]'),
+        "The view toggle should render.",
+      );
+      expect(recentToggle.getAttribute("aria-checked")).toBe("false");
+      recentToggle.click();
+      const tree = await waitForElement(
+        () => document.querySelector<HTMLElement>('[role="tree"][aria-label="Recent threads"]'),
+        "The Recent view should render its own tree.",
+      );
+      expect(document.querySelector('[role="tree"][aria-label="Threads and projects"]')).toBeNull();
+      const bucketOf = (title: string) =>
+        querySidebarThreadRowByTitle(title)?.closest<HTMLElement>("[data-recent-bucket]")?.dataset
+          .recentBucket;
+      await vi.waitFor(() => expect(bucketOf("Alpha now")).toBe("today"));
+      expect(bucketOf("Beta now")).toBe("today");
+      // Earlier starts collapsed.
+      expect(querySidebarThreadRowByTitle("Alpha old")).toBeNull();
+      expect(
+        tree.querySelector('[data-sidebar-row="recent:earlier"]')?.getAttribute("aria-expanded"),
+      ).toBe("false");
+      // Rows name their project while every project shows.
+      expect(querySidebarThreadRowByTitle("Beta now")?.textContent).toContain("Beta");
+
+      // Keyboard: the tree moves between bucket rows and threads; mod-click multi-selects.
+      const todayHeader = tree.querySelector<HTMLElement>('[data-sidebar-row="recent:today"]')!;
+      todayHeader.focus();
+      await userEvent.keyboard("{ArrowDown}");
+      expect(document.activeElement?.getAttribute("data-sidebar-row")).toMatch(/^thread:recent:/);
+      const modifier = navigator.platform.includes("Mac") ? { metaKey: true } : { ctrlKey: true };
+      for (const title of ["Alpha now", "Beta now"]) {
+        querySidebarThreadRowByTitle(title)!.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true, ...modifier }),
+        );
+      }
+      expect(useThreadSelectionStore.getState().selectedThreadIds.size).toBe(2);
+      useThreadSelectionStore.getState().clearSelection();
+
+      document
+        .querySelector<HTMLButtonElement>(`[data-testid="recent-project-chip-${otherProjectId}"]`)!
+        .click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Alpha now")).toBeNull());
+      const betaRow = querySidebarThreadRowByTitle("Beta now")!;
+      // A filtered list drops the redundant project tag.
+      expect(betaRow.textContent).not.toContain("Beta now Beta");
+      expect(betaRow.querySelector("[title='Beta']")).toBeNull();
+      expect(localStorage.getItem("f5:sidebar:recent-project")).toBe(
+        JSON.stringify(otherProjectId),
+      );
+
+      // Both choices survive a reload.
+      await mounted.cleanup();
+      mounted = await mountApp({
+        width: 1_400,
+        initialEntries: ["/recent-alpha-now"],
+        configureFixture,
+      });
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[role="tree"][aria-label="Recent threads"]'),
+        "The Recent view should be remembered.",
+      );
+      await waitForSidebarThreadRow("Beta now");
+      expect(querySidebarThreadRowByTitle("Alpha now")).toBeNull();
+
+      // A remembered project that no longer exists falls back to All.
+      await mounted.cleanup();
+      localStorage.setItem("f5:sidebar:recent-project", JSON.stringify("deleted-project"));
+      mounted = await mountApp({
+        width: 1_400,
+        initialEntries: ["/recent-alpha-now"],
+        configureFixture,
+      });
+      await waitForSidebarThreadRow("Alpha now");
+      await waitForSidebarThreadRow("Beta now");
+      expect(
+        document
+          .querySelector('[data-testid="recent-project-chip-all"]')
+          ?.getAttribute("aria-pressed"),
+      ).toBe("true");
+
+      document.querySelector<HTMLButtonElement>('[data-testid="sidebar-view-projects"]')!.click();
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>('[role="tree"][aria-label="Threads and projects"]'),
+        "Projects view should come back.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps a project draft visible in the collapsed preview when it would normally be truncated", async () => {
     const previewThreads = Array.from({ length: 8 }, (_, index) =>
       createSnapshotThread({
