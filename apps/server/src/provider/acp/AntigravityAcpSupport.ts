@@ -39,6 +39,67 @@ export function antigravityProfileDirectory(stateDir: string, instanceId: string
   );
 }
 
+export async function linkAntigravityUserSkills(home: string, userHome: string): Promise<void> {
+  const hasCode = (error: unknown, codes: readonly string[]) =>
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    codes.includes(String(error.code));
+
+  for (const directory of ["config", "antigravity-cli"]) {
+    const source = path.join(userHome, ".gemini", directory, "skills");
+    const target = path.join(home, directory, "skills");
+    try {
+      const sourceExists = await fs.stat(source).then(
+        (stat) => stat.isDirectory(),
+        (error: unknown) => {
+          if (hasCode(error, ["ENOENT"])) return false;
+          throw error;
+        },
+      );
+      const existing = await fs.lstat(target).catch((error: unknown) => {
+        if (hasCode(error, ["ENOENT"])) return undefined;
+        throw error;
+      });
+      if (!sourceExists) {
+        // The harness creates its own directory; a dangling link would break mkdir.
+        if (existing?.isSymbolicLink()) await fs.unlink(target);
+        continue;
+      }
+      if (existing?.isSymbolicLink()) {
+        if (path.resolve(path.dirname(target), await fs.readlink(target)) === source) continue;
+        await fs.unlink(target);
+      } else if (existing?.isDirectory()) {
+        // Only replace empty harness placeholders, never user content.
+        try {
+          await fs.rmdir(target);
+        } catch (error) {
+          if (hasCode(error, ["ENOTEMPTY", "EEXIST"])) continue;
+          throw error;
+        }
+      } else if (existing) {
+        continue;
+      }
+      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      await fs
+        .symlink(source, target, process.platform === "win32" ? "junction" : "dir")
+        .catch((error: unknown) => {
+          if (!hasCode(error, ["EEXIST"])) throw error;
+        });
+    } catch (error) {
+      // Skills are optional. Concurrent preparations and filesystem contention
+      // must not prevent sign-in or session startup, or skip the other directory.
+      await Effect.runPromise(
+        Effect.logWarning("Antigravity user skills are not linked into the profile.", {
+          source,
+          target,
+          error,
+        }),
+      );
+    }
+  }
+}
+
 const credentialVariables =
   /^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_GENAI_USE_VERTEXAI|GOOGLE_OAUTH_ACCESS_TOKEN|AGY_ACP_.*|GEMINI_HOME|ANTIGRAVITY_HARNESS_PATH|BROWSER|ELECTRON_RUN_AS_NODE)$/i;
 export function antigravityEnvironment(
@@ -117,25 +178,7 @@ export const makeAntigravityAcpRuntime = (input: {
             ? input.environment.USERPROFILE || os.homedir()
             : input.environment.HOME || os.homedir();
         // Share only user skill directories. MCP, hooks and credentials remain private.
-        for (const directory of ["config", "antigravity-cli"]) {
-          const source = path.join(userHome, ".gemini", directory, "skills");
-          const target = path.join(home, directory, "skills");
-          try {
-            if (!(await fs.stat(source)).isDirectory()) continue;
-            await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-            await fs.symlink(source, target, process.platform === "win32" ? "junction" : "dir");
-          } catch (error) {
-            if (
-              !(
-                error &&
-                typeof error === "object" &&
-                "code" in error &&
-                ["ENOENT", "EEXIST"].includes(String(error.code))
-              )
-            )
-              throw error;
-          }
-        }
+        await linkAntigravityUserSkills(home, userHome);
         // A helper handles browser requests without opening a browser in the server account.
         const helper = path.join(home, "browser.cjs");
         await publishProfileFile(
