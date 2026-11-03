@@ -1,11 +1,13 @@
 import "../../index.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PullRequestKey, type PrHubReviewOperation } from "@t3tools/contracts";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { PrReviewSubmit } from "./PrReviewSubmit";
 import { PrCommentSubmit } from "./PrCommentSubmit";
+const toast = vi.hoisted(() => ({ add: vi.fn() }));
+vi.mock("../ui/toast", () => ({ toastManager: toast }));
 const api = vi.hoisted(() => ({
   getReviewOperation: vi.fn(),
   getFiles: vi.fn(),
@@ -15,6 +17,7 @@ const api = vi.hoisted(() => ({
   getCommentOperation: vi.fn(),
 }));
 const auth = vi.hoisted(() => ({ generation: "account" }));
+beforeEach(() => vi.clearAllMocks());
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
 vi.mock("../../lib/prHubAccount", () => ({
   getPrHubAccountGeneration: () => auth.generation,
@@ -51,6 +54,64 @@ const operation = (body: string): PrHubReviewOperation => ({
     },
   },
 });
+
+it.each(["host reason", "no reason", "request error"])(
+  "shows a refused review toast and retains the quick draft (%s)",
+  async (scenario) => {
+    toast.add.mockClear();
+    api.getReviewOperation.mockResolvedValue(null);
+    api.getFiles.mockResolvedValue({ comparison });
+    api.prepareQuickReview.mockImplementation(async (input: { body: string }) =>
+      operation(input.body),
+    );
+    const reason =
+      "Pull request operation submitReview failed: You cannot approve your own pull request.";
+    if (scenario === "request error") {
+      api.submitReview.mockRejectedValueOnce(new Error(reason));
+    } else {
+      api.submitReview.mockResolvedValueOnce({
+        ...operation("Keep my draft"),
+        status: "rejected",
+        ...(scenario === "host reason" ? { errorMessage: reason } : {}),
+      });
+    }
+    await render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <PrReviewSubmit
+          prKey={key}
+          prUrl="https://github.com/org/repo/pull/1"
+          draft={null}
+          disabled={false}
+          onBusyChange={() => {}}
+          quickEvent="APPROVE"
+        />
+      </QueryClientProvider>,
+    );
+    await page.getByRole("textbox", { name: "Quick review note" }).fill("Keep my draft");
+    await page.getByRole("button", { name: "Preview review", exact: true }).click();
+    await page.getByRole("button", { name: "Submit review to GitHub" }).click();
+    await expect
+      .poll(() => toast.add.mock.calls)
+      .toEqual([
+        [
+          {
+            type: "error",
+            title: "The review could not be submitted",
+            description:
+              scenario === "no reason"
+                ? "The host refused the review. Your draft is still here to try again."
+                : "You cannot approve your own pull request.",
+          },
+        ],
+      ]);
+    await expect
+      .element(page.getByRole("textbox", { name: "Quick review note" }))
+      .toHaveValue("Keep my draft");
+  },
+);
+
 it("does not submit a saved request-changes operation from an Approve dialog", async () => {
   api.getReviewOperation.mockResolvedValue({
     ...operation("Please fix"),

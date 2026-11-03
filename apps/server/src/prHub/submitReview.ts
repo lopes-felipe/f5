@@ -238,7 +238,7 @@ export function submitPreparedReview(
               id,
               from: "creating",
               to: outcome.safeToRetry ? "prepared" : "rejected",
-              errorMessage: outcome.message,
+              errorMessage: outcome.rejected ? (outcome.hostMessage ?? "") : outcome.message,
             });
             return false;
           }

@@ -9,6 +9,8 @@ import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
+import { reviewFailureDescription } from "./prReviewFailure";
 
 export function PrReviewSubmit({
   prKey,
@@ -43,7 +45,7 @@ export function PrReviewSubmit({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operation = query.data;
-  async function run(action: () => Promise<PrHubReviewOperation>) {
+  async function run(action: () => Promise<PrHubReviewOperation>, submitting = false) {
     setBusy(true);
     onBusyChange(true);
     setError(null);
@@ -51,7 +53,24 @@ export function PrReviewSubmit({
       const result = await action();
       queryClient.setQueryData(queryKey, result);
       if (quickEvent && result.status === "succeeded") setQuickBody("");
+      if (
+        submitting &&
+        (result.status === "rejected" || (result.status !== "succeeded" && result.errorMessage))
+      ) {
+        toastManager.add({
+          type: "error",
+          title: "The review could not be submitted",
+          description: reviewFailureDescription(result.errorMessage),
+        });
+      }
     } catch (cause) {
+      if (submitting) {
+        toastManager.add({
+          type: "error",
+          title: "The review could not be submitted",
+          description: reviewFailureDescription(cause),
+        });
+      }
       setError(
         cause instanceof Error
           ? cause.message
@@ -135,13 +154,15 @@ export function PrReviewSubmit({
                 size="sm"
                 disabled={busy}
                 onClick={() =>
-                  void run(() =>
-                    ensureNativeApi().prHub.submitReview({
-                      key: prKey,
-                      accountGeneration,
-                      id: operation.id,
-                      payloadHash: operation.payloadHash,
-                    }),
+                  void run(
+                    () =>
+                      ensureNativeApi().prHub.submitReview({
+                        key: prKey,
+                        accountGeneration,
+                        id: operation.id,
+                        payloadHash: operation.payloadHash,
+                      }),
+                    true,
                   )
                 }
               >
