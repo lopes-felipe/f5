@@ -6,6 +6,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
 - A profile can always allow Claude in Chrome taking the browser connection back from your terminal Claude, revocable in Settings → Browser & Computer. Replacing another F5 profile's setup always asks.
 
 ### Changed

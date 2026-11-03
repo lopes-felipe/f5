@@ -35,6 +35,7 @@ const certified: ClaudeChromeRecord = {
   toolNames: ["read_page"],
   evidenceCommit: "b".repeat(40),
 };
+const { evidenceId: _id, evidenceCommit: _commit, toolNames: _tools, ...unstamped } = claude;
 
 describe("provider integration certification records", () => {
   it("accepts only OpenAI's Codex signing identifiers as node_repl's parent", () => {
@@ -225,7 +226,7 @@ describe("provider integration certification records", () => {
     expect(
       integrationUnavailableDetail("claude-chrome", "darwin", "arm64", [certified]),
     ).toBeUndefined();
-    expect(integrationUnavailableDetail("claude-chrome", "darwin", "arm64", [claude])).toContain(
+    expect(integrationUnavailableDetail("claude-chrome", "darwin", "arm64", [unstamped])).toContain(
       "awaiting a live safety certification",
     );
     expect(integrationUnavailableDetail("claude-chrome", "darwin", "x64", [certified])).toContain(
@@ -236,7 +237,7 @@ describe("provider integration certification records", () => {
     );
     expect(
       integrationUnavailableDetail("claude-chrome", "darwin", "arm64", [
-        { ...claude, withdrawn: "SDK 0.3.296" },
+        { ...unstamped, withdrawn: "SDK 0.3.296" },
       ]),
     ).toContain("withdrawn");
   });
