@@ -218,7 +218,7 @@ function ProviderAuthEmail(props: {
   );
 }
 
-function ProviderEnvironmentSection(props: {
+export function ProviderEnvironmentSection(props: {
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
 }) {
@@ -310,6 +310,7 @@ function ProviderEnvironmentSection(props: {
               <DraftInput
                 value={variable.name}
                 onCommit={(name) => updateVariable(variable.id, { name: name.trim() })}
+                disabled={variable.valueRedacted === true}
                 placeholder="VARIABLE_NAME"
                 spellCheck={false}
                 aria-label={`Environment variable name ${index + 1}`}
@@ -330,6 +331,7 @@ function ProviderEnvironmentSection(props: {
                   type="checkbox"
                   className="size-3.5"
                   checked={variable.sensitive}
+                  disabled={variable.valueRedacted === true}
                   onChange={(event) => {
                     const sensitive = event.currentTarget.checked;
                     updateVariable(variable.id, {
@@ -358,6 +360,9 @@ function ProviderEnvironmentSection(props: {
       )}
       <span className="text-xs text-muted-foreground">
         Sensitive values are stored separately and are not returned to the app after saving.
+        {rows.some((row) => row.valueRedacted === true)
+          ? " Enter a new value to rename a saved one or make it plain text."
+          : null}
       </span>
     </div>
   );
