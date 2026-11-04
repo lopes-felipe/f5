@@ -1,9 +1,7 @@
 import type {
-  ModelSlug,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderKind,
-  ProviderOptionSelection,
   ResolvedKeybindingsConfig,
   ServerProviderModel,
   ThreadId,
@@ -14,20 +12,17 @@ import { useComposerDraftStore } from "../../composerDraftStore";
 import {
   addFavoritePreset,
   applyPresetEffort,
-  findCurrentFavoritePresetIndex,
+  findNextSelectableFavoritePresetIndex,
   formatFavoritePresetLabel,
-  getCurrentEffort,
-  listUsableFavoritePresets,
   MODEL_FAVORITE_SAVE_EVENT,
-  stepFavoritePresetIndex,
   type FavoritePreset,
+  type FavoritePresetSelection,
   type UsableFavoritePreset,
 } from "../../favoritePresets";
 import { modelFavoriteJumpIndexFromCommand, resolveShortcutCommand } from "../../keybindings";
 import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { providerModelOptionsToSelections } from "../../providerModelOptions";
-import type { ProviderInstanceEntry } from "../../providerInstances";
 import { toastManager } from "../ui/toast";
 import { getComposerEffortDescriptors } from "./composerProviderState";
 import { getDisplayModelName, type ModelPickerModelOption } from "./providerIconUtils";
@@ -40,31 +35,27 @@ export interface FavoritePresetShortcutsInput {
   /** Send in flight, approval or blocking question, or disconnected. */
   readonly blocked: boolean;
   readonly favorites: ReadonlyArray<FavoritePreset>;
-  readonly entries: ReadonlyArray<ProviderInstanceEntry>;
+  /** Usable presets in favorites order: favorite N is `presets[N - 1]`. */
+  readonly presets: ReadonlyArray<UsableFavoritePreset>;
+  /** The composer's place in `presets`, or -1. */
+  readonly currentIndex: number;
+  readonly current: {
+    readonly instanceId: ProviderInstanceId;
+    readonly model: string;
+    readonly effort: string | null;
+  };
   readonly modelOptionsByInstance: ReadonlyMap<
     ProviderInstanceId,
     ReadonlyArray<ModelPickerModelOption>
   >;
-  readonly current: {
-    readonly instanceId: ProviderInstanceId;
-    readonly driver: ProviderDriverKind;
-    readonly model: string;
-    readonly models: ReadonlyArray<ServerProviderModel>;
-    readonly modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
-  };
   /** Null when the thread may switch to any instance; otherwise names its locked provider. */
   readonly lockedProviderLabel: string | null;
   readonly canSelectInstance: (
     instanceId: ProviderInstanceId,
     driver: ProviderDriverKind,
   ) => boolean;
-  /** Selects the model, then applies `effort` when given (see {@link applyFavoritePresetEffort}). */
-  readonly selectModel: (
-    instanceId: ProviderInstanceId,
-    driver: ProviderDriverKind,
-    model: ModelSlug,
-    effort?: string,
-  ) => void;
+  /** Selects the preset's model and pinned effort; null when the selection was refused. */
+  readonly selectPreset: (preset: UsableFavoritePreset) => FavoritePresetSelection | null;
   readonly isDialogEvent: (event: KeyboardEvent) => boolean;
   readonly saveFavorites: (favorites: ReadonlyArray<FavoritePreset>) => void;
 }
@@ -108,20 +99,25 @@ export function applyFavoritePresetEffort(input: {
 let lastToastId: string | null = null;
 
 function showFavoriteToast(toast: Parameters<typeof toastManager.add>[0]) {
-  // One toast at a time: a held cycle key replaces it rather than stacking.
+  // One toast at a time: quick successive presses replace it rather than stacking.
   if (lastToastId) toastManager.close(lastToastId);
   lastToastId = toastManager.add({ timeout: 2_500, ...toast });
 }
 
-function presetName(
-  preset: UsableFavoritePreset,
+function modelName(
+  instance: {
+    readonly instanceId: ProviderInstanceId;
+    readonly isDefault: boolean;
+    readonly displayName: string;
+  },
+  model: string,
   modelOptionsByInstance: FavoritePresetShortcutsInput["modelOptionsByInstance"],
 ): string {
   const option = modelOptionsByInstance
-    .get(preset.instance.instanceId)
-    ?.find((candidate) => candidate.slug === preset.model);
-  const name = option ? getDisplayModelName(option) : preset.model;
-  return preset.instance.isDefault ? name : `${preset.instance.displayName} · ${name}`;
+    .get(instance.instanceId)
+    ?.find((candidate) => candidate.slug === model);
+  const name = option ? getDisplayModelName(option) : model;
+  return instance.isDefault ? name : `${instance.displayName} · ${name}`;
 }
 
 /**
@@ -136,40 +132,34 @@ export function useFavoritePresetShortcuts(input: FavoritePresetShortcutsInput):
   });
 
   useEffect(() => {
-    const applyPreset = (preset: UsableFavoritePreset, position: string) => {
-      const latest = inputRef.current;
-      if (!latest.threadId) return;
-      const { instanceId, driverKind } = preset.instance;
-      if (preset.effort) latest.selectModel(instanceId, driverKind, preset.model, preset.effort);
-      else latest.selectModel(instanceId, driverKind, preset.model);
+    const lockedToast = () =>
       showFavoriteToast({
         type: "info",
-        title: `${formatFavoritePresetLabel(
-          presetName(preset, latest.modelOptionsByInstance),
-          preset.effort,
-        )} ${position}`,
+        title: `Locked to ${inputRef.current.lockedProviderLabel ?? "this provider"} in this thread`,
       });
-    };
 
-    const usablePresets = () => {
+    const canSelect = (preset: UsableFavoritePreset) =>
+      inputRef.current.canSelectInstance(preset.instance.instanceId, preset.instance.driverKind);
+
+    // The toast reports what was applied, not what the preset asked for.
+    const applyPreset = (index: number) => {
       const latest = inputRef.current;
-      return listUsableFavoritePresets(
-        latest.favorites,
-        latest.entries,
-        latest.modelOptionsByInstance,
-      );
-    };
-
-    const currentEffort = () => {
-      const { current } = inputRef.current;
-      return getCurrentEffort(
-        getComposerEffortDescriptors({
-          provider: current.driver,
-          model: current.model,
-          models: current.models,
-          modelOptions: current.modelOptions,
-        }),
-      );
+      const preset = latest.presets[index];
+      if (!preset) return;
+      const name = modelName(preset.instance, preset.model, latest.modelOptionsByInstance);
+      const selection = latest.selectPreset(preset);
+      if (!selection) {
+        showFavoriteToast({ type: "info", title: `Couldn't switch to ${name}` });
+        return;
+      }
+      const effortSkipped = preset.effort !== undefined && selection.effort === null;
+      showFavoriteToast({
+        type: "info",
+        title: `${formatFavoritePresetLabel(name, selection.effort ?? undefined)} (${index + 1}/${latest.presets.length})`,
+        ...(effortSkipped
+          ? { description: `${preset.effort} isn't available for this model.` }
+          : {}),
+      });
     };
 
     const noPresetsToast = () =>
@@ -181,72 +171,48 @@ export function useFavoritePresetShortcuts(input: FavoritePresetShortcutsInput):
 
     const cycle = (direction: 1 | -1) => {
       const latest = inputRef.current;
-      const presets = usablePresets();
-      if (presets.length === 0) {
-        noPresetsToast();
-        return;
-      }
-      let index = findCurrentFavoritePresetIndex(presets, {
-        instanceId: latest.current.instanceId,
-        model: latest.current.model,
-        effort: currentEffort(),
-      });
-      // At most one lap, skipping presets the thread's provider lock refuses.
-      for (let step = 0; step < presets.length; step += 1) {
-        index = stepFavoritePresetIndex(presets.length, index, direction);
-        const preset = presets[index]!;
-        if (latest.canSelectInstance(preset.instance.instanceId, preset.instance.driverKind)) {
-          applyPreset(preset, `(${index + 1}/${presets.length})`);
-          return;
-        }
-      }
-      showFavoriteToast({
-        type: "info",
-        title: `Locked to ${latest.lockedProviderLabel ?? "this provider"} in this thread`,
-      });
+      if (latest.presets.length === 0) return noPresetsToast();
+      const index = findNextSelectableFavoritePresetIndex(
+        latest.presets,
+        latest.currentIndex,
+        direction,
+        canSelect,
+      );
+      if (index < 0) return lockedToast();
+      applyPreset(index);
     };
 
     const jump = (index: number) => {
       const latest = inputRef.current;
-      const presets = usablePresets();
-      if (presets.length === 0) {
-        noPresetsToast();
-        return;
-      }
-      const preset = presets[index];
+      if (latest.presets.length === 0) return noPresetsToast();
+      const preset = latest.presets[index];
       if (!preset) {
         showFavoriteToast({
           type: "info",
           title: `No favorite ${index + 1}`,
-          description: `You have ${presets.length} favorite ${presets.length === 1 ? "model" : "models"}.`,
+          description: `You have ${latest.presets.length} favorite ${latest.presets.length === 1 ? "model" : "models"}.`,
         });
         return;
       }
-      if (!latest.canSelectInstance(preset.instance.instanceId, preset.instance.driverKind)) {
-        showFavoriteToast({
-          type: "info",
-          title: `Locked to ${latest.lockedProviderLabel ?? "this provider"} in this thread`,
-        });
-        return;
-      }
-      applyPreset(preset, `(${index + 1}/${presets.length})`);
+      if (!canSelect(preset)) return lockedToast();
+      applyPreset(index);
     };
 
     const saveCurrent = () => {
       const latest = inputRef.current;
-      const effort = currentEffort();
+      const { instanceId, model, effort } = latest.current;
       const preset: FavoritePreset = {
-        provider: latest.current.instanceId,
-        model: latest.current.model,
+        provider: instanceId,
+        model,
         ...(effort ? { effort } : {}),
       };
       const { favorites, added } = addFavoritePreset(latest.favorites, preset);
       if (added) latest.saveFavorites(favorites);
       const option = latest.modelOptionsByInstance
-        .get(latest.current.instanceId)
-        ?.find((candidate) => candidate.slug === latest.current.model);
+        .get(instanceId)
+        ?.find((candidate) => candidate.slug === model);
       const label = formatFavoritePresetLabel(
-        option ? getDisplayModelName(option) : latest.current.model,
+        option ? getDisplayModelName(option) : model,
         preset.effort,
       );
       showFavoriteToast({
@@ -274,6 +240,7 @@ export function useFavoritePresetShortcuts(input: FavoritePresetShortcutsInput):
       if (terminalFocus || dialogFocus) return;
       event.preventDefault();
       event.stopPropagation();
+      // Auto-repeat is ignored: holding the key switches once.
       if (event.repeat || latest.blocked) return;
       if (command === "model.favorite.next") cycle(1);
       else if (command === "model.favorite.previous") cycle(-1);

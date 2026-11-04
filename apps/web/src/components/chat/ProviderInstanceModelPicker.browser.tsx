@@ -72,19 +72,23 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
     { provider: CLAUDE_ID, model: "claude-fable-5-1", effort: "xhigh" },
   ];
 
-  async function renderPicker(onChange = vi.fn(), effort: string | null = null) {
+  async function renderPicker(
+    onChange = vi.fn(),
+    activePreset: (typeof presets)[number] | null = null,
+    lockedInstanceId: ProviderInstanceId | null = null,
+  ) {
     settingsMock.favorites = presets;
     active = await render(
       <TooltipProvider delay={0}>
         <ProviderInstanceModelPicker
           instanceId={CLAUDE_ID}
           model="claude-fable-5-1"
-          lockedInstanceId={null}
+          lockedInstanceId={lockedInstanceId}
           providers={PROVIDERS}
           modelOptionsByInstance={MODELS}
           keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
           favoritePresets
-          effort={effort}
+          activePreset={activePreset}
           onInstanceModelChange={onChange}
         />
       </TooltipProvider>,
@@ -95,7 +99,7 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
   }
 
   it("lists one row per preset in favorites order with effort chips and jump keys", async () => {
-    await renderPicker(vi.fn(), "xhigh");
+    await renderPicker(vi.fn(), presets[2]!);
     const rows = () =>
       [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].map((row) => ({
         effort: row.querySelector("[data-model-picker-preset-effort]")?.textContent ?? null,
@@ -111,12 +115,29 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
     ]);
   });
 
-  it("picks a preset row with mod+N and passes its pinned effort", async () => {
+  it("picks a preset row with mod+N and passes its preset", async () => {
     const onChange = await renderPicker();
     await userEvent.keyboard(isMac ? "{Meta>}3{/Meta}" : "{Control>}3{/Control}");
     await expect
       .poll(() => onChange.mock.calls)
-      .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1", "xhigh"]]);
+      .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1", presets[2]]]);
+  });
+
+  it("keeps favorite numbers in a locked thread so mod+N matches ctrl+N", async () => {
+    const onChange = await renderPicker(vi.fn(), null, CLAUDE_ID);
+    const jumps = () =>
+      [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].map(
+        (row) => row.querySelector("kbd")?.textContent ?? null,
+      );
+    await expect.poll(() => jumps().length).toBe(2);
+    const mod = isMac ? "⌘" : "Ctrl+";
+    // Favorite 1 is on Codex, hidden here; the Claude presets keep numbers 2 and 3.
+    expect(jumps()).toEqual([`${mod}2`, `${mod}3`]);
+    await userEvent.keyboard(isMac ? "{Meta>}1{/Meta}" : "{Control>}1{/Control}");
+    await userEvent.keyboard(isMac ? "{Meta>}2{/Meta}" : "{Control>}2{/Control}");
+    await expect
+      .poll(() => onChange.mock.calls)
+      .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1", presets[1]]]);
   });
 
   it("removes only the starred preset", async () => {

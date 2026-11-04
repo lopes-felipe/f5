@@ -9,9 +9,11 @@ import {
   addFavoritePreset,
   applyPresetEffort,
   findCurrentFavoritePresetIndex,
+  findNextSelectableFavoritePresetIndex,
   getCurrentEffort,
   listUsableFavoritePresets,
   removeFavoritePreset,
+  resolveCurrentFavoritePresetIndex,
   stepFavoritePresetIndex,
   toggleModelFavorite,
   withInstanceFavoriteModels,
@@ -163,6 +165,85 @@ describe("stepFavoritePresetIndex", () => {
     expect(stepFavoritePresetIndex(3, -1, 1)).toBe(0);
     expect(stepFavoritePresetIndex(3, -1, -1)).toBe(2);
     expect(stepFavoritePresetIndex(0, -1, 1)).toBe(-1);
+  });
+});
+
+describe("cycling over mixed presets of one model", () => {
+  // Starring creates an effort-less preset, and "Save current" adds pinned ones.
+  const favorites: FavoritePreset[] = [
+    { provider: claude, model: "claude-opus-5-5" },
+    { provider: claude, model: "claude-opus-5-5", effort: "high" },
+    { provider: claude, model: "claude-opus-5-5", effort: "xhigh" },
+    { provider: codex, model: "gpt-5.5" },
+  ];
+  const presets = listUsableFavoritePresets(
+    favorites,
+    [entry(claude, "claudeAgent"), entry(codex, "codex")],
+    options,
+  );
+
+  // Mirrors the composer: each model keeps a sticky effort, a pinned preset
+  // updates it, and an effort-less preset leaves it alone.
+  function lap(direction: 1 | -1, steps: number): number[] {
+    const sticky = new Map<string, string>([
+      ["claude-opus-5-5", "low"],
+      ["gpt-5.5", "medium"],
+    ]);
+    let state = {
+      instanceId: claude as ProviderInstanceId,
+      model: "claude-opus-5-5",
+      effort: "low" as string | null,
+      last: null as FavoritePreset | null,
+    };
+    const visited: number[] = [];
+    for (let step = 0; step < steps; step += 1) {
+      const current = resolveCurrentFavoritePresetIndex(presets, state, state.last);
+      const next = findNextSelectableFavoritePresetIndex(presets, current, direction, () => true);
+      const preset = presets[next]!;
+      visited.push(next);
+      if (preset.effort) sticky.set(preset.model, preset.effort);
+      state = {
+        instanceId: preset.instance.instanceId,
+        model: preset.model,
+        effort: sticky.get(preset.model) ?? null,
+        last: preset.favorite,
+      };
+    }
+    return visited;
+  }
+
+  it("visits every preset in order going forward", () => {
+    expect(lap(1, 8)).toEqual([1, 2, 3, 0, 1, 2, 3, 0]);
+  });
+
+  it("visits every preset in order going backward", () => {
+    expect(lap(-1, 8)).toEqual([3, 2, 1, 0, 3, 2, 1, 0]);
+  });
+
+  it("drops the applied preset once the composer no longer shows it", () => {
+    // After the effort is stepped away from a pinned preset, matching starts over.
+    expect(
+      resolveCurrentFavoritePresetIndex(
+        presets,
+        { instanceId: claude, model: "claude-opus-5-5", effort: "low" },
+        favorites[2]!,
+      ),
+    ).toBe(0);
+    // An effort-less preset stays current whatever the effort.
+    expect(
+      resolveCurrentFavoritePresetIndex(
+        presets,
+        { instanceId: claude, model: "claude-opus-5-5", effort: "xhigh" },
+        favorites[0]!,
+      ),
+    ).toBe(0);
+  });
+
+  it("skips presets the provider lock refuses, and gives up after one lap", () => {
+    const claudeOnly = (preset: (typeof presets)[number]) => preset.instance.instanceId === claude;
+    expect(findNextSelectableFavoritePresetIndex(presets, 2, 1, claudeOnly)).toBe(0);
+    expect(findNextSelectableFavoritePresetIndex(presets, 0, -1, claudeOnly)).toBe(2);
+    expect(findNextSelectableFavoritePresetIndex(presets, 0, 1, () => false)).toBe(-1);
   });
 });
 

@@ -55,24 +55,32 @@ function normalizeEventKey(key: string): string {
 
 /**
  * macOS Option rewrites `event.key` (Option+1 is `¡`, Option+K is `˚`), so a
- * binding such as `alt+1` would never match. Fall back to the physical key.
+ * binding such as `alt+1` would never match by the typed key. In that one case
+ * the physical key stands in. Elsewhere the typed key always decides: AltGr on
+ * Windows is Ctrl+Alt and types real characters, and a layout such as AZERTY
+ * puts `a` on the physical Q key, so a physical match there would run the
+ * wrong command or swallow the character.
  */
-function physicalKeyFromCode(code: string | undefined): string | null {
-  if (!code) return null;
-  const digit = /^Digit(\d)$/u.exec(code);
+function physicalOptionKey(event: ShortcutEventLike, platform: string): string | null {
+  if (!event.altKey || event.ctrlKey || !event.code || !isMacPlatform(platform)) return null;
+  if (/^[a-z0-9]$/iu.test(event.key)) return null;
+  const digit = /^Digit(\d)$/u.exec(event.code);
   if (digit) return digit[1]!;
-  const letter = /^Key([A-Z])$/u.exec(code);
+  const letter = /^Key([A-Z])$/u.exec(event.code);
   return letter ? letter[1]!.toLowerCase() : null;
 }
+
+type ShortcutKeyMatch = "typed" | "physical";
 
 function matchesShortcut(
   event: ShortcutEventLike,
   shortcut: KeybindingShortcut,
   platform = navigator.platform,
+  keyMatch: ShortcutKeyMatch = "typed",
 ): boolean {
-  const key = normalizeEventKey(event.key);
-  if (key !== shortcut.key && !(event.altKey && physicalKeyFromCode(event.code) === shortcut.key))
-    return false;
+  const key =
+    keyMatch === "typed" ? normalizeEventKey(event.key) : physicalOptionKey(event, platform);
+  if (key !== shortcut.key) return false;
 
   const useMetaForMod = isMacPlatform(platform);
   const expectedMeta = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
@@ -160,12 +168,16 @@ export function resolveShortcutBinding(
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
 
-  for (let index = keybindings.length - 1; index >= 0; index -= 1) {
-    const binding = keybindings[index];
-    if (!binding) continue;
-    if (!matchesWhenClause(binding.whenAst, context)) continue;
-    if (!matchesShortcut(event, binding.shortcut, platform)) continue;
-    return binding;
+  // A rule matching the typed key always beats one matching only the physical key.
+  for (const keyMatch of ["typed", "physical"] as const) {
+    if (keyMatch === "physical" && physicalOptionKey(event, platform) === null) break;
+    for (let index = keybindings.length - 1; index >= 0; index -= 1) {
+      const binding = keybindings[index];
+      if (!binding) continue;
+      if (!matchesWhenClause(binding.whenAst, context)) continue;
+      if (!matchesShortcut(event, binding.shortcut, platform, keyMatch)) continue;
+      return binding;
+    }
   }
 
   return null;

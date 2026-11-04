@@ -305,7 +305,14 @@ import {
   useSettings,
   useUpdateSettings,
 } from "../hooks/useSettings";
-import { type FavoritePreset, getCurrentEffort } from "../favoritePresets";
+import {
+  type FavoritePreset,
+  type FavoritePresetSelection,
+  getCurrentEffort,
+  listUsableFavoritePresets,
+  resolveCurrentFavoritePresetIndex,
+  type UsableFavoritePreset,
+} from "../favoritePresets";
 import {
   applyFavoritePresetEffort,
   useFavoritePresetShortcuts,
@@ -6742,32 +6749,80 @@ export default memo(function ChatView({
       return rest;
     });
   }, []);
+  // The favorite preset applied last. An effort-less preset leaves the model's
+  // sticky effort in place, so the composer alone can't tell it apart from a
+  // sibling preset of the same model.
+  const [lastAppliedFavoritePreset, setLastAppliedFavoritePreset] = useState<FavoritePreset | null>(
+    null,
+  );
   const onComposerModelSelect = useCallback(
     (
       instanceId: ProviderInstanceId,
       driver: ProviderDriverKind,
       model: ModelSlug,
-      presetEffort?: string,
-    ) => {
+      preset?: FavoritePreset,
+    ): FavoritePresetSelection | null => {
       // A regular click returns to a single model.
       clearFanOut(threadId);
       const selected = onProviderModelSelect(instanceId, driver, model);
+      if (!selected) return null;
+      setLastAppliedFavoritePreset(preset ?? null);
       // A favorite preset also pins its effort.
-      if (!selected || !presetEffort || !activeThread) return;
-      applyFavoritePresetEffort({
-        threadId: activeThread.id,
-        provider: providerKindForDriver(driver),
-        driver,
-        model: selected,
-        models: providerStatuses.find((entry) => entry.instanceId === instanceId)?.models ?? [],
-        effort: presetEffort,
-      });
+      const effort = preset?.effort;
+      const effortApplied =
+        effort !== undefined && activeThread
+          ? applyFavoritePresetEffort({
+              threadId: activeThread.id,
+              provider: providerKindForDriver(driver),
+              driver,
+              model: selected,
+              models:
+                providerStatuses.find((entry) => entry.instanceId === instanceId)?.models ?? [],
+              effort,
+            })
+          : false;
+      return { model: selected, effort: effortApplied ? (effort ?? null) : null };
     },
     [activeThread, clearFanOut, onProviderModelSelect, providerStatuses, threadId],
   );
   const providerInstanceEntries = useMemo(
     () => deriveProviderInstanceEntries(providerStatuses),
     [providerStatuses],
+  );
+  const usableFavoritePresets = useMemo(
+    () =>
+      listUsableFavoritePresets(favoritePresets, providerInstanceEntries, modelOptionsByInstance),
+    [favoritePresets, modelOptionsByInstance, providerInstanceEntries],
+  );
+  const currentFavoritePresetIndex = useMemo(
+    () =>
+      resolveCurrentFavoritePresetIndex(
+        usableFavoritePresets,
+        {
+          instanceId: selectedProviderInstanceId,
+          model: selectedModel,
+          effort: selectedComposerEffort,
+        },
+        lastAppliedFavoritePreset,
+      ),
+    [
+      lastAppliedFavoritePreset,
+      selectedComposerEffort,
+      selectedModel,
+      selectedProviderInstanceId,
+      usableFavoritePresets,
+    ],
+  );
+  const activeFavoritePreset = usableFavoritePresets[currentFavoritePresetIndex]?.favorite ?? null;
+  const selectFavoritePreset = useCallback(
+    (preset: UsableFavoritePreset) =>
+      onComposerModelSelect(
+        preset.instance.instanceId,
+        preset.instance.driverKind,
+        preset.model,
+        preset.favorite,
+      ),
+    [onComposerModelSelect],
   );
   // Mirrors the guards in `onProviderModelSelect`, so cycling can skip refused presets.
   const canSelectProviderInstance = useCallback(
@@ -6790,22 +6845,21 @@ export default memo(function ChatView({
       isComposerApprovalState ||
       blockingUserInputs.length > 0,
     favorites: favoritePresets,
-    entries: providerInstanceEntries,
-    modelOptionsByInstance,
+    presets: usableFavoritePresets,
+    currentIndex: currentFavoritePresetIndex,
     current: {
       instanceId: selectedProviderInstanceId,
-      driver: selectedProviderDriver,
       model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: selectedProviderModelOptionsForDispatch,
+      effort: selectedComposerEffort,
     },
+    modelOptionsByInstance,
     lockedProviderLabel:
       lockedProvider === null && !providerLocked
         ? null
         : (providerInstanceEntries.find((entry) => entry.instanceId === selectedProviderInstanceId)
             ?.displayName ?? selectedProvider),
     canSelectInstance: canSelectProviderInstance,
-    selectModel: onComposerModelSelect,
+    selectPreset: selectFavoritePreset,
     isDialogEvent: isEventInDialogKeybindingContext,
     saveFavorites: saveFavoritePresets,
   });
@@ -8060,7 +8114,7 @@ export default memo(function ChatView({
     isModelPickerOpen,
     setIsModelPickerOpen,
     onProviderModelSelect: onComposerModelSelect,
-    selectedEffort: selectedComposerEffort,
+    activeFavoritePreset,
     ...(canFanOut ? { fanOutModels, onToggleFanOutModel } : {}),
     showClaudeTraitsControls,
     selectedProviderModels,

@@ -28,6 +28,13 @@ export interface FavoritePreset {
   readonly effort?: string | undefined;
 }
 
+/** What selecting a preset actually applied. */
+export interface FavoritePresetSelection {
+  readonly model: ModelSlug;
+  /** The pinned effort, or null when the preset has none or the model doesn't offer it. */
+  readonly effort: string | null;
+}
+
 export interface UsableFavoritePreset {
   readonly instance: ProviderInstanceEntry;
   /** The model resolved against the instance's current options. */
@@ -114,6 +121,36 @@ export function findCurrentFavoritePresetIndex(
   return exact >= 0 ? exact : presets.findIndex(sameModel);
 }
 
+/**
+ * The composer's place among the presets. The preset applied last wins while
+ * the composer still shows it: an effort-less preset keeps the model's sticky
+ * effort, so matching by effort alone would land on a sibling preset of the
+ * same model and stall the cycle. Otherwise falls back to
+ * {@link findCurrentFavoritePresetIndex}.
+ */
+export function resolveCurrentFavoritePresetIndex(
+  presets: ReadonlyArray<UsableFavoritePreset>,
+  current: {
+    readonly instanceId: ProviderInstanceId;
+    readonly model: string;
+    readonly effort: string | null;
+  },
+  lastApplied: FavoritePreset | null,
+): number {
+  if (lastApplied) {
+    const index = presets.findIndex((preset) => isSameFavoritePreset(preset.favorite, lastApplied));
+    const preset = presets[index];
+    if (
+      preset &&
+      preset.instance.instanceId === current.instanceId &&
+      preset.model === current.model &&
+      (preset.effort === undefined || preset.effort === current.effort)
+    )
+      return index;
+  }
+  return findCurrentFavoritePresetIndex(presets, current);
+}
+
 /** Next index in a wrapping cycle; from -1, forward starts at 0 and backward at the end. */
 export function stepFavoritePresetIndex(
   length: number,
@@ -123,6 +160,24 @@ export function stepFavoritePresetIndex(
   if (length <= 0) return -1;
   if (currentIndex < 0) return direction === 1 ? 0 : length - 1;
   return (currentIndex + direction + length) % length;
+}
+
+/**
+ * The next preset `canSelect` accepts, at most one lap from `currentIndex`.
+ * -1 when every preset is refused (a thread locked to another provider).
+ */
+export function findNextSelectableFavoritePresetIndex(
+  presets: ReadonlyArray<UsableFavoritePreset>,
+  currentIndex: number,
+  direction: 1 | -1,
+  canSelect: (preset: UsableFavoritePreset) => boolean,
+): number {
+  let index = currentIndex;
+  for (let step = 0; step < presets.length; step += 1) {
+    index = stepFavoritePresetIndex(presets.length, index, direction);
+    if (canSelect(presets[index]!)) return index;
+  }
+  return -1;
 }
 
 /** The effort the descriptors currently resolve to (selected or default). */

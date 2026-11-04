@@ -1157,6 +1157,68 @@ describe("favorite model shortcuts", () => {
     );
   });
 
+  it("never matches by physical key off macOS, so AltGr characters stay typeable", () => {
+    // AltGr+Q types `@` on a German Windows layout; Chromium reports Ctrl+Alt.
+    const keybindings = compile([
+      {
+        shortcut: modShortcut("q", { modKey: false, ctrlKey: true, altKey: true }),
+        command: "model.favorite.next",
+      },
+      { shortcut: modShortcut("7", { altKey: true }), command: "model.favorite.1" },
+    ]);
+    for (const platform of ["Win32", "Linux"]) {
+      assert.isNull(
+        resolveShortcutCommand(
+          event({ key: "@", code: "KeyQ", ctrlKey: true, altKey: true }),
+          keybindings,
+          { platform },
+        ),
+      );
+      assert.isNull(
+        resolveShortcutCommand(
+          event({ key: "{", code: "Digit7", ctrlKey: true, altKey: true }),
+          keybindings,
+          { platform },
+        ),
+      );
+    }
+    // Ctrl+Option on macOS is not an Option rewrite either.
+    assert.isNull(
+      resolveShortcutCommand(
+        event({ key: "@", code: "KeyQ", ctrlKey: true, altKey: true }),
+        keybindings,
+        { platform: "MacIntel" },
+      ),
+    );
+  });
+
+  it("matches a letter layout by the typed key only", () => {
+    // AZERTY: the physical Q key types `a`.
+    const keybindings = compile([
+      { shortcut: modShortcut("a", { modKey: false, altKey: true }), command: "model.favorite.1" },
+      { shortcut: modShortcut("q", { modKey: false, altKey: true }), command: "model.favorite.2" },
+    ]);
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "a", code: "KeyQ", altKey: true }), keybindings, {
+        platform: "MacIntel",
+      }),
+      "model.favorite.1",
+    );
+  });
+
+  it("prefers a rule for the typed character over a physical-key rule", () => {
+    const keybindings = compile([
+      { shortcut: modShortcut("¡", { modKey: false, altKey: true }), command: "model.favorite.2" },
+      { shortcut: modShortcut("1", { modKey: false, altKey: true }), command: "model.favorite.1" },
+    ]);
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "¡", code: "Digit1", altKey: true }), keybindings, {
+        platform: "MacIntel",
+      }),
+      "model.favorite.2",
+    );
+  });
+
   it("keeps the existing alt defaults", () => {
     assert.strictEqual(
       resolveShortcutCommand(event({ key: "Tab", altKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {

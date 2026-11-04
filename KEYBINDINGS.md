@@ -31,8 +31,11 @@ anywhere in the app.
   `Opus · xhigh` can both be favorites. `mod+alt+right` and `mod+alt+left` cycle through them,
   `mod+alt+up` and `mod+alt+down` step the effort, and in the desktop app `ctrl+1` to `ctrl+9`
   pick favorite N directly. Run "Save current model and effort as favorite" from the command
-  palette to add a preset. On macOS, `ctrl+1` to `ctrl+9` only reach F5 while Mission Control's
-  "Switch to Desktop N" shortcuts are off.
+  palette to add a preset. Some of these defaults can clash with the operating system, which
+  takes the key first: on macOS, `ctrl+1` to `ctrl+9` are Mission Control's "Switch to Desktop
+  N" when that is turned on, and on Windows and Linux `mod+alt+arrow` is `ctrl+alt+arrow`,
+  which GNOME and some other desktops use to switch workspaces and some Intel graphics drivers
+  use to rotate the screen. Rebind the commands if a key doesn't reach F5.
 - With the model picker open, `mod+1` to `mod+9` pick the matching row. In the Favorites view
   that is the same order as the `ctrl+N` presets.
 - `chat.newLocal`, `chat.newScratch` and `model.favorite.saveCurrent` have no default binding
