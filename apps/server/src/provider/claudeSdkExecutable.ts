@@ -72,8 +72,8 @@ export function resolveBundledClaudeExecutable(
   let resolvePackage = options.resolve;
   try {
     if (!resolvePackage) {
-      const require = createRequire(import.meta.url);
-      const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
+      const moduleRequire = createRequire(import.meta.url);
+      const sdkEntry = moduleRequire.resolve("@anthropic-ai/claude-agent-sdk");
       resolvePackage = createRequire(sdkEntry).resolve;
     }
     for (const candidate of packages) {

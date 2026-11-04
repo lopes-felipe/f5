@@ -70,9 +70,10 @@ export function resolveBundledCodexExecutable(
         ". Set an absolute Binary path to your own Codex executable in Settings > Providers.",
     );
   try {
-    const require = createRequire(import.meta.url);
+    // CJS bundlers rewrite import.meta.url using require("url"); do not shadow it.
+    const moduleRequire = createRequire(import.meta.url);
     const resolve =
-      options.resolve ?? createRequire(require.resolve("@openai/codex/package.json")).resolve;
+      options.resolve ?? createRequire(moduleRequire.resolve("@openai/codex/package.json")).resolve;
     const root = Path.dirname(resolve("@openai/codex-" + platform + "-" + arch + "/package.json"));
     const vendor = Path.join(root, "vendor", target);
     const manifest = JSON.parse(
