@@ -57,7 +57,7 @@ export default function ProjectScriptsControl({
   return (
     <>
       {primaryScript ? (
-        <Group aria-label="Project scripts">
+        <Group aria-label="Project scripts" variant="track">
           <Button
             size="sm"
             variant="ghost"

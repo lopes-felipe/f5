@@ -136,7 +136,7 @@ function BrowserOpenRequestView({
         <Button size="xs" variant="ghost" disabled={locked} onClick={() => void answer("cancel")}>
           Cancel
         </Button>
-        <Group aria-label="Open options" variant="joined">
+        <Group aria-label="Open options">
           <Button size="xs" disabled={locked} onClick={() => void answer("open")}>
             Open
           </Button>

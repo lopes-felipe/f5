@@ -45,9 +45,9 @@ const buttonVariants = cva(
           "border-transparent text-foreground data-pressed:bg-accent [:hover,[data-pressed]]:bg-accent",
         link: "border-transparent underline-offset-4 [:hover,[data-pressed]]:underline",
         outline:
-          "border-transparent bg-secondary text-foreground [:hover,[data-pressed]]:bg-accent",
+          "border-transparent bg-secondary text-foreground [:hover,[data-pressed],[data-popup-open]]:bg-control-hover",
         secondary:
-          "border-transparent bg-secondary text-foreground [:hover,[data-pressed]]:bg-accent",
+          "border-transparent bg-secondary text-foreground [:hover,[data-pressed],[data-popup-open]]:bg-control-hover",
       },
     },
   },

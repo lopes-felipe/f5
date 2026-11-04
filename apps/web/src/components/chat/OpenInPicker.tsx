@@ -131,7 +131,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   }, [preferredEditor, keybindings, openInCwd, wsInteractionBlocked]);
 
   return (
-    <Group aria-label="Subscription actions">
+    <Group aria-label="Subscription actions" variant="track">
       <Button
         size="sm"
         variant="ghost"

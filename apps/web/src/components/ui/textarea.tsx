@@ -5,7 +5,7 @@ import { mergeProps } from "@base-ui/react/merge-props";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
-import { fieldShellClassName } from "./input";
+import { fieldShellClassName, singleFieldShellDisabledClassName } from "./input";
 
 type TextareaProps = React.ComponentProps<"textarea"> & {
   size?: "sm" | "default" | "lg" | number;
@@ -15,7 +15,10 @@ type TextareaProps = React.ComponentProps<"textarea"> & {
 function Textarea({ className, size = "default", unstyled = false, ...props }: TextareaProps) {
   return (
     <span
-      className={cn(!unstyled && fieldShellClassName, className) || undefined}
+      className={
+        cn(!unstyled && [fieldShellClassName, singleFieldShellDisabledClassName], className) ||
+        undefined
+      }
       data-size={size}
       data-slot="textarea-control"
     >

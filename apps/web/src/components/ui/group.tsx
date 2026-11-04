@@ -9,10 +9,11 @@ import { cn } from "~/lib/utils";
 import { Separator } from "./separator";
 
 /**
- * `track` (default) is the segmented shell used by the header's side-panel
- * toggle: a quiet rounded track holding 24px segments, no dividers. Use
- * ghost buttons inside it (`icon-xs` for icon-only segments). `joined` butts
- * solid buttons edge to edge, for split primary actions.
+ * `joined` (default) butts solid buttons edge to edge, for split primary
+ * actions. `track` is the segmented shell used by the header's side-panel
+ * toggle: a quiet rounded track holding 24px segments, no dividers; it
+ * overrides its children's fill, so opt in explicitly and put ghost buttons
+ * inside (`icon-xs` for icon-only segments).
  */
 const groupVariants = cva("flex w-fit *:focus-visible:z-1 *:has-focus-visible:z-1", {
   compoundVariants: [
@@ -24,32 +25,28 @@ const groupVariants = cva("flex w-fit *:focus-visible:z-1 *:has-focus-visible:z-
     },
     {
       className:
-        "flex-col *:data-slot:has-[~[data-slot]]:rounded-b-none *:data-slot:has-[~[data-slot]]:border-b-0 *:[[data-slot]~[data-slot]]:rounded-t-none *:[[data-slot]~[data-slot]]:border-t-0",
+        "*:data-slot:has-[~[data-slot]]:rounded-b-none *:data-slot:has-[~[data-slot]]:border-b-0 *:[[data-slot]~[data-slot]]:rounded-t-none *:[[data-slot]~[data-slot]]:border-t-0",
       orientation: "vertical",
       variant: "joined",
-    },
-    {
-      className: "flex-col",
-      orientation: "vertical",
-      variant: "track",
     },
   ],
   defaultVariants: {
     orientation: "horizontal",
-    variant: "track",
+    variant: "joined",
   },
   variants: {
+    // Children's 44px coarse-pointer hit areas would spill over their
+    // neighbours along the group's axis, so collapse them on that axis.
     orientation: {
-      horizontal: "",
-      vertical: "",
+      horizontal: "*:pointer-coarse:after:min-w-auto",
+      vertical: "flex-col *:pointer-coarse:after:min-h-auto",
     },
     variant: {
-      joined:
-        "has-[>[data-slot=group]]:gap-2 *:pointer-coarse:after:min-w-auto *:pointer-coarse:after:min-h-auto",
+      joined: "has-[>[data-slot=group]]:gap-2",
       track:
         // Segments are matched as any direct child: triggers (menu, popover)
         // rendering a Button replace its `data-slot`.
-        "items-center gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5 [&>:not([data-slot=separator])]:h-6 [&>:not([data-slot=separator])]:rounded-md [&>:not([data-slot=separator])]:border-transparent [&>:not([data-slot=separator])]:bg-transparent [&>:not([data-slot=separator])]:shadow-none [&>:not([data-slot=separator]):hover]:bg-accent [&>[data-pressed]]:bg-accent [&>[data-popup-open]]:bg-accent [&>[data-slot=separator]]:hidden",
+        "items-center gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5 [&>:not([data-slot=separator])]:h-6 [&>:not([data-slot=separator])]:rounded-md [&>:not([data-slot=separator])]:border-transparent [&>:not([data-slot=separator])]:bg-transparent [&>:not([data-slot=separator])]:shadow-none [&>:not([data-slot=separator]):not([aria-disabled=true]):hover]:bg-control-hover [&>[data-pressed]]:bg-control-hover [&>[data-popup-open]]:bg-control-hover [&>[data-slot=separator]]:hidden",
     },
   },
 });
@@ -71,7 +68,7 @@ function Group({
       className={cn(groupVariants({ orientation, variant }), className)}
       data-orientation={orientation}
       data-slot="group"
-      data-variant={variant ?? "track"}
+      data-variant={variant ?? "joined"}
       role="group"
       {...props}
     >

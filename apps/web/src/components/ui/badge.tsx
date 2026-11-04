@@ -28,7 +28,7 @@ const badgeVariants = cva(
         error: "bg-destructive/8 text-destructive-foreground dark:bg-destructive/16",
         info: "bg-info/8 text-info-foreground dark:bg-info/16",
         outline:
-          "border-transparent bg-secondary text-secondary-foreground [button&,a&]:hover:bg-accent",
+          "border-transparent bg-secondary text-secondary-foreground [button&,a&]:hover:bg-control-hover",
         secondary: "bg-secondary text-secondary-foreground [button&,a&]:hover:bg-secondary/90",
         success: "bg-success/8 text-success-foreground dark:bg-success/16",
         warning: "bg-warning/8 text-warning-foreground dark:bg-warning/16",

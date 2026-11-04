@@ -34,7 +34,7 @@ function ToggleGroup({
         // toggle and `Group`: a quiet shell with transparent segments.
         variant === "default"
           ? "gap-0.5"
-          : "gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5 [&>[data-slot=toggle]]:border-transparent [&>[data-slot=toggle]]:bg-transparent [&>[data-slot=toggle]]:text-muted-foreground [&>[data-slot=toggle]:hover]:bg-accent [&>[data-slot=toggle]:hover]:text-foreground [&>[data-slot=toggle][data-pressed]]:bg-accent [&>[data-slot=toggle][data-pressed]]:text-foreground [&>[data-slot=toggle][data-pressed]]:shadow-xs [&>[data-slot=separator]]:hidden",
+          : "gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5 [&>[data-slot=toggle]]:border-transparent [&>[data-slot=toggle]]:bg-transparent [&>[data-slot=toggle]]:text-muted-foreground [&>[data-slot=toggle]:not([data-pressed]):hover]:bg-control-hover [&>[data-slot=toggle]:hover]:text-foreground [&>[data-slot=toggle][data-pressed]]:bg-control-active [&>[data-slot=toggle][data-pressed]]:text-foreground [&>[data-slot=toggle][data-pressed]]:shadow-xs [&>[data-slot=separator]]:hidden",
         className,
       )}
       data-size={size}

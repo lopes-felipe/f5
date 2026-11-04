@@ -880,7 +880,7 @@ export default function GitActionsControl({
           </span>
         </Button>
       ) : (
-        <Group aria-label="Git actions">
+        <Group aria-label="Git actions" variant="track">
           {quickActionDisabledReason ? (
             <Popover>
               <PopoverTrigger

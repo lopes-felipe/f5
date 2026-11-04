@@ -14,9 +14,17 @@ import { cn } from "~/lib/utils";
 const fieldSurfaceClassName =
   "rounded-md border border-transparent bg-secondary text-foreground outline-none ring-ring/24 transition-[border-color,box-shadow,background-color] duration-(--duration-fast) placeholder:text-muted-foreground focus-visible:border-ring focus-visible:bg-background focus-visible:ring-[3px] aria-invalid:border-destructive/36 focus-visible:aria-invalid:border-destructive/64 focus-visible:aria-invalid:ring-destructive/16 dark:aria-invalid:ring-destructive/24 disabled:opacity-64";
 
-/** The same field look for a wrapper around the real control (`has-*` states). */
+/**
+ * The same field look for a wrapper around the real control (`has-*` states).
+ * It does not dim when a child is disabled: a wrapper may hold several
+ * controls that dim themselves. Single-control shells add
+ * `singleFieldShellDisabledClassName`.
+ */
 const fieldShellClassName =
-  "relative inline-flex w-full rounded-md border border-transparent bg-secondary text-base text-foreground ring-ring/24 transition-[border-color,box-shadow,background-color] duration-(--duration-fast) has-focus-visible:border-ring has-focus-visible:bg-background has-focus-visible:ring-[3px] has-aria-invalid:border-destructive/36 has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 dark:has-aria-invalid:ring-destructive/24 has-autofill:bg-foreground/4 dark:has-autofill:bg-foreground/8 has-disabled:opacity-64 sm:text-sm";
+  "relative inline-flex w-full rounded-md border border-transparent bg-secondary text-base text-foreground ring-ring/24 transition-[border-color,box-shadow,background-color] duration-(--duration-fast) has-focus-visible:border-ring has-focus-visible:bg-background has-focus-visible:ring-[3px] has-aria-invalid:border-destructive/36 has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 dark:has-aria-invalid:ring-destructive/24 has-autofill:bg-foreground/4 dark:has-autofill:bg-foreground/8 sm:text-sm";
+
+/** Dims a shell whose one control (unstyled itself) is disabled. */
+const singleFieldShellDisabledClassName = "has-disabled:opacity-64";
 
 type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputElement>, "size"> & {
   size?: "sm" | "default" | "lg" | number;
@@ -43,7 +51,10 @@ function Input({
 
   return (
     <span
-      className={cn(!unstyled && fieldShellClassName, className) || undefined}
+      className={
+        cn(!unstyled && [fieldShellClassName, singleFieldShellDisabledClassName], className) ||
+        undefined
+      }
       data-size={size}
       data-slot="input-control"
     >
@@ -66,4 +77,10 @@ function Input({
   );
 }
 
-export { Input, type InputProps, fieldShellClassName, fieldSurfaceClassName };
+export {
+  Input,
+  type InputProps,
+  fieldShellClassName,
+  fieldSurfaceClassName,
+  singleFieldShellDisabledClassName,
+};
