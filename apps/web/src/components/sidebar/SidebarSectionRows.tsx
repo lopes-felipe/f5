@@ -22,29 +22,66 @@ export function ListToggleRow(props: { label: string; onSelect: () => void }) {
   );
 }
 
-/** "N older than 7 days": folds idle items under a project; expanding lists them below. */
-export function OlderToggleRow(props: { label: string; expanded: boolean; onToggle: () => void }) {
-  const treeRowProps = useSidebarTreeRowProps();
+/**
+ * The project list's single disclosure row: "Show N more" for the preview limit, then
+ * "· M older than 7 days ›" for the threads aging folds away. Each part is its own button
+ * and tree row, side by side on one line; either may be absent.
+ */
+export function MoreAndOlderRow(props: {
+  more?: { label: string; onToggle: () => void } | undefined;
+  older?: { label: string; expanded: boolean; onToggle: () => void } | undefined;
+}) {
+  const moreRowProps = useSidebarTreeRowProps();
+  const olderRowProps = useSidebarTreeRowProps();
+  const { more, older } = props;
+  if (!more && !older) return null;
+  const partClassName =
+    "h-6 w-auto max-w-full shrink-0 translate-x-0 gap-1 rounded-sm px-0 text-2xs text-muted-foreground hover:bg-transparent hover:text-foreground active:bg-transparent";
+  // One line, two sibling tree rows: each part is its own button and tree stop.
   return (
     <SidebarMenuSubItem className="w-full">
-      <SidebarMenuSubButton
-        render={<button type="button" {...treeRowProps} />}
-        data-thread-selection-safe
-        data-testid="sidebar-older-toggle"
-        aria-expanded={props.expanded}
-        size="sm"
-        className="h-6 w-full translate-x-0 justify-start gap-1 rounded-md pl-8 text-left text-2xs text-muted-foreground hover:bg-transparent hover:text-foreground"
-        onClick={props.onToggle}
+      <div
+        data-testid="sidebar-more-and-older"
+        className="flex h-6 w-full min-w-0 items-center gap-1 pl-8"
       >
-        <span>{props.label}</span>
-        <ChevronRightIcon
-          aria-hidden="true"
-          className={cn(
-            "size-3.5 shrink-0 text-faint-foreground transition-transform duration-(--duration-fast)",
-            props.expanded && "rotate-90",
-          )}
-        />
-      </SidebarMenuSubButton>
+        {more ? (
+          <SidebarMenuSubButton
+            render={<button type="button" {...moreRowProps} />}
+            data-thread-selection-safe
+            data-testid="sidebar-show-more"
+            size="sm"
+            className={partClassName}
+            onClick={more.onToggle}
+          >
+            <span>{more.label}</span>
+          </SidebarMenuSubButton>
+        ) : null}
+        {more && older ? (
+          <span aria-hidden="true" className="text-2xs text-faint-foreground">
+            ·
+          </span>
+        ) : null}
+        {older ? (
+          <SidebarMenuSubButton
+            render={<button type="button" {...olderRowProps} />}
+            data-thread-selection-safe
+            data-testid="sidebar-older-toggle"
+            aria-expanded={older.expanded}
+            size="sm"
+            className={partClassName}
+            onClick={older.onToggle}
+          >
+            <span>{older.label}</span>
+            <ChevronRightIcon
+              aria-hidden="true"
+              className={cn(
+                "size-3.5 shrink-0 text-faint-foreground transition-transform duration-(--duration-fast)",
+                older.expanded && "rotate-90",
+              )}
+            />
+          </SidebarMenuSubButton>
+        ) : null}
+      </div>
     </SidebarMenuSubItem>
   );
 }

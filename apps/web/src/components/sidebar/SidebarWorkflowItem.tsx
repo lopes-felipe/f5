@@ -7,6 +7,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   CircleDashedIcon,
+  GitPullRequestIcon,
   LoaderIcon,
 } from "lucide-react";
 
@@ -25,6 +26,8 @@ import {
   resolveThreadRowClassName,
   resolveWorkflowThreadListExpanded,
   SIDEBAR_TREE_LEVEL_CLASS_NAME,
+  SIDEBAR_DONE_ROW_CLASS_NAME,
+  SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
 } from "../Sidebar.logic";
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -41,6 +44,7 @@ import {
   type SidebarWorkflowType,
   type TerminalStatusIndicator,
   isWorkflowRouteActive,
+  workflowPrLabel,
   workflowRouteForType,
   workflowTypeLabel,
 } from "./sidebarLists";
@@ -54,7 +58,14 @@ export interface SidebarThreadRowIndicators {
   prStatus: PrStatusIndicator | null;
   terminalStatus: TerminalStatusIndicator | null;
   isUnread: boolean;
+  /** The thread's git status is being polled but hasn't loaded, so "no PR" isn't known yet. */
+  prPending: boolean;
 }
+
+/** Row indicators by thread id; any thread in the store, including snoozed and archived ones. */
+export type SidebarIndicatorsForThread = (
+  thread: Pick<ThreadListItem, "id">,
+) => SidebarThreadRowIndicators;
 
 const PHASE_DOT_CLASS: Record<WorkflowPhaseSummary["state"], string> = {
   completed: "bg-success",
@@ -135,13 +146,74 @@ const CURRENT_STEP_ICON: Record<
 };
 
 /**
- * A collapsed workflow's second line: the step it is on, its state, model and time. Clicking
- * opens that step's thread, or the workflow before the step has one.
+ * A finished workflow's one-line status, in place of the phase strip: the last thread's PR
+ * (`#462` in its state's color) or a check. Clicking opens the last thread. The time sits in
+ * the archive button's slot, like a thread row's, so the right edges line up. While the PR
+ * state is still loading it shows a dashed circle instead of a check that could flip to a PR.
+ */
+function WorkflowFinishedStatus(props: {
+  pr: PrStatusIndicator | null;
+  prPending: boolean;
+  canOpen: boolean;
+  onOpenLastThread: () => void;
+}) {
+  const { pr } = props;
+  const pending = !pr && props.prPending;
+  return (
+    <span className="flex shrink-0 items-center">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              data-testid="workflow-finished-status"
+              aria-label={
+                pr
+                  ? `Open last thread, ${pr.tooltip}`
+                  : pending
+                    ? "Open last thread, checking for a PR"
+                    : "Open last thread"
+              }
+              {...(pending ? { "data-pr-pending": "" } : {})}
+              disabled={!props.canOpen}
+              className={cn(
+                "-mx-0.5 inline-flex h-5 items-center gap-0.5 rounded-md px-0.5 text-2xs tabular-nums outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none",
+                pr ? pr.colorClass : pending ? "text-faint-foreground" : "text-success-foreground",
+              )}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                props.onOpenLastThread();
+              }}
+            >
+              {pr ? (
+                <>
+                  <GitPullRequestIcon aria-hidden="true" className="size-3" />
+                  {`#${pr.number}`}
+                </>
+              ) : pending ? (
+                <CircleDashedIcon aria-hidden="true" className="size-3.5" />
+              ) : (
+                <CheckIcon aria-hidden="true" className="size-3.5" />
+              )}
+            </button>
+          }
+        />
+        <TooltipPopup side="top">
+          {pr ? workflowPrLabel(pr) : pending ? "Completed · checking for a PR" : "Completed"}
+        </TooltipPopup>
+      </Tooltip>
+    </span>
+  );
+}
+
+/**
+ * A collapsed, unfinished workflow's second line: the step it is on, its state, model and
+ * time. Clicking opens the step's target thread, or the workflow before it has any thread.
  */
 function WorkflowCurrentStepLine(props: {
   step: WorkflowCurrentStep;
   thread: ThreadSummary | undefined;
-  completedAt: string;
   ownerRowId: string | null;
   isActive: boolean;
   onOpen: () => void;
@@ -149,7 +221,7 @@ function WorkflowCurrentStepLine(props: {
   const { step, thread } = props;
   const { icon: Icon, word, className } = CURRENT_STEP_ICON[step.state];
   const model = thread ? (thread.modelSelection?.model ?? thread.model) : step.modelSlot?.model;
-  const at = step.state === "completed" ? props.completedAt : (thread?.lastInteractionAt ?? null);
+  const at = thread?.lastInteractionAt ?? null;
   return (
     <button
       type="button"
@@ -171,13 +243,11 @@ function WorkflowCurrentStepLine(props: {
         )}
       />
       <span className="min-w-0 truncate">
-        {step.state === "completed" ? "Completed" : step.label}
-        {step.state === "completed" ? null : (
-          <span className="text-faint-foreground">{` · ${word}`}</span>
-        )}
+        {step.label}
+        <span className="text-faint-foreground">{` · ${word}`}</span>
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {model && step.state !== "completed" ? (
+        {model ? (
           <ModelChip
             model={model}
             provider={thread ? undefined : step.modelSlot?.provider}
@@ -224,7 +294,7 @@ export function SidebarWorkflowItem(props: {
   overrideExpanded: boolean | undefined;
   onToggleCollapsed: (workflowId: string, fallbackExpanded: boolean) => void;
   onArchive: (workflowId: SidebarWorkflowId, title: string, type: SidebarWorkflowType) => void;
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   actions: SidebarThreadActions;
 }) {
   "use memo";
@@ -263,6 +333,12 @@ export function SidebarWorkflowItem(props: {
     currentStep?.threadId != null
       ? workflowThreads.find((thread) => thread.id === currentStep.threadId)
       : undefined;
+  const targetThreadId = currentStep?.targetThreadId ?? null;
+  // A finished workflow is one line: its last thread's PR (or a check) replaces the strip.
+  // `workflowThreads` leaves out snoozed threads, so the last thread is looked up by id.
+  const finished = currentStep?.state === "completed";
+  const targetIndicators =
+    finished && targetThreadId !== null ? props.indicatorsForThread({ id: targetThreadId }) : null;
   const peekTrigger = useSidebarPeekTrigger(
     {
       kind: "workflow",
@@ -272,8 +348,10 @@ export function SidebarWorkflowItem(props: {
       phases: props.phases ?? [],
       currentStep,
       threads: workflowThreads,
+      onOpenWorkflow: openWorkflow,
+      onOpenThread: actions.openThread,
     },
-    { prefetchThreadId: currentStep?.threadId ?? null },
+    { prefetchThreadId: targetThreadId },
   );
 
   return (
@@ -292,6 +370,7 @@ export function SidebarWorkflowItem(props: {
         isActive={isWorkflowActive}
         className={cn(
           resolveThreadRowClassName({ isActive: isWorkflowActive, isSelected: false }),
+          SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
           !isWorkflowActive && "text-foreground",
         )}
         onClick={openWorkflow}
@@ -343,8 +422,25 @@ export function SidebarWorkflowItem(props: {
           {workflow.title}
           <span className="sr-only">{`, ${typeLabel} workflow`}</span>
         </span>
-        <WorkflowPhaseStrip phases={props.phases ?? []} />
-        <span className="relative flex shrink-0 items-center">
+        {finished ? (
+          <WorkflowFinishedStatus
+            pr={targetIndicators?.prStatus ?? null}
+            prPending={targetIndicators?.prPending ?? false}
+            canOpen={targetThreadId !== null}
+            onOpenLastThread={() => {
+              if (targetThreadId !== null) actions.openThread(targetThreadId);
+            }}
+          />
+        ) : (
+          <WorkflowPhaseStrip phases={props.phases ?? []} />
+        )}
+        <span className="relative flex shrink-0 items-center justify-end">
+          {finished ? (
+            // The time gives way to the archive button on hover, as on thread rows.
+            <span className="text-2xs font-normal text-muted-foreground tabular-nums group-hover/workflow-row:invisible group-focus-within/workflow-row:invisible pointer-coarse:invisible">
+              {formatRelativeTimeLabel(workflow.updatedAt)}
+            </span>
+          ) : null}
           <Tooltip>
             <TooltipTrigger
               render={
@@ -354,6 +450,7 @@ export function SidebarWorkflowItem(props: {
                   className={cn(
                     "-mr-1 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
                     "opacity-0 group-hover/workflow-row:opacity-100 group-focus-within/workflow-row:opacity-100 pointer-coarse:opacity-100",
+                    finished && "absolute top-1/2 right-0 -translate-y-1/2",
                   )}
                   onClick={(event) => {
                     event.preventDefault();
@@ -369,15 +466,14 @@ export function SidebarWorkflowItem(props: {
           </Tooltip>
         </span>
       </SidebarMenuSubButton>
-      {workflowCollapsed && currentStep ? (
+      {workflowCollapsed && currentStep && !finished ? (
         <WorkflowCurrentStepLine
           step={currentStep}
           thread={currentStepThread}
-          completedAt={workflow.updatedAt}
           ownerRowId={isTreeRow ? workflowRowId : null}
-          isActive={currentStep.threadId !== null && currentStep.threadId === routeThreadId}
+          isActive={targetThreadId !== null && targetThreadId === routeThreadId}
           onOpen={() => {
-            if (currentStep.threadId !== null) actions.openThread(currentStep.threadId);
+            if (targetThreadId !== null) actions.openThread(targetThreadId);
             else openWorkflow();
           }}
         />
@@ -444,7 +540,12 @@ export function SidebarArchivedWorkflowRow(props: {
         render={<div role="button" tabIndex={0} {...treeRowProps} />}
         size="md"
         isActive={isActive}
-        className={resolveThreadRowClassName({ isActive, isSelected: false })}
+        className={cn(
+          resolveThreadRowClassName({ isActive, isSelected: false }),
+          SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+          !isActive && SIDEBAR_DONE_ROW_CLASS_NAME,
+        )}
+        data-row-done
         onClick={openWorkflow}
         onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") {

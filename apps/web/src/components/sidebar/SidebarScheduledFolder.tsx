@@ -6,7 +6,7 @@ import { useStore } from "../../store";
 import { isSnoozedThread } from "../../lib/threadOrdering";
 import type { ThreadListItem } from "../../types";
 import { SidebarThreadRow } from "./SidebarThreadRow";
-import type { SidebarThreadRowIndicators } from "./SidebarWorkflowItem";
+import type { SidebarIndicatorsForThread } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
 
@@ -15,7 +15,7 @@ const ATTENTION_LABELS = new Set(["Pending Approval", "Awaiting Input", "Plan Re
 /** Live scheduled runs that need the user, are running, or finished unseen. */
 export function summarizeScheduledThreads(
   threads: readonly ThreadListItem[],
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators,
+  indicatorsForThread: SidebarIndicatorsForThread,
 ): { attention: number; running: number; unread: number } {
   let attention = 0;
   let running = 0;
@@ -71,7 +71,7 @@ export function ScheduledShelfIndicator(props: {
 /** "Mark all as read" for a project's scheduled runs, from the shelf segment's context menu. */
 export function useScheduledFolderMenu(
   threads: readonly ThreadListItem[],
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators,
+  indicatorsForThread: SidebarIndicatorsForThread,
 ) {
   const markThreadsVisited = useStore((state) => state.markThreadsVisited);
   return async (position: { x: number; y: number }) => {
@@ -106,7 +106,7 @@ export function SidebarScheduledShelfList(props: {
   onToggleShowAll: () => void;
   routeThreadId: ThreadId | null;
   orderedIds: readonly ThreadId[];
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   actions: SidebarThreadActions;
 }) {
   const renderThread = (thread: ThreadListItem) => {

@@ -48,7 +48,7 @@ export type SidebarPeekPayload =
       /** A workflow child's role label, shown before the workflow title. */
       readonly roleLabel?: string | undefined;
       readonly workflowTitle?: string | undefined;
-      readonly indicators: SidebarThreadRowIndicators;
+      readonly indicators: Omit<SidebarThreadRowIndicators, "prPending">;
     }
   | {
       readonly kind: "workflow";
@@ -58,7 +58,12 @@ export type SidebarPeekPayload =
       readonly phases: readonly WorkflowPhaseSummary[];
       readonly currentStep: WorkflowCurrentStep | null;
       readonly threads: readonly ThreadSummary[];
+      /** The card's title opens the workflow page; a step with a thread opens that thread. */
+      readonly onOpenWorkflow: () => void;
+      readonly onOpenThread: (threadId: ThreadId) => void;
     };
+
+const PEEK_CARD_SELECTOR = "[data-sidebar-peek-card]";
 
 type SidebarPeekHandle = ReturnType<typeof TooltipPrimitive.createHandle<SidebarPeekPayload>>;
 
@@ -77,12 +82,14 @@ const PEEK_PREFETCH_DELAY_MS = 150;
  * Whether a primary-button press or drag is under way: a held pointer covers the dnd-kit
  * reorders, and native drag events cover thread reference drags, whose pointer stream the
  * browser cancels. Other buttons are ignored: a native context menu swallows its pointerup.
+ * So are presses inside the card itself, whose steps are clickable.
  */
 function usePointerHeld(): boolean {
   const [held, setHeld] = useState(false);
   useEffect(() => {
     const press = (event: Event) => {
       if (event instanceof PointerEvent && event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest(PEEK_CARD_SELECTOR)) return;
       setHeld(true);
     };
     const release = () => setHeld(false);
@@ -101,7 +108,7 @@ function usePointerHeld(): boolean {
 }
 
 /**
- * One read-only hover card for every sidebar row. Rows are detached triggers of a single
+ * One hover card for every sidebar row. Rows are detached triggers of a single
  * tooltip, so moving between rows while it is open swaps the card without a new delay.
  * `suppressed` closes it and keeps it closed (rename, open menu, multi-selection); so does
  * any press or drag.
@@ -131,6 +138,7 @@ export function SidebarPeekProvider(props: { suppressed: boolean; children: Reac
               sideOffset={8}
               className="w-80 max-w-80 whitespace-normal text-wrap"
               data-testid="sidebar-peek-card"
+              data-sidebar-peek-card=""
             >
               {payload.kind === "thread" ? (
                 <ThreadPeekContent payload={payload} />
@@ -288,10 +296,6 @@ function PeekReply(props: { threadId: ThreadId | null; question: string | null }
   );
 }
 
-function prNumberFromUrl(url: string): string | null {
-  return /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
-}
-
 function ThreadPeekContent({
   payload,
 }: {
@@ -322,7 +326,6 @@ function ThreadPeekContent({
     thread.modelContextWindowTokens,
   );
   const draftPreview = resolveSidebarComposerDraftPreview(draft);
-  const prNumber = prStatus ? prNumberFromUrl(prStatus.url) : null;
   const scratch = project ? isScratchProject(project) : false;
 
   return (
@@ -375,7 +378,7 @@ function ThreadPeekContent({
         {prStatus ? (
           <span className={cn("inline-flex items-center gap-0.5", prStatus.colorClass)}>
             <GitPullRequestIcon aria-hidden="true" className="size-3" />
-            {prNumber ? `${prStatus.label} #${prNumber}` : prStatus.label}
+            {`${prStatus.label} #${prStatus.number}`}
           </span>
         ) : null}
         {context !== null ? <span className="tabular-nums">{`${context}% context`}</span> : null}
@@ -404,18 +407,31 @@ function WorkflowPeekContent({
   payload: Extract<SidebarPeekPayload, { kind: "workflow" }>;
 }) {
   "use memo";
+  const context = use(SidebarPeekContext);
   const project = useStore((state) =>
     state.projects.find((entry) => entry.id === payload.projectId),
   );
   const threadById = new Map(payload.threads.map((thread) => [thread.id, thread] as const));
-  const currentThreadId = payload.currentStep?.threadId ?? null;
+  const currentThreadId = payload.currentStep?.targetThreadId ?? null;
+  // Pointer-only shortcuts: keyboard users open the same threads from the expanded workflow.
+  const open = (action: () => void) => {
+    action();
+    context?.handle.close();
+  };
   return (
     <div
       className="flex flex-col gap-1.5 py-1 text-left leading-snug"
       data-testid="sidebar-peek-workflow"
     >
       <div>
-        <p className="font-medium text-foreground">{payload.title}</p>
+        <button
+          type="button"
+          tabIndex={-1}
+          className="-mx-1 rounded-sm px-1 text-left font-medium text-foreground hover:bg-accent"
+          onClick={() => open(payload.onOpenWorkflow)}
+        >
+          {payload.title}
+        </button>
         <p className="text-2xs text-muted-foreground">
           {`${payload.typeLabel} · ${project && !isScratchProject(project) ? project.name : "No project"}`}
         </p>
@@ -437,11 +453,8 @@ function WorkflowPeekContent({
                   const model = thread
                     ? (thread.modelSelection?.model ?? thread.model)
                     : step.modelSlot?.model;
-                  return (
-                    <li
-                      key={`${stepIndex}:${step.label}`}
-                      className="flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground"
-                    >
+                  const content = (
+                    <>
                       <span className="min-w-0 truncate">{step.label}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1.5">
                         {model ? (
@@ -460,6 +473,25 @@ function WorkflowPeekContent({
                           <span className="text-faint-foreground">{step.state}</span>
                         )}
                       </span>
+                    </>
+                  );
+                  const rowClassName =
+                    "-mx-1 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-1.5 rounded-sm px-1 text-left text-2xs text-muted-foreground";
+                  return (
+                    <li key={`${stepIndex}:${step.label}`}>
+                      {thread ? (
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          data-peek-step-thread={thread.id}
+                          className={cn(rowClassName, "hover:bg-accent hover:text-foreground")}
+                          onClick={() => open(() => payload.onOpenThread(thread.id))}
+                        >
+                          {content}
+                        </button>
+                      ) : (
+                        <div className={rowClassName}>{content}</div>
+                      )}
                     </li>
                   );
                 })}

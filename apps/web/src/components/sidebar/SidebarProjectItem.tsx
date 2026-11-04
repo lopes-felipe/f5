@@ -17,7 +17,7 @@ import type { DraftThreadState } from "../../composerDraftStore";
 import { getVisibleThreadsWithPinnedDraft, isDraftThreadId } from "../../lib/draftThreads";
 import { cn } from "../../lib/utils";
 import type { ThreadSummary } from "../../threadSelectors";
-import type { Project, ThreadListItem } from "../../types";
+import type { Project } from "../../types";
 import { InlineTitleEditor } from "../InlineTitleEditor";
 import { ProjectIcon } from "../ProjectIcon";
 import {
@@ -50,13 +50,13 @@ import {
   summarizeScheduledThreads,
   useScheduledFolderMenu,
 } from "./SidebarScheduledFolder";
-import { ListToggleRow, OlderToggleRow } from "./SidebarSectionRows";
+import { ListToggleRow, MoreAndOlderRow } from "./SidebarSectionRows";
 import { SidebarShelfRow, type SidebarShelfSegment } from "./SidebarShelfRow";
 import { SidebarTreeParentContext, sidebarProjectRowId } from "./sidebarTreeRow";
 import {
   SidebarArchivedWorkflowRow,
   SidebarWorkflowItem,
-  type SidebarThreadRowIndicators,
+  type SidebarIndicatorsForThread,
 } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 
@@ -160,7 +160,7 @@ export interface SidebarProjectItemProps {
   workflowShortcutLabel: string | null;
   dndSensors: SensorDescriptor<SensorOptions>[];
   collisionDetection: CollisionDetection;
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   threadActions: SidebarThreadActions;
   projectActions: SidebarProjectActions;
 }
@@ -287,9 +287,19 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
   for (const entry of projectWorkflows) {
     const children = workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [];
+    const currentStep = workflowMeta(entry)?.currentStep ?? null;
+    // A finished workflow whose PR is still open has work left: it stays in view, and so does
+    // one whose PR state hasn't loaded yet. The last thread may be snoozed, so it is looked up
+    // by id rather than among the visible children.
+    const lastThreadIndicators =
+      currentStep?.state === "completed" && currentStep.targetThreadId !== null
+        ? indicatorsForThread({ id: currentStep.targetThreadId })
+        : null;
     if (
       isWorkflowRouteActive(pathname, entry.workflow.id, entry.type) ||
-      children.some((thread) => props.agingExemptThreadIds.has(thread.id))
+      children.some((thread) => props.agingExemptThreadIds.has(thread.id)) ||
+      lastThreadIndicators?.prStatus?.state === "open" ||
+      lastThreadIndicators?.prPending === true
     )
       agingExemptKeys.add(workflowEntryKey(entry));
   }
@@ -331,6 +341,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
   });
   const visibleWorkflows = agingEnabled ? agedWorkflows.recent : projectWorkflows;
   const hasHiddenActiveThreads = recentThreads.length > threadPreviewLimit;
+  const hiddenActiveCount = Math.max(0, recentThreads.length - visibleActiveThreads.length);
 
   // The shelf's open list, with the preview limit and "Show all N".
   const previewList = <T,>(
@@ -628,20 +639,29 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                     ) : null}
                     {visibleActiveThreads.map(renderActiveThread)}
 
-                    {hasHiddenActiveThreads ? (
-                      <ListToggleRow
-                        label={activeExpanded ? "Show less" : "Show more"}
-                        onSelect={() => toggleList("active")}
-                      />
-                    ) : null}
-
-                    {agingEnabled && olderCount > 0 ? (
-                      <OlderToggleRow
-                        label={`${olderCount} older than ${olderThreadDays} days`}
-                        expanded={olderExpanded}
-                        onToggle={() => toggleList("older")}
-                      />
-                    ) : null}
+                    <MoreAndOlderRow
+                      more={
+                        hasHiddenActiveThreads
+                          ? {
+                              label: activeExpanded
+                                ? "Show less"
+                                : hiddenActiveCount > 0
+                                  ? `Show ${hiddenActiveCount} more`
+                                  : "Show more",
+                              onToggle: () => toggleList("active"),
+                            }
+                          : undefined
+                      }
+                      older={
+                        agingEnabled && olderCount > 0
+                          ? {
+                              label: `${olderCount} older than ${olderThreadDays} days`,
+                              expanded: olderExpanded,
+                              onToggle: () => toggleList("older"),
+                            }
+                          : undefined
+                      }
+                    />
                     {visibleOlderWorkflows.map(renderWorkflow)}
                     {visibleOlderThreads.map(renderActiveThread)}
 

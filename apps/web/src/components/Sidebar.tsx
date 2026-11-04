@@ -95,10 +95,10 @@ import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
 import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
-import { SIDEBAR_NAV_ROW_CLASS_NAME, SidebarNav } from "./sidebar/SidebarNav";
+import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
-import type { SidebarThreadRowIndicators } from "./sidebar/SidebarWorkflowItem";
+import type { SidebarIndicatorsForThread } from "./sidebar/SidebarWorkflowItem";
 import {
   type SidebarHoverFreezeSnapshot,
   type SidebarWorkflowId,
@@ -125,11 +125,7 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 /** Which list the sidebar shows; a per-viewer convenience, so it lives in localStorage. */
 const SIDEBAR_VIEW_STORAGE_KEY = "f5:sidebar:view";
-const SidebarViewSchema = Schema.Literals(["projects", "recent"]);
-const SIDEBAR_VIEW_OPTIONS = [
-  { value: "projects", label: "Projects" },
-  { value: "recent", label: "Recent" },
-] as const;
+const SidebarViewSchema = Schema.Literals(SIDEBAR_VIEWS);
 
 /** Deletes a project's threads, then the project; throws the first failure. */
 async function deleteProjectWithThreads(input: {
@@ -319,30 +315,40 @@ export default function Sidebar() {
       enabled: polledGitStatusCwds.has(cwd),
     })),
   });
-  const prByThreadId = useMemo(() => {
+  const { prByThreadId, prPendingThreadIds } = useMemo(() => {
     const statusByCwd = new Map<string, GitStatusResult>();
+    // Polled cwds whose first status hasn't arrived: "no PR" isn't known for them yet.
+    const pendingCwds = new Set<string>();
     for (let index = 0; index < threadGitStatusCwds.length; index += 1) {
       const cwd = threadGitStatusCwds[index];
       if (!cwd) continue;
-      const status = threadGitStatusQueries[index]?.data;
+      const query = threadGitStatusQueries[index];
+      const status = query?.data;
       if (status) {
         statusByCwd.set(cwd, status);
+      } else if (query?.status === "pending" && polledGitStatusCwds.has(cwd)) {
+        pendingCwds.add(cwd);
       }
     }
 
     const map = new Map<ThreadId, ThreadPr>();
+    const pending = new Set<ThreadId>();
     for (const target of threadGitTargets) {
       const status = target.cwd ? statusByCwd.get(target.cwd) : undefined;
       const branchMatches =
         target.branch !== null && status?.branch !== null && status?.branch === target.branch;
       map.set(target.threadId, branchMatches ? (status?.pr ?? null) : null);
+      if (target.branch !== null && target.cwd !== null && pendingCwds.has(target.cwd)) {
+        pending.add(target.threadId);
+      }
     }
-    return map;
-  }, [threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
-  const indicatorsForThread = (thread: ThreadListItem): SidebarThreadRowIndicators => ({
+    return { prByThreadId: map, prPendingThreadIds: pending };
+  }, [polledGitStatusCwds, threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
+  const indicatorsForThread: SidebarIndicatorsForThread = (thread) => ({
     threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),
     isUnread: unreadThreadIds.has(thread.id),
     prStatus: prStatusIndicator(prByThreadId.get(thread.id) ?? null),
+    prPending: prPendingThreadIds.has(thread.id),
     terminalStatus: terminalStatusFromRunningIds(
       selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,
     ),
@@ -1047,7 +1053,8 @@ export default function Sidebar() {
     },
   );
 
-  // Opening a thread that sits on a shelf opens its bucket, so the open row is always visible.
+  // Opening a thread that sits on a shelf opens its bucket, so the open row is visible. A thread
+  // that moves onto a shelf while open (archived, snoozed, settled) leaves the shelf alone.
   const routeShelf = useMemo(() => {
     if (routeThreadId === null) return null;
     for (const [projectId, lists] of projectSidebarListsById) {
@@ -1059,15 +1066,31 @@ export default function Sidebar() {
   // Keyed by thread and bucket, not the lists, so closing the bucket afterwards sticks.
   const routeShelfProjectId = routeShelf?.projectId ?? null;
   const routeShelfBucket = routeShelf?.bucket ?? null;
+  const routeThreadInList =
+    routeShelf === null && routeThreadId !== null && persistedThreadIds.has(routeThreadId);
+  // Whether the open thread has been seen in the list (off every shelf) since it was opened.
+  const routeShelfRevealRef = useRef<{ threadId: ThreadId | null; seenInList: boolean }>({
+    threadId: null,
+    seenInList: false,
+  });
   useEffect(() => {
+    const reveal = routeShelfRevealRef.current;
+    if (reveal.threadId !== routeThreadId) {
+      reveal.threadId = routeThreadId;
+      reveal.seenInList = false;
+    }
+    if (routeThreadInList) reveal.seenInList = true;
     if (routeShelfProjectId === null || routeShelfBucket === null) return;
+    // Archiving, snoozing or settling the open thread moves it onto a shelf; leave the shelf
+    // as it was rather than expanding it.
+    if (reveal.seenInList) return;
     setOpenShelfByProject((current) => {
       if (current.get(routeShelfProjectId) === routeShelfBucket) return current;
       const next = new Map(current);
       next.set(routeShelfProjectId, routeShelfBucket);
       return next;
     });
-  }, [routeThreadId, routeShelfProjectId, routeShelfBucket]);
+  }, [routeThreadId, routeThreadInList, routeShelfProjectId, routeShelfBucket]);
 
   const projectActions: SidebarProjectActions = {
     onTitlePointerDownCapture: handleProjectTitlePointerDownCapture,
@@ -1173,6 +1196,8 @@ export default function Sidebar() {
               onOpenCommandPalette={handleOpenCommandPalette}
               commandPaletteShortcutLabel={commandPaletteShortcutLabel}
               pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+              view={sidebarView}
+              onViewChange={setSidebarView}
             />
             <SidebarArm64Warning update={desktopUpdate} />
             {sidebarSearchQuery.trim().length > 0 ? (
@@ -1196,61 +1221,32 @@ export default function Sidebar() {
             <SidebarGroup
               className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
             >
-              <div className="flex h-8 items-center justify-between gap-2 pr-2 pb-1 pl-1">
+              {sidebarView === "projects" ? (
                 <div
-                  role="radiogroup"
-                  aria-label="Sidebar view"
-                  className="flex min-w-0 flex-1 rounded-lg border border-border p-0.5"
+                  className="flex h-5 items-center justify-between gap-2 pr-1.5 pl-2"
+                  data-testid="sidebar-projects-label"
                 >
-                  {SIDEBAR_VIEW_OPTIONS.map((option, index) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={sidebarView === option.value}
-                      // One Tab stop; the arrow keys move the choice, as in a radio group.
-                      tabIndex={sidebarView === option.value ? 0 : -1}
-                      data-testid={`sidebar-view-${option.value}`}
-                      className="h-6 min-w-0 flex-1 truncate rounded-md px-2 text-2xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:font-medium aria-checked:text-foreground"
-                      onClick={() => setSidebarView(option.value)}
-                      onKeyDown={(event) => {
-                        const step =
-                          event.key === "ArrowRight" || event.key === "ArrowDown"
-                            ? 1
-                            : event.key === "ArrowLeft" || event.key === "ArrowUp"
-                              ? -1
-                              : 0;
-                        if (step === 0) return;
-                        event.preventDefault();
-                        const count = SIDEBAR_VIEW_OPTIONS.length;
-                        const next = SIDEBAR_VIEW_OPTIONS[(index + step + count) % count]!;
-                        setSidebarView(next.value);
-                        event.currentTarget.parentElement
-                          ?.querySelector<HTMLElement>(`[data-testid="sidebar-view-${next.value}"]`)
-                          ?.focus();
-                      }}
+                  <span className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">
+                    Projects
+                  </span>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          aria-label="Add project"
+                          aria-pressed={addProject.showPathEntry}
+                          className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                          onClick={addProject.handleStartAddProject}
+                        />
+                      }
                     >
-                      {option.label}
-                    </button>
-                  ))}
+                      <FolderPlusIcon className="size-3.5" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="right">Add project</TooltipPopup>
+                  </Tooltip>
                 </div>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        aria-label="Add project"
-                        aria-pressed={addProject.showPathEntry}
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                        onClick={addProject.handleStartAddProject}
-                      />
-                    }
-                  >
-                    <FolderPlusIcon className="size-4" />
-                  </TooltipTrigger>
-                  <TooltipPopup side="right">Add project</TooltipPopup>
-                </Tooltip>
-              </div>
+              ) : null}
 
               {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
 
@@ -1286,7 +1282,7 @@ export default function Sidebar() {
                     {...SIDEBAR_TREE_PROPS}
                     aria-label="Threads and projects"
                     ref={attachSidebarTree}
-                    className="gap-px"
+                    className="gap-4"
                   >
                     {projects.filter(isScratchProject).map(renderProjectItem)}
                     <SortableContext

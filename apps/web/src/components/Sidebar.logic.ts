@@ -190,6 +190,16 @@ export function toggleWorkflowThreadListExpansion(input: {
   };
 }
 
+/** Thread and workflow rows in the project tree: a little taller than the default 32px. */
+export const SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME = "h-[34px]";
+
+/**
+ * Done work (archived and settled rows): text and icons in the muted color until the row is
+ * hovered or focused. A color, not opacity, so the text keeps AA contrast in both themes.
+ */
+export const SIDEBAR_DONE_ROW_CLASS_NAME =
+  "text-muted-foreground [&:not(:hover):not(:focus-within)_*]:text-muted-foreground";
+
 /**
  * One level of the sidebar tree (a project's threads and workflows, a
  * workflow's threads): indented under the parent row's 16px icon, whose centre
