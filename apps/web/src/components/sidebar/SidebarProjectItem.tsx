@@ -50,7 +50,7 @@ import {
   summarizeScheduledThreads,
   useScheduledFolderMenu,
 } from "./SidebarScheduledFolder";
-import { ListToggleRow, OlderToggleRow } from "./SidebarSectionRows";
+import { ListToggleRow, MoreAndOlderRow } from "./SidebarSectionRows";
 import { SidebarShelfRow, type SidebarShelfSegment } from "./SidebarShelfRow";
 import { SidebarTreeParentContext, sidebarProjectRowId } from "./sidebarTreeRow";
 import {
@@ -338,6 +338,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
   });
   const visibleWorkflows = agingEnabled ? agedWorkflows.recent : projectWorkflows;
   const hasHiddenActiveThreads = recentThreads.length > threadPreviewLimit;
+  const hiddenActiveCount = Math.max(0, recentThreads.length - visibleActiveThreads.length);
 
   // The shelf's open list, with the preview limit and "Show all N".
   const previewList = <T,>(
@@ -635,20 +636,29 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                     ) : null}
                     {visibleActiveThreads.map(renderActiveThread)}
 
-                    {hasHiddenActiveThreads ? (
-                      <ListToggleRow
-                        label={activeExpanded ? "Show less" : "Show more"}
-                        onSelect={() => toggleList("active")}
-                      />
-                    ) : null}
-
-                    {agingEnabled && olderCount > 0 ? (
-                      <OlderToggleRow
-                        label={`${olderCount} older than ${olderThreadDays} days`}
-                        expanded={olderExpanded}
-                        onToggle={() => toggleList("older")}
-                      />
-                    ) : null}
+                    <MoreAndOlderRow
+                      more={
+                        hasHiddenActiveThreads
+                          ? {
+                              label: activeExpanded
+                                ? "Show less"
+                                : hiddenActiveCount > 0
+                                  ? `Show ${hiddenActiveCount} more`
+                                  : "Show more",
+                              onToggle: () => toggleList("active"),
+                            }
+                          : undefined
+                      }
+                      older={
+                        agingEnabled && olderCount > 0
+                          ? {
+                              label: `${olderCount} older than ${olderThreadDays} days`,
+                              expanded: olderExpanded,
+                              onToggle: () => toggleList("older"),
+                            }
+                          : undefined
+                      }
+                    />
                     {visibleOlderWorkflows.map(renderWorkflow)}
                     {visibleOlderThreads.map(renderActiveThread)}
 

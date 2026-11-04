@@ -126,10 +126,6 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 /** Which list the sidebar shows; a per-viewer convenience, so it lives in localStorage. */
 const SIDEBAR_VIEW_STORAGE_KEY = "f5:sidebar:view";
 const SidebarViewSchema = Schema.Literals(["projects", "recent"]);
-const SIDEBAR_VIEW_OPTIONS = [
-  { value: "projects", label: "Projects" },
-  { value: "recent", label: "Recent" },
-] as const;
 
 /** Deletes a project's threads, then the project; throws the first failure. */
 async function deleteProjectWithThreads(input: {
@@ -1173,6 +1169,8 @@ export default function Sidebar() {
               onOpenCommandPalette={handleOpenCommandPalette}
               commandPaletteShortcutLabel={commandPaletteShortcutLabel}
               pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+              view={sidebarView}
+              onViewChange={setSidebarView}
             />
             <SidebarArm64Warning update={desktopUpdate} />
             {sidebarSearchQuery.trim().length > 0 ? (
@@ -1196,61 +1194,32 @@ export default function Sidebar() {
             <SidebarGroup
               className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
             >
-              <div className="flex h-8 items-center justify-between gap-2 pr-2 pb-1 pl-1">
+              {sidebarView === "projects" ? (
                 <div
-                  role="radiogroup"
-                  aria-label="Sidebar view"
-                  className="flex min-w-0 flex-1 rounded-lg border border-border p-0.5"
+                  className="flex h-5 items-center justify-between gap-2 pr-1.5 pl-2"
+                  data-testid="sidebar-projects-label"
                 >
-                  {SIDEBAR_VIEW_OPTIONS.map((option, index) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={sidebarView === option.value}
-                      // One Tab stop; the arrow keys move the choice, as in a radio group.
-                      tabIndex={sidebarView === option.value ? 0 : -1}
-                      data-testid={`sidebar-view-${option.value}`}
-                      className="h-6 min-w-0 flex-1 truncate rounded-md px-2 text-2xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:font-medium aria-checked:text-foreground"
-                      onClick={() => setSidebarView(option.value)}
-                      onKeyDown={(event) => {
-                        const step =
-                          event.key === "ArrowRight" || event.key === "ArrowDown"
-                            ? 1
-                            : event.key === "ArrowLeft" || event.key === "ArrowUp"
-                              ? -1
-                              : 0;
-                        if (step === 0) return;
-                        event.preventDefault();
-                        const count = SIDEBAR_VIEW_OPTIONS.length;
-                        const next = SIDEBAR_VIEW_OPTIONS[(index + step + count) % count]!;
-                        setSidebarView(next.value);
-                        event.currentTarget.parentElement
-                          ?.querySelector<HTMLElement>(`[data-testid="sidebar-view-${next.value}"]`)
-                          ?.focus();
-                      }}
+                  <span className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">
+                    Projects
+                  </span>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          aria-label="Add project"
+                          aria-pressed={addProject.showPathEntry}
+                          className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                          onClick={addProject.handleStartAddProject}
+                        />
+                      }
                     >
-                      {option.label}
-                    </button>
-                  ))}
+                      <FolderPlusIcon className="size-3.5" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="right">Add project</TooltipPopup>
+                  </Tooltip>
                 </div>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        aria-label="Add project"
-                        aria-pressed={addProject.showPathEntry}
-                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                        onClick={addProject.handleStartAddProject}
-                      />
-                    }
-                  >
-                    <FolderPlusIcon className="size-4" />
-                  </TooltipTrigger>
-                  <TooltipPopup side="right">Add project</TooltipPopup>
-                </Tooltip>
-              </div>
+              ) : null}
 
               {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
 
@@ -1286,7 +1255,7 @@ export default function Sidebar() {
                     {...SIDEBAR_TREE_PROPS}
                     aria-label="Threads and projects"
                     ref={attachSidebarTree}
-                    className="gap-px"
+                    className="gap-4"
                   >
                     {projects.filter(isScratchProject).map(renderProjectItem)}
                     <SortableContext

@@ -38,6 +38,7 @@ import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
 import { useRecoveryStateStore } from "../recoveryStateStore";
+import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { useStore } from "../store";
 import { hasUnseenCompletion } from "../threadStatus";
 import { useProfileState } from "../profileState";
@@ -2279,7 +2280,43 @@ describe("Thread sidebar", () => {
       const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
         button.getAttribute("aria-label"),
       );
-      expect(navLabels).toEqual(["Home", "Search threads", "Pull requests", "Scheduled", "Usage"]);
+      expect(navLabels).toEqual([
+        "Home",
+        "Search threads",
+        "Pull requests",
+        "Scheduled",
+        "Usage",
+        "Projects",
+        "Recent",
+      ]);
+      // The view toggle lives in the strip; the Projects label carries Add project.
+      expect(
+        navigation.querySelector('[role="radiogroup"] [data-testid="sidebar-view-projects"]'),
+      ).not.toBeNull();
+      expect(document.querySelector('[data-testid="sidebar-projects-label"]')?.textContent).toBe(
+        "Projects",
+      );
+      expect(queryButtonByAriaLabel("Add project")).not.toBeNull();
+      const recentToggle = navigation.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-view-recent"]',
+      )!;
+      const projectsToggle = navigation.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-view-projects"]',
+      )!;
+      projectsToggle.focus();
+      projectsToggle.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() => expect(recentToggle.getAttribute("aria-checked")).toBe("true"));
+      expect(document.activeElement).toBe(recentToggle);
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="sidebar-projects-label"]')).toBeNull(),
+      );
+      expect(queryButtonByAriaLabel("Add project")).toBeNull();
+      recentToggle.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
       const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
       expect(usageButton.hasAttribute("aria-current")).toBe(false);
@@ -3427,19 +3464,29 @@ describe("Thread sidebar", () => {
       await waitForSidebarThreadRow("Recent two");
       expect(querySidebarThreadRowByTitle("Recent three")).toBeNull();
       expect(querySidebarThreadRowByTitle("Old one")).toBeNull();
-      const showMore = await waitForElement(
-        () => querySidebarButtonByText("Show more"),
-        "Recent threads past the preview count should sit behind Show more.",
+      // One row: "Show 2 more · 1 older than 7 days".
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="sidebar-more-and-older"]'),
+        "Recent threads past the preview count should sit behind one disclosure row.",
       );
-      const older = document.querySelector<HTMLElement>('[data-testid="sidebar-older-toggle"]')!;
-      expect(older.textContent).toBe("1 older than 7 days");
-      // "Show more" comes before the older row.
-      expect(
-        showMore.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-      showMore.click();
+      expect(row.textContent).toBe("Show 2 more·1 older than 7 days");
+      const older = row.querySelector<HTMLButtonElement>('[data-testid="sidebar-older-toggle"]')!;
+      expect(older.getAttribute("aria-expanded")).toBe("false");
+
+      // Enter on the row shows more, without opening the older threads.
+      row.focus();
+      row.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
       await waitForSidebarThreadRow("Recent four");
       expect(querySidebarThreadRowByTitle("Old one")).toBeNull();
+      await vi.waitFor(() => expect(row.textContent).toContain("Show less"));
+
+      // The older part toggles only its own list.
+      older.click();
+      await waitForSidebarThreadRow("Old one");
+      expect(older.getAttribute("aria-expanded")).toBe("true");
+      expect(querySidebarThreadRowByTitle("Recent four")).not.toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -3971,17 +4018,32 @@ describe("Thread sidebar", () => {
             : null;
       },
     });
+    const itemOf = (workflowTitle: string) =>
+      querySidebarThreadRowByTitle(workflowTitle)?.closest('[data-sidebar="menu-sub-item"]') ??
+      null;
     const stepLineOf = (workflowTitle: string) =>
-      querySidebarThreadRowByTitle(workflowTitle)
-        ?.closest('[data-sidebar="menu-sub-item"]')
-        ?.querySelector<HTMLButtonElement>('[data-testid="workflow-current-step"]') ?? null;
+      itemOf(workflowTitle)?.querySelector<HTMLButtonElement>(
+        '[data-testid="workflow-current-step"]',
+      ) ?? null;
+    const finishedStatusOf = (workflowTitle: string) =>
+      itemOf(workflowTitle)?.querySelector<HTMLButtonElement>(
+        '[data-testid="workflow-finished-status"]',
+      ) ?? null;
 
     try {
-      // Every phase is done and the last thread's PR is open: the line says so.
+      // Every phase is done: one line, with the last thread's PR in place of the phase strip.
       await waitForSidebarThreadRow("Open PR workflow");
       await vi.waitFor(() =>
-        expect(stepLineOf("Open PR workflow")?.textContent).toContain("PR #462 open"),
+        expect(finishedStatusOf("Open PR workflow")?.textContent).toBe("#462"),
       );
+      const openPrStatus = finishedStatusOf("Open PR workflow")!;
+      expect(openPrStatus.getAttribute("aria-label")).toBe(
+        "Open last thread, #462 PR open: Sidebar follow-ups",
+      );
+      expect(stepLineOf("Open PR workflow")).toBeNull();
+      expect(
+        itemOf("Open PR workflow")?.querySelector('[data-testid="workflow-phase-strip"]'),
+      ).toBeNull();
 
       // Old and finished without an open PR, the plain workflow folds; the open-PR one doesn't.
       expect(querySidebarThreadRowByTitle("Plain workflow")).toBeNull();
@@ -3991,21 +4053,110 @@ describe("Thread sidebar", () => {
       );
       older.click();
       await waitForSidebarThreadRow("Plain workflow");
-      expect(stepLineOf("Plain workflow")?.textContent).toContain("Completed");
+      // Without a PR, the status is a check.
+      expect(finishedStatusOf("Plain workflow")?.getAttribute("aria-label")).toBe(
+        "Open last thread",
+      );
+      expect(stepLineOf("Plain workflow")).toBeNull();
 
-      // The waiting workflow's next step (Merge) has no thread: the line opens the newest one.
+      // An unfinished workflow keeps its strip and step line. The waiting workflow's next step
+      // (Merge) has no thread: the line opens the newest one.
+      expect(
+        itemOf("Waiting workflow")?.querySelector('[data-testid="workflow-phase-strip"]'),
+      ).not.toBeNull();
       expect(stepLineOf("Waiting workflow")?.textContent).toContain("Merge · waiting");
       stepLineOf("Waiting workflow")!.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe(`/${waiting.b}`));
 
-      // A finished workflow's line opens its last thread, not the workflow page.
-      stepLineOf("Plain workflow")!.click();
+      // A finished workflow's status opens its last thread; the row opens the workflow page.
+      finishedStatusOf("Plain workflow")!.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe(`/${plain.impl}`));
-      stepLineOf("Open PR workflow")!.click();
+      finishedStatusOf("Open PR workflow")!.click();
       await vi.waitFor(() =>
         expect(mounted.router.state.location.pathname).toBe(`/${openPr.impl}`),
       );
+      querySidebarThreadRowByTitle("Open PR workflow")!.click();
+      await vi.waitFor(() =>
+        expect(mounted.router.state.location.pathname).toBe("/workflow/workflow-open-pr"),
+      );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps rows quiet: no worktree icon, queue count on the right, done work dimmed", async () => {
+    const worktreeId = "quiet-worktree" as ThreadId;
+    const queuedId = "quiet-queued" as ThreadId;
+    const archivedId = "quiet-archived" as ThreadId;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID }),
+          createSnapshotThread({
+            id: worktreeId,
+            title: "Worktree thread",
+            branch: "feature/quiet",
+            worktreePath: "/tmp/worktrees/quiet",
+          }),
+          createSnapshotThread({ id: queuedId, title: "Queued thread" }),
+          createSnapshotThread({ id: archivedId, title: "Archived thread", archivedAt: NOW_ISO }),
+        ]);
+      },
+    });
+    try {
+      const worktreeRow = await waitForSidebarThreadRow("Worktree thread");
+      expect(document.querySelector('[data-testid^="thread-worktree-"]')).toBeNull();
+
+      useNextTurnQueueStore.getState().applySummary({
+        threads: [
+          {
+            threadId: queuedId,
+            queuedCount: 1,
+            dispatchingCount: 0,
+            failedCount: 0,
+            scheduledResumeAt: null,
+            paused: false,
+          },
+        ],
+      });
+      const queuedRow = await waitForSidebarThreadRow("Queued thread");
+      const badge = await waitForElement(
+        () => queuedRow.querySelector<HTMLElement>('[aria-label="1 queued turns"]'),
+        "The queued row should show its count.",
+      );
+      const queuedTitle = queuedRow.querySelector<HTMLElement>(
+        `[data-testid="thread-title-${queuedId}"]`,
+      )!;
+      const plainTitle = worktreeRow.querySelector<HTMLElement>(
+        `[data-testid="thread-title-${worktreeId}"]`,
+      )!;
+      // The count sits after the title, so both titles start at the same x.
+      expect(
+        queuedTitle.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(queuedTitle.getBoundingClientRect().left).toBe(
+        plainTitle.getBoundingClientRect().left,
+      );
+
+      // Archived rows recede until hovered.
+      queryShelfSegment("archived")!.click();
+      const archivedRow = await waitForSidebarThreadRow("Archived thread");
+      expect(archivedRow.hasAttribute("data-row-done")).toBe(true);
+      expect(Number(getComputedStyle(archivedRow).opacity)).toBeLessThan(1);
+      await userEvent.hover(archivedRow);
+      await vi.waitFor(() => expect(getComputedStyle(archivedRow).opacity).toBe("1"));
+
+      // The worktree is still described in the hover card.
+      await userEvent.hover(worktreeRow);
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector('[data-testid="sidebar-peek-card"] [aria-label="Worktree"]'),
+        ).not.toBeNull(),
+      );
+    } finally {
+      useNextTurnQueueStore.setState({ byThreadId: {}, summary: { threads: [] } });
       await mounted.cleanup();
     }
   });

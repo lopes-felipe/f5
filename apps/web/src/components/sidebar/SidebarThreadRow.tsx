@@ -31,11 +31,14 @@ import { useThreadSelectionStore } from "../../threadSelectionStore";
 import type { ThreadStatusPill } from "../../threadStatus";
 import type { ThreadListItem } from "../../types";
 import { InlineTitleEditor } from "../InlineTitleEditor";
-import { resolveSidebarComposerDraftPreview, resolveThreadRowClassName } from "../Sidebar.logic";
+import {
+  resolveSidebarComposerDraftPreview,
+  resolveThreadRowClassName,
+  SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+} from "../Sidebar.logic";
 import { ThreadRelativeActivityTime } from "../thread/ThreadActivityTime";
 import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
-import { ThreadWorktreeIndicator } from "../ThreadWorktreeIndicator";
 import { SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -265,9 +268,16 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             isSelected,
             isUnread: section !== "archived" && isUnread,
           }),
+          section !== "attention" && SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
           section === "settled" &&
             "text-muted-foreground [&:not(:hover):not(:focus-within)_*]:text-muted-foreground",
+          // Done work recedes until it is hovered, focused, open or selected.
+          (section === "archived" || section === "settled") &&
+            !isActive &&
+            !isSelected &&
+            "opacity-60 hover:opacity-100 focus-within:opacity-100",
         )}
+        {...(section === "archived" || section === "settled" ? { "data-row-done": true } : {})}
         onClick={(event) => {
           if (section === "attention") {
             actions.openThread(thread.id);
@@ -359,7 +369,6 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
           </Tooltip>
         ) : null}
-        {activeLike ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
         {canRename && !isDraft && isRenaming ? (
           <InlineTitleEditor
             initialValue={thread.title}
@@ -390,6 +399,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           terminalStatus={section === "snoozed" ? null : terminalStatus}
           isHighlighted={isHighlighted}
           {...(activeLike ? { showDraftIndicator: !isDraft } : {})}
+          showQueueCount={activeLike}
           actions={quickActions}
         />
       </SidebarMenuSubButton>
@@ -515,6 +525,8 @@ export function ThreadRowTrailingMeta(props: {
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
   showDraftIndicator?: boolean | undefined;
+  /** The queued-message count, kept beside the time so every title starts at the same x. */
+  showQueueCount?: boolean | undefined;
   /**
    * Shown in the timestamp's place on hover and focus: Pin/Unpin and Archive (a pinned
    * project row unpins from its yellow pin), Unarchive, or Unsettle. Snoozing lives in the
@@ -556,7 +568,7 @@ export function ThreadRowTrailingMeta(props: {
           </TooltipPopup>
         </Tooltip>
       ) : null}
-      <ThreadWorktreeIndicator thread={props.thread} />
+      {props.showQueueCount ? <ThreadQueueCountBadge compact threadId={props.thread.id} /> : null}
       {props.terminalStatus ? (
         <button
           type="button"

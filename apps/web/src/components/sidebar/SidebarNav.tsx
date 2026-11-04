@@ -4,7 +4,9 @@ import {
   GitMergeIcon,
   GaugeIcon,
   GitPullRequestIcon,
+  ClockIcon,
   HomeIcon,
+  ListIcon,
   type LucideIcon,
   SearchIcon,
 } from "lucide-react";
@@ -60,6 +62,76 @@ function useUpstreamNav(): { readonly visible: boolean; readonly inbox: number }
 }
 
 /** A count badge pinned to a nav button's top-right corner. */
+export type SidebarView = "projects" | "recent";
+
+const SIDEBAR_VIEW_OPTIONS: ReadonlyArray<{
+  value: SidebarView;
+  label: string;
+  icon: LucideIcon;
+}> = [
+  { value: "projects", label: "Projects", icon: ListIcon },
+  { value: "recent", label: "Recent", icon: ClockIcon },
+];
+
+/**
+ * Projects | Recent as two icons at the end of the strip: a radio group with one Tab stop,
+ * where the arrow keys move both the choice and focus.
+ */
+function SidebarViewToggle(props: {
+  view: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Sidebar view"
+      className="flex shrink-0 items-center gap-px rounded-md border border-border p-px"
+    >
+      {SIDEBAR_VIEW_OPTIONS.map((option, index) => {
+        const Icon = option.icon;
+        const checked = props.view === option.value;
+        return (
+          <Tooltip key={option.value}>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={checked}
+                  aria-label={option.label}
+                  tabIndex={checked ? 0 : -1}
+                  data-testid={`sidebar-view-${option.value}`}
+                  className="inline-flex size-5 items-center justify-center rounded-[5px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:text-foreground"
+                  onClick={() => props.onViewChange(option.value)}
+                  onKeyDown={(event) => {
+                    const step =
+                      event.key === "ArrowRight" || event.key === "ArrowDown"
+                        ? 1
+                        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                          ? -1
+                          : 0;
+                    if (step === 0) return;
+                    event.preventDefault();
+                    const count = SIDEBAR_VIEW_OPTIONS.length;
+                    const next = SIDEBAR_VIEW_OPTIONS[(index + step + count) % count]!;
+                    props.onViewChange(next.value);
+                    event.currentTarget.parentElement
+                      ?.querySelector<HTMLElement>(`[data-testid="sidebar-view-${next.value}"]`)
+                      ?.focus();
+                  }}
+                />
+              }
+            >
+              <Icon aria-hidden="true" className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">{option.label}</TooltipPopup>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
 interface NavBadge {
   count: number;
   /** Screen-reader suffix, as in "432 need you". */
@@ -127,8 +199,9 @@ function NavIconButton(props: {
 }
 
 /**
- * One strip of icon buttons (Home, Search, Pull requests, Upstream, Scheduled, Usage). Search
- * toggles the thread search field under the strip; the field stays while it holds a query.
+ * One strip of icon buttons (Home, Search, Pull requests, Upstream, Scheduled, Usage), ending
+ * with the Projects | Recent toggle. Search toggles the thread search field under the strip;
+ * the field stays while it holds a query.
  */
 export function SidebarNav(props: {
   searchQuery: string;
@@ -136,6 +209,8 @@ export function SidebarNav(props: {
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
   pullRequestsShortcutLabel: string | null;
+  view: SidebarView;
+  onViewChange: (view: SidebarView) => void;
 }) {
   const navigate = useNavigate();
   const isOnScheduled = useLocation({ select: (loc) => loc.pathname === "/scheduled" });
@@ -204,6 +279,8 @@ export function SidebarNav(props: {
           isActive={isOnUsage}
           onSelect={() => void navigate({ to: "/usage" })}
         />
+        <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+        <SidebarViewToggle view={props.view} onViewChange={props.onViewChange} />
       </div>
       {searchVisible ? (
         <div className="pt-2">

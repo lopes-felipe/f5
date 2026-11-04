@@ -195,6 +195,9 @@ export function toggleWorkflowThreadListExpansion(input: {
  * workflow's threads): indented under the parent row's 16px icon, whose centre
  * sits 16px in (8px row padding + 8px), with a hairline guide on that centre.
  */
+/** Thread and workflow rows in the project tree: a little taller than the default 32px. */
+export const SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME = "h-[34px]";
+
 export const SIDEBAR_TREE_LEVEL_CLASS_NAME =
   "my-0 ms-4 me-0 translate-x-0 gap-px border-l border-sidebar-border ps-0 pe-0 py-px";
 
