@@ -495,8 +495,13 @@ it("keeps the Chrome banner up between calls and quiets it to a reservation once
 it("releases an idle Chrome reservation from the banner and says when the holder refuses", async () => {
   const store = useAgentComputerActivityStore.getState();
   const releaseChrome = vi
-    .fn(async (_input: { threadId: string }) => ({ released: true }))
-    .mockResolvedValueOnce({ released: false });
+    .fn(
+      async (_input: { threadId: string }): Promise<{ released: boolean; outcome?: string }> => ({
+        released: true,
+        outcome: "released",
+      }),
+    )
+    .mockResolvedValueOnce({ released: false, outcome: "working" });
   nativeMock.api = { computer: { releaseChrome } } as never;
   store.setLeases({
     holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
@@ -508,12 +513,10 @@ it("releases an idle Chrome reservation from the banner and says when the holder
     await expect.element(page.getByRole("button", { name: "Pause" })).not.toBeInTheDocument();
     await page.getByRole("button", { name: "Release" }).click();
     expect(releaseChrome).toHaveBeenCalledWith({ threadId });
-    await expect.element(page.getByText(/is using Chrome now, so it keeps it/)).toBeVisible();
+    await expect.element(page.getByText(/is busy now .* so it keeps Chrome/)).toBeVisible();
     await page.getByRole("button", { name: "Release" }).click();
     expect(releaseChrome).toHaveBeenCalledTimes(2);
-    await expect
-      .element(page.getByText(/is using Chrome now, so it keeps it/))
-      .not.toBeInTheDocument();
+    await expect.element(page.getByText(/so it keeps Chrome/)).not.toBeInTheDocument();
   } finally {
     await screen.unmount();
   }

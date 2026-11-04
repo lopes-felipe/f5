@@ -147,10 +147,13 @@ export class CodexChromeSession {
           this.stop("off", CODEX_CHROME_STOPPED_OFF);
       }),
       // Another thread needs Chrome (or the user pressed Release): give way only while idle.
-      deps.broker.registerChromeReleaser(deps.threadId, deps.generation, () => {
-        if (this.phase !== "ready" || this.turnActive || this.callRunning) return false;
-        this.stop("pending", CODEX_CHROME_STOPPED_RELEASED, "release");
-        return true;
+      deps.broker.registerChromeReleaser(deps.threadId, deps.generation, {
+        idle: () => this.idle,
+        release: () => {
+          if (!this.idle) return false;
+          this.stop("pending", CODEX_CHROME_STOPPED_RELEASED, "release");
+          return true;
+        },
       }),
     );
     deps.stateChanged("pending");
@@ -196,6 +199,11 @@ export class CodexChromeSession {
     if (running) this.calls.add(itemId);
     else this.calls.delete(itemId);
     this.reportCalls();
+  }
+
+  /** A ready runtime between turns with no call running: safe to stop for another thread. */
+  private get idle(): boolean {
+    return this.phase === "ready" && !this.turnActive && !this.callRunning;
   }
 
   /** Whether a model call to `node_repl` is running; read before interrupting its turn. */

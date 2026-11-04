@@ -45,7 +45,10 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
   const disabled = new Set<(threadId: string, generation: string) => void>();
   let generation = "gen-1";
   let timer: (() => void) | undefined;
-  const releasers = new Map<string, () => boolean>();
+  const releasers = new Map<
+    string,
+    { idle: () => boolean; release: () => boolean | Promise<boolean> }
+  >();
   const host = {
     profileId: "profile",
     correlated: vi.fn(async (..._args: unknown[]) => ({ type: "chromeLeaseResult", ok: true })),
@@ -61,8 +64,12 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
         false,
       );
     }),
-    registerChromeReleaser: (threadId: string, gen: string, release: () => boolean) => {
-      releasers.set(`${threadId}\u0000${gen}`, release);
+    registerChromeReleaser: (
+      threadId: string,
+      gen: string,
+      releaser: { idle: () => boolean; release: () => boolean | Promise<boolean> },
+    ) => {
+      releasers.set(`${threadId}\u0000${gen}`, releaser);
       return () => releasers.delete(`${threadId}\u0000${gen}`);
     },
     pause,
@@ -131,7 +138,8 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
     },
     idle: () => timer?.(),
     idleArmed: () => timer !== undefined,
-    release: () => releasers.get("thread-1\u0000gen-1")?.() ?? false,
+    release: () => releasers.get("thread-1\u0000gen-1")?.release() ?? false,
+    releaserIdle: () => releasers.get("thread-1\u0000gen-1")?.idle() ?? false,
   };
 }
 
@@ -266,13 +274,16 @@ describe("CodexChromeSession", () => {
     const turn = h.session.beforeTurn();
     await turn;
     // Mid-turn: refused, the runtime keeps running.
+    expect(h.releaserIdle()).toBe(false);
     expect(h.release()).toBe(false);
     h.session.turnEnded("turn-1");
     h.session.toolCall("call-1", true);
     // A call still running (reported late) also refuses.
+    expect(h.releaserIdle()).toBe(false);
     expect(h.release()).toBe(false);
     h.session.toolCall("call-1", false);
     const token = h.lastToken();
+    expect(h.releaserIdle()).toBe(true);
     expect(h.release()).toBe(true);
     expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(token, "release");
     expect(h.session.state).toBe("stopped");

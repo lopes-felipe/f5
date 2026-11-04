@@ -147,6 +147,22 @@ export function computerUseBannerAmbient(
   return holder?.delivery === "background" && holder.state === "active";
 }
 
+/** Why Release didn't free Chrome, from the server's outcome (older servers send none). */
+export function chromeReleaseFailureText(
+  outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
+): string {
+  switch (outcome) {
+    case "not-holder":
+      return "That thread no longer holds Chrome.";
+    case "timeout":
+      return "That thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
+    case "working":
+      return "That thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
+    default:
+      return "Chrome wasn't released. Try again.";
+  }
+}
+
 /** How long the banner keeps saying Chrome is in use after its last call ends. */
 export const CHROME_BANNER_LINGER_MS = 3000;
 
@@ -245,8 +261,8 @@ export function ComputerUseBanner() {
                 return;
               }
               void api.computer.releaseChrome({ threadId }).then(
-                ({ released }) => {
-                  if (!released) setError("That thread is using Chrome now, so it keeps it.");
+                ({ released, outcome }) => {
+                  if (!released) setError(chromeReleaseFailureText(outcome));
                 },
                 () => setError("Chrome could not be released. Try again."),
               );

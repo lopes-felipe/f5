@@ -109,6 +109,14 @@ export const CHROME_OTHER_PROFILE_LINGER_MS = 3000;
  * SIGTERM, SIGKILL after 1 s, and observes the group exit within 5 s.
  */
 export const CHROME_PREEMPT_WAIT_MS = 8000;
+/** How a Chrome-holding session gives the lease up (see `registerChromeReleaser`). */
+export interface ChromeReleaser {
+  /** Idle by the session's own account: nothing it runs would die with the release. */
+  readonly idle: () => boolean;
+  /** Stops what holds Chrome; answers whether it did (it may refuse if work started). */
+  readonly release: () => boolean | Promise<boolean>;
+}
+export type ChromeReleaseOutcome = "released" | "not-holder" | "working" | "timeout";
 function chromeCallsKey(threadId: string, generation: string): string {
   return `${threadId}\u0000${generation}`;
 }
@@ -220,7 +228,7 @@ export class ComputerAutomationBrokerRuntime {
   /** Whether a browser call runs, per thread and session generation (`reportChromeCalls`). */
   private readonly chromeCalls = new Map<string, boolean>();
   /** How each Chrome-holding session gives the lease up, per thread and generation. */
-  private readonly chromeReleasers = new Map<string, () => boolean>();
+  private readonly chromeReleasers = new Map<string, ChromeReleaser>();
   /** Preemptions waiting for main to report the lease gone. */
   private readonly chromeReleaseWaiters = new Set<() => void>();
   private readonly setupConsents = new Map<
@@ -754,19 +762,28 @@ export class ComputerAutomationBrokerRuntime {
     this.publishUse();
   }
   /**
-   * A session holding the Chrome lease registers how to give it up. `release` answers
-   * whether it started releasing: a session that is mid-turn or mid-call refuses.
+   * A session holding the Chrome lease registers how to give it up. `idle` says whether
+   * it could (its own work, such as background tasks, counts); `release` answers whether
+   * it stopped, refusing when work started since.
    */
-  registerChromeReleaser(threadId: string, generation: string, release: () => boolean): () => void {
+  registerChromeReleaser(
+    threadId: string,
+    generation: string,
+    releaser: ChromeReleaser,
+  ): () => void {
     const key = chromeCallsKey(threadId, generation);
-    this.chromeReleasers.set(key, release);
+    this.chromeReleasers.set(key, releaser);
     return () => {
-      if (this.chromeReleasers.get(key) === release) this.chromeReleasers.delete(key);
+      if (this.chromeReleasers.get(key) === releaser) this.chromeReleasers.delete(key);
     };
   }
-  /** Between turns, no Chrome call running, not paused and not recovering. */
+  /**
+   * Between turns, no Chrome call running, not paused, not recovering, and idle by the
+   * session's own account when it registered one.
+   */
   chromeHolderIdle(threadId: string, generation: string): boolean {
-    if (this.chromeCalls.get(chromeCallsKey(threadId, generation)) === true) return false;
+    const key = chromeCallsKey(threadId, generation);
+    if (this.chromeCalls.get(key) === true) return false;
     if (this.pause.has(threadId)) return false;
     if (this.executionStates.get(threadId)?.state === "recovery") return false;
     const binding = this.bindings.get(threadId);
@@ -776,41 +793,62 @@ export class ComputerAutomationBrokerRuntime {
       binding.endedTurnId !== binding.turnId
     )
       return false;
-    return true;
+    return this.chromeReleasers.get(key)?.idle() ?? true;
   }
   /**
-   * Asks this profile's Chrome holder to release when it is idle; resolves once main
-   * reports the lease gone (true) or the holder refused or didn't release in time (false).
+   * Asks this profile's Chrome holder to release when it is idle, and resolves once main
+   * reports the lease gone (`released`), the holder isn't this thread or has no way to
+   * release (`not-holder`), it is busy or refused (`working`), or it didn't let go within
+   * `timeoutMs` (`timeout`).
    */
-  async releaseChromeHolder(
+  async releaseChromeHolderOutcome(
     threadId: string,
     timeoutMs = CHROME_PREEMPT_WAIT_MS,
-  ): Promise<boolean> {
+  ): Promise<ChromeReleaseOutcome> {
     const holder = this.chromeHolder;
     if (!holder || holder.threadId !== threadId || holder.profileId !== this.host.profileId)
-      return false;
-    if (!this.chromeHolderIdle(holder.threadId, holder.sessionGeneration)) return false;
-    const release = this.chromeReleasers.get(
+      return "not-holder";
+    const releaser = this.chromeReleasers.get(
       chromeCallsKey(holder.threadId, holder.sessionGeneration),
     );
-    if (!release || !release()) return false;
+    if (!releaser) return "not-holder";
+    if (!this.chromeHolderIdle(holder.threadId, holder.sessionGeneration)) return "working";
     const released = () =>
       !this.chromeHolder ||
       this.chromeHolder.threadId !== holder.threadId ||
       this.chromeHolder.sessionGeneration !== holder.sessionGeneration;
-    if (released()) return true;
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => finish(false), timeoutMs);
-      const finish = (ok: boolean) => {
-        clearTimeout(timer);
-        this.chromeReleaseWaiters.delete(check);
-        resolve(ok);
-      };
-      const check = () => {
-        if (released()) finish(true);
-      };
-      this.chromeReleaseWaiters.add(check);
-    });
+    // Watching starts before the release, so a lease change it causes isn't missed.
+    let settle: (outcome: ChromeReleaseOutcome) => void = () => {};
+    const outcome = new Promise<ChromeReleaseOutcome>((resolve) => (settle = resolve));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      if (released()) finish("released");
+    };
+    const finish = (result: ChromeReleaseOutcome) => {
+      if (timer) clearTimeout(timer);
+      this.chromeReleaseWaiters.delete(check);
+      settle(result);
+    };
+    this.chromeReleaseWaiters.add(check);
+    let accepted = false;
+    try {
+      accepted = await releaser.release();
+    } catch {
+      accepted = false;
+    }
+    // A refusal gives up at once; an accepted release waits for main to see the exit.
+    if (!accepted) finish("working");
+    else {
+      timer = setTimeout(() => finish("timeout"), timeoutMs);
+      check();
+    }
+    return outcome;
+  }
+  async releaseChromeHolder(
+    threadId: string,
+    timeoutMs = CHROME_PREEMPT_WAIT_MS,
+  ): Promise<boolean> {
+    return (await this.releaseChromeHolderOutcome(threadId, timeoutMs)) === "released";
   }
   /**
    * Fills in who holds a same-profile `Busy`: the thread's title and whether it is idle.
@@ -827,11 +865,18 @@ export class ComputerAutomationBrokerRuntime {
     const title =
       busy.threadTitle ??
       (await this.options.threadTitle?.(busy.holderThreadId).catch(() => undefined));
+    // Native leases live only inside a turn, so their holder is always working. A Chrome
+    // holder this broker hasn't seen yet (main's report in flight) is left unstated.
+    const holderIdle =
+      busy.resource === "computer"
+        ? false
+        : chrome
+          ? this.chromeHolderIdle(chrome.threadId, chrome.sessionGeneration)
+          : undefined;
     return new ComputerControlError({
       ...busy,
       ...(title ? { threadTitle: title.slice(0, 200) } : {}),
-      // Native leases live only inside a turn, so their holder is always working.
-      holderIdle: chrome ? this.chromeHolderIdle(chrome.threadId, chrome.sessionGeneration) : false,
+      ...(holderIdle !== undefined ? { holderIdle } : {}),
     });
   }
   /**

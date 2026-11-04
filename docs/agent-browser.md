@@ -540,8 +540,14 @@ a failed tool call's activity carries `heldByThreadId`, which the live card show
 **Held by <thread>** linking to it. Claude session setup that loses the lease records the
 same message as its Chrome detail.
 
-A Chrome holder is **idle** between turns with no Chrome call running and neither paused nor
-in recovery. Both Claude and Codex report their Chrome calls (`reportChromeCalls`), so the
+A Chrome holder is **idle** between turns with no Chrome call running, neither paused nor
+in recovery, and idle by its session's own account (`registerChromeReleaser`'s `idle`). A
+Claude session is never idle while work that would die with its CLI runs: a native
+operation such as `/compact`, background agents, tasks not yet terminal (shells, monitors,
+subagents), or a wake-up or cron job it scheduled (`ScheduleWakeup`, `CronCreate`). Its stop
+is re-checked under the thread lock; a refusal (a turn or work started meanwhile) resumes
+idle tracking and the preempting acquisition gives up at once. An unknown holder state
+(main's report still in flight) is left out of the `Busy` message rather than guessed. Both Claude and Codex report their Chrome calls (`reportChromeCalls`), so the
 banner always knows; an idle holder shows as a quiet "Chrome reserved · idle" row with
 **View** and **Release** instead of disappearing.
 
@@ -556,7 +562,9 @@ banner always knows; an idle holder shows as a quiet "Chrome reserved · idle" r
   waits up to `CHROME_PREEMPT_WAIT_MS` (8 s) for main to report the lease gone and retries
   once. A working, mid-turn, other-profile or slow holder returns the attributed `Busy`.
   A foreground takeover releases an idle Chrome holder before it asks for approval.
-- **Release** in the banner calls `computer.chrome.release`, the same path.
+- **Release** in the banner calls `computer.chrome.release`, the same path. It answers an
+  `outcome` (`released`, `not-holder`, `working`, `timeout`) so the banner says why a
+  release didn't happen.
 
 The first background mutation in a session needs a native session approval (“F5 may keep
 acting in granted apps while you work elsewhere”), including full-access sessions. Electron

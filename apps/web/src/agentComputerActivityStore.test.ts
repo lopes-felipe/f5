@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isAgentComputerActive, useAgentComputerActivityStore } from "./agentComputerActivityStore";
 import {
   chromeIdleReservation,
+  chromeReleaseFailureText,
   computerUseBannerAmbient,
   computerUseBannerTargets,
   computerUseBannerText,
@@ -10,6 +11,14 @@ import {
 } from "./components/ComputerUseBanner";
 const threadId = ThreadId.makeUnsafe("computer-thread");
 beforeEach(() => useAgentComputerActivityStore.getState().resetConnection());
+describe("Chrome release failures", () => {
+  it("says why Release didn't free Chrome", () => {
+    expect(chromeReleaseFailureText("not-holder")).toBe("That thread no longer holds Chrome.");
+    expect(chromeReleaseFailureText("working")).toContain("busy now");
+    expect(chromeReleaseFailureText("timeout")).toContain("hasn't let go");
+    expect(chromeReleaseFailureText(undefined)).toBe("Chrome wasn't released. Try again.");
+  });
+});
 describe("computer activity", () => {
   it("clears the last capture when a later action starts or completes without one", () => {
     const store = useAgentComputerActivityStore.getState();

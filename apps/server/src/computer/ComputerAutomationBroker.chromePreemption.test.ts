@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { describe, expect, it } from "vitest";
 import type { ChromeLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
-import { ComputerAutomationBrokerRuntime } from "./ComputerAutomationBroker";
+import { ComputerAutomationBrokerRuntime, type ChromeReleaser } from "./ComputerAutomationBroker";
 import { DesktopComputerHost } from "./DesktopComputerHost";
 
 const holderA: ChromeLeaseHolder = {
@@ -79,32 +79,44 @@ async function refusal(promise: Promise<unknown>): Promise<ComputerControlError>
   return error as ComputerControlError;
 }
 
+/** A session's releaser; counts how often it is asked to release. */
+function releaser(
+  release: () => boolean | Promise<boolean>,
+  idle: () => boolean = () => true,
+): ChromeReleaser & { asked: () => number } {
+  let asked = 0;
+  return {
+    idle,
+    release: () => {
+      asked += 1;
+      return release();
+    },
+    asked: () => asked,
+  };
+}
+
 describe("Chrome lease preemption", () => {
   it("releases an idle holder in this profile and retries once", async () => {
     const { ipc, broker } = await harness();
-    let asked = 0;
-    broker.registerChromeReleaser("a", "gen-a", () => {
-      asked += 1;
-      // Main observes the stopped CLI exit, then reports the lease gone.
+    // Main observes the stopped CLI exit, then reports the lease gone.
+    const a = releaser(async () => {
       setTimeout(() => ipc.setChrome(null), 10);
       return true;
     });
+    broker.registerChromeReleaser("a", "gen-a", a);
     await broker.acquireChromeLease(holderB);
-    expect(asked).toBe(1);
+    expect(a.asked()).toBe(1);
     expect(ipc.acquires()).toBe(2);
     expect(ipc.chrome?.threadId).toBe("b");
   });
 
   it("names a working holder instead of preempting it", async () => {
     const { ipc, broker } = await harness();
-    let asked = 0;
-    broker.registerChromeReleaser("a", "gen-a", () => {
-      asked += 1;
-      return true;
-    });
+    const a = releaser(() => true);
+    broker.registerChromeReleaser("a", "gen-a", a);
     broker.reportChromeCalls("a", "gen-a", true);
     const error = await refusal(broker.acquireChromeLease(holderB));
-    expect(asked).toBe(0);
+    expect(a.asked()).toBe(0);
     expect(ipc.acquires()).toBe(1);
     expect(error.error).toMatchObject({
       _tag: "Busy",
@@ -118,52 +130,99 @@ describe("Chrome lease preemption", () => {
     );
   });
 
+  it("never preempts a holder whose own work (background tasks, compaction) is running", async () => {
+    const { ipc, broker } = await harness();
+    let busy = true;
+    const a = releaser(
+      () => true,
+      () => !busy,
+    );
+    broker.registerChromeReleaser("a", "gen-a", a);
+    expect(broker.chromeHolderIdle("a", "gen-a")).toBe(false);
+    const error = await refusal(broker.acquireChromeLease(holderB));
+    expect(a.asked()).toBe(0);
+    expect(ipc.acquires()).toBe(1);
+    expect(error.error).toMatchObject({ holderIdle: false });
+    busy = false;
+    expect(broker.chromeHolderIdle("a", "gen-a")).toBe(true);
+  });
+
   it("never preempts a holder that is mid-turn", async () => {
     const { ipc, broker } = await harness();
     broker.bindSession("a", "gen-a", "claude");
     broker.beginTurn("a", "turn-1");
-    let asked = 0;
-    broker.registerChromeReleaser("a", "gen-a", () => {
-      asked += 1;
-      return true;
-    });
+    const a = releaser(() => true);
+    broker.registerChromeReleaser("a", "gen-a", a);
     const error = await refusal(broker.acquireChromeLease(holderB));
-    expect(asked).toBe(0);
+    expect(a.asked()).toBe(0);
     expect(ipc.acquires()).toBe(1);
     expect(error.error).toMatchObject({ holderIdle: false });
     // Once the turn ends, the same holder is idle and gives way.
     broker.endTurn("a", "turn-1");
-    broker.registerChromeReleaser("a", "gen-a", () => {
-      asked += 1;
+    const later = releaser(() => {
       setTimeout(() => ipc.setChrome(null), 10);
       return true;
     });
+    broker.registerChromeReleaser("a", "gen-a", later);
     await broker.acquireChromeLease(holderB);
-    expect(asked).toBe(1);
+    expect(later.asked()).toBe(1);
   });
 
-  it("returns the attributed refusal when the holder refuses or doesn't release in time", async () => {
+  it("gives up at once when the holder refuses under its lock, without waiting out the timeout", async () => {
     const { ipc, broker } = await harness();
-    broker.registerChromeReleaser("a", "gen-a", () => false);
+    // Idle when asked, but a turn started before the session took its lock.
+    broker.registerChromeReleaser(
+      "a",
+      "gen-a",
+      releaser(async () => false),
+    );
+    const started = Date.now();
+    expect(await broker.releaseChromeHolderOutcome("a", 5_000)).toBe("working");
+    expect(Date.now() - started).toBeLessThan(1_000);
     const refused = await refusal(broker.acquireChromeLease(holderB));
     expect(refused.error).toMatchObject({ holderIdle: true, threadTitle: "Thread A" });
     expect(ipc.acquires()).toBe(1);
+  });
 
-    broker.registerChromeReleaser("a", "gen-a", () => true);
-    expect(await broker.releaseChromeHolder("a", 20)).toBe(false);
+  it("reports why a release didn't happen", async () => {
+    const { ipc, broker } = await harness();
+    // No releaser registered: nothing can give the lease up.
+    expect(await broker.releaseChromeHolderOutcome("a", 20)).toBe("not-holder");
+    // Accepted, but main never reports the lease gone.
+    broker.registerChromeReleaser(
+      "a",
+      "gen-a",
+      releaser(() => true),
+    );
+    expect(await broker.releaseChromeHolderOutcome("a", 20)).toBe("timeout");
     expect(ipc.chrome?.threadId).toBe("a");
+    // Another thread holds Chrome.
+    expect(await broker.releaseChromeHolderOutcome("b", 20)).toBe("not-holder");
+  });
+
+  it("leaves the holder's state unstated when this broker hasn't seen it yet", async () => {
+    const { broker } = await harness();
+    const error = await broker.attributeBusy(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "same-profile",
+        resource: "chrome",
+        holderThreadId: "not-reported-yet",
+      }),
+    );
+    expect((error as ComputerControlError).error).not.toHaveProperty("holderIdle");
+    expect((error as ComputerControlError).message).toBe(
+      "Busy: Chrome is held by another thread. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.",
+    );
   });
 
   it("leaves other profiles' holders anonymous and alone", async () => {
     const { ipc, broker } = await harness();
     ipc.setChrome({ ...holderA, profileId: "other" });
-    let asked = 0;
-    broker.registerChromeReleaser("a", "gen-a", () => {
-      asked += 1;
-      return true;
-    });
-    expect(await broker.releaseChromeHolder("a", 20)).toBe(false);
-    expect(asked).toBe(0);
+    const a = releaser(() => true);
+    broker.registerChromeReleaser("a", "gen-a", a);
+    expect(await broker.releaseChromeHolderOutcome("a", 20)).toBe("not-holder");
+    expect(a.asked()).toBe(0);
     const anonymous = await broker.attributeBusy(
       new ComputerControlError({ _tag: "Busy", holder: "other-profile", resource: "chrome" }),
     );

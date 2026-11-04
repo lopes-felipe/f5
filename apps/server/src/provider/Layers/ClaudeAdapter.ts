@@ -38,7 +38,11 @@ import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeE
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
 import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import type { ChromeSessionRuntime } from "../chromeSessionRuntime";
-import { ClaudeChromeActivity } from "../claudeChromeActivity";
+import {
+  CLAUDE_SCHEDULING_TOOLS,
+  ClaudeChromeActivity,
+  claudeSessionBackgroundBusy,
+} from "../claudeChromeActivity";
 import {
   claudeChromeAvailability,
   makeChromeSessionRuntime,
@@ -526,6 +530,8 @@ interface ClaudeSessionContext {
   chromeProcess?: { kill: (signal: NodeJS.Signals) => boolean } | undefined;
   /** Turns and Chrome calls: an idle session stops to free Chrome. */
   chromeActivity?: ClaudeChromeActivity | undefined;
+  /** The session scheduled a wake-up or cron job, which would die with its CLI. */
+  chromeScheduledWork?: boolean | undefined;
   /** Unregisters the broker's release hook for this session's Chrome lease. */
   chromeReleaserOff?: (() => void) | undefined;
   replyOwned?: boolean | undefined;
@@ -4635,6 +4641,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
 
           const toolName = block.name;
+          // Scheduled work runs later inside this CLI: never stop it to free Chrome.
+          if (CLAUDE_SCHEDULING_TOOLS.has(toolName)) context.chromeScheduledWork = true;
           const requestKind = classifyToolRequestKind(toolName, { blockType: block.type });
           const toolInput =
             typeof block.input === "object" && block.input !== null
@@ -8992,26 +9000,38 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           context.chromeActivity = new ClaudeChromeActivity({
             reportCalls: (running) =>
               broker.reportChromeCalls(threadId, chromeLeaseGeneration, running),
-            stop: (reason) => {
-              Effect.runFork(
+            // Compaction, background tasks and scheduled wake-ups die with the CLI.
+            busy: () => claudeSessionBackgroundBusy(context),
+            // Re-checked under the thread lock: a turn or background work that started
+            // since the idle check refuses the stop, and the tracker resumes.
+            stop: (reason) =>
+              Effect.runPromise(
                 withThreadLock(
                   threadId,
                   Effect.gen(function* () {
-                    if (sessions.get(threadId) !== context || context.stopped || context.turnState)
-                      return;
+                    if (
+                      sessions.get(threadId) !== context ||
+                      context.stopped ||
+                      context.turnState ||
+                      claudeSessionBackgroundBusy(context)
+                    )
+                      return false;
                     yield* stopSessionInternal(context, {
                       emitExitEvent: true,
                       exitReason: reason,
                     });
+                    return true;
                   }),
                 ),
-              );
-            },
+              ),
           });
           context.chromeReleaserOff = broker.registerChromeReleaser(
             threadId,
             chromeLeaseGeneration,
-            () => context.chromeActivity?.release() ?? false,
+            {
+              idle: () => context.chromeActivity?.idle ?? false,
+              release: () => context.chromeActivity?.release() ?? false,
+            },
           );
         }
 
