@@ -84,6 +84,43 @@ describe.skipIf(process.platform === "win32")("private browser socket", () => {
     await h.close();
     await expect(FS.stat(h.socketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("opens without a prompt only when the token's thread is preapproved", async () => {
+    const openExternalUrl = vi.fn(async () => "opened" as const);
+    const isPreapproved = vi.fn(async (token: string) => token === "full");
+    const h = await fixture({ openExternalUrl, isPreapproved } as never);
+    expect(await h.send('{"url":"https://example.com","token":"full"}\n')).toEqual({
+      status: "opened",
+    });
+    expect(openExternalUrl).toHaveBeenLastCalledWith("https://example.com", { preapproved: true });
+    expect(await h.send('{"url":"https://example.com","token":"supervised"}\n')).toEqual({
+      status: "opened",
+    });
+    expect(openExternalUrl).toHaveBeenLastCalledWith("https://example.com");
+    expect(isPreapproved.mock.calls).toEqual([["full"], ["supervised"]]);
+  });
+  it.each([
+    ['{"url":"https://example.com"}\n', "no token"],
+    ['{"url":"https://example.com","token":42}\n', "non-string token"],
+    [`{"url":"https://example.com","token":"${"t".repeat(257)}"}\n`, "oversized token"],
+  ])("asks as before for %s (%s)", async (data) => {
+    const openExternalUrl = vi.fn(async () => "opened" as const);
+    const isPreapproved = vi.fn(async () => true);
+    const h = await fixture({ openExternalUrl, isPreapproved } as never);
+    expect(await h.send(data)).toEqual({ status: "opened" });
+    expect(isPreapproved).not.toHaveBeenCalled();
+    expect(openExternalUrl).toHaveBeenCalledWith("https://example.com");
+  });
+  it("asks as before when the preapproval lookup fails", async () => {
+    const openExternalUrl = vi.fn(async () => "denied" as const);
+    const isPreapproved = vi.fn(async () => {
+      throw new Error("database closed");
+    });
+    const h = await fixture({ openExternalUrl, isPreapproved } as never);
+    expect(await h.send('{"url":"https://example.com","token":"full"}\n')).toEqual({
+      status: "denied",
+    });
+    expect(openExternalUrl).toHaveBeenCalledWith("https://example.com");
+  });
   it.each([
     "not json\n",
     "{}\n",

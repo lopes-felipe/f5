@@ -104,6 +104,17 @@ describe("private computer host channel", () => {
       ),
     );
     expect(openExternalUrl).toHaveBeenCalledWith("profile", "https://example.com");
+    h.process.emit("message", {
+      type: "openExternalUrlRequest",
+      id: "full-access",
+      url: "https://example.com",
+      preapproved: true,
+    });
+    await vi.waitFor(() =>
+      expect(openExternalUrl).toHaveBeenLastCalledWith("profile", "https://example.com", {
+        preapproved: true,
+      }),
+    );
     h.process.emit("disconnect");
     expect(cancelBrowserOpen).toHaveBeenCalledWith("profile");
   });

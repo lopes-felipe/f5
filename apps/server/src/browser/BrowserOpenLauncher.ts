@@ -27,6 +27,9 @@ export function browserOpenSocketPath(stateDir: string): string {
       );
 }
 
+/** The launcher forwards this thread token, if present, with the URL. */
+export const BROWSER_OPEN_TOKEN_ENV = "F5_BROWSER_OPEN_TOKEN";
+
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
 /** Contains only paths: login URLs and credentials are never persisted. */
@@ -53,7 +56,8 @@ const socket = net.createConnection(socketPath);
 const exit = (code) => { socket.destroy(); process.exit(code); };
 const timer = setTimeout(() => exit(2), 6 * 60 * 1000);
 let reply = "";
-socket.on("connect", () => socket.write(JSON.stringify({ url: args[0] }) + "\n"));
+const token = process.env.${BROWSER_OPEN_TOKEN_ENV};
+socket.on("connect", () => socket.write(JSON.stringify(token ? { url: args[0], token } : { url: args[0] }) + "\n"));
 socket.on("data", (chunk) => {
   reply += chunk.toString("utf8");
   if (Buffer.byteLength(reply) > 8192) return exit(2);

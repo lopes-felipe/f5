@@ -1,5 +1,6 @@
 import { githubShellEnvironment } from "./git/githubShellStartup";
 import {
+  BROWSER_OPEN_TOKEN_ENV,
   browserLauncherDir,
   browserLauncherPath,
   browserOpenEnabled,
@@ -16,8 +17,11 @@ const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as
 function isBlockedProviderEnvKey(key: string): boolean {
   const normalizedKey = key.toUpperCase();
   return (
-    ["F5_STANDALONE", "F5_STANDALONE_DIR", "F5_INSTALL_ROOT"].includes(normalizedKey) ||
-    BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
+    // Only the spawn site that knows the thread may set a browser-open token; an inherited one
+    // (for example, F5 started from another F5's terminal) never reaches F5's children.
+    ["F5_STANDALONE", "F5_STANDALONE_DIR", "F5_INSTALL_ROOT", BROWSER_OPEN_TOKEN_ENV].includes(
+      normalizedKey,
+    ) || BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
   );
 }
 

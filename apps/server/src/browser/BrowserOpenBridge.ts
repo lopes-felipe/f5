@@ -1,11 +1,10 @@
-import type { DesktopComputerHost } from "../computer/DesktopComputerHost";
 import { browserOpenEnabled, prepareBrowserOpenLauncher } from "./BrowserOpenLauncher";
-import { startBrowserOpenListener } from "./BrowserOpenListener";
+import { type BrowserOpenTarget, startBrowserOpenListener } from "./BrowserOpenListener";
 
 /** Optional login support must never prevent profile startup or teardown. */
 export async function startBrowserOpenBridge(
   stateDir: string,
-  host: Pick<DesktopComputerHost, "openExternalUrl">,
+  host: BrowserOpenTarget,
   enabled = browserOpenEnabled(),
   warn: (message: string, error: unknown) => void = console.warn,
 ): Promise<() => Promise<void>> {

@@ -45,12 +45,20 @@ export class BrowserOpenAuthority {
     },
   ) {}
 
-  /** Validate before consent; remembered hosts still share a per-profile browser-open budget. */
-  request(profileId: string, rawUrl: unknown): Promise<OpenExternalUrlStatus> {
+  /**
+   * Validate before consent; remembered hosts and `preapproved` requests (the profile's backend
+   * vouches that the requesting thread is in full access) skip the prompt but still share a
+   * per-profile browser-open budget.
+   */
+  request(
+    profileId: string,
+    rawUrl: unknown,
+    options?: { preapproved?: boolean },
+  ): Promise<OpenExternalUrlStatus> {
     const url = getSafeBrowserLoginUrl(rawUrl);
     if (!url) return Promise.resolve("invalid");
     const host = new URL(url).hostname.toLowerCase();
-    if (this.allowed.get(profileId)?.has(host))
+    if (options?.preapproved === true || this.allowed.get(profileId)?.has(host))
       return Promise.resolve()
         .then(() => this.open(profileId, url))
         .catch(() => "denied" as const);

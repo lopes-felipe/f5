@@ -693,6 +693,8 @@ export const DesktopComputerHostMessage = Schema.Union([
     type: Schema.Literal("openExternalUrlRequest"),
     id: Id,
     url: Schema.String,
+    /** The requesting thread is in full access; the desktop opens without asking. */
+    preapproved: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("openExternalUrlResult"),

@@ -440,6 +440,29 @@ it("keeps a failed suspension unconfirmed after successful interruption and expo
     await screen.unmount();
   }
 });
+it.each([
+  ["ambient", { delivery: "background" as const }],
+  ["foreground", { delivery: "foreground" as const }],
+])("keeps the %s banner's Stop clickable over the window drag region", async (_, holder) => {
+  useAgentComputerActivityStore.getState().setLeases({
+    holders: [{ threadId, state: "active", appName: "Notes", ...holder }],
+  });
+  const screen = await render(
+    <>
+      <div className="drag-region fixed inset-x-0 top-0 h-12" />
+      <ComputerUseBanner />
+    </>,
+  );
+  try {
+    const banner = page.getByTestId("computer-use-banner");
+    await expect.element(banner).toBeVisible();
+    expect(getComputedStyle(banner.element()).getPropertyValue("-webkit-app-region")).toBe(
+      "no-drag",
+    );
+  } finally {
+    await screen.unmount();
+  }
+});
 it("keeps the Chrome banner up between calls and hides it once the runtime stays idle", async () => {
   const store = useAgentComputerActivityStore.getState();
   const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
