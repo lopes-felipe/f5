@@ -263,6 +263,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
 
           return (
             <Toast.Root
+              data-slot="toast-root"
               className={cn(
                 "absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-lg border bg-popover text-popover-foreground shadow-lg/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s]",
                 // Base positioning using data-position

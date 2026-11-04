@@ -1,11 +1,51 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 export interface IntegrationConsentIo {
   readonly read: () => string | undefined;
   readonly write: (contents: string) => void;
   readonly remove: () => void;
+}
+
+const hasCode = (error: unknown, code: string) =>
+  !!error && typeof error === "object" && "code" in error && error.code === code;
+
+function writePrivateFile(path: string, contents: string | Uint8Array): void {
+  const fd = openSync(path, "wx", 0o600);
+  try {
+    writeFileSync(fd, contents);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function syncParent(path: string): void {
+  // Windows does not support opening directories for fsync through this API.
+  if (process.platform === "win32") return;
+  let fd: number;
+  try {
+    fd = openSync(dirname(path), "r");
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return;
+    throw error;
+  }
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Atomic JSON file; missing or unreadable files mean no grants. */
@@ -22,13 +62,17 @@ export function fileConsentIo(path: string): IntegrationConsentIo {
       mkdirSync(dirname(path), { recursive: true });
       const temporary = path + "." + randomUUID() + ".tmp";
       try {
-        writeFileSync(temporary, contents, { mode: 0o600, flag: "wx" });
+        writePrivateFile(temporary, contents);
         renameSync(temporary, path);
+        syncParent(path);
       } finally {
         rmSync(temporary, { force: true });
       }
     },
-    remove: () => rmSync(path, { force: true }),
+    remove: () => {
+      rmSync(path, { force: true });
+      syncParent(path);
+    },
   };
 }
 
@@ -53,13 +97,24 @@ export function keychainConsentKey(
     } catch (error) {
       // Access failures are not missing keys. Never overwrite an existing key when
       // the keychain or filesystem is temporarily unavailable.
-      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT")
-        return undefined;
+      if (!hasCode(error, "ENOENT")) return undefined;
       try {
         const fresh = randomBytes(32);
         mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, crypto.encrypt(fresh.toString("hex")), { mode: 0o600, flag: "wx" });
-        return (key = fresh);
+        const temporary = path + "." + randomUUID() + ".tmp";
+        try {
+          writePrivateFile(temporary, crypto.encrypt(fresh.toString("hex")));
+          try {
+            linkSync(temporary, path);
+            syncParent(path);
+          } catch (error) {
+            if (!hasCode(error, "EEXIST")) throw error;
+          }
+        } finally {
+          rmSync(temporary, { force: true });
+        }
+        // Another creator may have won the link race. Always use the published key.
+        encrypted = readFileSync(path);
       } catch {
         return undefined;
       }
@@ -124,11 +179,15 @@ export class SignedRecordFile<R extends object> {
   }
 
   list(profileId: string): ReadonlyArray<readonly [string, R]> {
-    return [...(this.profiles.get(profileId) ?? [])]
+    const entries = [...(this.profiles.get(profileId) ?? [])];
+    const key = entries.some(([id]) => !this.unsaved.has(JSON.stringify([profileId, id])))
+      ? this.key()
+      : undefined;
+    return entries
       .filter(
         ([id, entry]) =>
           this.unsaved.has(JSON.stringify([profileId, id])) ||
-          this.verified(profileId, entry.record, id, entry.mac),
+          this.verified(profileId, entry.record, id, entry.mac, key),
       )
       .map(([id, entry]) => [id, structuredClone(entry.record)]);
   }
@@ -145,7 +204,7 @@ export class SignedRecordFile<R extends object> {
       (!entries?.has(id) && (entries?.size ?? 0) >= this.options.maxRecordsPerProfile)
     )
       throw new Error("Remembered consent limit reached.");
-    const mac = this.sign(profileId, record, id);
+    const mac = this.sign(profileId, record, id, this.key());
     const entry = entries ?? new Map<string, { record: R; mac: string }>();
     entry.set(id, { record: structuredClone(record), mac: mac ?? "" });
     this.profiles.set(profileId, entry);
@@ -186,8 +245,12 @@ export class SignedRecordFile<R extends object> {
     }
   }
 
-  private sign(profileId: string, record: R, id: string): string | undefined {
-    const key = this.key();
+  private sign(
+    profileId: string,
+    record: R,
+    id: string,
+    key: Buffer | undefined,
+  ): string | undefined {
     return key
       ? createHmac("sha256", key)
           .update(this.options.payload(profileId, record, id))
@@ -195,8 +258,14 @@ export class SignedRecordFile<R extends object> {
       : undefined;
   }
 
-  private verified(profileId: string, record: R, id: string, mac: string): boolean {
-    const expected = this.sign(profileId, record, id);
+  private verified(
+    profileId: string,
+    record: R,
+    id: string,
+    mac: string,
+    key: Buffer | undefined,
+  ): boolean {
+    const expected = this.sign(profileId, record, id, key);
     return (
       expected !== undefined &&
       expected.length === mac.length &&

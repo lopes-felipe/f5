@@ -1,6 +1,6 @@
 import { usePendingComputerAccessRequests } from "../hooks/usePendingComputerAccessRequests";
 import { useStore } from "../store";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ComputerAccessPush, ComputerAppTier } from "@t3tools/contracts";
 import { AppWindowIcon, GlobeIcon, KeyboardIcon } from "lucide-react";
 
@@ -133,6 +133,76 @@ export function ComputerAccessInbox() {
   const [announcement, setAnnouncement] = useState("");
   const announcementCount = useRef(0);
   const requestId = request?.requestId;
+  const panelRef = useRef<HTMLElement>(null);
+  const [panelTop, setPanelTop] = useState(80);
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !canReview) return;
+    let frame = 0;
+    const measure = () => {
+      const bounds = panel.getBoundingClientRect();
+      let top = 80;
+      for (const viewport of document.querySelectorAll<HTMLElement>(
+        '[data-slot="toast-viewport"][data-position*="top"]',
+      )) {
+        const toastBounds = viewport.getBoundingClientRect();
+        if (toastBounds.left >= bounds.right || toastBounds.right <= bounds.left) continue;
+        for (const toast of viewport.querySelectorAll<HTMLElement>(
+          '[data-slot="toast-root"]:not([data-limited])',
+        ))
+          top = Math.max(
+            top,
+            toast.getBoundingClientRect().bottom + 12,
+            toastBounds.top + toast.offsetHeight + 12,
+          );
+      }
+      setPanelTop(Math.ceil(top));
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const resize = new ResizeObserver(schedule);
+    const observe = () => {
+      resize.disconnect();
+      resize.observe(panel);
+      document
+        .querySelectorAll('[data-slot="toast-viewport"], [data-slot="toast-root"]')
+        .forEach((node) => resize.observe(node));
+      schedule();
+    };
+    const toastNode = (node: Node) =>
+      node instanceof Element &&
+      (node.matches('[data-slot="toast-root"], [data-slot="toast-viewport"]') ||
+        node.querySelector('[data-slot="toast-viewport"]'));
+    const mutations = new MutationObserver((records) => {
+      if (
+        records.some(
+          (record) =>
+            (record.target instanceof Element &&
+              record.target.closest('[data-slot="toast-viewport"]')) ||
+            [...record.addedNodes, ...record.removedNodes].some(toastNode),
+        )
+      )
+        observe();
+    });
+    mutations.observe(document.body, { childList: true, subtree: true });
+    const transitioned = (event: TransitionEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-slot="toast-viewport"]'))
+        schedule();
+    };
+    document.addEventListener("transitionend", transitioned);
+    window.addEventListener("resize", schedule);
+    observe();
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      resize.disconnect();
+      mutations.disconnect();
+      document.removeEventListener("transitionend", transitioned);
+      window.removeEventListener("resize", schedule);
+    };
+  }, [requestId, canReview]);
   useEffect(() => {
     setAnnouncement(
       requestId && canReview
@@ -175,11 +245,13 @@ export function ComputerAccessInbox() {
       </p>
       {request && canReview ? (
         <section
+          ref={panelRef}
           role="dialog"
           aria-modal="false"
           aria-labelledby={titleId}
           aria-describedby={descriptionId}
-          className="fixed top-20 left-1/2 z-40 max-h-[calc(100dvh-6rem)] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 overflow-y-auto rounded-xl border bg-popover text-popover-foreground shadow-lg"
+          className="fixed left-1/2 z-40 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 overflow-y-auto rounded-xl border bg-popover text-popover-foreground shadow-lg"
+          style={{ top: panelTop, maxHeight: "calc(100dvh - " + (panelTop + 16) + "px)" }}
         >
           <div className="space-y-2 p-6">
             <h2 id={titleId} className="font-semibold text-lg">

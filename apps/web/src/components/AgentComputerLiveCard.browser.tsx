@@ -96,53 +96,64 @@ async function waitForLayoutAnimations() {
   );
 }
 
-it("keeps access above a tall composer, clear of desktop toasts, and respects modal focus", async () => {
-  const viewport = { width: window.innerWidth, height: window.innerHeight };
-  await page.viewport(1280, 900);
-  const store = useAgentComputerActivityStore.getState();
-  const answerAccess = vi.fn(async () => {});
-  window.desktopBridge = { computerAutomation: { answerAccess } } as never;
-  const screen = await render(<AccessLayoutFixture />);
-  try {
-    store.request({
-      requestId: "layout",
-      threadId,
-      backendIncarnation: "fixture-backend",
-      kind: "apps",
-      reason: "Edit the document while you keep working",
-      apps: [{ appId: "fixture", name: "Document editor", tier: "full" }],
-    });
-    toastManager.add({ type: "info", title: "Layout notification", timeout: 0 });
-    await expect.element(page.getByText("Layout notification", { exact: true })).toBeVisible();
-    await waitForLayoutAnimations();
-    const panel = page.getByRole("dialog", { name: "Computer access", exact: true }).element();
-    const panelRect = panel.getBoundingClientRect();
-    const composer = page.getByRole("textbox", { name: "Multi-line composer" });
-    expect(panelRect.bottom).toBeLessThan(composer.element().getBoundingClientRect().top);
-    expect(
-      page.getByText("Layout notification", { exact: true }).element().getBoundingClientRect().left,
-    ).toBeGreaterThan(panelRect.right);
-    await page.screenshot({
-      path: "../../.playwright/screenshots/computer-access-composer-toast.png",
-    });
-    await page.getByRole("button", { name: "Open editor confirmation" }).click();
-    await expect
-      .element(page.getByRole("dialog", { name: "Editor confirmation", exact: true }))
-      .toBeVisible();
-    await waitForLayoutAnimations();
-    await page.screenshot({
-      path: "../../.playwright/screenshots/computer-access-editor-modal.png",
-    });
-    await page.getByRole("button", { name: "Close editor", exact: true }).click();
-    await page.getByRole("button", { name: "Review access", exact: true }).click();
-    expect(answerAccess).toHaveBeenCalledOnce();
-    await composer.click();
-    await expect.element(composer).toHaveFocus();
-  } finally {
-    await screen.unmount();
-    await page.viewport(viewport.width, viewport.height);
-  }
-});
+it.each([1280, 840, 390])(
+  "keeps access above a tall composer, clear of toasts, and respects modal focus at %spx",
+  async (width) => {
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    await page.viewport(width, 900);
+    const store = useAgentComputerActivityStore.getState();
+    const answerAccess = vi.fn(async () => {});
+    window.desktopBridge = { computerAutomation: { answerAccess } } as never;
+    const screen = await render(<AccessLayoutFixture />);
+    try {
+      store.request({
+        requestId: "layout",
+        threadId,
+        backendIncarnation: "fixture-backend",
+        kind: "apps",
+        reason: "Edit the document while you keep working",
+        apps: [{ appId: "fixture", name: "Document editor", tier: "full" }],
+      });
+      toastManager.add({ type: "info", title: "Layout notification", timeout: 0 });
+      await expect.element(page.getByText("Layout notification", { exact: true })).toBeVisible();
+      await waitForLayoutAnimations();
+      const panel = page.getByRole("dialog", { name: "Computer access", exact: true }).element();
+      const panelRect = panel.getBoundingClientRect();
+      const composer = page.getByRole("textbox", { name: "Multi-line composer" });
+      expect(panelRect.bottom).toBeLessThan(composer.element().getBoundingClientRect().top);
+      const toast = page
+        .getByText("Layout notification", { exact: true })
+        .element()
+        .closest('[data-slot="toast-root"]')!;
+      await expect
+        .poll(() => {
+          const a = panel.getBoundingClientRect();
+          const b = toast.getBoundingClientRect();
+          return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        })
+        .toBe(false);
+      await page.screenshot({
+        path: "../../.playwright/screenshots/computer-access-composer-toast-" + width + ".png",
+      });
+      await page.getByRole("button", { name: "Open editor confirmation" }).click();
+      await expect
+        .element(page.getByRole("dialog", { name: "Editor confirmation", exact: true }))
+        .toBeVisible();
+      await waitForLayoutAnimations();
+      await page.screenshot({
+        path: "../../.playwright/screenshots/computer-access-editor-modal-" + width + ".png",
+      });
+      await page.getByRole("button", { name: "Close editor", exact: true }).click();
+      await page.getByRole("button", { name: "Review access", exact: true }).click();
+      expect(answerAccess).toHaveBeenCalledOnce();
+      await composer.click();
+      await expect.element(composer).toHaveFocus();
+    } finally {
+      await screen.unmount();
+      await page.viewport(viewport.width, viewport.height);
+    }
+  },
+);
 
 it("shows Pause after an old action's lease ends and keeps Resume visible once paused", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
