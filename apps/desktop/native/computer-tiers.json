@@ -120,5 +120,16 @@
       "com.apple.TextEdit",
       "com.apple.Notes"
     ]
+  },
+  "backgroundEvents": { "darwin": [], "win32": [] },
+  "backgroundEventCandidates": {
+    "darwin": [
+      "com.apple.TextEdit",
+      "com.apple.Notes",
+      "com.apple.finder",
+      "com.apple.Terminal",
+      "com.apple.dt.Xcode"
+    ],
+    "win32": ["notepad.exe", "explorer.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"]
   }
 }

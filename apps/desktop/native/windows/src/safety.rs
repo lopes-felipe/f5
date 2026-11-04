@@ -68,6 +68,25 @@ pub fn grant_allows(tier: &str, allow_typing: bool, needed: &str) -> bool {
     }
     needed == "click" || (needed == "type" && (tier == "full" || allow_typing))
 }
+pub fn background_event_app_allowed(app: &str) -> bool {
+    static TABLE: OnceLock<Value> = OnceLock::new();
+    let table = TABLE
+        .get_or_init(|| serde_json::from_str(include_str!("../../computer-tiers.json")).unwrap());
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|arg| arg == format!("--rehearse-background-events={app}"))
+        && table["backgroundEventCandidates"]["win32"]
+            .as_array()
+            .is_some_and(|apps| apps.iter().any(|id| id.as_str() == Some(app)))
+    {
+        return true;
+    }
+    table["backgroundEvents"]["win32"]
+        .as_array()
+        .is_some_and(|apps| {
+            apps.iter()
+                .any(|id| id.as_str().is_some_and(|id| id.eq_ignore_ascii_case(app)))
+        })
+}
 pub fn input_monitors_healthy(
     mouse_registered: bool,
     mouse_responsive: bool,
@@ -129,6 +148,12 @@ pub fn system_process(executable: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_key_messages_include_extended_scan_and_balanced_release_bits() {
+        assert_eq!(message_key_flags(0x41, 0x1e, false) as u32, 0x001e0001);
+        assert_eq!(message_key_flags(0x25, 0x4b, true) as u32, 0xc14b0001);
+        assert!(!background_event_app_allowed("unverified.example.exe"));
+    }
     #[test]
     fn stop_chord_recognizes_system_keydown_and_never_keyup_or_partial_modifiers() {
         assert!(stop_chord(0x100, 0x7b, true, true, true));
@@ -283,6 +308,14 @@ mod release_tests {
     }
 }
 
+/// LPARAM for process-directed key messages, including navigation's extended-key bit.
+pub fn message_key_flags(code: u16, scan: u32, up: bool) -> isize {
+    let extended = matches!(code, 0x21..=0x28 | 0x2d | 0x2e | 0xa3 | 0xa5);
+    (1u32
+        | ((scan & 0xff) << 16)
+        | if extended { 1 << 24 } else { 0 }
+        | if up { 3 << 30 } else { 0 }) as isize
+}
 pub fn parse_chord(raw: &str) -> Result<Vec<u16>, &'static str> {
     let parts: Vec<_> = raw.split('+').map(|part| part.to_lowercase()).collect();
     let mut codes = Vec::new();

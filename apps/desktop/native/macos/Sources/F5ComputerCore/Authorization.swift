@@ -40,6 +40,27 @@ public func computerBackgroundForegroundOnly(_ id: String) -> Bool {
     patternMatches(id, $0)
   })
 }
+public func computerBackgroundEventAppAllowed(_ id: String) -> Bool {
+  let events = tierTable["backgroundEvents"] as? [String: [String]]
+  #if DEBUG
+  let candidates = tierTable["backgroundEventCandidates"] as? [String: [String]]
+  if CommandLine.arguments.contains("--rehearse-background-events=" + id) &&
+    (candidates?["darwin"] ?? []).contains(id) { return true }
+  #endif
+  return (events?["darwin"] ?? []).contains { $0.lowercased() == id.lowercased() }
+}
+public func computerBackgroundKeyAllowed(_ raw: String) -> Bool {
+  guard let chord = computerKeyChord(raw) else { return false }
+  let key = chord.key
+  let command = chord.flags.contains(.maskCommand)
+  let control = chord.flags.contains(.maskControl)
+  let alt = chord.flags.contains(.maskAlternate)
+  let shift = chord.flags.contains(.maskShift)
+  return !blockedComputerChord(key: key, command: command, control: control, alt: alt, shift: shift)
+    && !(command && ["tab", "space"].contains(key))
+    && !(control && ["up", "down", "left", "right", "arrowup", "arrowdown", "arrowleft", "arrowright"].contains(key))
+    && !(command && shift && ["3", "4", "5"].contains(key))
+}
 public func computerAppIsBrowser(_ id: String) -> Bool {
   ((tierTable["browsers"] as! [String: [String]])["darwin"]!).contains(where: {
     patternMatches(id, $0)

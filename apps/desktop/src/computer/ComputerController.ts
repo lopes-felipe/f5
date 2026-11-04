@@ -23,14 +23,20 @@ import {
   COMPUTER_CHROME_APP_IDS,
   computerScopeAllows,
   computerScopeDelivery,
-  computerScopesConflict,
+  computerBackgroundKeyAllowed,
 } from "@t3tools/shared/computerExecution";
+import { computerBackgroundEventAppAllowed } from "@t3tools/shared/computerApps";
 import { computerModelToNative } from "@t3tools/shared/computerGeometry";
-import { COMPUTER_BACKGROUND_CAPABILITY } from "@t3tools/contracts";
+import {
+  COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
+} from "@t3tools/contracts";
 import { ComputerLeaseAuthority, sameComputerHolder } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
 import { ComputerCooperation } from "./ComputerCooperation";
 import { ComputerAdmissionQueue, type ComputerAdmission } from "./ComputerAdmissionQueue";
+import { ComputerSharedAppState } from "./ComputerSharedAppState";
 
 interface Admission {
   owner: string;
@@ -142,6 +148,13 @@ export class ComputerController {
     string,
     { owner: string; appId: string; result: ComputerInspectResult }
   >();
+  private readonly sharedApps = new ComputerSharedAppState();
+  sharedAppsAvailable(): boolean {
+    return this.helper.capabilities?.().includes(COMPUTER_SHARED_APP_CAPABILITY) ?? false;
+  }
+  backgroundEventsAvailable(): boolean {
+    return this.helper.capabilities?.().includes(COMPUTER_BACKGROUND_EVENTS_CAPABILITY) ?? false;
+  }
   private readonly permitTimer: ReturnType<typeof setInterval>;
   private readonly offEvent: () => void;
   private readonly offLease: () => void;
@@ -285,6 +298,7 @@ export class ComputerController {
     );
   }
   private yieldHolder(holder: ComputerLeaseHolder): void {
+    if (holder.scope.kind === "app") this.sharedApps.yielded(holder.scope.appId);
     const key = this.key(holder);
     if (
       this.cooperation.yielded.get(key)?.holder.executionGeneration === holder.executionGeneration
@@ -474,6 +488,7 @@ export class ComputerController {
   }
   turnEnded(profileId: string, threadId: string, sessionGeneration: string, turnId?: string): void {
     const key = this.key({ profileId, threadId });
+    this.sharedApps.releaseOwner(key);
     this.admission.cancel(
       (entry) =>
         this.key(entry.holder) === key && entry.holder.sessionGeneration === sessionGeneration,
@@ -553,6 +568,7 @@ export class ComputerController {
       )
         this.stop("paused");
       this.cooperation.reset();
+      this.sharedApps.reset();
       // The previous helper process is gone, and with it any unresolved native work.
       this.nativeWork.clear();
       // A replacement helper starts suspended and has no remembered authorization. Existing
@@ -665,7 +681,7 @@ export class ComputerController {
       if (
         scope === "chrome"
           ? entry.scope.kind !== "app" || COMPUTER_CHROME_APP_IDS.includes(entry.scope.appId)
-          : computerScopesConflict(entry.scope, scope)
+          : this.lease.scopesConflict(entry.scope, scope)
       )
         return true;
     return false;
@@ -680,6 +696,8 @@ export class ComputerController {
     this.nativeWork.add(entry);
     const settle = () => {
       this.nativeWork.delete(entry);
+      this.pump();
+      this.admission.changed();
     };
     // A timeout or lost reply is not completion: only a drain proves the helper finished. A
     // generation still stuck in its app stays excluded and is drained again; a retired helper
@@ -697,11 +715,62 @@ export class ComputerController {
       }
       settle();
     };
-    native.then(settle, (error: unknown) => {
-      if (computerError(error)._tag === "OutcomeUnknown" && this.capable() && this.helper.drain)
-        void drainUntilDone();
-      else settle();
-    });
+    native.then(
+      (result) => {
+        this.recordSharedMutation(request, result);
+        settle();
+      },
+      (error: unknown) => {
+        if (
+          computerError(error)._tag === "OutcomeUnknown" ||
+          this.confirmed.has(request.requestId)
+        ) {
+          const confirmed = this.confirmed.has(request.requestId);
+          if (!confirmed && "appId" in request && request.appId)
+            this.sharedApps.yielded(request.appId);
+          this.recordSharedMutation(request, {}, confirmed);
+        }
+        if (computerError(error)._tag === "OutcomeUnknown" && this.capable() && this.helper.drain)
+          void drainUntilDone();
+        else settle();
+      },
+    );
+  }
+  private recordSharedMutation(
+    request: ComputerAutomationRequest,
+    result: unknown,
+    confirmed = true,
+  ): void {
+    if (
+      request.delivery !== "background" ||
+      !("appId" in request) ||
+      !request.appId ||
+      !this.sharedAppsAvailable() ||
+      (result &&
+        typeof result === "object" &&
+        "actionCompleted" in result &&
+        result.actionCompleted === false)
+    )
+      return;
+    const key = this.key(request.authorization);
+    const ended = this.endedTurns.get(key);
+    const canPress =
+      confirmed &&
+      !this.paused.has(key) &&
+      !this.cooperation.yielded.has(key) &&
+      this.grants.get(key)?.sessionGeneration === request.authorization.sessionGeneration &&
+      !(
+        ended?.sessionGeneration === request.authorization.sessionGeneration &&
+        ended.turnId === request.authorization.turnId
+      );
+    this.sharedApps.mutated(
+      request.appId,
+      key,
+      canPress && request.op === "elementAction" && request.action === "press",
+    );
+    for (const [id, snapshot] of this.snapshots)
+      if (snapshot.appId === request.appId && snapshot.owner !== this.key(request.authorization))
+        this.snapshots.delete(id);
   }
   private async awaitNative(
     predicate: (entry: { key: string; generation: number }) => boolean,
@@ -820,6 +889,7 @@ export class ComputerController {
     )
       return;
     if (previous && previous.sessionGeneration !== authorization.sessionGeneration) {
+      this.sharedApps.releaseOwner(key);
       this.cooperation.release((holder) => this.key(holder) === key);
       this.forgetAdmissions(
         (entry) =>
@@ -973,6 +1043,22 @@ export class ComputerController {
   private pump(): void {
     for (const [generation, queue] of this.mutationQueues) {
       if (this.activeMutations.has(generation)) continue;
+      const next = queue[0]?.request;
+      const appId = next?.delivery === "background" && "appId" in next ? next.appId : undefined;
+      if (
+        appId &&
+        ([...this.activeMutations.values()].some(
+          ({ request }) =>
+            request.delivery === "background" && "appId" in request && request.appId === appId,
+        ) ||
+          [...this.nativeWork].some(
+            (entry) =>
+              entry.generation !== generation &&
+              entry.scope.kind === "app" &&
+              entry.scope.appId === appId,
+          ))
+      )
+        continue;
       const job = queue.shift();
       if (!queue.length) this.mutationQueues.delete(generation);
       if (!job) continue;
@@ -1016,6 +1102,12 @@ export class ComputerController {
     )
       throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
     const delivery = request.delivery ?? "foreground";
+    if (request.op === "scroll" && "elementRef" in request && delivery !== "background")
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message:
+          "Element scrolling uses background delivery; use a fresh display screenshot and coordinates for foreground scrolling.",
+      });
     if (isComputerMutation(request.op)) {
       const holder = this.lease.find(request.authorization);
       if (!holder || holder.backend !== "native")
@@ -1031,7 +1123,37 @@ export class ComputerController {
       if (delivery === "background") {
         if (holder.scope.kind !== "app" || appId !== holder.scope.appId)
           throw new ComputerControlError({ _tag: "ReplayRejected" });
-        if (!computerScopeAllows(holder.scope, delivery, request.op, appId, action))
+        if (this.sharedAppsAvailable()) {
+          if (
+            request.op === "elementAction" ||
+            (request.op === "scroll" && "elementRef" in request)
+          ) {
+            const snapshot = this.snapshots.get(request.snapshotId);
+            if (!snapshot || snapshot.owner !== this.key(holder) || snapshot.appId !== appId)
+              throw new ComputerControlError({ _tag: "StaleElement" });
+          }
+          if (request.op === "type" || request.op === "key")
+            this.sharedApps.assertTyping(
+              appId,
+              this.key(holder),
+              this.lease
+                .holders()
+                .some(
+                  (other) =>
+                    this.key(other) !== this.key(holder) &&
+                    other.scope.kind === "app" &&
+                    other.scope.appId === appId,
+                ),
+            );
+        }
+        const events =
+          this.backgroundEventsAvailable() &&
+          computerBackgroundEventAppAllowed(appId, this.options.platform) &&
+          (request.op === "scroll"
+            ? "elementRef" in request
+            : request.op === "key" &&
+              computerBackgroundKeyAllowed(request.chords, this.options.platform));
+        if (!computerScopeAllows(holder.scope, delivery, request.op, appId, action, { events }))
           throw new ComputerControlError({
             _tag: "ForegroundRequired",
             reason: "unsupported-in-background",
@@ -1481,6 +1603,7 @@ export class ComputerController {
     this.forgetAdmissions((entry) => entry.owner.startsWith(`${profileId}\0`));
     for (const [key, auth] of this.grants)
       if (auth.profileId === profileId) {
+        this.sharedApps.releaseOwner(key);
         this.grants.delete(key);
         this.paused.delete(key);
         this.pauseCauses.delete(key);
@@ -1508,6 +1631,7 @@ export class ComputerController {
   /** Stop one thread's generation; other threads' background work keeps running. */
   stopThread(holder: ComputerLeaseHolder, cause: ComputerPauseCause = "paused"): void {
     const key = this.key(holder);
+    this.sharedApps.releaseOwner(key);
     this.admission.cancel(
       (entry) => this.key(entry.holder) === key,
       new ComputerControlError({ _tag: "Interrupted", cause: STOP_CAUSE[cause] }),
@@ -1586,6 +1710,7 @@ export class ComputerController {
     this.cooperation.reset();
     for (const holder of [...active, ...stopped]) {
       const key = this.key(holder);
+      this.sharedApps.releaseOwner(key);
       this.controlled.set(key, holder);
       this.paused.add(key);
       this.pauseCauses.set(key, cause);
@@ -1672,6 +1797,7 @@ export class ComputerController {
     this.pauseCauses.clear();
     this.quarantined.clear();
     this.snapshots.clear();
+    this.sharedApps.reset();
     this.appNames.clear();
     this.permitted.clear();
     this.nativeWork.clear();

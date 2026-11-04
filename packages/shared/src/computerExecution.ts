@@ -18,9 +18,8 @@ export function computerHostMetadata(platform: string): {
 }
 
 /**
- * Operations a background (accessibility-only) generation may execute. Everything else needs
- * the foreground: coordinate input, keys and activation reach whatever app is frontmost.
- * Mirrors the scope checks in both native helpers.
+ * Accessibility operations available in background generations. Process-directed key/scroll
+ * events additionally require negotiated support and an app certified for those events.
  */
 const BACKGROUND_OPS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "status",
@@ -56,7 +55,9 @@ export const COMPUTER_CHROME_APP_IDS: ReadonlyArray<string> = integrationBrowser
 export function computerBackgroundOpAllowed(
   op: ComputerAutomationOperation,
   action?: ComputerElementAction,
+  options: { events?: boolean } = {},
 ): boolean {
+  if (op === "key" || op === "scroll") return options.events === true;
   if (!BACKGROUND_OPS.has(op)) return false;
   return op !== "elementAction" || (action !== undefined && BACKGROUND_ELEMENT_ACTIONS.has(action));
 }
@@ -78,14 +79,16 @@ export function sameComputerScope(a: ComputerLeaseScope, b: ComputerLeaseScope):
 }
 /**
  * Whether `requested` may coexist with another thread's `held` scope. Foreground and takeover
- * are exclusive among foreground holders; background leases are one agent per app.
+ * are exclusive among foreground holders; capable helpers may share background app scopes.
  */
 export function computerScopesConflict(
   requested: ComputerLeaseScope,
   held: ComputerLeaseScope,
+  options: { shareApps?: boolean } = {},
 ): boolean {
   if (requested.kind === "foreground" || held.kind === "foreground") return true;
   if (requested.kind === "takeover" && held.kind === "takeover") return true;
+  if (options.shareApps && requested.kind === "app" && held.kind === "app") return false;
   return requested.appId === held.appId;
 }
 /**
@@ -98,15 +101,53 @@ export function computerScopeAllows(
   op: ComputerAutomationOperation,
   appId: string | undefined,
   action?: ComputerElementAction,
+  options: { events?: boolean } = {},
 ): boolean {
   if (delivery === "background")
     return (
       scope.kind === "app" &&
       appId === scope.appId &&
       op !== "activateApp" &&
-      computerBackgroundOpAllowed(op, action)
+      computerBackgroundOpAllowed(op, action, options)
     );
   if (scope.kind === "foreground") return true;
   if (scope.kind === "app") return false;
   return appId === undefined || appId === scope.appId;
+}
+/** These shortcuts are handled by the desktop session, regardless of a target process. */
+export function computerBackgroundKeyAllowed(
+  chords: ReadonlyArray<string>,
+  platform: "darwin" | "win32",
+): boolean {
+  if (!chords.length) return false;
+  return chords.every((raw) => {
+    const parts = raw
+      .toLowerCase()
+      .split("+")
+      .map((part) => part.trim());
+    const key = parts.at(-1) ?? "";
+    const has = (...names: string[]) => names.some((name) => parts.includes(name));
+    const control = has("control", "ctrl");
+    const alt = has("alt", "option", "opt");
+    const meta = has("meta", "command", "cmd", "win", "windows", "super");
+    const escape = key === "escape" || key === "esc";
+    if (platform === "win32")
+      return (
+        !meta &&
+        !(alt && key === "tab") &&
+        !(control && ((alt && (key === "delete" || key === "del")) || escape))
+      );
+    return (
+      !(meta && (key === "tab" || key === "space")) &&
+      !(
+        control &&
+        ["up", "down", "left", "right", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(
+          key,
+        )
+      ) &&
+      !(meta && alt && escape) &&
+      !(meta && control && key === "q") &&
+      !(meta && has("shift") && ["3", "4", "5"].includes(key))
+    );
+  });
 }

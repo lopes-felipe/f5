@@ -1,5 +1,10 @@
 import type { ComputerAgentProvider } from "@t3tools/shared/agentAutomationSupport";
-import { selectComputerApp, appTier, grantAllows } from "@t3tools/shared/computerApps";
+import {
+  selectComputerApp,
+  appTier,
+  grantAllows,
+  computerBackgroundEventAppAllowed,
+} from "@t3tools/shared/computerApps";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { createHash, randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
@@ -37,6 +42,7 @@ import {
 import {
   computerBackgroundOpAllowed,
   computerOpRequiresApp,
+  computerBackgroundKeyAllowed,
 } from "@t3tools/shared/computerExecution";
 import { ServerConfig } from "../config";
 
@@ -989,6 +995,8 @@ export class ComputerAutomationBrokerRuntime {
     let delivery = this.selectDelivery(ctx, binding, input.op, appId, {
       executionMode: input.executionMode,
       action: input.action,
+      chords: input.chords,
+      elementRef: input.elementRef,
     });
     delete input.executionMode;
     if (delivery === "background") {
@@ -1059,6 +1067,8 @@ export class ComputerAutomationBrokerRuntime {
             delivery = this.selectDelivery(live, binding, input.op, appId, {
               executionMode: requestedMode,
               action: input.action,
+              chords: input.chords,
+              elementRef: input.elementRef,
             });
             if (delivery !== "background")
               throw new ComputerControlError({
@@ -1098,7 +1108,7 @@ export class ComputerAutomationBrokerRuntime {
               input.appId,
               !mutation
                 ? "view"
-                : input.action === "setValue" || input.op === "type"
+                : input.action === "setValue" || input.op === "type" || input.op === "key"
                   ? "type"
                   : "click",
             );
@@ -1305,7 +1315,7 @@ export class ComputerAutomationBrokerRuntime {
     binding: ComputerBinding,
     op: ComputerAutomationRequest["op"],
     appId: string | undefined,
-    input: { executionMode?: unknown; action?: unknown },
+    input: { executionMode?: unknown; action?: unknown; chords?: unknown; elementRef?: unknown },
     classifyOnly = false,
   ): ComputerDelivery {
     if (op === "status" || op === "listApps" || op === "resolveApps") return "foreground";
@@ -1332,6 +1342,18 @@ export class ComputerAutomationBrokerRuntime {
       !computerBackgroundOpAllowed(
         op,
         typeof input.action === "string" ? (input.action as ComputerElementAction) : undefined,
+        {
+          events:
+            this.host.backgroundEventsCapable() &&
+            !!appId &&
+            computerBackgroundEventAppAllowed(appId, this.options.platform ?? "darwin") &&
+            (op === "scroll"
+              ? typeof input.elementRef === "string"
+              : op === "key" &&
+                Array.isArray(input.chords) &&
+                input.chords.every((chord) => typeof chord === "string") &&
+                computerBackgroundKeyAllowed(input.chords, this.options.platform ?? "darwin")),
+        },
       )
     )
       throw new ComputerControlError({
@@ -1346,7 +1368,7 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     op: ComputerAutomationRequest["op"],
     appId: string | undefined,
-    input: { executionMode?: unknown; action?: unknown },
+    input: { executionMode?: unknown; action?: unknown; chords?: unknown; elementRef?: unknown },
   ): Promise<ComputerDelivery> {
     await this.admitted();
     const ctx = await this.context(threadId, generation);
