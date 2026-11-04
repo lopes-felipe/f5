@@ -150,6 +150,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       return () => ipcRenderer.removeListener("desktop-computer:status-changed", handler);
     },
     integrationConsents: () => ipcRenderer.invoke("desktop-computer:integration-consents"),
+    rememberedComputerConsents: () => ipcRenderer.invoke("desktop-computer:remembered-consents"),
+    revokeRememberedComputerConsent: (consent) =>
+      ipcRenderer.invoke("desktop-computer:revoke-remembered-consent", consent),
     revokeIntegrationConsent: (integration) =>
       ipcRenderer.invoke("desktop-computer:revoke-integration-consent", integration),
   },

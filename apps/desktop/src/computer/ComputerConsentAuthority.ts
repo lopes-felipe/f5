@@ -1,4 +1,8 @@
-import type { ComputerAccessAnswer, ComputerAccessRequested } from "@t3tools/contracts";
+import type {
+  ComputerAccessAnswer,
+  ComputerAccessRequested,
+  RememberedComputerConsent,
+} from "@t3tools/contracts";
 import { appTier, restrictComputerTier, type ComputerPlatform } from "@t3tools/shared/computerApps";
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import type { MessageBoxOptions, MessageBoxReturnValue } from "electron";
@@ -19,7 +23,12 @@ export class ComputerConsentAuthority {
     private readonly options: {
       platform: ComputerPlatform;
       request: (profileId: string, answer: ComputerAccessAnswer) => ComputerAccessRequested;
-      answer: (profileId: string, answer: ComputerAccessAnswer) => void;
+      answer: (
+        profileId: string,
+        answer: ComputerAccessAnswer,
+        policies?: ReadonlyArray<RememberedComputerConsent>,
+      ) => void;
+      remembered?: boolean;
       show: (profileId: string, options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
       /**
        * Remembers "always allow" for a profile's Codex Chrome sessions or Claude in Chrome
@@ -31,6 +40,11 @@ export class ComputerConsentAuthority {
 
   async review(profileId: string, offered: ComputerAccessAnswer): Promise<void> {
     const request = this.options.request(profileId, offered);
+    const current = () => {
+      if (this.options.request(profileId, offered) !== request)
+        throw new Error("This request expired or was replaced.");
+    };
+    const policies: RememberedComputerConsent[] = [];
     const key = `${profileId}\0${offered.backendIncarnation}\0${request.requestId}`;
     if (this.pending.has(key)) throw new Error("This request is already being reviewed.");
     this.pending.add(key);
@@ -54,8 +68,31 @@ export class ComputerConsentAuthority {
           defaultId: 0,
           cancelId: 0,
           noLink: true,
+          ...(this.options.remembered && request.fullAccess && request.projectId
+            ? {
+                checkboxLabel:
+                  "Always allow foreground in this app for Full access threads in this project (revoke in Settings)",
+                checkboxChecked: false,
+              }
+            : {}),
         });
         answer = { ...answer, allowForegroundTakeover: choice.response === 1 };
+        current();
+        if (
+          choice.response === 1 &&
+          choice.checkboxChecked &&
+          this.options.remembered &&
+          request.fullAccess &&
+          request.projectId &&
+          takeover
+        )
+          policies.push({
+            version: 1,
+            kind: "takeover",
+            projectId: request.projectId,
+            appId: takeover.appId,
+            policyVersion: 1,
+          });
       } else if (request.kind !== "apps") {
         const setup = request.chromeSetup;
         const session = request.kind === "chrome-session" ? request.chromeSession : undefined;
@@ -92,7 +129,17 @@ export class ComputerConsentAuthority {
                 checkboxLabel: "Always allow for this profile (revoke in Settings)",
                 checkboxChecked: false,
               }
-            : {}),
+            : this.options.remembered &&
+                request.kind === "session-actions" &&
+                ((request.fullAccess && request.background) || request.projectId)
+              ? {
+                  checkboxLabel:
+                    request.fullAccess && request.background
+                      ? "Don't ask again in Full access threads (this profile; revoke in Settings)"
+                      : "Don't ask again for this project",
+                  checkboxChecked: false,
+                }
+              : {}),
         });
         remember = rememberable !== undefined && choice.response === 1 && choice.checkboxChecked;
         if (request.kind === "chrome-setup")
@@ -100,12 +147,30 @@ export class ComputerConsentAuthority {
         else if (request.kind === "chrome-session")
           answer = { ...answer, allowChromeSession: choice.response === 1 };
         else answer = { ...answer, allowSessionActions: choice.response === 1 };
+        current();
+        if (
+          this.options.remembered &&
+          request.kind === "session-actions" &&
+          choice.response === 1 &&
+          choice.checkboxChecked
+        ) {
+          if (request.fullAccess && request.background)
+            policies.push({ version: 1, kind: "full-access-session", policyVersion: 1 });
+          else if (request.projectId)
+            policies.push({
+              version: 1,
+              kind: "session-actions",
+              projectId: request.projectId,
+              background: request.background === true,
+              policyVersion: 1,
+            });
+        }
       } else {
         const decisions: ComputerAccessAnswer["decisions"][number][] = [];
         for (const app of request.apps) {
           // Revalidate after each prompt: neither a replaced backend nor an expired
           // request can collect more decisions or receive a late approval.
-          this.options.request(profileId, offered);
+          current();
           const tier = restrictComputerTier(app.tier, appTier(app.appId, this.options.platform));
           if (tier === "blocked") {
             decisions.push({ appId: app.appId, allow: false, allowTyping: false, remember: false });
@@ -123,7 +188,9 @@ export class ComputerConsentAuthority {
             defaultId: 0,
             cancelId: 0,
             noLink: true,
-            checkboxLabel: "Remember for this project while F5 is running",
+            checkboxLabel: this.options.remembered
+              ? "Don't ask again for this project"
+              : "Remember for this project while F5 is running",
             checkboxChecked: false,
           });
           decisions.push({
@@ -132,11 +199,28 @@ export class ComputerConsentAuthority {
             allowTyping: tier === "click" && choice.response === 2,
             remember: choice.response > 0 && choice.checkboxChecked,
           });
+          current();
+          if (
+            this.options.remembered &&
+            request.projectId &&
+            decisions.at(-1)!.allow &&
+            decisions.at(-1)!.remember
+          )
+            policies.push({
+              version: 1,
+              kind: "app-access",
+              projectId: request.projectId,
+              appId: app.appId,
+              tier,
+              allowTyping: tier === "click" && choice.response === 2,
+              policyVersion: 1,
+            });
         }
         answer = { ...answer, decisions };
       }
-      this.options.request(profileId, offered);
-      this.options.answer(profileId, answer);
+      current();
+      if (policies.length) this.options.answer(profileId, answer, policies);
+      else this.options.answer(profileId, answer);
     } finally {
       this.pending.delete(key);
     }

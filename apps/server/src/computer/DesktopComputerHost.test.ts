@@ -38,6 +38,7 @@ describe("private desktop host", () => {
         "background-ax-v1",
         "computer-session-lifecycle-v1",
         "computer-grant-forget-v1",
+        "computer-remembered-consent-v1",
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",
         "chrome-call-activity-v1",

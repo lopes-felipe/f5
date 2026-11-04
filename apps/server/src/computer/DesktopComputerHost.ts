@@ -6,6 +6,7 @@ import {
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
   COMPUTER_GRANT_FORGET_CAPABILITY,
+  COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -68,6 +69,7 @@ export class DesktopComputerHost {
         COMPUTER_BACKGROUND_CAPABILITY,
         COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
         COMPUTER_GRANT_FORGET_CAPABILITY,
+        COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -86,6 +88,31 @@ export class DesktopComputerHost {
   }
   grantForgetCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_GRANT_FORGET_CAPABILITY);
+  }
+  rememberedConsentCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY);
+  }
+  /** Main sends capabilities before status; a legacy host settles readiness with status alone. */
+  async handshake(): Promise<void> {
+    if (
+      !this.connected ||
+      this.hostCapabilities.size ||
+      this.state.available ||
+      this.state.detail !== "Waiting for desktop host."
+    )
+      return;
+    await new Promise<void>((resolve) => {
+      const off = this.onMessage((message) => {
+        if (message.type !== "hostCapabilities" && message.type !== "status") return;
+        clearTimeout(timer);
+        off();
+        resolve();
+      });
+      const timer = setTimeout(() => {
+        off();
+        resolve();
+      }, 2000);
+    });
   }
   supportsAgentIdentity(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_AGENT_IDENTITY_CAPABILITY);

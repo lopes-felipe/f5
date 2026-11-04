@@ -129,6 +129,15 @@ export function ComputerAccessInbox() {
   const descriptionId = useId();
   const pending = usePendingComputerAccessRequests();
   const request = pending[0];
+  const requests = useAgentComputerActivityStore((state) => state.requests);
+  const [dismissed, setDismissed] = useState<string>();
+  const persistenceFailure = Object.values(requests).findLast(
+    (entry) =>
+      entry?.settled &&
+      entry.allowed &&
+      entry.persistence === "session-only" &&
+      entry.requestId !== dismissed,
+  );
   const canReview = !!window.desktopBridge?.computerAutomation;
   const [announcement, setAnnouncement] = useState("");
   const announcementCount = useRef(0);
@@ -243,6 +252,22 @@ export function ComputerAccessInbox() {
       <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </p>
+      {!request && persistenceFailure ? (
+        <div
+          role="status"
+          className="fixed right-4 bottom-20 z-40 w-[min(28rem,calc(100vw-2rem))] rounded-xl border bg-popover p-4 text-sm shadow-lg"
+        >
+          <p>Permission applies until F5 closes.</p>
+          <p>{persistenceFailure.persistenceReason ?? "F5 could not save Don't ask again."}</p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setDismissed(persistenceFailure.requestId)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      ) : null}
       {request && canReview ? (
         <section
           ref={panelRef}

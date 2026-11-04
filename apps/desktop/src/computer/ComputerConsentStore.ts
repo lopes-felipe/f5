@@ -1,4 +1,4 @@
-import { RememberedComputerConsent } from "@t3tools/contracts";
+import { RememberedComputerConsent, type RememberedComputerConsentEntry } from "@t3tools/contracts";
 import { Exit, Schema } from "effect";
 import { canonicalJson, SignedRecordFile, type IntegrationConsentIo } from "./signedRecordFile";
 
@@ -47,6 +47,18 @@ export class ComputerConsentStore {
 
   list(profileId: string): ReadonlyArray<RememberedComputerConsent> {
     return this.records.list(profileId).map(([, record]) => record);
+  }
+  entries(profileId: string): ReadonlyArray<RememberedComputerConsentEntry> {
+    return this.list(profileId).map((consent) => {
+      const persistence = this.records.persistence(profileId, computerConsentKey(consent));
+      return {
+        consent,
+        persistence,
+        ...(persistence === "session-only"
+          ? { reason: "F5 could not save this choice. It applies until F5 closes." }
+          : {}),
+      };
+    });
   }
 
   allow(profileId: string, record: RememberedComputerConsent): "durable" | "session-only" {

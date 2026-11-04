@@ -21,7 +21,7 @@ describe("renderer computer controls", () => {
       removeHandler: (name: string) => handlers.delete(name),
     };
     registerComputerIpc(ipc as unknown as IpcMain, input);
-    expect(handlers.size).toBe(8);
+    expect(handlers.size).toBe(10);
     expect([...handlers.keys()].some((name) => /execute|request$/.test(name))).toBe(false);
     const event = {} as IpcMainInvokeEvent;
     const answer = { requestId: "r", backendIncarnation: "b", decisions: [] };
@@ -78,5 +78,39 @@ describe("renderer computer controls", () => {
         handlers.get("desktop-computer:revoke-integration-consent")!(event, other),
       ).toThrow("Invalid integration");
     expect([...handlers.keys()].some((name) => /allow|grant/.test(name))).toBe(false);
+  });
+  it("decodes exact computer policy for revocation and derives profile identity from the sender", () => {
+    const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
+    const computerConsents = { list: vi.fn(() => []), revoke: vi.fn() };
+    registerComputerIpc(
+      {
+        handle: (name: string, fn: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) =>
+          handlers.set(name, fn),
+        removeHandler: (name: string) => handlers.delete(name),
+      } as unknown as IpcMain,
+      {
+        authorize: () => "authenticated-profile",
+        status: () => ({ available: true }),
+        retry: vi.fn(),
+        answer: vi.fn(),
+        pause: vi.fn(),
+        computerConsents,
+      },
+    );
+    const event = {} as IpcMainInvokeEvent;
+    handlers.get("desktop-computer:remembered-consents")!(event);
+    expect(computerConsents.list).toHaveBeenCalledWith("authenticated-profile");
+    const policy = { version: 1, kind: "full-access-session", policyVersion: 1 };
+    handlers.get("desktop-computer:revoke-remembered-consent")!(event, policy);
+    expect(computerConsents.revoke).toHaveBeenCalledWith("authenticated-profile", policy);
+    for (const invalid of [
+      { ...policy, profileId: "other" },
+      { ...policy, appId: "extra" },
+      { ...policy, policyVersion: 2 },
+    ])
+      expect(() =>
+        handlers.get("desktop-computer:revoke-remembered-consent")!(event, invalid),
+      ).toThrow();
+    expect(computerConsents.revoke).toHaveBeenCalledTimes(1);
   });
 });

@@ -23,6 +23,36 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => ({}),
 }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
+it("shows session-only persistence after the native request closes", async () => {
+  window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
+  const store = useAgentComputerActivityStore.getState();
+  store.request({
+    requestId: "save-failed",
+    threadId,
+    backendIncarnation: "fixture",
+    kind: "apps",
+    reason: "Edit",
+    apps: [],
+  });
+  const screen = await render(<ComputerAccessInbox />);
+  try {
+    store.settle({
+      requestId: "save-failed",
+      threadId,
+      allowed: true,
+      persistence: "session-only",
+      persistenceReason: "Disk full",
+    });
+    await expect
+      .element(page.getByText("Permission applies until F5 closes.", { exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByText("Disk full", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect.element(page.getByText("Disk full", { exact: true })).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
 beforeEach(() => {
   nativeMock.api = undefined;
   useAgentComputerActivityStore.getState().resetConnection();

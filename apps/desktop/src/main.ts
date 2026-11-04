@@ -85,6 +85,8 @@ import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
+import { ComputerConsentStore } from "./computer/ComputerConsentStore";
+import { ComputerGrantAuthority } from "./computer/ComputerGrantAuthority";
 import {
   IntegrationConsentStore,
   fileConsentIo,
@@ -541,13 +543,25 @@ function initializeComputerSystem(): void {
   let killChordRegistered = false;
   // "Always allow" for a profile's Codex Chrome sessions, owned by main and signed with a
   // key only the keychain releases to F5.
-  const integrationConsents = new IntegrationConsentStore(
-    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
-    keychainConsentKey(Path.join(app.getPath("userData"), "computer", "integration-consent.key"), {
+  const consentKey = keychainConsentKey(
+    Path.join(app.getPath("userData"), "computer", "integration-consent.key"),
+    {
       available: () => safeStorage.isEncryptionAvailable(),
       encrypt: (plain) => safeStorage.encryptString(plain),
       decrypt: (encrypted) => safeStorage.decryptString(encrypted),
-    }),
+    },
+  );
+  const integrationConsents = new IntegrationConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
+    consentKey,
+  );
+  const computerConsents = new ComputerConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "remembered-consent.json")),
+    consentKey,
+  );
+  const computerGrants = new ComputerGrantAuthority(
+    process.platform === "win32" ? "win32" : "darwin",
+    computerConsents,
   );
   // Provider-integration children are registered here so main can stop them and observe
   // their exit without the (possibly frozen) profile server.
@@ -655,8 +669,9 @@ function initializeComputerSystem(): void {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
     },
-    undefined,
+    computerGrants,
     {
+      consents: computerConsents,
       grantForgetFailed: (_profileId, message) =>
         dialog.showErrorBox("Could not forget this app", message),
       ...(process.platform === "darwin"
@@ -728,9 +743,10 @@ function initializeComputerSystem(): void {
       electronWebContents.fromId(id)?.send("desktop-computer:status-changed", rendererStatus());
   });
   const consent = new ComputerConsentAuthority({
+    remembered: true,
     platform: process.platform === "win32" ? "win32" : "darwin",
     request: (profileId, answer) => channel.accessRequest(profileId, answer),
-    answer: (profileId, answer) => channel.answerAccess(profileId, answer),
+    answer: (profileId, answer, policies) => channel.answerAccess(profileId, answer, policies),
     show: (profileId, options) => {
       const parent = BrowserWindow.getAllWindows().find(
         (window) =>
@@ -745,6 +761,10 @@ function initializeComputerSystem(): void {
     },
   });
   registerComputerIpc(ipcMain, {
+    computerConsents: {
+      list: (profileId) => channel.rememberedConsents(profileId),
+      revoke: (profileId, record) => channel.revokeRemembered(profileId, record),
+    },
     integrationConsents: {
       list: (profileId) => integrationConsents.list(profileId),
       revoke: (profileId, integration) => integrationConsents.revoke(profileId, integration),

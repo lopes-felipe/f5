@@ -116,7 +116,19 @@ instead.
   already running.
 - A checked-in `f5.json` can never turn on external sites, Claude in Chrome, Codex Chrome or
   computer use.
-- After you restart F5, app approvals have to be granted again.
+- In the native dialog, **Don't ask again for this project** saves app access or session
+  approval within the current F5 profile. App permission does not approve session actions,
+  additional typing rights, or foreground takeover. Only native dialogs create these choices;
+  the saved policy is signed by desktop main using a keychain-protected key. Live permission
+  receipts are recreated when F5 restarts.
+- Full access background sessions can opt into **Don't ask again in Full access threads** for
+  the current profile. It covers session approval across projects, only in Full access threads.
+  Foreground takeover has a separate per-app, per-project Full access checkbox.
+- Review or revoke these choices in **Settings → Browser & Computer → Don't ask again**.
+  Revoking removes current authority immediately and pauses affected work. Removed projects
+  appear under **Unlinked projects**; recreating a project with a different ID inherits nothing.
+  If saving fails, F5 grants the current run and shows **Until F5 closes**. If revocation cannot
+  be saved, access remains removed for this run and F5 reports that restarting could restore it.
 - **Screenshot password masking** defaults to **Fast — best effort**. It searches browser
   accessibility for password fields and masks those it finds. Password fields Chrome omits from
   accessibility search may appear in screenshots sent to your model.

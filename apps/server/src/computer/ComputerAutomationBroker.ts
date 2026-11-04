@@ -8,6 +8,7 @@ import {
   ThreadId,
   type AgentComputerUseChanged,
   ComputerGrant,
+  RememberedComputerGrant,
   ComputerLeaseHolder,
   type ComputerDelivery,
   type ComputerElementAction,
@@ -136,7 +137,13 @@ export type ComputerBrokerEvent =
     }
   | {
       channel: "computer.access.settled";
-      data: { requestId: string; threadId: string; allowed: boolean };
+      data: {
+        requestId: string;
+        threadId: string;
+        allowed: boolean;
+        persistence?: "durable" | "session-only";
+        persistenceReason?: string;
+      };
     }
   | {
       channel: "computer.access.grantsChanged";
@@ -155,6 +162,7 @@ export class ComputerAutomationBroker extends ServiceMap.Service<
 export class ComputerAutomationBrokerRuntime {
   readonly pause: AgentControlPause;
   readonly access: ComputerAccessService;
+  private initialized = false;
   private readonly bindings = new Map<string, ComputerBinding>();
   private readonly chromeDisabledListeners = new Set<
     (threadId: string, generation: string) => void
@@ -276,6 +284,33 @@ export class ComputerAutomationBrokerRuntime {
           : this.host.send({ type: "grantForget", projectId, appId }),
       backendIncarnation: host.backendIncarnation,
       storage: options.storage,
+      mainOwned: () => host.rememberedConsentCapable(),
+      remembered: {
+        load: async (projectId) =>
+          Schema.decodeUnknownSync(Schema.Array(RememberedComputerGrant))(
+            await host.correlated(
+              {
+                type: "grantsRemembered",
+                requestId: randomUUID(),
+                ...(projectId === undefined ? {} : { projectId }),
+              },
+              5000,
+              false,
+            ),
+          ),
+        forget: async (projectId, appId) => {
+          await host.correlated(
+            {
+              type: "grantForget",
+              requestId: randomUUID(),
+              projectId,
+              appId,
+            },
+            10_000,
+            false,
+          );
+        },
+      },
       request: (request, expiresAtMs) => {
         this.publish({
           channel: "computer.access.requested",
@@ -283,11 +318,19 @@ export class ComputerAutomationBrokerRuntime {
         });
         host.send({ type: "accessRequested", request });
       },
-      settled: (requestId, threadId, allowed) => {
+      settled: (requestId, threadId, allowed, persistence) => {
         host.send({ type: "cancel", requestId });
         this.publish({
           channel: "computer.access.settled",
-          data: { requestId, threadId, allowed },
+          data: {
+            requestId,
+            threadId,
+            allowed,
+            ...(persistence?.persistence ? { persistence: persistence.persistence } : {}),
+            ...(persistence?.persistenceReason
+              ? { persistenceReason: persistence.persistenceReason }
+              : {}),
+          },
         });
       },
       changed: (threadId) => {
@@ -364,6 +407,14 @@ export class ComputerAutomationBrokerRuntime {
           const [threadId, generation] = key.split("\u0000") as [string, string];
           this.sendChromeCalls(threadId, generation, running);
         }
+      if (message.type === "hostCapabilities" && this.initialized)
+        void this.access.refreshRemembered().catch(() => undefined);
+      if (message.type === "rememberedChanged") {
+        for (const session of message.revokedSessions ?? [])
+          if (this.bindings.get(session.threadId)?.generation === session.sessionGeneration)
+            this.access.revokeSessionApproval(session.threadId);
+        void this.access.refreshRemembered(message.projectId).catch(() => undefined);
+      }
       if (
         message.type === "status" &&
         (this.hostPlatform !== message.status.hostPlatform ||
@@ -434,8 +485,10 @@ export class ComputerAutomationBrokerRuntime {
         this.publish({ channel: "computer.host", data: message });
     });
   }
-  initialize(): Promise<void> {
-    return this.access.initialize();
+  async initialize(): Promise<void> {
+    await this.host.handshake();
+    await this.access.initialize();
+    this.initialized = true;
   }
   bindSession(threadId: string, generation: string, provider: ComputerAgentProvider): void {
     if (provider !== "claude" && provider !== "codex" && !this.host.supportsAgentIdentity())
@@ -934,9 +987,11 @@ export class ComputerAutomationBrokerRuntime {
           ctx.turnId,
           [],
           "Allow this agent session to control apps you approve, while you work elsewhere?",
-          "session-actions",
-          false,
-          true,
+          {
+            kind: "session-actions",
+            background: true,
+            fullAccess: ctx.runtimeMode === "full-access",
+          },
         );
         if (!this.access.backgroundApproved(threadId))
           throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
@@ -946,7 +1001,7 @@ export class ComputerAutomationBrokerRuntime {
           ctx.turnId,
           [],
           "Allow this agent session to control apps you approve?",
-          "session-actions",
+          { kind: "session-actions" },
         );
         if (!this.access.actionsApproved(threadId))
           throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
@@ -1252,9 +1307,11 @@ export class ComputerAutomationBrokerRuntime {
         ctx.turnId,
         [],
         "Allow this agent session to control apps you approve, while you work elsewhere?",
-        "session-actions",
-        false,
-        true,
+        {
+          kind: "session-actions",
+          background: true,
+          fullAccess: ctx.runtimeMode === "full-access",
+        },
       );
       if (!this.access.backgroundApproved(threadId))
         throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
@@ -1293,6 +1350,7 @@ export class ComputerAutomationBrokerRuntime {
           threadId,
           { requestId: approvalId, appId: app.appId, appName: app.name, turnId: ctx.turnId },
           reason,
+          { fullAccess: ctx.runtimeMode === "full-access" },
         )
         .then((allowed) => {
           if (!allowed)
@@ -1364,7 +1422,10 @@ export class ComputerAutomationBrokerRuntime {
     // User interaction with a consent dialog must not race continuing native input.
     // Keep this turn's denial history, while cancelling queued/in-flight execution.
     this.cancelTurn(threadId, generation, ctx.turnId, "paused", false, false);
-    await this.access.requestAccess(threadId, ctx.turnId, candidates, reason, "apps", typing);
+    await this.access.requestAccess(threadId, ctx.turnId, candidates, reason, {
+      kind: "apps",
+      typing,
+    });
     const grants = this.access.grants(threadId);
     return {
       grants: grants.map((grant) => ({

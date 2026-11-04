@@ -30,6 +30,114 @@ function make(source = request) {
   return { authority, show, answer, read };
 }
 describe("main-owned computer consent", () => {
+  it.each([
+    {
+      fullAccess: false,
+      background: false,
+      kind: "session-actions",
+      label: "Don't ask again for this project",
+    },
+    {
+      fullAccess: false,
+      background: true,
+      kind: "session-actions",
+      label: "Don't ask again for this project",
+    },
+    {
+      fullAccess: true,
+      background: true,
+      kind: "full-access-session",
+      label: "Don't ask again in Full access threads (this profile; revoke in Settings)",
+    },
+  ])("remembers exactly the approved session policy: $kind/$background", async (entry) => {
+    const current: ComputerAccessRequested = {
+      ...request,
+      projectId: "project",
+      kind: "session-actions",
+      apps: [],
+      fullAccess: entry.fullAccess,
+      background: entry.background,
+    };
+    const answer = vi.fn();
+    const show = vi.fn(async () => ({ response: 1, checkboxChecked: true }));
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      remembered: true,
+      request: () => current,
+      answer,
+      show,
+    });
+    await authority.review("profile", offered);
+    expect(show).toHaveBeenCalledWith(
+      "profile",
+      expect.objectContaining({
+        checkboxLabel: entry.label,
+        checkboxChecked: false,
+      }),
+    );
+    expect(answer).toHaveBeenCalledWith(
+      "profile",
+      expect.objectContaining({ allowSessionActions: true }),
+      [
+        entry.kind === "full-access-session"
+          ? { version: 1, kind: entry.kind, policyVersion: 1 }
+          : {
+              version: 1,
+              kind: entry.kind,
+              projectId: "project",
+              background: entry.background,
+              policyVersion: 1,
+            },
+      ],
+    );
+  });
+  it("does not commit policy from a replaced native request", async () => {
+    let current: ComputerAccessRequested = { ...request, projectId: "project" };
+    const answer = vi.fn();
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      remembered: true,
+      request: () => current,
+      answer,
+      show: async () => {
+        current = { ...current };
+        return { response: 2, checkboxChecked: true };
+      },
+    });
+    await expect(authority.review("profile", offered)).rejects.toThrow("replaced");
+    expect(answer).not.toHaveBeenCalled();
+  });
+  it("persists only the app tier and typing chosen in the native dialog", async () => {
+    const current: ComputerAccessRequested = { ...request, projectId: "project" };
+    const answer = vi.fn();
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      remembered: true,
+      request: () => current,
+      answer,
+      show: async () => ({ response: 1, checkboxChecked: true }),
+    });
+    await authority.review("profile", offered);
+    expect(answer).toHaveBeenCalledWith(
+      "profile",
+      expect.objectContaining({
+        decisions: [
+          { appId: "com.apple.Terminal", allow: true, allowTyping: false, remember: true },
+        ],
+      }),
+      [
+        {
+          version: 1,
+          kind: "app-access",
+          projectId: "project",
+          appId: "com.apple.Terminal",
+          tier: "click",
+          allowTyping: false,
+          policyVersion: 1,
+        },
+      ],
+    );
+  });
   it.each(["view", "full"] as const)(
     "makes %s rights explicit without allowing renderer typing choices",
     async (tier) => {
@@ -233,14 +341,15 @@ describe("main-owned computer consent", () => {
       response: 1,
       checkboxChecked: true,
     }));
+    const current: ComputerAccessRequested = {
+      ...request,
+      kind: "chrome-session",
+      apps: [],
+      chromeSession: { integration: "codex-computer" },
+    };
     const authority = new ComputerConsentAuthority({
       platform: "darwin",
-      request: () => ({
-        ...request,
-        kind: "chrome-session",
-        apps: [],
-        chromeSession: { integration: "codex-computer" },
-      }),
+      request: () => current,
       answer: vi.fn(),
       show,
       alwaysAllow,
@@ -257,7 +366,7 @@ describe("main-owned computer consent", () => {
     }));
     const authority = new ComputerConsentAuthority({
       platform: "darwin",
-      request: () => ({ ...request, kind: "session-actions", apps: [] }),
+      request: vi.fn().mockReturnValue({ ...request, kind: "session-actions", apps: [] }),
       answer: vi.fn(),
       show,
       alwaysAllow,
