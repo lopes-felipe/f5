@@ -22,19 +22,21 @@ export class ComputerControlError extends Error {
         ? "The action may or may not have run; take a screenshot before retrying."
         : error._tag === "Busy" && error.reason === "observation-backlog"
           ? "Observation backlog is full; wait before requesting another screenshot or inspection."
-          : error._tag === "StaleElement"
-            ? `StaleElement${error.reason ? ` (${error.reason})` : ""}: call computer_inspect again.`
-            : error._tag === "Execution"
-              ? error.message
-              : error._tag === "ForegroundRequired"
-                ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
-                : error._tag === "TargetBlocked" && error.kind === "user-active"
-                  ? "TargetBlocked user-active: the user is in that app; wait or ask."
-                  : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
-                    ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
-                    : error._tag === "TargetBlocked" && error.kind === "other-app"
-                      ? "TargetBlocked other-app: the foreground was approved for a different app."
-                      : error._tag,
+          : error._tag === "Busy" && error.holder === "other-profile"
+            ? "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user."
+            : error._tag === "StaleElement"
+              ? `StaleElement${error.reason ? ` (${error.reason})` : ""}: call computer_inspect again.`
+              : error._tag === "Execution"
+                ? error.message
+                : error._tag === "ForegroundRequired"
+                  ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
+                  : error._tag === "TargetBlocked" && error.kind === "user-active"
+                    ? "TargetBlocked user-active: the user is in that app; wait or ask."
+                    : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
+                      ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
+                      : error._tag === "TargetBlocked" && error.kind === "other-app"
+                        ? "TargetBlocked other-app: the foreground was approved for a different app."
+                        : error._tag,
     );
   }
 }

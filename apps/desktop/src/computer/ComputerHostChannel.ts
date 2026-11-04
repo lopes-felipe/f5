@@ -8,6 +8,7 @@ import {
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
+  COMPUTER_CHROME_CALLS_CAPABILITY,
   DesktopComputerHostMessage,
   type ComputerAccessAnswer,
   type ComputerAutomationBackendStatus,
@@ -37,10 +38,21 @@ interface Backend {
   pendingAccess: Map<string, ComputerAccessRequested>;
   acquisitions: Map<string, ComputerLeaseHolder>;
 }
+function chromeCallsKey(holder: {
+  profileId: string;
+  threadId: string;
+  sessionGeneration: string;
+}): string {
+  return `${holder.profileId}\u0000${holder.threadId}\u0000${holder.sessionGeneration}`;
+}
 /** Inherited private process IPC is the only registration, execute and consent transport. */
 export class ComputerHostChannel {
   private readonly backends = new Map<string, Backend>();
   readonly chrome: ChromeLeaseAuthority;
+  /** Whether a backend's Chrome session runs a browser call (`chromeCallsChanged`). */
+  private readonly chromeCalls = new Map<string, boolean>();
+  /** The Chrome holder last announced, so its report ends with its lease. */
+  private chromeCallsHolder: ChromeLeaseHolder | null = null;
   /** Builtin (Sky) holders kept after a disconnect until main observes the child exit. */
   private readonly builtinQuarantine = new Map<string, ComputerLeaseHolder[]>();
   readonly execution: ComputerExecutionAuthority;
@@ -87,6 +99,11 @@ export class ComputerHostChannel {
     } = {},
   ) {
     this.chrome = new ChromeLeaseAuthority((holder) => {
+      // A report outlives only its own lease; a later holder starts unknown.
+      const previous = this.chromeCallsHolder;
+      if (previous && (!holder || chromeCallsKey(previous) !== chromeCallsKey(holder)))
+        this.chromeCalls.delete(chromeCallsKey(previous));
+      this.chromeCallsHolder = holder;
       for (const profileId of this.backends.keys()) this.sendChromeLease(profileId, holder);
       this.chromeOptions?.changed?.(holder);
     }, chromeOptions?.supervisor);
@@ -126,8 +143,16 @@ export class ComputerHostChannel {
     this.controller.disconnect(profileId);
     this.grants.disconnect(profileId);
     this.execution.disconnect(profileId);
+    // A gone backend can't report its calls any more: its Chrome lease reads as unknown.
+    const prefix = `${profileId}\u0000`;
+    for (const key of this.chromeCalls.keys())
+      if (key.startsWith(prefix)) this.chromeCalls.delete(key);
     // Main stops the profile's registered children and keeps Chrome until they exit.
     this.chrome.releaseProfile(profileId, "unresponsive");
+    // A drain changes no holder, so nothing announced it: other profiles re-learn the lease,
+    // now unreported and so busy, while it may still be acting with no backend to gate it.
+    const draining = this.chrome.current();
+    if (draining?.profileId === profileId) this.sendChromeLeaseToOthers(draining);
     this.quarantineBuiltin(profileId, builtin);
   }
   /** A disconnected Sky client may still act: keep its foreground lease until it exits. */
@@ -210,6 +235,7 @@ export class ComputerHostChannel {
                 this.options.notificationAvailable?.() !== false) ||
               capability === COMPUTER_AGENT_IDENTITY_CAPABILITY ||
               capability === COMPUTER_ACTIVITY_CORRELATION_CAPABILITY ||
+              capability === COMPUTER_CHROME_CALLS_CAPABILITY ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -437,6 +463,26 @@ export class ComputerHostChannel {
             fail(message.requestId, error);
           }
           break;
+        case "chromeCallsChanged": {
+          if (!backend.capabilities.has(COMPUTER_CHROME_CALLS_CAPABILITY)) break;
+          // Keyed by the sending backend, so no profile can report another's calls.
+          const key = chromeCallsKey({
+            profileId,
+            threadId: message.threadId,
+            sessionGeneration: message.sessionGeneration,
+          });
+          const holder = this.chrome.current();
+          const before = holder ? this.chromeBusyForOthers(holder) : undefined;
+          if (message.running === null) this.chromeCalls.delete(key);
+          else this.chromeCalls.set(key, message.running);
+          if (
+            holder &&
+            holder.profileId === profileId &&
+            before !== this.chromeBusyForOthers(holder)
+          )
+            this.sendChromeLeaseToOthers(holder);
+          break;
+        }
         case "chromeLeaseRelease":
           if (message.holder.profileId === profileId) this.chrome.release(message.holder);
           this.send(profileId, { type: "response", requestId: message.requestId, result: true });
@@ -669,9 +715,23 @@ export class ComputerHostChannel {
     this.send(profileId, {
       type: "chromeLeaseChanged",
       holder: holder?.profileId === profileId ? holder : null,
-      otherProfile: holder !== null && holder.profileId !== profileId,
+      otherProfile:
+        holder !== null && holder.profileId !== profileId && this.chromeBusyForOthers(holder),
       ...(this.chrome.recoveryRequired() ? { recoveryRequired: true } : {}),
     });
+  }
+  /**
+   * Whether other profiles' banners count this Chrome lease as control. Only a holder whose
+   * backend reported no running call is idle; no report (a legacy backend, or a runtime that
+   * never reports) stays busy, as the owner's own banner says "may be using Chrome".
+   */
+  private chromeBusyForOthers(holder: ChromeLeaseHolder): boolean {
+    return this.chromeCalls.get(chromeCallsKey(holder)) !== false;
+  }
+  /** Re-announces the holder's lease to every profile but its own. */
+  private sendChromeLeaseToOthers(holder: ChromeLeaseHolder): void {
+    for (const profileId of this.backends.keys())
+      if (profileId !== holder.profileId) this.sendChromeLease(profileId, holder);
   }
   /** Recovery state changed: every backend re-learns Chrome ownership. */
   publishChrome(): void {

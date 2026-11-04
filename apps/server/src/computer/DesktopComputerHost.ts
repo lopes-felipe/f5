@@ -6,6 +6,7 @@ import {
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
+  COMPUTER_CHROME_CALLS_CAPABILITY,
   DesktopComputerHostMessage,
   type ComputerAutomationBackendStatus,
   type ComputerAutomationRequest,
@@ -65,6 +66,7 @@ export class DesktopComputerHost {
         COMPUTER_BACKGROUND_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
+        COMPUTER_CHROME_CALLS_CAPABILITY,
       ],
     });
   }
@@ -80,6 +82,10 @@ export class DesktopComputerHost {
   }
   supportsActivityCorrelation(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_ACTIVITY_CORRELATION_CAPABILITY);
+  }
+  /** Main understands `chromeCallsChanged`; older mains disconnect on unknown messages. */
+  chromeCallsCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_CALLS_CAPABILITY);
   }
   notificationsCapable(): boolean {
     return this.connected && this.hostCapabilities.has(SCHEDULED_NOTIFICATIONS_CAPABILITY);

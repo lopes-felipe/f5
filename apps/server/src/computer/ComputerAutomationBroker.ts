@@ -102,6 +102,8 @@ export interface ComputerUseSnapshot {
   };
   readonly otherProfile: boolean;
 }
+/** Matches the web banner's `CHROME_BANNER_LINGER_MS` after the owner's last Chrome call. */
+export const CHROME_OTHER_PROFILE_LINGER_MS = 3000;
 function chromeCallsKey(threadId: string, generation: string): string {
   return `${threadId}\u0000${generation}`;
 }
@@ -226,6 +228,8 @@ export class ComputerAutomationBrokerRuntime {
   private readonly sessionConsentRequests = new Map<string, Promise<boolean>>();
   private nativeOtherProfile = false;
   private chromeOtherProfile = false;
+  /** Holds another profile's Chrome control in the banner briefly after it goes idle. */
+  private chromeOtherLinger: ReturnType<typeof setTimeout> | undefined;
   private chromeRecovery = false;
   private hostPlatform: "darwin" | "win32" | undefined;
   private stopShortcut: string | undefined;
@@ -336,10 +340,16 @@ export class ComputerAutomationBrokerRuntime {
         )
           this.chromeCalls.delete(chromeCallsKey(previous.threadId, previous.sessionGeneration));
         this.chromeHolder = message.holder;
-        this.chromeOtherProfile = message.otherProfile ?? false;
+        this.setChromeOtherProfile(message.otherProfile ?? false);
         this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
       }
+      // Reports made before main answered the handshake reach it now.
+      if (message.type === "hostCapabilities")
+        for (const [key, running] of this.chromeCalls) {
+          const [threadId, generation] = key.split("\u0000") as [string, string];
+          this.sendChromeCalls(threadId, generation, running);
+        }
       if (
         message.type === "status" &&
         (this.hostPlatform !== message.status.hostPlatform ||
@@ -361,6 +371,7 @@ export class ComputerAutomationBrokerRuntime {
         this.executionStates.clear();
         this.nativeOtherProfile = false;
         this.chromeOtherProfile = false;
+        this.clearChromeOtherLinger();
         for (const [threadId, binding] of this.bindings)
           this.releaseSession(threadId, binding.generation);
         this.publish({ channel: "computer.host", data: { type: "leaseChanged", holder: null } });
@@ -529,8 +540,32 @@ export class ComputerAutomationBrokerRuntime {
           }
         : {}),
       otherProfile:
-        this.nativeOtherProfile || this.chromeOtherProfile || this.mainHolders.length > own.length,
+        this.nativeOtherProfile ||
+        this.chromeOtherProfile ||
+        this.chromeOtherLinger !== undefined ||
+        this.mainHolders.length > own.length,
     };
+  }
+  /**
+   * Another profile's Chrome control lingers for `CHROME_OTHER_PROFILE_LINGER_MS` after it
+   * ends, as the owner's banner does after a call, so back-to-back calls there don't flicker
+   * the banner here. Native control isn't delayed.
+   */
+  private setChromeOtherProfile(next: boolean): void {
+    const ended = this.chromeOtherProfile && !next;
+    this.chromeOtherProfile = next;
+    if (next || ended) this.clearChromeOtherLinger();
+    if (!ended) return;
+    this.chromeOtherLinger = setTimeout(() => {
+      this.chromeOtherLinger = undefined;
+      this.publishUse();
+    }, CHROME_OTHER_PROFILE_LINGER_MS);
+    this.chromeOtherLinger.unref?.();
+  }
+  private clearChromeOtherLinger(): void {
+    if (this.chromeOtherLinger === undefined) return;
+    clearTimeout(this.chromeOtherLinger);
+    this.chromeOtherLinger = undefined;
   }
   private publishUse(): void {
     this.publish({ channel: "computer.use.changed", data: this.computerUse() });
@@ -701,7 +736,18 @@ export class ComputerAutomationBrokerRuntime {
     if (this.chromeCalls.get(key) === running) return;
     if (running === undefined) this.chromeCalls.delete(key);
     else this.chromeCalls.set(key, running);
+    this.sendChromeCalls(threadId, generation, running);
     this.publishUse();
+  }
+  /** Main hides an idle Chrome lease from other profiles' banners, as this one does. */
+  private sendChromeCalls(threadId: string, generation: string, running: boolean | undefined) {
+    if (!this.host.chromeCallsCapable()) return;
+    this.host.send({
+      type: "chromeCallsChanged",
+      threadId,
+      sessionGeneration: generation,
+      running: running ?? null,
+    });
   }
   /** Called with each binding whose provider-native Chrome policy is off after a refresh. */
   onChromeDisabled(listener: (threadId: string, generation: string) => void): () => void {
@@ -1798,6 +1844,7 @@ export class ComputerAutomationBrokerRuntime {
       this.releaseSession(threadId, binding.generation);
     this.offHost();
     this.offPause();
+    this.clearChromeOtherLinger();
     this.access.close();
     this.host.close();
   }

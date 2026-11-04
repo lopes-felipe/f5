@@ -505,6 +505,158 @@ describe("private computer host channel", () => {
     );
     expect(JSON.stringify(other.send.mock.calls)).not.toContain("private");
   });
+  describe("idle Chrome leases in other profiles' banners", () => {
+    const holder = {
+      profileId: "profile",
+      threadId: "private-thread",
+      sessionGeneration: "private-generation",
+      provider: "codex" as const,
+    };
+    const calls = (running: boolean | null, threadId = holder.threadId) => ({
+      type: "chromeCallsChanged",
+      threadId,
+      sessionGeneration: holder.sessionGeneration,
+      running,
+    });
+    const twoProfiles = (supervisor?: ChromeProcessSupervisor, capabilities = true) => {
+      const h = setup(true, undefined, supervisor ? { supervisor } : {});
+      h.hello(capabilities ? ["chrome-call-activity-v1"] : undefined);
+      const other = Object.assign(new EventEmitter(), {
+        connected: true,
+        send: vi.fn(),
+        disconnect: vi.fn(),
+      });
+      h.channel.register("other", "other-incarnation", other as unknown as ChildProcess);
+      other.emit("message", {
+        type: "hello",
+        profileId: "other",
+        backendIncarnation: "other-incarnation",
+        protocolVersion: 1,
+        capabilities: ["chrome-call-activity-v1"],
+      });
+      const leases = () =>
+        other.send.mock.calls
+          .map(([message]) => message as { type: string; otherProfile?: boolean })
+          .filter((message) => message.type === "chromeLeaseChanged")
+          .map((message) => message.otherProfile);
+      return { ...h, other, leases };
+    };
+
+    it("echoes the capability only to backends that advertise it", () => {
+      const h = twoProfiles();
+      expect(h.process.send).toHaveBeenCalledWith(
+        { type: "hostCapabilities", capabilities: ["chrome-call-activity-v1"] },
+        expect.any(Function),
+      );
+      const legacy = setup(true);
+      legacy.hello();
+      expect(
+        legacy.process.send.mock.calls.some(
+          ([message]) => (message as { type: string }).type === "hostCapabilities",
+        ),
+      ).toBe(false);
+    });
+
+    it("counts an unreported lease as control, and an idle one as none", () => {
+      const h = twoProfiles();
+      h.channel.chrome.acquire(holder, null);
+      expect(h.leases()).toEqual([true]);
+      h.process.emit("message", calls(false));
+      expect(h.leases()).toEqual([true, false]);
+      h.process.emit("message", calls(true));
+      expect(h.leases()).toEqual([true, false, true]);
+      // An unchanged answer republishes nothing.
+      h.process.emit("message", calls(true));
+      expect(h.leases()).toEqual([true, false, true]);
+      h.process.emit("message", calls(null));
+      expect(h.leases()).toEqual([true, false, true]);
+      expect(JSON.stringify(h.other.send.mock.calls)).not.toContain("private");
+    });
+
+    it("applies a report made before the lease is acquired", () => {
+      const h = twoProfiles();
+      h.process.emit("message", calls(false));
+      expect(h.leases()).toEqual([]);
+      h.channel.chrome.acquire(holder, null);
+      expect(h.leases()).toEqual([false]);
+    });
+
+    it("ignores reports for other threads and from other profiles", () => {
+      const h = twoProfiles();
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false, "another-thread"));
+      h.other.emit("message", calls(false));
+      expect(h.leases()).toEqual([true]);
+    });
+
+    it("forgets a report when its lease ends or its backend disconnects", () => {
+      const h = twoProfiles();
+      h.process.emit("message", calls(false));
+      h.channel.chrome.acquire(holder, null);
+      h.channel.chrome.release(holder);
+      h.channel.chrome.acquire(holder, null);
+      expect(h.leases()).toEqual([false, false, true]);
+      h.channel.chrome.release(holder);
+      // A report waiting for its lease goes with its backend.
+      h.process.emit("message", calls(false));
+      h.process.emit("disconnect");
+      h.channel.chrome.acquire(holder, null);
+      expect(h.leases()).toEqual([false, false, true, false, true]);
+    });
+
+    it("ignores reports from a backend that didn't negotiate them", () => {
+      const h = twoProfiles(undefined, false);
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false));
+      expect(h.leases()).toEqual([true]);
+      expect(h.process.disconnect).not.toHaveBeenCalled();
+    });
+
+    /** A registered group that outlives its release: the lease drains. */
+    const lingeringGroup = () => {
+      const alive = { value: true };
+      const supervisor = {
+        alive: () => alive.value,
+        stop: vi.fn(),
+        recoveryRequired: () => false,
+        invalidated: () => false,
+      } as unknown as ChromeProcessSupervisor;
+      return { alive, supervisor };
+    };
+
+    it("shows a draining lease as control once its backend is gone", () => {
+      const group = lingeringGroup();
+      const h = twoProfiles(group.supervisor);
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false));
+      expect(h.leases()).toEqual([true, false]);
+      h.process.emit("disconnect");
+      // Still draining with nothing left to gate it: unknown, so busy.
+      expect(h.channel.chrome.current()).not.toBeNull();
+      expect(h.leases()).toEqual([true, false, true]);
+      group.alive.value = false;
+      h.channel.chrome.processExited();
+      expect(h.leases()).toEqual([true, false, true, false]);
+    });
+
+    it("keeps an idle lease hidden while its owner's own release drains", () => {
+      // The owner's banner hides the idle runtime while it exits, so other profiles do too.
+      const group = lingeringGroup();
+      const h = twoProfiles(group.supervisor);
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false));
+      h.process.emit("message", {
+        type: "chromeLeaseRelease",
+        requestId: "release",
+        holder,
+      });
+      expect(h.channel.chrome.current()).not.toBeNull();
+      expect(h.leases()).toEqual([true, false]);
+      group.alive.value = false;
+      h.channel.chrome.processExited();
+      expect(h.leases()).toEqual([true, false, false]);
+    });
+  });
   it("rejects mismatched hello before allowing registration", () => {
     const h = setup();
     h.process.emit("message", {
