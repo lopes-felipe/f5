@@ -111,7 +111,13 @@ interface RecordBase<I extends ProviderIntegration, Identity> {
   readonly withdrawn?: string;
 }
 
-export type ClaudeChromeRecord = RecordBase<"claude-chrome", ClaudeChromeIdentity>;
+/** Extra setups a Claude in Chrome run certified beyond the base assertions. */
+export type ClaudeChromeCapability = "isolated-profiles";
+
+export type ClaudeChromeRecord = RecordBase<"claude-chrome", ClaudeChromeIdentity> & {
+  /** Each needs every assertion in `INTEGRATION_CAPABILITY_ASSERTIONS` to have passed. */
+  readonly capabilities?: ReadonlyArray<ClaudeChromeCapability>;
+};
 export type CodexChromeRecord = RecordBase<"codex-chrome", CodexChromeIdentity>;
 export type CodexComputerRecord = RecordBase<"codex-computer", CodexComputerIdentity>;
 export type ProviderIntegrationRecord =
@@ -283,6 +289,15 @@ export function claudeChromeRecordFor(
   return record && recordCertifies(record) ? record : undefined;
 }
 
+/**
+ * Whether isolated F5 profiles may use this record: F5 copies the registration the CLI
+ * wrote under the profile's own HOME into the real home, which only a run with the
+ * isolated-profile phase has exercised.
+ */
+export function claudeChromeSupportsIsolatedProfiles(record: ClaudeChromeRecord): boolean {
+  return record.capabilities?.includes("isolated-profiles") === true;
+}
+
 /** Whether the integration is open for this build. Claude goes through its versioned gate. */
 export function isIntegrationCertified(
   integration: ProviderIntegration,
@@ -399,6 +414,25 @@ export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
   ],
 });
 
+/** Assertions a report must pass before a Claude record may claim each capability. */
+export const INTEGRATION_CAPABILITY_ASSERTIONS: Readonly<
+  Record<ClaudeChromeCapability, ReadonlyArray<string>>
+> = Object.freeze({
+  "isolated-profiles": ["isolated-projection", "isolated-read-only-call", "isolated-restore"],
+});
+
+/** The capabilities whose every assertion passed in this report. */
+export function reportCapabilities(
+  report: Pick<IntegrationEvidenceReport, "assertions">,
+): ClaudeChromeCapability[] {
+  return (Object.keys(INTEGRATION_CAPABILITY_ASSERTIONS) as ClaudeChromeCapability[]).filter(
+    (capability) =>
+      INTEGRATION_CAPABILITY_ASSERTIONS[capability].every(
+        (assertion) => report.assertions[assertion] === true,
+      ),
+  );
+}
+
 /** Scrubbed live-run report: versions, assertions and inventory only. */
 export interface IntegrationEvidenceReport {
   readonly integration: ProviderIntegration;
@@ -437,6 +471,16 @@ export function evidenceMismatches(
     if (report.versions[key] !== value) problems.push(`versions.${key}`);
   for (const assertion of INTEGRATION_REQUIRED_ASSERTIONS[record.integration])
     if (report.assertions[assertion] !== true) problems.push(`assertion ${assertion}`);
+  if (record.integration === "claude-chrome")
+    for (const capability of record.capabilities ?? []) {
+      const assertions = INTEGRATION_CAPABILITY_ASSERTIONS[capability] as
+        | ReadonlyArray<string>
+        | undefined;
+      if (!assertions) problems.push(`capability ${capability}: unknown`);
+      for (const assertion of assertions ?? [])
+        if (report.assertions[assertion] !== true)
+          problems.push(`capability ${capability}: assertion ${assertion}`);
+    }
   if (
     record.toolNames &&
     JSON.stringify([...record.toolNames].sort()) !==

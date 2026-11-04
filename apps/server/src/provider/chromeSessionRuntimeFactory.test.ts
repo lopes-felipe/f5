@@ -10,12 +10,18 @@ import {
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
-import { CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED } from "./Layers/claudeAgentBrowser";
-import { parseNativeHostManifest } from "./chromeNativeHost";
+import {
+  CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED,
+  CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH,
+  CLAUDE_IN_CHROME_ISOLATED_PROFILE,
+} from "./Layers/claudeAgentBrowser";
+import { claudeChromeDescriptor, parseNativeHostManifest } from "./chromeNativeHost";
 import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import {
   claudeChromeAvailability,
+  claudeChromeRuntimeLocations,
+  isolatedClaudeHome,
   listChromeSessionSetups,
   restoreChromeSessionSetup,
 } from "./chromeSessionRuntimeFactory";
@@ -140,6 +146,76 @@ describe("Claude in Chrome executable identity", () => {
     ],
   ])("refuses %s", async (_name, patch, reason) => {
     expect(await check(await patch())).toMatchObject({ unavailable: { reason } });
+  });
+
+  describe("isolated F5 profiles", () => {
+    const capable: ClaudeChromeRecord = { ...certified, capabilities: ["isolated-profiles"] };
+    const isolated = {
+      isolatedProfile: true,
+      stateDir: "/state",
+      userHome: isolatedClaudeHome("/state"),
+      records: [capable],
+    };
+
+    it("admits a certified copy, with Chrome's home and the CLI's as source", async () => {
+      expect(await check(isolated)).toMatchObject({
+        record: { id: capable.id },
+        chromeHome: "/Users/me",
+        projection: { sourceHome: join("/state", "provider-homes", "claude") },
+      });
+      // Non-isolated profiles never project.
+      expect(await check()).not.toHaveProperty("projection");
+    });
+
+    it("stays closed until a record certifies the isolated-profile copy", async () => {
+      expect(await check({ ...isolated, records: [certified] })).toMatchObject({
+        unavailable: { reason: "isolated-profile", detail: CLAUDE_IN_CHROME_ISOLATED_PROFILE },
+      });
+      // The covering record decides: an older capable floor doesn't open a newer build.
+      await bundleVersion("9.9.9");
+      const newer: ClaudeChromeRecord = {
+        ...certified,
+        id: "claude-chrome-darwin-arm64-9.9.9",
+        versions: { ...certified.versions, sdkMin: "9.9.9" },
+      };
+      expect(await check({ ...isolated, records: [capable, newer] })).toMatchObject({
+        unavailable: { reason: "isolated-profile" },
+      });
+    });
+
+    it("journals where Chrome reads and copies from where the CLI writes", async () => {
+      const identity = await check(isolated);
+      if ("unavailable" in identity) throw new Error("expected admission");
+      const descriptor = claudeChromeDescriptor(capable);
+      const providerHome = join(isolatedClaudeHome("/state"), ".claude");
+      const wired = claudeChromeRuntimeLocations(descriptor, providerHome, identity);
+      const paths = (locations: typeof wired.locations) =>
+        locations.map((location) => (location.kind === "file" ? location.path : ""));
+      expect(
+        paths(wired.locations).every((path) => path.startsWith(join("/Users/me", "Library"))),
+      ).toBe(true);
+      expect(wired.projection?.destinations).toBe(wired.locations);
+      expect(
+        paths(wired.projection!.sources).every((path) =>
+          path.startsWith(join(isolatedClaudeHome("/state"), "Library")),
+        ),
+      ).toBe(true);
+      const plain = await check();
+      if ("unavailable" in plain) throw new Error("expected admission");
+      expect(
+        claudeChromeRuntimeLocations(descriptor, providerHome, plain).projection,
+      ).toBeUndefined();
+    });
+
+    it("refuses an isolated HOME that isn't the profile's provider home", async () => {
+      expect(await check({ ...isolated, userHome: "/elsewhere" })).toMatchObject({
+        unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH },
+      });
+      const { stateDir: _stateDir, ...withoutState } = isolated;
+      expect(await check(withoutState)).toMatchObject({
+        unavailable: { reason: "home-mismatch" },
+      });
+    });
   });
 });
 

@@ -1,6 +1,7 @@
 import {
   evidenceMismatches,
   recordForVersion,
+  reportCapabilities,
   type ClaudeChromeRecord,
   type CodexChromeRecord,
   type CodexComputerRecord,
@@ -20,6 +21,8 @@ function withoutStamp<R extends ProviderIntegrationRecord>(record: R): R {
     withdrawn: _withdrawn,
     ...rest
   } = record;
+  // Capabilities are evidence too: they come only from the report that stamped the record.
+  if ("capabilities" in rest) delete (rest as { capabilities?: unknown }).capabilities;
   return rest as R;
 }
 
@@ -35,6 +38,9 @@ function stamp<R extends ProviderIntegrationRecord>(
     ...(report.toolNames ? { toolNames: report.toolNames } : {}),
     ...(record.integration !== "claude-chrome" && report.toolInventorySha256
       ? { toolInventorySha256: report.toolInventorySha256 }
+      : {}),
+    ...(record.integration === "claude-chrome" && reportCapabilities(report).length
+      ? { capabilities: reportCapabilities(report) }
       : {}),
   };
 }
@@ -159,6 +165,9 @@ export function mergeIntegrationRecords<R extends ProviderIntegrationRecord>(inp
         ...(previous.toolNames ? { toolNames: previous.toolNames } : {}),
         ...(previous.toolInventorySha256
           ? { toolInventorySha256: previous.toolInventorySha256 }
+          : {}),
+        ...("capabilities" in previous && previous.capabilities
+          ? { capabilities: previous.capabilities }
           : {}),
         ...(previous.withdrawn ? { withdrawn: previous.withdrawn } : {}),
       } as R;
