@@ -507,9 +507,9 @@ describe("private computer host channel", () => {
       sessionGeneration: holder.sessionGeneration,
       running,
     });
-    const twoProfiles = () => {
-      const h = setup(true);
-      h.hello(["chrome-call-activity-v1"]);
+    const twoProfiles = (supervisor?: ChromeProcessSupervisor, capabilities = true) => {
+      const h = setup(true, undefined, supervisor ? { supervisor } : {});
+      h.hello(capabilities ? ["chrome-call-activity-v1"] : undefined);
       const other = Object.assign(new EventEmitter(), {
         connected: true,
         send: vi.fn(),
@@ -591,6 +591,59 @@ describe("private computer host channel", () => {
       h.process.emit("disconnect");
       h.channel.chrome.acquire(holder, null);
       expect(h.leases()).toEqual([false, false, true, false, true]);
+    });
+
+    it("ignores reports from a backend that didn't negotiate them", () => {
+      const h = twoProfiles(undefined, false);
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false));
+      expect(h.leases()).toEqual([true]);
+      expect(h.process.disconnect).not.toHaveBeenCalled();
+    });
+
+    /** A registered group that outlives its release: the lease drains. */
+    const lingeringGroup = () => {
+      const alive = { value: true };
+      const supervisor = {
+        alive: () => alive.value,
+        stop: vi.fn(),
+        recoveryRequired: () => false,
+        invalidated: () => false,
+      } as unknown as ChromeProcessSupervisor;
+      return { alive, supervisor };
+    };
+
+    it("shows a draining lease as control once its backend is gone", () => {
+      const group = lingeringGroup();
+      const h = twoProfiles(group.supervisor);
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false));
+      expect(h.leases()).toEqual([true, false]);
+      h.process.emit("disconnect");
+      // Still draining with nothing left to gate it: unknown, so busy.
+      expect(h.channel.chrome.current()).not.toBeNull();
+      expect(h.leases()).toEqual([true, false, true]);
+      group.alive.value = false;
+      h.channel.chrome.processExited();
+      expect(h.leases()).toEqual([true, false, true, false]);
+    });
+
+    it("keeps an idle lease hidden while its owner's own release drains", () => {
+      // The owner's banner hides the idle runtime while it exits, so other profiles do too.
+      const group = lingeringGroup();
+      const h = twoProfiles(group.supervisor);
+      h.channel.chrome.acquire(holder, null);
+      h.process.emit("message", calls(false));
+      h.process.emit("message", {
+        type: "chromeLeaseRelease",
+        requestId: "release",
+        holder,
+      });
+      expect(h.channel.chrome.current()).not.toBeNull();
+      expect(h.leases()).toEqual([true, false]);
+      group.alive.value = false;
+      h.channel.chrome.processExited();
+      expect(h.leases()).toEqual([true, false, false]);
     });
   });
   it("rejects mismatched hello before allowing registration", () => {

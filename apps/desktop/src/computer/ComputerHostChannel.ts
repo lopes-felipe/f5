@@ -145,6 +145,10 @@ export class ComputerHostChannel {
       if (key.startsWith(prefix)) this.chromeCalls.delete(key);
     // Main stops the profile's registered children and keeps Chrome until they exit.
     this.chrome.releaseProfile(profileId, "unresponsive");
+    // A drain changes no holder, so nothing announced it: other profiles re-learn the lease,
+    // now unreported and so busy, while it may still be acting with no backend to gate it.
+    const draining = this.chrome.current();
+    if (draining?.profileId === profileId) this.sendChromeLeaseToOthers(draining);
     this.quarantineBuiltin(profileId, builtin);
   }
   /** A disconnected Sky client may still act: keep its foreground lease until it exits. */
@@ -452,6 +456,7 @@ export class ComputerHostChannel {
           }
           break;
         case "chromeCallsChanged": {
+          if (!backend.capabilities.has(COMPUTER_CHROME_CALLS_CAPABILITY)) break;
           // Keyed by the sending backend, so no profile can report another's calls.
           const key = chromeCallsKey({
             profileId,
@@ -467,8 +472,7 @@ export class ComputerHostChannel {
             holder.profileId === profileId &&
             before !== this.chromeBusyForOthers(holder)
           )
-            for (const other of this.backends.keys())
-              if (other !== profileId) this.sendChromeLease(other, holder);
+            this.sendChromeLeaseToOthers(holder);
           break;
         }
         case "chromeLeaseRelease":
@@ -715,6 +719,11 @@ export class ComputerHostChannel {
    */
   private chromeBusyForOthers(holder: ChromeLeaseHolder): boolean {
     return this.chromeCalls.get(chromeCallsKey(holder)) !== false;
+  }
+  /** Re-announces the holder's lease to every profile but its own. */
+  private sendChromeLeaseToOthers(holder: ChromeLeaseHolder): void {
+    for (const profileId of this.backends.keys())
+      if (profileId !== holder.profileId) this.sendChromeLease(profileId, holder);
   }
   /** Recovery state changed: every backend re-learns Chrome ownership. */
   publishChrome(): void {

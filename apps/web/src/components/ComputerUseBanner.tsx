@@ -50,8 +50,6 @@ export function computerUseBannerTargets(
     .map((entry) => entry.threadId);
 }
 /**
- * `otherProfileLinger`: another profile's control ended moments ago, so back-to-back Chrome
- * calls there don't flicker the anonymous banner here.
  * `chromeLinger`: a Chrome call ended moments ago, so an idle runtime still reads as in use
  * and the banner doesn't flicker between back-to-back calls.
  */
@@ -59,7 +57,6 @@ export function computerUseBannerText(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
   chromeLinger = false,
-  otherProfileLinger = false,
 ): string | null {
   const pending = leases.pendingTakeover;
   if (pending) {
@@ -74,7 +71,7 @@ export function computerUseBannerText(
   const chromeIdle =
     holder?.browser === "idle" && holder.state === "active" && !pausedLocally && !chromeLinger;
   if (!holder || chromeIdle)
-    return leases.otherProfile || otherProfileLinger
+    return leases.otherProfile
       ? "An agent in another F5 profile is controlling this computer"
       : null;
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
@@ -150,21 +147,6 @@ function useChromeLinger(leases: typeof AgentComputerUseChanged.Type): boolean {
   return working || linger;
 }
 
-/** True while another profile controls this computer and for the linger after it stops. */
-function useOtherProfileLinger(leases: typeof AgentComputerUseChanged.Type): boolean {
-  const active = !!leases.otherProfile;
-  const [linger, setLinger] = useState(active);
-  useEffect(() => {
-    if (active) {
-      setLinger(true);
-      return;
-    }
-    const timer = setTimeout(() => setLinger(false), CHROME_BANNER_LINGER_MS);
-    return () => clearTimeout(timer);
-  }, [active]);
-  return active || linger;
-}
-
 export function ComputerUseBanner() {
   const [error, setError] = useState("");
   const stopUnconfirmed = useAgentComputerActivityStore((state) => state.stopUnconfirmed);
@@ -180,8 +162,7 @@ export function ComputerUseBanner() {
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
   const chromeLinger = useChromeLinger(leases);
-  const otherProfileLinger = useOtherProfileLinger(leases);
-  const text = computerUseBannerText(leases, paused, chromeLinger, otherProfileLinger);
+  const text = computerUseBannerText(leases, paused, chromeLinger);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);

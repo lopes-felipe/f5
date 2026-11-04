@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { computerRequestPayload } from "@t3tools/shared/computerControl";
+import { ComputerControlError, computerRequestPayload } from "@t3tools/shared/computerControl";
 import { describe, expect, it, vi } from "vitest";
 import type { ComputerLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
 import {
+  CHROME_OTHER_PROFILE_LINGER_MS,
   ComputerAutomationBrokerRuntime,
   type ComputerInvocationContext,
 } from "./ComputerAutomationBroker";
@@ -511,6 +512,39 @@ describe("computer broker safety boundaries", () => {
     } finally {
       h.broker.close();
     }
+  });
+  it("holds another profile's Chrome control in the banner briefly, but not native control", async () => {
+    const h = await harness();
+    vi.useFakeTimers();
+    try {
+      const other = () => h.broker.computerUse().otherProfile;
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null, otherProfile: true });
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null, otherProfile: false });
+      expect(other()).toBe(true);
+      vi.advanceTimersByTime(CHROME_OTHER_PROFILE_LINGER_MS - 1);
+      // Back to busy within the window: no flicker, and the earlier timer can't end it.
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null, otherProfile: true });
+      vi.advanceTimersByTime(CHROME_OTHER_PROFILE_LINGER_MS);
+      expect(other()).toBe(true);
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null, otherProfile: false });
+      vi.advanceTimersByTime(CHROME_OTHER_PROFILE_LINGER_MS - 1);
+      expect(other()).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(other()).toBe(false);
+      // Native control ends at once.
+      h.ipc.emit("message", { type: "leasesChanged", holders: [], otherProfile: true });
+      h.ipc.emit("message", { type: "leasesChanged", holders: [], otherProfile: false });
+      expect(other()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      h.broker.close();
+    }
+  });
+  it("says why another profile's control refuses an agent", () => {
+    expect(new ComputerControlError({ _tag: "Busy", holder: "other-profile" }).message).toBe(
+      "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.",
+    );
+    expect(new ComputerControlError({ _tag: "Busy", holder: "same-profile" }).message).toBe("Busy");
   });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();

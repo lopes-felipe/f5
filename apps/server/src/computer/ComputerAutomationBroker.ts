@@ -100,6 +100,8 @@ export interface ComputerUseSnapshot {
   };
   readonly otherProfile: boolean;
 }
+/** Matches the web banner's `CHROME_BANNER_LINGER_MS` after the owner's last Chrome call. */
+export const CHROME_OTHER_PROFILE_LINGER_MS = 3000;
 function chromeCallsKey(threadId: string, generation: string): string {
   return `${threadId}\u0000${generation}`;
 }
@@ -224,6 +226,8 @@ export class ComputerAutomationBrokerRuntime {
   private readonly sessionConsentRequests = new Map<string, Promise<boolean>>();
   private nativeOtherProfile = false;
   private chromeOtherProfile = false;
+  /** Holds another profile's Chrome control in the banner briefly after it goes idle. */
+  private chromeOtherLinger: ReturnType<typeof setTimeout> | undefined;
   private chromeRecovery = false;
   private hostPlatform: "darwin" | "win32" | undefined;
   private stopShortcut: string | undefined;
@@ -334,7 +338,7 @@ export class ComputerAutomationBrokerRuntime {
         )
           this.chromeCalls.delete(chromeCallsKey(previous.threadId, previous.sessionGeneration));
         this.chromeHolder = message.holder;
-        this.chromeOtherProfile = message.otherProfile ?? false;
+        this.setChromeOtherProfile(message.otherProfile ?? false);
         this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
       }
@@ -365,6 +369,7 @@ export class ComputerAutomationBrokerRuntime {
         this.executionStates.clear();
         this.nativeOtherProfile = false;
         this.chromeOtherProfile = false;
+        this.clearChromeOtherLinger();
         for (const [threadId, binding] of this.bindings)
           this.releaseSession(threadId, binding.generation);
         this.publish({ channel: "computer.host", data: { type: "leaseChanged", holder: null } });
@@ -533,8 +538,32 @@ export class ComputerAutomationBrokerRuntime {
           }
         : {}),
       otherProfile:
-        this.nativeOtherProfile || this.chromeOtherProfile || this.mainHolders.length > own.length,
+        this.nativeOtherProfile ||
+        this.chromeOtherProfile ||
+        this.chromeOtherLinger !== undefined ||
+        this.mainHolders.length > own.length,
     };
+  }
+  /**
+   * Another profile's Chrome control lingers for `CHROME_OTHER_PROFILE_LINGER_MS` after it
+   * ends, as the owner's banner does after a call, so back-to-back calls there don't flicker
+   * the banner here. Native control isn't delayed.
+   */
+  private setChromeOtherProfile(next: boolean): void {
+    const ended = this.chromeOtherProfile && !next;
+    this.chromeOtherProfile = next;
+    if (next || ended) this.clearChromeOtherLinger();
+    if (!ended) return;
+    this.chromeOtherLinger = setTimeout(() => {
+      this.chromeOtherLinger = undefined;
+      this.publishUse();
+    }, CHROME_OTHER_PROFILE_LINGER_MS);
+    this.chromeOtherLinger.unref?.();
+  }
+  private clearChromeOtherLinger(): void {
+    if (this.chromeOtherLinger === undefined) return;
+    clearTimeout(this.chromeOtherLinger);
+    this.chromeOtherLinger = undefined;
   }
   private publishUse(): void {
     this.publish({ channel: "computer.use.changed", data: this.computerUse() });
@@ -1813,6 +1842,7 @@ export class ComputerAutomationBrokerRuntime {
       this.releaseSession(threadId, binding.generation);
     this.offHost();
     this.offPause();
+    this.clearChromeOtherLinger();
     this.access.close();
     this.host.close();
   }
