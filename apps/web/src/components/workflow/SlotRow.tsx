@@ -21,6 +21,7 @@ import { ChevronDownIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { fieldShellClassName } from "../ui/input";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Button } from "../ui/button";
 import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
@@ -207,7 +208,7 @@ export function SlotRow(props: {
       <label className="w-24 shrink-0 truncate text-ui text-muted-foreground" title={props.label}>
         {props.label}
       </label>
-      <div className="flex h-9 min-w-0 flex-1 items-center gap-0.5 rounded-lg border border-input bg-background px-1 transition-colors focus-within:border-ring/60">
+      <div className={cn(fieldShellClassName, "flex h-9 min-w-0 flex-1 items-center gap-0.5 px-1")}>
         <ProviderModelPicker
           providers={props.providers}
           disabled={props.disabled ?? false}

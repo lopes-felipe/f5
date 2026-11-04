@@ -34,6 +34,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, ChevronsUpDownIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { fieldSurfaceClassName } from "../ui/input";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { SettingsCard } from "./SettingsCard";
@@ -944,8 +945,7 @@ const SOURCE_CONTROL_TEXT_LABELS = {
   prBodyTemplate: "PR body template",
 } as const;
 
-const NATIVE_CONTROL_CLASS =
-  "h-8 rounded-md border border-input bg-background px-2.5 text-sm font-normal text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60";
+const NATIVE_CONTROL_CLASS = cn(fieldSurfaceClassName, "h-8 px-2.5 text-sm font-normal");
 
 const CHROME_PROJECT_DESCRIPTION =
   "Available only where F5 has certified the agent's browser integration; readiness is shown in global Browser settings.";

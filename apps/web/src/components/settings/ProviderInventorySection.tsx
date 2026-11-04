@@ -15,6 +15,7 @@ import { useStore } from "../../store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { fieldSurfaceClassName } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 
 const SOURCE_LABELS: Record<ProviderInventorySource, string> = {
@@ -298,7 +299,7 @@ export function ProviderInventorySection({
             <div className="flex items-center gap-2">
               <select
                 aria-label="Project for project-shared entries"
-                className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                className={cn(fieldSurfaceClassName, "h-7 min-w-0 flex-1 px-2 text-xs")}
                 value={projectId ?? ""}
                 onChange={(event) =>
                   setProjectId(event.target.value ? (event.target.value as ProjectId) : undefined)

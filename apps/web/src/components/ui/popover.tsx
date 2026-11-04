@@ -66,8 +66,7 @@ function PopoverPopup({
           finalFocus={finalFocus}
           className={cn(
             popupSurfaceClassName,
-            tooltipStyle &&
-              "w-fit text-balance rounded-md text-xs shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]",
+            tooltipStyle && "w-fit text-balance rounded-md text-xs shadow-md/5",
             className,
           )}
           data-slot="popover-popup"
