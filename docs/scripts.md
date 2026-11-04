@@ -13,6 +13,7 @@
 - `bun run start` — Runs the production server (serves built web app as static files).
 - `bun run build` — Builds contracts, web app, and server through Turbo.
 - `bun run typecheck` — Strict TypeScript checks for all packages.
+- `bun run protocol:audit:baseline` and `bun run protocol:audit:requests:baseline` — Audit F5's bundled Codex with `--bundled-baseline`, without installing another CLI. The old `--install-baseline` flag remains a compatibility alias.
 - `bun run test` — Runs the fast workspace suite, including service-boundary Git tests and a representative real-Git smoke suite.
 - `bun run test:server:git:smoke` — Runs only the representative real-Git smoke contracts.
 - `bun run test:server:git` — Runs both smoke and exhaustive real-Git contracts.

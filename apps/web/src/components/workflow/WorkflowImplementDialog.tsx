@@ -50,6 +50,7 @@ import { normalizeWorkflowSlotModelOptions, getSingleProviderModelOptions } from
 import { SlotRow } from "./SlotRow";
 import { WorkflowOptionCheckbox, WorkflowOptionField, WorkflowOptions } from "./WorkflowOptions";
 import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
+import { fieldSurfaceClassName } from "../ui/input";
 
 function resolveImplementationDefaults(workflow: PlanningWorkflow) {
   const slotProvider = workflow.merge.mergeSlot.provider;
@@ -402,7 +403,7 @@ export function WorkflowImplementDialog(props: {
             >
               <select
                 id="workflow-runtime-mode"
-                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:border-ring/60"
+                className={`${fieldSurfaceClassName} h-9 w-full px-3 text-sm`}
                 value={runtimeMode}
                 onChange={(event) => setRuntimeMode(event.currentTarget.value as RuntimeMode)}
               >

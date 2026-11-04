@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
+import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { fieldSurfaceClassName } from "../ui/input";
 
 export function parseDisposablePathsInput(text: string): string[] {
   return [
@@ -32,7 +34,7 @@ export function WorktreeDisposablePathsEditor(props: {
     <div className="space-y-2">
       <textarea
         aria-label="Disposable worktree changes"
-        className="min-h-20 w-full rounded-md border border-input bg-background px-2 py-1.5 font-mono text-xs"
+        className={cn(fieldSurfaceClassName, "min-h-20 w-full px-2 py-1.5 font-mono text-xs")}
         placeholder={"apps/web/public/mockServiceWorker.js\n**/__screenshots__/"}
         value={text}
         disabled={props.disabled}

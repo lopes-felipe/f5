@@ -65,7 +65,7 @@ describe("verifyClaudeRuntime", () => {
         },
         { run: () => ({ status }) },
       ),
-    ).toThrow("Bundled Claude runtime smoke failed");
+    ).toThrow("Bundled provider runtime smoke failed");
   });
 
   it("includes process diagnostics when the runtime smoke times out", () => {
@@ -79,7 +79,7 @@ describe("verifyClaudeRuntime", () => {
         { run: () => ({ status: null, signal: "SIGKILL", error: "ETIMEDOUT" }) },
       ),
     ).toThrow(
-      "Bundled Claude runtime smoke failed for /out (status=null, signal=SIGKILL, error=ETIMEDOUT)",
+      "Bundled provider runtime smoke failed for /out (status=null, signal=SIGKILL, error=ETIMEDOUT)",
     );
   });
 });

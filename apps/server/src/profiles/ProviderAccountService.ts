@@ -18,6 +18,7 @@ import type { ServerSettingsShape } from "../serverSettings";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
 import { resolveClaudeCliInvocation } from "../provider/claudeSdkExecutable";
+import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { resolveInvocation } from "../spawn/resolveCommand";
 import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -97,7 +98,7 @@ export class ProviderAccountService {
       instance.driver === "claudeAgent"
         ? resolveClaudeCliInvocation(config.binaryPath, args, environment)
         : resolveInvocation(
-            config.binaryPath,
+            resolveCodexCommand(config.binaryPath),
             [
               ...(serverConfig.profile?.isDefault === false
                 ? ["-c", 'cli_auth_credentials_store="file"']

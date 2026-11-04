@@ -53,6 +53,7 @@ function fixture(
     homeDir: "/home/test",
     platform: options.platform ?? "linux",
     bundledExecutable: () => "/f5/sdk/claude",
+    bundledCodexExecutable: () => "/f5/codex/bin/codex",
   };
   return { input, dependencies, target: detectProviderInstallTarget(input, dependencies) };
 }
@@ -63,6 +64,26 @@ const npmFiles = {
 };
 
 describe("provider installation ownership", () => {
+  it("does not group bundled Codex and Claude as one shared installation", () => {
+    const codex = fixture("", { driver: "codex", binaryPath: "codex" }).target!;
+    const claude = fixture("", { driver: "claudeAgent", binaryPath: "claude" }).target!;
+    expect(codex.installKey).not.toBe(claude.installKey);
+  });
+  it.each(["", "codex", " codex "])(
+    "classifies default Codex %s as bundled without probing PATH",
+    (binaryPath) => {
+      const { input, dependencies } = fixture("/other/codex", { binaryPath });
+      const target = detectProviderInstallTarget(input, {
+        ...dependencies,
+        resolveExecutable: () => {
+          throw new Error("must not resolve PATH");
+        },
+      });
+      expect(target?.channel).toBe("bundled");
+      expect(target?.executablePath).toBe("/f5/codex/bin/codex");
+      expect(buildProviderUpdateCommand(target!, "linux", "1.0.0")).toBeNull();
+    },
+  );
   it("uses one canonical native-install key for different Claude aliases", () => {
     const first = fixture("/home/test/.local/share/claude/versions/2.0.0", {
       driver: "claudeAgent",

@@ -30,6 +30,14 @@
   /* A step stronger than --accent (any palette): plain accent all but disappears on the chrome tint in light mode. */
   --color-sidebar-accent: color-mix(in oklab, var(--accent), var(--foreground) 4%);
   --color-sidebar-accent-foreground: var(--accent-foreground);
+  /*
+   * Quiet tonal controls (docs/design/direction.md) rest on `secondary` and step
+   * toward the foreground for hover and pressed. `accent` can't carry those
+   * states: some palettes (and the defaults below) give it the same value as
+   * `secondary`.
+   */
+  --color-control-hover: color-mix(in oklab, var(--secondary), var(--foreground) 7%);
+  --color-control-active: color-mix(in oklab, var(--secondary), var(--foreground) 13%);
   --color-sidebar-border: var(--border);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);

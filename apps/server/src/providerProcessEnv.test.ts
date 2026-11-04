@@ -10,6 +10,20 @@ import {
 } from "./providerProcessEnv";
 
 describe("buildProviderChildProcessEnv", () => {
+  it("strips Codex package-manager hints from inherited and overridden environments", () => {
+    expect(
+      buildProviderChildProcessEnv(
+        {
+          PATH: "/bin",
+          CODEX_MANAGED_BY_NPM: "1",
+          CODEX_MANAGED_BY_BUN: "1",
+          CODEX_MANAGED_BY_PNPM: "1",
+          CODEX_MANAGED_PACKAGE_ROOT: "/package",
+        },
+        { codex_managed_by_npm: "1" },
+      ),
+    ).toEqual({ PATH: "/bin" });
+  });
   it("replaces differently-cased inherited variables on Windows", () => {
     const env = buildProviderChildProcessEnv(
       { ANTHROPIC_API_KEY: "ambient" },

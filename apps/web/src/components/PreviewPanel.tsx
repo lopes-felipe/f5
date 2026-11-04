@@ -65,7 +65,7 @@ import {
 } from "./PreviewPanel.logic";
 import { PreviewAutomationResponseCache } from "./PreviewAutomationResponseCache";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
+import { Input, fieldSurfaceClassName } from "./ui/input";
 import { Spinner } from "./ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { toastManager } from "./ui/toast";
@@ -1876,7 +1876,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         {desktopPreview?.setZoom && activeSession ? (
           <select
             aria-label="Tab zoom"
-            className="h-7 rounded-md border border-input bg-background px-1.5 text-2xs text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            className={cn(fieldSurfaceClassName, "h-7 px-1.5 text-2xs")}
             value={String(
               zoomTabs[activeSession.tabId] ?? previewSettings.previewDefaults.zoomFactor,
             )}

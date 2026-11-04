@@ -342,7 +342,7 @@ export const makeProviderUpdateAdvisor = (
             updateCommand: null,
             canRunUpdate: false,
             message: behind
-              ? `Bundled with F5. Claude Code v${latestVersion} ships with a future F5 release.`
+              ? `Bundled with F5. ${input.driver === "codex" ? "Codex" : "Claude Code"} v${latestVersion} ships with a future F5 release.`
               : "Bundled with F5.",
           };
         if (target.blockedReason === "registry_unverified")

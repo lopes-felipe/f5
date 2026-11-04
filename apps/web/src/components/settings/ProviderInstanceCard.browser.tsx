@@ -2,6 +2,7 @@ import "../../index.css";
 
 import {
   ProviderDriverKind,
+  ProfileId,
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ServerProvider,
@@ -16,6 +17,8 @@ import { useState, type ReactNode } from "react";
 import { createTestRouter, TestRouterContext } from "../../test/routerContext";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS } from "./providerDriverMeta";
+import { useProfileState } from "../../profileState";
+import { Schema } from "effect";
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CODEX_INSTANCE_ID = ProviderInstanceId.make("codex");
@@ -97,6 +100,89 @@ function renderCardContent(content: ReactNode) {
     ),
   });
 }
+
+describe("bundled provider runtimes", () => {
+  it("does not present a failed bundled resolution as an active version", async () => {
+    const screen = await renderCard({
+      liveProvider: makeLiveProvider({ installed: false, version: "0.166.0" }),
+    });
+    try {
+      await expect
+        .element(page.getByText("Bundled · Codex (unavailable)", { exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+  afterEach(() => useProfileState.setState({ active: null }));
+  it("shows the bundled Codex version", async () => {
+    const screen = await renderCard({ liveProvider: makeLiveProvider({ version: "0.166.0" }) });
+    try {
+      await expect
+        .element(page.getByText("Bundled · Codex 0.166.0", { exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("resets a custom binary to the bundled default", async () => {
+    const onUpdate = vi.fn();
+    const instance = makeInstance({ config: { binaryPath: "/custom/codex" } });
+    const screen = await renderCard({ instance, onUpdate, isExpanded: true });
+    try {
+      await expect
+        .element(page.getByText("Custom · /custom/codex · 0.1.0", { exact: true }))
+        .toBeVisible();
+      await page.getByRole("button", { name: "Use bundled", exact: true }).click();
+      expect(onUpdate).toHaveBeenCalledWith({ ...instance, config: undefined });
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("locks Claude's binary field in isolated profiles but keeps Codex editable", async () => {
+    useProfileState.setState({
+      active: {
+        id: Schema.decodeUnknownSync(ProfileId)("b".repeat(32)),
+        slug: "work",
+        name: "Work",
+        isDefault: false,
+        isActive: true,
+        status: "ready",
+        port: 3774,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        stateDir: "/state",
+        providerAccounts: [],
+      },
+    });
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const screen = await renderCard({
+      instance: makeInstance({ driver: claude, config: { binaryPath: "/custom/claude" } }),
+      driverOption: DRIVER_OPTIONS.find((option) => option.value === claude),
+      isExpanded: true,
+    });
+    try {
+      await expect.element(page.getByRole("textbox", { name: /Binary path/ })).toBeDisabled();
+      await expect
+        .element(page.getByText("Custom · /custom/claude (unavailable)", { exact: true }))
+        .toBeVisible();
+      await expect
+        .element(
+          page.getByText(
+            "Isolated profiles use the bundled Claude runtime to keep keychain sign-ins separate.",
+          ),
+        )
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+    const codexScreen = await renderCard({ isExpanded: true });
+    try {
+      await expect.element(page.getByRole("textbox", { name: /Binary path/ })).toBeEnabled();
+    } finally {
+      await codexScreen.unmount();
+    }
+  });
+});
 
 describe("ProviderInstanceCard advisory", () => {
   it("explains how to edit a saved secret after the server redacts a replacement", async () => {

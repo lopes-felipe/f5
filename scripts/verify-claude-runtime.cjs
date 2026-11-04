@@ -10,7 +10,7 @@ function defaultRun(command, args, options) {
   };
 }
 
-/** Exercise the packaged resolver and the platform's production SDK spawn path. */
+/** Exercise bundled Codex and the platform's production Claude SDK spawn path. */
 function verifyClaudeRuntime(context, { run = defaultRun } = {}) {
   const { appOutDir, electronPlatformName: platform, packager } = context;
   if (!["darwin", "win32", "linux"].includes(platform))
@@ -30,7 +30,7 @@ function verifyClaudeRuntime(context, { run = defaultRun } = {}) {
   const result = run(executable, [entry], { env, timeout: 120_000, killSignal: "SIGKILL" });
   if (result.status !== 0)
     throw new Error(
-      `Bundled Claude runtime smoke failed for ${app} (status=${result.status}, signal=${result.signal}, error=${result.error})`,
+      `Bundled provider runtime smoke failed for ${app} (status=${result.status}, signal=${result.signal}, error=${result.error})`,
     );
 }
 

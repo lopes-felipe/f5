@@ -10,6 +10,7 @@ import { validateElicitationContent } from "@t3tools/shared/elicitationForm";
 import { readNativeApi } from "~/nativeApi";
 import { Button } from "../ui/button";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
+import { fieldSurfaceClassName } from "../ui/input";
 
 type DraftValue = string | boolean | string[] | undefined;
 
@@ -143,7 +144,7 @@ function FieldInput(props: {
           aria-label={field.title}
           // Never let the browser remember what a provider asked for.
           autoComplete="off"
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-ui outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          className={`${fieldSurfaceClassName} h-8 w-full px-2 text-ui`}
           disabled={disabled}
           inputMode={field.type === "string" ? undefined : "decimal"}
           type={
