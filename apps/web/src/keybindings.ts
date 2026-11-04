@@ -1,6 +1,7 @@
 import { isElectron } from "./env";
 import {
   type KeybindingCommand,
+  MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ModelPickerJumpKeybindingCommand,
   type ResolvedKeybindingRule,
@@ -19,6 +20,8 @@ export { formatShortcutLabel } from "@t3tools/shared/keybindings";
 export interface ShortcutEventLike {
   type?: string;
   key: string;
+  /** Physical key (`KeyboardEvent.code`); lets Option combos match on macOS. */
+  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   shiftKey: boolean;
@@ -50,13 +53,26 @@ function normalizeEventKey(key: string): string {
   return normalized;
 }
 
+/**
+ * macOS Option rewrites `event.key` (Option+1 is `¡`, Option+K is `˚`), so a
+ * binding such as `alt+1` would never match. Fall back to the physical key.
+ */
+function physicalKeyFromCode(code: string | undefined): string | null {
+  if (!code) return null;
+  const digit = /^Digit(\d)$/u.exec(code);
+  if (digit) return digit[1]!;
+  const letter = /^Key([A-Z])$/u.exec(code);
+  return letter ? letter[1]!.toLowerCase() : null;
+}
+
 function matchesShortcut(
   event: ShortcutEventLike,
   shortcut: KeybindingShortcut,
   platform = navigator.platform,
 ): boolean {
   const key = normalizeEventKey(event.key);
-  if (key !== shortcut.key) return false;
+  if (key !== shortcut.key && !(event.altKey && physicalKeyFromCode(event.code) === shortcut.key))
+    return false;
 
   const useMetaForMod = isMacPlatform(platform);
   const expectedMeta = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
@@ -311,6 +327,11 @@ export function modelPickerJumpCommandForIndex(
 
 export function modelPickerJumpIndexFromCommand(command: string): number | null {
   const index = (MODEL_PICKER_JUMP_KEYBINDING_COMMANDS as readonly string[]).indexOf(command);
+  return index === -1 ? null : index;
+}
+
+export function modelFavoriteJumpIndexFromCommand(command: string): number | null {
+  const index = (MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS as readonly string[]).indexOf(command);
   return index === -1 ? null : index;
 }
 

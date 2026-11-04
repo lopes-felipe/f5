@@ -587,6 +587,8 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.Struct({
       provider: ProviderInstanceId,
       model: TrimmedNonEmptyString,
+      /** Pinned reasoning effort; makes the favorite a model + effort preset. */
+      effort: Schema.optional(TrimmedNonEmptyString),
     }),
   ).pipe(
     Schema.withConstructorDefault(() => Option.some([])),

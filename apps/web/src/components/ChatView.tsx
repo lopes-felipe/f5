@@ -299,7 +299,17 @@ import {
   resolveComposerFallbackModel,
   type ModelCatalogSettings,
 } from "../modelSelection";
-import { selectServerSettings, type UnifiedWebSettings, useSettings } from "../hooks/useSettings";
+import {
+  selectServerSettings,
+  type UnifiedWebSettings,
+  useSettings,
+  useUpdateSettings,
+} from "../hooks/useSettings";
+import { type FavoritePreset, getCurrentEffort } from "../favoritePresets";
+import {
+  applyFavoritePresetEffort,
+  useFavoritePresetShortcuts,
+} from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
 import BranchToolbar from "./BranchToolbar";
 import { useChatViewBranchDriftGuard } from "./ChatViewBranchDriftGuard";
@@ -426,6 +436,7 @@ import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueu
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
 
 import {
+  getComposerEffortDescriptors,
   getComposerProviderState,
   getComposerReasoningStep,
   renderProviderTraitsMenuContent,
@@ -784,6 +795,10 @@ function selectChatViewSettings(settings: AppSettings) {
   };
 }
 
+function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<FavoritePreset> {
+  return settings.favorites;
+}
+
 function selectModelCatalogSettings(settings: UnifiedWebSettings): ModelCatalogSettings {
   return {
     providerInstances: settings.providerInstances,
@@ -839,6 +854,12 @@ export default memo(function ChatView({
   const changedFilesExpandedByThreadId = useStore((store) => store.changedFilesExpandedByThreadId);
   const settings = useAppSettingsSelector(selectChatViewSettings);
   const unifiedSettings = useSettings(selectModelCatalogSettings);
+  const favoritePresets = useSettings(selectFavoritePresets);
+  const { updateSettings: updateUnifiedSettings } = useUpdateSettings();
+  const saveFavoritePresets = useCallback(
+    (favorites: ReadonlyArray<FavoritePreset>) => void updateUnifiedSettings({ favorites }),
+    [updateUnifiedSettings],
+  );
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const diskSpaceStatus = useDiskSpaceStatus();
   const timestampFormat = settings.timestampFormat;
@@ -1803,6 +1824,23 @@ export default memo(function ChatView({
   );
   const selectedProviderModelOptionsForDispatch =
     genericComposerProviderState.modelOptionsForDispatch ?? selectedProviderModelOptions;
+  const selectedComposerEffort = useMemo(
+    () =>
+      getCurrentEffort(
+        getComposerEffortDescriptors({
+          provider: selectedProviderDriver,
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: selectedProviderModelOptionsForDispatch,
+        }),
+      ),
+    [
+      selectedModel,
+      selectedProviderDriver,
+      selectedProviderModelOptionsForDispatch,
+      selectedProviderModels,
+    ],
+  );
   const genericModelOptionsForDispatch = useMemo(
     () =>
       providerSelectionsToModelOptions(selectedProvider, selectedProviderModelOptionsForDispatch) ??
@@ -6645,28 +6683,34 @@ export default memo(function ChatView({
     threadId,
   ]);
 
+  /** Returns the model actually selected, or null when the selection was refused. */
   const onProviderModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
-      if (!activeThread || isPendingTurnDispatchBlocked) return;
+    (
+      instanceId: ProviderInstanceId,
+      driver: ProviderDriverKind,
+      model: ModelSlug,
+    ): ModelSlug | null => {
+      if (!activeThread || isPendingTurnDispatchBlocked) return null;
       const provider = providerKindForDriver(driver);
-      if (!provider) return;
+      if (!provider) return null;
       if (lockedProvider !== null && provider !== lockedProvider) {
         scheduleComposerFocus();
-        return;
+        return null;
       }
       if (providerLocked && instanceId !== selectedProviderInstanceId) {
         scheduleComposerFocus();
-        return;
+        return null;
       }
       const pickerOptions = modelOptionsByInstance.get(instanceId) ?? [];
       const pickerResolvedModel =
         resolveSelectableModel(driver, model, pickerOptions) ?? pickerOptions[0]?.slug;
-      if (!pickerResolvedModel) return;
+      if (!pickerResolvedModel) return null;
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftProviderInstance(activeThread.id, instanceId);
       setComposerDraftModel(activeThread.id, pickerResolvedModel);
       recordModelSelection(provider, pickerResolvedModel, composerDraft.modelOptions);
       scheduleComposerFocus();
+      return pickerResolvedModel;
     },
     [
       activeThread,
@@ -6699,13 +6743,72 @@ export default memo(function ChatView({
     });
   }, []);
   const onComposerModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
+    (
+      instanceId: ProviderInstanceId,
+      driver: ProviderDriverKind,
+      model: ModelSlug,
+      presetEffort?: string,
+    ) => {
       // A regular click returns to a single model.
       clearFanOut(threadId);
-      onProviderModelSelect(instanceId, driver, model);
+      const selected = onProviderModelSelect(instanceId, driver, model);
+      // A favorite preset also pins its effort.
+      if (!selected || !presetEffort || !activeThread) return;
+      applyFavoritePresetEffort({
+        threadId: activeThread.id,
+        provider: providerKindForDriver(driver),
+        driver,
+        model: selected,
+        models: providerStatuses.find((entry) => entry.instanceId === instanceId)?.models ?? [],
+        effort: presetEffort,
+      });
     },
-    [clearFanOut, onProviderModelSelect, threadId],
+    [activeThread, clearFanOut, onProviderModelSelect, providerStatuses, threadId],
   );
+  const providerInstanceEntries = useMemo(
+    () => deriveProviderInstanceEntries(providerStatuses),
+    [providerStatuses],
+  );
+  // Mirrors the guards in `onProviderModelSelect`, so cycling can skip refused presets.
+  const canSelectProviderInstance = useCallback(
+    (instanceId: ProviderInstanceId, driver: ProviderDriverKind) => {
+      const provider = providerKindForDriver(driver);
+      if (!provider) return false;
+      if (lockedProvider !== null && provider !== lockedProvider) return false;
+      return !(providerLocked && instanceId !== selectedProviderInstanceId);
+    },
+    [lockedProvider, providerLocked, selectedProviderInstanceId],
+  );
+  useFavoritePresetShortcuts({
+    threadId: activeThread ? activeThread.id : null,
+    keybindings,
+    modelPickerOpen: isModelPickerOpen,
+    terminalOpen: Boolean(terminalState.terminalOpen),
+    blocked:
+      wsInteractionBlocked ||
+      isPendingTurnDispatchBlocked ||
+      isComposerApprovalState ||
+      blockingUserInputs.length > 0,
+    favorites: favoritePresets,
+    entries: providerInstanceEntries,
+    modelOptionsByInstance,
+    current: {
+      instanceId: selectedProviderInstanceId,
+      driver: selectedProviderDriver,
+      model: selectedModel,
+      models: selectedProviderModels,
+      modelOptions: selectedProviderModelOptionsForDispatch,
+    },
+    lockedProviderLabel:
+      lockedProvider === null && !providerLocked
+        ? null
+        : (providerInstanceEntries.find((entry) => entry.instanceId === selectedProviderInstanceId)
+            ?.displayName ?? selectedProvider),
+    canSelectInstance: canSelectProviderInstance,
+    selectModel: onComposerModelSelect,
+    isDialogEvent: isEventInDialogKeybindingContext,
+    saveFavorites: saveFavoritePresets,
+  });
   const onToggleFanOutModel = useCallback(
     (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
       if (!canFanOut || isPendingTurnDispatchBlocked || noProviderAvailable) return;
@@ -7957,6 +8060,7 @@ export default memo(function ChatView({
     isModelPickerOpen,
     setIsModelPickerOpen,
     onProviderModelSelect: onComposerModelSelect,
+    selectedEffort: selectedComposerEffort,
     ...(canFanOut ? { fanOutModels, onToggleFanOutModel } : {}),
     showClaudeTraitsControls,
     selectedProviderModels,

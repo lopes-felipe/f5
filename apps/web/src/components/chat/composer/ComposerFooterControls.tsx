@@ -165,6 +165,8 @@ export function ComposerFooterControls(props: {
           onOpenChange={model.setIsModelPickerOpen}
           disabled={isPendingTurnDispatchBlocked}
           onInstanceModelChange={model.onProviderModelSelect}
+          favoritePresets
+          effort={model.selectedEffort ?? null}
           {...(model.fanOutModels ? { selectedModels: model.fanOutModels } : {})}
           {...(model.onToggleFanOutModel ? { onToggleModel: model.onToggleFanOutModel } : {})}
         />

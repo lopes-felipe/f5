@@ -19,6 +19,7 @@ import {
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
   isTerminalToggleShortcut,
+  modelFavoriteJumpIndexFromCommand,
   modelPickerJumpCommandForIndex,
   modelPickerJumpIndexFromCommand,
   resolveShortcutBinding,
@@ -1064,6 +1065,111 @@ describe("Phase 3 shortcut contexts", () => {
         context: { newThreadComposer: false },
       }),
       "chat.newBackground",
+    );
+  });
+});
+
+describe("favorite model shortcuts", () => {
+  const desktop = { isElectron: true, terminalFocus: false, dialogFocus: false };
+
+  it("resolves ctrl+N to favorite N on macOS and elsewhere", () => {
+    for (const platform of ["MacIntel", "Linux", "Win32"]) {
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "2", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform,
+          context: desktop,
+        }),
+        "model.favorite.2",
+      );
+    }
+    assert.strictEqual(modelFavoriteJumpIndexFromCommand("model.favorite.9"), 8);
+    assert.isNull(modelFavoriteJumpIndexFromCommand("modelPicker.jump.1"));
+  });
+
+  it("hands ctrl+N to the open picker's row jump off macOS", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "2", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { ...desktop, modelPickerOpen: true },
+      }),
+      "modelPicker.jump.2",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "2", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { ...desktop, modelPickerOpen: true },
+      }),
+    );
+  });
+
+  it("leaves ctrl+N alone in a terminal, a dialog or the web build", () => {
+    for (const context of [
+      { ...desktop, terminalFocus: true },
+      { ...desktop, dialogFocus: true },
+      { ...desktop, isElectron: false },
+    ]) {
+      assert.isNull(
+        resolveShortcutCommand(event({ key: "1", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform: "MacIntel",
+          context,
+        }),
+      );
+    }
+  });
+
+  it("cycles favorites and steps effort with mod+alt arrows", () => {
+    const resolve = (key: string) =>
+      resolveShortcutCommand(
+        event({ key, metaKey: true, altKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "MacIntel", context: { ...desktop, isElectron: false } },
+      );
+    assert.strictEqual(resolve("ArrowRight"), "model.favorite.next");
+    assert.strictEqual(resolve("ArrowLeft"), "model.favorite.previous");
+    assert.strictEqual(resolve("ArrowUp"), "composer.effortUp");
+    assert.strictEqual(resolve("ArrowDown"), "composer.effortDown");
+  });
+
+  it("matches an Option binding on macOS by its physical key", () => {
+    const keybindings = compile([
+      { shortcut: modShortcut("1", { modKey: false, altKey: true }), command: "model.favorite.1" },
+      { shortcut: modShortcut("k", { altKey: true }), command: "model.favorite.next" },
+    ]);
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "¡", code: "Digit1", altKey: true }), keybindings, {
+        platform: "MacIntel",
+      }),
+      "model.favorite.1",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "˚", code: "KeyK", altKey: true, metaKey: true }),
+        keybindings,
+        { platform: "MacIntel" },
+      ),
+      "model.favorite.next",
+    );
+    // Without Option, the typed key still decides.
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "a", code: "Digit1" }), keybindings, {
+        platform: "MacIntel",
+      }),
+    );
+  });
+
+  it("keeps the existing alt defaults", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "Tab", altKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+      }),
+      "model.switchRecent",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "Enter", altKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { dialogFocus: false },
+      }),
+      "chat.queueTurnNext",
     );
   });
 });

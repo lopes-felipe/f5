@@ -79,6 +79,8 @@ export interface ComposerModelControls {
   onProviderModelSelect: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["onInstanceModelChange"];
+  /** The composer's current effort, marking the matching favorite preset. */
+  selectedEffort?: string | null;
   /** Multi-model fan-out for a new thread's first message (empty draft, git project). */
   fanOutModels?: React.ComponentProps<typeof ProviderInstanceModelPicker>["selectedModels"];
   onToggleFanOutModel?: React.ComponentProps<typeof ProviderInstanceModelPicker>["onToggleModel"];

@@ -97,6 +97,16 @@ const EFFORT_DESCRIPTOR_IDS = new Set([
   "thinking",
 ]);
 
+/** The select that carries a model's reasoning effort, when it has one. */
+export function findEffortSelectDescriptor(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): Extract<ProviderOptionDescriptor, { type: "select" }> | undefined {
+  return descriptors.find(
+    (entry): entry is Extract<ProviderOptionDescriptor, { type: "select" }> =>
+      entry.type === "select" && EFFORT_DESCRIPTOR_IDS.has(entry.id),
+  );
+}
+
 export function getEffortLevel(id: string | null | undefined): EffortLevelPresentation | null {
   if (!id || !Object.hasOwn(ALL_EFFORT_LEVELS, id)) {
     return null;
@@ -150,10 +160,7 @@ export function stepEffortOptions(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
   direction: 1 | -1,
 ) {
-  const descriptor = descriptors.find(
-    (entry): entry is Extract<ProviderOptionDescriptor, { type: "select" }> =>
-      entry.type === "select" && EFFORT_DESCRIPTOR_IDS.has(entry.id),
-  );
+  const descriptor = findEffortSelectDescriptor(descriptors);
   if (!descriptor || descriptor.options.length < 2) return null;
   const options = isEffortScale(descriptor.options)
     ? sortEffortOptions(descriptor.options).toReversed()

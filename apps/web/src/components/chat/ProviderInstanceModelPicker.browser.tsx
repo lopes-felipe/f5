@@ -7,6 +7,7 @@ import {
   type ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -15,9 +16,14 @@ import { createTestServerProvider } from "../../testServerProvider";
 import { TooltipProvider } from "../ui/tooltip";
 import { ProviderInstanceModelPicker } from "./ProviderInstanceModelPicker";
 
+const settingsMock = vi.hoisted(() => ({
+  favorites: [] as Array<{ provider: string; model: string; effort?: string }>,
+  updateSettings: vi.fn(),
+}));
+
 vi.mock("../../hooks/useSettings", () => ({
-  useSettings: () => ({ favorites: [] }),
-  useUpdateSettings: () => ({ updateSettings: vi.fn() }),
+  useSettings: () => ({ favorites: settingsMock.favorites }),
+  useUpdateSettings: () => ({ updateSettings: settingsMock.updateSettings }),
 }));
 
 const CODEX_ID = defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
@@ -53,7 +59,100 @@ let active: Awaited<ReturnType<typeof render>> | undefined;
 afterEach(async () => {
   await active?.unmount();
   active = undefined;
+  settingsMock.favorites = [];
+  settingsMock.updateSettings.mockReset();
   await page.viewport(1024, 900);
+});
+
+describe("ProviderInstanceModelPicker favorite presets", () => {
+  const isMac = /Mac/u.test(navigator.platform);
+  const presets = [
+    { provider: CODEX_ID, model: "gpt-5.6-sol" },
+    { provider: CLAUDE_ID, model: "claude-fable-5-1", effort: "high" },
+    { provider: CLAUDE_ID, model: "claude-fable-5-1", effort: "xhigh" },
+  ];
+
+  async function renderPicker(onChange = vi.fn(), effort: string | null = null) {
+    settingsMock.favorites = presets;
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CLAUDE_ID}
+          model="claude-fable-5-1"
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+          favoritePresets
+          effort={effort}
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /Claude Fable 5.1/ }).click();
+    await expect.element(page.getByPlaceholder("Search models...")).toBeVisible();
+    return onChange;
+  }
+
+  it("lists one row per preset in favorites order with effort chips and jump keys", async () => {
+    await renderPicker(vi.fn(), "xhigh");
+    const rows = () =>
+      [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].map((row) => ({
+        effort: row.querySelector("[data-model-picker-preset-effort]")?.textContent ?? null,
+        active: row.textContent?.includes("Active") ?? false,
+        jump: row.querySelector("kbd")?.textContent ?? null,
+      }));
+    await expect.poll(() => rows().length).toBe(3);
+    const mod = isMac ? "⌘" : "Ctrl+";
+    expect(rows()).toEqual([
+      { effort: null, active: false, jump: `${mod}1` },
+      { effort: "high", active: false, jump: `${mod}2` },
+      { effort: "xhigh", active: true, jump: `${mod}3` },
+    ]);
+  });
+
+  it("picks a preset row with mod+N and passes its pinned effort", async () => {
+    const onChange = await renderPicker();
+    await userEvent.keyboard(isMac ? "{Meta>}3{/Meta}" : "{Control>}3{/Control}");
+    await expect
+      .poll(() => onChange.mock.calls)
+      .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1", "xhigh"]]);
+  });
+
+  it("removes only the starred preset", async () => {
+    await renderPicker();
+    await page
+      .getByRole("button", { name: "Remove Claude Fable 5.1 · high from favorites" })
+      .click();
+    expect(settingsMock.updateSettings).toHaveBeenCalledWith({
+      favorites: [presets[0], presets[2]],
+    });
+  });
+
+  it("lists each model once and passes no effort without favoritePresets", async () => {
+    settingsMock.favorites = presets;
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CLAUDE_ID}
+          model="claude-fable-5-1"
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /Claude Fable 5.1/ }).click();
+    await expect.poll(() => document.querySelectorAll("[data-model-picker-row]").length).toBe(2);
+    expect(document.querySelector("[data-model-picker-preset-effort]")).toBeNull();
+    await userEvent.keyboard(isMac ? "{Meta>}2{/Meta}" : "{Control>}2{/Control}");
+    await expect
+      .poll(() => onChange.mock.calls)
+      .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1"]]);
+  });
 });
 
 describe("ProviderInstanceModelPicker", () => {
