@@ -2,7 +2,6 @@ import type { ThreadId } from "@t3tools/contracts";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  AlarmClockIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   GitPullRequestIcon,
@@ -14,7 +13,7 @@ import {
   SunriseIcon,
   TerminalIcon,
 } from "lucide-react";
-import type { DragEvent, ReactNode } from "react";
+import { type DragEvent, type ReactNode, useEffect, useRef } from "react";
 import {
   isThreadReferenceId,
   THREAD_REFERENCE_MAX_PER_MESSAGE,
@@ -174,27 +173,21 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     if (!writeThreadReferenceDrag(event.dataTransfer, items)) event.preventDefault();
   };
   const pinned = thread.pinnedAt != null;
+  // A pinned project row's yellow pin is its unpin control, so the quick actions skip it.
+  const showsPinnedHandle = section === "active" && pinned;
   const quickActions: ThreadRowQuickAction[] =
     activeLike && !isDraft
       ? [
-          {
-            label: pinned ? "Unpin" : "Pin",
-            ariaLabel: `${pinned ? "Unpin" : "Pin"} ${thread.title}`,
-            icon: pinned ? PinOffIcon : PinIcon,
-            onClick: () => actions.togglePinThread(thread.id),
-          },
-          {
-            label: "Snooze",
-            ariaLabel: `Snooze ${thread.title}`,
-            icon: AlarmClockIcon,
-            onClick: (button) => {
-              const rect = button.getBoundingClientRect();
-              void actions.openSnoozeMenu(thread.id, {
-                x: Math.round(rect.left),
-                y: Math.round(rect.bottom),
-              });
-            },
-          },
+          ...(showsPinnedHandle
+            ? []
+            : [
+                {
+                  label: pinned ? "Unpin" : "Pin",
+                  ariaLabel: `${pinned ? "Unpin" : "Pin"} ${thread.title}`,
+                  icon: pinned ? PinOffIcon : PinIcon,
+                  onClick: () => actions.togglePinThread(thread.id),
+                },
+              ]),
           {
             label: "Archive",
             ariaLabel: `Archive ${thread.title}`,
@@ -384,8 +377,12 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           />
         )}
         {props.trailingMeta}
-        {section === "active" && thread.pinnedAt != null ? (
-          <PinnedThreadDragHandle threadId={thread.id} />
+        {showsPinnedHandle ? (
+          <PinnedThreadDragHandle
+            threadId={thread.id}
+            title={thread.title}
+            onUnpin={() => actions.togglePinThread(thread.id)}
+          />
         ) : null}
         <ThreadRowTrailingMeta
           thread={thread}
@@ -423,30 +420,75 @@ export function SidebarThreadTitle({
   );
 }
 
-export function PinnedThreadDragHandle({ threadId }: { threadId: ThreadId }) {
+/**
+ * A pinned project row's yellow pin: a click unpins the thread, a drag (6px or more, per the
+ * sidebar's pointer sensor) reorders the pins. Hover and focus show the unpin icon.
+ */
+export function PinnedThreadDragHandle({
+  threadId,
+  title,
+  onUnpin,
+}: {
+  threadId: ThreadId;
+  title: string;
+  onUnpin: () => void;
+}) {
+  "use memo";
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: pinnedThreadSortableId(threadId),
   });
+  // Releasing a drag over the handle can still fire a click; it must not unpin.
+  const draggedRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) draggedRef.current = true;
+  }, [isDragging]);
   return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      aria-label="Reorder pinned thread"
-      data-pinned-thread-drag-handle=""
-      className={cn(
-        "inline-flex size-5 shrink-0 cursor-grab items-center justify-center rounded-md text-warning-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
-        isDragging && "z-20 opacity-70",
-      )}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-      {...attributes}
-      {...listeners}
-    >
-      <PinIcon className="size-3.5" />
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            ref={setNodeRef}
+            type="button"
+            data-pinned-thread-drag-handle=""
+            className={cn(
+              "group/pin -mx-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-warning-foreground outline-none hover:bg-background hover:text-foreground focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
+              isDragging && "z-20 opacity-70",
+            )}
+            style={{ transform: CSS.Translate.toString(transform), transition }}
+            {...attributes}
+            {...listeners}
+            aria-label={`Unpin ${title}`}
+            onPointerDown={(event) => {
+              draggedRef.current = false;
+              listeners?.onPointerDown?.(event);
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (draggedRef.current) {
+                draggedRef.current = false;
+                return;
+              }
+              onUnpin();
+            }}
+            onKeyDown={(event) => {
+              // Enter and Space unpin here instead of opening the row.
+              if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+            }}
+          >
+            <PinIcon
+              aria-hidden="true"
+              className="size-3.5 group-hover/pin:hidden group-focus-visible/pin:hidden"
+            />
+            <PinOffIcon
+              aria-hidden="true"
+              className="hidden size-3.5 group-hover/pin:block group-focus-visible/pin:block"
+            />
+          </button>
+        }
+      />
+      <TooltipPopup side="top">Unpin · drag to reorder</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -474,8 +516,10 @@ export function ThreadRowTrailingMeta(props: {
   isHighlighted: boolean;
   showDraftIndicator?: boolean | undefined;
   /**
-   * Shown in the timestamp's place on hover and focus. Touch screens always show the last
-   * one, the row's main action; the others stay in the context menu there.
+   * Shown in the timestamp's place on hover and focus: Pin/Unpin and Archive (a pinned
+   * project row unpins from its yellow pin), Unarchive, or Unsettle. Snoozing lives in the
+   * context menu. Touch screens always show the last one, the row's main action; the others
+   * stay in the context menu there.
    */
   actions?: readonly ThreadRowQuickAction[] | undefined;
 }) {

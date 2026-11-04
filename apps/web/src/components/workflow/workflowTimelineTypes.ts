@@ -105,28 +105,57 @@ export interface WorkflowCurrentStep {
   state: WorkflowCurrentStepState;
   /** The step's thread; null before it exists, and for a completed workflow. */
   threadId: ThreadId | null;
+  /**
+   * The thread the row's step line opens: the step's own thread, else the newest thread the
+   * workflow has run in pipeline order (a completed workflow's last thread), else null.
+   */
+  targetThreadId: ThreadId | null;
   /** The configured model, shown until the step's thread exists. */
   modelSlot: WorkflowModelSlot | null;
 }
 
-function currentStepOf(
-  step: WorkflowTimelineStep,
-  state: WorkflowCurrentStepState,
-): WorkflowCurrentStep {
-  return { label: step.label, state, threadId: step.threadId, modelSlot: step.modelSlot };
+/** The thread of the last non-skipped step, in pipeline order, that has one. */
+function latestStepThreadId(phases: ReadonlyArray<WorkflowTimelinePhase>): ThreadId | null {
+  for (let phaseIndex = phases.length - 1; phaseIndex >= 0; phaseIndex -= 1) {
+    const steps = phases[phaseIndex]!.steps;
+    for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex -= 1) {
+      const step = steps[stepIndex]!;
+      if (step.state !== "skipped" && step.threadId) return step.threadId;
+    }
+  }
+  return null;
 }
 
 /**
  * The one step a collapsed workflow row names: the first failed step (an error wins, as in
  * `overallStateFromPhases`), else the running step of the first active phase (an active
  * step with a thread first), else "Completed" when every phase is done, else the next
- * pending step.
+ * pending step. `targetThreadId` falls back to the newest thread so far when the step has
+ * none, so the line always opens a thread once the workflow has one.
  */
 export function currentStepFromPhases(
   phases: ReadonlyArray<WorkflowTimelinePhase>,
 ): WorkflowCurrentStep | null {
   const relevant = phases.filter((phase) => phase.state !== "skipped");
   if (relevant.length === 0) return null;
+  const latestThreadId = latestStepThreadId(relevant);
+  const currentStepOf = (
+    step: WorkflowTimelineStep,
+    state: WorkflowCurrentStepState,
+  ): WorkflowCurrentStep => ({
+    label: step.label,
+    state,
+    threadId: step.threadId,
+    targetThreadId: step.threadId ?? latestThreadId,
+    modelSlot: step.modelSlot,
+  });
+  const phaseStep = (label: string, state: WorkflowCurrentStepState): WorkflowCurrentStep => ({
+    label,
+    state,
+    threadId: null,
+    targetThreadId: latestThreadId,
+    modelSlot: null,
+  });
 
   for (const phase of relevant) {
     const step = phase.steps.find((candidate) => candidate.state === "error");
@@ -134,7 +163,7 @@ export function currentStepFromPhases(
     if (phase.state === "error") {
       return phase.steps[0]
         ? currentStepOf(phase.steps[0], "needs-attention")
-        : { label: phase.label, state: "needs-attention", threadId: null, modelSlot: null };
+        : phaseStep(phase.label, "needs-attention");
     }
   }
 
@@ -147,22 +176,18 @@ export function currentStepFromPhases(
         (candidate) => candidate.state !== "completed" && candidate.state !== "skipped",
       ) ??
       activePhase.steps[0];
-    return step
-      ? currentStepOf(step, "running")
-      : { label: activePhase.label, state: "running", threadId: null, modelSlot: null };
+    return step ? currentStepOf(step, "running") : phaseStep(activePhase.label, "running");
   }
 
   if (relevant.every((phase) => phase.state === "completed")) {
-    return { label: "Completed", state: "completed", threadId: null, modelSlot: null };
+    return phaseStep("Completed", "completed");
   }
 
   const pendingPhase = relevant.find((phase) => phase.state === "pending");
   if (!pendingPhase) return null;
   const step =
     pendingPhase.steps.find((candidate) => candidate.state === "pending") ?? pendingPhase.steps[0];
-  return step
-    ? currentStepOf(step, "waiting")
-    : { label: pendingPhase.label, state: "waiting", threadId: null, modelSlot: null };
+  return step ? currentStepOf(step, "waiting") : phaseStep(pendingPhase.label, "waiting");
 }
 
 export type WorkflowOverallState = "error" | "active" | "completed" | "pending";

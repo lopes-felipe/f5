@@ -288,10 +288,6 @@ function PeekReply(props: { threadId: ThreadId | null; question: string | null }
   );
 }
 
-function prNumberFromUrl(url: string): string | null {
-  return /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
-}
-
 function ThreadPeekContent({
   payload,
 }: {
@@ -322,7 +318,6 @@ function ThreadPeekContent({
     thread.modelContextWindowTokens,
   );
   const draftPreview = resolveSidebarComposerDraftPreview(draft);
-  const prNumber = prStatus ? prNumberFromUrl(prStatus.url) : null;
   const scratch = project ? isScratchProject(project) : false;
 
   return (
@@ -375,7 +370,7 @@ function ThreadPeekContent({
         {prStatus ? (
           <span className={cn("inline-flex items-center gap-0.5", prStatus.colorClass)}>
             <GitPullRequestIcon aria-hidden="true" className="size-3" />
-            {prNumber ? `${prStatus.label} #${prNumber}` : prStatus.label}
+            {`${prStatus.label} #${prStatus.number}`}
           </span>
         ) : null}
         {context !== null ? <span className="tabular-nums">{`${context}% context`}</span> : null}
@@ -408,7 +403,7 @@ function WorkflowPeekContent({
     state.projects.find((entry) => entry.id === payload.projectId),
   );
   const threadById = new Map(payload.threads.map((thread) => [thread.id, thread] as const));
-  const currentThreadId = payload.currentStep?.threadId ?? null;
+  const currentThreadId = payload.currentStep?.targetThreadId ?? null;
   return (
     <div
       className="flex flex-col gap-1.5 py-1 text-left leading-snug"

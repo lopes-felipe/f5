@@ -79,7 +79,13 @@ describe("currentStepFromPhases", () => {
           step("Review C", "pending"),
         ]),
       ]),
-    ).toEqual({ label: "Review B", state: "running", threadId: "rb", modelSlot: null });
+    ).toEqual({
+      label: "Review B",
+      state: "running",
+      threadId: "rb",
+      targetThreadId: "rb",
+      modelSlot: null,
+    });
   });
 
   it("falls back to the first unfinished step of the active phase", () => {
@@ -90,7 +96,29 @@ describe("currentStepFromPhases", () => {
           step("Review B", "pending"),
         ]),
       ]),
-    ).toMatchObject({ label: "Review B", state: "running", threadId: null });
+    ).toMatchObject({
+      label: "Review B",
+      state: "running",
+      threadId: null,
+      // No thread yet: the line opens the newest thread so far.
+      targetThreadId: "ra",
+    });
+  });
+
+  it("targets the newest earlier thread for a failed step without one", () => {
+    expect(
+      currentStepFromPhases([
+        phase("Plan", "completed", [step("Branch A", "completed", "a")]),
+        phase("Implement", "completed", [step("Implementation", "completed", "impl")]),
+        phase("Code Review", "error", []),
+      ]),
+    ).toMatchObject({ label: "Code Review", state: "needs-attention", targetThreadId: "impl" });
+  });
+
+  it("targets nothing when the workflow has no thread yet", () => {
+    expect(
+      currentStepFromPhases([phase("Plan", "active", [step("Branch A", "active")])]),
+    ).toMatchObject({ label: "Branch A", threadId: null, targetThreadId: null });
   });
 
   it("names the failed step when nothing is running", () => {
@@ -116,13 +144,24 @@ describe("currentStepFromPhases", () => {
     });
   });
 
-  it("reports Completed once every phase is done", () => {
+  it("reports Completed once every phase is done, targeting the last thread", () => {
     expect(
       currentStepFromPhases([
         phase("Plan", "completed", [step("Branch A", "completed", "a")]),
-        phase("Optional", "skipped", []),
+        phase("Implement", "completed", [step("Implementation", "completed", "impl")]),
+        phase("Apply Reviews", "completed", [
+          step("Apply Reviews", "completed", "impl"),
+          step("Unused", "skipped", "skipped-thread"),
+        ]),
+        phase("Optional", "skipped", [step("Optional", "skipped", "optional")]),
       ]),
-    ).toEqual({ label: "Completed", state: "completed", threadId: null, modelSlot: null });
+    ).toEqual({
+      label: "Completed",
+      state: "completed",
+      threadId: null,
+      targetThreadId: "impl",
+      modelSlot: null,
+    });
   });
 
   it("names the next pending step as waiting, even before it has a thread", () => {
@@ -131,7 +170,13 @@ describe("currentStepFromPhases", () => {
         phase("Plan", "completed", [step("Branch A", "completed", "a")]),
         phase("Merge", "pending", [step("Merge", "pending")]),
       ]),
-    ).toEqual({ label: "Merge", state: "waiting", threadId: null, modelSlot: null });
+    ).toEqual({
+      label: "Merge",
+      state: "waiting",
+      threadId: null,
+      targetThreadId: "a",
+      modelSlot: null,
+    });
   });
 
   it("returns null without phases", () => {

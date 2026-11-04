@@ -287,9 +287,16 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
   for (const entry of projectWorkflows) {
     const children = workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [];
+    const currentStep = workflowMeta(entry)?.currentStep ?? null;
+    // A finished workflow whose PR is still open has work left: it stays in view.
+    const lastThread =
+      currentStep?.state === "completed" && currentStep.targetThreadId !== null
+        ? children.find((thread) => thread.id === currentStep.targetThreadId)
+        : undefined;
     if (
       isWorkflowRouteActive(pathname, entry.workflow.id, entry.type) ||
-      children.some((thread) => props.agingExemptThreadIds.has(thread.id))
+      children.some((thread) => props.agingExemptThreadIds.has(thread.id)) ||
+      (lastThread !== undefined && indicatorsForThread(lastThread).prStatus?.label === "PR open")
     )
       agingExemptKeys.add(workflowEntryKey(entry));
   }

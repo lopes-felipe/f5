@@ -7,6 +7,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   CircleDashedIcon,
+  GitPullRequestIcon,
   LoaderIcon,
 } from "lucide-react";
 
@@ -41,6 +42,7 @@ import {
   type SidebarWorkflowType,
   type TerminalStatusIndicator,
   isWorkflowRouteActive,
+  workflowPrLabel,
   workflowRouteForType,
   workflowTypeLabel,
 } from "./sidebarLists";
@@ -135,19 +137,25 @@ const CURRENT_STEP_ICON: Record<
 };
 
 /**
- * A collapsed workflow's second line: the step it is on, its state, model and time. Clicking
- * opens that step's thread, or the workflow before the step has one.
+ * A collapsed workflow's second line: the step it is on, its state, model and time; once every
+ * phase is done, the last thread's PR state in place of "Completed". Clicking opens the step's
+ * target thread, or the workflow before it has any thread.
  */
 function WorkflowCurrentStepLine(props: {
   step: WorkflowCurrentStep;
   thread: ThreadSummary | undefined;
+  /** The PR of the workflow's last thread, shown once every phase is done. */
+  pr: PrStatusIndicator | null;
   completedAt: string;
   ownerRowId: string | null;
   isActive: boolean;
   onOpen: () => void;
 }) {
   const { step, thread } = props;
-  const { icon: Icon, word, className } = CURRENT_STEP_ICON[step.state];
+  const pr = step.state === "completed" ? props.pr : null;
+  const { icon: StateIcon, word, className: stateClassName } = CURRENT_STEP_ICON[step.state];
+  const Icon = pr ? GitPullRequestIcon : StateIcon;
+  const className = pr ? pr.colorClass : stateClassName;
   const model = thread ? (thread.modelSelection?.model ?? thread.model) : step.modelSlot?.model;
   const at = step.state === "completed" ? props.completedAt : (thread?.lastInteractionAt ?? null);
   return (
@@ -171,7 +179,16 @@ function WorkflowCurrentStepLine(props: {
         )}
       />
       <span className="min-w-0 truncate">
-        {step.state === "completed" ? "Completed" : step.label}
+        {pr ? (
+          <>
+            <span aria-hidden="true">{workflowPrLabel(pr)}</span>
+            <span className="sr-only">{pr.tooltip}</span>
+          </>
+        ) : step.state === "completed" ? (
+          "Completed"
+        ) : (
+          step.label
+        )}
         {step.state === "completed" ? null : (
           <span className="text-faint-foreground">{` · ${word}`}</span>
         )}
@@ -263,6 +280,15 @@ export function SidebarWorkflowItem(props: {
     currentStep?.threadId != null
       ? workflowThreads.find((thread) => thread.id === currentStep.threadId)
       : undefined;
+  const targetThreadId = currentStep?.targetThreadId ?? null;
+  const targetThread =
+    targetThreadId !== null
+      ? workflowThreads.find((thread) => thread.id === targetThreadId)
+      : undefined;
+  const targetPr =
+    currentStep?.state === "completed" && targetThread
+      ? props.indicatorsForThread(targetThread).prStatus
+      : null;
   const peekTrigger = useSidebarPeekTrigger(
     {
       kind: "workflow",
@@ -273,7 +299,7 @@ export function SidebarWorkflowItem(props: {
       currentStep,
       threads: workflowThreads,
     },
-    { prefetchThreadId: currentStep?.threadId ?? null },
+    { prefetchThreadId: targetThreadId },
   );
 
   return (
@@ -373,11 +399,12 @@ export function SidebarWorkflowItem(props: {
         <WorkflowCurrentStepLine
           step={currentStep}
           thread={currentStepThread}
+          pr={targetPr}
           completedAt={workflow.updatedAt}
           ownerRowId={isTreeRow ? workflowRowId : null}
-          isActive={currentStep.threadId !== null && currentStep.threadId === routeThreadId}
+          isActive={targetThreadId !== null && targetThreadId === routeThreadId}
           onOpen={() => {
-            if (currentStep.threadId !== null) actions.openThread(currentStep.threadId);
+            if (targetThreadId !== null) actions.openThread(targetThreadId);
             else openWorkflow();
           }}
         />
