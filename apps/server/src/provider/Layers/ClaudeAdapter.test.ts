@@ -79,6 +79,10 @@ type ClaudeQueryOptionsForTest = Omit<ClaudeQueryOptions, "effort"> & {
 };
 
 import { FakeClaudeQuery } from "../testUtils/FakeClaudeQuery.ts";
+import {
+  BROWSER_OPEN_TOKEN_ENV,
+  browserOpenTokenFor,
+} from "../../browser/BrowserOpenThreadToken.ts";
 
 function makeHarness(config?: {
   readonly createQueryError?: Error;
@@ -2839,6 +2843,46 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect.skipIf(process.platform !== "darwin")(
+    "gives the Claude session its thread's browser-open token in place of an inherited one",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const previous = {
+          host: process.env.F5_DESKTOP_COMPUTER_HOST,
+          token: process.env[BROWSER_OPEN_TOKEN_ENV],
+        };
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const [key, value] of [
+              ["F5_DESKTOP_COMPUTER_HOST", previous.host],
+              [BROWSER_OPEN_TOKEN_ENV, previous.token],
+            ] as const)
+              if (value === undefined) delete process.env[key];
+              else process.env[key] = value;
+          }),
+        );
+        process.env.F5_DESKTOP_COMPUTER_HOST = "ipc";
+        process.env[BROWSER_OPEN_TOKEN_ENV] = "inherited";
+
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(
+          harness.getLastCreateQueryInput()?.options.env?.[BROWSER_OPEN_TOKEN_ENV],
+          browserOpenTokenFor(THREAD_ID),
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("canonicalizes a concrete subagent model override in the Claude query env", () => {
     const harness = makeHarness();

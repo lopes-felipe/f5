@@ -171,10 +171,14 @@ function ChatRouteLayout() {
           <Outlet />
         </PreviewBrowserHost>
         <ComputerAccessInbox />
-        {/* One top-center stack so the pills never overlap; computer control stays first. */}
+        {/*
+          One top-center stack so the pills never overlap. The consent pill comes first so it
+          never moves under the cursor when the computer-use banner appears, wraps or goes away.
+          The empty strip stays a window drag area; each pill opts out of dragging itself.
+        */}
         <div className="pointer-events-none fixed inset-x-2 top-2 z-[60] flex flex-col items-center gap-1.5">
-          <ComputerUseBanner />
           <BrowserOpenRequestCard />
+          <ComputerUseBanner />
         </div>
         <WorkflowCreateDialogHost />
         <WorktreeRemovalDialogHost />

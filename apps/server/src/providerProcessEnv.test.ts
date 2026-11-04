@@ -32,6 +32,16 @@ describe("buildProviderChildProcessEnv", () => {
     });
   });
 
+  it("never passes an inherited browser-open token to F5's children", () => {
+    expect(
+      buildProviderChildProcessEnv({
+        PATH: "/usr/bin",
+        F5_BROWSER_OPEN_TOKEN: "another-f5",
+        f5_browser_open_token: "lowercase",
+      }),
+    ).toEqual({ PATH: "/usr/bin" });
+  });
+
   it("treats env keys case-insensitively and applies overrides", () => {
     const env = buildProviderChildProcessEnv(
       {

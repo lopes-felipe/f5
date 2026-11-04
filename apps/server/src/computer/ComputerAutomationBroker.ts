@@ -51,6 +51,7 @@ import { AgentControlPause, AgentControlPauseService } from "../mcp/agentControl
 import { DesktopComputerHost } from "./DesktopComputerHost";
 import { startBrowserOpenBridge } from "../browser/BrowserOpenBridge";
 import { browserOpenThreadFor } from "../browser/BrowserOpenThreadToken";
+import { browserOpenThreadIsFullAccess } from "../browser/BrowserOpenPreapproval";
 import { computerAccessStorage } from "./computerAccessStorage";
 import { ComputerAccessService } from "./ComputerAccessService";
 
@@ -1824,16 +1825,9 @@ export const ComputerAutomationBrokerLive = Layer.effect(
     const closeBrowser = yield* Effect.promise(() =>
       startBrowserOpenBridge(config.stateDir, {
         openExternalUrl: (url, options) => host.openExternalUrl(url, options),
-        // Read at request time, so switching a thread out of full access takes effect at once.
         isPreapproved: async (token) => {
           const threadId = browserOpenThreadFor(token);
-          if (!threadId) return false;
-          const rows = await run(
-            sql<{
-              runtimeMode: string;
-            }>`SELECT runtime_mode AS "runtimeMode" FROM projection_threads WHERE thread_id=${threadId}`,
-          );
-          return rows[0]?.runtimeMode === "full-access";
+          return threadId ? run(browserOpenThreadIsFullAccess(threadId)) : false;
         },
       }),
     );

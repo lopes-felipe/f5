@@ -186,10 +186,11 @@ export function ComputerUseBanner() {
   return (
     <div
       role="status"
+      // Drawn over the frameless titlebar's drag region, which would otherwise take Stop's click.
       className={
         ambient
-          ? "pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/95 py-1 pr-1 pl-3 text-muted-foreground text-sm shadow-sm"
-          : "pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-2xl border border-warning/50 bg-background/95 py-1 pr-1 pl-3 text-sm shadow-md"
+          ? "pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/95 py-1 pr-1 pl-3 text-muted-foreground text-sm shadow-sm [-webkit-app-region:no-drag]"
+          : "pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-2xl border border-warning/50 bg-background/95 py-1 pr-1 pl-3 text-sm shadow-md [-webkit-app-region:no-drag]"
       }
       data-testid="computer-use-banner"
       data-delivery={holder?.delivery}

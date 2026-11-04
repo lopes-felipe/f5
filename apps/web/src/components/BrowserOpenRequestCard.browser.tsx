@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { BrowserOpenRequestCard } from "./BrowserOpenRequestCard";
+import { RequestDeadline } from "./RequestDeadline";
 
 // Component regression only: main's validation and the browser launch are not exercised.
 const url = "https://github.com/login/device?code=" + "x".repeat(200);
@@ -44,6 +45,8 @@ function setup(current: DesktopBrowserOpenRequest | null = null) {
 }
 
 const card = () => page.getByRole("region", { name: "Browser open request" });
+/** The visible "Open {host}…?" sentence, which carries the full URL as its hover title. */
+const title = (target: string) => card().getByTitle(target, { exact: true });
 
 afterEach(() => {
   delete window.desktopBridge;
@@ -55,17 +58,17 @@ it("shows a request main already had and acknowledges it once without taking foc
   const screen = await render(<BrowserOpenRequestCard />);
   try {
     await expect.element(card()).toBeVisible();
-    const title = page.getByRole("button", { name: "Show full URL" });
-    await expect.element(title).toHaveTextContent(/^Open\sgithub\.com\/login\/device\?code=x+\?$/);
-    await expect.element(title).toHaveAttribute("title", url);
-    await expect.element(page.getByText("Work", { exact: true })).toBeVisible();
-    await expect.element(page.getByTitle(/Expires in 4:(29|30)/)).toHaveTextContent(/^4:(29|30)$/);
-    await expect.element(page.getByTitle("2 more waiting")).toHaveTextContent("1/3");
+    await expect
+      .element(title(url))
+      .toHaveTextContent(/^Open\sgithub\.com\/login\/device\?code=x+\?$/);
+    await expect.element(page.getByText("Agent or terminal in Work")).toBeVisible();
+    await expect.element(page.getByText(/^expires in 4:(29|30)$/)).toBeVisible();
+    await expect.element(page.getByText("+2 waiting")).toBeVisible();
     // The pushed copy of the same request does not acknowledge it a second time.
     h.push(request({ waiting: 2 }));
     await vi.waitFor(() => expect(h.bridge.acknowledge).toHaveBeenCalledExactlyOnceWith("first"));
     expect(document.activeElement).toBe(before);
-    await title.click();
+    await page.getByRole("button", { name: "Show full URL" }).click();
     await expect.element(page.getByLabelText("Full URL", { exact: true })).toHaveTextContent(url);
     await page.getByRole("button", { name: "Hide full URL" }).click();
     await expect.element(page.getByLabelText("Full URL", { exact: true })).not.toBeInTheDocument();
@@ -74,15 +77,87 @@ it("shows a request main already had and acknowledges it once without taking foc
   }
 });
 
-it("names a loopback server by host and port", async () => {
+it.each([
+  ["http://127.0.0.1:62115/abc", /^Open\s127\.0\.0\.1:62115\/abc\?$/],
+  // Userinfo is never shown as the host: the real site is evil.example.
+  ["https://github.com@evil.example/login", /^Open\sevil\.example\/login\?$/],
+  ["http://[::1]:3000/", /^Open\s\[::1\]:3000\?$/],
+])("names the real host with its port for %s", async (target, expected) => {
   const h = setup();
   const screen = await render(<BrowserOpenRequestCard />);
   try {
-    h.push(request({ host: "127.0.0.1", url: "http://127.0.0.1:62115/abc" }));
-    await expect
-      .element(page.getByRole("button", { name: "Show full URL" }))
-      .toHaveTextContent(/^Open\s127\.0\.0\.1:62115\/abc\?$/);
-    await expect.element(page.getByTitle(/more waiting/)).not.toBeInTheDocument();
+    h.push(request({ url: target }));
+    await expect.element(title(target)).toHaveTextContent(expected);
+    await expect.element(page.getByText(/waiting/)).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("keeps a long host whole inside the pill at narrow widths", async () => {
+  await page.viewport(420, 400);
+  const host = "github.com.login-verify." + "a".repeat(60) + ".example";
+  const target = `https://${host}/device`;
+  const h = setup();
+  const screen = await render(<BrowserOpenRequestCard />);
+  try {
+    h.push(request({ host, url: target }));
+    await expect.element(page.getByText(host, { exact: true })).toBeVisible();
+    const pill = card().element().getBoundingClientRect();
+    const hostBox = page.getByText(host, { exact: true }).element().getBoundingClientRect();
+    expect(hostBox.right).toBeLessThanOrEqual(pill.right);
+    expect(pill.right).toBeLessThanOrEqual(window.innerWidth);
+  } finally {
+    await screen.unmount();
+    await page.viewport(1280, 720);
+  }
+});
+
+it("stays clickable over the window drag region", async () => {
+  const h = setup();
+  const screen = await render(
+    <>
+      <div className="drag-region fixed inset-x-0 top-0 h-12" />
+      <BrowserOpenRequestCard />
+    </>,
+  );
+  try {
+    h.push(request());
+    await expect.element(card()).toBeVisible();
+    expect(getComputedStyle(card().element()).getPropertyValue("-webkit-app-region")).toBe(
+      "no-drag",
+    );
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("ignores answers until it has been visible briefly", async () => {
+  const h = setup();
+  const screen = await render(<BrowserOpenRequestCard />);
+  try {
+    h.push(request());
+    const open = page.getByRole("button", { name: "Open", exact: true });
+    await expect.element(open).toBeDisabled();
+    await expect.element(open).toBeEnabled();
+    await open.click();
+    expect(h.bridge.answer).toHaveBeenCalledExactlyOnceWith("first", "open");
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("shows the full deadline phrase in both forms", async () => {
+  const expiresAtMs = Date.now() + 90_500;
+  const screen = await render(
+    <>
+      <RequestDeadline expiresAtMs={expiresAtMs} />
+      <RequestDeadline compact expiresAtMs={expiresAtMs} />
+    </>,
+  );
+  try {
+    await expect.element(page.getByText(/^Expires in 1:(30|31)$/)).toBeVisible();
+    await expect.element(page.getByText(/^expires in 1:(30|31)$/)).toBeVisible();
   } finally {
     await screen.unmount();
   }
@@ -128,9 +203,7 @@ it("closes only on its own settlement and shows the next request", async () => {
     h.settle("first");
     await expect.element(card()).not.toBeInTheDocument();
     h.push(request({ requestId: "second", host: "example.com", url: "https://example.com/" }));
-    await expect
-      .element(page.getByRole("button", { name: "Show full URL" }))
-      .toHaveTextContent(/^Open\sexample\.com\?$/);
+    await expect.element(title("https://example.com/")).toHaveTextContent(/^Open\sexample\.com\?$/);
     await vi.waitFor(() => expect(h.bridge.acknowledge).toHaveBeenLastCalledWith("second"));
   } finally {
     await screen.unmount();
