@@ -3470,14 +3470,19 @@ describe("Thread sidebar", () => {
         "Recent threads past the preview count should sit behind one disclosure row.",
       );
       expect(row.textContent).toBe("Show 2 more·1 older than 7 days");
+      const more = row.querySelector<HTMLButtonElement>('[data-testid="sidebar-show-more"]')!;
       const older = row.querySelector<HTMLButtonElement>('[data-testid="sidebar-older-toggle"]')!;
       expect(older.getAttribute("aria-expanded")).toBe("false");
+      // Two sibling buttons, each its own tree row; neither nests inside the other.
+      expect(more.tagName).toBe("BUTTON");
+      expect(more.getAttribute("role")).toBe("treeitem");
+      expect(older.getAttribute("role")).toBe("treeitem");
+      expect(more.contains(older) || older.contains(more)).toBe(false);
+      expect(row.querySelector('[role="button"]')).toBeNull();
 
-      // Enter on the row shows more, without opening the older threads.
-      row.focus();
-      row.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
-      );
+      // Enter on "Show 2 more" shows more, without opening the older threads.
+      more.focus();
+      await userEvent.keyboard("{Enter}");
       await waitForSidebarThreadRow("Recent four");
       expect(querySidebarThreadRowByTitle("Old one")).toBeNull();
       await vi.waitFor(() => expect(row.textContent).toContain("Show less"));
@@ -4084,6 +4089,140 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("reads a snoozed last thread's PR, and waits for git status before a check or folding", async () => {
+    seedAppSettings({ sidebarOlderThreadDays: 7 });
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = (prefix: string) => ({
+      a: `${prefix}-branch-a` as ThreadId,
+      b: `${prefix}-branch-b` as ThreadId,
+      merge: `${prefix}-merge` as ThreadId,
+      impl: `${prefix}-impl` as ThreadId,
+      review: `${prefix}-review` as ThreadId,
+    });
+    const snoozed = ids("snoozed");
+    const plain = ids("plain");
+    const completedWorkflow = (id: string, title: string, threads: ReturnType<typeof ids>) =>
+      createPlanningWorkflow({
+        id,
+        title,
+        branchAThreadId: threads.a,
+        branchBThreadId: threads.b,
+        branchA: { status: "revised" },
+        branchB: { status: "revised" },
+        merge: { status: "merged", threadId: threads.merge },
+        implementation: {
+          implementationSlot: slot,
+          threadId: threads.impl,
+          implementationTurnId: null,
+          revisionTurnId: null,
+          codeReviewEnabled: true,
+          codeReviews: [
+            {
+              reviewerLabel: "Reviewer",
+              reviewerSlot: slot,
+              threadId: threads.review,
+              status: "completed",
+              error: null,
+              retryCount: 0,
+              lastRetryAt: null,
+              updatedAt: at,
+            },
+          ],
+          status: "completed",
+          error: null,
+          retryCount: 0,
+          lastRetryAt: null,
+          updatedAt: at,
+        },
+      });
+    const snapshotThreads = (
+      threads: ReturnType<typeof ids>,
+      label: string,
+      impl: Partial<SnapshotThread>,
+    ) =>
+      Object.entries(threads).map(([role, id]) =>
+        createSnapshotThread({
+          id,
+          title: `${label} ${role} thread`,
+          ...(role === "impl" ? impl : {}),
+        }),
+      );
+    let releaseGitStatus: () => void = () => {};
+    const gitStatusHeld = new Promise<void>((resolve) => {
+      releaseGitStatus = resolve;
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            // The implementation thread is snoozed, so the workflow's child list leaves it out.
+            ...snapshotThreads(snoozed, "Snoozed", { snoozedUntil: "2099-01-01T00:00:00.000Z" }),
+            // Without a branch, the plain workflow's last thread has no PR to wait for.
+            ...snapshotThreads(plain, "Plain", { branch: null }),
+          ]),
+          planningWorkflows: [
+            completedWorkflow("workflow-snoozed", "Snoozed PR workflow", snoozed),
+            completedWorkflow("workflow-plain", "Plain workflow", plain),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitStatus
+            ? gitStatusHeld.then(() => ({
+                type: "result" as const,
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 462,
+                    title: "Sidebar follow-ups",
+                    url: "https://github.com/acme/repo/pull/462",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open" as const,
+                  },
+                },
+              }))
+            : null;
+      },
+    });
+    const finishedStatusOf = (workflowTitle: string) =>
+      querySidebarThreadRowByTitle(workflowTitle)
+        ?.closest('[data-sidebar="menu-sub-item"]')
+        ?.querySelector<HTMLButtonElement>('[data-testid="workflow-finished-status"]') ?? null;
+
+    try {
+      // While git status loads: no check that could flip to a PR, and no folding.
+      await waitForSidebarThreadRow("Snoozed PR workflow");
+      const pending = finishedStatusOf("Snoozed PR workflow")!;
+      expect(pending.hasAttribute("data-pr-pending")).toBe(true);
+      expect(pending.getAttribute("aria-label")).toBe("Open last thread, checking for a PR");
+      // The plain workflow has nothing to wait for, so it folds as before.
+      expect(querySidebarThreadRowByTitle("Plain workflow")).toBeNull();
+      expect(document.querySelector('[data-testid="sidebar-older-toggle"]')?.textContent).toBe(
+        "1 older than 7 days",
+      );
+
+      // Once loaded, the snoozed implementation thread's open PR shows and keeps it in view.
+      releaseGitStatus();
+      await vi.waitFor(() =>
+        expect(finishedStatusOf("Snoozed PR workflow")?.textContent).toBe("#462"),
+      );
+      expect(finishedStatusOf("Snoozed PR workflow")?.hasAttribute("data-pr-pending")).toBe(false);
+      expect(querySidebarThreadRowByTitle("Snoozed PR workflow")).not.toBeNull();
+    } finally {
+      releaseGitStatus();
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps rows quiet: no worktree icon, queue count on the right, done work dimmed", async () => {
     const worktreeId = "quiet-worktree" as ThreadId;
     const queuedId = "quiet-queued" as ThreadId;
@@ -4140,13 +4279,17 @@ describe("Thread sidebar", () => {
         plainTitle.getBoundingClientRect().left,
       );
 
-      // Archived rows recede until hovered.
+      // Archived rows recede like settled ones: everything in the muted color, never opacity,
+      // which would drop the (already muted) title below AA contrast.
       queryShelfSegment("archived")!.click();
       const archivedRow = await waitForSidebarThreadRow("Archived thread");
+      const archivedTitle = [...archivedRow.querySelectorAll<HTMLElement>("span")].find(
+        (span) => span.textContent === "Archived thread",
+      )!;
       expect(archivedRow.hasAttribute("data-row-done")).toBe(true);
-      expect(Number(getComputedStyle(archivedRow).opacity)).toBeLessThan(1);
-      await userEvent.hover(archivedRow);
-      await vi.waitFor(() => expect(getComputedStyle(archivedRow).opacity).toBe("1"));
+      expect(getComputedStyle(archivedRow).opacity).toBe("1");
+      expect(getComputedStyle(archivedTitle).opacity).toBe("1");
+      expect(getComputedStyle(archivedTitle).color).toBe(getComputedStyle(plainTitle).color);
 
       // The worktree is still described in the hover card.
       await userEvent.hover(worktreeRow);
@@ -4232,6 +4375,79 @@ describe("Thread sidebar", () => {
       expect(pinCommands(from).every((ids) => ids.length === 2)).toBe(true);
       expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("undoes an accidental unpin from the yellow pin, back to the same place", async () => {
+    const ids = ["pin-undo-a", "pin-undo-b", "pin-undo-c"] as ThreadId[];
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...ids.map((id, index) =>
+              createSnapshotThread({
+                id,
+                title: `Undo pin ${index}`,
+                pinnedAt: NOW_ISO,
+                pinOrderKey: index,
+              }),
+            ),
+          ]),
+          pinRevision: 3,
+        };
+      },
+    });
+    const pinCommands = (from: number) =>
+      wsRequests
+        .slice(from)
+        .filter(
+          (entry) =>
+            entry._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (entry.command as { type?: string } | undefined)?.type === "thread.pins.replace",
+        )
+        .map((entry) => entry.command as { pinnedThreadIds: string[]; expectedRevision: number });
+    const toast = vi.spyOn(toastManager, "add");
+    try {
+      const middleRow = await waitForSidebarThreadRow("Undo pin 1");
+      const handle = middleRow.querySelector<HTMLButtonElement>(
+        "[data-pinned-thread-drag-handle]",
+      )!;
+      // A short press unpins.
+      let from = wsRequests.length;
+      await userEvent.click(handle);
+      await vi.waitFor(() =>
+        expect(pinCommands(from)).toEqual([
+          expect.objectContaining({ pinnedThreadIds: [ids[0], ids[2]], expectedRevision: 3 }),
+        ]),
+      );
+      expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+      // The server confirms the unpin. (Set directly: a domain event would advance the store's
+      // applied sequence past later tests' snapshots.)
+      useStore.setState((state) => ({
+        pinRevision: 4,
+        threads: state.threads.map((thread) =>
+          thread.id === ids[1] ? { ...thread, pinnedAt: null, pinOrderKey: null } : thread,
+        ),
+      }));
+
+      // The "Thread unpinned" toast's Undo puts the pin back between its old neighbours.
+      const unpinnedToast = toast.mock.calls
+        .map(([options]) => options)
+        .find((options) => options.title === "Thread unpinned");
+      expect(unpinnedToast?.actionProps?.children).toBe("Undo");
+      from = wsRequests.length;
+      unpinnedToast!.actionProps!.onClick!({ preventDefault: () => {} } as never);
+      await vi.waitFor(() =>
+        expect(pinCommands(from)).toEqual([
+          expect.objectContaining({ pinnedThreadIds: ids, expectedRevision: 4 }),
+        ]),
+      );
+    } finally {
+      toast.mockRestore();
       await mounted.cleanup();
     }
   });

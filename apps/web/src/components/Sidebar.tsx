@@ -95,10 +95,10 @@ import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
 import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
-import { SIDEBAR_NAV_ROW_CLASS_NAME, SidebarNav } from "./sidebar/SidebarNav";
+import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
-import type { SidebarThreadRowIndicators } from "./sidebar/SidebarWorkflowItem";
+import type { SidebarIndicatorsForThread } from "./sidebar/SidebarWorkflowItem";
 import {
   type SidebarHoverFreezeSnapshot,
   type SidebarWorkflowId,
@@ -125,7 +125,7 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 /** Which list the sidebar shows; a per-viewer convenience, so it lives in localStorage. */
 const SIDEBAR_VIEW_STORAGE_KEY = "f5:sidebar:view";
-const SidebarViewSchema = Schema.Literals(["projects", "recent"]);
+const SidebarViewSchema = Schema.Literals(SIDEBAR_VIEWS);
 
 /** Deletes a project's threads, then the project; throws the first failure. */
 async function deleteProjectWithThreads(input: {
@@ -315,30 +315,40 @@ export default function Sidebar() {
       enabled: polledGitStatusCwds.has(cwd),
     })),
   });
-  const prByThreadId = useMemo(() => {
+  const { prByThreadId, prPendingThreadIds } = useMemo(() => {
     const statusByCwd = new Map<string, GitStatusResult>();
+    // Polled cwds whose first status hasn't arrived: "no PR" isn't known for them yet.
+    const pendingCwds = new Set<string>();
     for (let index = 0; index < threadGitStatusCwds.length; index += 1) {
       const cwd = threadGitStatusCwds[index];
       if (!cwd) continue;
-      const status = threadGitStatusQueries[index]?.data;
+      const query = threadGitStatusQueries[index];
+      const status = query?.data;
       if (status) {
         statusByCwd.set(cwd, status);
+      } else if (query?.status === "pending" && polledGitStatusCwds.has(cwd)) {
+        pendingCwds.add(cwd);
       }
     }
 
     const map = new Map<ThreadId, ThreadPr>();
+    const pending = new Set<ThreadId>();
     for (const target of threadGitTargets) {
       const status = target.cwd ? statusByCwd.get(target.cwd) : undefined;
       const branchMatches =
         target.branch !== null && status?.branch !== null && status?.branch === target.branch;
       map.set(target.threadId, branchMatches ? (status?.pr ?? null) : null);
+      if (target.branch !== null && target.cwd !== null && pendingCwds.has(target.cwd)) {
+        pending.add(target.threadId);
+      }
     }
-    return map;
-  }, [threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
-  const indicatorsForThread = (thread: ThreadListItem): SidebarThreadRowIndicators => ({
+    return { prByThreadId: map, prPendingThreadIds: pending };
+  }, [polledGitStatusCwds, threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
+  const indicatorsForThread: SidebarIndicatorsForThread = (thread) => ({
     threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),
     isUnread: unreadThreadIds.has(thread.id),
     prStatus: prStatusIndicator(prByThreadId.get(thread.id) ?? null),
+    prPending: prPendingThreadIds.has(thread.id),
     terminalStatus: terminalStatusFromRunningIds(
       selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,
     ),

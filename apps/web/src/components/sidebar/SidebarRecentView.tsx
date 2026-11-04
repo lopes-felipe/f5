@@ -11,7 +11,7 @@ import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../../lib/sidebarTree";
 import { cn } from "../../lib/utils";
 import type { ThreadSummary } from "../../threadSelectors";
 import type { ThreadStatus } from "../../threadStatus";
-import type { Project, ThreadListItem } from "../../types";
+import type { Project } from "../../types";
 import { ProjectIcon } from "../ProjectIcon";
 import { reconcileFrozenOrder } from "../Sidebar.logic";
 import { SidebarMenu, SidebarMenuItem, SidebarMenuSub } from "../ui/sidebar";
@@ -27,7 +27,7 @@ import {
 import { ListToggleRow } from "./SidebarSectionRows";
 import { SidebarThreadRow } from "./SidebarThreadRow";
 import { SidebarTreeParentContext } from "./sidebarTreeRow";
-import { SidebarWorkflowItem, type SidebarThreadRowIndicators } from "./SidebarWorkflowItem";
+import { SidebarWorkflowItem, type SidebarIndicatorsForThread } from "./SidebarWorkflowItem";
 import type { SidebarProjectActions } from "./SidebarProjectItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 
@@ -83,7 +83,7 @@ export function SidebarRecentView(props: {
   pathname: string;
   expandWorkflowThreadsByDefault: boolean;
   workflowExpandedById: Readonly<Record<string, boolean>>;
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   threadActions: SidebarThreadActions;
   projectActions: Pick<SidebarProjectActions, "onToggleWorkflowCollapsed" | "onArchiveWorkflow">;
 }) {

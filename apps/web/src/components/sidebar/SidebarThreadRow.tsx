@@ -34,6 +34,7 @@ import { InlineTitleEditor } from "../InlineTitleEditor";
 import {
   resolveSidebarComposerDraftPreview,
   resolveThreadRowClassName,
+  SIDEBAR_DONE_ROW_CLASS_NAME,
   SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
 } from "../Sidebar.logic";
 import { ThreadRelativeActivityTime } from "../thread/ThreadActivityTime";
@@ -269,13 +270,10 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             isUnread: section !== "archived" && isUnread,
           }),
           section !== "attention" && SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
-          section === "settled" &&
-            "text-muted-foreground [&:not(:hover):not(:focus-within)_*]:text-muted-foreground",
-          // Done work recedes until it is hovered, focused, open or selected.
-          (section === "archived" || section === "settled") &&
-            !isActive &&
-            !isSelected &&
-            "opacity-60 hover:opacity-100 focus-within:opacity-100",
+          // Done work recedes until it is hovered or focused; an open or selected archived
+          // row keeps its normal colors.
+          section === "settled" && SIDEBAR_DONE_ROW_CLASS_NAME,
+          section === "archived" && !isActive && !isSelected && SIDEBAR_DONE_ROW_CLASS_NAME,
         )}
         {...(section === "archived" || section === "settled" ? { "data-row-done": true } : {})}
         onClick={(event) => {
@@ -350,9 +348,9 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
                     section === "settled"
                       ? cn(
                           "text-muted-foreground",
-                          prStatus.label === "PR open"
+                          prStatus.state === "open"
                             ? "group-hover/thread-row:text-success-foreground group-focus-within/thread-row:text-success-foreground"
-                            : prStatus.label === "PR merged"
+                            : prStatus.state === "merged"
                               ? "group-hover/thread-row:text-attention-foreground group-focus-within/thread-row:text-attention-foreground"
                               : "group-hover/thread-row:text-muted-foreground",
                         )

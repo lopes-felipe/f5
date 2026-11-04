@@ -48,7 +48,7 @@ export type SidebarPeekPayload =
       /** A workflow child's role label, shown before the workflow title. */
       readonly roleLabel?: string | undefined;
       readonly workflowTitle?: string | undefined;
-      readonly indicators: SidebarThreadRowIndicators;
+      readonly indicators: Omit<SidebarThreadRowIndicators, "prPending">;
     }
   | {
       readonly kind: "workflow";

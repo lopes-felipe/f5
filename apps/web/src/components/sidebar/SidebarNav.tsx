@@ -61,8 +61,9 @@ function useUpstreamNav(): { readonly visible: boolean; readonly inbox: number }
   };
 }
 
-/** A count badge pinned to a nav button's top-right corner. */
-export type SidebarView = "projects" | "recent";
+/** The sidebar's two views; `Sidebar.tsx` persists the choice with a schema built from this. */
+export const SIDEBAR_VIEWS = ["projects", "recent"] as const;
+export type SidebarView = (typeof SIDEBAR_VIEWS)[number];
 
 const SIDEBAR_VIEW_OPTIONS: ReadonlyArray<{
   value: SidebarView;
@@ -101,7 +102,7 @@ function SidebarViewToggle(props: {
                   aria-label={option.label}
                   tabIndex={checked ? 0 : -1}
                   data-testid={`sidebar-view-${option.value}`}
-                  className="inline-flex size-5 items-center justify-center rounded-[5px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:text-foreground"
+                  className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:text-foreground"
                   onClick={() => props.onViewChange(option.value)}
                   onKeyDown={(event) => {
                     const step =
@@ -132,6 +133,7 @@ function SidebarViewToggle(props: {
   );
 }
 
+/** A count badge pinned to a nav button's top-right corner. */
 interface NavBadge {
   count: number;
   /** Screen-reader suffix, as in "432 need you". */

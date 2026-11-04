@@ -26,6 +26,7 @@ import {
   resolveThreadRowClassName,
   resolveWorkflowThreadListExpanded,
   SIDEBAR_TREE_LEVEL_CLASS_NAME,
+  SIDEBAR_DONE_ROW_CLASS_NAME,
   SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
 } from "../Sidebar.logic";
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
@@ -57,7 +58,14 @@ export interface SidebarThreadRowIndicators {
   prStatus: PrStatusIndicator | null;
   terminalStatus: TerminalStatusIndicator | null;
   isUnread: boolean;
+  /** The thread's git status is being polled but hasn't loaded, so "no PR" isn't known yet. */
+  prPending: boolean;
 }
+
+/** Row indicators by thread id; any thread in the store, including snoozed and archived ones. */
+export type SidebarIndicatorsForThread = (
+  thread: Pick<ThreadListItem, "id">,
+) => SidebarThreadRowIndicators;
 
 const PHASE_DOT_CLASS: Record<WorkflowPhaseSummary["state"], string> = {
   completed: "bg-success",
@@ -140,14 +148,17 @@ const CURRENT_STEP_ICON: Record<
 /**
  * A finished workflow's one-line status, in place of the phase strip: the last thread's PR
  * (`#462` in its state's color) or a check. Clicking opens the last thread. The time sits in
- * the archive button's slot, like a thread row's, so the right edges line up.
+ * the archive button's slot, like a thread row's, so the right edges line up. While the PR
+ * state is still loading it shows a dashed circle instead of a check that could flip to a PR.
  */
 function WorkflowFinishedStatus(props: {
   pr: PrStatusIndicator | null;
+  prPending: boolean;
   canOpen: boolean;
   onOpenLastThread: () => void;
 }) {
   const { pr } = props;
+  const pending = !pr && props.prPending;
   return (
     <span className="flex shrink-0 items-center">
       <Tooltip>
@@ -156,11 +167,18 @@ function WorkflowFinishedStatus(props: {
             <button
               type="button"
               data-testid="workflow-finished-status"
-              aria-label={pr ? `Open last thread, ${pr.tooltip}` : "Open last thread"}
+              aria-label={
+                pr
+                  ? `Open last thread, ${pr.tooltip}`
+                  : pending
+                    ? "Open last thread, checking for a PR"
+                    : "Open last thread"
+              }
+              {...(pending ? { "data-pr-pending": "" } : {})}
               disabled={!props.canOpen}
               className={cn(
                 "-mx-0.5 inline-flex h-5 items-center gap-0.5 rounded-md px-0.5 text-2xs tabular-nums outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none",
-                pr ? pr.colorClass : "text-success-foreground",
+                pr ? pr.colorClass : pending ? "text-faint-foreground" : "text-success-foreground",
               )}
               onClick={(event) => {
                 event.preventDefault();
@@ -173,13 +191,17 @@ function WorkflowFinishedStatus(props: {
                   <GitPullRequestIcon aria-hidden="true" className="size-3" />
                   {`#${pr.number}`}
                 </>
+              ) : pending ? (
+                <CircleDashedIcon aria-hidden="true" className="size-3.5" />
               ) : (
                 <CheckIcon aria-hidden="true" className="size-3.5" />
               )}
             </button>
           }
         />
-        <TooltipPopup side="top">{pr ? workflowPrLabel(pr) : "Completed"}</TooltipPopup>
+        <TooltipPopup side="top">
+          {pr ? workflowPrLabel(pr) : pending ? "Completed · checking for a PR" : "Completed"}
+        </TooltipPopup>
       </Tooltip>
     </span>
   );
@@ -272,7 +294,7 @@ export function SidebarWorkflowItem(props: {
   overrideExpanded: boolean | undefined;
   onToggleCollapsed: (workflowId: string, fallbackExpanded: boolean) => void;
   onArchive: (workflowId: SidebarWorkflowId, title: string, type: SidebarWorkflowType) => void;
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   actions: SidebarThreadActions;
 }) {
   "use memo";
@@ -312,14 +334,11 @@ export function SidebarWorkflowItem(props: {
       ? workflowThreads.find((thread) => thread.id === currentStep.threadId)
       : undefined;
   const targetThreadId = currentStep?.targetThreadId ?? null;
-  const targetThread =
-    targetThreadId !== null
-      ? workflowThreads.find((thread) => thread.id === targetThreadId)
-      : undefined;
   // A finished workflow is one line: its last thread's PR (or a check) replaces the strip.
+  // `workflowThreads` leaves out snoozed threads, so the last thread is looked up by id.
   const finished = currentStep?.state === "completed";
-  const targetPr =
-    finished && targetThread ? props.indicatorsForThread(targetThread).prStatus : null;
+  const targetIndicators =
+    finished && targetThreadId !== null ? props.indicatorsForThread({ id: targetThreadId }) : null;
   const peekTrigger = useSidebarPeekTrigger(
     {
       kind: "workflow",
@@ -405,7 +424,8 @@ export function SidebarWorkflowItem(props: {
         </span>
         {finished ? (
           <WorkflowFinishedStatus
-            pr={targetPr}
+            pr={targetIndicators?.prStatus ?? null}
+            prPending={targetIndicators?.prPending ?? false}
             canOpen={targetThreadId !== null}
             onOpenLastThread={() => {
               if (targetThreadId !== null) actions.openThread(targetThreadId);
@@ -523,7 +543,7 @@ export function SidebarArchivedWorkflowRow(props: {
         className={cn(
           resolveThreadRowClassName({ isActive, isSelected: false }),
           SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
-          !isActive && "opacity-60 hover:opacity-100 focus-within:opacity-100",
+          !isActive && SIDEBAR_DONE_ROW_CLASS_NAME,
         )}
         data-row-done
         onClick={openWorkflow}

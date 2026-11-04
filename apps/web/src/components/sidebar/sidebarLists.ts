@@ -47,6 +47,7 @@ export interface TerminalStatusIndicator {
 }
 
 export interface PrStatusIndicator {
+  state: "open" | "closed" | "merged";
   label: "PR open" | "PR closed" | "PR merged";
   colorClass: string;
   tooltip: string;
@@ -447,6 +448,7 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
 
   if (pr.state === "open") {
     return {
+      state: "open",
       label: "PR open",
       colorClass: "text-success-foreground",
       tooltip: `#${pr.number} PR open: ${pr.title}`,
@@ -456,6 +458,7 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   }
   if (pr.state === "closed") {
     return {
+      state: "closed",
       label: "PR closed",
       colorClass: "text-muted-foreground",
       tooltip: `#${pr.number} PR closed: ${pr.title}`,
@@ -465,6 +468,7 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   }
   if (pr.state === "merged") {
     return {
+      state: "merged",
       label: "PR merged",
       colorClass: "text-attention-foreground",
       tooltip: `#${pr.number} PR merged: ${pr.title}`,
@@ -475,14 +479,14 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   return null;
 }
 
-/** A finished workflow's step line: "PR #462 open", "Merged #462" or "PR #462 closed". */
+/** A finished workflow's PR status tooltip: "PR #462 open", "Merged #462" or "PR #462 closed". */
 export function workflowPrLabel(pr: PrStatusIndicator): string {
-  switch (pr.label) {
-    case "PR open":
+  switch (pr.state) {
+    case "open":
       return `PR #${pr.number} open`;
-    case "PR merged":
+    case "merged":
       return `Merged #${pr.number}`;
-    case "PR closed":
+    case "closed":
       return `PR #${pr.number} closed`;
   }
 }

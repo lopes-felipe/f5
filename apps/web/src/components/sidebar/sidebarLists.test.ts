@@ -30,13 +30,25 @@ describe("prStatusIndicator", () => {
     }) as ThreadPr;
 
   it("carries the PR number with each state", () => {
-    expect(prStatusIndicator(pr("open"))).toMatchObject({ label: "PR open", number: 462 });
-    expect(prStatusIndicator(pr("merged"))).toMatchObject({ label: "PR merged", number: 462 });
-    expect(prStatusIndicator(pr("closed"))).toMatchObject({ label: "PR closed", number: 462 });
+    expect(prStatusIndicator(pr("open"))).toMatchObject({
+      state: "open",
+      label: "PR open",
+      number: 462,
+    });
+    expect(prStatusIndicator(pr("merged"))).toMatchObject({
+      state: "merged",
+      label: "PR merged",
+      number: 462,
+    });
+    expect(prStatusIndicator(pr("closed"))).toMatchObject({
+      state: "closed",
+      label: "PR closed",
+      number: 462,
+    });
     expect(prStatusIndicator(null)).toBeNull();
   });
 
-  it("labels a finished workflow's step line by PR state", () => {
+  it("labels a finished workflow's PR status tooltip by PR state", () => {
     expect(workflowPrLabel(prStatusIndicator(pr("open"))!)).toBe("PR #462 open");
     expect(workflowPrLabel(prStatusIndicator(pr("merged"))!)).toBe("Merged #462");
     expect(workflowPrLabel(prStatusIndicator(pr("closed"))!)).toBe("PR #462 closed");

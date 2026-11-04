@@ -17,7 +17,7 @@ import type { DraftThreadState } from "../../composerDraftStore";
 import { getVisibleThreadsWithPinnedDraft, isDraftThreadId } from "../../lib/draftThreads";
 import { cn } from "../../lib/utils";
 import type { ThreadSummary } from "../../threadSelectors";
-import type { Project, ThreadListItem } from "../../types";
+import type { Project } from "../../types";
 import { InlineTitleEditor } from "../InlineTitleEditor";
 import { ProjectIcon } from "../ProjectIcon";
 import {
@@ -56,7 +56,7 @@ import { SidebarTreeParentContext, sidebarProjectRowId } from "./sidebarTreeRow"
 import {
   SidebarArchivedWorkflowRow,
   SidebarWorkflowItem,
-  type SidebarThreadRowIndicators,
+  type SidebarIndicatorsForThread,
 } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 
@@ -160,7 +160,7 @@ export interface SidebarProjectItemProps {
   workflowShortcutLabel: string | null;
   dndSensors: SensorDescriptor<SensorOptions>[];
   collisionDetection: CollisionDetection;
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   threadActions: SidebarThreadActions;
   projectActions: SidebarProjectActions;
 }
@@ -288,15 +288,18 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
   for (const entry of projectWorkflows) {
     const children = workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [];
     const currentStep = workflowMeta(entry)?.currentStep ?? null;
-    // A finished workflow whose PR is still open has work left: it stays in view.
-    const lastThread =
+    // A finished workflow whose PR is still open has work left: it stays in view, and so does
+    // one whose PR state hasn't loaded yet. The last thread may be snoozed, so it is looked up
+    // by id rather than among the visible children.
+    const lastThreadIndicators =
       currentStep?.state === "completed" && currentStep.targetThreadId !== null
-        ? children.find((thread) => thread.id === currentStep.targetThreadId)
-        : undefined;
+        ? indicatorsForThread({ id: currentStep.targetThreadId })
+        : null;
     if (
       isWorkflowRouteActive(pathname, entry.workflow.id, entry.type) ||
       children.some((thread) => props.agingExemptThreadIds.has(thread.id)) ||
-      (lastThread !== undefined && indicatorsForThread(lastThread).prStatus?.label === "PR open")
+      lastThreadIndicators?.prStatus?.state === "open" ||
+      lastThreadIndicators?.prPending === true
     )
       agingExemptKeys.add(workflowEntryKey(entry));
   }

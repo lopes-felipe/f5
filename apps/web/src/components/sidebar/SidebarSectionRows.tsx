@@ -24,55 +24,54 @@ export function ListToggleRow(props: { label: string; onSelect: () => void }) {
 
 /**
  * The project list's single disclosure row: "Show N more" for the preview limit, then
- * "· M older than 7 days ›" for the threads aging folds away. The row's own action is the
- * first part present; the older part is also its own in-row button, which Tab reaches.
+ * "· M older than 7 days ›" for the threads aging folds away. Each part is its own button
+ * and tree row, side by side on one line; either may be absent.
  */
 export function MoreAndOlderRow(props: {
   more?: { label: string; onToggle: () => void } | undefined;
   older?: { label: string; expanded: boolean; onToggle: () => void } | undefined;
 }) {
-  const treeRowProps = useSidebarTreeRowProps();
+  const moreRowProps = useSidebarTreeRowProps();
+  const olderRowProps = useSidebarTreeRowProps();
   const { more, older } = props;
-  const primary = more?.onToggle ?? older?.onToggle;
-  if (!primary) return null;
+  if (!more && !older) return null;
+  const partClassName =
+    "h-6 w-auto max-w-full shrink-0 translate-x-0 gap-1 rounded-sm px-0 text-2xs text-muted-foreground hover:bg-transparent hover:text-foreground active:bg-transparent";
+  // One line, two sibling tree rows: each part is its own button and tree stop.
   return (
     <SidebarMenuSubItem className="w-full">
-      <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} {...treeRowProps} />}
-        data-thread-selection-safe
+      <div
         data-testid="sidebar-more-and-older"
-        {...(more ? {} : { "aria-expanded": older?.expanded })}
-        size="sm"
-        className="h-6 w-full translate-x-0 justify-start gap-1 rounded-md pl-8 text-left text-2xs text-muted-foreground hover:bg-transparent"
-        onClick={primary}
-        onKeyDown={(event) => {
-          if (event.target !== event.currentTarget) return;
-          if (event.key !== "Enter" && event.key !== " ") return;
-          event.preventDefault();
-          primary();
-        }}
+        className="flex h-6 w-full min-w-0 items-center gap-1 pl-8"
       >
-        {more ? <span className="hover:text-foreground">{more.label}</span> : null}
+        {more ? (
+          <SidebarMenuSubButton
+            render={<button type="button" {...moreRowProps} />}
+            data-thread-selection-safe
+            data-testid="sidebar-show-more"
+            size="sm"
+            className={partClassName}
+            onClick={more.onToggle}
+          >
+            <span>{more.label}</span>
+          </SidebarMenuSubButton>
+        ) : null}
         {more && older ? (
-          <span aria-hidden="true" className="text-faint-foreground">
+          <span aria-hidden="true" className="text-2xs text-faint-foreground">
             ·
           </span>
         ) : null}
         {older ? (
-          <button
-            type="button"
+          <SidebarMenuSubButton
+            render={<button type="button" {...olderRowProps} />}
+            data-thread-selection-safe
             data-testid="sidebar-older-toggle"
             aria-expanded={older.expanded}
-            className="inline-flex items-center gap-1 rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={(event) => {
-              event.stopPropagation();
-              older.onToggle();
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") event.stopPropagation();
-            }}
+            size="sm"
+            className={partClassName}
+            onClick={older.onToggle}
           >
-            {older.label}
+            <span>{older.label}</span>
             <ChevronRightIcon
               aria-hidden="true"
               className={cn(
@@ -80,9 +79,9 @@ export function MoreAndOlderRow(props: {
                 older.expanded && "rotate-90",
               )}
             />
-          </button>
+          </SidebarMenuSubButton>
         ) : null}
-      </SidebarMenuSubButton>
+      </div>
     </SidebarMenuSubItem>
   );
 }

@@ -8,7 +8,7 @@ import { cn } from "../../lib/utils";
 import type { Project, ThreadListItem } from "../../types";
 import { SidebarMenuSub } from "../ui/sidebar";
 import { SidebarThreadRow } from "./SidebarThreadRow";
-import type { SidebarThreadRowIndicators } from "./SidebarWorkflowItem";
+import type { SidebarIndicatorsForThread } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 
 export const SIDEBAR_ATTENTION_LIMIT = 5;
@@ -26,7 +26,7 @@ export function SidebarAttentionSection(props: {
   threads: readonly ThreadListItem[];
   projectsById: ReadonlyMap<ProjectId, Project>;
   routeThreadId: ThreadId | null;
-  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
+  indicatorsForThread: SidebarIndicatorsForThread;
   actions: SidebarThreadActions;
 }) {
   "use memo";
