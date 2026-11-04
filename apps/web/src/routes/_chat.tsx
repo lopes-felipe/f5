@@ -171,8 +171,11 @@ function ChatRouteLayout() {
           <Outlet />
         </PreviewBrowserHost>
         <ComputerAccessInbox />
-        <BrowserOpenRequestCard />
-        <ComputerUseBanner />
+        {/* One top-center stack so the pills never overlap; computer control stays first. */}
+        <div className="pointer-events-none fixed inset-x-2 top-2 z-[60] flex flex-col items-center gap-1.5">
+          <ComputerUseBanner />
+          <BrowserOpenRequestCard />
+        </div>
         <WorkflowCreateDialogHost />
         <WorktreeRemovalDialogHost />
       </CommandPalette>

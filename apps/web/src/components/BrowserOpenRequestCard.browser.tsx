@@ -55,16 +55,34 @@ it("shows a request main already had and acknowledges it once without taking foc
   const screen = await render(<BrowserOpenRequestCard />);
   try {
     await expect.element(card()).toBeVisible();
-    await expect.element(page.getByText("github.com", { exact: true })).toBeVisible();
-    await expect.element(page.getByText("Requested by a terminal or agent in Work")).toBeVisible();
-    await expect.element(page.getByText(/Expires in 4:(29|30)/)).toBeVisible();
-    await expect.element(page.getByText("+2 more waiting")).toBeVisible();
+    const title = page.getByRole("button", { name: "Show full URL" });
+    await expect.element(title).toHaveTextContent(/^Open\sgithub\.com\/login\/device\?code=x+\?$/);
+    await expect.element(title).toHaveAttribute("title", url);
+    await expect.element(page.getByText("Work", { exact: true })).toBeVisible();
+    await expect.element(page.getByTitle(/Expires in 4:(29|30)/)).toHaveTextContent(/^4:(29|30)$/);
+    await expect.element(page.getByTitle("2 more waiting")).toHaveTextContent("1/3");
     // The pushed copy of the same request does not acknowledge it a second time.
     h.push(request({ waiting: 2 }));
     await vi.waitFor(() => expect(h.bridge.acknowledge).toHaveBeenCalledExactlyOnceWith("first"));
     expect(document.activeElement).toBe(before);
-    await page.getByRole("button", { name: "Show full URL" }).click();
+    await title.click();
     await expect.element(page.getByLabelText("Full URL", { exact: true })).toHaveTextContent(url);
+    await page.getByRole("button", { name: "Hide full URL" }).click();
+    await expect.element(page.getByLabelText("Full URL", { exact: true })).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("names a loopback server by host and port", async () => {
+  const h = setup();
+  const screen = await render(<BrowserOpenRequestCard />);
+  try {
+    h.push(request({ host: "127.0.0.1", url: "http://127.0.0.1:62115/abc" }));
+    await expect
+      .element(page.getByRole("button", { name: "Show full URL" }))
+      .toHaveTextContent(/^Open\s127\.0\.0\.1:62115\/abc\?$/);
+    await expect.element(page.getByTitle(/more waiting/)).not.toBeInTheDocument();
   } finally {
     await screen.unmount();
   }
@@ -109,8 +127,10 @@ it("closes only on its own settlement and shows the next request", async () => {
     await expect.element(card()).toBeVisible();
     h.settle("first");
     await expect.element(card()).not.toBeInTheDocument();
-    h.push(request({ requestId: "second", host: "example.com" }));
-    await expect.element(page.getByText("example.com", { exact: true })).toBeVisible();
+    h.push(request({ requestId: "second", host: "example.com", url: "https://example.com/" }));
+    await expect
+      .element(page.getByRole("button", { name: "Show full URL" }))
+      .toHaveTextContent(/^Open\sexample\.com\?$/);
     await vi.waitFor(() => expect(h.bridge.acknowledge).toHaveBeenLastCalledWith("second"));
   } finally {
     await screen.unmount();
