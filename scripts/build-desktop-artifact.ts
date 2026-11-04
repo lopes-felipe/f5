@@ -32,6 +32,7 @@ const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 export const DESKTOP_ASAR_UNPACK = [
   "node_modules/@ff-labs/fff-bin-*/**/*",
   "node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
+  "node_modules/@openai/codex-*/**/*",
 ] as const;
 
 const RepoRoot = Effect.service(Path.Path).pipe(
