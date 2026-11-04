@@ -63,7 +63,9 @@ import {
   type ProviderTurnStartResult,
   RuntimeMode,
   ProviderInteractionMode,
+  SubagentActivityKind,
 } from "@t3tools/contracts";
+import { normalizeCodexThreadItemType } from "./provider/codexItemPresentation.ts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import {
@@ -75,7 +77,7 @@ import { readCodexModelPages } from "./codex/readCodexModelPages.ts";
 import { readCodexReportedModelCapabilities } from "./provider/codexModelCatalog.ts";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
-import { Effect, ServiceMap } from "effect";
+import { Effect, Schema, ServiceMap } from "effect";
 
 import { formatCodexUnsupportedModelError } from "./provider/codexErrors.ts";
 import {
@@ -3921,9 +3923,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const reviewTurnId = asObject(notification.params)?.turnId;
       if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
     }
-    if (item && (item.type === "collabAgentToolCall" || item.type === "collab_agent_tool_call")) {
+    const itemType = normalizeCodexThreadItemType(item?.type ?? item?.kind);
+    const activityChildId =
+      itemType === "subagent_activity" &&
+      primaryProviderThreadId !== undefined &&
+      notificationProviderThreadId === primaryProviderThreadId &&
+      Schema.is(SubagentActivityKind)(item?.kind) &&
+      asString(item?.agentPath ?? item?.agent_path)?.trim()
+        ? asString(item?.agentThreadId ?? item?.agent_thread_id)?.trim()
+        : undefined;
+    if (item && (itemType === "collab_agent_tool_call" || activityChildId)) {
       const previousSize = context.childThreadIds?.size ?? 0;
-      const children = item.receiverThreadIds;
+      // Newer Codex runtimes publish subAgentActivity without a collab call.
+      // Register only children explicitly reported by this parent, keeping
+      // transcript reads fenced by the same persisted session allowlist.
+      const children = activityChildId ? [activityChildId] : item.receiverThreadIds;
       if (Array.isArray(children))
         for (const child of children)
           if (typeof child === "string") {

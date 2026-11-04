@@ -4803,6 +4803,84 @@ it("reads one bounded native item page for an owned child thread", async () => {
   expect(sendRequest).toHaveBeenCalledTimes(1);
 });
 
+it.each(["started", "interacted", "completed", "interrupted"])(
+  "registers children from parent subagent activity (%s) for transcript reads",
+  async (kind) => {
+    const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
+    const threadId = asThreadId("thread_1");
+    (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+    const notify = (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification.bind(manager);
+    notify(context, {
+      method: "item/completed",
+      params: {
+        threadId: "thread_1",
+        item: {
+          type: "subAgentActivity",
+          kind,
+          agentThreadId: "native-child",
+          agentPath: "/root/child",
+        },
+      },
+    });
+    expect(updateSession).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        resumeCursor: { threadId: "thread_1", childThreadIds: ["native-child"] },
+      }),
+    );
+    sendRequest.mockResolvedValue({ data: [], nextCursor: null });
+    expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toEqual({
+      data: [],
+      nextCursor: null,
+    });
+    expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+  },
+);
+
+it.each([
+  { threadId: "other-parent", kind: "started", agentPath: "/root/child" },
+  { threadId: undefined, kind: "started", agentPath: "/root/child" },
+  { threadId: "thread_1", kind: "unknown", agentPath: "/root/child" },
+  { threadId: "thread_1", kind: "started", agentPath: "" },
+])(
+  "refuses foreign or malformed subagent ownership ($threadId, $kind, $agentPath)",
+  async (input) => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    const threadId = asThreadId("thread_1");
+    (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/completed",
+      params: {
+        threadId: input.threadId,
+        item: {
+          type: "subAgentActivity",
+          kind: input.kind,
+          agentThreadId: "foreign-child",
+          agentPath: input.agentPath,
+        },
+      },
+    });
+    expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+    expect(sendRequest).not.toHaveBeenCalled();
+  },
+);
+
 it("reads raw child transcript pages with ownership and envelope checks", async () => {
   const { manager, context, sendRequest } = createThreadControlHarness();
   const threadId = asThreadId("thread_1");
