@@ -182,7 +182,7 @@ export class ComputerController {
       now?: () => number;
     },
   ) {
-    this.cooperation = new ComputerCooperation(helper, () => this.now());
+    this.cooperation = new ComputerCooperation(helper, () => this.cooperationNow());
     this.admission = new ComputerAdmissionQueue({
       conflicts: (a, b) => lease.scopesConflict(a, b),
       renewal: (holder) => lease.renewal(holder),
@@ -232,7 +232,7 @@ export class ComputerController {
             ? Math.max(0, Math.ceil((entry.dwell - age) / 1000))
             : undefined,
         );
-        if (this.now() - entry.at >= 60_000 && this.lease.find(entry.holder)) {
+        if (this.cooperationNow() - entry.at >= 60_000 && this.lease.find(entry.holder)) {
           this.lease.release(entry.holder);
           this.options.holderStopped?.(entry.holder);
           this.overlay.clear();
@@ -240,6 +240,10 @@ export class ComputerController {
       }
     }, 250);
     this.permitTimer.unref();
+  }
+  /** Native activity ages and yield dwell must not advance when the system clock changes. */
+  private cooperationNow(): number {
+    return this.options.now?.() ?? performance.now();
   }
   private now(): number {
     return this.options.now?.() ?? Date.now();

@@ -115,6 +115,23 @@ function fixture(
     event: (message: Record<string, unknown>) => event(message),
   };
 }
+it("does not shorten native activity dwell when the wall clock jumps forward", async () => {
+  const h = fixture();
+  let clock: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    const held = await h.acquire();
+    h.ready.lastActivityAgeMs = 0;
+    await h.controller.prepareAcquisition(held);
+    const wall = Date.now();
+    clock = vi.spyOn(Date, "now").mockReturnValue(wall + 60_000);
+    expect(() => h.controller.acquire(h.holder)).toThrow(
+      expect.objectContaining({ error: { _tag: "TargetBlocked", kind: "user-active" } }),
+    );
+  } finally {
+    clock?.mockRestore();
+    h.controller.close();
+  }
+});
 it("pauses a queued thread without suspending the current holder's placeholder generation", async () => {
   const h = fixture();
   try {
