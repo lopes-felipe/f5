@@ -17,6 +17,17 @@ import {
 } from "@t3tools/shared/cliRelease";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CLI_NODE_VERSION = "26.10.0";
+/** Keep npm aliases intact when pinning a staged runtime to the root lock. */
+export function pinnedCliDependency(
+  packages: Readonly<Record<string, readonly unknown[]>>,
+  name: string,
+): string {
+  const entry = packages[name]?.[0];
+  const resolution = typeof entry === "string" ? /^((?:@[^/]+\/)?[^@]+)@(.+)$/.exec(entry) : null;
+  if (!resolution) throw new Error(`Missing pinned native dependency: ${name}`);
+  return resolution[1] === name ? resolution[2]! : `npm:${entry}`;
+}
+
 export async function buildCliArchive(options: {
   target: string;
   output: string;
@@ -133,12 +144,7 @@ export async function buildCliArchive(options: {
       "bun.lock",
       await fs.readFile(path.join(repo, "bun.lock"), "utf8"),
     ).config as { packages: Record<string, [string, ...unknown[]]> };
-    const pinned = (name: string): string => {
-      const entry = sourceLock.packages[name]?.[0];
-      if (!entry?.startsWith(`${name}@`))
-        throw new Error(`Missing pinned native dependency: ${name}`);
-      return entry.slice(name.length + 1);
-    };
+    const pinned = (name: string): string => pinnedCliDependency(sourceLock.packages, name);
     const dependencies = Object.fromEntries(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackage.dependencies)).map((name) => [
         name,
