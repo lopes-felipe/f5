@@ -297,7 +297,9 @@ jobs:
         env:
           F5_CI_SUITE_ID: "web-browser"
         run: |
-          timeout --signal=TERM --kill-after=20s 8m bun run --cwd apps/web test:browser
+          # Leave headroom for the growing suite on shared runners; individual
+          # tests still have Vitest's 30-second timeout.
+          timeout --signal=TERM --kill-after=20s 10m bun run --cwd apps/web test:browser
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts browser
