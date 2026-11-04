@@ -463,7 +463,7 @@ it.each([
     await screen.unmount();
   }
 });
-it("keeps the Chrome banner up between calls and hides it once the runtime stays idle", async () => {
+it("keeps the Chrome banner up between calls and quiets it to a reservation once idle", async () => {
   const store = useAgentComputerActivityStore.getState();
   const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
   const banner = () => document.querySelector('[data-testid="computer-use-banner"]');
@@ -485,9 +485,57 @@ it("keeps the Chrome banner up between calls and hides it once the runtime stays
     expect(banner()?.textContent).toContain("An agent is using Chrome");
     await settle("idle");
     await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS);
-    await vi.waitFor(() => expect(banner()).toBeNull());
+    await vi.waitFor(() => expect(banner()?.textContent).toContain("Chrome reserved · idle"));
   } finally {
     await screen.unmount();
     vi.useRealTimers();
+  }
+});
+
+it("releases an idle Chrome reservation from the banner and says when the holder refuses", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const releaseChrome = vi
+    .fn(async (_input: { threadId: string }) => ({ released: true }))
+    .mockResolvedValueOnce({ released: false });
+  nativeMock.api = { computer: { releaseChrome } } as never;
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  const screen = await render(<ComputerUseBanner />);
+  try {
+    await expect.element(page.getByText(/Chrome reserved · idle/)).toBeVisible();
+    // An idle reservation offers Release, not Pause/Stop.
+    await expect.element(page.getByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Release" }).click();
+    expect(releaseChrome).toHaveBeenCalledWith({ threadId });
+    await expect.element(page.getByText(/is using Chrome now, so it keeps it/)).toBeVisible();
+    await page.getByRole("button", { name: "Release" }).click();
+    expect(releaseChrome).toHaveBeenCalledTimes(2);
+    await expect
+      .element(page.getByText(/is using Chrome now, so it keeps it/))
+      .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("links a refused call to the thread holding control", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const holderThread = ThreadId.makeUnsafe("holder-thread");
+  store.record({
+    source: "tool",
+    threadId,
+    backend: "native",
+    op: "click",
+    status: "failed",
+    outcome: "Busy",
+    heldByThreadId: holderThread,
+  });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await expect.element(page.getByText("Held by")).toBeVisible();
+    await expect.element(page.getByTestId("computer-held-by")).toHaveTextContent("another thread");
+  } finally {
+    await screen.unmount();
   }
 });

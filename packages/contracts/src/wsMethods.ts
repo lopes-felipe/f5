@@ -103,6 +103,8 @@ export const WS_METHODS = {
   previewAutomationSetPaused: "preview.automation.setPaused",
   computerAccessRevoke: "computer.access.revoke",
   computerAccessList: "computer.access.list",
+  /** Asks this profile's idle Chrome holder to give the lease up. */
+  computerChromeRelease: "computer.chrome.release",
   computerAccessListRemembered: "computer.access.listRemembered",
   computerAccessForgetRemembered: "computer.access.forgetRemembered",
   claudeChromeRestoreNativeHost: "claudeChrome.restoreNativeHost",

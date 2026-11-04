@@ -1,4 +1,5 @@
 import { useShallow } from "zustand/react/shallow";
+import { useNavigate } from "@tanstack/react-router";
 import { AGENT_ACTIVITY_WINDOW_MS } from "../agentActivityWindow";
 import { useEffect, useMemo, useState } from "react";
 import type { ComputerAccessPush, ComputerGrant, ThreadId } from "@t3tools/contracts";
@@ -20,6 +21,7 @@ import {
 } from "../agentComputerActivityStore";
 import { cn } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
+import { useStore } from "../store";
 import {
   cardActivity,
   computerBackendLabel,
@@ -66,6 +68,15 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
     (state) => computerHolderFor(state.leases, threadId)?.browser,
   );
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
+  // The last call was refused because another thread in this profile holds control.
+  const heldBy =
+    activity?.status === "failed" && activity.outcome === "Busy"
+      ? (activity.heldByThreadId as ThreadId | undefined)
+      : undefined;
+  const heldByTitle = useStore((store) =>
+    heldBy ? store.threads.find((thread) => thread.id === heldBy)?.title : undefined,
+  );
+  const navigate = useNavigate();
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState("");
   useEffect(() => {
@@ -184,6 +195,20 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
             })
           )}
         </div>
+        {heldBy ? (
+          <p className="flex flex-wrap items-center gap-1 text-muted-foreground text-xs">
+            Held by
+            <Button
+              size="xs"
+              variant="outline"
+              data-testid="computer-held-by"
+              title="Go to the thread holding control"
+              onClick={() => void navigate({ to: "/$threadId", params: { threadId: heldBy } })}
+            >
+              {heldByTitle ?? "another thread"}
+            </Button>
+          </p>
+        ) : null}
         {shown?.outcome === "OutcomeUnknown" ? (
           <p className="text-warning-foreground text-xs">
             Check the app before resuming. Observe the result before another action.

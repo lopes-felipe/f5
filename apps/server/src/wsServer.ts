@@ -6485,6 +6485,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.computerChromeRelease: {
+        if (Option.isNone(computerAutomationBroker)) return { released: false };
+        const broker = computerAutomationBroker.value;
+        const body = stripRequestTag(request.body);
+        // The same path preemption uses: only an idle holder in this profile gives way.
+        const released = yield* Effect.promise(() => broker.releaseChromeHolder(body.threadId));
+        return { released };
+      }
+
       case WS_METHODS.computerAccessRevoke:
       case WS_METHODS.computerAccessList:
       case WS_METHODS.computerAccessListRemembered:

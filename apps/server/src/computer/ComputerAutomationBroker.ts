@@ -104,6 +104,11 @@ export interface ComputerUseSnapshot {
 }
 /** Matches the web banner's `CHROME_BANNER_LINGER_MS` after the owner's last Chrome call. */
 export const CHROME_OTHER_PROFILE_LINGER_MS = 3000;
+/**
+ * How long a preempting acquisition waits for an idle holder to give Chrome up: main sends
+ * SIGTERM, SIGKILL after 1 s, and observes the group exit within 5 s.
+ */
+export const CHROME_PREEMPT_WAIT_MS = 8000;
 function chromeCallsKey(threadId: string, generation: string): string {
   return `${threadId}\u0000${generation}`;
 }
@@ -214,6 +219,10 @@ export class ComputerAutomationBrokerRuntime {
   private chromeHolder: ChromeLeaseHolder | null = null;
   /** Whether a browser call runs, per thread and session generation (`reportChromeCalls`). */
   private readonly chromeCalls = new Map<string, boolean>();
+  /** How each Chrome-holding session gives the lease up, per thread and generation. */
+  private readonly chromeReleasers = new Map<string, () => boolean>();
+  /** Preemptions waiting for main to report the lease gone. */
+  private readonly chromeReleaseWaiters = new Set<() => void>();
   private readonly setupConsents = new Map<
     string,
     {
@@ -246,6 +255,8 @@ export class ComputerAutomationBrokerRuntime {
       storage: ConstructorParameters<typeof ComputerAccessService>[0]["storage"];
       platform: "darwin" | "win32";
       pause?: AgentControlPause;
+      /** Thread titles for attributing a same-profile `Busy`. */
+      threadTitle?: (threadId: string) => Promise<string | undefined>;
     },
   ) {
     this.pause = options.pause ?? new AgentControlPause();
@@ -343,6 +354,8 @@ export class ComputerAutomationBrokerRuntime {
         this.setChromeOtherProfile(message.otherProfile ?? false);
         this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
+        // A waiter that finishes deletes itself; Set iteration tolerates that.
+        for (const check of this.chromeReleaseWaiters) check();
       }
       // Reports made before main answered the handshake reach it now.
       if (message.type === "hostCapabilities")
@@ -367,6 +380,7 @@ export class ComputerAutomationBrokerRuntime {
         this.mainHolders = [];
         this.chromeHolder = null;
         this.chromeCalls.clear();
+        for (const check of this.chromeReleaseWaiters) check();
         this.pendingTakeover = undefined;
         this.executionStates.clear();
         this.nativeOtherProfile = false;
@@ -739,6 +753,124 @@ export class ComputerAutomationBrokerRuntime {
     this.sendChromeCalls(threadId, generation, running);
     this.publishUse();
   }
+  /**
+   * A session holding the Chrome lease registers how to give it up. `release` answers
+   * whether it started releasing: a session that is mid-turn or mid-call refuses.
+   */
+  registerChromeReleaser(threadId: string, generation: string, release: () => boolean): () => void {
+    const key = chromeCallsKey(threadId, generation);
+    this.chromeReleasers.set(key, release);
+    return () => {
+      if (this.chromeReleasers.get(key) === release) this.chromeReleasers.delete(key);
+    };
+  }
+  /** Between turns, no Chrome call running, not paused and not recovering. */
+  chromeHolderIdle(threadId: string, generation: string): boolean {
+    if (this.chromeCalls.get(chromeCallsKey(threadId, generation)) === true) return false;
+    if (this.pause.has(threadId)) return false;
+    if (this.executionStates.get(threadId)?.state === "recovery") return false;
+    const binding = this.bindings.get(threadId);
+    if (
+      binding?.generation === generation &&
+      binding.turnId !== undefined &&
+      binding.endedTurnId !== binding.turnId
+    )
+      return false;
+    return true;
+  }
+  /**
+   * Asks this profile's Chrome holder to release when it is idle; resolves once main
+   * reports the lease gone (true) or the holder refused or didn't release in time (false).
+   */
+  async releaseChromeHolder(
+    threadId: string,
+    timeoutMs = CHROME_PREEMPT_WAIT_MS,
+  ): Promise<boolean> {
+    const holder = this.chromeHolder;
+    if (!holder || holder.threadId !== threadId || holder.profileId !== this.host.profileId)
+      return false;
+    if (!this.chromeHolderIdle(holder.threadId, holder.sessionGeneration)) return false;
+    const release = this.chromeReleasers.get(
+      chromeCallsKey(holder.threadId, holder.sessionGeneration),
+    );
+    if (!release || !release()) return false;
+    const released = () =>
+      !this.chromeHolder ||
+      this.chromeHolder.threadId !== holder.threadId ||
+      this.chromeHolder.sessionGeneration !== holder.sessionGeneration;
+    if (released()) return true;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      const finish = (ok: boolean) => {
+        clearTimeout(timer);
+        this.chromeReleaseWaiters.delete(check);
+        resolve(ok);
+      };
+      const check = () => {
+        if (released()) finish(true);
+      };
+      this.chromeReleaseWaiters.add(check);
+    });
+  }
+  /**
+   * Fills in who holds a same-profile `Busy`: the thread's title and whether it is idle.
+   * Anything else passes through unchanged.
+   */
+  async attributeBusy(error: unknown): Promise<unknown> {
+    if (!(error instanceof ComputerControlError) || error.error._tag !== "Busy") return error;
+    const busy = error.error;
+    if (busy.holder !== "same-profile" || !busy.holderThreadId) return error;
+    const chrome =
+      busy.resource === "chrome" && this.chromeHolder?.threadId === busy.holderThreadId
+        ? this.chromeHolder
+        : undefined;
+    const title =
+      busy.threadTitle ??
+      (await this.options.threadTitle?.(busy.holderThreadId).catch(() => undefined));
+    return new ComputerControlError({
+      ...busy,
+      ...(title ? { threadTitle: title.slice(0, 200) } : {}),
+      // Native leases live only inside a turn, so their holder is always working.
+      holderIdle: chrome ? this.chromeHolderIdle(chrome.threadId, chrome.sessionGeneration) : false,
+    });
+  }
+  /**
+   * Runs an acquisition that main may refuse because this profile's Chrome holder has the
+   * lease. An idle holder is released and the acquisition retried once; otherwise the
+   * refusal comes back naming the holder.
+   */
+  async withChromePreemption<A>(acquire: () => Promise<A>): Promise<A> {
+    try {
+      return await acquire();
+    } catch (error) {
+      const holderThreadId =
+        error instanceof ComputerControlError &&
+        error.error._tag === "Busy" &&
+        error.error.holder === "same-profile" &&
+        error.error.resource === "chrome"
+          ? error.error.holderThreadId
+          : undefined;
+      if (!holderThreadId || !(await this.releaseChromeHolder(holderThreadId)))
+        throw await this.attributeBusy(error);
+    }
+    try {
+      return await acquire();
+    } catch (error) {
+      throw await this.attributeBusy(error);
+    }
+  }
+  /** A session's Chrome lease, taken from an idle holder in this profile when needed. */
+  acquireChromeLease(holder: ChromeLeaseHolder, timeoutMs = 5000): Promise<void> {
+    return this.withChromePreemption(() =>
+      this.host
+        .correlated(
+          { type: "chromeLeaseAcquire", requestId: randomUUID(), holder },
+          timeoutMs,
+          false,
+        )
+        .then(() => undefined),
+    );
+  }
   /** Main hides an idle Chrome lease from other profiles' banners, as this one does. */
   private sendChromeCalls(threadId: string, generation: string, running: boolean | undefined) {
     if (!this.host.chromeCallsCapable()) return;
@@ -995,22 +1127,25 @@ export class ComputerAutomationBrokerRuntime {
       } else if (mutation) {
         const scope: ComputerLeaseScope =
           delivery === "background" ? { kind: "app", appId: appId! } : { kind: "foreground" };
-        const acquisitionId = randomUUID();
+        let acquisitionId = randomUUID();
         const holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(
-          await this.host.correlated(
-            {
-              type: "leaseAcquire",
-              requestId: acquisitionId,
-              holder: {
-                ...this.authorization(live, executionGeneration),
-                backend: "native",
-                threadTitle: live.threadTitle,
-                scope,
-                policyRevision: revision,
+          // An idle Chrome holder in this profile gives way; a retry needs a fresh id.
+          await this.withChromePreemption(() =>
+            this.host.correlated(
+              {
+                type: "leaseAcquire",
+                requestId: (acquisitionId = randomUUID()),
+                holder: {
+                  ...this.authorization(live, executionGeneration),
+                  backend: "native",
+                  threadTitle: live.threadTitle,
+                  scope,
+                  policyRevision: revision,
+                },
               },
-            },
-            2000,
-            false,
+              2000,
+              false,
+            ),
           ),
         );
         this.host.send({ type: "leaseAccepted", requestId: acquisitionId });
@@ -1256,6 +1391,11 @@ export class ComputerAutomationBrokerRuntime {
     const approvalId = randomUUID();
     binding.takeover = { acquireId, approvalId, appId: app.appId };
     const live = await this.context(threadId, generation);
+    // A takeover excludes Chrome control; an idle Chrome holder in this profile gives way
+    // first, since the takeover's approval can't be retried.
+    const chromeHolder = this.chromeHolder;
+    if (chromeHolder && chromeHolder.threadId !== threadId)
+      await this.releaseChromeHolder(chromeHolder.threadId);
     const acquired = this.host.correlated(
       {
         type: "foregroundTakeoverAcquire",
@@ -1819,11 +1959,21 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     op: string,
     outcome: ComputerToolOutcomeCode,
+    /** A same-profile `Busy`'s holder, so the card can link to it. */
+    heldByThreadId?: string,
   ): void {
     if (this.generation(threadId) !== generation) return;
     this.publish({
       channel: "computer.activity",
-      data: { source: "tool", threadId, backend: "native", op, status: "failed", outcome },
+      data: {
+        source: "tool",
+        threadId,
+        backend: "native",
+        op,
+        status: "failed",
+        outcome,
+        ...(heldByThreadId && heldByThreadId !== threadId ? { heldByThreadId } : {}),
+      },
     });
   }
   subscribe(listener: (event: ComputerBrokerEvent) => void): () => void {
@@ -1916,6 +2066,14 @@ export const ComputerAutomationBrokerLive = Layer.effect(
           }
           return verified;
         },
+      },
+      threadTitle: async (threadId) => {
+        const rows = await run(
+          sql<{
+            title: string;
+          }>`SELECT title FROM projection_threads WHERE thread_id=${threadId}`,
+        );
+        return rows[0]?.title;
       },
       resolve: async (threadId, sessionGeneration, provider) => {
         const rows = await run(

@@ -977,6 +977,8 @@ export interface NativeApi {
       onSettled: (listener: (event: typeof ComputerAccessSettled.Type) => void) => () => void;
       onGrantsChanged: (listener: (event: typeof ComputerGrantsChanged.Type) => void) => () => void;
     };
+    /** Frees Chrome from an idle holder thread; `released: false` when it is working. */
+    releaseChrome: (input: { threadId: ThreadId }) => Promise<{ released: boolean }>;
     onObservationsInvalidated: (listener: (event: { threadId: string }) => void) => () => void;
     onActivity: (listener: (event: ComputerActivity) => void) => () => void;
     onLeaseChanged: (listener: (event: typeof AgentComputerUseChanged.Type) => void) => () => void;

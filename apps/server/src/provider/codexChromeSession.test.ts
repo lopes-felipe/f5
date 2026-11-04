@@ -10,6 +10,7 @@ import {
   CODEX_CHROME_STOPPED_INTERRUPTED,
   CODEX_CHROME_STOPPED_OFF,
   CODEX_CHROME_STOPPED_PAUSED,
+  CODEX_CHROME_STOPPED_RELEASED,
   CodexChromeSession,
   listedTools,
   type CodexChromeSessionDeps,
@@ -44,11 +45,25 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
   const disabled = new Set<(threadId: string, generation: string) => void>();
   let generation = "gen-1";
   let timer: (() => void) | undefined;
+  const releasers = new Map<string, () => boolean>();
+  const host = {
+    profileId: "profile",
+    correlated: vi.fn(async (..._args: unknown[]) => ({ type: "chromeLeaseResult", ok: true })),
+    send: vi.fn(),
+  };
   const broker = {
-    host: {
-      profileId: "profile",
-      correlated: vi.fn(async () => ({ type: "chromeLeaseResult", ok: true })),
-      send: vi.fn(),
+    host,
+    // The broker's preemption is tested on its own; here it is main's plain acquire.
+    acquireChromeLease: vi.fn(async (holder: unknown, timeoutMs?: number) => {
+      await host.correlated(
+        { type: "chromeLeaseAcquire", requestId: "r", holder },
+        timeoutMs,
+        false,
+      );
+    }),
+    registerChromeReleaser: (threadId: string, gen: string, release: () => boolean) => {
+      releasers.set(`${threadId}\u0000${gen}`, release);
+      return () => releasers.delete(`${threadId}\u0000${gen}`);
     },
     pause,
     generation: vi.fn(() => generation),
@@ -116,6 +131,7 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
     },
     idle: () => timer?.(),
     idleArmed: () => timer !== undefined,
+    release: () => releasers.get("thread-1\u0000gen-1")?.() ?? false,
   };
 }
 
@@ -242,6 +258,27 @@ describe("CodexChromeSession", () => {
       expect(h.session.adopted).toBeUndefined();
       expect(h.states.at(-1)).toEqual([state, detail]);
     }
+  });
+
+  it("gives Chrome up to another thread only while idle", async () => {
+    const h = harness();
+    await ready(h);
+    const turn = h.session.beforeTurn();
+    await turn;
+    // Mid-turn: refused, the runtime keeps running.
+    expect(h.release()).toBe(false);
+    h.session.turnEnded("turn-1");
+    h.session.toolCall("call-1", true);
+    // A call still running (reported late) also refuses.
+    expect(h.release()).toBe(false);
+    h.session.toolCall("call-1", false);
+    const token = h.lastToken();
+    expect(h.release()).toBe(true);
+    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(token, "release");
+    expect(h.session.state).toBe("stopped");
+    expect(h.states.at(-1)).toEqual(["pending", CODEX_CHROME_STOPPED_RELEASED]);
+    // Already stopped: nothing more to give up.
+    expect(h.release()).toBe(false);
   });
 
   it("never idle-stops during a turn, however long before its first call", async () => {

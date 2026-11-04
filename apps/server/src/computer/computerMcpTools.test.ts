@@ -55,6 +55,29 @@ function setup(displays = [display], delivery: "foreground" | "background" = "fo
   };
 }
 describe("shared computer tool catalog", () => {
+  it("names a same-profile holder to the model and to the card", async () => {
+    const h = setup();
+    h.invoke.mockRejectedValue(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "same-profile",
+        resource: "chrome",
+        holderThreadId: "holder",
+        threadTitle: "Fix login",
+        holderIdle: false,
+      }),
+    );
+    const result = await callComputerTool(h.context, "computer_screenshot", {});
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('Chrome is held by thread \\"Fix login\\"');
+    expect(h.broker.reportToolFailure).toHaveBeenLastCalledWith(
+      "t",
+      "s",
+      "screenshot",
+      "Busy",
+      "holder",
+    );
+  });
   it("reports safe pre-dispatch failures without screen contents or invalid argument values", async () => {
     const h = setup();
     await callComputerTool(h.context, "computer_type", { text: { secret: "PRIVATE_SENTINEL" } });

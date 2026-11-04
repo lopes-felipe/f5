@@ -529,6 +529,35 @@ are foreground. The helper keeps a permit per execution generation, so suspendin
 or retiring one thread never affects another; physical input tagged to a target app stops
 only the thread acting in it, while untagged input pauses foreground holders only.
 
+#### Who holds Chrome: attribution, idle release and preemption
+
+A `Busy` refusal names its holder when it is in the same profile: main fills `resource`
+(`chrome` or `computer`) and `holderThreadId` (plus `threadTitle` for native leases), and
+the server broker adds the Chrome holder's title and `holderIdle` before the refusal reaches
+a tool or session setup. Other profiles' holders stay anonymous (`holder: "other-profile"`
+only). The model sees, for example, `Busy: Chrome is held by thread "Fix login" (working).`;
+a failed tool call's activity carries `heldByThreadId`, which the live card shows as
+**Held by <thread>** linking to it. Claude session setup that loses the lease records the
+same message as its Chrome detail.
+
+A Chrome holder is **idle** between turns with no Chrome call running and neither paused nor
+in recovery. Both Claude and Codex report their Chrome calls (`reportChromeCalls`), so the
+banner always knows; an idle holder shows as a quiet "Chrome reserved · idle" row with
+**View** and **Release** instead of disappearing.
+
+- **Idle release:** a Chrome-enabled Claude session stops `CLAUDE_CHROME_IDLE_MS` (10 min)
+  after its last turn or Chrome call, as Codex's runtime does after `CODEX_CHROME_IDLE_MS`.
+  The session exits gracefully with "Stopped while idle to free Chrome…"; main releases the
+  lease once it sees the CLI exit, and the next message resumes the session with Chrome.
+- **Preemption:** `broker.acquireChromeLease` (Claude and Codex Chrome setup) and native
+  `leaseAcquire` go through `withChromePreemption`: on a same-profile `Busy` naming a Chrome
+  holder, the broker asks that holder's registered releaser to give way. Only an idle holder
+  agrees (Claude stops its session, Codex stops its runtime with `release`); the broker then
+  waits up to `CHROME_PREEMPT_WAIT_MS` (8 s) for main to report the lease gone and retries
+  once. A working, mid-turn, other-profile or slow holder returns the attributed `Busy`.
+  A foreground takeover releases an idle Chrome holder before it asks for approval.
+- **Release** in the banner calls `computer.chrome.release`, the same path.
+
 The first background mutation in a session needs a native session approval (“F5 may keep
 acting in granted apps while you work elsewhere”), including full-access sessions. Electron
 mints the session receipt; it is bound to profile, backend incarnation, thread, session and
@@ -615,12 +644,12 @@ keeps these references when creating activities and still extracts other MCP ima
 
 ## Provider-native integrations
 
-| Integration      | Record           | Path                                                           | Lease                | Status         |
-| ---------------- | ---------------- | -------------------------------------------------------------- | -------------------- | -------------- |
-| Claude in Chrome | `claude-chrome`  | CLI `--chrome`, native host registered by the CLI              | Whole session        | Gate closed    |
-| Codex Chrome     | `codex-chrome`   | Codex starts ChatGPT.app's `node_repl`; desktop main adopts it | Runtime's lifetime   | Gate closed    |
-| Codex Sky        | `codex-computer` | Proxy to `SkyComputerUseClient mcp` (spike only)               | Foreground, per call | No record      |
-| Claude built-in  | none             | The CLI starts computer use only in interactive terminals      | n/a                  | Not applicable |
+| Integration      | Record           | Path                                                           | Lease                            | Status         |
+| ---------------- | ---------------- | -------------------------------------------------------------- | -------------------------------- | -------------- |
+| Claude in Chrome | `claude-chrome`  | CLI `--chrome`, native host registered by the CLI              | Until idle (10 min) or preempted | Gate closed    |
+| Codex Chrome     | `codex-chrome`   | Codex starts ChatGPT.app's `node_repl`; desktop main adopts it | Until idle (10 min) or preempted | Gate closed    |
+| Codex Sky        | `codex-computer` | Proxy to `SkyComputerUseClient mcp` (spike only)               | Foreground, per call             | No record      |
+| Claude built-in  | none             | The CLI starts computer use only in interactive terminals      | n/a                              | Not applicable |
 
 ### Single certification source
 

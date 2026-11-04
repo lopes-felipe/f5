@@ -33,10 +33,12 @@ import {
   MCP_RUNTIME_SERVER_LIMIT,
 } from "@t3tools/shared/mcpValidation";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
 import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import type { ChromeSessionRuntime } from "../chromeSessionRuntime";
+import { ClaudeChromeActivity } from "../claudeChromeActivity";
 import {
   claudeChromeAvailability,
   makeChromeSessionRuntime,
@@ -522,6 +524,10 @@ interface ClaudeSessionContext {
   chromeHealthFiber?: Fiber.Fiber<void, never> | undefined;
   /** The Chrome-enabled CLI, registered with desktop main before stdio flowed. */
   chromeProcess?: { kill: (signal: NodeJS.Signals) => boolean } | undefined;
+  /** Turns and Chrome calls: an idle session stops to free Chrome. */
+  chromeActivity?: ClaudeChromeActivity | undefined;
+  /** Unregisters the broker's release hook for this session's Chrome lease. */
+  chromeReleaserOff?: (() => void) | undefined;
   replyOwned?: boolean | undefined;
   hostContractVersion?: string | undefined;
   hostContractMigrationMessageUuid?: string | undefined;
@@ -2483,7 +2489,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.agentBrowser?.chrome?.verified !== true
           )
             return context?.agentBrowser?.chrome?.detail ?? claudeInChromeUnavailableDetail();
-          return yield* Effect.promise(() =>
+          const denial = yield* Effect.promise(() =>
             context.chromeRuntime!.admit(
               {
                 toolName,
@@ -2497,6 +2503,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               threadId,
             ),
           );
+          // Admitted: Chrome is in use until the call's result (or the turn's end).
+          if (denial === undefined && call.toolUseId)
+            context.chromeActivity?.callStarted(call.toolUseId);
+          return denial;
         }
         if (isClaudeComputerUseTool(toolName)) {
           const policy = yield* resolveSessionBrowserPolicy(threadId);
@@ -4330,6 +4340,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
         };
         context.turnState = undefined;
+        context.chromeActivity?.turnEnded();
         context.pendingPrompts.length = 0;
         if (context.resumeInvalidatedTurnId === turnState.turnId) {
           context.resumeInvalidatedTurnId = undefined;
@@ -4894,6 +4905,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const toolResultBlocks = toolResultBlocksFromUserMessage(message);
         for (const toolResult of toolResultBlocks) {
+          context.chromeActivity?.callEnded(toolResult.toolUseId);
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
             const subagentTool = context.subagentTaskTools.get(toolResult.toolUseId);
@@ -5259,6 +5271,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (!context.turnState) {
           const turnId = TurnId.makeUnsafe(yield* Random.nextUUIDv4);
           const startedAt = yield* nowIso;
+          // Background work is a turn too: Chrome isn't idle while it runs.
+          context.chromeActivity?.turnStarted();
           context.turnState = {
             synthetic: true,
             turnId,
@@ -6843,12 +6857,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       options?: {
         readonly emitExitEvent?: boolean;
         readonly interruptStreamFiber?: boolean;
+        /** Shown as the exit reason; defaults to "Session stopped". */
+        readonly exitReason?: string;
       },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (context.stopped) return;
 
         context.stopped = true;
+        context.chromeActivity?.dispose();
         if (context.mcpStatusFiber) yield* Fiber.interrupt(context.mcpStatusFiber);
         if (context.forkCheckFiber) yield* Fiber.interrupt(context.forkCheckFiber);
         // Stop input immediately; retain provenance until final tool events are queued safely.
@@ -6959,7 +6976,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ? { resumeCursor: context.session.resumeCursor }
               : {}),
             payload: {
-              reason: "Session stopped",
+              reason: options?.exitReason ?? "Session stopped",
               exitKind: "graceful",
             },
             providerRefs: {},
@@ -6985,6 +7002,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const generation = context.chromeGeneration;
         if (!generation) return;
         context.chromeGeneration = undefined;
+        context.chromeActivity?.dispose();
+        context.chromeActivity = undefined;
+        context.chromeReleaserOff?.();
+        context.chromeReleaserOff = undefined;
         if (context.chromeHealthFiber) {
           const fiber = context.chromeHealthFiber;
           context.chromeHealthFiber = undefined;
@@ -8687,18 +8708,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             registerChromeSession(threadId, chromeGeneration, chromeRuntime);
             // Masking is installed before the first SDK message can be logged.
             automationEventSanitizer.mask(threadId, CLAUDE_IN_CHROME_SERVER_NAME);
-            const decision = yield* Effect.tryPromise(() =>
-              chromeRuntime!.prepare({
-                threadId,
-                generation: chromeGeneration!,
-                providerHome,
-                providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
-              }),
-            ).pipe(
-              Effect.catch(() =>
+            const decision = yield* Effect.tryPromise({
+              try: () =>
+                chromeRuntime!.prepare({
+                  threadId,
+                  generation: chromeGeneration!,
+                  providerHome,
+                  providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
+                }),
+              catch: (cause) => cause,
+            }).pipe(
+              Effect.catch((cause) =>
                 Effect.succeed({
                   kind: "unknown" as const,
-                  detail: "Chrome setup failed verification.",
+                  // A refused lease says who holds Chrome; anything else is verification.
+                  detail:
+                    cause instanceof ComputerControlError && cause.error._tag === "Busy"
+                      ? cause.message
+                      : "Chrome setup failed verification.",
                 }),
               ),
             );
@@ -8957,6 +8984,36 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
         yield* Ref.set(contextRef, context);
         sessions.set(threadId, context);
+        if (context.chromeGeneration && computerBroker) {
+          // The Chrome lease lives as long as this CLI: an idle session stops to free it,
+          // after CLAUDE_CHROME_IDLE_MS or when another thread needs Chrome.
+          const chromeLeaseGeneration = context.chromeGeneration;
+          const broker = computerBroker;
+          context.chromeActivity = new ClaudeChromeActivity({
+            reportCalls: (running) =>
+              broker.reportChromeCalls(threadId, chromeLeaseGeneration, running),
+            stop: (reason) => {
+              Effect.runFork(
+                withThreadLock(
+                  threadId,
+                  Effect.gen(function* () {
+                    if (sessions.get(threadId) !== context || context.stopped || context.turnState)
+                      return;
+                    yield* stopSessionInternal(context, {
+                      emitExitEvent: true,
+                      exitReason: reason,
+                    });
+                  }),
+                ),
+              );
+            },
+          });
+          context.chromeReleaserOff = broker.registerChromeReleaser(
+            threadId,
+            chromeLeaseGeneration,
+            () => context.chromeActivity?.release() ?? false,
+          );
+        }
 
         if (pendingTranscriptWarning)
           yield* emitRuntimeWarning(context, pendingTranscriptWarning, {
@@ -9293,6 +9350,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const updatedAt = yield* nowIso;
         yield* ensureLive;
         context.turnState = turnState;
+        context.chromeActivity?.turnStarted();
         context.lastAssistantUuid = undefined;
         context.session = {
           ...context.session,
