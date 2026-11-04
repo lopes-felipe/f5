@@ -1,4 +1,5 @@
 import { makeOperationGate } from "../provider/operationGate.ts";
+import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { makeMcpAccountExecutionResolver } from "../mcp/accountExecution.ts";
 import { ServerSettingsService } from "../serverSettings";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -180,7 +181,7 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
     await validateProviderCompatibility(
       serverConfig,
       "codex",
-      config.binaryPath ?? "codex",
+      resolveCodexCommand(config.binaryPath),
       environment,
     );
     return CodexControlClient.create({

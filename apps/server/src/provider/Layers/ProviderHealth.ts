@@ -413,7 +413,7 @@ export const checkCodexProviderPreflight = (input?: {
           ? "notInstalled"
           : "versionProbeFailed",
         message: isCommandMissingCause(error, binaryPath)
-          ? `Could not start Codex CLI (${binaryPath}). Check Settings → Providers → Codex → Binary path on the server. ${binaryPath === "codex" ? "Installing ChatGPT or Codex desktop may not add codex to PATH." : "Make sure the configured executable exists and can be run."}`
+          ? `Could not start Codex CLI (${binaryPath}). Check Settings → Providers → Codex → Binary path on the server. ${!binaryPath.trim() || binaryPath.trim() === "codex" ? "Reinstall F5 to restore its bundled Codex runtime." : "Make sure the configured executable exists and can be run."}`
           : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }

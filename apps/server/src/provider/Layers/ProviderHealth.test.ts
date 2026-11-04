@@ -17,6 +17,7 @@ import {
   readCodexConfigModelProvider,
 } from "./ProviderHealth";
 import { prependCodexCliTelemetryDisabledConfig } from "../codexCliConfig";
+import { resolveBundledCodexExecutable } from "../codexExecutable.ts";
 
 // The spawner is simulated, so command discovery must not depend on installed CLIs.
 vi.mock("../../spawn/resolveCommand.ts", async (importOriginal) => ({
@@ -189,12 +190,19 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.authStatus, "authenticated");
       }).pipe(
         Effect.provide(
-          mockSpawnerLayer((args) => {
-            const joined = normalizeCodexArgs(args).join(" ");
-            if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
-            if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
-            throw new Error(`Unexpected args: ${joined}`);
-          }),
+          mockSpawnerLayer(
+            (args) => {
+              const joined = normalizeCodexArgs(args).join(" ");
+              if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
+              if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            },
+            (command) =>
+              assert.strictEqual(
+                (command as { command: string }).command,
+                resolveBundledCodexExecutable(),
+              ),
+          ),
         ),
       ),
     );
@@ -208,7 +216,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.available, false);
         assert.strictEqual(status.authStatus, "unknown");
         assert.match(status.message ?? "", /Binary path on the server/);
-        assert.match(status.message ?? "", /may not add codex to PATH/);
+        assert.match(status.message ?? "", /Reinstall F5.*bundled Codex runtime/);
       }).pipe(Effect.provide(failingSpawnerLayer("spawn codex ENOENT"))),
     );
 

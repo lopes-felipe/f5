@@ -110,7 +110,8 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         key: "binaryPath",
         label: "Binary path",
         placeholder: "codex",
-        description: "Path to the Codex binary used by this instance.",
+        description:
+          "Empty or codex uses bundled Codex. Set another command or path to override it.",
       },
       {
         key: "homePath",
@@ -143,7 +144,8 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         key: "binaryPath",
         label: "Binary path",
         placeholder: "claude",
-        description: "Path to the Claude binary used by this instance.",
+        description:
+          "Empty or claude uses bundled Claude. The Default profile can use a custom path.",
       },
       {
         key: "homePath",

@@ -1,4 +1,5 @@
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { resolveCodexCommand } from "../codexExecutable.ts";
 import {
   normalizeCodexThreadItemType,
   itemTitle,
@@ -2647,7 +2648,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             const codexHomePath = resolveCodexHome({ homePath: providerOptions?.codex?.homePath });
             const codex = yield* Effect.promise(() =>
               inspectCodexBinary({
-                binaryPath: providerOptions?.codex?.binaryPath ?? "codex",
+                binaryPath: resolveCodexCommand(providerOptions?.codex?.binaryPath),
                 processEnvironment,
                 cwd: input.cwd ?? process.cwd(),
                 ...(codexHomePath ? { homePath: codexHomePath } : {}),
@@ -3782,6 +3783,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             eligibility: "recovery-required" as const,
             reason: "Browser control from an earlier session hasn't stopped yet.",
           };
+        let binaryPath: string;
+        try {
+          binaryPath = resolveCodexCommand(options?.defaultProviderOptions?.codex?.binaryPath);
+        } catch (cause) {
+          return {
+            eligibility: "unavailable" as const,
+            reason: cause instanceof Error ? cause.message : "Bundled Codex is unavailable.",
+          };
+        }
         const processEnvironment = options?.processEnvironment ?? process.env;
         const eligibility = await codexChromeEligibility({
           codexHome: effectiveCodexHome(
@@ -3792,7 +3802,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           runtimeMode: "preflight",
           // The binary's path and signature only: the preflight never runs Codex.
           codex: await inspectCodexBinary({
-            binaryPath: options?.defaultProviderOptions?.codex?.binaryPath ?? "codex",
+            binaryPath,
             processEnvironment,
             cwd: process.cwd(),
             probeVersion: false,

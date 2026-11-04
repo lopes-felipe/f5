@@ -7,13 +7,16 @@ Codex history.
 
 ## How to
 
-1. Install the [Codex CLI](https://github.com/openai/codex) and run `codex login`.
+1. Codex is bundled with F5. Sign in from **Settings → Profiles & Accounts**.
 2. Open **Settings → Providers**. The default Codex provider uses **CODEX_HOME path** `~/.codex`
    with an empty **Shadow home path**.
 3. Pick a Codex model in the composer and start a thread.
 
-The audited version is **0.166.0**. To install that version explicitly, run
-`npm install -g @openai/codex@0.166.0`. F5 does not replace your installed executable.
+The bundled and audited version is **0.166.0**. An empty **Binary path** or `codex`
+selects the bundled copy. Set another command or an absolute executable path to use
+your own version; **Use bundled** resets the override. Isolated profiles also allow
+custom Codex versions at or above **0.144.3**, with an advisory when the version
+differs from the audited baseline. Bundled Codex updates with F5.
 
 ## Side questions and diagnostics
 

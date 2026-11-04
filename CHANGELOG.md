@@ -11,6 +11,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- F5 bundles the audited Codex 0.166.0 runtime. Existing empty or default `codex` Binary paths now use the bundled copy. Set an explicit Binary path to keep a PATH or Homebrew install; isolated profiles still accept custom Codex at or above 0.144.3. Bundled Codex updates with F5. Settings shows bundled/custom runtime sources and a Use bundled reset; isolated Claude profiles keep their bundled-runtime restriction.
+
 - Claude in Chrome certification records are version floors: a Claude update with the same browser setup stays covered, and a changed setup or tool list closes Claude in Chrome with its reason until a new live run. Withdrawing the covering record turns it off, and desktop and server use the same gate.
 - The Claude in Chrome live harness observes terminal `claude --chrome` coexistence; permission-mode behaviour, routing isolation, stale native hosts and frozen-server stop are no longer required of the live run.
 

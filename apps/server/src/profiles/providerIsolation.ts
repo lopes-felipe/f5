@@ -1,6 +1,7 @@
 import { compareCodexCliVersions, parseCodexCliVersion } from "@t3tools/shared/codexCliVersion";
 import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import { createHash } from "node:crypto";
+import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { dependencies } from "../../package.json" with { type: "json" };
 import { assertExecutionDirectory } from "./executionDirectory";
 import { Effect } from "effect";
@@ -91,7 +92,7 @@ async function checkProviderCompatibility(
   const { resolveInvocation } = await import("../spawn/resolveCommand");
   const { runProcess } = await import("../processRunner");
   try {
-    const command = resolveInvocation(binaryPath || "codex", ["--version"], environment);
+    const command = resolveInvocation(resolveCodexCommand(binaryPath), ["--version"], environment);
     const result = await runProcess(command.file, command.args, {
       env: environment,
       timeoutMs: 15000,

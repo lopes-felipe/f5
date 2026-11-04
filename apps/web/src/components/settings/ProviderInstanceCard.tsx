@@ -1,6 +1,8 @@
 "use client";
 
 import { ProviderUpdateDialog } from "./ProviderUpdateDialog";
+import { isDefaultProviderBinary } from "@t3tools/shared/providerBinary";
+import { useProfileState } from "../../profileState";
 import { toastManager } from "../ui/toast";
 
 import type { CustomModelSetting } from "@t3tools/contracts";
@@ -455,6 +457,7 @@ export function ProviderInstanceCard({
   onModelOrderChange,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
+  const isolatedProfile = useProfileState((state) => state.active?.isDefault === false);
   // The server-reported status wins when present; otherwise fall back to
   // "disabled"/"warning" based on the local `enabled` flag so the dot
   // reflects the persisted intent even before the first probe completes.
@@ -519,6 +522,23 @@ export function ProviderInstanceCard({
   const driverKind: ProviderDriverKind | null = isProviderDriverKind(instance.driver)
     ? instance.driver
     : null;
+  const bundledProvider = driverKind === "codex" || driverKind === "claudeAgent";
+  const binaryPath =
+    typeof instance.config === "object" &&
+    instance.config !== null &&
+    "binaryPath" in instance.config &&
+    typeof instance.config.binaryPath === "string"
+      ? instance.config.binaryPath.trim()
+      : "";
+  const customBinary =
+    bundledProvider &&
+    !isDefaultProviderBinary(binaryPath, driverKind === "codex" ? "codex" : "claude");
+  const binaryLabel = bundledProvider
+    ? (customBinary
+        ? "Custom · " + binaryPath
+        : "Bundled · " + (driverKind === "codex" ? "Codex" : "Claude")) +
+      (versionLabel ? (customBinary ? " · " : " ") + versionLabel.replace(/^v/, "") : "")
+    : versionLabel;
 
   const customModels = readCustomModels(instance.config);
   // Server-returned models may lag behind settings writes. Treat probe
@@ -645,8 +665,8 @@ export function ProviderInstanceCard({
                   {driverOption.badgeLabel}
                 </Badge>
               ) : null}
-              {versionLabel ? (
-                <code className="text-xs text-muted-foreground">{versionLabel}</code>
+              {binaryLabel ? (
+                <code className="text-xs text-muted-foreground">{binaryLabel}</code>
               ) : null}
               {enabled &&
               liveProvider?.versionAdvisory &&
@@ -960,8 +980,17 @@ export function ProviderInstanceCard({
                     value={readDriverConfigField(instance.config, field)}
                     onCommit={(next) => updateConfigField(field, next)}
                     placeholder={field.placeholder}
+                    disabled={
+                      field.key === "binaryPath" && driverKind === "claudeAgent" && isolatedProfile
+                    }
                     spellCheck={false}
                   />
+                  {field.key === "binaryPath" && driverKind === "claudeAgent" && isolatedProfile ? (
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Isolated profiles use the bundled Claude runtime to keep keychain sign-ins
+                      separate.
+                    </span>
+                  ) : null}
                   {field.description ? (
                     <span className="mt-1 block text-xs text-muted-foreground">
                       {field.description}
@@ -971,6 +1000,22 @@ export function ProviderInstanceCard({
               </div>
             ))}
 
+            {customBinary ? (
+              <div className="border-t px-4 py-3">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    onUpdate({
+                      ...instance,
+                      config: nextConfigBlobWithString(instance.config, "binaryPath", ""),
+                    })
+                  }
+                >
+                  Use bundled
+                </Button>
+              </div>
+            ) : null}
             {(driverKind === "codex" ||
               driverKind === "claudeAgent" ||
               driverKind === "antigravity") && (

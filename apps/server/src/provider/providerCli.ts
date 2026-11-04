@@ -9,6 +9,7 @@ import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { CommandNotFoundError, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
 import { resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
+import { resolveCodexCommand } from "./codexExecutable.ts";
 
 export interface ProviderCliCommandResult {
   readonly stdout: string;
@@ -55,7 +56,16 @@ export function runProviderCliCommand(
 ) {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const resolvedBinary = options?.binaryPath ?? binary;
+    const resolvedBinary = yield* Effect.try({
+      try: () =>
+        binary === "codex"
+          ? resolveCodexCommand(options.binaryPath)
+          : (options.binaryPath ?? binary),
+      catch: (cause) =>
+        cause instanceof CommandNotFoundError
+          ? cause
+          : new CommandNotFoundError(binary, String(cause)),
+    });
     const environment = buildProviderChildProcessEnv(
       options.baseEnvironment,
       options?.envOverrides,

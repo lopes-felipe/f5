@@ -3,6 +3,7 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "node-pty",
   "@ff-labs/",
   "@anthropic-ai/claude-agent-sdk",
+  "@openai/codex",
   "node-gyp-build",
   "node-addon-api",
   "bufferutil",

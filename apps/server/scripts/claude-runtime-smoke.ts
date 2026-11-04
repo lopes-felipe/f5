@@ -1,8 +1,11 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
+import { resolveBundledCodexExecutable } from "../src/provider/codexExecutable.ts";
 
 import { isAsarExecutablePath } from "../src/spawn/asarExecutable.ts";
 import { makeClaudeProcessGroupSpawner } from "../src/provider/claudeProcessGroup.ts";
@@ -48,6 +51,34 @@ async function smokeClaudeRuntime(): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let session: ReturnType<typeof query> | undefined;
   try {
+    await mkdir(join(root, ".codex"));
+    const codex = resolveBundledCodexExecutable();
+    const codexVersion = execFileSync(codex, ["--version"], {
+      env: { ...environment, CODEX_HOME: join(root, ".codex") },
+      encoding: "utf8",
+      timeout: 10_000,
+    }).trim();
+    if (codexVersion !== "codex-cli " + CODEX_PROTOCOL_BASELINE_VERSION)
+      throw new Error("Bundled Codex version does not match the audited baseline: " + codexVersion);
+    if (process.platform === "darwin") {
+      const vendor = dirname(dirname(codex));
+      let checked = 0;
+      for (const entry of readdirSync(vendor, { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const file = join(entry.parentPath, entry.name);
+        if (!execFileSync("/usr/bin/file", ["-b", file], { encoding: "utf8" }).includes("Mach-O"))
+          continue;
+        const signature = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=2", file], {
+          encoding: "utf8",
+          timeout: 10_000,
+        });
+        if (signature.status !== 0 || !/^TeamIdentifier=2DC432GLL2$/m.test(signature.stderr))
+          throw new Error("Bundled Codex vendor signature changed: " + file);
+        checked++;
+      }
+      if (!checked) throw new Error("Bundled Codex has no signed native binaries.");
+    }
+    console.log(JSON.stringify({ codexVersion }));
     const invocation = resolveClaudeCliInvocation("claude", ["--version"], environment);
     const sdkOptions = resolveClaudeSdkExecutableOptions("claude", environment);
     if (isAsarExecutablePath(invocation.file)) {

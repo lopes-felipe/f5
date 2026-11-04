@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  resolveBundledCodexExecutable,
+  resolveCodexCommand,
+  stripCodexManagedEnvironment,
+} from "../apps/server/src/provider/codexExecutable.ts";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,7 +17,11 @@ import { codexRequestShapeProbe } from "./codexRequestShapeAudit.ts";
 
 const PINNED_VERSION = CODEX_PROTOCOL_BASELINE_VERSION;
 async function command(file: string, args: string[]) {
-  const child = Bun.spawn([file, ...args], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([file, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: stripCodexManagedEnvironment(process.env),
+  });
   const [code, out, err] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -26,25 +35,9 @@ const root = path.resolve(import.meta.dirname, "..");
 const probeDirectory = await mkdtemp(path.join(root, "scripts/.codex-request-audit-"));
 const temporary = await mkdtemp(path.join(tmpdir(), "f5-codex-request-shapes-"));
 try {
-  let binary = process.env.CODEX_BINARY_PATH ?? "codex";
-  if (process.argv.includes("--install-baseline")) {
-    const platformPackage = `@openai/codex-${process.platform}-${process.arch}`;
-    await command("npm", [
-      "install",
-      "--prefix",
-      temporary,
-      "--no-save",
-      "--omit=optional",
-      "--fetch-retries=2",
-      `@openai/codex@${PINNED_VERSION}`,
-      `${platformPackage}@npm:@openai/codex@${PINNED_VERSION}-${process.platform}-${process.arch}`,
-    ]);
-    binary = path.join(
-      temporary,
-      "node_modules/.bin",
-      process.platform === "win32" ? "codex.cmd" : "codex",
-    );
-  }
+  const binary = process.argv.includes("--install-baseline")
+    ? resolveBundledCodexExecutable()
+    : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
   const version = await command(binary, ["--version"]);
   if (parseCodexCliVersion(version) !== PINNED_VERSION)
     throw new Error(`Request audit requires ${PINNED_VERSION}; received ${version}`);

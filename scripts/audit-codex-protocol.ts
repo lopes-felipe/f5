@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  resolveBundledCodexExecutable,
+  resolveCodexCommand,
+  stripCodexManagedEnvironment,
+} from "../apps/server/src/provider/codexExecutable.ts";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -41,6 +46,7 @@ function sha256(content: string): string {
 
 async function runCommand(command: string, args: ReadonlyArray<string>): Promise<string> {
   const process = Bun.spawn([command, ...args], {
+    env: stripCodexManagedEnvironment(globalThis.process.env),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -72,24 +78,9 @@ function printDrift(
 async function main(): Promise<void> {
   const temporaryDirectories: string[] = [];
   try {
-    let binary = process.env.CODEX_BINARY_PATH?.trim() || "codex";
-    if (process.argv.includes("--install-baseline")) {
-      const installDirectory = await mkdtemp(path.join(tmpdir(), "f5-codex-protocol-cli-"));
-      temporaryDirectories.push(installDirectory);
-      await runCommand("npm", [
-        "install",
-        "--prefix",
-        installDirectory,
-        "--no-save",
-        `@openai/codex@${CODEX_PROTOCOL_BASELINE_VERSION}`,
-      ]);
-      binary = path.join(
-        installDirectory,
-        "node_modules",
-        ".bin",
-        process.platform === "win32" ? "codex.cmd" : "codex",
-      );
-    }
+    const binary = process.argv.includes("--install-baseline")
+      ? resolveBundledCodexExecutable()
+      : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
 
     const outputDirectory = await mkdtemp(path.join(tmpdir(), "f5-codex-protocol-audit-"));
     temporaryDirectories.push(outputDirectory);
