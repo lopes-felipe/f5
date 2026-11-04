@@ -4277,6 +4277,59 @@ describe("Thread sidebar", () => {
       }
     });
 
+    it("opens a step's thread, or the workflow, from inside the workflow card", async () => {
+      const workflowTitle = "Clickable peek workflow";
+      const branchAThreadId = "clickable-peek-branch-a" as ThreadId;
+      const branchBThreadId = "clickable-peek-branch-b" as ThreadId;
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = {
+            ...createSnapshot([
+              createSnapshotThread({ id: THREAD_ID }),
+              createSnapshotThread({ id: branchAThreadId, title: `${workflowTitle} Branch A` }),
+              createSnapshotThread({ id: branchBThreadId, title: `${workflowTitle} Branch B` }),
+            ]),
+            planningWorkflows: [
+              createPlanningWorkflow({ title: workflowTitle, branchAThreadId, branchBThreadId }),
+            ],
+          };
+        },
+      });
+      try {
+        await userEvent.hover(await waitForSidebarThreadRow(workflowTitle));
+        const card = await waitForElement(peekCard, "The workflow card should open.");
+        // Steps with a thread are buttons (Authoring and Revision share the branch threads);
+        // Merge, which has no thread yet, is not.
+        const stepButtons = [
+          ...card.querySelectorAll<HTMLButtonElement>("[data-peek-step-thread]"),
+        ];
+        expect(new Set(stepButtons.map((button) => button.dataset.peekStepThread))).toEqual(
+          new Set([branchAThreadId, branchBThreadId]),
+        );
+        expect(stepButtons.some((button) => button.textContent?.includes("Merge"))).toBe(false);
+        expect(card.textContent).toContain("Merge");
+
+        // A real press inside the card must not close it before the click lands.
+        await userEvent.hover(stepButtons[1]!);
+        await userEvent.click(stepButtons[1]!);
+        await vi.waitFor(() =>
+          expect(mounted.router.state.location.pathname).toBe(`/${branchBThreadId}`),
+        );
+        await vi.waitFor(() => expect(peekCard()).toBeNull());
+
+        await userEvent.hover(await waitForSidebarThreadRow(workflowTitle));
+        const reopened = await waitForElement(peekCard, "The workflow card should reopen.");
+        await userEvent.click(
+          reopened.querySelector<HTMLElement>('[data-testid="sidebar-peek-workflow"] button')!,
+        );
+        await vi.waitFor(() => expect(mounted.router.state.location.pathname).toMatch(/workflow/u));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
     it("lists a workflow's phases and steps", async () => {
       const workflowTitle = "Peek workflow";
       const branchAThreadId = "peek-workflow-branch-a" as ThreadId;

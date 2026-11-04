@@ -298,6 +298,8 @@ export function SidebarWorkflowItem(props: {
       phases: props.phases ?? [],
       currentStep,
       threads: workflowThreads,
+      onOpenWorkflow: openWorkflow,
+      onOpenThread: actions.openThread,
     },
     { prefetchThreadId: targetThreadId },
   );
