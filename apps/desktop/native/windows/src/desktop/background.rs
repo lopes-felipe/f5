@@ -27,7 +27,7 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
     let hwnd = target(
         request,
         host,
-        if op == "type" || s(request, "action") == "setValue" {
+        if op == "type" || op == "key" || s(request, "action") == "setValue" {
             "type"
         } else {
             "click"
@@ -185,6 +185,10 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                 .SetValue(&BSTR::from(text.as_str()))
                 .map_err(|_| fail("OutcomeUnknown"))?;
             verification = Some(read_back(pattern, &text));
+        }
+        "key" | "scroll" => {
+            _activation = Some(cooperation::background_action(request, before));
+            verification = Some(background_events::execute(request, host, hwnd)?);
         }
         "openApp" => {} // Already running: do not activate it. New launches require takeover.
         _ => return Err(foreground_required("unsupported-in-background")),

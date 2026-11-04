@@ -41,6 +41,8 @@ describe("private desktop host", () => {
         "computer-remembered-consent-v1",
         "computer-cooperation-v1",
         "takeover-reservation-v1",
+        "background-shared-app-v1",
+        "background-events-v1",
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",
         "chrome-call-activity-v1",

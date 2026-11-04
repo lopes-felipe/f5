@@ -1,6 +1,34 @@
 import type { ComputerAppTier } from "@t3tools/contracts";
 
 export type ComputerPlatform = "darwin" | "win32";
+/**
+ * Only real-app rehearsals verifying a chord, a text key and element scrolling may add entries.
+ * No candidate is certified yet. Protocol, fixture and cross-compilation checks do not certify
+ * focus preservation or application support on a real desktop.
+ */
+export const BACKGROUND_EVENT_APPS: Readonly<Record<ComputerPlatform, ReadonlyArray<string>>> = {
+  darwin: [],
+  win32: [],
+};
+/** Rehearsal candidates are never production permissions or evidence of support. */
+export const BACKGROUND_EVENT_CANDIDATES: Readonly<
+  Record<ComputerPlatform, ReadonlyArray<string>>
+> = {
+  darwin: [
+    "com.apple.TextEdit",
+    "com.apple.Notes",
+    "com.apple.finder",
+    "com.apple.Terminal",
+    "com.apple.dt.Xcode",
+  ],
+  win32: ["notepad.exe", "explorer.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"],
+};
+export function computerBackgroundEventAppAllowed(
+  appId: string,
+  platform: ComputerPlatform,
+): boolean {
+  return BACKGROUND_EVENT_APPS[platform].some((id) => id.toLowerCase() === appId.toLowerCase());
+}
 /** Declarative source for native helper tables; prefixes end in '*'. */
 export const COMPUTER_APP_TIERS = {
   darwin: {

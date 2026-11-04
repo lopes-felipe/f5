@@ -66,6 +66,8 @@ export class ComputerHelperClient implements ComputerHelper {
     private readonly root: string,
     private readonly executable: string,
     private readonly now: () => number = Date.now,
+    /** Standalone debug-helper rehearsals only; desktop main never supplies arguments. */
+    private readonly helperArgs: ReadonlyArray<string> = [],
   ) {
     let lastTick = this.now();
     this.monitorTimer = setInterval(() => {
@@ -101,7 +103,7 @@ export class ComputerHelperClient implements ComputerHelper {
       });
       return;
     }
-    const child = spawn(resolve(executable), [], {
+    const child = spawn(resolve(executable), [...this.helperArgs], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

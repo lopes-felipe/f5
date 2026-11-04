@@ -442,7 +442,9 @@ function initializeComputerSystem(): void {
     root,
     Path.join(root, process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"),
   );
-  const lease = new ComputerLeaseAuthority();
+  const lease = new ComputerLeaseAuthority(Date.now, {
+    shareApps: () => helper.capabilities().includes("background-shared-app-v1"),
+  });
   const overlay = new ComputerOverlay();
   const nativeStatus = () => {
     const gate = computerCertificationStatus(

@@ -71,6 +71,20 @@ final class ExecutionPermitsTests: XCTestCase {
 }
 
 final class BackgroundPolicyTests: XCTestCase {
+  func testBackgroundEventsRequireCertifiedAppsAndExcludeSessionShortcuts() {
+    XCTAssertFalse(computerBackgroundEventAppAllowed("unverified.example"))
+    for op in ["key", "scroll"] {
+      XCTAssertFalse(computerBackgroundOpAllowed(op: op, action: nil))
+      XCTAssertTrue(computerBackgroundOpAllowed(op: op, action: nil, events: true))
+    }
+    for raw in ["Meta+Tab", "Meta+Space", "Ctrl+Left", "Control+ArrowUp", "Meta+Alt+Esc",
+      "Control+Meta+Q", "Meta+Shift+3", "Meta+Shift+4", "Meta+Shift+5"] {
+      XCTAssertFalse(computerBackgroundKeyAllowed(raw), raw)
+    }
+    for raw in ["Meta+A", "Shift+Left", "x", "Down"] {
+      XCTAssertTrue(computerBackgroundKeyAllowed(raw), raw)
+    }
+  }
   func testScopeAllowsAcrossDeliveries() {
     XCTAssertTrue(
       computerScopeAllows(
