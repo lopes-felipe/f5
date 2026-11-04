@@ -508,9 +508,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    # Keep ARM64 for the certified Claude CLI, but avoid the macos-latest
-    # pool, which has repeatedly failed to allocate hosted runners.
-    runs-on: macos-15
+    # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
+    runs-on: macos-latest
     timeout-minutes: 20
     defaults:
       run:
