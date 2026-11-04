@@ -65,6 +65,32 @@ export class ComputerLeaseAuthority {
         computerScopesConflict(input.scope, this.pending.holder.scope))
     );
   }
+  scopesConflict(a: ComputerLeaseScope, b: ComputerLeaseScope): boolean {
+    return computerScopesConflict(a, b);
+  }
+  renewal(input: ComputerLeaseHolder): boolean {
+    return this.entries.some(
+      ({ holder, lastMutationAt }) =>
+        sameThread(holder, input) &&
+        holder.sessionGeneration === input.sessionGeneration &&
+        holder.turnId === input.turnId &&
+        holder.backend === input.backend &&
+        holder.policyRevision === input.policyRevision &&
+        holder.cooperative === input.cooperative &&
+        sameComputerScope(holder.scope, input.scope) &&
+        this.now() - lastMutationAt < 60_000,
+    );
+  }
+  idleConflicts(scope: ComputerLeaseScope, idleMs: number): ReadonlyArray<ComputerLeaseHolder> {
+    return this.entries
+      .filter(
+        ({ holder, lastMutationAt }) =>
+          holder.scope.kind !== "takeover" &&
+          this.scopesConflict(scope, holder.scope) &&
+          this.now() - lastMutationAt >= idleMs,
+      )
+      .map(({ holder }) => holder);
+  }
   /** The armed takeover, which blocks every other thread's background mutations. */
   takeover(): ComputerLeaseHolder | undefined {
     return this.entries.find((entry) => entry.holder.scope.kind === "takeover")?.holder;

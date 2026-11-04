@@ -19,7 +19,7 @@ import type { McpToolResult } from "../mcp/previewMcpTools";
 import type { ComputerAutomationBrokerRuntime } from "./ComputerAutomationBroker";
 
 /** Above the 360 s takeover host correlation, so the broker always answers first. */
-export const COMPUTER_TOOL_TIMEOUT_MS = 370_000;
+export const COMPUTER_TOOL_TIMEOUT_MS = 400_000;
 const coordinate = z.number().int().min(0);
 const displayId = z.string().min(1).max(1024).optional();
 const app = z.string().min(1).max(1024);

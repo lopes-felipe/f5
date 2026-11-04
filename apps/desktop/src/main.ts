@@ -512,6 +512,11 @@ function initializeComputerSystem(): void {
       return Buffer.byteLength(data) <= 40 * 1024 ? data : undefined;
     },
     paused: (holder, cause) => {
+      computerSystem?.channel.cancelSessionAccess(
+        holder.profileId,
+        holder.threadId,
+        holder.sessionGeneration,
+      );
       computerSystem?.channel.send(holder.profileId, {
         type: "pauseChanged",
         threadId: holder.threadId,

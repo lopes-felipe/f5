@@ -115,6 +115,32 @@ function fixture(
     event: (message: Record<string, unknown>) => event(message),
   };
 }
+it("pauses a queued thread without suspending the current holder's placeholder generation", async () => {
+  const h = fixture();
+  try {
+    const active = await h.acquire();
+    const queued = { ...h.holder, threadId: "waiting", executionGeneration: 1 };
+    h.controller.updateGrants(queued);
+    await h.controller.prepareAcquisition(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "queued",
+      waitMs: 20_000,
+      admit: () => h.controller.acquire(queued),
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+    h.controller.setPaused("p", queued.threadId, true);
+    await rejected;
+    expect(h.controller.isPaused("p", queued.threadId)).toBe(true);
+    expect(h.controller.isPaused("p", active.threadId)).toBe(false);
+    expect(h.lease.holders()).toEqual([active]);
+    expect(h.helper.suspend).not.toHaveBeenCalledWith(active.executionGeneration);
+  } finally {
+    h.controller.close();
+  }
+});
 function action(
   holder: ComputerLeaseHolder,
   op: "type" | "inspect" | "screenshot" | "click" = "type",

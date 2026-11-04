@@ -186,6 +186,8 @@ export const COMPUTER_ACTIVITY_CORRELATION_CAPABILITY = "computer-activity-corre
 /** The backend reports whether its Chrome holder runs a browser call (`chromeCallsChanged`). */
 export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
 export const COMPUTER_COOPERATION_CAPABILITY = "computer-cooperation-v1";
+export const COMPUTER_TAKEOVER_RESERVATION_CAPABILITY = "takeover-reservation-v1";
+export const COMPUTER_LEASE_WAIT_MAX_MS = 20_000;
 export const ComputerInterruptionCause = Schema.Literals([
   "pointer",
   "key",
@@ -939,6 +941,9 @@ export const DesktopComputerHostMessage = Schema.Union([
     requestId: Id,
     holder: ComputerLeaseHolder,
     cooperative: Schema.optionalKey(Schema.Boolean),
+    waitMs: Schema.optionalKey(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: COMPUTER_LEASE_WAIT_MAX_MS })),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("leaseChanged"),
@@ -962,11 +967,18 @@ export const DesktopComputerHostMessage = Schema.Union([
     pauseCause: Schema.optionalKey(ComputerPauseCause),
   }),
   Schema.Struct({
+    type: Schema.Literal("takeoverReserved"),
+    requestId: Id,
+  }),
+  Schema.Struct({
     type: Schema.Literal("foregroundTakeoverAcquire"),
     requestId: Id,
     approvalRequestId: Id,
     holder: ComputerLeaseHolder,
     cooperative: Schema.optionalKey(Schema.Boolean),
+    waitMs: Schema.optionalKey(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: COMPUTER_LEASE_WAIT_MAX_MS })),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("observationInvalidate"),

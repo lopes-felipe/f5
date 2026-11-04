@@ -872,7 +872,7 @@ pub fn run() {
                 (state.started.elapsed().as_millis() as u64 + 1).saturating_sub(last) as i64
             };
             emit(
-                json!({"type":"heartbeat","monitorHealthy":state.monitors_ready(),"suspended":active.is_empty(),"activeGenerations":active,"inputSequence":state.input_sequence.load(Ordering::SeqCst),"lastUserInputAgeMs":age,"inputHeld":cooperation::held(),"frontmostAppId":unsafe { owner(GetForegroundWindow()).ok().map(|(id,_)|id) }}),
+                json!({"type":"heartbeat","monitorHealthy":state.monitors_ready(),"suspended":active.is_empty(),"activeGenerations":active,"inputSequence":state.input_sequence.load(Ordering::SeqCst),"lastUserInputAgeMs":age,"inputHeld":cooperation::held(),"targets":cooperation::target_summaries(),"frontmostAppId":unsafe { owner(GetForegroundWindow()).ok().map(|(id,_)|id) }}),
             );
             emit_status();
         }
