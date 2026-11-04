@@ -28,6 +28,7 @@ import {
 import { writeFileStringAtomically } from "../atomicWrite";
 import { isPathWithinRoot, safeLstat } from "../storage/storagePathSafety";
 import { acquireInstanceLock, ProfileBusyError } from "./InstanceLock";
+import { chromeSetupBlockingRemoval } from "../provider/chromeRegistrationProjection";
 
 export type ProfileRegistryRead =
   | { ok: true; registry: ProfileRegistryFile }
@@ -393,7 +394,10 @@ export class ProfileRegistryStore {
       if (!record || record.isDefault) throw new Error("Default cannot be removed.");
       const lock = await acquireInstanceLock(this.instanceLockPath(record));
       try {
-        await assertProfileDirectory(this.defaultStateDir, record);
+        const directory = await assertProfileDirectory(this.defaultStateDir, record);
+        // Its journal holds the only copy of browser registrations it replaced.
+        const chromeBlocker = await chromeSetupBlockingRemoval(directory);
+        if (chromeBlocker) throw new Error(chromeBlocker);
         registry = {
           ...registry,
           profiles: registry.profiles.map((p) =>

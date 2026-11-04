@@ -19,6 +19,14 @@ import {
 } from "./chromeNativeHostJournal";
 import type { PersistentChromeNativeHostStorage } from "./chromeNativeHostStorage";
 import {
+  ChromeProjectionConflict,
+  clearProjectionSources,
+  projectClaudeRegistrations,
+  projectionIo,
+  type ClaudeRegistrationProjection,
+  type ProjectionIo,
+} from "./chromeRegistrationProjection";
+import {
   CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
   CLAUDE_IN_CHROME_START_FAILED,
   CLAUDE_IN_CHROME_TOOLS_CHANGED,
@@ -65,6 +73,10 @@ interface Binding {
   epoch: number;
   readonly inspected: Map<string, number>;
   leaseHeld: boolean;
+  /** Isolated profiles: cancels an in-flight copy when the session goes away. */
+  projectionAbort?: AbortController;
+  /** The in-flight copy; finalize waits for it before reconciling and releasing. */
+  projecting?: Promise<unknown>;
 }
 
 /** Covers a settings read and one IPC round trip to main under load; still fails closed. */
@@ -94,6 +106,14 @@ export interface ChromeRuntimeDeps {
   readonly cache?: ChromeArtifactCache;
   readonly realpath?: (path: string) => Promise<string>;
   readonly launchTimeoutMs?: number;
+  /**
+   * Isolated profiles: the CLI writes under the profile's HOME and F5 copies the
+   * registration to `userHome` (Chrome's) before the launch is recorded.
+   */
+  readonly projection?: ClaudeRegistrationProjection;
+  readonly projectionIo?: ProjectionIo;
+  /** Diagnostics that never reach the user, such as why a copy was refused. */
+  readonly log?: (message: string) => void;
 }
 
 const withDeadline = <A>(promise: Promise<A>, ms: number, fallback: A): Promise<A> =>
@@ -235,6 +255,8 @@ export class ChromeSessionRuntime {
       });
       if (!live() || !(await this.deps.policyEnabled(session.threadId)))
         throw new Error("Chrome setup interrupted.");
+      // The copy must only ever see what this launch's CLI writes, never an older run's.
+      if (this.deps.projection) await clearProjectionSources(this.deps.projection);
       binding.decision = { kind: "launch", targetPath };
       binding.state = "pending";
       return binding.decision;
@@ -285,14 +307,66 @@ export class ChromeSessionRuntime {
       );
       return false;
     }
+    const verifyWrapper = (bytes: string) =>
+      this.deps.descriptor.verifyWrapper?.(bytes, this.deps.executableRealpath, this.realpath) ??
+      Promise.resolve(false);
+    if (this.deps.projection) {
+      const transaction = binding.transaction;
+      const abort = new AbortController();
+      binding.projectionAbort = abort;
+      // Writes only while this exact binding is still waiting on its launch.
+      const live = () =>
+        !abort.signal.aborted &&
+        this.current(threadId, generation) === binding &&
+        binding.state === "pending";
+      const io = this.deps.projectionIo ?? projectionIo;
+      const copy = projectClaudeRegistrations(
+        {
+          projection: this.deps.projection,
+          targetPath: transaction.targetPath,
+          allowedOrigins: this.deps.descriptor.allowedOrigins,
+          verifyWrapper,
+          signal: abort.signal,
+          ...(this.deps.launchTimeoutMs !== undefined
+            ? { timeoutMs: this.deps.launchTimeoutMs }
+            : {}),
+          commit: (writes) =>
+            this.transactions.commitProjection(transaction, writes, {
+              live,
+              write: (location, bytes) => io.writeAtomic(location, bytes),
+            }),
+        },
+        io,
+      );
+      binding.projecting = copy.catch(() => undefined);
+      try {
+        await copy;
+      } catch (error) {
+        this.deps.log?.(
+          `Claude in Chrome registration copy refused: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (this.current(threadId, generation) !== binding) return false;
+        // Copies already written are journaled destinations: reconcile settles them.
+        if (error instanceof ChromeProjectionConflict) {
+          this.invalidate(
+            threadId,
+            generation,
+            "external-cli-conflict",
+            CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+          );
+          binding.transaction = await this.transactions
+            .reconcile(transaction)
+            .catch(() => transaction);
+        } else await this.startupFailed(threadId, generation);
+        return false;
+      } finally {
+        if (binding.projectionAbort === abort) delete binding.projectionAbort;
+      }
+      if (!live()) return false;
+    }
     try {
       binding.transaction = await this.transactions.recordLaunch(binding.transaction, {
-        verifyWrapper: (bytes) =>
-          this.deps.descriptor.verifyWrapper?.(
-            bytes,
-            this.deps.executableRealpath,
-            this.realpath,
-          ) ?? Promise.resolve(false),
+        verifyWrapper,
         allowedOrigins: this.deps.descriptor.allowedOrigins,
         ...(this.deps.launchTimeoutMs !== undefined
           ? { timeoutMs: this.deps.launchTimeoutMs }
@@ -360,6 +434,7 @@ export class ChromeSessionRuntime {
   ): void {
     const binding = this.current(threadId, generation);
     if (!binding || binding.state === "retiring") return;
+    binding.projectionAbort?.abort();
     binding.state = state;
     binding.detail = detail;
     binding.epoch += 1;
@@ -522,7 +597,10 @@ export class ChromeSessionRuntime {
     if (!binding) return;
     binding.state = "retiring";
     this.sessions.delete(threadId);
+    binding.projectionAbort?.abort();
     try {
+      // A copy still writing must stop before reconcile reads it and the lease goes.
+      await binding.projecting;
       if (binding.transaction) await this.transactions.reconcile(binding.transaction);
     } finally {
       this.releaseLease(binding);
@@ -543,16 +621,20 @@ export function chromeRuntimeHost(input: {
   userHome: string;
   executableRealpath: string;
   policyEnabled: (threadId: string) => Promise<boolean>;
+  projection?: ClaudeRegistrationProjection;
+  log?: (message: string) => void;
 }) {
   const { broker } = input;
   return new ChromeSessionRuntime({
     descriptor: input.descriptor,
     record: input.record,
     ...(input.sdkVersion ? { sdkVersion: input.sdkVersion } : {}),
+    ...(input.projection ? { projection: input.projection } : {}),
     storage: input.storage,
     userHome: input.userHome,
     executableRealpath: input.executableRealpath,
     policyEnabled: input.policyEnabled,
+    ...(input.log ? { log: input.log } : {}),
     profileId: broker.host.profileId,
     currentGeneration: (threadId) => broker.generation(threadId),
     acquire: async (holder) => {

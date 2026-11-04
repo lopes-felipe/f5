@@ -86,7 +86,9 @@ export const CLAUDE_IN_CHROME_NEEDS_BUNDLED =
 export const CLAUDE_IN_CHROME_HOME_MISMATCH =
   "Claude in Chrome needs the provider to use your macOS home folder.";
 export const CLAUDE_IN_CHROME_ISOLATED_PROFILE =
-  "Claude in Chrome isn't available in isolated F5 profiles: Chrome only finds Claude through your real home folder, which this profile keeps separate.";
+  "Claude in Chrome isn't certified for isolated F5 profiles yet.";
+export const CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH =
+  "Claude in Chrome needs this isolated profile's Claude to use the profile's own home folder.";
 export const CLAUDE_IN_CHROME_START_FAILED =
   "Claude in Chrome did not start. It needs the Claude in Chrome extension and a claude.ai sign-in; API-key sign-in isn't supported. Open Chrome before asking Claude to use it.";
 export const CLAUDE_IN_CHROME_EXTERNAL_CONFLICT =

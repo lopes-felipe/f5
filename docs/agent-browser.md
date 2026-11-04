@@ -716,8 +716,39 @@ do no Chrome I/O, and warm admission reuses manifests and wrappers cached by met
 fingerprint. Claude launches with `--chrome`
 only when the record certifies, the toggle is on and setup is approved; otherwise with
 `--no-chrome`, and user overrides of either flag are stripped. Isolated F5 profiles set
-`HOME` to the profile's provider home, where the browser's native-messaging folders do
-not exist, so Claude in Chrome reports unavailable there with that reason. The session's
+`HOME` to the profile's provider home (`<stateDir>/provider-homes/claude`), so the CLI
+writes its manifests where Chrome never looks. When the covering record carries the
+`isolated-profiles` capability, F5 copies them: after `connected`, it waits for the CLI's
+manifests under that home and verifies each one (parsed, certified origins only, aimed at
+the profile's wrapper, wrapper verified against the bundled realpath). Then it writes them
+byte for byte, atomically, into the real home's seven folders. Nothing is written unless
+every source verifies, and a failure is a startup failure. The copies go to the locations
+the journal snapshotted before launch, so consent, conflict detection and restore are
+unchanged. The session keeps its isolated `HOME`. The native host and the session meet at
+`/tmp/claude-mcp-browser-bridge-<username>/`, which doesn't depend on `HOME`, and Claude
+must be signed in to the same claude.ai account as the extension. Without the capability,
+or with any other `HOME`, isolated profiles report unavailable with their reason.
+
+Guards on the copy:
+
+- **Fresh sources only.** `prepare` deletes the CLI's earlier manifests under the
+  isolated home, so only what this launch writes is copied.
+- **Serialized with restore.** The writes run in the journal's queue
+  (`commitProjection`), so a restore can't interleave with them, and a restored setup is
+  never written again.
+- **Session-bound.** The copy stops when the session ends or is invalidated, and
+  `finalize` waits for it before reconciling and releasing the lease.
+- **Owner check.** A destination holding bytes the setup never approved (neither the
+  original, consent included, nor this setup's own copy) is another owner's. A reconnect
+  then reports `external-cli-conflict` instead of overwriting it, and fresh consent needs
+  a new session.
+- **Logged refusals.** Each refusal is logged with its reason.
+- **Profile removal.** It is refused while a profile's unrestored setup still points
+  Chrome at that profile's wrapper; the profile's own Settings restores it first.
+
+Restores are ordered only within one profile's journal. If two profiles each took the
+registration in turn, restore the newer setup first: restoring the older one first can
+put back bytes aimed at a wrapper the newer restore then deletes. The session's
 restart fingerprint covers only the launch decision and wrapper target, never connection
 health, so a disconnect or reconnect does not restart the session.
 
@@ -1053,7 +1084,10 @@ DOM text or screenshots) for the operator gate and never stamps a record:
 - `F5_CLAUDE_CHROME_LIVE=1 bun run --cwd apps/server test:file integration/claudeChromeNative.live.test.ts`
   with `F5_CLAUDE_CHROME_CONFIG_DIR=<dir>` (an isolated Claude config signed in once to
   claude.ai with `CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`; Vitest drops an
-  inherited `CLAUDE_CONFIG_DIR`) and `F5_CLAUDE_CHROME_REPORT=<file>`;
+  inherited `CLAUDE_CONFIG_DIR`) and `F5_CLAUDE_CHROME_REPORT=<file>`. Optionally, set
+  `F5_CLAUDE_CHROME_ISOLATED_STATE_DIR=<dir>` (an isolated F5 profile's folder,
+  `~/.f5/userdata-profiles/<id>`, whose Claude is signed in to the extension's claude.ai
+  account) to add the isolated-profile phase;
 - `F5_CODEX_NATIVE_LIVE=chrome … integration/codexChromeNative.live.test.ts` with
   `F5_CODEX_CHROME_HOME=<dir>` (a Codex home signed in once with
   `CODEX_HOME=<dir> codex login`), `F5_CODEX_CHROME_REPORT=<file>` and, optionally,
@@ -1109,6 +1143,20 @@ versions (stamped as floors) and `admission: "session"`, and computes:
   and F5's restore leaves the terminal's manifests untouched; an incomplete restore of
   F5's own wrapper keeps the journal. The terminal's registration stays in place
   afterwards, as running it yourself would.
+
+  The optional isolated-profile phase runs Claude with the environment F5 builds for that
+  profile and copies its registration with `projectClaudeRegistrations`. It observes three
+  assertions:
+  - `isolated-projection`: every destination is byte-identical to what the CLI wrote, and
+    the launch verifies.
+  - `isolated-read-only-call`: a tab listing succeeds from that session.
+  - `isolated-restore`: the real-home folders and the profile's wrapper are back to their
+    pre-run bytes.
+
+  `--evidence` adds the `isolated-profiles` capability to the record only when all three
+  passed. Without the phase, or if any of them fails, the record is still stamped and
+  isolated profiles stay closed. `evidenceMismatches` checks a claimed capability's
+  assertions like the base ones.
 
   Not required of the live run: permission-mode behaviour (disclosed in the toggle and
   consent), routing isolation (another profile's registration always asks, even with
