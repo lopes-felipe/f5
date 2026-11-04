@@ -6,6 +6,8 @@ import type {
   ComputerLeaseHolder,
 } from "@t3tools/contracts";
 import { computerRequestPayload } from "@t3tools/shared/computerControl";
+import { ComputerControlError } from "@t3tools/shared/computerControl";
+import * as computerApps from "@t3tools/shared/computerApps";
 import { ComputerController } from "./ComputerController";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
@@ -29,7 +31,7 @@ function holderFor(threadId: string, appId: string): ComputerLeaseHolder {
     policyRevision: 0,
   };
 }
-function make(options: { capable?: boolean } = {}) {
+function make(options: { capable?: boolean; shareApps?: boolean; events?: boolean } = {}) {
   let event: (message: Record<string, unknown>) => void = () => {};
   const request = vi.fn(
     async (_request: ComputerAutomationRequest): Promise<unknown> => ({ ok: true }),
@@ -43,10 +45,19 @@ function make(options: { capable?: boolean } = {}) {
       event = callback;
       return () => {};
     },
-    capabilities: () => (options.capable === false ? [] : ["background-ax-v1"]),
+    capabilities: () =>
+      options.capable === false
+        ? []
+        : [
+            "background-ax-v1",
+            ...(options.shareApps ? ["background-shared-app-v1"] : []),
+            ...(options.events ? ["background-events-v1"] : []),
+          ],
     drain: vi.fn(async () => {}),
   };
-  const lease = new ComputerLeaseAuthority();
+  const lease = new ComputerLeaseAuthority(Date.now, {
+    shareApps: () => options.shareApps === true,
+  });
   const paused = vi.fn();
   const states = vi.fn();
   const overlay = {
@@ -103,6 +114,129 @@ function envelope(
 }
 
 describe("background computer control", () => {
+  it("applies shared focus to certified background keys and stales sibling snapshots after element scroll", async () => {
+    const h = make({ shareApps: true, events: true });
+    const certified = vi
+      .spyOn(computerApps, "computerBackgroundEventAppAllowed")
+      .mockReturnValue(true);
+    h.request.mockImplementation(async (request) =>
+      request.op === "inspect"
+        ? { accessible: true, snapshotId: request.requestId, nodes: [] }
+        : { ok: true },
+    );
+    try {
+      const a = h.controller.acquire(holderFor("a", "notes"));
+      const b = h.controller.acquire(holderFor("b", "notes"));
+      await expect(
+        h.controller.invoke(envelope("b-key", b, { op: "key", chords: ["Down"], repeat: 1 })),
+      ).rejects.toMatchObject({ error: { kind: "shared-focus" } });
+      await h.controller.invoke(envelope("a-tree", a, { op: "inspect" }));
+      await h.controller.invoke(envelope("a-press", a, { snapshotId: "a-tree" }));
+      await expect(
+        h.controller.invoke(envelope("a-key", a, { op: "key", chords: ["Down"], repeat: 1 })),
+      ).resolves.toEqual({ ok: true });
+      await h.controller.invoke(envelope("b-tree", b, { op: "inspect" }));
+      await h.controller.invoke(
+        envelope("a-scroll", a, { op: "scroll", snapshotId: "a-tree", deltaX: 0, deltaY: 3 }),
+      );
+      await expect(
+        h.controller.invoke(envelope("b-stale", b, { snapshotId: "b-tree" })),
+      ).rejects.toMatchObject({ error: { _tag: "StaleElement" } });
+    } finally {
+      certified.mockRestore();
+      h.controller.close();
+    }
+  });
+  it("keeps another generation excluded after OutcomeUnknown until native drain confirms completion", async () => {
+    const h = make({ shareApps: true });
+    let rejectAction!: (error: unknown) => void;
+    let drain!: () => void;
+    h.request.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectAction = reject;
+        }),
+    );
+    vi.mocked(h.helper.drain!).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          drain = resolve;
+        }),
+    );
+    try {
+      const a = h.controller.acquire(holderFor("a", "notes"));
+      const b = h.controller.acquire(holderFor("b", "notes"));
+      const first = h.controller.invoke(envelope("unknown", a, { op: "openApp" }));
+      const rejected = expect(first).rejects.toMatchObject({ error: { _tag: "OutcomeUnknown" } });
+      const second = h.controller.invoke(envelope("waiting", b, { op: "openApp" }));
+      await vi.waitFor(() => expect(h.request).toHaveBeenCalledTimes(1));
+      rejectAction(new ComputerControlError({ _tag: "OutcomeUnknown" }));
+      await rejected;
+      expect(h.request).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(h.helper.drain).toHaveBeenCalled());
+      drain();
+      await expect(second).resolves.toEqual({ ok: true });
+      expect(h.request).toHaveBeenCalledTimes(2);
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("shares one app but serializes its mutations across generations", async () => {
+    const h = make({ shareApps: true });
+    const finishes: Array<() => void> = [];
+    h.request.mockImplementation(
+      () => new Promise((resolve) => finishes.push(() => resolve({ ok: true }))),
+    );
+    try {
+      const a = h.controller.acquire(holderFor("a", "notes"));
+      const b = h.controller.acquire(holderFor("b", "notes"));
+      const first = h.controller.invoke(envelope("a1", a, { op: "openApp" }));
+      const second = h.controller.invoke(envelope("b1", b, { op: "openApp" }));
+      await vi.waitFor(() => expect(h.request).toHaveBeenCalledTimes(1));
+      finishes.shift()!();
+      await first;
+      await vi.waitFor(() => expect(h.request).toHaveBeenCalledTimes(2));
+      finishes.shift()!();
+      await second;
+      expect(h.lease.holders()).toHaveLength(2);
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("requires a fresh press after another agent writes and invalidates its old snapshot", async () => {
+    const h = make({ shareApps: true });
+    h.request.mockImplementation(async (request) =>
+      request.op === "inspect"
+        ? { accessible: true, snapshotId: request.requestId, nodes: [] }
+        : { ok: true },
+    );
+    try {
+      const a = h.controller.acquire(holderFor("a", "notes"));
+      const b = h.controller.acquire(holderFor("b", "notes"));
+      await expect(
+        h.controller.invoke(envelope("unpressed", b, { op: "type", text: "no" })),
+      ).rejects.toMatchObject({ error: { kind: "shared-focus" } });
+      await h.controller.invoke(envelope("a-inspect", a, { op: "inspect" }));
+      await h.controller.invoke(envelope("a-press", a, { snapshotId: "a-inspect" }));
+      await h.controller.invoke(envelope("b-inspect", b, { op: "inspect" }));
+      await h.controller.invoke(
+        envelope("b-set", b, { snapshotId: "b-inspect", action: "setValue", value: "b" }),
+      );
+      await expect(
+        h.controller.invoke(envelope("old-a", a, { snapshotId: "a-inspect" })),
+      ).rejects.toMatchObject({ error: { _tag: "StaleElement" } });
+      await expect(
+        h.controller.invoke(envelope("a-type", a, { op: "type", text: "no" })),
+      ).rejects.toMatchObject({ error: { kind: "shared-focus" } });
+      await h.controller.invoke(envelope("a-fresh", a, { op: "inspect" }));
+      await h.controller.invoke(envelope("a-repress", a, { snapshotId: "a-fresh" }));
+      await expect(
+        h.controller.invoke(envelope("a-type-ok", a, { op: "type", text: "yes" })),
+      ).resolves.toEqual({ ok: true });
+    } finally {
+      h.controller.close();
+    }
+  });
   it("lets two threads hold two apps and stops only the conflicting one", async () => {
     const h = make();
     try {

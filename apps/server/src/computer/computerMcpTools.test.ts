@@ -61,6 +61,56 @@ function setup(displays = [display], delivery: "foreground" | "background" = "fo
   };
 }
 describe("shared computer tool catalog", () => {
+  it("routes app keys and element scrolling without display geometry", async () => {
+    const h = setup([], "background");
+    h.context.geometry.rememberApps([
+      { appId: "one", name: "Notes", tier: "full", running: true, frontmost: false },
+    ]);
+    expect(
+      (await callComputerTool(h.context, "computer_key", { app: "Notes", keys: "Down" })).isError,
+    ).not.toBe(true);
+    expect(h.invoke).toHaveBeenLastCalledWith(
+      "t",
+      "s",
+      expect.objectContaining({
+        op: "key",
+        appId: "one",
+        chords: ["Down"],
+      }),
+      undefined,
+      expect.any(Object),
+    );
+    expect(
+      (
+        await callComputerTool(h.context, "computer_scroll", {
+          app: "Notes",
+          snapshotId: "snapshot",
+          elementRef: "element",
+          deltaY: 4,
+        })
+      ).isError,
+    ).not.toBe(true);
+    const request = h.invoke.mock.calls.at(-1)![2];
+    expect(request).toMatchObject({
+      op: "scroll",
+      appId: "one",
+      snapshotId: "snapshot",
+      elementRef: "element",
+    });
+    expect(request).not.toHaveProperty("displayId");
+    expect(request).not.toHaveProperty("geometryGeneration");
+    expect(
+      (
+        await callComputerTool(h.context, "computer_scroll", {
+          app: "Notes",
+          snapshotId: "snapshot",
+          elementRef: "element",
+          x: 1,
+          y: 1,
+        })
+      ).isError,
+    ).toBe(true);
+  });
   it("waits for availability without observing or opening consent", async () => {
     const h = setup();
     const waited = await callComputerTool(h.context, "computer_wait_for_target", {

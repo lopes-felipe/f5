@@ -1,6 +1,7 @@
 mod capture;
 use capture::*;
 mod background;
+mod background_events;
 mod capture_worker;
 
 mod accessibility;
@@ -760,7 +761,7 @@ pub fn run() {
         }
     });
     emit(
-        json!({"type":"hello","protocolVersion":1,"helperVersion":"2.1.0","capabilities":["background-ax-v1","computer-cooperation-v1"]}),
+        json!({"type":"hello","protocolVersion":1,"helperVersion":"2.1.0","capabilities":["background-ax-v1","computer-cooperation-v1","background-shared-app-v1","background-events-v1"]}),
     );
     std::thread::spawn(|| {
         let mut last_probe: Option<Instant> = None;

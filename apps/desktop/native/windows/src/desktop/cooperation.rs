@@ -183,13 +183,19 @@ pub(super) fn epoch_matches(app: &str, expected: u64) -> bool {
 pub(super) fn target_summaries() -> Vec<Value> {
     let state = STATE.get().unwrap();
     let now = now_ms();
-    state.watch_owners.lock().unwrap().iter().map(|(app, watch)| {
-        let slot = &state.watches[watch.slot];
-        let last = slot.last_activity.load(Ordering::SeqCst);
-        json!({"appId":app,"activityEpoch":slot.epoch.load(Ordering::SeqCst),
+    state
+        .watch_owners
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(app, watch)| {
+            let slot = &state.watches[watch.slot];
+            let last = slot.last_activity.load(Ordering::SeqCst);
+            json!({"appId":app,"activityEpoch":slot.epoch.load(Ordering::SeqCst),
             "lastActivityAgeMs":if last == 0 {-1} else {now.saturating_sub(last) as i64},
             "frontmost":slot.frontmost.load(Ordering::SeqCst)})
-    }).collect()
+        })
+        .collect()
 }
 pub(super) struct ActionGuard(u64);
 pub(super) fn background_action(request: &Value, before: HWND) -> ActionGuard {

@@ -188,6 +188,8 @@ export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
 export const COMPUTER_COOPERATION_CAPABILITY = "computer-cooperation-v1";
 export const COMPUTER_TAKEOVER_RESERVATION_CAPABILITY = "takeover-reservation-v1";
 export const COMPUTER_LEASE_WAIT_MAX_MS = 20_000;
+export const COMPUTER_SHARED_APP_CAPABILITY = "background-shared-app-v1";
+export const COMPUTER_BACKGROUND_EVENTS_CAPABILITY = "background-events-v1";
 export const ComputerInterruptionCause = Schema.Literals([
   "pointer",
   "key",
@@ -299,7 +301,16 @@ export const ComputerAutomationRequest = Schema.Union([
     op: Schema.Literal("scroll"),
     deltaX: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
     deltaY: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
-  }),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...Envelope,
+    op: Schema.Literal("scroll"),
+    appId: Id,
+    snapshotId: Id,
+    elementRef: Id,
+    deltaX: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
+    deltaY: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
   Schema.Struct({
     ...Envelope,
     op: Schema.Literal("type"),
@@ -309,6 +320,7 @@ export const ComputerAutomationRequest = Schema.Union([
   Schema.Struct({
     ...Envelope,
     op: Schema.Literal("key"),
+    appId: Schema.optional(Id),
     chords: Schema.Array(Id).check(Schema.isMinLength(1), Schema.isMaxLength(16)),
     repeat: Positive.check(Schema.isLessThanOrEqualTo(20)),
   }),
@@ -502,6 +514,7 @@ export const ComputerAutomationError = Schema.Union([
       "user-active",
       "other-app",
       "foreground-busy",
+      "shared-focus",
     ]),
   }),
   Schema.Struct({ _tag: Schema.Literal("Execution"), message: Schema.String }),
