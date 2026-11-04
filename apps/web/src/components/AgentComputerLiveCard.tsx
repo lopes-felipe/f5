@@ -130,7 +130,20 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
   const shown = cardActivity(activity, chrome);
   const native = shown?.backend === "native";
   const backendLabel = computerBackendLabel(shown?.backend);
-  const tone = waiting ? "pending" : computerStatusTone(shown, { paused, held, chrome });
+  const tone = paused
+    ? "warning"
+    : waiting
+      ? "pending"
+      : computerStatusTone(shown, { paused, held, chrome });
+  const summary =
+    execution?.state === "recovery"
+      ? "Needs recovery"
+      : paused || execution?.state === "paused"
+        ? "Paused"
+        : (waiting ??
+          (execution?.delivery === "background" && execution.state === "active"
+            ? "Working in background"
+            : describeComputerAction(shown, { paused, held, chrome })));
   return (
     <div
       className={cn(
@@ -156,11 +169,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
           <span
             className={cn("size-1.5 shrink-0 rounded-full", COMPUTER_STATUS_TONE_CLASS[tone])}
           />
-          <span className="truncate">
-            {stopUnconfirmed
-              ? "Stop unconfirmed"
-              : (waiting ?? describeComputerAction(shown, { paused, held, chrome }))}
-          </span>
+          <span className="truncate">{stopUnconfirmed ? "Stop unconfirmed" : summary}</span>
           {shown?.appName && !paused && !waiting ? (
             <span className="truncate font-normal text-muted-foreground">· {shown.appName}</span>
           ) : null}

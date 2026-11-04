@@ -173,7 +173,7 @@ describe("computer use banner text", () => {
   };
   it("names the app for background control and counts several agents", () => {
     expect(computerUseBannerText({ holders: [holder] }, false)).toBe(
-      "An agent is working in TextEdit in the background",
+      "Working in background · TextEdit",
     );
     expect(
       computerUseBannerText(
@@ -185,7 +185,7 @@ describe("computer use banner text", () => {
         },
         false,
       ),
-    ).toBe("2 agents are working in the background in TextEdit, Notes");
+    ).toBe("2 agents working in background · TextEdit, Notes");
     expect(
       computerUseBannerTargets({
         holders: [holder, { ...holder, threadId: ThreadId.makeUnsafe("b") }],
@@ -219,9 +219,7 @@ describe("computer use banner text", () => {
         { holders: [{ ...holder, state: "recovery", pauseCause: "outcome-unknown" }] },
         false,
       ),
-    ).toBe(
-      "Computer control stopped · check TextEdit before resuming · last action's result is unknown",
-    );
+    ).toBe("Needs recovery · check TextEdit before resuming · last action's result is unknown");
     expect(computerUseBannerText({ holders: [], otherProfile: true }, false)).toBe(
       "An agent in another F5 profile is controlling this computer",
     );
@@ -267,7 +265,7 @@ describe("computer use banner text", () => {
     const idle = { ...chrome, threadId: ThreadId.makeUnsafe("b"), browser: "idle" as const };
     expect(primaryComputerHolder({ holders: [idle, holder] })).toBe(holder);
     expect(computerUseBannerText({ holders: [idle, holder] }, false)).toBe(
-      "An agent is working in TextEdit in the background",
+      "Working in background · TextEdit",
     );
     expect(
       computerUseBannerText({ holders: [{ ...chrome, browser: "idle", state: "paused" }] }, false),

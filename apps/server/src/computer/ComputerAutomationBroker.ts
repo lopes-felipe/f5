@@ -1048,6 +1048,7 @@ export class ComputerAutomationBrokerRuntime {
     }
     let requestId = randomUUID();
     let dispatched = false;
+    let retrying = false;
     const retryDeadline =
       performance.now() + Math.min(COMPUTER_LEASE_WAIT_MAX_MS, Math.max(0, timeoutMs - 5000));
     const controller = new AbortController();
@@ -1063,7 +1064,7 @@ export class ComputerAutomationBrokerRuntime {
           // Revision checkpoint after context resolution and queue admission.
           this.assertRevision(binding, revision, turnRevision);
           if (options?.signal?.aborted) throw options.signal.reason;
-          if (dispatched) {
+          if (retrying) {
             delivery = this.selectDelivery(live, binding, input.op, appId, {
               executionMode: requestedMode,
               action: input.action,
@@ -1289,6 +1290,7 @@ export class ComputerAutomationBrokerRuntime {
             options?.signal?.addEventListener("abort", abort, { once: true });
             if (options?.signal?.aborted) abort();
           });
+          retrying = true;
         } finally {
           this.inFlight.delete(requestId);
         }

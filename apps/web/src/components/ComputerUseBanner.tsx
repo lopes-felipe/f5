@@ -76,12 +76,12 @@ export function computerUseBannerText(
       : null;
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
-  const state = pausedLocally && holder.state === "active" ? "paused" : holder.state;
+  const state = pausedLocally && holder.state !== "recovery" ? "paused" : holder.state;
   switch (state) {
     case "paused":
       return `Computer control paused${cause ? ` · ${cause}` : ""}`;
     case "recovery":
-      return `Computer control stopped${app ? ` · check ${app} before resuming` : ""}${cause ? ` · ${cause}` : ""}`;
+      return `Needs recovery${app ? ` · check ${app} before resuming` : ""}${cause ? ` · ${cause}` : ""}`;
     case "waiting-secure-input":
       return `Agent waiting${app ? ` in ${app}` : ""} while secure text entry is active`;
     case "pending-consent":
@@ -111,9 +111,9 @@ export function computerUseBannerText(
   const background = leases.holders.filter(
     (entry) => entry.delivery === "background" && entry.state === "active",
   );
-  if (background.length <= 1) return `An agent is working in ${app ?? "an app"} in the background`;
+  if (background.length <= 1) return `Working in background · ${app ?? "an app"}`;
   const apps = [...new Set(background.flatMap((entry) => (entry.appName ? [entry.appName] : [])))];
-  return `${background.length} agents are working in the background${apps.length ? ` in ${apps.join(", ")}` : ""}`;
+  return `${background.length} agents working in background${apps.length ? ` · ${apps.join(", ")}` : ""}`;
 }
 
 /**
@@ -127,8 +127,9 @@ export function computerUseBannerAmbient(
   return (
     !leases.pendingTakeover &&
     !leases.otherProfile &&
-    holder?.delivery === "background" &&
-    holder.state === "active" &&
+    (holder?.state === "waiting-user" ||
+      holder?.state === "waiting-agent" ||
+      (holder?.delivery === "background" && holder.state === "active")) &&
     !pausedLocally
   );
 }

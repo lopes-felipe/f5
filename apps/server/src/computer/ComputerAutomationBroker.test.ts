@@ -836,6 +836,41 @@ describe("background delivery", () => {
       h.broker.close();
     }
   });
+  it("reselects delivery after pre-dispatch admission contention and stops when it becomes foreground", async () => {
+    const h = await backgroundHarness();
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.ipc.messages.length = 0;
+      const delivery = vi
+        .spyOn(h.broker, "selectDelivery")
+        .mockReturnValueOnce("background")
+        .mockReturnValue("foreground");
+      const acquire = vi
+        .spyOn(h.broker.host, "correlated")
+        .mockRejectedValueOnce(
+          new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" }),
+        );
+      try {
+        await expect(
+          h.broker.invoke("t", "s", { op: "type", appId: "com.apple.TextEdit", text: "x" }),
+        ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+        expect(delivery).toHaveBeenCalledTimes(2);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(h.ipc.messages.filter((message) => message.type === "request")).toEqual([]);
+      } finally {
+        delivery.mockRestore();
+        acquire.mockRestore();
+      }
+    } finally {
+      h.broker.close();
+    }
+  });
   it("waits for a takeover reservation before showing exactly one consent, and none on Busy", async () => {
     const h = await backgroundHarness();
     h.ipc.emit("message", {

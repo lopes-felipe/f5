@@ -23,44 +23,48 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => ({}),
 }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
-it.each(["waiting-user", "waiting-agent"] as const)(
-  "shows ambient %s without Resume",
-  async (state) => {
-    window.desktopBridge = { computerAutomation: { setPaused: vi.fn() } } as never;
-    const store = useAgentComputerActivityStore.getState();
-    store.setLeases({
-      holders: [
-        {
-          threadId,
-          backend: "native",
-          delivery: "background",
-          appId: "com.apple.TextEdit",
-          appName: "TextEdit",
-          state,
-          leaseHeld: false,
-        },
-      ],
-    });
-    const screen = await render(
-      <>
-        <ComputerUseBanner />
-        <AgentComputerLiveCard threadId={threadId} />
-      </>,
-    );
-    try {
-      const text =
-        state === "waiting-user"
+it.each([
+  ["waiting-user", "background"],
+  ["waiting-agent", "background"],
+  ["waiting-user", "foreground"],
+  ["waiting-agent", "foreground"],
+] as const)("shows ambient %s/%s without Resume", async (state, delivery) => {
+  window.desktopBridge = { computerAutomation: { setPaused: vi.fn() } } as never;
+  const store = useAgentComputerActivityStore.getState();
+  store.setLeases({
+    holders: [
+      {
+        threadId,
+        backend: "native",
+        delivery,
+        ...(delivery === "background" ? { appId: "com.apple.TextEdit", appName: "TextEdit" } : {}),
+        state,
+        leaseHeld: false,
+      },
+    ],
+  });
+  const screen = await render(
+    <>
+      <ComputerUseBanner />
+      <AgentComputerLiveCard threadId={threadId} />
+    </>,
+  );
+  try {
+    const text =
+      state === "waiting-user"
+        ? delivery === "background"
           ? "Waiting for you to finish in TextEdit"
-          : "Waiting for another agent";
-      await expect.element(page.getByText(text, { exact: true }).first()).toBeVisible();
-      await expect
-        .element(page.getByRole("button", { name: "Resume", exact: true }))
-        .not.toBeInTheDocument();
-    } finally {
-      await screen.unmount();
-    }
-  },
-);
+          : "Waiting while you use the computer"
+        : "Waiting for another agent";
+    await expect.element(page.getByText(text, { exact: true }).first()).toBeVisible();
+    await expect.element(page.getByTestId("computer-use-banner")).toHaveClass("border-border");
+    await expect
+      .element(page.getByRole("button", { name: "Resume", exact: true }))
+      .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
 it("shows session-only persistence after the native request closes", async () => {
   window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
   const store = useAgentComputerActivityStore.getState();
