@@ -717,6 +717,9 @@ export class ComputerController {
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
+      // An inspection made during an unknown action's drain must not become fresh evidence
+      // after the helper finishes its remaining writes.
+      if (this.nativeWork.has(entry)) this.recordSharedMutation(request, {}, false);
       settle();
     };
     native.then(
@@ -1206,6 +1209,10 @@ export class ComputerController {
       this.lease.find(request.authorization) ??
       this.controlled.get(this.key(request.authorization));
     const observedApp = background && "appId" in request ? request.appId : undefined;
+    const appEpoch =
+      !mutation && observedApp && this.sharedAppsAvailable()
+        ? this.sharedApps.epoch(observedApp)
+        : undefined;
     const observationSequence = holder
       ? this.cooperation.observationSequence(holder, observedApp)
       : 0;
@@ -1290,6 +1297,15 @@ export class ComputerController {
       this.trackNative(request, native);
       const result = await Promise.race([native, job.cancellation]);
       if (job.cancelled) return;
+      if (
+        appEpoch !== undefined &&
+        observedApp &&
+        (this.sharedApps.epoch(observedApp) !== appEpoch ||
+          [...this.nativeWork].some(
+            (entry) => entry.scope.kind === "app" && entry.scope.appId === observedApp,
+          ))
+      )
+        throw new ComputerControlError({ _tag: "StaleElement", reason: "snapshot-expired" });
       if (
         observing &&
         holder &&

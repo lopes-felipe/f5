@@ -114,6 +114,36 @@ function envelope(
 }
 
 describe("background computer control", () => {
+  it("does not restore a sibling snapshot that finishes after another agent's mutation", async () => {
+    const h = make({ shareApps: true });
+    const finishes = new Map<string, (result: unknown) => void>();
+    h.request.mockImplementation(
+      (request) =>
+        new Promise((resolve) => {
+          finishes.set(request.requestId, resolve);
+        }),
+    );
+    try {
+      const a = h.controller.acquire(holderFor("a", "notes"));
+      const b = h.controller.acquire(holderFor("b", "notes"));
+      const observation = h.controller.invoke(envelope("old-tree", a, { op: "inspect" }));
+      const rejected = expect(observation).rejects.toMatchObject({
+        error: { _tag: "StaleElement" },
+      });
+      await vi.waitFor(() => expect(finishes.has("old-tree")).toBe(true));
+      const mutation = h.controller.invoke(envelope("writer", b, { op: "openApp" }));
+      await vi.waitFor(() => expect(finishes.has("writer")).toBe(true));
+      finishes.get("writer")!({ ok: true });
+      await mutation;
+      finishes.get("old-tree")!({ accessible: true, snapshotId: "old-tree", nodes: [] });
+      await rejected;
+      await expect(
+        h.controller.invoke(envelope("old-action", a, { snapshotId: "old-tree" })),
+      ).rejects.toMatchObject({ error: { _tag: "StaleElement" } });
+    } finally {
+      h.controller.close();
+    }
+  });
   it("applies shared focus to certified background keys and stales sibling snapshots after element scroll", async () => {
     const h = make({ shareApps: true, events: true });
     const certified = vi

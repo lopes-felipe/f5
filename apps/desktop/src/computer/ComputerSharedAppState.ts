@@ -7,6 +7,9 @@ export class ComputerSharedAppState {
     { sequence: number; firstMutator: string; mixed: boolean }
   >();
   private readonly presses = new Map<string, Map<string, number>>();
+  epoch(appId: string): number {
+    return this.apps.get(appId)?.sequence ?? 0;
+  }
   assertTyping(appId: string, owner: string, anotherLease: boolean): void {
     const state = this.apps.get(appId);
     const press = this.presses.get(appId)?.get(owner);
