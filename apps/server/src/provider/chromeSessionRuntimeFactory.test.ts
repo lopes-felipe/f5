@@ -12,13 +12,15 @@ import {
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
 import {
   CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED,
+  CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH,
   CLAUDE_IN_CHROME_ISOLATED_PROFILE,
 } from "./Layers/claudeAgentBrowser";
-import { parseNativeHostManifest } from "./chromeNativeHost";
+import { claudeChromeDescriptor, parseNativeHostManifest } from "./chromeNativeHost";
 import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import {
   claudeChromeAvailability,
+  claudeChromeRuntimeLocations,
   isolatedClaudeHome,
   listChromeSessionSetups,
   restoreChromeSessionSetup,
@@ -159,7 +161,7 @@ describe("Claude in Chrome executable identity", () => {
       expect(await check(isolated)).toMatchObject({
         record: { id: capable.id },
         chromeHome: "/Users/me",
-        projection: { sourceHome: "/state/provider-homes/claude" },
+        projection: { sourceHome: join("/state", "provider-homes", "claude") },
       });
       // Non-isolated profiles never project.
       expect(await check()).not.toHaveProperty("projection");
@@ -181,9 +183,33 @@ describe("Claude in Chrome executable identity", () => {
       });
     });
 
+    it("journals where Chrome reads and copies from where the CLI writes", async () => {
+      const identity = await check(isolated);
+      if ("unavailable" in identity) throw new Error("expected admission");
+      const descriptor = claudeChromeDescriptor(capable);
+      const providerHome = join(isolatedClaudeHome("/state"), ".claude");
+      const wired = claudeChromeRuntimeLocations(descriptor, providerHome, identity);
+      const paths = (locations: typeof wired.locations) =>
+        locations.map((location) => (location.kind === "file" ? location.path : ""));
+      expect(
+        paths(wired.locations).every((path) => path.startsWith(join("/Users/me", "Library"))),
+      ).toBe(true);
+      expect(wired.projection?.destinations).toBe(wired.locations);
+      expect(
+        paths(wired.projection!.sources).every((path) =>
+          path.startsWith(join(isolatedClaudeHome("/state"), "Library")),
+        ),
+      ).toBe(true);
+      const plain = await check();
+      if ("unavailable" in plain) throw new Error("expected admission");
+      expect(
+        claudeChromeRuntimeLocations(descriptor, providerHome, plain).projection,
+      ).toBeUndefined();
+    });
+
     it("refuses an isolated HOME that isn't the profile's provider home", async () => {
       expect(await check({ ...isolated, userHome: "/elsewhere" })).toMatchObject({
-        unavailable: { reason: "home-mismatch" },
+        unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH },
       });
       const { stateDir: _stateDir, ...withoutState } = isolated;
       expect(await check(withoutState)).toMatchObject({

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { ChromeNativeHostRegistration } from "./chromeNativeHost";
+import { parseNativeHostManifest, type ChromeNativeHostRegistration } from "./chromeNativeHost";
 import {
   inspectChromeNativeHosts,
   type ChromeNativeHostLocation,
@@ -23,6 +23,13 @@ export interface ClaudeRegistrationProjection {
 export class ChromeProjectionFailed extends Error {
   constructor(readonly reason: string) {
     super(`Claude in Chrome's registration could not be copied: ${reason}`);
+  }
+}
+
+/** A destination changed owner since setup was approved: it needs fresh consent. */
+export class ChromeProjectionConflict extends ChromeProjectionFailed {
+  constructor(readonly location: string) {
+    super(`${location} changed since setup was approved`);
   }
 }
 
@@ -85,6 +92,13 @@ export async function projectClaudeRegistrations(
     readonly timeoutMs?: number;
     readonly intervalMs?: number;
     readonly signal?: AbortSignal;
+    /**
+     * Performs the verified writes; the runtime routes them through the journal so they
+     * can't race a restore. Defaults to writing each changed destination atomically.
+     */
+    readonly commit?: (
+      writes: ReadonlyArray<{ readonly location: string; readonly bytes: string }>,
+    ) => Promise<ReadonlyArray<string>>;
   },
   io: ProjectionIo = projectionIo,
 ): Promise<ReadonlyArray<string>> {
@@ -131,13 +145,64 @@ export async function projectClaudeRegistrations(
   const wrapper = await io.readFile(input.targetPath);
   if (wrapper === null || !(await input.verifyWrapper(wrapper)))
     throw new ChromeProjectionFailed("the wrapper isn't F5's bundled Claude");
+  if (input.signal?.aborted) throw new ChromeProjectionFailed("cancelled");
+  const writes = pairs.map((pair) => ({ location: pair.to, bytes: bytesFor.get(pair.browser)! }));
+  if (input.commit) return input.commit(writes);
   const written: string[] = [];
-  for (const pair of pairs) {
+  for (const write of writes) {
     if (input.signal?.aborted) throw new ChromeProjectionFailed("cancelled");
-    const bytes = bytesFor.get(pair.browser)!;
-    if ((await io.readFile(pair.to).catch(() => null)) === bytes) continue;
-    await io.writeAtomic(pair.to, bytes);
-    written.push(pair.to);
+    if ((await io.readFile(write.location).catch(() => null)) === write.bytes) continue;
+    await io.writeAtomic(write.location, write.bytes);
+    written.push(write.location);
   }
   return written;
+}
+
+/**
+ * Removes the CLI's manifests under the isolated HOME before a launch, so the copy only
+ * ever sees what this launch wrote. Chrome never reads these files.
+ */
+export async function clearProjectionSources(
+  projection: ClaudeRegistrationProjection,
+): Promise<void> {
+  for (const source of projection.sources) {
+    const path = filePath(source);
+    if (path) await rm(path, { force: true });
+  }
+}
+
+/**
+ * Why an isolated profile's folder can't be removed yet: a Claude in Chrome setup it
+ * copied into the real home still points at its wrapper, and the only record of the
+ * bytes it replaced is the journal inside that folder. Restoring it in that profile's
+ * Settings clears this.
+ */
+export async function chromeSetupBlockingRemoval(stateDir: string): Promise<string | undefined> {
+  const directory = join(stateDir, "claude-chrome", "transactions");
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  for (const name of names.filter((entry) => entry.endsWith(".json"))) {
+    const transaction = JSON.parse(await readFile(join(directory, name), "utf8")) as {
+      state?: string;
+      targetPath?: string;
+      slots?: ReadonlyArray<{ kind?: string; browser?: string; location?: string }>;
+    };
+    if (transaction.state === "restored" || !transaction.targetPath) continue;
+    for (const slot of transaction.slots ?? []) {
+      if (slot.kind !== "manifest" || !slot.location || !slot.browser) continue;
+      const current = parseNativeHostManifest(
+        slot.browser,
+        slot.location,
+        await projectionIo.readFile(slot.location).catch(() => null),
+      );
+      if (current.state === "ok" && current.targetPath === transaction.targetPath)
+        return "Claude in Chrome's browser setup still points at this profile. Restore it in this profile's Settings → Browser & Computer, then remove the profile.";
+    }
+  }
+  return undefined;
 }

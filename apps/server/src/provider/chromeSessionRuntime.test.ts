@@ -11,6 +11,7 @@ import {
 } from "@t3tools/shared/providerIntegrationCertification";
 import { ChromeArtifactCache, defaultChromeArtifactCacheIo } from "./chromeArtifactCache";
 import { claudeChromeDescriptor, parseNativeHostManifest } from "./chromeNativeHost";
+import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import { ChromeSessionRuntime, type ChromeRuntimeDeps } from "./chromeSessionRuntime";
 import {
@@ -416,6 +417,65 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
       expect(await h.runtime.admit(call("read_page"), "t")).toBe(
         CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
       );
+    });
+
+    it("never copies over a newer owner on reconnect; that needs fresh consent", async () => {
+      const h = await isolatedSetup();
+      await h.runtime.prepare(session());
+      await isolatedLaunch();
+      expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(true);
+      const terminal = manifest(join(root, ".claude", "chrome", "chrome-native-host"));
+      await writeFile(manifestPath, terminal);
+      h.runtime.reconnecting("t", "g1");
+      expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(false);
+      expect(h.runtime.status("t", "g1")).toEqual({
+        state: "external-cli-conflict",
+        detail: CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      });
+      expect(await readChromeArtifact(manifestPath)).toMatchObject({ bytes: terminal });
+    });
+
+    it("clears an earlier run's manifests before launch, so only fresh ones are copied", async () => {
+      await mkdir(dirname(sourcePath()), { recursive: true });
+      await writeFile(sourcePath(), manifest(wrapperPath));
+      const h = await isolatedSetup();
+      await h.runtime.prepare(session());
+      expect(await readChromeArtifact(sourcePath())).toEqual({ bytes: null });
+      // This launch's CLI never wrote: nothing reaches Chrome.
+      expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(false);
+      expect(await readChromeArtifact(manifestPath)).toEqual({ bytes: null });
+    });
+
+    it("stops a waiting copy when the session ends, and finalize waits for it", async () => {
+      const h = await setup({
+        launchTimeoutMs: 5_000,
+        projection: {
+          sources: descriptor.locations(providerHome, join(root, "isolated")),
+          destinations: descriptor.locations(providerHome, root),
+        },
+      });
+      await h.runtime.prepare(session());
+      const pending = h.runtime.connected("t", "g1", verifiedStatus());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await h.runtime.finalize("t", "g1");
+      // The CLI's write lands after the session ended: it must never reach Chrome.
+      await isolatedLaunch();
+      expect(await pending).toBe(false);
+      expect(await readChromeArtifact(manifestPath)).toEqual({ bytes: null });
+      expect(h.deps.release).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses to copy once Settings has restored the setup", async () => {
+      const h = await isolatedSetup();
+      await h.runtime.prepare(session());
+      const [approved] = await h.storage.listTransactions("claude");
+      await new ChromeNativeHostTransactions(h.storage).restore(approved!, {
+        stopSessions: async () => {},
+        validateSlot: async () => true,
+      });
+      await isolatedLaunch();
+      expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(false);
+      expect(await readChromeArtifact(manifestPath)).toEqual({ bytes: null });
     });
   });
 });

@@ -5,6 +5,7 @@ import {
   type ChromeNativeHostRegistration,
   type ChromeProvider,
 } from "./chromeNativeHost";
+import { ChromeProjectionConflict, ChromeProjectionFailed } from "./chromeRegistrationProjection";
 
 /**
  * Journal v2. Everything needed to undo a launch is persisted before the CLI starts:
@@ -320,6 +321,42 @@ export class ChromeNativeHostTransactions {
       }
     };
     return loop();
+  }
+
+  /**
+   * Writes an isolated profile's registration copies behind the journal's queue, so they
+   * can't interleave with a restore. Refuses once the transaction is being or has been
+   * restored, when `live` says the session is gone, and with `ChromeProjectionConflict`
+   * when a destination holds bytes this setup never approved (another owner took it).
+   */
+  commitProjection(
+    transaction: ChromeNativeHostTransaction,
+    writes: ReadonlyArray<{ readonly location: string; readonly bytes: string }>,
+    options: {
+      readonly live: () => boolean;
+      readonly write: (location: string, bytes: string) => Promise<void>;
+    },
+  ): Promise<ReadonlyArray<string>> {
+    return serialize(this.storage, async () => {
+      const latest = await this.storage.loadTransaction(transaction.provider, transaction.id);
+      if (!latest || (latest.state !== "approved" && latest.state !== "launched"))
+        throw new ChromeProjectionFailed(`setup is ${latest?.state ?? "gone"}`);
+      const written: string[] = [];
+      for (const { location, bytes } of writes) {
+        if (!options.live()) throw new ChromeProjectionFailed("cancelled");
+        const slot = latest.slots.find((entry) => entry.location === location);
+        if (!slot || slot.kind !== "manifest" || slot.outcome !== undefined)
+          throw new ChromeProjectionFailed(`${location} isn't this setup's`);
+        const current = hashOf((await this.storage.readArtifact(location)).bytes);
+        if (current === sha256(bytes)) continue;
+        // What setup approved (the original, consent included) or this setup's own copy.
+        if (current !== slot.originalHash && current !== (slot.postLaunchHash ?? null))
+          throw new ChromeProjectionConflict(location);
+        await options.write(location, bytes);
+        written.push(location);
+      }
+      return written;
+    });
   }
 
   /** Idempotent: run on connection, timeout, finalizers and at server start. */

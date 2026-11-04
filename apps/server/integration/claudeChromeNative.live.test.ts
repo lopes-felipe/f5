@@ -19,7 +19,11 @@ import {
 
 import { buildAccountExecutionEnvironment } from "../src/providerProcessEnv.ts";
 import { buildClaudeQueryEnv } from "../src/provider/Layers/ClaudeAdapter.ts";
-import { projectClaudeRegistrations } from "../src/provider/chromeRegistrationProjection";
+import {
+  clearProjectionSources,
+  projectClaudeRegistrations,
+  projectionIo,
+} from "../src/provider/chromeRegistrationProjection";
 import { isolatedClaudeHome } from "../src/provider/chromeSessionRuntimeFactory";
 import { createControllableAsyncIterable } from "../src/provider/Layers/ClaudeSdk.testUtils.ts";
 import { claudeChromeDescriptor, type ChromeServerStatus } from "../src/provider/chromeNativeHost";
@@ -447,6 +451,9 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           )
           .map((entry) => ({ location: entry.location, sha256: entry.sha256! })),
       });
+      // As F5's prepare does: only manifests this launch writes can be copied, so an
+      // earlier run's leftovers never stand in for the CLI's behaviour.
+      await clearProjectionSources(projection);
       const isolatedSession = launch(isolatedEnv);
       try {
         await isolatedSession.q.initializationResult();
@@ -457,6 +464,11 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             allowedOrigins: descriptor.allowedOrigins,
             verifyWrapper: (bytes) => descriptor.verifyWrapper!(bytes, executable, realpath),
             timeoutMs: 15_000,
+            commit: (writes) =>
+              isolatedTransactions.commitProjection(isolatedApproved, writes, {
+                live: () => true,
+                write: (location, bytes) => projectionIo.writeAtomic(location, bytes),
+              }),
           });
           const launched = await isolatedTransactions.recordLaunch(isolatedApproved, {
             verifyWrapper: (bytes) => descriptor.verifyWrapper!(bytes, executable, realpath),

@@ -22,12 +22,22 @@ import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutoma
 import {
   CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED,
   CLAUDE_IN_CHROME_HOME_MISMATCH,
+  CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH,
   CLAUDE_IN_CHROME_ISOLATED_PROFILE,
   CLAUDE_IN_CHROME_NEEDS_BUNDLED,
   claudeInChromeUnavailableDetail,
 } from "./Layers/claudeAgentBrowser";
-import { claudeChromeDescriptor, parseShellToken, type ChromeProvider } from "./chromeNativeHost";
-import { inspectChromeNativeHosts } from "./chromeNativeHostInspection";
+import {
+  claudeChromeDescriptor,
+  parseShellToken,
+  type ChromeNativeHostDescriptor,
+  type ChromeProvider,
+} from "./chromeNativeHost";
+import {
+  inspectChromeNativeHosts,
+  type ChromeNativeHostLocation,
+} from "./chromeNativeHostInspection";
+import type { ClaudeRegistrationProjection } from "./chromeRegistrationProjection";
 import {
   ChromeNativeHostTransactions,
   ChromeRestoreBlocked,
@@ -134,7 +144,9 @@ export async function claudeChromeAvailability(input: {
     )
       return isolatedUnavailable;
     if (input.stateDir === undefined || input.userHome !== isolatedClaudeHome(input.stateDir))
-      return { unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_HOME_MISMATCH } };
+      return {
+        unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH },
+      };
   } else if (chromeHome !== input.userHome)
     return { unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_HOME_MISMATCH } };
   try {
@@ -258,7 +270,11 @@ export const makeChromeSessionRuntime = (input: {
     const existing = runtimes.get(key);
     if (existing) return { runtime: existing };
     const descriptor = claudeChromeDescriptor(identity.record);
-    const locations = descriptor.locations(input.providerHome, chromeHome);
+    const { locations, projection } = claudeChromeRuntimeLocations(
+      descriptor,
+      input.providerHome,
+      identity,
+    );
     const storage = yield* Effect.promise(() =>
       storageFor(input.stateDir, services, () => inspectChromeNativeHosts(locations)),
     );
@@ -271,18 +287,36 @@ export const makeChromeSessionRuntime = (input: {
       userHome: chromeHome,
       executableRealpath: identity.executableRealpath,
       policyEnabled: input.policyEnabled,
-      ...(identity.projection
-        ? {
-            projection: {
-              sources: descriptor.locations(input.providerHome, identity.projection.sourceHome),
-              destinations: locations,
-            },
-          }
-        : {}),
+      log: (message) => Effect.runFork(Effect.logWarning(message)),
+      ...(projection ? { projection } : {}),
     });
     runtimes.set(key, runtime);
     return { runtime };
   });
+
+/**
+ * Where a runtime inspects, journals and restores (`chromeHome`, where Chrome reads),
+ * and, in an isolated profile, which CLI-written manifests it copies there.
+ */
+export function claudeChromeRuntimeLocations(
+  descriptor: ChromeNativeHostDescriptor,
+  providerHome: string,
+  identity: Pick<ClaudeChromeIdentity, "chromeHome" | "projection">,
+): {
+  locations: ReadonlyArray<ChromeNativeHostLocation>;
+  projection?: ClaudeRegistrationProjection;
+} {
+  const locations = descriptor.locations(providerHome, identity.chromeHome);
+  return identity.projection
+    ? {
+        locations,
+        projection: {
+          sources: descriptor.locations(providerHome, identity.projection.sourceHome),
+          destinations: locations,
+        },
+      }
+    : { locations };
+}
 
 /** Retained historical rules, keyed by the transaction's record; never executes a wrapper. */
 async function validateSlot(

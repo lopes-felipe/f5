@@ -1,9 +1,14 @@
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import { claudeChromeDescriptor } from "./chromeNativeHost";
+import { inspectChromeNativeHosts } from "./chromeNativeHostInspection";
+import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
+import { makeChromeNativeHostStorage } from "./chromeNativeHostStorage";
 import {
   ChromeProjectionFailed,
   projectClaudeRegistrations,
@@ -137,5 +142,53 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome registration pro
     await writeFile(first!, manifest("/old"));
     await projectionIo.writeAtomic(first!, manifest());
     expect(await readFile(first!, "utf8")).toBe(manifest());
+  });
+
+  it("keeps copies written before a failure owned by the journal and restorable", async () => {
+    const storage = await Effect.runPromise(
+      makeChromeNativeHostStorage({
+        stateDir: join(root, "journal"),
+        inspect: () => inspectChromeNativeHosts(projection.destinations),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    const transactions = new ChromeNativeHostTransactions(storage);
+    const approved = await transactions.approve({
+      provider: "claude",
+      profileId: "p",
+      providerInstanceId: "claudeAgent",
+      recordId: record.id,
+      providerHome,
+      userHome: chromeHome,
+      targetPath: wrapperPath,
+      wrapperLocation: wrapperPath,
+      observed: await storage.inspect(),
+      acceptedForeign: [],
+    });
+    await cliWrites();
+    let writes = 0;
+    await expect(
+      project({
+        commit: (pending) =>
+          transactions.commitProjection(approved, pending, {
+            live: () => true,
+            write: async (location, bytes) => {
+              if (++writes === 3) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+              await projectionIo.writeAtomic(location, bytes);
+            },
+          }),
+      }),
+    ).rejects.toThrow("EACCES");
+    const [first, second] = paths(projection.destinations);
+    const settled = await transactions.reconcile(approved);
+    for (const location of [first!, second!])
+      expect(
+        settled.slots.find((slot) => slot.location === location)?.postLaunchHash,
+      ).toBeDefined();
+    const restored = await transactions.restore(settled, {
+      stopSessions: async () => {},
+      validateSlot: async () => true,
+    });
+    expect(restored.restored).toEqual(expect.arrayContaining([first!, second!]));
+    expect(await destinationsWritten()).toEqual([]);
   });
 });
