@@ -3798,6 +3798,50 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("keeps the archived shelf collapsed when the open thread is archived", async () => {
+    const openThreadId = "open-thread" as ThreadId;
+    const otherThreadId = "other-thread" as ThreadId;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${openThreadId}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: openThreadId, title: "Open thread" }),
+          createSnapshotThread({ id: otherThreadId, title: "Other thread" }),
+        ]);
+      },
+    });
+
+    try {
+      await waitForSidebarThreadRow("Open thread");
+      // The server confirms archiving the open thread.
+      useStore.setState((state) => ({
+        threads: state.threads.map((thread) =>
+          thread.id === openThreadId ? { ...thread, archivedAt: NOW_ISO } : thread,
+        ),
+      }));
+      const archivedSegment = await waitForElement(
+        () => queryShelfSegment("archived"),
+        "The archived segment should appear once the open thread is archived.",
+      );
+      await waitForLayout();
+      expect(archivedSegment.getAttribute("aria-expanded")).toBe("false");
+      expect(querySidebarThreadRowByTitle("Open thread")).toBeNull();
+      expect(mounted.router.state.location.pathname).toBe(`/${openThreadId}`);
+
+      // Navigating to an archived thread still opens its bucket.
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: otherThreadId } });
+      await waitForSidebarThreadRow("Other thread");
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: openThreadId } });
+      await expect
+        .poll(() => queryShelfSegment("archived")?.getAttribute("aria-expanded"))
+        .toBe("true");
+      await waitForSidebarThreadRow("Open thread");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders archived workflows as archived rows and keeps workflow threads hidden", async () => {
     const activeThreadId = "active-thread" as ThreadId;
     const branchAThreadId = "archived-workflow-branch-a" as ThreadId;

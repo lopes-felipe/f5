@@ -1053,7 +1053,8 @@ export default function Sidebar() {
     },
   );
 
-  // Opening a thread that sits on a shelf opens its bucket, so the open row is always visible.
+  // Opening a thread that sits on a shelf opens its bucket, so the open row is visible. A thread
+  // that moves onto a shelf while open (archived, snoozed, settled) leaves the shelf alone.
   const routeShelf = useMemo(() => {
     if (routeThreadId === null) return null;
     for (const [projectId, lists] of projectSidebarListsById) {
@@ -1065,15 +1066,31 @@ export default function Sidebar() {
   // Keyed by thread and bucket, not the lists, so closing the bucket afterwards sticks.
   const routeShelfProjectId = routeShelf?.projectId ?? null;
   const routeShelfBucket = routeShelf?.bucket ?? null;
+  const routeThreadInList =
+    routeShelf === null && routeThreadId !== null && persistedThreadIds.has(routeThreadId);
+  // Whether the open thread has been seen in the list (off every shelf) since it was opened.
+  const routeShelfRevealRef = useRef<{ threadId: ThreadId | null; seenInList: boolean }>({
+    threadId: null,
+    seenInList: false,
+  });
   useEffect(() => {
+    const reveal = routeShelfRevealRef.current;
+    if (reveal.threadId !== routeThreadId) {
+      reveal.threadId = routeThreadId;
+      reveal.seenInList = false;
+    }
+    if (routeThreadInList) reveal.seenInList = true;
     if (routeShelfProjectId === null || routeShelfBucket === null) return;
+    // Archiving, snoozing or settling the open thread moves it onto a shelf; leave the shelf
+    // as it was rather than expanding it.
+    if (reveal.seenInList) return;
     setOpenShelfByProject((current) => {
       if (current.get(routeShelfProjectId) === routeShelfBucket) return current;
       const next = new Map(current);
       next.set(routeShelfProjectId, routeShelfBucket);
       return next;
     });
-  }, [routeThreadId, routeShelfProjectId, routeShelfBucket]);
+  }, [routeThreadId, routeThreadInList, routeShelfProjectId, routeShelfBucket]);
 
   const projectActions: SidebarProjectActions = {
     onTitlePointerDownCapture: handleProjectTitlePointerDownCapture,
