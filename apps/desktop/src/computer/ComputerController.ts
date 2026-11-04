@@ -30,6 +30,7 @@ import { COMPUTER_BACKGROUND_CAPABILITY } from "@t3tools/contracts";
 import { ComputerLeaseAuthority, sameComputerHolder } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
 import { ComputerCooperation } from "./ComputerCooperation";
+import { ComputerAdmissionQueue, type ComputerAdmission } from "./ComputerAdmissionQueue";
 
 interface Admission {
   owner: string;
@@ -92,6 +93,7 @@ const STOP_CAUSE: Record<
 const isForegroundHolder = (holder: ComputerLeaseHolder) => holder.scope.kind !== "app";
 export class ComputerController {
   readonly cooperation: ComputerCooperation;
+  readonly admission: ComputerAdmissionQueue;
   private admissionCheck: ((holder: ComputerLeaseHolder) => void) | undefined;
   private readonly availabilityListeners = new Set<() => void>();
   private readonly endedTurns = new Map<string, { sessionGeneration: string; turnId: string }>();
@@ -168,9 +170,34 @@ export class ComputerController {
     },
   ) {
     this.cooperation = new ComputerCooperation(helper, () => this.now());
+    this.admission = new ComputerAdmissionQueue({
+      conflicts: (a, b) => lease.scopesConflict(a, b),
+      renewal: (holder) => lease.renewal(holder),
+      sweep: (head) => {
+        for (const holder of lease.idleConflicts(head.scope, 10_000)) {
+          if (this.key(holder) === this.key(head)) continue;
+          const key = this.key(holder);
+          const jobs = [
+            ...this.activeMutations.values(),
+            ...this.activeObservations,
+            ...this.observationQueue,
+            ...[...this.mutationQueues.values()].flat(),
+          ];
+          if (
+            jobs.some((job) => this.key(job.request.authorization) === key) ||
+            [...this.nativeWork].some((entry) => entry.key === key)
+          )
+            continue;
+          lease.release(holder);
+          this.options.holderStopped?.(holder);
+        }
+      },
+      state: (holder, waiting) => this.publishState(holder, waiting ? "waiting-agent" : null),
+    });
     this.offEvent = helper.onEvent((message) => this.helperEvent(message));
     this.offLease = lease.subscribe((holders) => {
       this.holdersChanged(holders);
+      this.admission.changed();
       for (const changed of this.availabilityListeners) changed();
     });
     this.permitTimer = setInterval(() => {
@@ -216,6 +243,19 @@ export class ComputerController {
   }
   setAdmissionCheck(check: (holder: ComputerLeaseHolder) => void): void {
     this.admissionCheck = check;
+  }
+  admitWhenFree<T>(entry: ComputerAdmission<T>): Promise<T> {
+    this.controlled.set(this.key(entry.holder), entry.holder);
+    return this.admission.admit(entry);
+  }
+  assertTakeoverAdmission(holder: ComputerLeaseHolder): void {
+    // A reservation owns no input permit; user-idle checks run after native consent.
+    this.assertAdmission(holder, "reservation");
+  }
+  cancelAdmission(profileId: string, requestId: string): void {
+    this.admission.cancel(
+      (entry) => entry.profileId === profileId && entry.requestId === requestId,
+    );
   }
   private cooperates(holder: ComputerLeaseHolder): boolean {
     return this.cooperation.supported() && !!this.options.cooperationEnabled?.(holder.profileId);
@@ -269,7 +309,11 @@ export class ComputerController {
         await this.helper.drain?.(holder.executionGeneration, 5000);
       } catch {
         // A drain failure cannot prove the in-flight action is safe to continue.
-        this.stopThread(holder, "outcome-unknown");
+        if (
+          this.cooperation.yielded.get(key)?.holder.executionGeneration ===
+          holder.executionGeneration
+        )
+          this.stopThread(holder, "outcome-unknown");
         return;
       }
       if (
@@ -285,7 +329,10 @@ export class ComputerController {
     void retire();
   }
   /** One predicate for acquisition, dispatch and advisory waiting. No cross-profile labels escape. */
-  private assertAdmission(holder: ComputerLeaseHolder, foregroundOwnershipOnly = false): void {
+  private assertAdmission(
+    holder: ComputerLeaseHolder,
+    phase: "execute" | "foreground-ownership" | "reservation" = "execute",
+  ): void {
     const ended = this.endedTurns.get(this.key(holder));
     if (ended?.sessionGeneration === holder.sessionGeneration && ended.turnId === holder.turnId)
       throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
@@ -295,7 +342,7 @@ export class ComputerController {
     if (!status.available)
       throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
     this.admissionCheck?.(holder);
-    if (foregroundOwnershipOnly) {
+    if (phase === "foreground-ownership") {
       const other = this.lease
         .holders()
         .some((entry) => this.key(entry) !== this.key(holder) && entry.scope.kind !== "app");
@@ -304,13 +351,18 @@ export class ComputerController {
         throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
       return;
     }
-    if (this.cooperates(holder) && (holder.scope.kind === "app" || holder.cooperative)) {
+    if (
+      phase !== "reservation" &&
+      this.cooperates(holder) &&
+      (holder.scope.kind === "app" || holder.cooperative)
+    ) {
       if (this.cooperation.blocked(holder))
         throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
     } else if (
-      holder.scope.kind === "app"
+      phase !== "reservation" &&
+      (holder.scope.kind === "app"
         ? this.frontmostAppId === holder.scope.appId
-        : this.inputIdleMs() < 1500
+        : this.inputIdleMs() < 1500)
     )
       throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
     if (this.lease.conflictsFor(holder))
@@ -333,6 +385,7 @@ export class ComputerController {
     const waitKey = holder.profileId + "\0" + requestId;
     if (this.availabilityWaiters.size >= 32 || this.availabilityWaiters.has(waitKey))
       throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+    this.controlled.set(this.key(holder), holder);
     let cancelled = false;
     let rejectCancellation!: (error: unknown) => void;
     const interruption = new Promise<never>((_resolve, reject) => {
@@ -369,7 +422,7 @@ export class ComputerController {
           const yielded = this.cooperation.yielded.get(this.key(holder));
           if (!appId && (!yielded || yielded.appId || !this.lease.find(yielded.holder))) {
             try {
-              this.assertAdmission(holder, true);
+              this.assertAdmission(holder, "foreground-ownership");
             } catch (error) {
               const failure = computerError(error);
               if (
@@ -421,6 +474,10 @@ export class ComputerController {
   }
   turnEnded(profileId: string, threadId: string, sessionGeneration: string, turnId?: string): void {
     const key = this.key({ profileId, threadId });
+    this.admission.cancel(
+      (entry) =>
+        this.key(entry.holder) === key && entry.holder.sessionGeneration === sessionGeneration,
+    );
     const turn = turnId ?? this.controlled.get(key)?.turnId ?? this.grants.get(key)?.turnId;
     if (turn) this.endedTurns.set(key, { sessionGeneration, turnId: turn });
     const matches = (holder: ComputerLeaseHolder) =>
@@ -437,6 +494,7 @@ export class ComputerController {
     this.cooperation.release(matches);
   }
   private helperEvent(message: Record<string, unknown>): void {
+    this.admission.changed();
     for (const changed of this.availabilityListeners) changed();
     const generation =
       typeof message.executionGeneration === "number" ? message.executionGeneration : undefined;
@@ -1319,6 +1377,7 @@ export class ComputerController {
     for (const request of unknown) this.recordUnknown(request);
   }
   cancel(requestId: string, profileId: string): void {
+    this.cancelAdmission(profileId, requestId);
     const waiter = this.availabilityWaiters.get(profileId + "\0" + requestId);
     if (waiter?.holder.profileId === profileId) waiter.cancel();
     this.cancelWhere(
@@ -1367,6 +1426,10 @@ export class ComputerController {
   /** Policy transition for one thread: cancel, revoke holders and await their drain. */
   async invalidateThread(profileId: string, threadId: string, revision: number): Promise<void> {
     const key = this.key({ profileId, threadId });
+    this.admission.cancel(
+      (entry) => this.key(entry.holder) === key,
+      new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" }),
+    );
     this.cooperation.release((holder) => this.key(holder) === key);
     for (const waiter of this.availabilityWaiters.values())
       if (this.key(waiter.holder) === key) waiter.cancel();
@@ -1400,6 +1463,7 @@ export class ComputerController {
       throw new ComputerControlError({ _tag: "OutcomeUnknown" });
   }
   disconnect(profileId: string): void {
+    this.admission.cancel((entry) => entry.profileId === profileId);
     for (const key of this.endedTurns.keys())
       if (key.startsWith(profileId + "\0")) this.endedTurns.delete(key);
     for (const waiter of this.availabilityWaiters.values())
@@ -1444,15 +1508,22 @@ export class ComputerController {
   /** Stop one thread's generation; other threads' background work keeps running. */
   stopThread(holder: ComputerLeaseHolder, cause: ComputerPauseCause = "paused"): void {
     const key = this.key(holder);
+    this.admission.cancel(
+      (entry) => this.key(entry.holder) === key,
+      new ComputerControlError({ _tag: "Interrupted", cause: STOP_CAUSE[cause] }),
+    );
     this.cooperation.release((entry) => this.key(entry) === key);
     for (const waiter of this.availabilityWaiters.values())
       if (this.key(waiter.holder) === key) waiter.cancel();
     const capable = this.capable();
-    this.helper.control(
-      capable
-        ? { type: "suspend", executionGeneration: holder.executionGeneration }
-        : { type: "suspend" },
-    );
+    const owned = this.lease.holders().filter((entry) => this.key(entry) === key);
+    this.controlled.set(key, owned[0] ?? holder);
+    for (const entry of owned)
+      this.helper.control(
+        capable
+          ? { type: "suspend", executionGeneration: entry.executionGeneration }
+          : { type: "suspend" },
+      );
     const wasPaused = this.paused.has(key);
     this.paused.add(key);
     this.pauseCauses.set(key, cause);
@@ -1465,16 +1536,19 @@ export class ComputerController {
     if (holder.scope.kind === "app" && cause === "outcome-unknown")
       for (const [id, snapshot] of this.snapshots)
         if (snapshot.owner === key) this.snapshots.delete(id);
-    const held = this.lease.holders().some((entry) => sameComputerHolder(entry, holder));
+    const held = owned.length > 0;
     if (held) {
       this.recentlyStopped = [
         ...this.recentlyStopped.filter((entry) => this.key(entry.holder) !== key),
-        { holder, at: this.now() },
+        ...owned.map((entry) => ({ holder: entry, at: this.now() })),
       ].slice(-16);
       this.lease.invalidate((entry) => this.key(entry) === key);
-      this.options.holderStopped?.(holder);
-      void this.helper.suspend(capable ? holder.executionGeneration : undefined);
+      for (const entry of owned) this.options.holderStopped?.(entry);
+      for (const entry of owned)
+        void this.helper.suspend(capable ? entry.executionGeneration : undefined);
     }
+    const pending = this.lease.pendingTakeover();
+    if (pending && this.key(pending.holder) === key) this.lease.cancelTakeover(pending);
     // Without per-generation control a legacy helper suspends everything.
     if (!capable)
       for (const other of this.lease.holders())
@@ -1482,6 +1556,12 @@ export class ComputerController {
   }
   stop(cause: ComputerPauseCause = "paused"): void {
     const active = [...this.lease.holders()];
+    const pending = this.lease.pendingTakeover()?.holder;
+    if (pending && !active.some((holder) => this.key(holder) === this.key(pending)))
+      active.push(pending);
+    for (const holder of this.admission.holders())
+      if (!active.some((entry) => this.key(entry) === this.key(holder))) active.push(holder);
+    this.admission.cancel(() => true);
     for (const { holder } of this.cooperation.yielded.values())
       if (!active.some((entry) => this.key(entry) === this.key(holder))) active.push(holder);
     for (const { holder } of this.availabilityWaiters.values())
@@ -1506,6 +1586,7 @@ export class ComputerController {
     this.cooperation.reset();
     for (const holder of [...active, ...stopped]) {
       const key = this.key(holder);
+      this.controlled.set(key, holder);
       this.paused.add(key);
       this.pauseCauses.set(key, cause);
       this.options.paused(holder, cause);
@@ -1542,6 +1623,10 @@ export class ComputerController {
   setPaused(profileId: string, threadId: string, paused: boolean): void {
     const key = this.key({ profileId, threadId });
     if (paused) {
+      const pending = this.lease.pendingTakeover()?.holder;
+      if (pending && this.key(pending) === key) this.stopThread(pending, "paused");
+      for (const holder of this.admission.holders())
+        if (this.key(holder) === key) this.stopThread(holder, "paused");
       const yielded = this.cooperation.yielded.get(key);
       if (yielded) this.stopThread(yielded.holder, "paused");
       for (const holder of this.lease.holders())
@@ -1579,6 +1664,7 @@ export class ComputerController {
     this.offEvent();
     this.offLease();
     this.stop();
+    this.admission.close();
     this.forgetAdmissions(() => true);
     this.grants.clear();
     this.controlled.clear();

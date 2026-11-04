@@ -47,6 +47,30 @@ function fixture() {
     },
   };
 }
+it("refreshes observe-only app epochs from heartbeat while no generation is armed", async () => {
+  const h = fixture();
+  const holder = h.holder();
+  await h.cooperation.prepare(holder);
+  h.cooperation.heartbeat({
+    inputSequence: 2,
+    inputHeld: false,
+    monitorHealthy: true,
+    lastUserInputAgeMs: 6000,
+    targets: [
+      {
+        appId: "app-0",
+        activityEpoch: 4,
+        lastActivityAgeMs: 500,
+        frontmost: false,
+      },
+    ],
+  });
+  expect(h.cooperation.readiness(holder)).toMatchObject({
+    activityEpoch: 4,
+    lastActivityAgeMs: 500,
+    inputSequence: 2,
+  });
+});
 it("backs off repeated yielding, resets after sixty seconds, and releases a turn's native watch", async () => {
   const h = fixture();
   const holder = h.holder();

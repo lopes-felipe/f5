@@ -215,6 +215,30 @@ export class ComputerCooperation {
         inputHeld: message.inputHeld,
       },
     });
+    const global = this.samples.get(sampleKey())!;
+    if (Array.isArray(message.targets))
+      for (const target of message.targets) {
+        if (
+          !target ||
+          typeof target.appId !== "string" ||
+          !this.watches.has(target.appId) ||
+          !Number.isSafeInteger(target.activityEpoch) ||
+          target.activityEpoch < 0 ||
+          typeof target.lastActivityAgeMs !== "number" ||
+          !Number.isFinite(target.lastActivityAgeMs) ||
+          typeof target.frontmost !== "boolean"
+        )
+          continue;
+        this.samples.set(sampleKey(target.appId), {
+          at: global.at,
+          ready: {
+            ...global.ready,
+            activityEpoch: target.activityEpoch,
+            lastActivityAgeMs: target.lastActivityAgeMs,
+            frontmost: target.frontmost,
+          },
+        });
+      }
   }
   release(predicate: (holder: ComputerLeaseHolder) => boolean): void {
     const owners = new Set<string>();
