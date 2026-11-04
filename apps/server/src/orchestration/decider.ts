@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import { CommandId, EventId, MessageId } from "@t3tools/contracts";
+import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import {
   MAX_PINNED_THREADS,
   SCRIPT_RUN_COMMAND_PATTERN,
@@ -1815,7 +1816,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
               commandId: CommandId.makeUnsafe(`answer-delivery:${command.commandId}`),
               threadId: thread.id,
               message: {
-                messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+                messageId: MessageId.makeUnsafe(answerMessageIdFor(command.commandId)),
                 role: "user" as const,
                 text: JSON.stringify(answers),
                 attachments,

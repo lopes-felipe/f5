@@ -32,6 +32,7 @@ import {
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { automationToolSurface } from "@t3tools/shared/computerAction";
 import { ELICITATION_SUBMITTED_ACTIVITY_KIND } from "@t3tools/shared/pendingUserInputs";
+import { answerMessageLinkId, parseAnswerDeliveryRecord } from "@t3tools/shared/answerDelivery";
 import {
   normalizeCodexCollaborationTool,
   REASONING_STATUS_ACTIVITY_KIND,
@@ -225,6 +226,8 @@ export type TimelineEntry =
       kind: "message";
       createdAt: string;
       message: ChatMessage;
+      /** The Q&A card of the question this message answered, shown in place of its text. */
+      userInput?: WorkLogUserInput;
     }
   | {
       id: string;
@@ -1171,6 +1174,35 @@ function workLogUserInput(
   return {
     state: items.some((item) => item.answers.length > 0) ? "answered" : fallbackState,
     questions: items,
+  };
+}
+
+/**
+ * A message-mode card with the answers its delivered message actually carried; the
+ * queued answer may have been edited after it was submitted. Answers that were not one
+ * of the answers originally chosen are typed text. A reply rewritten into free text
+ * carries no answers record, so the card keeps only the questions.
+ */
+function withDeliveredAnswers(
+  userInput: WorkLogUserInput,
+  deliveredText: string,
+): WorkLogUserInput {
+  const record = parseAnswerDeliveryRecord(deliveredText) ?? {};
+  return {
+    ...userInput,
+    state: "answered",
+    questions: userInput.questions.map((question) => {
+      const chosen = new Set(
+        question.answers.filter((answer) => !answer.custom).map((answer) => answer.text),
+      );
+      return {
+        ...question,
+        answers: (record[question.id] ?? [])
+          .map(collapseWhitespace)
+          .filter(Boolean)
+          .map((text) => ({ text, custom: !chosen.has(text) })),
+      };
+    }),
   };
 }
 
@@ -2383,7 +2415,9 @@ export function deriveTimelineEntries(
       const message = byId.get(entry.id);
       if (!message || message === entry.message) return entry;
       changed = true;
-      const next = { ...entry, message };
+      const next = entry.userInput
+        ? { ...entry, message, userInput: withDeliveredAnswers(entry.userInput, message.text) }
+        : { ...entry, message };
       cache.entries.set(entry.id, { sources: [message], entry: next });
       return next;
     });
@@ -2414,29 +2448,44 @@ export function deriveTimelineEntries(
     return entry;
   };
 
-  // An answered message-mode Q&A card already shows the answer its follow-up message
-  // delivered; that message stays only when it carries attachments the card cannot show.
-  const answerMessageIdsShownByCards = new Set<string>();
+  // A message-mode answer is a real user message that starts its own turn, so it keeps its
+  // row (turn boundaries, revert, fork). Its Q&A card renders inside that row instead of as
+  // a separate one, with the answers that were actually delivered. A message with
+  // attachments, or one the user rewrote, stays a bubble beside its card.
+  const answeredCardsByLink = new Map<string, WorkLogEntry>();
   for (const entry of workEntries) {
-    if (entry.userInput?.answerMessageId) {
-      answerMessageIdsShownByCards.add(entry.userInput.answerMessageId);
-    }
+    const link = entry.userInput?.answerMessageId;
+    if (link && !answeredCardsByLink.has(link)) answeredCardsByLink.set(link, entry);
   }
-  const visibleMessages =
-    answerMessageIdsShownByCards.size === 0
-      ? messages
-      : messages.filter(
-          (message) =>
-            !answerMessageIdsShownByCards.has(message.id) || (message.attachments?.length ?? 0) > 0,
-        );
-  const messageRows: TimelineEntry[] = visibleMessages.map((message) =>
-    reuse(message.id, [message], () => ({
+  const foldedCardIds = new Set<string>();
+  const deliveredMessageByCardId = new Map<string, ChatMessage>();
+  const messageRows: TimelineEntry[] = messages.map((message) => {
+    const link = answeredCardsByLink.size > 0 ? answerMessageLinkId(message.id) : null;
+    const card = link ? answeredCardsByLink.get(link) : undefined;
+    if (card?.userInput && !deliveredMessageByCardId.has(card.id)) {
+      deliveredMessageByCardId.set(card.id, message);
+      const cardUserInput = card.userInput;
+      if (
+        (message.attachments?.length ?? 0) === 0 &&
+        parseAnswerDeliveryRecord(message.text) !== null
+      ) {
+        foldedCardIds.add(card.id);
+        return reuse(message.id, [message, card], () => ({
+          id: message.id,
+          kind: "message",
+          createdAt: message.createdAt,
+          message,
+          userInput: withDeliveredAnswers(cardUserInput, message.text),
+        }));
+      }
+    }
+    return reuse(message.id, [message], () => ({
       id: message.id,
       kind: "message",
       createdAt: message.createdAt,
       message,
-    })),
-  );
+    }));
+  });
   const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) =>
     reuse(proposedPlan.id, [proposedPlan], () => ({
       id: proposedPlan.id,
@@ -2475,10 +2524,23 @@ export function deriveTimelineEntries(
     return diagnostics;
   };
 
-  const workRows: TimelineEntry[] = regularWorkEntries.map((entry) => {
+  const workRows: TimelineEntry[] = regularWorkEntries.flatMap((entry) => {
+    if (foldedCardIds.has(entry.id)) return [];
     const nestedDiagnostics = takeDiagnostics(entry.turnId, entry.providerItemId);
-    return reuse(entry.id, [entry, ...(nestedDiagnostics ?? [])], () => {
-      const nestedEntry = nestedDiagnostics ? { ...entry, nestedDiagnostics } : entry;
+    const deliveredMessage = deliveredMessageByCardId.get(entry.id);
+    const sources = [
+      entry,
+      ...(nestedDiagnostics ?? []),
+      ...(deliveredMessage ? [deliveredMessage] : []),
+    ];
+    return reuse(entry.id, sources, () => {
+      const deliveredEntry =
+        deliveredMessage && entry.userInput
+          ? { ...entry, userInput: withDeliveredAnswers(entry.userInput, deliveredMessage.text) }
+          : entry;
+      const nestedEntry = nestedDiagnostics
+        ? { ...deliveredEntry, nestedDiagnostics }
+        : deliveredEntry;
       return {
         id: nestedEntry.id,
         kind: "work",

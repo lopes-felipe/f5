@@ -3808,42 +3808,111 @@ describe("deriveTimelineEntries", () => {
             id: "0",
             header: "Question",
             question: "Ready?",
-            answers: [{ text: "Yes", custom: true }],
+            answers: [{ text: "Yes", custom: false }],
           },
         ],
         answerMessageId: "answer:cmd",
       },
     };
-    const answerMessage = (attachments?: ChatMessage["attachments"]): ChatMessage => ({
+    const answerMessage = (
+      overrides: Partial<Pick<ChatMessage, "id" | "text" | "attachments">> = {},
+    ): ChatMessage => ({
       id: MessageId.makeUnsafe("answer:cmd"),
       role: "user",
       text: '{"0":{"answers":["Yes"]}}',
       createdAt: "2026-02-23T00:00:02.001Z",
       streaming: false,
-      ...(attachments ? { attachments } : {}),
+      ...overrides,
     });
+    const messageEntry = (entries: ReturnType<typeof deriveTimelineEntries>, id: string) => {
+      const entry = entries.find((candidate) => candidate.id === id);
+      return entry?.kind === "message" ? entry : undefined;
+    };
+    const workEntry = (entries: ReturnType<typeof deriveTimelineEntries>, id: string) => {
+      const entry = entries.find((candidate) => candidate.id === id);
+      return entry?.kind === "work" ? entry.entry : undefined;
+    };
 
-    it("drops the answer message that its Q&A card already shows", () => {
+    it("renders the card on the answer's own user row, which keeps the turn boundary", () => {
       const entries = deriveTimelineEntries([answerMessage()], [], [answerCard]);
-      expect(entries.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd"]);
+      expect(entries.map((entry) => [entry.id, entry.kind])).toEqual([["answer:cmd", "message"]]);
+      expect(messageEntry(entries, "answer:cmd")?.userInput?.questions[0]?.answers).toEqual([
+        { text: "Yes", custom: false },
+      ]);
     });
 
-    it("keeps an answer message that carries attachments", () => {
+    it("shows the answers an edited or retried delivery actually carried", () => {
       const entries = deriveTimelineEntries(
         [
-          answerMessage([
-            { type: "file", id: "file-1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 1 },
-          ]),
+          answerMessage({
+            id: MessageId.makeUnsafe("answer:cmd#retry"),
+            text: '{"0":{"answers":["Yes","Only after lunch"]}}',
+          }),
         ],
         [],
         [answerCard],
       );
-      expect(entries.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd", "answer:cmd"]);
+      expect(entries.map((entry) => entry.id)).toEqual(["answer:cmd#retry"]);
+      expect(messageEntry(entries, "answer:cmd#retry")?.userInput?.questions[0]?.answers).toEqual([
+        { text: "Yes", custom: false },
+        { text: "Only after lunch", custom: true },
+      ]);
     });
 
-    it("keeps an answer message without a linked card", () => {
-      const entries = deriveTimelineEntries([answerMessage()], [], []);
-      expect(entries.map((entry) => entry.id)).toEqual(["answer:cmd"]);
+    it("keeps a bubble beside the card for attachments or a rewritten reply", () => {
+      const withFile = deriveTimelineEntries(
+        [
+          answerMessage({
+            attachments: [
+              {
+                type: "file",
+                id: "file-1",
+                name: "notes.txt",
+                mimeType: "text/plain",
+                sizeBytes: 1,
+              },
+            ],
+          }),
+        ],
+        [],
+        [answerCard],
+      );
+      expect(withFile.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd", "answer:cmd"]);
+      expect(messageEntry(withFile, "answer:cmd")?.userInput).toBeUndefined();
+
+      const rewritten = deriveTimelineEntries(
+        [answerMessage({ text: "Actually, not yet." })],
+        [],
+        [answerCard],
+      );
+      expect(rewritten.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd", "answer:cmd"]);
+      const card = workEntry(rewritten, "user-input-resolved:cmd")?.userInput;
+      expect(card?.state).toBe("answered");
+      expect(card?.questions[0]?.answers).toEqual([]);
+    });
+
+    it("folds a card into one delivered message only", () => {
+      const entries = deriveTimelineEntries(
+        [
+          answerMessage(),
+          answerMessage({
+            id: MessageId.makeUnsafe("answer:cmd#duplicate"),
+          }),
+        ],
+        [],
+        [answerCard],
+      );
+      expect(entries.map((entry) => entry.id)).toEqual(["answer:cmd", "answer:cmd#duplicate"]);
+      expect(messageEntry(entries, "answer:cmd")?.userInput).toBeDefined();
+      expect(messageEntry(entries, "answer:cmd#duplicate")?.userInput).toBeUndefined();
+    });
+
+    it("keeps the card standalone until its answer is delivered", () => {
+      const entries = deriveTimelineEntries([], [], [answerCard]);
+      expect(entries.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd"]);
+      expect(deriveTimelineEntries([answerMessage()], [], []).map((entry) => entry.id)).toEqual([
+        "answer:cmd",
+      ]);
     });
   });
 
