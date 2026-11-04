@@ -169,7 +169,7 @@ export class ComputerTakeoverCoordinator {
         throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
       // Native readiness exchange: the helper's current idle age, not cached telemetry. The
       // helper re-checks the input sequence it reported when the armed generation resumes.
-      const { idleMs } = await this.controller.takeoverReadiness();
+      const { idleMs } = await this.controller.takeoverReadiness(takeover.holder);
       if (!this.takeovers.has(takeover.requestId))
         throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
       if (idleMs < TAKEOVER_IDLE_MS) {
@@ -211,10 +211,14 @@ export class ComputerTakeoverCoordinator {
         false,
       );
   }
-  cancelThread(profileId: string, threadId?: string): void {
+  cancelThread(profileId: string, threadId?: string, sessionGeneration?: string): void {
     // Snapshot: fail() deletes from the map while we iterate.
     for (const takeover of [...this.takeovers.values()])
-      if (takeover.profileId === profileId && (!threadId || takeover.holder.threadId === threadId))
+      if (
+        takeover.profileId === profileId &&
+        (!threadId || takeover.holder.threadId === threadId) &&
+        (!sessionGeneration || takeover.holder.sessionGeneration === sessionGeneration)
+      )
         this.fail(takeover, new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }));
   }
   pending(profileId: string): ComputerLeaseHolder | undefined {

@@ -12,6 +12,7 @@ mod mouse_monitor;
 
 mod execution;
 use execution::*;
+mod cooperation;
 
 mod identity;
 use identity::*;
@@ -53,6 +54,7 @@ struct State {
     grants: Mutex<HashMap<String, Value>>,
     healthy: AtomicBool,
     keyboard_hook_installed: AtomicBool,
+    foreground_hook_installed: AtomicBool,
     session_connected: AtomicBool,
     mouse_probe: AtomicU64,
     raw_mouse_window: AtomicU64,
@@ -65,6 +67,9 @@ struct State {
     input_sequence: AtomicU64,
     last_input_ms: AtomicU64,
     controls: [GenerationControl; 128],
+    watches: [cooperation::WatchSlot; 32],
+    watch_owners: Mutex<HashMap<String, cooperation::Watch>>,
+    background_actions: Mutex<HashMap<u64, cooperation::Action>>,
     in_flight: Mutex<HashMap<String, u64>>,
     generation_owners: Mutex<HashMap<u64, String>>,
     drains: AtomicU64,
@@ -78,6 +83,7 @@ impl State {
     fn monitors_ready(&self) -> bool {
         self.healthy.load(Ordering::SeqCst)
             && self.keyboard_hook_installed.load(Ordering::SeqCst)
+            && self.foreground_hook_installed.load(Ordering::SeqCst)
             && self.raw_mouse_window.load(Ordering::SeqCst) != 0
     }
 }
@@ -98,6 +104,7 @@ struct GenerationControl {
     background: AtomicBool,
     paused: AtomicBool,
     input_pending: AtomicU64,
+    input_cause: AtomicU64,
     recognized_ms: AtomicU64,
 }
 impl GenerationControl {
@@ -110,6 +117,7 @@ impl GenerationControl {
             background: AtomicBool::new(false),
             paused: AtomicBool::new(true),
             input_pending: AtomicU64::new(0),
+            input_cause: AtomicU64::new(0),
             recognized_ms: AtomicU64::new(0),
         }
     }
@@ -540,6 +548,7 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
             let hwnd = app_window(s(request, "appId"))?;
             authorize(hwnd, request, host, "click")?;
             check(request)?;
+            mark_posted();
             if !SetForegroundWindow(hwnd).as_bool() {
                 return Err(fail("Execution"));
             }
@@ -658,6 +667,7 @@ pub fn run() {
         grants: Mutex::new(HashMap::new()),
         healthy: AtomicBool::new(false),
         keyboard_hook_installed: AtomicBool::new(false),
+        foreground_hook_installed: AtomicBool::new(false),
         session_connected: AtomicBool::new(unsafe { session_connected() }),
         mouse_probe: AtomicU64::new(0),
         raw_mouse_window: AtomicU64::new(0),
@@ -670,6 +680,9 @@ pub fn run() {
         input_sequence: AtomicU64::new(0),
         last_input_ms: AtomicU64::new(0),
         controls: std::array::from_fn(|_| GenerationControl::new()),
+        watches: std::array::from_fn(|_| cooperation::WatchSlot::new()),
+        watch_owners: Mutex::new(HashMap::new()),
+        background_actions: Mutex::new(HashMap::new()),
         in_flight: Mutex::new(HashMap::new()),
         generation_owners: Mutex::new(HashMap::new()),
         drains: AtomicU64::new(0),
@@ -681,6 +694,7 @@ pub fn run() {
     });
     let _ = STATE.set(state.clone());
     mouse_monitor::start();
+    cooperation::start();
     // Hooks must never wait for stdout when Electron is stalled or disconnected.
     let (output_tx, output_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(32);
     let _ = OUTPUT_QUEUE.set(output_tx);
@@ -738,13 +752,15 @@ pub fn run() {
             if generation != 0 {
                 suspend_generation(Some(generation));
                 emit(
-                    json!({"type":"physicalInput","executionGeneration":generation,"recognizedAtMs":slot.recognized_ms.load(Ordering::SeqCst)}),
+                    json!({"type":"physicalInput","executionGeneration":generation,
+                        "cause":match slot.input_cause.load(Ordering::SeqCst) {1=>"pointer",2=>"key",3=>"scroll",4=>"drag",5=>"move",_=>"unresolved"},
+                        "recognizedAtMs":slot.recognized_ms.load(Ordering::SeqCst)}),
                 );
             }
         }
     });
     emit(
-        json!({"type":"hello","protocolVersion":1,"helperVersion":"2.1.0","capabilities":["background-ax-v1"]}),
+        json!({"type":"hello","protocolVersion":1,"helperVersion":"2.1.0","capabilities":["background-ax-v1","computer-cooperation-v1"]}),
     );
     std::thread::spawn(|| {
         let mut last_probe: Option<Instant> = None;
@@ -856,7 +872,7 @@ pub fn run() {
                 (state.started.elapsed().as_millis() as u64 + 1).saturating_sub(last) as i64
             };
             emit(
-                json!({"type":"heartbeat","monitorHealthy":state.monitors_ready(),"suspended":active.is_empty(),"activeGenerations":active,"inputSequence":state.input_sequence.load(Ordering::SeqCst),"lastUserInputAgeMs":age,"frontmostAppId":unsafe { owner(GetForegroundWindow()).ok().map(|(id,_)|id) }}),
+                json!({"type":"heartbeat","monitorHealthy":state.monitors_ready(),"suspended":active.is_empty(),"activeGenerations":active,"inputSequence":state.input_sequence.load(Ordering::SeqCst),"lastUserInputAgeMs":age,"inputHeld":cooperation::held(),"frontmostAppId":unsafe { owner(GetForegroundWindow()).ok().map(|(id,_)|id) }}),
             );
             emit_status();
         }
@@ -905,6 +921,24 @@ pub fn run() {
             break;
         };
         match s(&message, "type") {
+            "watchRegister" | "availability" => {
+                let result = if s(&message, "type") == "watchRegister" {
+                    cooperation::register(s(&message, "appId"), s(&message, "owner"))
+                } else {
+                    cooperation::readiness(message["appId"].as_str())
+                };
+                match result {
+                    Ok(result) => emit(
+                        json!({"type":"response","requestId":message["requestId"],"result":result}),
+                    ),
+                    Err(error) => emit(
+                        json!({"type":"response","requestId":message["requestId"],"error":error}),
+                    ),
+                }
+            }
+            "watchRelease" => {
+                cooperation::release_watch(s(&message, "appId"), s(&message, "owner"))
+            }
             "permit" => {
                 let generation = message["executionGeneration"].as_u64().unwrap_or(0);
                 let mut permits = state.permit.lock().unwrap();
@@ -1071,7 +1105,9 @@ pub fn run() {
 }
 fn respond(message: Value) {
     let id = message["request"]["requestId"].clone();
-    let result = unsafe { execute(&message) };
+    reset_posted();
+    let result = unsafe { execute(&message) }
+        .map_err(|error| crate::protocol::interrupted_response(error, action_posted()));
     STATE
         .get()
         .unwrap()

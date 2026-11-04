@@ -31,7 +31,7 @@ export class ComputerControlError extends Error {
                 : error._tag === "ForegroundRequired"
                   ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
                   : error._tag === "TargetBlocked" && error.kind === "user-active"
-                    ? "TargetBlocked user-active: the user is in that app; wait or ask."
+                    ? "TargetBlocked user-active: call computer_wait_for_target, then observe again before acting; take a screenshot before coordinates."
                     : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
                       ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
                       : error._tag === "TargetBlocked" && error.kind === "other-app"

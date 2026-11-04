@@ -550,6 +550,27 @@ it("keeps only typed interruption/protection codes and bounds the trace", () => 
   observer.receive({ type: "request", request: { op: "INVALID_PRIVATE_SENTINEL" } });
   expect(JSON.stringify(observer.snapshot())).not.toContain("INVALID_PRIVATE_SENTINEL");
 });
+it("accepts a retryable background yield as the interruption outcome", () => {
+  const observer = new ElectronRehearsalObservation();
+  observer.receive({
+    type: "request",
+    request: {
+      ...request("type"),
+      delivery: "background",
+      appId: "app",
+    },
+  });
+  observer.receive({
+    type: "response",
+    requestId: "type",
+    error: { _tag: "TargetBlocked", kind: "user-active" },
+  });
+  expect(observer.snapshot().operations[0]).toEqual({
+    op: "type",
+    outcome: "TargetBlocked",
+    kind: "user-active",
+  });
+});
 
 it("distinguishes requested consent from correlated host-forwarded answers without retaining decisions", () => {
   const observer = new ElectronRehearsalObservation();

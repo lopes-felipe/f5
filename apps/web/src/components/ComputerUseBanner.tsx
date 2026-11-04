@@ -88,6 +88,10 @@ export function computerUseBannerText(
       return "Agent waiting for computer access approval";
     case "waiting-idle":
       return "Agent waiting for you to stop using the mouse and keyboard";
+    case "waiting-user":
+      return app ? `Waiting for you to finish in ${app}` : "Waiting while you use the computer";
+    case "waiting-agent":
+      return "Waiting for another agent";
     case "active":
       break;
   }

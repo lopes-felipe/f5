@@ -49,7 +49,7 @@ it.effect(
         assert.equal((yield* post("preview", computerToken)).status, 401);
         const list = yield* post("computer", computerToken);
         assert.equal(list.status, 200);
-        assert.equal(list.body.result?.tools.length, 17);
+        assert.equal(list.body.result?.tools.length, 18);
         assert.ok(list.body.result?.tools.every((tool) => tool.name.startsWith("computer_")));
         computerSession.dispose();
         previewSession.dispose();

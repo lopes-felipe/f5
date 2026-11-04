@@ -108,6 +108,23 @@ instead.
 
 ## Good to know
 
+With an updated desktop, helper, and backend, interacting with an agent's background app makes
+the agent wait until you leave that app and conflicting activity has stopped. Scrolling a
+non-frontmost window counts too; typing in another app does not delay it. The agent uses
+computer_wait_for_target and observes the app again before continuing. Waiting reserves no
+control and never repeats an interrupted action automatically.
+
+In Full access threads, moving the mouse or typing during foreground control also makes the
+agent wait. The overlay says **Waiting while you use the computer**, then counts down after
+three seconds of idle input; movement keeps you in control. Held keys or mouse buttons block
+continuation. Other foreground threads still pause and require Resume. After repeated
+contention the idle delay grows, up to fifteen seconds. Foreground ownership is released after
+sixty seconds without continuation.
+
+**Pause**, **Stop**, the stop shortcut, helper or monitor failures, and uncertain action
+outcomes always latch. **Resume** always asks for native confirmation. Older helpers retain
+their existing pause behavior.
+
 > [!WARNING]
 > Computer use is an uncertified preview. Claude's own built-in computer
 > control is not available.

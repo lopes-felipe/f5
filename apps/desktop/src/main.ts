@@ -524,6 +524,23 @@ function initializeComputerSystem(): void {
         });
     },
     backgroundAvailable: () => backgroundStatus().available,
+    cooperationEnabled: (profileId) =>
+      computerSystem?.channel.cooperationCapable(profileId) ?? false,
+    targetYielded: (holder, appId) => {
+      if (computerSystem?.channel.cooperationCapable(holder.profileId))
+        computerSystem.channel.send(holder.profileId, {
+          type: "targetYielded",
+          threadId: holder.threadId,
+          sessionGeneration: holder.sessionGeneration,
+          ...(appId ? { appId } : {}),
+        });
+    },
+    foregroundContinued: (previous, next) =>
+      computerSystem?.channel.execution.continueTakeover(
+        previous,
+        next,
+        computerSystem.channel.incarnation(previous.profileId),
+      ),
     executionState: (profileId, update) =>
       computerSystem?.channel.sendExecutionState(profileId, update),
     takeoverValid: (holder) =>
@@ -744,6 +761,7 @@ function initializeComputerSystem(): void {
   });
   const consent = new ComputerConsentAuthority({
     remembered: true,
+    cooperative: (profileId) => channel.cooperationCapable(profileId),
     platform: process.platform === "win32" ? "win32" : "darwin",
     request: (profileId, answer) => channel.accessRequest(profileId, answer),
     answer: (profileId, answer, policies) => channel.answerAccess(profileId, answer, policies),

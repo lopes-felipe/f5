@@ -13,6 +13,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #outline{position:absolute;border:2px dashed var(--accent);border-radius:4px;box-sizing:border-box}svg{position:absolute;inset:0;width:100%;height:100%}line{stroke:var(--accent);stroke-width:3;stroke-dasharray:5 5;opacity:.7}
 </style></head><body><div id="outline" hidden></div><svg><line id="trail"/></svg><div id="cursor"><div id="point">➤</div><div id="label"></div></div><script>
 window.drawComputerAction=(action)=>{document.body.style.setProperty('--accent',action.accent);document.getElementById('label').textContent=action.label;const cursor=document.getElementById('cursor');cursor.style.transform='translate('+action.x+'px,'+action.y+'px)';document.getElementById('point').style.display=action.point?'block':'none';cursor.style.transition=action.animate?'transform 180ms ease-out':'none';const outline=document.getElementById('outline');outline.hidden=!action.outline;if(action.outline){for(const key of ['left','top','width','height'])outline.style[key]=action.outline[key]+'px'}const trail=document.getElementById('trail');trail.style.display=action.from?'block':'none';if(action.from){trail.setAttribute('x1',action.from.x);trail.setAttribute('y1',action.from.y);trail.setAttribute('x2',action.x);trail.setAttribute('y2',action.y)}if(action.click){const ripple=document.createElement('div');ripple.id='ripple';ripple.style.left=action.x+'px';ripple.style.top=action.y+'px';document.body.append(ripple);setTimeout(()=>ripple.remove(),550)}};
+window.f5Waiting=(message)=>{let banner=document.getElementById('waiting');if(!banner){banner=document.createElement('div');banner.id='waiting';banner.style.cssText='position:absolute;top:16px;left:50%;transform:translateX(-50%);border-radius:10px;padding:10px 16px;background:rgba(20,20,20,.92);color:white;font:14px system-ui;white-space:nowrap;pointer-events:none';document.body.append(banner)}banner.textContent=message||'';banner.hidden=!message;document.getElementById('cursor').hidden=!!message;document.getElementById('outline').hidden=true;document.getElementById('trail').style.display='none'};
 </script></body></html>`;
 export class ComputerOverlay implements ComputerOverlaySurface {
   private readonly windows = new Map<string, BrowserWindow>();
@@ -65,6 +66,23 @@ export class ComputerOverlay implements ComputerOverlaySurface {
           if (!window.isDestroyed()) window.showInactive();
         });
       this.windows.set(String(display.id), window);
+    }
+  }
+  waiting(holder: ComputerLeaseHolder, seconds?: number): void {
+    if (!this.holder || this.holder.executionGeneration !== holder.executionGeneration) return;
+    const active = String(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id);
+    const shortcut = process.platform === "win32" ? "Ctrl+Alt+Shift+F12" : "⌃⌘Esc";
+    const message =
+      seconds !== undefined && seconds > 0
+        ? `Agent resumes in ${seconds}s · move the mouse to keep control · ${shortcut} stops`
+        : "Waiting while you use the computer";
+    for (const [id, window] of this.windows) {
+      if (window.isDestroyed() || window.webContents.isLoading()) continue;
+      void window.webContents
+        .executeJavaScript(
+          "window.f5Waiting(" + JSON.stringify(id === active ? message : undefined) + ")",
+        )
+        .catch(() => undefined);
     }
   }
   async action(
