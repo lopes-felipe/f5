@@ -8,6 +8,8 @@ import {
 import { Button } from "../ui/button";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { cn } from "~/lib/utils";
+import { fieldShellClassName } from "../ui/input";
 
 export function inspectCronInput(value: string) {
   try {
@@ -50,7 +52,7 @@ export function CronScheduleEditor(props: {
   }, [props.value]);
   return (
     <div className="space-y-2" role="group" aria-label="Cron expression">
-      <div className="flex items-center gap-2 rounded-lg border border-input bg-background px-3 py-3 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20 has-aria-invalid:border-destructive">
+      <div className={cn(fieldShellClassName, "flex items-center gap-2 px-3 py-3")}>
         <div className="min-w-0 flex-1 overflow-x-auto">
           <div className="flex w-max min-w-full items-center justify-center gap-1">
             {fields.map((field, index) => {

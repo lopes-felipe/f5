@@ -3,6 +3,7 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "node-pty",
   "@ff-labs/",
   "@anthropic-ai/claude-agent-sdk",
+  "@openai/codex",
   "node-gyp-build",
   "node-addon-api",
   "bufferutil",
@@ -25,12 +26,8 @@ export function pinnedCliDependency(
   packages: Readonly<Record<string, readonly unknown[]>>,
   name: string,
 ): string {
-  const resolution = packages[name]?.[0];
-  if (typeof resolution !== "string") throw new Error("Missing pinned native dependency: " + name);
-  const separator = resolution.lastIndexOf("@");
-  if (separator <= 0 || separator === resolution.length - 1)
-    throw new Error("Invalid pinned native dependency: " + name);
-  return resolution.slice(0, separator) === name
-    ? resolution.slice(separator + 1)
-    : "npm:" + resolution;
+  const entry = packages[name]?.[0];
+  const resolution = typeof entry === "string" ? /^((?:@[^/]+\/)?[^@]+)@(.+)$/.exec(entry) : null;
+  if (!resolution) throw new Error("Missing pinned native dependency: " + name);
+  return resolution[1] === name ? resolution[2]! : "npm:" + entry;
 }

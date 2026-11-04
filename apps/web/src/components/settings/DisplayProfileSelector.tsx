@@ -114,8 +114,8 @@ export function DisplayProfileSelector({
           <span
             className={cn(
               toggleVariants({ size: "xs", variant: "outline" }),
-              "cursor-default border-dashed text-muted-foreground hover:bg-transparent",
-              profile === "custom" ? "bg-input/64 text-foreground" : "opacity-80",
+              "cursor-default border-dashed border-border bg-transparent text-muted-foreground hover:bg-transparent",
+              profile === "custom" ? "bg-accent text-foreground hover:bg-accent" : "opacity-80",
             )}
           >
             Custom

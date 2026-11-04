@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./providerBinary": {
+      "types": "./src/providerBinary.ts",
+      "import": "./src/providerBinary.ts"
+    },
     "./generatedImageMarkdown": {
       "types": "./src/generatedImageMarkdown.ts",
       "import": "./src/generatedImageMarkdown.ts"

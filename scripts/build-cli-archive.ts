@@ -20,6 +20,8 @@ import {
 } from "@t3tools/shared/cliRelease";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CLI_NODE_VERSION = "26.10.0";
+export { pinnedCliDependency };
+
 export async function buildCliArchive(options: {
   target: string;
   output: string;
@@ -136,7 +138,7 @@ export async function buildCliArchive(options: {
       "bun.lock",
       await fs.readFile(path.join(repo, "bun.lock"), "utf8"),
     ).config as { packages: Record<string, [string, ...unknown[]]> };
-    const pinned = (name: string) => pinnedCliDependency(sourceLock.packages, name);
+    const pinned = (name: string): string => pinnedCliDependency(sourceLock.packages, name);
     const dependencies = Object.fromEntries(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackage.dependencies)).map((name) => [
         name,
@@ -156,6 +158,9 @@ export async function buildCliArchive(options: {
     // fff's optional platform binary is explicit, so installer settings cannot silently omit it.
     const fffPlatform = target.startsWith("linux-") ? `${target}-gnu` : target;
     dependencies[`@ff-labs/fff-bin-${fffPlatform}`] = pinned("@ff-labs/fff-node");
+    // Codex's native alias must survive --omit=optional too.
+    const codexPlatformPackage = "@openai/codex-" + target;
+    dependencies[codexPlatformPackage] = pinned(codexPlatformPackage);
     await fs.writeFile(
       path.join(stage, "package.json"),
       JSON.stringify({

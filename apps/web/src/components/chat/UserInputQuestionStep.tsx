@@ -11,6 +11,7 @@ import {
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
+import { fieldSurfaceClassName } from "~/components/ui/input";
 import ChatMarkdown from "../ChatMarkdown";
 import { useStableCallback } from "../../hooks/useStableCallback";
 
@@ -337,7 +338,10 @@ export function UserInputQuestionStep({
             rows={1}
             aria-label={`Other answer: ${question.question}`}
             placeholder={`Type your answer… (Enter to ${isLastQuestion ? "send" : "continue"}, Shift+Enter for a new line)`}
-            className="mt-2 field-sizing-content max-h-24 min-h-8 w-full resize-none rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-50"
+            className={cn(
+              fieldSurfaceClassName,
+              "mt-2 field-sizing-content max-h-24 min-h-8 w-full resize-none px-3 py-1.5 text-sm",
+            )}
             disabled={disabled}
             value={customAnswer}
             onChange={(event) => onCustomAnswerChange?.(event.target.value)}

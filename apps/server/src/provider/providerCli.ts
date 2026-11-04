@@ -9,6 +9,7 @@ import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { CommandNotFoundError, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
 import { resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
+import { resolveCodexCommand } from "./codexExecutable.ts";
 
 export interface ProviderCliCommandResult {
   readonly stdout: string;
@@ -55,17 +56,23 @@ export function runProviderCliCommand(
 ) {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const resolvedBinary = options?.binaryPath ?? binary;
-    const environment = buildProviderChildProcessEnv(
-      options.baseEnvironment,
-      options?.envOverrides,
-    );
+    const resolvedBinary = yield* Effect.try({
+      try: () =>
+        binary === "codex"
+          ? resolveCodexCommand(options.binaryPath)
+          : (options.binaryPath ?? binary),
+      catch: (cause) =>
+        cause instanceof CommandNotFoundError
+          ? cause
+          : new CommandNotFoundError(binary, String(cause)),
+    });
+    const environment = buildProviderChildProcessEnv(options.baseEnvironment, options.envOverrides);
     const launchArgs =
       binary === "codex"
         ? yield* Effect.try({
             try: () =>
               resolveCodexLaunchArgv({
-                ...(options?.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
+                ...(options.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
                 environment,
               }),
             catch: (cause) =>
@@ -83,9 +90,9 @@ export function runProviderCliCommand(
       binary === "codex"
         ? prependCodexCliTelemetryDisabledConfig([...launchArgs.argv, ...args], {
             managedCredentials: environment.F5_PROFILE_ISOLATED === "1",
-            mcpServers: options?.mcpServers ?? null,
-            mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
-            mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
+            mcpServers: options.mcpServers ?? null,
+            mcpOAuthCallbackPort: options.mcpOAuthCallbackPort ?? null,
+            mcpOAuthCallbackUrl: options.mcpOAuthCallbackUrl ?? null,
           })
         : [...args];
     const invocation = yield* resolveInvocationEffect(resolvedBinary, commandArgs, environment);

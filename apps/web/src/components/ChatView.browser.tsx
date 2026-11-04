@@ -9676,9 +9676,23 @@ describe("ChatView timeline (full app)", () => {
     try {
       await page.getByText("Original answer", { exact: true }).click();
       await waitForTimelineScrollToSettle();
-      const paragraph = document.querySelector('[data-message-role="assistant"] p')!;
-      paragraph.scrollIntoView({ block: "center" });
-      await waitForTimelineScrollToSettle();
+      const paragraph = document.querySelector<HTMLElement>('[data-message-role="assistant"] p')!;
+      // A one-shot scrollIntoView can be undone when the timeline re-pins to the
+      // bottom (the anchor then hides the quote toolbar); retry like
+      // scrollTimelineRowIntoView until the paragraph stays in view.
+      await vi.waitFor(
+        async () => {
+          const scrollContainer = document.querySelector<HTMLElement>(
+            '[data-slot="messages-scroll-container"]',
+          );
+          expect(scrollContainer, "Messages scroll container must be present.").toBeTruthy();
+          paragraph.scrollIntoView({ block: "center" });
+          scrollContainer!.dispatchEvent(new Event("scroll"));
+          await waitForTimelineScrollToSettle();
+          expect(isElementVisibleWithinContainer(paragraph, scrollContainer!)).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       const range = document.createRange();
       range.selectNodeContents(paragraph);
       window.getSelection()!.removeAllRanges();

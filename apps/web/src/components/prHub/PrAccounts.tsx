@@ -6,7 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Input, fieldSurfaceClassName } from "../ui/input";
 
 const PROVIDERS = [
   ["github", "GitHub", "github.com"],
@@ -19,7 +19,7 @@ const providerLabel = (provider: SourceControlProviderKind) =>
   PROVIDERS.find(([kind]) => kind === provider)?.[1] ?? provider;
 const accountLabel = (account: ForgeAccount) =>
   `${providerLabel(account.provider)} · ${account.host} · ${account.login}`;
-const selectClass = "h-8 rounded-md border border-input bg-background px-2 text-sm";
+const selectClass = `${fieldSurfaceClassName} h-8 px-2 text-sm`;
 
 export function PrAccounts({
   selectedAccountId,

@@ -17,6 +17,18 @@ import {
   readCodexConfigModelProvider,
 } from "./ProviderHealth";
 import { prependCodexCliTelemetryDisabledConfig } from "../codexCliConfig";
+import { resolveBundledCodexExecutable } from "../codexExecutable.ts";
+import * as codexExecutable from "../codexExecutable.ts";
+import * as claudeExecutable from "../claudeSdkExecutable.ts";
+import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
+import { runCodexCliCommand } from "../providerCli.ts";
+
+vi.mock("../codexExecutable.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../codexExecutable.ts")>()),
+  resolveBundledCodexExecutable: () => "/fixture/bundled/codex",
+  resolveCodexCommand: (value?: string) =>
+    !value?.trim() || value.trim() === "codex" ? "/fixture/bundled/codex" : value.trim(),
+}));
 
 // The spawner is simulated, so command discovery must not depend on installed CLIs.
 vi.mock("../../spawn/resolveCommand.ts", async (importOriginal) => ({
@@ -189,12 +201,19 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.authStatus, "authenticated");
       }).pipe(
         Effect.provide(
-          mockSpawnerLayer((args) => {
-            const joined = normalizeCodexArgs(args).join(" ");
-            if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
-            if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
-            throw new Error(`Unexpected args: ${joined}`);
-          }),
+          mockSpawnerLayer(
+            (args) => {
+              const joined = normalizeCodexArgs(args).join(" ");
+              if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
+              if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            },
+            (command) =>
+              assert.strictEqual(
+                (command as { command: string }).command,
+                resolveBundledCodexExecutable(),
+              ),
+          ),
         ),
       ),
     );
@@ -208,7 +227,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.available, false);
         assert.strictEqual(status.authStatus, "unknown");
         assert.match(status.message ?? "", /Binary path on the server/);
-        assert.match(status.message ?? "", /may not add codex to PATH/);
+        assert.match(status.message ?? "", /Reinstall F5.*bundled Codex runtime/);
       }).pipe(Effect.provide(failingSpawnerLayer("spawn codex ENOENT"))),
     );
 
@@ -390,6 +409,27 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   });
 
   describe("checkCodexProviderPreflight", () => {
+    it.effect(
+      "preserves typed resolver failures and their platform-specific recovery advice",
+      () => {
+        const missing = new CommandNotFoundError(
+          "codex",
+          "Command not found: codex. Set an absolute Binary path for this unsupported platform.",
+        );
+        const resolver = vi.spyOn(codexExecutable, "resolveCodexCommand").mockImplementation(() => {
+          throw missing;
+        });
+        return Effect.gen(function* () {
+          const failure = yield* runCodexCliCommand(["--version"], {
+            baseEnvironment: {},
+          }).pipe(Effect.flip);
+          assert.equal(failure, missing);
+          const status = yield* checkCodexProviderPreflight();
+          assert.equal(status.failureReason, "notInstalled");
+          assert.match(status.message ?? "", /absolute Binary path/);
+        }).pipe(Effect.ensuring(Effect.sync(() => resolver.mockRestore())));
+      },
+    );
     it.effect("honors binaryPath and homePath overrides", () =>
       Effect.gen(function* () {
         yield* withTempCodexHome('model_provider = "openai"\n');
@@ -830,6 +870,21 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   });
 
   describe("checkClaudeProviderPreflight", () => {
+    it.effect("preserves actionable resolver advice for unsupported custom command shims", () => {
+      const detail = "Use an .exe or cli.js instead of this unsupported Claude .cmd shim.";
+      const resolver = vi
+        .spyOn(claudeExecutable, "resolveClaudeCliInvocation")
+        .mockImplementation(() => {
+          throw new CommandNotFoundError("claude.cmd", detail);
+        });
+      return Effect.gen(function* () {
+        const result = yield* checkClaudeProviderPreflight({
+          providerOptions: { claudeAgent: { binaryPath: "claude.cmd" } },
+        });
+        assert.equal(result.message, detail);
+        assert.equal(result.available, false);
+      }).pipe(Effect.ensuring(Effect.sync(() => resolver.mockRestore())));
+    });
     it.effect("strips the launching Claude session from harness preflight children", () =>
       Effect.gen(function* () {
         vi.stubEnv("CLAUDECODE", "1");

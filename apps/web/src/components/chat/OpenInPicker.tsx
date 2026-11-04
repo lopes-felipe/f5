@@ -131,10 +131,10 @@ export const OpenInPicker = memo(function OpenInPicker({
   }, [preferredEditor, keybindings, openInCwd, wsInteractionBlocked]);
 
   return (
-    <Group aria-label="Subscription actions">
+    <Group aria-label="Subscription actions" variant="track">
       <Button
         size="sm"
-        variant="outline"
+        variant="ghost"
         disabled={!preferredEditor || !openInCwd}
         onClick={() => openInEditor(preferredEditor)}
       >
@@ -145,7 +145,16 @@ export const OpenInPicker = memo(function OpenInPicker({
       </Button>
       <GroupSeparator className="hidden @xl/header-actions:block" />
       <Menu>
-        <MenuTrigger render={<Button aria-label="Copy options" size="icon-sm" variant="outline" />}>
+        <MenuTrigger
+          render={
+            <Button
+              aria-label="Copy options"
+              size="icon-xs"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+            />
+          }
+        >
           <ChevronDownIcon aria-hidden="true" className="size-4" />
         </MenuTrigger>
         <MenuPopup align="end">

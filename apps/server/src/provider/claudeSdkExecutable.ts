@@ -1,4 +1,5 @@
 import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
+import { isDefaultProviderBinary } from "@t3tools/shared/providerBinary";
 import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as NodePath from "node:path";
@@ -21,8 +22,7 @@ export interface ClaudeSdkExecutableOptions {
 }
 
 export function isDefaultClaudeBinary(binaryPath: string | null | undefined): boolean {
-  const normalized = binaryPath?.trim();
-  return !normalized || normalized === DEFAULT_CLAUDE_BINARY;
+  return isDefaultProviderBinary(binaryPath, DEFAULT_CLAUDE_BINARY);
 }
 
 function isFile(filePath: string): boolean {
@@ -72,8 +72,8 @@ export function resolveBundledClaudeExecutable(
   let resolvePackage = options.resolve;
   try {
     if (!resolvePackage) {
-      const require = createRequire(import.meta.url);
-      const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
+      const moduleRequire = createRequire(import.meta.url);
+      const sdkEntry = moduleRequire.resolve("@anthropic-ai/claude-agent-sdk");
       resolvePackage = createRequire(sdkEntry).resolve;
     }
     for (const candidate of packages) {
