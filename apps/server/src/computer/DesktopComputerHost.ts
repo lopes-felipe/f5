@@ -5,6 +5,7 @@ import {
   OPEN_EXTERNAL_URL_CAPABILITY,
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+  COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -66,6 +67,7 @@ export class DesktopComputerHost {
         OPEN_EXTERNAL_URL_CAPABILITY,
         COMPUTER_BACKGROUND_CAPABILITY,
         COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+        COMPUTER_GRANT_FORGET_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -81,6 +83,9 @@ export class DesktopComputerHost {
   }
   sessionLifecycleCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY);
+  }
+  grantForgetCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_GRANT_FORGET_CAPABILITY);
   }
   supportsAgentIdentity(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_AGENT_IDENTITY_CAPABILITY);

@@ -47,17 +47,26 @@ export function keychainConsentKey(
   return () => {
     if (key) return key;
     if (!crypto.available()) return undefined;
+    let encrypted: Buffer;
     try {
-      const plain = crypto.decrypt(readFileSync(path));
-      if (/^[0-9a-f]{64}$/.test(plain)) return (key = Buffer.from(plain, "hex"));
-    } catch {
-      // Missing or unreadable: replace the key, invalidating the old records.
+      encrypted = readFileSync(path);
+    } catch (error) {
+      // Access failures are not missing keys. Never overwrite an existing key when
+      // the keychain or filesystem is temporarily unavailable.
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT")
+        return undefined;
+      try {
+        const fresh = randomBytes(32);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, crypto.encrypt(fresh.toString("hex")), { mode: 0o600, flag: "wx" });
+        return (key = fresh);
+      } catch {
+        return undefined;
+      }
     }
     try {
-      const fresh = randomBytes(32);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, crypto.encrypt(fresh.toString("hex")), { mode: 0o600 });
-      return (key = fresh);
+      const plain = crypto.decrypt(encrypted);
+      return /^[0-9a-f]{64}$/.test(plain) ? (key = Buffer.from(plain, "hex")) : undefined;
     } catch {
       return undefined;
     }
@@ -70,8 +79,6 @@ export interface SignedRecordOptions<R extends object> {
   readonly revokeFailureMessage: string;
   readonly maxRecordsPerProfile: number;
   readonly maxProfiles: number;
-  /** Legacy files retain unverified entries verbatim and verify lazily on use. */
-  readonly preserveUnverified?: boolean;
 }
 
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -81,6 +88,8 @@ const object = (value: unknown): value is Record<string, unknown> =>
 export class SignedRecordFile<R extends object> {
   private readonly profiles = new Map<string, Map<string, { record: R; mac: string }>>();
   private readonly unsaved = new Set<string>();
+  /** Last durable envelope, retained when a run-only approval replaces the same key. */
+  private readonly durable = new Map<string, { record: R; mac: string }>();
 
   constructor(
     private readonly io: IntegrationConsentIo,
@@ -104,8 +113,11 @@ export class SignedRecordFile<R extends object> {
           continue;
         const { mac, ...record } = entry;
         if (!options.validate(record, id)) continue;
-        if (options.preserveUnverified || this.verified(profileId, record, id, mac))
-          kept.set(id, { record, mac });
+        // Preserve signed envelopes without consulting the keychain during load.
+        // Only list() authorizes them. An unavailable key must not turn the next
+        // unrelated write into deletion of every profile's durable policy.
+        kept.set(id, { record, mac });
+        this.durable.set(JSON.stringify([profileId, id]), { record, mac });
       }
       if (kept.size) this.profiles.set(profileId, kept);
     }
@@ -143,6 +155,7 @@ export class SignedRecordFile<R extends object> {
     this.unsaved.delete(identity);
     try {
       this.save();
+      this.durable.set(identity, entry.get(id)!);
       return "durable";
     } catch {
       this.unsaved.add(identity);
@@ -155,6 +168,7 @@ export class SignedRecordFile<R extends object> {
     entry?.delete(id);
     if (entry?.size === 0) this.profiles.delete(profileId);
     this.unsaved.delete(JSON.stringify([profileId, id]));
+    this.durable.delete(JSON.stringify([profileId, id]));
     try {
       this.save();
     } catch {
@@ -197,9 +211,11 @@ export class SignedRecordFile<R extends object> {
           [...this.profiles].map(([profileId, entries]) => [
             profileId,
             Object.fromEntries(
-              [...entries]
-                .filter(([id]) => !this.unsaved.has(JSON.stringify([profileId, id])))
-                .map(([id, { record, mac }]) => [id, { ...record, mac }]),
+              [...entries].flatMap(([id, entry]) => {
+                const identity = JSON.stringify([profileId, id]);
+                const saved = this.unsaved.has(identity) ? this.durable.get(identity) : entry;
+                return saved ? [[id, { ...saved.record, mac: saved.mac }]] : [];
+              }),
             ),
           ]),
         ),

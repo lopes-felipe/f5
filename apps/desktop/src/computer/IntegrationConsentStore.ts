@@ -87,7 +87,6 @@ export class IntegrationConsentStore {
         typeof record.digest === "string",
       maxRecordsPerProfile: INTEGRATIONS.length,
       maxProfiles: Number.POSITIVE_INFINITY,
-      preserveUnverified: true,
       revokeFailureMessage:
         "F5 couldn't save the revocation, so Codex may use Chrome without asking after F5 restarts. Try again.",
     });

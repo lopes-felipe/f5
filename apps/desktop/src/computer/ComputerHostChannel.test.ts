@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ChromeProcessSupervisor, type ChromeProcessIo } from "./ChromeProcessSupervisor";
 import { ComputerHostChannel } from "./ComputerHostChannel";
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
+import { ComputerConsentStore } from "./ComputerConsentStore";
 import type { ComputerController } from "./ComputerController";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 import { claudeTerminalTargets, type AlwaysAllowableIntegration } from "./IntegrationConsentStore";
@@ -24,6 +25,7 @@ function setup(
     cancelBrowserOpen?: (profileId: string) => void;
     alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
     grants?: ComputerGrantAuthority;
+    grantForgetFailed?: (profileId: string, message: string) => void;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
@@ -56,6 +58,7 @@ function setup(
       ...(options.openExternalUrl ? { openExternalUrl: options.openExternalUrl } : {}),
       ...(options.cancelBrowserOpen ? { cancelBrowserOpen: options.cancelBrowserOpen } : {}),
       ...(notification ? { notification } : {}),
+      ...(options.grantForgetFailed ? { grantForgetFailed: options.grantForgetFailed } : {}),
       background: () => ({ available: true }),
       ...(advertiseBackground !== undefined ? { advertiseBackground } : {}),
     },
@@ -78,6 +81,64 @@ function setup(
   return { channel, controller, process, hello, attention };
 }
 describe("private computer host channel", () => {
+  it("reports a failed revocation without throwing out of the authenticated IPC listener", () => {
+    let contents: string | undefined;
+    let failing = false;
+    const store = new ComputerConsentStore(
+      {
+        read: () => contents,
+        write: (value) => {
+          if (failing) throw new Error("disk full");
+          contents = value;
+        },
+        remove: () => {
+          if (failing) throw new Error("read-only");
+          contents = undefined;
+        },
+      },
+      () => Buffer.alloc(32, 7),
+    );
+    store.allow("profile", {
+      version: 1,
+      kind: "app-access",
+      projectId: "project",
+      appId: "com.apple.TextEdit",
+      tier: "full",
+      allowTyping: false,
+      policyVersion: 1,
+    });
+    const grants = new ComputerGrantAuthority("darwin", store);
+    const grantForgetFailed = vi.fn();
+    const h = setup(false, false, { grants, grantForgetFailed });
+    h.hello(["computer-grant-forget-v1"]);
+    failing = true;
+    const message = { type: "grantForget", projectId: "project", appId: "com.apple.TextEdit" };
+    expect(() => h.process.emit("message", { ...message, requestId: "forget" })).not.toThrow();
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "response",
+        requestId: "forget",
+        error: { _tag: "Execution", message: expect.stringContaining("restart could restore") },
+      },
+      expect.any(Function),
+    );
+    expect(grants.listRemembered("profile")).toEqual([]);
+    expect(() => h.process.emit("message", message)).not.toThrow();
+    expect(grantForgetFailed).toHaveBeenCalledWith(
+      "profile",
+      expect.stringContaining("restart could restore"),
+    );
+    failing = false;
+    h.process.emit("message", { ...message, requestId: "retry" });
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "response",
+        requestId: "retry",
+        result: {},
+      },
+      expect.any(Function),
+    );
+  });
   it("settles a failed multi-app issuance without retaining partial receipts", () => {
     const grants = new ComputerGrantAuthority("darwin");
     const request = {

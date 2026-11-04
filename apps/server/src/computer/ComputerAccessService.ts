@@ -60,7 +60,7 @@ export class ComputerAccessService {
       settled: (requestId: string, threadId: string, allowed: boolean) => void;
       changed: (threadId: string) => void;
       timeoutMs?: number;
-      forgotten?: (projectId: string, appId: string) => void;
+      forgotten?: (projectId: string, appId: string) => void | Promise<void>;
     },
   ) {}
   async initialize(): Promise<void> {
@@ -451,7 +451,7 @@ export class ComputerAccessService {
       const next = this.remembered.filter(
         (grant) => grant.projectId !== projectId || grant.appId !== appId,
       );
-      this.options.forgotten?.(projectId, appId);
+      await this.options.forgotten?.(projectId, appId);
       this.remembered = next;
       for (const [threadId, binding] of this.bindings)
         if (binding.projectId === projectId) {

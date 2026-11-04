@@ -212,7 +212,7 @@ describe("IntegrationConsentStore", () => {
     io.remove();
   });
 
-  it("keeps the signing key encrypted and replaces one it can't read", () => {
+  it("keeps the signing key encrypted and never replaces one it can't decrypt", () => {
     const dir = mkdtempSync(join(tmpdir(), "consent-key-"));
     const path = join(dir, "integration-consent.key");
     const crypto = {
@@ -229,9 +229,30 @@ describe("IntegrationConsentStore", () => {
     expect(readFileSync(path, "utf8")).toBe(`enc:${first!.toString("hex")}`);
     expect(keychainConsentKey(path, crypto)()).toEqual(first);
     writeFileSync(path, "garbage");
-    const replaced = keychainConsentKey(path, crypto)();
-    expect(replaced?.length).toBe(32);
-    expect(replaced).not.toEqual(first);
+    expect(keychainConsentKey(path, crypto)()).toBeUndefined();
+    expect(readFileSync(path, "utf8")).toBe("garbage");
     expect(keychainConsentKey(path, { ...crypto, available: () => false })()).toBeUndefined();
+  });
+
+  it("retries a temporarily denied decrypt without changing the shared signing key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "consent-key-denied-"));
+    const path = join(dir, "key");
+    const encrypted = Buffer.from("encrypted-existing-key");
+    writeFileSync(path, encrypted);
+    let denied = true;
+    const getter = keychainConsentKey(path, {
+      available: () => true,
+      encrypt: () => {
+        throw new Error("must not replace the key");
+      },
+      decrypt: () => {
+        if (denied) throw new Error("user denied keychain access");
+        return KEY.toString("hex");
+      },
+    });
+    expect(getter()).toBeUndefined();
+    expect(readFileSync(path)).toEqual(encrypted);
+    denied = false;
+    expect(getter()).toEqual(KEY);
   });
 });

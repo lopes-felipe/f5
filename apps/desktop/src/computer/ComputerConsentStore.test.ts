@@ -34,6 +34,34 @@ function memory() {
 }
 
 describe("ComputerConsentStore", () => {
+  it("retains every profile's signed policy across writes while the keychain is unavailable", () => {
+    const { io, state } = memory();
+    const signed = new ComputerConsentStore(io, () => KEY);
+    signed.allow("p1", app);
+    signed.allow("p2", { ...app, projectId: "other" });
+    const before = JSON.parse(state.contents!);
+    let available = false;
+    let keyReads = 0;
+    const reloaded = new ComputerConsentStore(io, () => {
+      keyReads++;
+      return available ? KEY : undefined;
+    });
+    expect(keyReads).toBe(0);
+    expect(reloaded.list("p1")).toEqual([]);
+    // A native run-only replacement must not erase the previous durable envelope.
+    expect(reloaded.allow("p1", { ...app, allowTyping: true })).toBe("session-only");
+    expect(reloaded.list("p1")).toEqual([{ ...app, allowTyping: true }]);
+    reloaded.revoke("unrelated", app);
+    expect(JSON.parse(state.contents!).p1).toEqual(before.p1);
+    expect(JSON.parse(state.contents!).p2).toEqual(before.p2);
+    expect(reloaded.allow("run-only", app)).toBe("session-only");
+    available = true;
+    reloaded.allow("p3", app);
+    const restart = new ComputerConsentStore(io, () => KEY);
+    expect(restart.list("p1")).toEqual([app]);
+    expect(restart.list("p2")).toEqual([{ ...app, projectId: "other" }]);
+    expect(restart.list("run-only")).toEqual([]);
+  });
   it("round trips every policy kind, replacing only the same policy key", () => {
     const { io } = memory();
     const records: RememberedComputerConsent[] = [

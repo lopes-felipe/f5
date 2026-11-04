@@ -7,6 +7,7 @@ import {
   type OpenExternalUrlStatus,
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+  COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -97,6 +98,7 @@ export class ComputerHostChannel {
         options?: { preapproved?: boolean },
       ) => Promise<OpenExternalUrlStatus>;
       cancelBrowserOpen?: (profileId: string) => void;
+      grantForgetFailed?: (profileId: string, message: string) => void;
     } = {},
   ) {
     this.chrome = new ChromeLeaseAuthority((holder) => {
@@ -238,6 +240,7 @@ export class ComputerHostChannel {
               capability === COMPUTER_ACTIVITY_CORRELATION_CAPABILITY ||
               capability === COMPUTER_CHROME_CALLS_CAPABILITY ||
               capability === COMPUTER_SESSION_LIFECYCLE_CAPABILITY ||
+              capability === COMPUTER_GRANT_FORGET_CAPABILITY ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -655,7 +658,18 @@ export class ComputerHostChannel {
           backend.acquisitions.delete(message.requestId);
           break;
         case "grantForget":
-          this.grants.forget(profileId, message.projectId, message.appId);
+          try {
+            this.grants.forget(profileId, message.projectId, message.appId);
+            if (message.requestId)
+              this.send(profileId, { type: "response", requestId: message.requestId, result: {} });
+          } catch (error) {
+            if (message.requestId) fail(message.requestId, error);
+            else
+              this.options.grantForgetFailed?.(
+                profileId,
+                error instanceof Error ? error.message : "Could not forget this app.",
+              );
+          }
           break;
         case "computerSessionClosed":
           if (!backend.capabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY)) break;

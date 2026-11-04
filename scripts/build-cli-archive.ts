@@ -7,7 +7,10 @@ import * as path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import serverPackage from "../apps/server/package.json" with { type: "json" };
-import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
+import {
+  pinnedCliDependency,
+  selectCliRuntimeExternalDependencies,
+} from "./lib/cli-external-packages.ts";
 import {
   cliTarget,
   sha256File,
@@ -133,12 +136,7 @@ export async function buildCliArchive(options: {
       "bun.lock",
       await fs.readFile(path.join(repo, "bun.lock"), "utf8"),
     ).config as { packages: Record<string, [string, ...unknown[]]> };
-    const pinned = (name: string): string => {
-      const entry = sourceLock.packages[name]?.[0];
-      if (!entry?.startsWith(`${name}@`))
-        throw new Error(`Missing pinned native dependency: ${name}`);
-      return entry.slice(name.length + 1);
-    };
+    const pinned = (name: string) => pinnedCliDependency(sourceLock.packages, name);
     const dependencies = Object.fromEntries(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackage.dependencies)).map((name) => [
         name,

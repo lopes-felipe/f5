@@ -657,6 +657,8 @@ function initializeComputerSystem(): void {
     },
     undefined,
     {
+      grantForgetFailed: (_profileId, message) =>
+        dialog.showErrorBox("Could not forget this app", message),
       ...(process.platform === "darwin"
         ? {
             openExternalUrl: (

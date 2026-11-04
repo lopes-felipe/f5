@@ -50,6 +50,7 @@ export type ComputerDisplay = typeof ComputerDisplay.Type;
 export const COMPUTER_BACKGROUND_CAPABILITY = "background-ax-v1";
 /** Session receipt reclamation, independently negotiated from durable policy support. */
 export const COMPUTER_SESSION_LIFECYCLE_CAPABILITY = "computer-session-lifecycle-v1";
+export const COMPUTER_GRANT_FORGET_CAPABILITY = "computer-grant-forget-v1";
 export const ComputerBackgroundUnavailableReason = Schema.Literals([
   "unsupported-platform",
   "peer-capability",
@@ -821,7 +822,12 @@ export const DesktopComputerHostMessage = Schema.Union([
     error: Schema.optional(ComputerAutomationError),
   }),
   Schema.Struct({ type: Schema.Literals(["cancel", "leaseAccepted"]), requestId: Id }),
-  Schema.Struct({ type: Schema.Literal("grantForget"), projectId: Id, appId: Id }),
+  Schema.Struct({
+    type: Schema.Literal("grantForget"),
+    requestId: Schema.optionalKey(Id),
+    projectId: Id,
+    appId: Id,
+  }),
   Schema.Struct({
     type: Schema.Literal("computerSessionClosed"),
     threadId: Id,

@@ -259,7 +259,21 @@ export class ComputerAutomationBrokerRuntime {
     });
     this.access = new ComputerAccessService({
       platform: options.platform,
-      forgotten: (projectId, appId) => this.host.send({ type: "grantForget", projectId, appId }),
+      forgotten: (projectId, appId) =>
+        this.host.grantForgetCapable()
+          ? this.host
+              .correlated(
+                {
+                  type: "grantForget",
+                  requestId: randomUUID(),
+                  projectId,
+                  appId,
+                },
+                10_000,
+                false,
+              )
+              .then(() => undefined)
+          : this.host.send({ type: "grantForget", projectId, appId }),
       backendIncarnation: host.backendIncarnation,
       storage: options.storage,
       request: (request, expiresAtMs) => {

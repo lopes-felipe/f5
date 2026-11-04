@@ -8,6 +8,9 @@ import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { ComputerAccessInbox } from "./ComputerAccessCard";
 import { AUTO_ANSWER_GRACE_MS } from "../hooks/usePendingComputerAccessRequests";
+import { useState } from "react";
+import { ToastProvider, toastManager } from "./ui/toast";
+import { Dialog, DialogPopup, DialogTitle, DialogClose } from "./ui/dialog";
 
 // Component regression only: no desktop host, grants or OS input are executed.
 const nativeMock = vi.hoisted(() => ({
@@ -17,6 +20,7 @@ vi.mock("../nativeApi", () => ({ readNativeApi: () => nativeMock.api }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useNavigate: () => async () => {},
+  useParams: () => ({}),
 }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
 beforeEach(() => {
@@ -24,9 +28,120 @@ beforeEach(() => {
   useAgentComputerActivityStore.getState().resetConnection();
 });
 afterEach(() => {
+  toastManager.close();
   vi.restoreAllMocks();
   delete window.desktopBridge;
   useAgentComputerActivityStore.getState().resetConnection();
+});
+
+it("updates an already-mounted live region for each queued access request", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
+  const screen = await render(<ComputerAccessInbox />);
+  try {
+    const region = page.getByRole("status").element();
+    expect(region.textContent?.trim()).toBe("");
+    for (const requestId of ["announce-first", "announce-next"])
+      store.request({
+        requestId,
+        threadId,
+        backendIncarnation: "fixture-backend",
+        kind: "apps",
+        reason: "Synthetic announcement test",
+        apps: [{ appId: "fixture", name: "Synthetic fixture", tier: "full" }],
+      });
+    await expect.element(region).toHaveTextContent("Computer access request 1 is waiting.");
+    store.settle({ requestId: "announce-first", threadId, allowed: false });
+    await expect.element(region).toHaveTextContent("Computer access request 2 is waiting.");
+    expect(page.getByRole("status").element()).toBe(region);
+    expect(region.textContent).not.toContain("Expires");
+    store.settle({ requestId: "announce-next", threadId, allowed: false });
+    await expect.element(region).toBeEmptyDOMElement();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+function AccessLayoutFixture() {
+  const [open, setOpen] = useState(false);
+  return (
+    <ToastProvider>
+      <main className="min-h-screen bg-background text-foreground">
+        <button type="button" className="fixed top-4 left-4" onClick={() => setOpen(true)}>
+          Open editor confirmation
+        </button>
+        <textarea
+          aria-label="Multi-line composer"
+          className="fixed right-4 bottom-4 left-4 h-40 rounded-lg border bg-background p-4"
+          defaultValue={"Keep writing while access is pending.\nA second line.\nA third line."}
+        />
+        <ComputerAccessInbox />
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogPopup>
+            <DialogTitle className="p-6">Editor confirmation</DialogTitle>
+            <DialogClose className="p-6">Close editor</DialogClose>
+          </DialogPopup>
+        </Dialog>
+      </main>
+    </ToastProvider>
+  );
+}
+
+async function waitForLayoutAnimations() {
+  await Promise.all(
+    document
+      .getAnimations()
+      .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+      .map((animation) => animation.finished.catch(() => {})),
+  );
+}
+
+it("keeps access above a tall composer, clear of desktop toasts, and respects modal focus", async () => {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(1280, 900);
+  const store = useAgentComputerActivityStore.getState();
+  const answerAccess = vi.fn(async () => {});
+  window.desktopBridge = { computerAutomation: { answerAccess } } as never;
+  const screen = await render(<AccessLayoutFixture />);
+  try {
+    store.request({
+      requestId: "layout",
+      threadId,
+      backendIncarnation: "fixture-backend",
+      kind: "apps",
+      reason: "Edit the document while you keep working",
+      apps: [{ appId: "fixture", name: "Document editor", tier: "full" }],
+    });
+    toastManager.add({ type: "info", title: "Layout notification", timeout: 0 });
+    await expect.element(page.getByText("Layout notification", { exact: true })).toBeVisible();
+    await waitForLayoutAnimations();
+    const panel = page.getByRole("dialog", { name: "Computer access", exact: true }).element();
+    const panelRect = panel.getBoundingClientRect();
+    const composer = page.getByRole("textbox", { name: "Multi-line composer" });
+    expect(panelRect.bottom).toBeLessThan(composer.element().getBoundingClientRect().top);
+    expect(
+      page.getByText("Layout notification", { exact: true }).element().getBoundingClientRect().left,
+    ).toBeGreaterThan(panelRect.right);
+    await page.screenshot({
+      path: "../../.playwright/screenshots/computer-access-composer-toast.png",
+    });
+    await page.getByRole("button", { name: "Open editor confirmation" }).click();
+    await expect
+      .element(page.getByRole("dialog", { name: "Editor confirmation", exact: true }))
+      .toBeVisible();
+    await waitForLayoutAnimations();
+    await page.screenshot({
+      path: "../../.playwright/screenshots/computer-access-editor-modal.png",
+    });
+    await page.getByRole("button", { name: "Close editor", exact: true }).click();
+    await page.getByRole("button", { name: "Review access", exact: true }).click();
+    expect(answerAccess).toHaveBeenCalledOnce();
+    await composer.click();
+    await expect.element(composer).toHaveFocus();
+  } finally {
+    await screen.unmount();
+    await page.viewport(viewport.width, viewport.height);
+  }
 });
 
 it("shows Pause after an old action's lease ends and keeps Resume visible once paused", async () => {
