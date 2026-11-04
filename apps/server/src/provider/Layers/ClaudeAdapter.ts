@@ -8716,26 +8716,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             registerChromeSession(threadId, chromeGeneration, chromeRuntime);
             // Masking is installed before the first SDK message can be logged.
             automationEventSanitizer.mask(threadId, CLAUDE_IN_CHROME_SERVER_NAME);
-            const decision = yield* Effect.tryPromise({
-              try: () =>
-                chromeRuntime!.prepare({
+            const decision = yield* Effect.promise(() =>
+              chromeRuntime!
+                .prepare({
                   threadId,
                   generation: chromeGeneration!,
                   providerHome,
                   providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
-                }),
-              catch: (cause) => cause,
-            }).pipe(
-              Effect.catch((cause) =>
-                Effect.succeed({
+                })
+                // A refused lease says who holds Chrome; anything else is verification.
+                .catch((cause: unknown) => ({
                   kind: "unknown" as const,
-                  // A refused lease says who holds Chrome; anything else is verification.
                   detail:
                     cause instanceof ComputerControlError && cause.error._tag === "Busy"
                       ? cause.message
                       : "Chrome setup failed verification.",
-                }),
-              ),
+                })),
             );
             chromeAllowed =
               decision.kind === "launch" &&
