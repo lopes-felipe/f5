@@ -1324,7 +1324,8 @@ export default memo(function ChatView({
     project: activeProject,
     thread: activeThread,
   });
-  const switchDraftProject = useSwitchDraftProject();
+  const { switchProject: switchDraftProject, pending: draftProjectSwitchPending } =
+    useSwitchDraftProject();
   const pickerProjects = useMemo(
     () => projects.filter((project) => !isScratchProject(project)),
     [projects],
@@ -8020,6 +8021,7 @@ export default memo(function ChatView({
           selection: isScratchProject(activeProject)
             ? { kind: "none" }
             : { kind: "project", projectId: draftThread.projectId },
+          disabled: draftProjectSwitchPending,
           onSelect: (selection) => {
             void switchDraftProject(threadId, selection);
           },

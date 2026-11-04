@@ -53,7 +53,8 @@ import {
 import { cn } from "../../lib/utils";
 import type { ThreadStatusPill } from "../../threadStatus";
 import type { Project } from "../../types";
-import { ProjectPicker, type ProjectPickerSelection } from "../ProjectPicker";
+import { ProjectPicker } from "../ProjectPicker";
+import type { ComposerProjectPickerControls } from "./composer/composerControls";
 import type { RightPanelSurfaceHeaderState } from "../../rightPanelStore";
 
 interface ChatHeaderProps {
@@ -70,13 +71,7 @@ interface ChatHeaderProps {
    * Unsent drafts can still change project: the crumb becomes a project picker
    * instead of the project actions menu.
    */
-  projectPicker?:
-    | {
-        readonly projects: ReadonlyArray<Project>;
-        readonly selection: ProjectPickerSelection;
-        readonly onSelect: (selection: ProjectPickerSelection) => void;
-      }
-    | undefined;
+  projectPicker?: ComposerProjectPickerControls | undefined;
   onNewThreadInProject?: (() => void) | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
   /** Opens Settings → Project → Actions, the only entry point while a project has no actions. */
@@ -286,6 +281,7 @@ export const ChatHeader = memo(function ChatHeader({
             projects={projectPicker.projects}
             selection={projectPicker.selection}
             onSelect={projectPicker.onSelect}
+            disabled={projectPicker.disabled ?? false}
             allowNone
             trigger="crumb"
           />

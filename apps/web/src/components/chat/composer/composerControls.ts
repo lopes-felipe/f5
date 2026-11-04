@@ -156,6 +156,8 @@ export interface ComposerSendControls {
 export interface ComposerProjectPickerControls {
   readonly projects: ReadonlyArray<Project>;
   readonly selection: ProjectPickerSelection;
+  /** True while a switch is running. */
+  readonly disabled?: boolean | undefined;
   readonly onSelect: (selection: ProjectPickerSelection) => void;
 }
 

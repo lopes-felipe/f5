@@ -1639,6 +1639,55 @@ describe("WorkflowCreateDialog", () => {
       host.remove();
     }
   });
+
+  it("clears the review branch on a project change and drops the note once files are added", async () => {
+    const baseProject = useStore.getState().projects[0]!;
+    useStore.setState({
+      projects: [
+        baseProject,
+        { ...baseProject, id: "project-2" as ProjectId, name: "Second", cwd: "/repo/second" },
+      ],
+    });
+    desktopBridgePathByFileName.set("AGENTS.md", "/repo/second/AGENTS.md");
+    function Host() {
+      const [projectId, setProjectId] = useState("project-1" as ProjectId);
+      return (
+        <WorkflowCreateDialog
+          open
+          projectId={projectId}
+          onOpenChange={() => {}}
+          onProjectChange={setProjectId}
+        />
+      );
+    }
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(<Host />, { container: host });
+
+    try {
+      await page.getByRole("button", { name: "Code Review" }).click();
+      await page.getByRole("button", { name: /^Options/ }).click();
+      await page.getByPlaceholder("main").fill("release/old-repo");
+
+      await page.getByRole("combobox", { name: "Project: Project" }).click();
+      await page.getByRole("option", { name: "Second" }).click();
+
+      await expect
+        .element(page.getByText("The review branch was cleared for the new project."))
+        .toBeVisible();
+      await expect.element(page.getByPlaceholder("main")).toHaveValue("");
+
+      await dropFilesOnRequirement([new File(["agents"], "AGENTS.md", { type: "text/markdown" })]);
+      await vi.waitFor(() => {
+        expect(document.querySelector('[title="AGENTS.md"]')).not.toBeNull();
+      });
+      expect(document.body.textContent).not.toContain("cleared for the new project");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
 });
 
 describe("reported workflow capabilities", () => {

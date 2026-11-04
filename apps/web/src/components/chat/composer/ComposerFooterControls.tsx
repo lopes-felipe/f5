@@ -95,6 +95,7 @@ export function ComposerFooterControls(props: {
           projects={props.projectPicker.projects}
           selection={props.projectPicker.selection}
           onSelect={props.projectPicker.onSelect}
+          disabled={props.projectPicker.disabled ?? false}
           allowNone
           trigger="chip"
         />

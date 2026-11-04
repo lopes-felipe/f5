@@ -5,6 +5,7 @@ vi.mock("../lib/serverHttpOrigin", () => ({ getServerHttpOrigin: () => "http://l
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createComposerMention } from "../composer-editor-mentions";
 import {
   resetComposerDraftBaseStorageForTesting,
   setComposerDraftBaseStorageForTesting,
@@ -12,6 +13,7 @@ import {
 } from "../composerDraftStore";
 import { useStore } from "../store";
 import type { Project } from "../types";
+import type { CreateProjectBackedDraftThreadResult } from "./useCreateProjectBackedDraftThread";
 import { type SwitchDraftProjectDeps, switchDraftProject } from "./useSwitchDraftProject";
 
 const SOURCE_PROJECT = ProjectId.makeUnsafe("project-source");
@@ -56,23 +58,37 @@ function openDraft(projectId: ProjectId, threadId: ThreadId) {
   });
 }
 
+function openTargetDraft(projectId: ProjectId): CreateProjectBackedDraftThreadResult {
+  const threadId = projectId === TARGET_PROJECT ? TARGET_THREAD : SCRATCH_THREAD;
+  if (!useComposerDraftStore.getState().getDraftThread(threadId)) openDraft(projectId, threadId);
+  return { projectId, threadId };
+}
+
 function makeDeps(overrides: Partial<SwitchDraftProjectDeps> = {}) {
-  const navigateToThread = vi.fn(async (_threadId: ThreadId) => {});
-  const createDraftThread = vi.fn(async (projectId: ProjectId) => {
-    const threadId = projectId === TARGET_PROJECT ? TARGET_THREAD : SCRATCH_THREAD;
-    if (!useComposerDraftStore.getState().getDraftThread(threadId)) openDraft(projectId, threadId);
-    return { projectId, threadId };
-  });
-  const startScratchThread = vi.fn(async () => createDraftThread(SCRATCH_PROJECT));
+  const createDraftThread = vi.fn(async (projectId: ProjectId) => openTargetDraft(projectId));
   return {
-    navigateToThread,
+    navigateToThread: vi.fn(async (_threadId: ThreadId) => {}),
+    isViewingThread: vi.fn((threadId: ThreadId) => threadId === SOURCE_THREAD),
     createDraftThread,
-    startScratchThread,
+    startScratchThread: vi.fn(async () => createDraftThread(SCRATCH_PROJECT)),
     ...overrides,
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const draftOf = (threadId: ThreadId) => useComposerDraftStore.getState().draftsByThreadId[threadId];
+const draftThreadOf = (threadId: ThreadId) =>
+  useComposerDraftStore.getState().getDraftThread(threadId);
+const stashedPrompts = () =>
+  useComposerDraftStore.getState().promptStashes.map((stash) => stash.draft.prompt);
+const toTarget = { kind: "project", projectId: TARGET_PROJECT } as const;
 
 describe("switchDraftProject", () => {
   beforeEach(() => {
@@ -89,12 +105,14 @@ describe("switchDraftProject", () => {
         makeProject(TARGET_PROJECT, "Target", "/repo/target"),
         makeProject(SCRATCH_PROJECT, "Scratch", "/scratch", "scratch"),
       ],
+      threads: [],
     });
     openDraft(SOURCE_PROJECT, SOURCE_THREAD);
     toastAdd.mockClear();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     resetComposerDraftBaseStorageForTesting();
   });
 
@@ -112,15 +130,10 @@ describe("switchDraftProject", () => {
 
   it("switches an empty draft without stashing and drops the source draft", async () => {
     const deps = makeDeps();
-    const outcome = await switchDraftProject(
-      SOURCE_THREAD,
-      { kind: "project", projectId: TARGET_PROJECT },
-      deps,
-    );
-    expect(outcome).toBe("moved");
-    expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, deps)).toBe("moved");
+    expect(stashedPrompts()).toEqual([]);
     expect(deps.navigateToThread).toHaveBeenCalledWith(TARGET_THREAD);
-    expect(useComposerDraftStore.getState().getDraftThread(SOURCE_THREAD)).toBeNull();
+    expect(draftThreadOf(SOURCE_THREAD)).toBeNull();
     expect(
       useComposerDraftStore.getState().getDraftThreadByProjectId(SOURCE_PROJECT, {
         envMode: "local",
@@ -143,23 +156,136 @@ describe("switchDraftProject", () => {
       }),
     });
 
-    const outcome = await switchDraftProject(
-      SOURCE_THREAD,
-      { kind: "project", projectId: TARGET_PROJECT },
-      deps,
-    );
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, deps)).toBe("moved");
 
-    expect(outcome).toBe("moved");
     expect(draftOf(TARGET_THREAD)?.prompt).toBe("Fix the login redirect");
     expect(draftOf(TARGET_THREAD)?.model).toBe("claude-opus-5-5");
     // The source file is outside the target workspace.
     expect(draftOf(TARGET_THREAD)?.filePaths).toEqual([]);
     expect(draftOf(SOURCE_THREAD)).toBeUndefined();
-    expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
+    expect(stashedPrompts()).toEqual([]);
     expect(deps.navigateToThread).toHaveBeenCalledWith(TARGET_THREAD);
+    const [toast] = toastAdd.mock.calls.at(-1)!;
+    expect(toast).toMatchObject({ type: "warning", title: "Prompt moved to Target" });
+    // Re-authorization is expected when moving; only the loss is reported.
+    expect(toast.description).toContain("omitted because it is outside this workspace");
+    expect(toast.description).not.toContain("re-authorized");
+  });
+
+  it("turns mentions into plain text when the workspace changes", async () => {
+    const prompt = "Look at @src/login.ts please";
+    useComposerDraftStore
+      .getState()
+      .setPrompt(SOURCE_THREAD, prompt, [createComposerMention("src/login.ts", 8)]);
+    expect(draftOf(SOURCE_THREAD)?.mentions).toHaveLength(1);
+
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, makeDeps())).toBe("moved");
+
+    expect(draftOf(TARGET_THREAD)?.prompt).toBe(prompt);
+    expect(draftOf(TARGET_THREAD)?.mentions).toEqual([]);
     expect(toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "warning", title: "Prompt moved to Target" }),
+      expect.objectContaining({
+        type: "warning",
+        description: expect.stringContaining("1 file mention was kept as plain text"),
+      }),
     );
+  });
+
+  it("turns mentions into plain text when moving to No project", async () => {
+    useComposerDraftStore
+      .getState()
+      .setPrompt(SOURCE_THREAD, "@src/a.ts ", [createComposerMention("src/a.ts", 0)]);
+
+    expect(await switchDraftProject(SOURCE_THREAD, { kind: "none" }, makeDeps())).toBe("moved");
+
+    expect(draftOf(SCRATCH_THREAD)?.prompt).toBe("@src/a.ts ");
+    expect(draftOf(SCRATCH_THREAD)?.mentions).toEqual([]);
+  });
+
+  it("leaves the source composer untouched while the target is opening", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "First");
+    const opening = deferred<CreateProjectBackedDraftThreadResult>();
+    const deps = makeDeps({ createDraftThread: vi.fn(() => opening.promise) });
+
+    const switching = switchDraftProject(SOURCE_THREAD, toTarget, deps);
+    await Promise.resolve();
+    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("First");
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "First, then more");
+    opening.resolve(openTargetDraft(TARGET_PROJECT));
+
+    expect(await switching).toBe("moved");
+    expect(draftOf(TARGET_THREAD)?.prompt).toBe("First, then more");
+    expect(draftOf(SOURCE_THREAD)).toBeUndefined();
+    expect(stashedPrompts()).toEqual([]);
+  });
+
+  it("keeps the source composer when opening the target fails", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Do not lose me");
+    const opening = deferred<CreateProjectBackedDraftThreadResult | null>();
+    const deps = makeDeps({ createDraftThread: vi.fn(() => opening.promise) });
+
+    const switching = switchDraftProject(SOURCE_THREAD, toTarget, deps);
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Do not lose me, or this");
+    opening.resolve(null);
+
+    expect(await switching).toBe("failed");
+    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("Do not lose me, or this");
+    expect(stashedPrompts()).toEqual([]);
+    expect(deps.navigateToThread).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: "Could not change project",
+        description: "The project is no longer available.",
+      }),
+    );
+  });
+
+  it("stays put and moves the draft when the user navigated away meanwhile", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Moved in the background");
+    const deps = makeDeps({ isViewingThread: vi.fn(() => false) });
+
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, deps)).toBe("moved");
+
+    expect(deps.navigateToThread).not.toHaveBeenCalled();
+    expect(draftOf(TARGET_THREAD)?.prompt).toBe("Moved in the background");
+    const [toast] = toastAdd.mock.calls.at(-1)!;
+    expect(toast).toMatchObject({ type: "info", title: "Draft moved to Target" });
+    toast.actionProps.onClick();
+    expect(deps.navigateToThread).toHaveBeenCalledWith(TARGET_THREAD);
+  });
+
+  it("does not move a draft that was sent while the target was opening", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Sent already");
+    const deps = makeDeps({
+      createDraftThread: vi.fn(async (projectId: ProjectId) => {
+        // A send promotes the draft into a server thread meanwhile.
+        useStore.setState({
+          threads: [{ id: SOURCE_THREAD, projectId: SOURCE_PROJECT } as never],
+        });
+        return openTargetDraft(projectId);
+      }),
+    });
+
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, deps)).toBe("unchanged");
+    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("Sent already");
+    expect(draftThreadOf(TARGET_THREAD)).toBeNull();
+    expect(deps.navigateToThread).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when a stale mapping resolves the target to the source thread", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Stay here");
+    const deps = makeDeps({
+      createDraftThread: vi.fn(async (projectId: ProjectId) => ({
+        projectId,
+        threadId: SOURCE_THREAD,
+      })),
+    });
+
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, deps)).toBe("unchanged");
+    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("Stay here");
+    expect(stashedPrompts()).toEqual([]);
   });
 
   it("keeps the prompt in the stash when the target already has a draft", async () => {
@@ -168,54 +294,61 @@ describe("switchDraftProject", () => {
     useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Moved prompt");
     const deps = makeDeps();
 
-    const outcome = await switchDraftProject(
-      SOURCE_THREAD,
-      { kind: "project", projectId: TARGET_PROJECT },
-      deps,
-    );
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, deps)).toBe("stashed");
 
-    expect(outcome).toBe("stashed");
     expect(draftOf(TARGET_THREAD)?.prompt).toBe("Existing target draft");
-    expect(useComposerDraftStore.getState().promptStashes.map((s) => s.draft.prompt)).toEqual([
-      "Moved prompt",
-    ]);
+    expect(stashedPrompts()).toEqual(["Moved prompt"]);
     expect(deps.navigateToThread).toHaveBeenCalledWith(TARGET_THREAD);
-    expect(useComposerDraftStore.getState().getDraftThread(SOURCE_THREAD)).toBeNull();
+    expect(draftThreadOf(SOURCE_THREAD)).toBeNull();
     expect(toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ type: "info", title: "Prompt saved to the prompt stash" }),
     );
   });
 
-  it("returns the prompt to the source draft when the target cannot be opened", async () => {
-    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Do not lose me");
-    const deps = makeDeps({ createDraftThread: vi.fn(async () => null) });
+  it("returns the prompt to the source and drops the empty target when restoring fails", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Bring me back");
+    const restore = useComposerDraftStore.getState().restorePromptStash;
+    useComposerDraftStore.setState({
+      restorePromptStash: vi.fn(async (input) =>
+        input.threadId === TARGET_THREAD
+          ? { status: "failed" as const, message: "Images could not be restored." }
+          : restore(input),
+      ),
+    });
 
-    const outcome = await switchDraftProject(
-      SOURCE_THREAD,
-      { kind: "project", projectId: TARGET_PROJECT },
-      deps,
-    );
+    expect(await switchDraftProject(SOURCE_THREAD, toTarget, makeDeps())).toBe("failed");
 
-    expect(outcome).toBe("failed");
-    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("Do not lose me");
-    expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
-    expect(deps.navigateToThread).not.toHaveBeenCalled();
+    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("Bring me back");
+    expect(stashedPrompts()).toEqual([]);
+    expect(draftThreadOf(TARGET_THREAD)).toBeNull();
     expect(toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "error", title: "Could not change project" }),
+      expect.objectContaining({
+        type: "error",
+        description: "Images could not be restored.",
+      }),
     );
+    useComposerDraftStore.setState({ restorePromptStash: restore });
   });
 
   it("uses the scratch path for No project", async () => {
     useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Quick question");
     const deps = makeDeps();
 
-    const outcome = await switchDraftProject(SOURCE_THREAD, { kind: "none" }, deps);
+    expect(await switchDraftProject(SOURCE_THREAD, { kind: "none" }, deps)).toBe("moved");
 
-    expect(outcome).toBe("moved");
     expect(deps.startScratchThread).toHaveBeenCalledTimes(1);
     expect(deps.createDraftThread).toHaveBeenCalledWith(SCRATCH_PROJECT);
     expect(draftOf(SCRATCH_THREAD)?.prompt).toBe("Quick question");
     expect(deps.navigateToThread).toHaveBeenCalledWith(SCRATCH_THREAD);
+  });
+
+  it("leaves the error toast to the scratch path when it fails", async () => {
+    useComposerDraftStore.getState().setPrompt(SOURCE_THREAD, "Keep me");
+    const deps = makeDeps({ startScratchThread: vi.fn(async () => null) });
+
+    expect(await switchDraftProject(SOURCE_THREAD, { kind: "none" }, deps)).toBe("failed");
+    expect(toastAdd).not.toHaveBeenCalled();
+    expect(draftOf(SOURCE_THREAD)?.prompt).toBe("Keep me");
   });
 
   it("treats No project as unchanged for a scratch draft", async () => {

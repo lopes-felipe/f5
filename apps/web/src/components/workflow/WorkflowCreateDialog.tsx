@@ -196,7 +196,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const documentProfile = WORKFLOW_DOCUMENT_PROFILES[documentType];
 
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
-  const [fileReferencesCleared, setFileReferencesCleared] = useState(false);
+  /** What a project change dropped; cleared once new references are added. */
+  const [projectChangeNote, setProjectChangeNote] = useState<string | null>(null);
+  /** Bumped on every project change so late file-tree authorizations can tell they are stale. */
+  const projectGenerationRef = useRef(0);
   const [reviewBranch, setReviewBranch] = useState("");
   const [plansDirectory, setPlansDirectory] = useState("plans");
   const [branchAProvider, setBranchAProvider] = useState<ProviderKind>(
@@ -387,7 +390,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setReaderSlot(null);
     setRequirementDraft({ text: "", mentions: [], cursor: 0 });
     setAttachedFilePaths([]);
-    setFileReferencesCleared(false);
+    setProjectChangeNote(null);
     setReviewBranch("");
     setPlansDirectory("plans");
     setBranchAProvider(branchADefaults.provider);
@@ -411,13 +414,25 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
   const changeProject = (projectId: ProjectId) => {
     if (projectId === props.projectId || submittingRef.current) return;
-    // File chips and @-mentions point into the old project's workspace.
-    const dropsReferences = attachedFilePaths.length > 0 || requirementDraft.mentions.length > 0;
+    // A file-tree drop still authorizing against the old project must not land afterwards.
+    projectGenerationRef.current += 1;
+    // File chips, @-mentions and the review branch belong to the old project's repository.
+    const dropsFiles = attachedFilePaths.length > 0 || requirementDraft.mentions.length > 0;
+    const dropsBranch = reviewBranch.trim().length > 0;
     if (requirementDraft.mentions.length > 0) {
       setRequirementDraft((current) => ({ ...current, mentions: [] }));
     }
     setAttachedFilePaths([]);
-    setFileReferencesCleared(dropsReferences);
+    setReviewBranch("");
+    setProjectChangeNote(
+      dropsFiles && dropsBranch
+        ? "File references and the review branch were cleared for the new project."
+        : dropsFiles
+          ? "File references were cleared for the new project."
+          : dropsBranch
+            ? "The review branch was cleared for the new project."
+            : null,
+    );
     setError(null);
     props.onProjectChange?.(projectId);
   };
@@ -440,6 +455,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
     if (filePaths.length > 0) {
       setAttachedFilePaths((current) => normalizeAttachedFilePaths([...current, ...filePaths]));
+      setProjectChangeNote(null);
       setError(null);
     }
 
@@ -540,6 +556,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       toastManager.add({ type: "error", title: "Unable to add the dragged file." });
       return;
     }
+    const projectGeneration = projectGenerationRef.current;
     void authorizeFileTreeMention({
       api,
       payload,
@@ -548,6 +565,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       workspaceRoot: project.cwd,
     })
       .then((relativePath) => {
+        // The project changed while authorizing: the path belongs to the old workspace.
+        if (projectGeneration !== projectGenerationRef.current) return;
+        setProjectChangeNote(null);
         const mention = composerFileMention(relativePath);
         if (mention === null) throw new Error("The file path is invalid.");
         setRequirementDraft((current) => {
@@ -925,9 +945,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     }
                   />
                 </div>
-                {fileReferencesCleared ? (
+                {projectChangeNote ? (
                   <p className="text-2xs text-muted-foreground" role="status">
-                    File references were cleared for the new project.
+                    {projectChangeNote}
                   </p>
                 ) : null}
               </div>

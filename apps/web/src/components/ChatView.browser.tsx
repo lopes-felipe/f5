@@ -4434,6 +4434,63 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("offers a project picker in the header and composer only for unsent drafts", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [PROJECT_ID]: THREAD_ID,
+      },
+    });
+    const draft = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+    });
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-project-picker="crumb"]')).not.toBeNull();
+          expect(document.querySelector('[data-project-picker="chip"]')).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await draft.cleanup();
+    }
+
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+    const sent = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-picker-target" as MessageId,
+        targetText: "already sent",
+      }),
+    });
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[aria-label^="Project actions for"]')).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(document.querySelector("[data-project-picker]")).toBeNull();
+    } finally {
+      await sent.cleanup();
+    }
+  });
+
   it("opens the project cwd for draft threads without a worktree path", async () => {
     useComposerDraftStore.setState({
       draftThreadsByThreadId: {
