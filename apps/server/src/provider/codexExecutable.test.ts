@@ -73,7 +73,9 @@ describe("bundled Codex", () => {
         },
       }),
     ).toThrow("Reinstall F5");
-    expect(() => resolveBundledCodexExecutable("linux", "ia32")).toThrow("Reinstall F5");
+    expect(() => resolveBundledCodexExecutable("linux", "ia32")).toThrow(
+      "Set an absolute Binary path",
+    );
     expect(() =>
       resolveBundledCodexExecutable("darwin", "arm64", {
         resolve: () => "/package.json",

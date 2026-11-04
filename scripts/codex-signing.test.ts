@@ -1,6 +1,17 @@
 import { createRequire } from "node:module";
 import { expect, it } from "vitest";
-import { CODEX_WINDOWS_SIGNING_EXCLUSIONS } from "./lib/codex-signing.ts";
+import {
+  CODEX_WINDOWS_SIGNING_EXCLUSIONS,
+  CODEX_WINDOWS_VENDOR_EXECUTABLES,
+  assertCodexWindowsSigningCoverage,
+} from "./lib/codex-signing.ts";
+
+it("blocks packaging when Codex adds an executable without a signing exclusion", () => {
+  expect(() => assertCodexWindowsSigningCoverage(CODEX_WINDOWS_VENDOR_EXECUTABLES)).not.toThrow();
+  expect(() => assertCodexWindowsSigningCoverage(["codex-resources/new-helper.exe"])).toThrow(
+    "has no Windows signing exclusion",
+  );
+});
 
 // Exercise the actual pinned builder's filtering, including its .exe fallback.
 const require = createRequire(import.meta.url);

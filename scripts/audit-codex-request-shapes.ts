@@ -35,9 +35,10 @@ const root = path.resolve(import.meta.dirname, "..");
 const probeDirectory = await mkdtemp(path.join(root, "scripts/.codex-request-audit-"));
 const temporary = await mkdtemp(path.join(tmpdir(), "f5-codex-request-shapes-"));
 try {
-  const binary = process.argv.includes("--install-baseline")
-    ? resolveBundledCodexExecutable()
-    : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
+  const binary =
+    process.argv.includes("--bundled-baseline") || process.argv.includes("--install-baseline")
+      ? resolveBundledCodexExecutable()
+      : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
   const version = await command(binary, ["--version"]);
   if (parseCodexCliVersion(version) !== PINNED_VERSION)
     throw new Error(`Request audit requires ${PINNED_VERSION}; received ${version}`);

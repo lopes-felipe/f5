@@ -10,6 +10,16 @@ export const CODEX_WINDOWS_VENDOR_EXECUTABLES = [
   "codex-resources/voice/bin/codex-voice-host.exe",
 ] as const;
 
+/** Fail afterPack before Azure can re-sign any newly added vendor executable. */
+export function assertCodexWindowsSigningCoverage(files: readonly string[]): void {
+  const covered = new Set<string>(CODEX_WINDOWS_VENDOR_EXECUTABLES);
+  for (const file of files) {
+    const relative = file.replaceAll("\\", "/");
+    if (/\.exe$/i.test(relative) && !covered.has(relative))
+      throw new Error("Codex vendor executable has no Windows signing exclusion: " + relative);
+  }
+}
+
 export const CODEX_WINDOWS_SIGNING_EXCLUSIONS = (
   [
     ["x64", "x86_64"],

@@ -7,7 +7,9 @@ Codex history.
 
 ## How to
 
-1. Codex is bundled with F5. Sign in from **Settings → Profiles & Accounts**.
+1. Codex is bundled with F5. Sign in to the first account from **Settings → Profiles & Accounts**.
+   For a second account using a **Shadow home path**, use the terminal command in
+   [Work and personal accounts](#work-and-personal-accounts).
 2. Open **Settings → Providers**. The default Codex provider uses **CODEX_HOME path** `~/.codex`
    with an empty **Shadow home path**.
 3. Pick a Codex model in the composer and start a thread.
@@ -41,6 +43,10 @@ also sends a best-effort read receipt; F5 keeps its own unread markers.
 ## Work and personal accounts
 
 Keep one shared Codex home and give the second account a shadow home that holds only its login:
+
+The following terminal commands require a separately installed Codex CLI on PATH;
+F5's bundled executable is managed by F5. Settings sign-in targets the shared
+CODEX_HOME path, not the Shadow home path, so use the second command for the shadow account.
 
 ```bash
 codex login                                  # first account, uses ~/.codex

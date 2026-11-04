@@ -2,6 +2,7 @@
 
 import { ProviderUpdateDialog } from "./ProviderUpdateDialog";
 import { isDefaultProviderBinary } from "@t3tools/shared/providerBinary";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import { useProfileState } from "../../profileState";
 import { toastManager } from "../ui/toast";
 
@@ -533,11 +534,18 @@ export function ProviderInstanceCard({
   const customBinary =
     bundledProvider &&
     !isDefaultProviderBinary(binaryPath, driverKind === "codex" ? "codex" : "claude");
+  const binaryUnavailable =
+    liveProvider?.installed === false ||
+    (driverKind === "claudeAgent" && isolatedProfile && customBinary);
   const binaryLabel = bundledProvider
     ? (customBinary
         ? "Custom · " + binaryPath
         : "Bundled · " + (driverKind === "codex" ? "Codex" : "Claude")) +
-      (versionLabel ? (customBinary ? " · " : " ") + versionLabel.replace(/^v/, "") : "")
+      (binaryUnavailable
+        ? " (unavailable)"
+        : versionLabel
+          ? (customBinary ? " · " : " ") + versionLabel.replace(/^v/, "")
+          : "")
     : versionLabel;
 
   const customModels = readCustomModels(instance.config);
@@ -666,7 +674,16 @@ export function ProviderInstanceCard({
                 </Badge>
               ) : null}
               {binaryLabel ? (
-                <code className="text-xs text-muted-foreground">{binaryLabel}</code>
+                <code
+                  className="min-w-0 truncate text-xs text-muted-foreground"
+                  title={
+                    bundledProvider
+                      ? "Configured runtime; version comes from its latest successful health check."
+                      : undefined
+                  }
+                >
+                  {binaryLabel}
+                </code>
               ) : null}
               {enabled &&
               liveProvider?.versionAdvisory &&
@@ -994,6 +1011,13 @@ export function ProviderInstanceCard({
                   {field.description ? (
                     <span className="mt-1 block text-xs text-muted-foreground">
                       {field.description}
+                    </span>
+                  ) : null}
+                  {field.key === "binaryPath" && driverKind === "codex" ? (
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Default binary paths now use bundled Codex {CODEX_PROTOCOL_BASELINE_VERSION},
+                      which may be older than your PATH install. Set an absolute path to keep a
+                      newer CLI or wrapper.
                     </span>
                   ) : null}
                 </label>

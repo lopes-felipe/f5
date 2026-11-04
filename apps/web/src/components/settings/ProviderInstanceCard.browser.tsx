@@ -102,6 +102,18 @@ function renderCardContent(content: ReactNode) {
 }
 
 describe("bundled provider runtimes", () => {
+  it("does not present a failed bundled resolution as an active version", async () => {
+    const screen = await renderCard({
+      liveProvider: makeLiveProvider({ installed: false, version: "0.166.0" }),
+    });
+    try {
+      await expect
+        .element(page.getByText("Bundled · Codex (unavailable)", { exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
   afterEach(() => useProfileState.setState({ active: null }));
   it("shows the bundled Codex version", async () => {
     const screen = await renderCard({ liveProvider: makeLiveProvider({ version: "0.166.0" }) });
@@ -144,12 +156,15 @@ describe("bundled provider runtimes", () => {
     });
     const claude = ProviderDriverKind.make("claudeAgent");
     const screen = await renderCard({
-      instance: makeInstance({ driver: claude }),
+      instance: makeInstance({ driver: claude, config: { binaryPath: "/custom/claude" } }),
       driverOption: DRIVER_OPTIONS.find((option) => option.value === claude),
       isExpanded: true,
     });
     try {
       await expect.element(page.getByRole("textbox", { name: /Binary path/ })).toBeDisabled();
+      await expect
+        .element(page.getByText("Custom · /custom/claude (unavailable)", { exact: true }))
+        .toBeVisible();
       await expect
         .element(
           page.getByText(

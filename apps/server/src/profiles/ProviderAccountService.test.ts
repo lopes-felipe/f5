@@ -16,6 +16,12 @@ import { ProviderAccountService, assertOAuthPortAvailable } from "./ProviderAcco
 import { acquireInstanceLock } from "./InstanceLock";
 import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 
+vi.mock("../provider/codexExecutable.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../provider/codexExecutable.ts")>()),
+  resolveCodexCommand: (value?: string) =>
+    !value?.trim() || value.trim() === "codex" ? process.execPath : value.trim(),
+}));
+
 for (const scenario of [
   { name: "default", expected: "t3-code" },
   { name: "instance override", instance: "instance", expected: "instance" },

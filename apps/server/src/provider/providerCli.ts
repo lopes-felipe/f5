@@ -66,16 +66,13 @@ export function runProviderCliCommand(
           ? cause
           : new CommandNotFoundError(binary, String(cause)),
     });
-    const environment = buildProviderChildProcessEnv(
-      options.baseEnvironment,
-      options?.envOverrides,
-    );
+    const environment = buildProviderChildProcessEnv(options.baseEnvironment, options.envOverrides);
     const launchArgs =
       binary === "codex"
         ? yield* Effect.try({
             try: () =>
               resolveCodexLaunchArgv({
-                ...(options?.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
+                ...(options.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
                 environment,
               }),
             catch: (cause) =>
@@ -93,9 +90,9 @@ export function runProviderCliCommand(
       binary === "codex"
         ? prependCodexCliTelemetryDisabledConfig([...launchArgs.argv, ...args], {
             managedCredentials: environment.F5_PROFILE_ISOLATED === "1",
-            mcpServers: options?.mcpServers ?? null,
-            mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
-            mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
+            mcpServers: options.mcpServers ?? null,
+            mcpOAuthCallbackPort: options.mcpOAuthCallbackPort ?? null,
+            mcpOAuthCallbackUrl: options.mcpOAuthCallbackUrl ?? null,
           })
         : [...args];
     const invocation = yield* resolveInvocationEffect(resolvedBinary, commandArgs, environment);

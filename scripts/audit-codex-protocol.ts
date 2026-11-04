@@ -78,9 +78,10 @@ function printDrift(
 async function main(): Promise<void> {
   const temporaryDirectories: string[] = [];
   try {
-    const binary = process.argv.includes("--install-baseline")
-      ? resolveBundledCodexExecutable()
-      : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
+    const binary =
+      process.argv.includes("--bundled-baseline") || process.argv.includes("--install-baseline")
+        ? resolveBundledCodexExecutable()
+        : resolveCodexCommand(process.env.CODEX_BINARY_PATH);
 
     const outputDirectory = await mkdtemp(path.join(tmpdir(), "f5-codex-protocol-audit-"));
     temporaryDirectories.push(outputDirectory);

@@ -18,6 +18,16 @@ import {
 } from "./ProviderHealth";
 import { prependCodexCliTelemetryDisabledConfig } from "../codexCliConfig";
 import { resolveBundledCodexExecutable } from "../codexExecutable.ts";
+import * as codexExecutable from "../codexExecutable.ts";
+import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
+import { runCodexCliCommand } from "../providerCli.ts";
+
+vi.mock("../codexExecutable.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../codexExecutable.ts")>()),
+  resolveBundledCodexExecutable: () => "/fixture/bundled/codex",
+  resolveCodexCommand: (value?: string) =>
+    !value?.trim() || value.trim() === "codex" ? "/fixture/bundled/codex" : value.trim(),
+}));
 
 // The spawner is simulated, so command discovery must not depend on installed CLIs.
 vi.mock("../../spawn/resolveCommand.ts", async (importOriginal) => ({
@@ -398,6 +408,27 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   });
 
   describe("checkCodexProviderPreflight", () => {
+    it.effect(
+      "preserves typed resolver failures and their platform-specific recovery advice",
+      () => {
+        const missing = new CommandNotFoundError(
+          "codex",
+          "Command not found: codex. Set an absolute Binary path for this unsupported platform.",
+        );
+        const resolver = vi.spyOn(codexExecutable, "resolveCodexCommand").mockImplementation(() => {
+          throw missing;
+        });
+        return Effect.gen(function* () {
+          const failure = yield* runCodexCliCommand(["--version"], {
+            baseEnvironment: {},
+          }).pipe(Effect.flip);
+          assert.equal(failure, missing);
+          const status = yield* checkCodexProviderPreflight();
+          assert.equal(status.failureReason, "notInstalled");
+          assert.match(status.message ?? "", /absolute Binary path/);
+        }).pipe(Effect.ensuring(Effect.sync(() => resolver.mockRestore())));
+      },
+    );
     it.effect("honors binaryPath and homePath overrides", () =>
       Effect.gen(function* () {
         yield* withTempCodexHome('model_provider = "openai"\n');

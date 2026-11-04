@@ -164,6 +164,9 @@ export async function buildCliArchive(options: {
     // fff's optional platform binary is explicit, so installer settings cannot silently omit it.
     const fffPlatform = target.startsWith("linux-") ? `${target}-gnu` : target;
     dependencies[`@ff-labs/fff-bin-${fffPlatform}`] = pinned("@ff-labs/fff-node");
+    // Codex's native alias must survive --omit=optional too.
+    const codexPlatformPackage = "@openai/codex-" + target;
+    dependencies[codexPlatformPackage] = pinned(codexPlatformPackage);
     await fs.writeFile(
       path.join(stage, "package.json"),
       JSON.stringify({

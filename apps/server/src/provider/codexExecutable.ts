@@ -29,6 +29,7 @@ const TARGETS: Readonly<Record<string, string>> = {
   "win32-arm64": "aarch64-pc-windows-msvc",
   "win32-x64": "x86_64-pc-windows-msvc",
 };
+let cachedBundledExecutable: string | undefined;
 
 export function isDefaultCodexBinary(binaryPath: string | null | undefined): boolean {
   return isDefaultProviderBinary(binaryPath, "codex");
@@ -54,9 +55,21 @@ export function resolveBundledCodexExecutable(
       }
     });
   const electron = options.electron ?? Boolean(process.versions.electron);
+  const cacheable =
+    platform === process.platform && arch === process.arch && Object.keys(options).length === 0;
+  if (cacheable && cachedBundledExecutable && fileExists(cachedBundledExecutable))
+    return cachedBundledExecutable;
+  const target = TARGETS[platform + "-" + arch];
+  if (!target)
+    throw new CommandNotFoundError(
+      "codex",
+      "Command not found: codex. F5 has no bundled Codex for " +
+        platform +
+        "-" +
+        arch +
+        ". Set an absolute Binary path to your own Codex executable in Settings > Providers.",
+    );
   try {
-    const target = TARGETS[platform + "-" + arch];
-    if (!target) throw new Error("Unsupported Codex platform.");
     const require = createRequire(import.meta.url);
     const resolve =
       options.resolve ?? createRequire(require.resolve("@openai/codex/package.json")).resolve;
@@ -78,18 +91,20 @@ export function resolveBundledCodexExecutable(
       electron,
       fileExists,
     });
-    if ((!electron || !isAsarExecutablePath(executable)) && fileExists(executable))
+    if ((!electron || !isAsarExecutablePath(executable)) && fileExists(executable)) {
+      if (cacheable) cachedBundledExecutable = executable;
       return executable;
+    }
   } catch {
     // Missing optional packages and unsupported layouts have the same recovery path.
   }
   throw new CommandNotFoundError(
     "codex",
-    "Bundled Codex executable for " +
+    "Command not found: codex. Bundled Codex executable for " +
       platform +
       "-" +
       arch +
-      " is unavailable or not unpacked. Reinstall F5, or reinstall dependencies with optional packages enabled.",
+      " is unavailable or not unpacked. Reinstall F5 or dependencies with optional packages enabled, or set an absolute Binary path to your own Codex executable.",
   );
 }
 

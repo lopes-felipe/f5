@@ -2646,9 +2646,19 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             const userHome = userInfo().homedir;
             const processEnvironment = options?.processEnvironment ?? process.env;
             const codexHomePath = resolveCodexHome({ homePath: providerOptions?.codex?.homePath });
+            const binaryPath = yield* Effect.try({
+              try: () => resolveCodexCommand(providerOptions?.codex?.binaryPath),
+              catch: (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: toMessage(cause, "Bundled Codex is unavailable."),
+                  cause,
+                }),
+            });
             const codex = yield* Effect.promise(() =>
               inspectCodexBinary({
-                binaryPath: resolveCodexCommand(providerOptions?.codex?.binaryPath),
+                binaryPath,
                 processEnvironment,
                 cwd: input.cwd ?? process.cwd(),
                 ...(codexHomePath ? { homePath: codexHomePath } : {}),
