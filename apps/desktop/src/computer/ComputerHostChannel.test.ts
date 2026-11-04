@@ -3,6 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { ChromeProcessSupervisor, type ChromeProcessIo } from "./ChromeProcessSupervisor";
 import { ComputerHostChannel } from "./ComputerHostChannel";
+import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
 import type { ComputerController } from "./ComputerController";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 import { claudeTerminalTargets, type AlwaysAllowableIntegration } from "./IntegrationConsentStore";
@@ -22,6 +23,7 @@ function setup(
     ) => Promise<import("@t3tools/contracts").OpenExternalUrlStatus>;
     cancelBrowserOpen?: (profileId: string) => void;
     alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
+    grants?: ComputerGrantAuthority;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
@@ -49,7 +51,7 @@ function setup(
       ...(verifyAdoption ? { verifyAdoption } : {}),
       ...(alwaysAllowed ? { alwaysAllowed } : {}),
     },
-    undefined,
+    options.grants,
     {
       ...(options.openExternalUrl ? { openExternalUrl: options.openExternalUrl } : {}),
       ...(options.cancelBrowserOpen ? { cancelBrowserOpen: options.cancelBrowserOpen } : {}),
@@ -76,6 +78,114 @@ function setup(
   return { channel, controller, process, hello, attention };
 }
 describe("private computer host channel", () => {
+  it("settles a failed multi-app issuance without retaining partial receipts", () => {
+    const grants = new ComputerGrantAuthority("darwin");
+    const request = {
+      requestId: "limit",
+      threadId: "thread",
+      projectId: "project",
+      sessionGeneration: "session",
+      reason: "Test",
+      kind: "apps" as const,
+      apps: [{ appId: "com.apple.TextEdit", name: "TextEdit", tier: "full" as const }],
+    };
+    const decision = {
+      appId: "com.apple.TextEdit",
+      allow: true,
+      allowTyping: false,
+      remember: true,
+    };
+    const answer = { requestId: "limit", backendIncarnation: "incarnation", decisions: [decision] };
+    for (let index = 0; index < 9999; index++) grants.issue("profile", request, answer);
+    const h = setup(false, false, { grants });
+    h.hello();
+    h.process.emit("message", {
+      type: "accessRequested",
+      request: {
+        ...request,
+        apps: [...request.apps, { appId: "com.apple.Notes", name: "Notes", tier: "full" }],
+      },
+    });
+    expect(() =>
+      h.channel.answerAccess("profile", {
+        ...answer,
+        decisions: [decision, { ...decision, appId: "com.apple.Notes" }],
+      }),
+    ).toThrow("limit");
+    expect(grants.listRemembered("profile")).toHaveLength(9999);
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "accessAnswer",
+        answer: {
+          ...answer,
+          decisions: [
+            { ...decision, allow: false, allowTyping: false, remember: false },
+            {
+              ...decision,
+              appId: "com.apple.Notes",
+              allow: false,
+              allowTyping: false,
+              remember: false,
+            },
+          ],
+        },
+      },
+      expect.any(Function),
+    );
+    expect(() => h.channel.accessRequest("profile", answer)).toThrow("expired");
+  });
+
+  it("reclaims session receipts through negotiated host messages, retaining other sessions", () => {
+    const grants = new ComputerGrantAuthority("darwin");
+    const h = setup(false, false, { grants });
+    h.hello(["computer-session-lifecycle-v1"]);
+    const request = {
+      requestId: "r",
+      threadId: "thread",
+      projectId: "project",
+      sessionGeneration: "session",
+      reason: "Test",
+      kind: "apps" as const,
+      apps: [{ appId: "com.apple.TextEdit", name: "TextEdit", tier: "full" as const }],
+    };
+    const answer = {
+      requestId: "r",
+      backendIncarnation: "incarnation",
+      decisions: [
+        { appId: "com.apple.TextEdit", allow: true, allowTyping: false, remember: false },
+      ],
+    };
+    const issued = grants.issue("profile", request, answer);
+    const grant = {
+      appId: "com.apple.TextEdit",
+      tier: "full" as const,
+      allowTyping: false,
+      receipt: issued.decisions[0]!.receipt!,
+    };
+    const authorization = {
+      profileId: "profile",
+      threadId: "thread",
+      projectId: "project",
+      sessionGeneration: "session",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: [grant],
+    };
+    expect(grants.validate(authorization).grants).toHaveLength(1);
+    h.process.emit("message", {
+      type: "computerSessionClosed",
+      threadId: "thread",
+      sessionGeneration: "old",
+    });
+    expect(grants.validate(authorization).grants).toHaveLength(1);
+    h.process.emit("message", {
+      type: "computerSessionClosed",
+      threadId: "thread",
+      sessionGeneration: "session",
+    });
+    expect(grants.validate(authorization).grants).toEqual([]);
+  });
   it("negotiates browser opening and routes the correlated result to its owning backend", async () => {
     const openExternalUrl = vi.fn(async () => "opened" as const);
     const cancelBrowserOpen = vi.fn();

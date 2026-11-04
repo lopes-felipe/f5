@@ -1515,6 +1515,8 @@ export class ComputerAutomationBrokerRuntime {
       data: { threadId, grantVersion, grants: [] },
     });
     this.access.clearSession(threadId, generation);
+    if (this.host.sessionLifecycleCapable())
+      this.host.send({ type: "computerSessionClosed", threadId, sessionGeneration: generation });
     this.threadRevisions.delete(threadId);
     this.threadRevisions.set(threadId, binding.policyRevision);
     if (this.threadRevisions.size > 4096)

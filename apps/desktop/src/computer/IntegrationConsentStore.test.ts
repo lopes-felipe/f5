@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync, readdirSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import {
   IntegrationConsentStore,
   disclosuresDigest,
@@ -39,6 +40,52 @@ function memoryIo(initial?: string) {
 }
 
 describe("IntegrationConsentStore", () => {
+  it("reads the existing integration format and MAC without migration or re-signing", () => {
+    const { io, state } = memoryIo();
+    const digest = disclosuresDigest("codex-chrome");
+    const mac = createHmac("sha256", KEY)
+      .update(JSON.stringify(["profile", "codex-chrome", digest]))
+      .digest("hex");
+    state.contents = JSON.stringify({ profile: { "codex-chrome": { digest, mac } } });
+    const before = state.contents;
+    expect(new IntegrationConsentStore(io, key).list("profile")).toEqual(["codex-chrome"]);
+    expect(state.contents).toBe(before);
+  });
+
+  it("does not access the keychain at load or erase other profiles while it is unavailable", () => {
+    const { io, state } = memoryIo();
+    const initial = new IntegrationConsentStore(io, key);
+    initial.allow("p1", "codex-chrome");
+    initial.allow("p2", "claude-chrome");
+    const before = JSON.parse(state.contents!);
+    let available = false;
+    let reads = 0;
+    const store = new IntegrationConsentStore(io, () => {
+      reads++;
+      return available ? KEY : undefined;
+    });
+    expect(reads).toBe(0);
+    expect(store.list("p1")).toEqual([]);
+    store.allow("run-only", "codex-chrome");
+    store.revoke("unrelated", "codex-chrome");
+    expect(JSON.parse(state.contents!).p1).toEqual(before.p1);
+    expect(JSON.parse(state.contents!).p2).toEqual(before.p2);
+    available = true;
+    store.allow("p3", "codex-chrome");
+    const restart = new IntegrationConsentStore(io, key);
+    expect(restart.list("p1")).toEqual(["codex-chrome"]);
+    expect(restart.list("p2")).toEqual(["claude-chrome"]);
+    expect(restart.list("run-only")).toEqual([]);
+  });
+
+  it("preserves more than 64 legacy profiles across unrelated writes", () => {
+    const { io } = memoryIo();
+    const store = new IntegrationConsentStore(io, key);
+    for (let i = 0; i < 65; i++) store.allow("p" + i, "codex-chrome");
+    const restart = new IntegrationConsentStore(io, key);
+    restart.allow("other", "claude-chrome");
+    expect(new IntegrationConsentStore(io, key).list("p64")).toEqual(["codex-chrome"]);
+  });
   it("keeps a signed grant per profile across restarts", () => {
     const { io, state } = memoryIo();
     const store = new IntegrationConsentStore(io, key);

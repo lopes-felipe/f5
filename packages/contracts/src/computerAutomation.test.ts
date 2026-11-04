@@ -6,9 +6,31 @@ import {
   ComputerAutomationBackendStatus,
   ComputerInspectResult,
   ComputerScreenshot,
+  RememberedComputerConsent,
+  DesktopComputerHostMessage,
 } from "./computerAutomation";
 
 describe("computer observation and error metadata", () => {
+  it("decodes session-close messages and rejects noncanonical typing policy", () => {
+    const closed = { type: "computerSessionClosed", threadId: "t", sessionGeneration: "s" };
+    expect(Schema.decodeUnknownSync(DesktopComputerHostMessage)(closed)).toEqual(closed);
+    const policy = {
+      version: 1,
+      kind: "app-access",
+      projectId: "p",
+      appId: "app",
+      tier: "full",
+      allowTyping: false,
+      policyVersion: 1,
+    };
+    expect(Schema.decodeUnknownSync(RememberedComputerConsent)(policy)).toEqual(policy);
+    expect(() =>
+      Schema.decodeUnknownSync(RememberedComputerConsent)({
+        ...policy,
+        allowTyping: true,
+      }),
+    ).toThrow();
+  });
   it("accepts optional request policy and supported-helper status without changing legacy data", () => {
     const request = {
       op: "screenshot",

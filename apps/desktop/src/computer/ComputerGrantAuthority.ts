@@ -6,6 +6,7 @@ import type {
   ComputerGrant,
 } from "@t3tools/contracts";
 import { appTier, restrictComputerTier, type ComputerPlatform } from "@t3tools/shared/computerApps";
+import type { ComputerConsentStore } from "./ComputerConsentStore";
 
 interface Approval {
   profileId: string;
@@ -17,26 +18,94 @@ interface Approval {
   sessions: Set<string>;
 }
 
-/** Only native consent can mint receipts. No backend or filesystem content is authority.
- * Preview receipts intentionally expire when desktop main exits; there is no disk secret.
+/** Only native consent or main's signed policy store can mint receipts. Persisted
+ * policy gets fresh receipts each main lifetime; issue() never persists policy.
  */
 export class ComputerGrantAuthority {
   private readonly approvals = new Map<string, Approval>();
   private readonly active = new Map<string, ReadonlyArray<ComputerGrant>>();
   private readonly revoked = new Map<string, Set<string>>();
-  constructor(private readonly platform: ComputerPlatform) {}
+  private runApprovalCount = 0;
+  constructor(
+    private readonly platform: ComputerPlatform,
+    private readonly store?: ComputerConsentStore,
+  ) {
+    if (!store) return;
+    for (const profileId of store.profiles()) {
+      for (const record of store.list(profileId)) {
+        if (record.kind !== "app-access") continue;
+        const tier = restrictComputerTier(record.tier, appTier(record.appId, platform));
+        if (tier === "blocked" || tier !== record.tier) continue;
+        const receipt = randomUUID();
+        this.approvals.set(receipt, {
+          profileId,
+          projectId: record.projectId,
+          threadId: "",
+          generation: "",
+          remembered: true,
+          grant: { appId: record.appId, tier, allowTyping: record.allowTyping, receipt },
+          sessions: new Set(),
+        });
+      }
+    }
+  }
+
+  listRemembered(
+    profileId: string,
+    projectId?: string,
+  ): ReadonlyArray<ComputerGrant & { projectId: string }> {
+    return [...this.approvals.values()]
+      .filter(
+        (approval) =>
+          approval.remembered &&
+          approval.profileId === profileId &&
+          (projectId === undefined || approval.projectId === projectId),
+      )
+      .map((approval) => ({ projectId: approval.projectId, ...approval.grant }));
+  }
+
+  sessionClosed(profileId: string, threadId: string, generation: string): void {
+    const key = profileId + "\0" + threadId + "\0" + generation;
+    for (const [receipt, approval] of this.approvals) {
+      approval.sessions.delete(key);
+      if (
+        !approval.remembered &&
+        approval.profileId === profileId &&
+        approval.threadId === threadId &&
+        approval.generation === generation
+      ) {
+        this.approvals.delete(receipt);
+        this.runApprovalCount--;
+      }
+    }
+    this.active.delete(key);
+    this.revoked.delete(key);
+  }
 
   issue(
     profileId: string,
     request: ComputerAccessRequested,
     answer: ComputerAccessAnswer,
   ): ComputerAccessAnswer {
+    // Check the whole request before minting anything: failures must not leak partial receipts.
+    const required = answer.decisions.filter((decision) => {
+      const app = request.apps.find((entry) => entry.appId === decision.appId);
+      return (
+        decision.allow &&
+        app &&
+        request.projectId &&
+        request.sessionGeneration &&
+        restrictComputerTier(app.tier, appTier(app.appId, this.platform)) !== "blocked"
+      );
+    }).length;
+    if (required > 10_000 - this.runApprovalCount)
+      throw new Error("Computer approval limit reached.");
     const decisions = answer.decisions.map((decision) => {
       const app = request.apps.find((entry) => entry.appId === decision.appId);
       if (!decision.allow || !app || !request.projectId || !request.sessionGeneration)
         return { ...decision, allow: false };
       const tier = restrictComputerTier(app.tier, appTier(app.appId, this.platform));
-      if (tier === "blocked" || this.approvals.size >= 10_000) return { ...decision, allow: false };
+      if (tier === "blocked") return { ...decision, allow: false };
       const receipt = randomUUID();
       const grant = {
         appId: app.appId,
@@ -53,6 +122,7 @@ export class ComputerGrantAuthority {
         grant,
         sessions: new Set(),
       });
+      this.runApprovalCount++;
       return { ...decision, allowTyping: grant.allowTyping, receipt };
     });
     return { ...answer, decisions };
@@ -75,13 +145,25 @@ export class ComputerGrantAuthority {
   }
 
   forget(profileId: string, projectId: string, appId: string): void {
-    for (const approval of this.approvals.values())
+    for (const [receipt, approval] of this.approvals)
       if (
         approval.profileId === profileId &&
         approval.projectId === projectId &&
         approval.grant.appId === appId
-      )
-        approval.remembered = false;
+      ) {
+        if (approval.generation === "") this.approvals.delete(receipt);
+        else approval.remembered = false;
+      }
+    // Revoke by policy key even if a previous failed write already removed it in memory.
+    this.store?.revoke(profileId, {
+      version: 1,
+      kind: "app-access",
+      projectId,
+      appId,
+      tier: "view",
+      allowTyping: false,
+      policyVersion: 1,
+    });
   }
 
   validate(authorization: ComputerAuthorization): ComputerAuthorization {
@@ -116,7 +198,10 @@ export class ComputerGrantAuthority {
 
   disconnect(profileId: string): void {
     for (const [id, approval] of this.approvals)
-      if (approval.profileId === profileId && !approval.remembered) this.approvals.delete(id);
+      if (approval.profileId === profileId && !approval.remembered) {
+        this.approvals.delete(id);
+        if (approval.generation !== "") this.runApprovalCount--;
+      }
     for (const map of [this.active, this.revoked])
       for (const key of map.keys()) if (key.startsWith(`${profileId}\0`)) map.delete(key);
   }

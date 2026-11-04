@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
+import { ComputerConsentStore } from "./ComputerConsentStore";
+import { createHmac } from "node:crypto";
+import { canonicalJson } from "./signedRecordFile";
 import type {
   ComputerAccessRequested,
   ComputerAccessAnswer,
@@ -42,6 +45,153 @@ function approve(authority: ComputerGrantAuthority, remember = true) {
   };
 }
 describe("desktop consent receipts", () => {
+  it("restores more than 10,000 policies without crashing or consuming the session budget", () => {
+    const key = Buffer.alloc(32, 7);
+    const profiles: Record<string, Record<string, unknown>> = {};
+    for (let i = 0; i < 10_001; i++) {
+      const profileId = "profile-" + Math.floor(i / 2000);
+      const record = {
+        version: 1,
+        kind: "app-access",
+        projectId: "p",
+        appId: "app-" + i,
+        tier: "full",
+        allowTyping: false,
+        policyVersion: 1,
+      };
+      const mac = createHmac("sha256", key)
+        .update(canonicalJson(["f5-native-computer-consent-v1", profileId, record]))
+        .digest("hex");
+      (profiles[profileId] ??= {})[canonicalJson(["app-access", "p", record.appId])] = {
+        ...record,
+        mac,
+      };
+    }
+    const store = new ComputerConsentStore(
+      {
+        read: () => JSON.stringify(profiles),
+        write: () => {},
+        remove: () => {},
+      },
+      () => key,
+    );
+    const authority = new ComputerGrantAuthority("darwin", store);
+    expect(authority.listRemembered("profile-5")).toHaveLength(1);
+    expect(approve(authority).receipt).toBeTruthy();
+  });
+
+  it("forgets restored policies in memory and on disk, even if the disk later fails", () => {
+    let contents: string | undefined;
+    let fail = false;
+    const io = {
+      read: () => contents,
+      write: (value: string) => {
+        if (fail) throw new Error("disk full");
+        contents = value;
+      },
+      remove: () => {
+        if (fail) throw new Error("read-only");
+        contents = undefined;
+      },
+    };
+    const store = new ComputerConsentStore(io, () => Buffer.alloc(32, 7));
+    const policy = {
+      version: 1 as const,
+      kind: "app-access" as const,
+      projectId: "p",
+      appId: "com.apple.TextEdit",
+      tier: "full" as const,
+      allowTyping: false,
+      policyVersion: 1 as const,
+    };
+    store.allow("profile", policy);
+    const authority = new ComputerGrantAuthority("darwin", store);
+    const [grant] = authority.listRemembered("profile");
+    fail = true;
+    expect(() => authority.forget("profile", "p", policy.appId)).toThrow("restart could restore");
+    expect(authority.listRemembered("profile")).toEqual([]);
+    expect(authority.validate({ ...auth, grants: [grant!] }).grants).toEqual([]);
+    fail = false;
+    // Retry reaches disk even though the record was already removed from memory.
+    authority.forget("profile", "p", policy.appId);
+    expect(
+      new ComputerGrantAuthority(
+        "darwin",
+        new ComputerConsentStore(io, () => Buffer.alloc(32, 7)),
+      ).listRemembered("profile"),
+    ).toEqual([]);
+  });
+  it("drops persisted policy whose tier is no longer permitted on this platform", () => {
+    let contents: string | undefined;
+    const store = new ComputerConsentStore(
+      {
+        read: () => contents,
+        write: (value) => {
+          contents = value;
+        },
+        remove: () => {
+          contents = undefined;
+        },
+      },
+      () => Buffer.alloc(32, 7),
+    );
+    store.allow("profile", {
+      version: 1,
+      kind: "app-access",
+      projectId: "p",
+      appId: "com.apple.Terminal",
+      tier: "full",
+      allowTyping: false,
+      policyVersion: 1,
+    });
+    expect(new ComputerGrantAuthority("darwin", store).listRemembered("profile")).toEqual([]);
+  });
+
+  it("hydrates signed policy with fresh receipts without persisting issue()", () => {
+    let contents: string | undefined;
+    const io = {
+      read: () => contents,
+      write: (value: string) => {
+        contents = value;
+      },
+      remove: () => {
+        contents = undefined;
+      },
+    };
+    const store = new ComputerConsentStore(io, () => Buffer.alloc(32, 7));
+    const authority = new ComputerGrantAuthority("darwin", store);
+    approve(authority);
+    expect(store.list("profile")).toEqual([]);
+    store.allow("profile", {
+      version: 1,
+      kind: "app-access",
+      projectId: "p",
+      appId: "com.apple.TextEdit",
+      tier: "full",
+      allowTyping: false,
+      policyVersion: 1,
+    });
+    const first = new ComputerGrantAuthority("darwin", store).listRemembered("profile", "p");
+    const next = new ComputerGrantAuthority(
+      "darwin",
+      new ComputerConsentStore(io, () => Buffer.alloc(32, 7)),
+    );
+    expect(first).toHaveLength(1);
+    expect(next.listRemembered("profile", "p")[0]!.receipt).not.toBe(first[0]!.receipt);
+    expect(next.remembered("profile", "p", first)).toEqual([]);
+    expect(next.listRemembered("other")).toEqual([]);
+  });
+
+  it("reclaims receipts across more than 10,000 sequential session lifecycles", () => {
+    const authority = new ComputerGrantAuthority("darwin");
+    for (let index = 0; index < 10_001; index++) {
+      const grant = approve(authority, false);
+      authority.validate({ ...auth, grants: [grant] });
+      authority.sessionClosed("profile", "t", "s");
+      expect(authority.validate({ ...auth, grants: [grant] }).grants).toEqual([]);
+    }
+  });
+
   it("refuses file-forged grants and stale receipts after F5 restarts", () => {
     const authority = new ComputerGrantAuthority("darwin");
     const grant = approve(authority);

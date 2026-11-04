@@ -11,6 +11,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Computer access requests appear in a non-modal panel that leaves F5 interactive and keeps composer focus.
 - Claude in Chrome certification records are version floors: a Claude update with the same browser setup stays covered, and a changed setup or tool list closes Claude in Chrome with its reason until a new live run. Withdrawing the covering record turns it off, and desktop and server use the same gate.
 - The Claude in Chrome live harness observes terminal `claude --chrome` coexistence; permission-mode behaviour, routing isolation, stale native hosts and frozen-server stop are no longer required of the live run.
 

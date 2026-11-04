@@ -52,7 +52,41 @@ it("shows Pause after an old action's lease ends and keeps Resume visible once p
   }
 });
 
-it("closes the real consent dialog only when its matching settlement arrives", async () => {
+it("keeps the access inbox non-modal without stealing composer focus", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
+  const screen = await render(
+    <>
+      <input aria-label="Composer fixture" />
+      <button type="button">Outside action</button>
+      <ComputerAccessInbox />
+    </>,
+  );
+  try {
+    const composer = page.getByRole("textbox", { name: "Composer fixture" });
+    await composer.click();
+    store.request({
+      requestId: "non-modal",
+      threadId,
+      backendIncarnation: "fixture-backend",
+      kind: "apps",
+      reason: "Synthetic component test",
+      apps: [{ appId: "fixture", name: "Synthetic fixture", tier: "full" }],
+    });
+    await expect
+      .element(page.getByRole("dialog", { name: "Computer access" }))
+      .toHaveAttribute("aria-modal", "false");
+    await expect.element(composer).toHaveFocus();
+    await userEvent.keyboard("still working");
+    await expect.element(composer).toHaveValue("still working");
+    await page.getByRole("button", { name: "Outside action" }).click();
+    await expect.element(page.getByRole("button", { name: "Outside action" })).toHaveFocus();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("closes the access inbox only when its matching settlement arrives", async () => {
   const store = useAgentComputerActivityStore.getState();
   const answer = vi.fn(async () => {});
   window.desktopBridge = { computerAutomation: { answerAccess: answer } } as never;

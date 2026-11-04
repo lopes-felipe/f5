@@ -111,6 +111,31 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
 }
 describe("computer broker safety boundaries", () => {
+  it.each([false, true])(
+    "notifies capable hosts on actual session release, capable=%s",
+    async (capable) => {
+      const h = await harness();
+      try {
+        if (capable)
+          h.ipc.emit("message", {
+            type: "hostCapabilities",
+            capabilities: ["computer-session-lifecycle-v1"],
+          });
+        h.broker.releaseSession("t", "obsolete");
+        expect(
+          h.ipc.messages.filter((message) => message.type === "computerSessionClosed"),
+        ).toEqual([]);
+        h.broker.releaseSession("t", "s");
+        expect(
+          h.ipc.messages.filter((message) => message.type === "computerSessionClosed"),
+        ).toEqual(
+          capable ? [{ type: "computerSessionClosed", threadId: "t", sessionGeneration: "s" }] : [],
+        );
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
   it("keeps action success but discards a late capture after a masking change", async () => {
     const h = await harness();
     try {

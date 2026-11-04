@@ -110,6 +110,15 @@ export class ComputerExecutionAuthority {
     return revision >= this.minimumRevision(profileId, threadId);
   }
   /** A replaced provider session can never reuse an earlier session's receipts. */
+  sessionClosed(profileId: string, threadId: string, sessionGeneration: string): void {
+    this.revoke(
+      (receipt) =>
+        receipt.profileId === profileId &&
+        receipt.threadId === threadId &&
+        receipt.sessionGeneration === sessionGeneration,
+    );
+  }
+
   sessionChanged(profileId: string, threadId: string, sessionGeneration: string): void {
     this.revoke(
       (receipt) =>

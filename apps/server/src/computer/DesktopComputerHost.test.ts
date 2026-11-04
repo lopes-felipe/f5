@@ -36,21 +36,29 @@ describe("private desktop host", () => {
         "scheduled-notifications-v1",
         "open-external-url-v1",
         "background-ax-v1",
+        "computer-session-lifecycle-v1",
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",
         "chrome-call-activity-v1",
       ],
     });
     expect(host.backgroundCapable()).toBe(false);
+    expect(host.sessionLifecycleCapable()).toBe(false);
     expect(host.chromeCallsCapable()).toBe(false);
     ipc.emit("message", { type: "hostCapabilities", capabilities: ["background-ax-v1"] });
     expect(host.backgroundCapable()).toBe(true);
     expect(host.chromeCallsCapable()).toBe(false);
     ipc.emit("message", { type: "hostCapabilities", capabilities: ["chrome-call-activity-v1"] });
     expect(host.chromeCallsCapable()).toBe(true);
+    ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["computer-session-lifecycle-v1"],
+    });
+    expect(host.sessionLifecycleCapable()).toBe(true);
     ipc.emit("message", { type: "response", requestId: 3 });
     expect(host.hasHost()).toBe(false);
     expect(host.backgroundCapable()).toBe(false);
+    expect(host.sessionLifecycleCapable()).toBe(false);
     host.close();
   });
   it("reports ambiguity for mutations and interruption for observations on disconnect", async () => {

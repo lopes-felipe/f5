@@ -1,6 +1,6 @@
 import { usePendingComputerAccessRequests } from "../hooks/usePendingComputerAccessRequests";
 import { useStore } from "../store";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { ComputerAccessPush, ComputerAppTier } from "@t3tools/contracts";
 import { AppWindowIcon, GlobeIcon, KeyboardIcon } from "lucide-react";
 
@@ -10,7 +10,6 @@ import { COMPUTER_TIER_LABEL } from "./AgentComputerLiveCard.logic";
 import { RequestDeadline } from "./RequestDeadline";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { Dialog, DialogPopup, DialogTitle, DialogDescription, DialogHeader } from "./ui/dialog";
 
 const TIER_BADGE: Record<ComputerAppTier, "warning" | "info" | "outline" | "error"> = {
   full: "warning",
@@ -126,6 +125,8 @@ function SignedInWarning() {
 }
 /** Mounted once per app window. Consent stays visible even when its thread is not selected. */
 export function ComputerAccessInbox() {
+  const titleId = useId();
+  const descriptionId = useId();
   const pending = usePendingComputerAccessRequests();
   const request = pending[0];
   const title = useStore(
@@ -156,35 +157,42 @@ export function ComputerAccessInbox() {
   }, []);
   if (!request || !window.desktopBridge?.computerAutomation) return null;
   return (
-    <Dialog open>
-      <DialogPopup showCloseButton={false}>
-        <DialogHeader>
-          <DialogTitle>
-            {request.kind === "chrome-setup"
-              ? "Browser integration setup"
-              : request.kind === "foreground-takeover"
-                ? "Foreground control"
-                : "Computer access"}
-          </DialogTitle>
-          <DialogDescription>
-            {request.kind === "chrome-setup"
-              ? "Review the browser registration change before allowing it."
-              : request.kind === "foreground-takeover"
-                ? `The agent asks to take over ${request.takeover?.appName ?? "an app"} with the mouse and keyboard. It starts once you stop using them.`
-                : request.kind === "session-actions" && request.background
-                  ? "The agent may keep acting in granted apps while you work elsewhere."
-                  : "Choose which apps the agent can use for this session."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-1 px-6 pb-3 text-muted-foreground text-sm">
-          <p>{[projectName, title].filter(Boolean).join(" · ")}</p>
-          {request.expiresAtMs !== undefined ? (
-            <RequestDeadline expiresAtMs={request.expiresAtMs} />
-          ) : null}
-          {pending.length > 1 ? <p>{pending.length - 1} more requests waiting</p> : null}
-        </div>
-        <ComputerAccessCard key={request.requestId} request={request} />
-      </DialogPopup>
-    </Dialog>
+    <section
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      className="fixed right-4 bottom-20 z-40 max-h-[calc(100dvh-6rem)] w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border bg-popover text-popover-foreground shadow-lg"
+    >
+      <p role="status" className="sr-only">
+        A computer access request is waiting. Use Review access in this panel to review it.
+      </p>
+      <div className="space-y-2 p-6">
+        <h2 id={titleId} className="font-semibold text-lg">
+          {request.kind === "chrome-setup"
+            ? "Browser integration setup"
+            : request.kind === "foreground-takeover"
+              ? "Foreground control"
+              : "Computer access"}
+        </h2>
+        <p id={descriptionId} className="text-muted-foreground text-sm">
+          {request.kind === "chrome-setup"
+            ? "Review the browser registration change before allowing it."
+            : request.kind === "foreground-takeover"
+              ? `The agent asks to take over ${request.takeover?.appName ?? "an app"} with the mouse and keyboard. It starts once you stop using them.`
+              : request.kind === "session-actions" && request.background
+                ? "The agent may keep acting in granted apps while you work elsewhere."
+                : "Choose which apps the agent can use for this session."}
+        </p>
+      </div>
+      <div className="space-y-1 px-6 pb-3 text-muted-foreground text-sm">
+        <p>{[projectName, title].filter(Boolean).join(" · ")}</p>
+        {request.expiresAtMs !== undefined ? (
+          <RequestDeadline expiresAtMs={request.expiresAtMs} />
+        ) : null}
+        {pending.length > 1 ? <p>{pending.length - 1} more requests waiting</p> : null}
+      </div>
+      <ComputerAccessCard key={request.requestId} request={request} />
+    </section>
   );
 }

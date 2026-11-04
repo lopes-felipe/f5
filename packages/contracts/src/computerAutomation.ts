@@ -48,6 +48,8 @@ export const ComputerDisplay = Schema.Struct({
 export type ComputerDisplay = typeof ComputerDisplay.Type;
 /** Capability token: background accessibility delivery (helper, desktop and backend). */
 export const COMPUTER_BACKGROUND_CAPABILITY = "background-ax-v1";
+/** Session receipt reclamation, independently negotiated from durable policy support. */
+export const COMPUTER_SESSION_LIFECYCLE_CAPABILITY = "computer-session-lifecycle-v1";
 export const ComputerBackgroundUnavailableReason = Schema.Literals([
   "unsupported-platform",
   "peer-capability",
@@ -88,6 +90,38 @@ export const ComputerAutomationBackendStatus = Schema.Union([
 export type ComputerAutomationBackendStatus = typeof ComputerAutomationBackendStatus.Type;
 export const ComputerAppTier = Schema.Literals(["blocked", "view", "click", "full"]);
 export type ComputerAppTier = typeof ComputerAppTier.Type;
+/** Policy only. Native main mints fresh execution receipts for each lifetime. */
+export const RememberedComputerConsent = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("app-access"),
+    projectId: Id,
+    appId: Id,
+    tier: Schema.Literals(["view", "click", "full"]),
+    allowTyping: Schema.Boolean,
+    policyVersion: Schema.Literal(1),
+  }).check(Schema.makeFilter((record) => record.tier === "click" || !record.allowTyping)),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("session-actions"),
+    projectId: Id,
+    background: Schema.Boolean,
+    policyVersion: Schema.Literal(1),
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("full-access-session"),
+    policyVersion: Schema.Literal(1),
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("takeover"),
+    projectId: Id,
+    appId: Id,
+    policyVersion: Schema.Literal(1),
+  }),
+]);
+export type RememberedComputerConsent = typeof RememberedComputerConsent.Type;
 export const ComputerGrant = Schema.Struct({
   receipt: Schema.optionalKey(Id),
   appId: Id,
@@ -788,6 +822,11 @@ export const DesktopComputerHostMessage = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literals(["cancel", "leaseAccepted"]), requestId: Id }),
   Schema.Struct({ type: Schema.Literal("grantForget"), projectId: Id, appId: Id }),
+  Schema.Struct({
+    type: Schema.Literal("computerSessionClosed"),
+    threadId: Id,
+    sessionGeneration: Id,
+  }),
   Schema.Struct({
     type: Schema.Literal("grantsValidate"),
     requestId: Id,
