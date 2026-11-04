@@ -338,6 +338,12 @@ export class ComputerAutomationBrokerRuntime {
         this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
       }
+      // Reports made before main answered the handshake reach it now.
+      if (message.type === "hostCapabilities")
+        for (const [key, running] of this.chromeCalls) {
+          const [threadId, generation] = key.split("\u0000") as [string, string];
+          this.sendChromeCalls(threadId, generation, running);
+        }
       if (
         message.type === "status" &&
         (this.hostPlatform !== message.status.hostPlatform ||
@@ -699,7 +705,18 @@ export class ComputerAutomationBrokerRuntime {
     if (this.chromeCalls.get(key) === running) return;
     if (running === undefined) this.chromeCalls.delete(key);
     else this.chromeCalls.set(key, running);
+    this.sendChromeCalls(threadId, generation, running);
     this.publishUse();
+  }
+  /** Main hides an idle Chrome lease from other profiles' banners, as this one does. */
+  private sendChromeCalls(threadId: string, generation: string, running: boolean | undefined) {
+    if (!this.host.chromeCallsCapable()) return;
+    this.host.send({
+      type: "chromeCallsChanged",
+      threadId,
+      sessionGeneration: generation,
+      running: running ?? null,
+    });
   }
   /** Called with each binding whose provider-native Chrome policy is off after a refresh. */
   onChromeDisabled(listener: (threadId: string, generation: string) => void): () => void {

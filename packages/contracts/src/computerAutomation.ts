@@ -133,6 +133,8 @@ export const ComputerDelivery = Schema.Literals(["background", "foreground"]);
 export type ComputerDelivery = typeof ComputerDelivery.Type;
 export const COMPUTER_AGENT_IDENTITY_CAPABILITY = "computer-agent-identity-v1";
 export const COMPUTER_ACTIVITY_CORRELATION_CAPABILITY = "computer-activity-correlation-v1";
+/** The backend reports whether its Chrome holder runs a browser call (`chromeCallsChanged`). */
+export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
 export const ComputerAgentProviderSchema = Schema.Literals([
   "claude",
   "codex",
@@ -725,6 +727,16 @@ export const DesktopComputerHostMessage = Schema.Union([
     otherProfile: Schema.optionalKey(Schema.Boolean),
     /** Main could not observe a registered process exit; Chrome ownership is refused. */
     recoveryRequired: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    /**
+     * Backend to main: whether this profile's Chrome session runs a browser call, so other
+     * profiles' banners skip an idle runtime. `null` withdraws the report.
+     */
+    type: Schema.Literal("chromeCallsChanged"),
+    threadId: Id,
+    sessionGeneration: Id,
+    running: Schema.NullOr(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("chromeProcessRegister"),

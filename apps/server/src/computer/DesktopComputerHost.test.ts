@@ -38,11 +38,16 @@ describe("private desktop host", () => {
         "background-ax-v1",
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",
+        "chrome-call-activity-v1",
       ],
     });
     expect(host.backgroundCapable()).toBe(false);
+    expect(host.chromeCallsCapable()).toBe(false);
     ipc.emit("message", { type: "hostCapabilities", capabilities: ["background-ax-v1"] });
     expect(host.backgroundCapable()).toBe(true);
+    expect(host.chromeCallsCapable()).toBe(false);
+    ipc.emit("message", { type: "hostCapabilities", capabilities: ["chrome-call-activity-v1"] });
+    expect(host.chromeCallsCapable()).toBe(true);
     ipc.emit("message", { type: "response", requestId: 3 });
     expect(host.hasHost()).toBe(false);
     expect(host.backgroundCapable()).toBe(false);

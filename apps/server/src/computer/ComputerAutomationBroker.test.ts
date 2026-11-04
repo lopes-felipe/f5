@@ -484,6 +484,34 @@ describe("computer broker safety boundaries", () => {
       h.broker.close();
     }
   });
+  it("tells a capable desktop whether its Chrome session runs a call", async () => {
+    const h = await harness();
+    try {
+      const sent = () => h.ipc.messages.filter((message) => message.type === "chromeCallsChanged");
+      // A legacy desktop would disconnect on the unknown message: nothing is sent.
+      h.broker.reportChromeCalls("t", "s", false);
+      h.broker.reportChromeCalls("t", "other", true);
+      expect(sent()).toEqual([]);
+      // The handshake answer replays what was reported before it.
+      h.ipc.emit("message", {
+        type: "hostCapabilities",
+        capabilities: ["chrome-call-activity-v1"],
+      });
+      expect(sent()).toEqual([
+        { type: "chromeCallsChanged", threadId: "t", sessionGeneration: "s", running: false },
+        { type: "chromeCallsChanged", threadId: "t", sessionGeneration: "other", running: true },
+      ]);
+      h.broker.reportChromeCalls("t", "s", true);
+      h.broker.reportChromeCalls("t", "s", true);
+      h.broker.reportChromeCalls("t", "other", undefined);
+      expect(sent().slice(2)).toEqual([
+        { type: "chromeCallsChanged", threadId: "t", sessionGeneration: "s", running: true },
+        { type: "chromeCallsChanged", threadId: "t", sessionGeneration: "other", running: null },
+      ]);
+    } finally {
+      h.broker.close();
+    }
+  });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();
     try {

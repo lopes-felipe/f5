@@ -226,6 +226,10 @@ describe("computer use banner text", () => {
       "An agent in another F5 profile is controlling this computer",
     );
     expect(computerUseBannerText({ holders: [] }, false)).toBeNull();
+    // Just after another profile's control ended, the anonymous banner lingers.
+    expect(computerUseBannerText({ holders: [] }, false, false, true)).toBe(
+      "An agent in another F5 profile is controlling this computer",
+    );
   });
   it("says whether an agent is using Chrome, not that it controls the computer", () => {
     const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
