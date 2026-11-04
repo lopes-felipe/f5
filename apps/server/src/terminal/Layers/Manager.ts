@@ -9,6 +9,7 @@ import { neutralizeInheritedHistory, readTerminalHistory } from "../historyPersi
 import { readTerminalProcessTable, type TerminalProcessTable } from "../processTable";
 import { githubTerminalStartup } from "../../git/githubShellStartup";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
+import { withBrowserOpenThreadToken } from "../../browser/BrowserOpenThreadToken";
 import type { ServerConfigShape } from "../../config";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -747,19 +748,25 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         }),
       );
       const shellCandidates = resolveShellCandidates(this.shellResolver);
-      const terminalEnv = createTerminalSpawnEnv(
-        this.accountConfig
-          ? buildAccountExecutionEnvironment({
-              purpose: "terminal",
-              profile: this.accountConfig.profile,
-              stateDir: this.accountConfig.stateDir,
-              baseEnv: process.env,
-              ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
-            })
-          : process.env,
-        // Restore intentional script/multiplexer overrides after filtering the
-        // account environment; inherited pane identities remain excluded.
-        this.accountConfig ? explicitTerminalRuntimeEnvOf(session.runtimeEnv) : session.runtimeEnv,
+      // A thread's terminals follow its access mode for browser opens, like its agent.
+      const terminalEnv = withBrowserOpenThreadToken(
+        createTerminalSpawnEnv(
+          this.accountConfig
+            ? buildAccountExecutionEnvironment({
+                purpose: "terminal",
+                profile: this.accountConfig.profile,
+                stateDir: this.accountConfig.stateDir,
+                baseEnv: process.env,
+                ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
+              })
+            : process.env,
+          // Restore intentional script/multiplexer overrides after filtering the
+          // account environment; inherited pane identities remain excluded.
+          this.accountConfig
+            ? explicitTerminalRuntimeEnvOf(session.runtimeEnv)
+            : session.runtimeEnv,
+        ),
+        session.threadId,
       );
       let lastSpawnError: unknown = null;
 

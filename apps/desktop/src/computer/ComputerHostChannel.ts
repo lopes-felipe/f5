@@ -78,7 +78,11 @@ export class ComputerHostChannel {
         profileId: string,
         notification: import("@t3tools/contracts").DesktopScheduledNotification,
       ) => boolean;
-      openExternalUrl?: (profileId: string, url: string) => Promise<OpenExternalUrlStatus>;
+      openExternalUrl?: (
+        profileId: string,
+        url: string,
+        options?: { preapproved?: boolean },
+      ) => Promise<OpenExternalUrlStatus>;
       cancelBrowserOpen?: (profileId: string) => void;
     } = {},
   ) {
@@ -227,7 +231,11 @@ export class ComputerHostChannel {
       switch (message.type) {
         case "openExternalUrlRequest":
           if (!backend.capabilities.has(OPEN_EXTERNAL_URL_CAPABILITY)) return;
-          void this.options.openExternalUrl!(profileId, message.url).then(
+          void (
+            message.preapproved === true
+              ? this.options.openExternalUrl!(profileId, message.url, { preapproved: true })
+              : this.options.openExternalUrl!(profileId, message.url)
+          ).then(
             (status) => {
               if (this.backends.get(profileId) === backend)
                 this.send(profileId, { type: "openExternalUrlResult", id: message.id, status });

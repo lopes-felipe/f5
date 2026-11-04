@@ -87,7 +87,11 @@ export class DesktopComputerHost {
   hasHost(): boolean {
     return this.connected;
   }
-  openExternalUrl(url: string): Promise<OpenExternalUrlStatus | "unavailable"> {
+  /** `preapproved`: the requesting thread is in full access, so the desktop skips its prompt. */
+  openExternalUrl(
+    url: string,
+    options?: { preapproved?: boolean },
+  ): Promise<OpenExternalUrlStatus | "unavailable"> {
     if (!this.connected || !this.hostCapabilities.has(OPEN_EXTERNAL_URL_CAPABILITY))
       return Promise.resolve("unavailable");
     return new Promise((resolve) => {
@@ -97,7 +101,12 @@ export class DesktopComputerHost {
         resolve("unavailable");
       }, 330_000);
       this.browserPending.set(id, { resolve, timer });
-      this.send({ type: "openExternalUrlRequest", id, url });
+      this.send({
+        type: "openExternalUrlRequest",
+        id,
+        url,
+        ...(options?.preapproved ? { preapproved: true } : {}),
+      });
     });
   }
   send(message: DesktopComputerHostMessage): void {

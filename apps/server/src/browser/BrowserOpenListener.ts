@@ -6,10 +6,15 @@ import { browserOpenSocketPath, prepareBrowserOpenLauncher } from "./BrowserOpen
 
 export type BrowserOpenStatus = import("@t3tools/contracts").OpenExternalUrlStatus | "unavailable";
 
+export type BrowserOpenTarget = Pick<DesktopComputerHost, "openExternalUrl"> & {
+  /** True when the launcher's thread token names a thread that is in full access now. */
+  isPreapproved?: (token: string) => Promise<boolean>;
+};
+
 /** One bounded JSON line per connection, on a socket private to the OS user. */
 export async function startBrowserOpenListener(
   stateDir: string,
-  host: Pick<DesktopComputerHost, "openExternalUrl">,
+  host: BrowserOpenTarget,
 ): Promise<() => Promise<void>> {
   const socketPath = browserOpenSocketPath(stateDir);
   const directory = Path.join(stateDir, "browser-open");
@@ -69,11 +74,12 @@ export async function startBrowserOpenListener(
       requested = true;
       socket.setTimeout(6 * 60 * 1000);
       let url: unknown;
+      let token: unknown;
       try {
         const request: unknown = JSON.parse(input.subarray(0, newline).toString("utf8"));
         if (!request || typeof request !== "object" || input.length !== newline + 1)
           throw new Error("Expected one request.");
-        url = (request as { url?: unknown }).url;
+        ({ url, token } = request as { url?: unknown; token?: unknown });
         if (typeof url !== "string") throw new Error("Expected a URL.");
         const parsed = new URL(url);
         if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Expected HTTP.");
@@ -81,7 +87,18 @@ export async function startBrowserOpenListener(
         reply("invalid");
         return;
       }
-      void host.openExternalUrl(url as string).then(reply, () => reply("unavailable"));
+      // A missing, malformed or unknown token only means the user is asked as before.
+      const preapproved =
+        typeof token === "string" && token.length <= 256 && host.isPreapproved
+          ? host.isPreapproved(token).catch(() => false)
+          : Promise.resolve(false);
+      void preapproved
+        .then((skip) =>
+          skip
+            ? host.openExternalUrl(url as string, { preapproved: true })
+            : host.openExternalUrl(url as string),
+        )
+        .then(reply, () => reply("unavailable"));
     });
   });
   await new Promise<void>((resolve, reject) => {

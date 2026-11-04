@@ -50,6 +50,7 @@ import { AutomationQueue } from "../mcp/automationQueue";
 import { AgentControlPause, AgentControlPauseService } from "../mcp/agentControlPause";
 import { DesktopComputerHost } from "./DesktopComputerHost";
 import { startBrowserOpenBridge } from "../browser/BrowserOpenBridge";
+import { browserOpenThreadFor } from "../browser/BrowserOpenThreadToken";
 import { computerAccessStorage } from "./computerAccessStorage";
 import { ComputerAccessService } from "./ComputerAccessService";
 
@@ -1820,7 +1821,22 @@ export const ComputerAutomationBrokerLive = Layer.effect(
     const host = DesktopComputerHost.fromEnvironment(config.profile?.id ?? "default");
     // Register cleanup before starting any profile-local services.
     yield* Effect.addFinalizer(() => Effect.sync(() => host.close()));
-    const closeBrowser = yield* Effect.promise(() => startBrowserOpenBridge(config.stateDir, host));
+    const closeBrowser = yield* Effect.promise(() =>
+      startBrowserOpenBridge(config.stateDir, {
+        openExternalUrl: (url, options) => host.openExternalUrl(url, options),
+        // Read at request time, so switching a thread out of full access takes effect at once.
+        isPreapproved: async (token) => {
+          const threadId = browserOpenThreadFor(token);
+          if (!threadId) return false;
+          const rows = await run(
+            sql<{
+              runtimeMode: string;
+            }>`SELECT runtime_mode AS "runtimeMode" FROM projection_threads WHERE thread_id=${threadId}`,
+          );
+          return rows[0]?.runtimeMode === "full-access";
+        },
+      }),
+    );
     yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
     const pause = yield* Effect.serviceOption(AgentControlPauseService);
     const storage = computerAccessStorage({

@@ -94,6 +94,7 @@ import {
 import { prependCodexCliTelemetryDisabledConfig } from "./provider/codexCliConfig";
 import { buildCodexAppServerCommand } from "./provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "./providerProcessEnv";
+import { withBrowserOpenThreadToken } from "./browser/BrowserOpenThreadToken";
 import {
   fingerprintSupportedSlashCommands,
   normalizeSupportedSlashCommands,
@@ -1291,12 +1292,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(signal ? { signal } : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const childEnvironment = buildProviderChildProcessEnv(
-        input.processEnvironment ?? process.env,
-        {
+      const childEnvironment = withBrowserOpenThreadToken(
+        buildProviderChildProcessEnv(input.processEnvironment ?? process.env, {
           ...input.mcpEnvironment,
           ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
-        },
+        }),
+        threadId,
       );
       const appServerCommand = buildCodexAppServerCommand({
         ...(codexOptions.launchArgs ? { providerLaunchArgs: codexOptions.launchArgs } : {}),

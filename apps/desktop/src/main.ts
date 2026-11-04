@@ -659,8 +659,11 @@ function initializeComputerSystem(): void {
     {
       ...(process.platform === "darwin"
         ? {
-            openExternalUrl: (profileId: string, url: string) =>
-              browserOpenAuthority.request(profileId, url),
+            openExternalUrl: (
+              profileId: string,
+              url: string,
+              options?: { preapproved?: boolean },
+            ) => browserOpenAuthority.request(profileId, url, options),
             cancelBrowserOpen: (profileId: string) => browserOpenAuthority.cancelProfile(profileId),
           }
         : {}),

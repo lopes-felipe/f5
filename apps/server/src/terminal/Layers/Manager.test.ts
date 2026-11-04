@@ -10,6 +10,7 @@ import {
   type TerminalRestartInput,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BROWSER_OPEN_TOKEN_ENV, browserOpenTokenFor } from "../../browser/BrowserOpenThreadToken";
 import * as processTree from "@t3tools/shared/processTree";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
@@ -406,6 +407,24 @@ describe("TerminalManager", () => {
         await manager.open({ ...openInput(), env: { COLORTERM: color ?? "" } });
         expect(ptyAdapter.spawnInputs[0]?.env.COLORTERM).toBe(color || "truecolor");
       } finally {
+        await manager.dispose();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "gives the terminal its thread's browser-open token in place of any inherited one",
+    async () => {
+      vi.stubEnv("F5_DESKTOP_COMPUTER_HOST", "ipc");
+      const { manager, ptyAdapter } = makeManager();
+      try {
+        const input = openInput();
+        await manager.open({ ...input, env: { [BROWSER_OPEN_TOKEN_ENV]: "forged" } });
+        expect(ptyAdapter.spawnInputs[0]?.env[BROWSER_OPEN_TOKEN_ENV]).toBe(
+          browserOpenTokenFor(input.threadId),
+        );
+      } finally {
+        vi.unstubAllEnvs();
         await manager.dispose();
       }
     },

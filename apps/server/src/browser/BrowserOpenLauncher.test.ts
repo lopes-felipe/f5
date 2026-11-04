@@ -5,6 +5,7 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  BROWSER_OPEN_TOKEN_ENV,
   browserLauncherDir,
   browserLauncherPath,
   browserOpenSocketPath,
@@ -23,9 +24,11 @@ async function fixture() {
   return root;
 }
 
-function run(file: string, args: string[]) {
+function run(file: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
+  // Drop a token inherited from an F5 shell running these tests, so requests stay exact.
+  const { [BROWSER_OPEN_TOKEN_ENV]: _inherited, ...baseEnv } = process.env;
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(file, args, { env: process.env });
+    const child = spawn(file, args, { env: { ...baseEnv, ...extraEnv } });
     let stdout = "",
       stderr = "";
     child.stdout.on("data", (data) => {
@@ -84,6 +87,15 @@ describe.skipIf(process.platform === "win32")("browser launcher", () => {
     expect(result.code).toBe(code);
     expect(result.stderr).toContain("Open this URL to continue: https://example.com/login?a=b");
     expect(requests).toEqual([{ url: "https://example.com/login?a=b" }]);
+  });
+  it("forwards the thread token from its environment when one is set", async () => {
+    const root = await fixture();
+    const requests = await respond(root, "opened");
+    const shim = Path.join(browserLauncherDir(root), "open");
+    expect(
+      (await run(shim, ["https://example.com"], { [BROWSER_OPEN_TOKEN_ENV]: "thread-token" })).code,
+    ).toBe(0);
+    expect(requests).toEqual([{ url: "https://example.com", token: "thread-token" }]);
   });
   it("returns unavailable for a missing socket and invalid for unsupported arguments", async () => {
     const root = await fixture();

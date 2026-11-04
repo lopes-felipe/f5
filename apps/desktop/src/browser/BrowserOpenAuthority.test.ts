@@ -111,6 +111,24 @@ describe("browser open authority", () => {
     expect(await authority.request("p", "https://example.com")).toBe("opened");
     expect(effects.prompt).toHaveBeenCalledTimes(2);
   });
+  it("opens preapproved requests without a prompt or a remembered host, within the budget", async () => {
+    const { effects, authority } = setup();
+    const results = await Promise.all(
+      Array.from({ length: 11 }, () =>
+        authority.request("p", "https://example.com/login", { preapproved: true }),
+      ),
+    );
+    expect(results.filter((status) => status === "opened")).toHaveLength(10);
+    expect(results.filter((status) => status === "busy")).toHaveLength(1);
+    expect(effects.prompt).not.toHaveBeenCalled();
+    expect(await authority.request("p", "file:///etc/passwd", { preapproved: true })).toBe(
+      "invalid",
+    );
+    // Preapproval does not grant the host to later, non-preapproved requests.
+    effects.prompt.mockResolvedValue(3);
+    expect(await authority.request("other", "https://example.com/login")).toBe("denied");
+    expect(effects.prompt).toHaveBeenCalledOnce();
+  });
   it("shows one dialog per profile, queues three, and permits another profile's dialog", async () => {
     const { effects, authority } = setup();
     const answers: Array<(button: number) => void> = [];

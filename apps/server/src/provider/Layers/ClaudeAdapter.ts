@@ -240,6 +240,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { increment, providerSessionContextResetsTotal } from "../../observability/Metrics.ts";
 import { buildProviderChildProcessEnv } from "../../providerProcessEnv.ts";
+import { withBrowserOpenThreadToken } from "../../browser/BrowserOpenThreadToken.ts";
 import {
   fetchAnthropicModelContextWindowCatalog,
   lookupModelContextWindowTokens,
@@ -7445,9 +7446,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const threadId = input.threadId;
         const rawResumeCandidate = readClaudeResumeCandidate(input.resumeCursor);
         // Built once so the resume preflight and the CLI launch see the same env.
-        const queryEnvironment = buildClaudeQueryEnv(
-          input.providerOptions?.claudeAgent,
-          options?.processEnvironment ?? process.env,
+        const queryEnvironment = withBrowserOpenThreadToken(
+          buildClaudeQueryEnv(
+            input.providerOptions?.claudeAgent,
+            options?.processEnvironment ?? process.env,
+          ),
+          threadId,
         );
         const plansDirectory = NodePath.join(
           resolveClaudeConfigDir(queryEnvironment, input.cwd),
