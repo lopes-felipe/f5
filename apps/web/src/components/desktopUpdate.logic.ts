@@ -91,6 +91,14 @@ export function getDesktopUpdateReleaseNotes(state: DesktopUpdateState | null): 
   return notes.length > 0 ? notes : null;
 }
 
+const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+
+/** GitHub page holding the complete notes, which the in-app text may abridge. */
+export function getDesktopUpdateReleaseUrl(version: string | null | undefined): string | null {
+  if (!version || !RELEASE_VERSION_PATTERN.test(version)) return null;
+  return `https://github.com/lopes-felipe/f5/releases/tag/v${version}`;
+}
+
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
   if (!result.accepted || result.completed) return null;
   if (typeof result.state.message !== "string") return null;

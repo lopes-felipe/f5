@@ -9,6 +9,7 @@ import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateReleaseNotes,
+  getDesktopUpdateReleaseUrl,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   getDesktopUpdatePhaseAnnouncement,
@@ -45,6 +46,18 @@ describe("desktop update button state", () => {
     );
     expect(getDesktopUpdateReleaseNotes({ ...baseState, releaseNotes: "   " })).toBeNull();
     expect(getDesktopUpdateReleaseNotes(baseState)).toBeNull();
+  });
+
+  it("links only well-formed versions to their GitHub release", () => {
+    expect(getDesktopUpdateReleaseUrl("0.1.3")).toBe(
+      "https://github.com/lopes-felipe/f5/releases/tag/v0.1.3",
+    );
+    expect(getDesktopUpdateReleaseUrl("0.1.4-beta.20")).toBe(
+      "https://github.com/lopes-felipe/f5/releases/tag/v0.1.4-beta.20",
+    );
+    expect(getDesktopUpdateReleaseUrl("0.1.3/../../evil")).toBeNull();
+    expect(getDesktopUpdateReleaseUrl("v0.1.3")).toBeNull();
+    expect(getDesktopUpdateReleaseUrl(null)).toBeNull();
   });
 
   it("shows a download action when an update is available", () => {

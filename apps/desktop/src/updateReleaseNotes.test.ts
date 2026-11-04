@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
+import { MAX_RELEASE_NOTES_LENGTH, normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 
 describe("normalizeDesktopUpdateReleaseNotes", () => {
   it("normalizes HTML notes to plain text", () => {
@@ -23,12 +23,28 @@ describe("normalizeDesktopUpdateReleaseNotes", () => {
 
   it("removes active markup and bounds the result", () => {
     const result = normalizeDesktopUpdateReleaseNotes(
-      `<script>alert('no')</script><style>body{display:none}</style>${"x".repeat(2_000)}`,
+      `<script>alert('no')</script><style>body{display:none}</style>${"x".repeat(MAX_RELEASE_NOTES_LENGTH + 2_000)}`,
     );
     expect(result).not.toContain("alert");
     expect(result).not.toContain("display:none");
-    expect(result?.length).toBe(1_200);
+    expect(result?.length).toBe(MAX_RELEASE_NOTES_LENGTH);
     expect(result?.endsWith("…")).toBe(true);
+  });
+
+  it("keeps a full stable release after the intermediate betas the updater lists", () => {
+    const stable = Array.from(
+      { length: 40 },
+      (_, index) => `<li>Change ${index}: ${"detail ".repeat(20)}</li>`,
+    ).join("");
+    const result = normalizeDesktopUpdateReleaseNotes([
+      { version: "0.1.4-beta.20", note: "Automated beta from 0c7683f." },
+      { version: "0.1.4-beta.12", note: "Automated beta from a774476." },
+      { version: "0.1.3", note: `<h3>Added</h3><ul>${stable}</ul>` },
+    ]);
+
+    expect(result?.length).toBeGreaterThan(5_000);
+    expect(result).toContain("Change 39:");
+    expect(result?.endsWith("…")).toBe(false);
   });
 
   it("returns null for empty or malformed payloads", () => {
@@ -49,7 +65,7 @@ describe("normalizeDesktopUpdateReleaseNotes", () => {
 
     const result = normalizeDesktopUpdateReleaseNotes(entries);
 
-    expect(result?.length).toBe(1_200);
+    expect(result?.length).toBe(MAX_RELEASE_NOTES_LENGTH);
     expect(noteReads).toBeLessThanOrEqual(64);
   });
 });

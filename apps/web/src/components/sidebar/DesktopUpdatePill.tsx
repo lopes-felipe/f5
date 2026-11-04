@@ -17,6 +17,7 @@ import {
   DesktopUpdateDownloadProgress,
   DesktopUpdateInstallProgress,
 } from "../DesktopUpdateProgress";
+import { DesktopUpdateReleaseLink } from "../DesktopUpdateReleaseLink";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
@@ -60,7 +61,7 @@ function PillIcon({ pill }: { pill: DesktopUpdatePillView }) {
   }
 }
 
-function ReleaseNotes({ notes }: { notes: string }) {
+function ReleaseNotes({ notes, version }: { notes: string; version: string | null }) {
   return (
     <Collapsible>
       <CollapsibleTrigger className="group inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
@@ -71,6 +72,7 @@ function ReleaseNotes({ notes }: { notes: string }) {
         <div className="mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
           {notes}
         </div>
+        <DesktopUpdateReleaseLink version={version} />
       </CollapsiblePanel>
     </Collapsible>
   );
@@ -84,7 +86,12 @@ function PopoverBody({
   update: DesktopUpdateController;
 }) {
   const version = state.downloadedVersion ?? state.availableVersion ?? "update";
-  const notes = update.releaseNotes ? <ReleaseNotes notes={update.releaseNotes} /> : null;
+  const notes = update.releaseNotes ? (
+    <ReleaseNotes
+      notes={update.releaseNotes}
+      version={state.downloadedVersion ?? state.availableVersion}
+    />
+  ) : null;
 
   if (state.status === "downloading") {
     return (
@@ -177,6 +184,7 @@ export function DesktopUpdateInstalledNotesDialog({ update }: { update: DesktopU
           <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
             {installed?.releaseNotes}
           </div>
+          <DesktopUpdateReleaseLink version={installed?.toVersion} />
         </DialogPanel>
       </DialogPopup>
     </Dialog>

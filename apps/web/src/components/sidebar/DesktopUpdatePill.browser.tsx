@@ -37,6 +37,7 @@ function bridge(state: DesktopUpdateState = initial) {
   const listeners = new Set<(next: DesktopUpdateState) => void>();
   const download = vi.fn(async () => ({ accepted: true, completed: false, state }));
   const install = vi.fn(async () => ({ accepted: false, completed: false, state }));
+  const openExternal = vi.fn(async () => true);
   // Mirrors the main process: the recent install goes to the first claimer only.
   let unclaimed = state.recentlyInstalled ?? null;
   const claim = vi.fn(async () => {
@@ -53,11 +54,13 @@ function bridge(state: DesktopUpdateState = initial) {
     downloadUpdate: download,
     installUpdate: install,
     claimRecentUpdateInstall: claim,
+    openExternal,
   } as unknown as DesktopBridge;
   return {
     download,
     install,
     claim,
+    openExternal,
     emit: (next: DesktopUpdateState) => {
       for (const listener of listeners) listener(next);
     },
@@ -126,6 +129,23 @@ it("downloads from the popover and then shows live progress in the pill", async 
   });
   await expect.element(screen.getByText("39 MB of 92 MB")).toBeVisible();
   await expect.element(screen.getByRole("status")).toHaveTextContent("Downloading F5 0.2.0");
+});
+
+it("links the release notes to the full GitHub release", async () => {
+  const f = bridge();
+  const screen = await render(<Harness />);
+  f.emit({
+    ...initial,
+    status: "available",
+    availableVersion: "0.2.0",
+    releaseNotes: "Faster preview",
+  });
+  await screen.getByRole("button", { name: "Update 0.2.0 ready to download" }).click();
+  await screen.getByText("What’s new").click();
+  await screen.getByRole("button", { name: "Full release notes" }).click();
+  expect(f.openExternal).toHaveBeenCalledWith(
+    "https://github.com/lopes-felipe/f5/releases/tag/v0.2.0",
+  );
 });
 
 it("toasts a finished download even when the menu started it", async () => {
