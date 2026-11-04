@@ -10,12 +10,16 @@ import {
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
-import { CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED } from "./Layers/claudeAgentBrowser";
+import {
+  CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED,
+  CLAUDE_IN_CHROME_ISOLATED_PROFILE,
+} from "./Layers/claudeAgentBrowser";
 import { parseNativeHostManifest } from "./chromeNativeHost";
 import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import {
   claudeChromeAvailability,
+  isolatedClaudeHome,
   listChromeSessionSetups,
   restoreChromeSessionSetup,
 } from "./chromeSessionRuntimeFactory";
@@ -140,6 +144,52 @@ describe("Claude in Chrome executable identity", () => {
     ],
   ])("refuses %s", async (_name, patch, reason) => {
     expect(await check(await patch())).toMatchObject({ unavailable: { reason } });
+  });
+
+  describe("isolated F5 profiles", () => {
+    const capable: ClaudeChromeRecord = { ...certified, capabilities: ["isolated-profiles"] };
+    const isolated = {
+      isolatedProfile: true,
+      stateDir: "/state",
+      userHome: isolatedClaudeHome("/state"),
+      records: [capable],
+    };
+
+    it("admits a certified copy, with Chrome's home and the CLI's as source", async () => {
+      expect(await check(isolated)).toMatchObject({
+        record: { id: capable.id },
+        chromeHome: "/Users/me",
+        projection: { sourceHome: "/state/provider-homes/claude" },
+      });
+      // Non-isolated profiles never project.
+      expect(await check()).not.toHaveProperty("projection");
+    });
+
+    it("stays closed until a record certifies the isolated-profile copy", async () => {
+      expect(await check({ ...isolated, records: [certified] })).toMatchObject({
+        unavailable: { reason: "isolated-profile", detail: CLAUDE_IN_CHROME_ISOLATED_PROFILE },
+      });
+      // The covering record decides: an older capable floor doesn't open a newer build.
+      await bundleVersion("9.9.9");
+      const newer: ClaudeChromeRecord = {
+        ...certified,
+        id: "claude-chrome-darwin-arm64-9.9.9",
+        versions: { ...certified.versions, sdkMin: "9.9.9" },
+      };
+      expect(await check({ ...isolated, records: [capable, newer] })).toMatchObject({
+        unavailable: { reason: "isolated-profile" },
+      });
+    });
+
+    it("refuses an isolated HOME that isn't the profile's provider home", async () => {
+      expect(await check({ ...isolated, userHome: "/elsewhere" })).toMatchObject({
+        unavailable: { reason: "home-mismatch" },
+      });
+      const { stateDir: _stateDir, ...withoutState } = isolated;
+      expect(await check(withoutState)).toMatchObject({
+        unavailable: { reason: "home-mismatch" },
+      });
+    });
   });
 });
 

@@ -8,14 +8,19 @@ import { promisify } from "node:util";
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
+import type { ProfileId } from "@t3tools/contracts";
 import {
+  INTEGRATION_CAPABILITY_ASSERTIONS,
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
   integrationTemplateRecord,
   type IntegrationEvidenceReport,
 } from "@t3tools/shared/providerIntegrationCertification";
 
+import { buildAccountExecutionEnvironment } from "../src/providerProcessEnv.ts";
 import { buildClaudeQueryEnv } from "../src/provider/Layers/ClaudeAdapter.ts";
+import { projectClaudeRegistrations } from "../src/provider/chromeRegistrationProjection";
+import { isolatedClaudeHome } from "../src/provider/chromeSessionRuntimeFactory";
 import { createControllableAsyncIterable } from "../src/provider/Layers/ClaudeSdk.testUtils.ts";
 import { claudeChromeDescriptor, type ChromeServerStatus } from "../src/provider/chromeNativeHost";
 import { inspectChromeNativeHosts } from "../src/provider/chromeNativeHostInspection";
@@ -39,6 +44,9 @@ const execFileAsync = promisify(execFile);
  * F5_CLAUDE_CHROME_CONFIG_DIR=<dir> is the isolated, claude.ai-signed-in Claude config F5's
  * sessions use. Vitest drops an inherited CLAUDE_CONFIG_DIR (see vitest.config.ts), so the
  * harness takes its own variable and passes it to the CLI explicitly.
+ * F5_CLAUDE_CHROME_ISOLATED_STATE_DIR=<dir>, optional, is an isolated F5 profile's folder
+ * (`~/.f5/userdata-profiles/<id>`) whose Claude is signed in to the same claude.ai account
+ * as the extension; it adds the isolated-profile phase.
  */
 const optedIn = process.env.F5_CLAUDE_CHROME_LIVE === "1";
 describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
@@ -107,7 +115,9 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       acceptedForeign: [],
     });
     const cwd = mkdtempSync(join(tmpdir(), "f5-claude-chrome-cwd-"));
-    const launch = () => {
+    const launch = (
+      env: NodeJS.ProcessEnv = { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: providerHome },
+    ) => {
       const input = createControllableAsyncIterable<SDKUserMessage>();
       const q = query({
         prompt: input.iterable,
@@ -116,10 +126,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           pathToClaudeCodeExecutable: executable,
           persistSession: false,
           settingSources: [],
-          env: buildClaudeQueryEnv(
-            { subagentModel: "inherit" },
-            { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: providerHome },
-          ),
+          env: buildClaudeQueryEnv({ subagentModel: "inherit" }, env),
           maxTurns: 4,
           extraArgs: { chrome: null },
           canUseTool: async (name, toolInput) =>
@@ -156,6 +163,39 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       Promise.all(
         [...before.keys()].map(async (location) => (await readChromeArtifact(location)).bytes),
       );
+    /**
+     * Asks for one tab listing. Only a successful result of the allowed call counts: a
+     * denied or failed call also comes back as a `tool_result`, with `is_error`.
+     */
+    const readOnlyCall = async (handle: ReturnType<typeof launch>) => {
+      handle.input.push({
+        type: "user",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: "Call tabs_context_mcp once, then reply DONE. Use no other tool.",
+        },
+      });
+      const tabListingIds = new Set<string>();
+      let succeeded = false;
+      for (;;) {
+        const next = await handle.q.next();
+        if (next.done || next.value.type === "result") break;
+        const content = (next.value as { message?: { content?: unknown } }).message?.content;
+        if (!Array.isArray(content)) continue;
+        for (const block of content as Array<Record<string, unknown>>) {
+          if (block.type === "tool_use" && block.name === "mcp__claude-in-chrome__tabs_context_mcp")
+            tabListingIds.add(String(block.id));
+          if (
+            block.type === "tool_result" &&
+            block.is_error !== true &&
+            tabListingIds.has(String(block.tool_use_id))
+          )
+            succeeded = true;
+        }
+      }
+      return succeeded;
+    };
     const observations: Record<string, unknown> = {};
     let toolNames: string[] = [];
     let firstLaunchBytes: Array<string | null> | undefined;
@@ -207,36 +247,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             (entry) => JSON.stringify([...(entry.allowedOrigins ?? [])].sort()) === expectedOrigins,
           );
         firstLaunchBytes = await artifactBytes();
-        first.input.push({
-          type: "user",
-          parent_tool_use_id: null,
-          message: {
-            role: "user",
-            content: "Call tabs_context_mcp once, then reply DONE. Use no other tool.",
-          },
-        });
-        // Only a successful result of the allowed tab listing counts: a denied or failed
-        // call also comes back as a `tool_result`, with `is_error`.
-        const tabListingIds = new Set<string>();
-        for (;;) {
-          const next = await first.q.next();
-          if (next.done || next.value.type === "result") break;
-          const content = (next.value as { message?: { content?: unknown } }).message?.content;
-          if (!Array.isArray(content)) continue;
-          for (const block of content as Array<Record<string, unknown>>) {
-            if (
-              block.type === "tool_use" &&
-              block.name === "mcp__claude-in-chrome__tabs_context_mcp"
-            )
-              tabListingIds.add(String(block.id));
-            if (
-              block.type === "tool_result" &&
-              block.is_error !== true &&
-              tabListingIds.has(String(block.tool_use_id))
-            )
-              assertions["read-only-call"] = true;
-          }
-        }
+        assertions["read-only-call"] = await readOnlyCall(first);
       } finally {
         first.q.close();
         first.input.end();
@@ -367,6 +378,129 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       };
       assertions["terminal-claude-unaffected"] &&= untouched;
     }
+    // Isolated F5 profile: Claude runs with the profile's own HOME, exactly as F5 builds
+    // it, and F5 copies the registration the CLI wrote there into the real home. Optional:
+    // without it the record gets no `isolated-profiles` capability.
+    const isolatedStateDirInput = process.env.F5_CLAUDE_CHROME_ISOLATED_STATE_DIR;
+    let isolatedRestoreClean = true;
+    if (!isolatedStateDirInput) {
+      observations.isolated = {
+        skipped: "set F5_CLAUDE_CHROME_ISOLATED_STATE_DIR to an isolated F5 profile's folder",
+      };
+    } else if (!assertions["restore-original-bytes"] || !contestedRestoreClean) {
+      observations.isolated = { skipped: "an earlier restore was incomplete" };
+    } else {
+      for (const name of INTEGRATION_CAPABILITY_ASSERTIONS["isolated-profiles"])
+        assertions[name] = false;
+      const isolatedStateDir = await realpath(isolatedStateDirInput);
+      const isolatedEnv = buildAccountExecutionEnvironment({
+        purpose: "provider",
+        profile: {
+          id: "0".repeat(32) as ProfileId,
+          slug: "certification",
+          name: "Certification",
+          isDefault: false,
+        },
+        stateDir: isolatedStateDir,
+        baseEnv: process.env,
+      });
+      const cliHome = isolatedEnv.HOME!;
+      const isolatedProviderHome = isolatedEnv.CLAUDE_CONFIG_DIR!;
+      if (cliHome !== isolatedClaudeHome(isolatedStateDir))
+        throw new Error(`Unexpected isolated HOME ${cliHome}.`);
+      const isolatedTarget = descriptor.expectedTarget(isolatedProviderHome);
+      const projection = {
+        sources: descriptor.locations(isolatedProviderHome, cliHome),
+        destinations: descriptor.locations(isolatedProviderHome, userHome),
+      };
+      const isolatedJournalDir = mkdtempSync(join(tmpdir(), "f5-claude-chrome-isolated-"));
+      const isolatedStorage = await Effect.runPromise(
+        makeChromeNativeHostStorage({
+          stateDir: isolatedJournalDir,
+          inspect: () => inspectChromeNativeHosts(projection.destinations),
+        }).pipe(Effect.provide(NodeServices.layer)),
+      );
+      const isolatedTransactions = new ChromeNativeHostTransactions(isolatedStorage);
+      const isolatedPaths = [
+        ...projection.destinations.map((entry) => (entry.kind === "file" ? entry.path : "")),
+        isolatedTarget,
+      ];
+      const isolatedBefore = new Map<string, string | null>();
+      for (const location of isolatedPaths)
+        isolatedBefore.set(location, (await readChromeArtifact(location)).bytes);
+      const observed = await isolatedStorage.inspect();
+      const isolatedApproved = await isolatedTransactions.approve({
+        provider: "claude",
+        profileId: "live-certification-isolated",
+        providerInstanceId: "claudeAgent",
+        recordId: record.id,
+        providerHome: isolatedProviderHome,
+        userHome,
+        targetPath: isolatedTarget,
+        wrapperLocation: isolatedTarget,
+        observed,
+        // As consent records it: whatever registration was there before (the terminal's).
+        acceptedForeign: observed
+          .filter(
+            (entry) =>
+              !entry.shadowed && entry.state === "ok" && entry.targetPath !== isolatedTarget,
+          )
+          .map((entry) => ({ location: entry.location, sha256: entry.sha256! })),
+      });
+      const isolatedSession = launch(isolatedEnv);
+      try {
+        await isolatedSession.q.initializationResult();
+        if (await awaitConnected(isolatedSession.q)) {
+          await projectClaudeRegistrations({
+            projection,
+            targetPath: isolatedTarget,
+            allowedOrigins: descriptor.allowedOrigins,
+            verifyWrapper: (bytes) => descriptor.verifyWrapper!(bytes, executable, realpath),
+            timeoutMs: 15_000,
+          });
+          const launched = await isolatedTransactions.recordLaunch(isolatedApproved, {
+            verifyWrapper: (bytes) => descriptor.verifyWrapper!(bytes, executable, realpath),
+            allowedOrigins: descriptor.allowedOrigins,
+          });
+          // Every destination holds exactly what the CLI wrote under the isolated HOME.
+          const copies = await Promise.all(
+            projection.sources.map(async (source, index) => {
+              const destination = projection.destinations[index]!;
+              if (source.kind !== "file" || destination.kind !== "file") return false;
+              const from = (await readChromeArtifact(source.path)).bytes;
+              return from !== null && from === (await readChromeArtifact(destination.path)).bytes;
+            }),
+          );
+          observations.isolated = {
+            copied: copies.filter(Boolean).length,
+            of: copies.length,
+            launchVerified: launched.launchVerified === true,
+          };
+          assertions["isolated-projection"] =
+            launched.launchVerified === true && copies.length > 0 && copies.every(Boolean);
+          assertions["isolated-read-only-call"] = await readOnlyCall(isolatedSession);
+        }
+      } catch (error) {
+        observations.isolated = { error: String(error) };
+      } finally {
+        isolatedSession.q.close();
+        isolatedSession.input.end();
+        const restored = await isolatedTransactions.restore(
+          (await isolatedStorage.loadTransaction("claude", isolatedApproved.id))!,
+          { stopSessions: async () => {}, validateSlot: async () => true },
+        );
+        let identical = restored.transaction.state === "restored";
+        for (const [location, bytes] of isolatedBefore)
+          identical &&= (await readChromeArtifact(location)).bytes === bytes;
+        assertions["isolated-restore"] = identical;
+        isolatedRestoreClean = identical;
+        if (identical) await rm(isolatedJournalDir, { recursive: true, force: true });
+        else
+          console.error(
+            `Isolated restore incomplete; the journal is in ${isolatedJournalDir} (transaction ${isolatedApproved.id}).`,
+          );
+      }
+    }
     // Every required assertion is observed above; none may be set by hand.
     const report: IntegrationEvidenceReport & {
       readonly observations: Record<string, unknown>;
@@ -393,6 +527,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             "restore-original-bytes",
             "byte-identical-launches",
             "terminal-claude-unaffected",
+            ...INTEGRATION_CAPABILITY_ASSERTIONS["isolated-profiles"],
           ].includes(name),
       ),
     };
@@ -404,7 +539,9 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       await rm(stateDir, { recursive: true, force: true });
     expect(assertions["restore-original-bytes"]).toBe(true);
     expect(assertions["manifests-and-wrapper"]).toBe(true);
-    // Two launches, the read-only call, then a contested session with a terminal run (up to
-    // 30 s to connect plus 90 s for the terminal), with room for a slow Mac.
-  }, 420_000);
+    expect(isolatedRestoreClean).toBe(true);
+    // Two launches, the read-only call, a contested session with a terminal run (up to 30 s
+    // to connect plus 90 s for the terminal) and the isolated session, with room for a slow
+    // Mac.
+  }, 540_000);
 });

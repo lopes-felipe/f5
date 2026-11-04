@@ -12,7 +12,9 @@ import {
   PROVIDER_INTEGRATION_RECORDS,
   certifiedIntegrationRecord,
   claudeChromeRecordFor,
+  claudeChromeSupportsIsolatedProfiles,
   integrationRecordById,
+  recordCertifies,
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
@@ -63,22 +65,39 @@ export interface ClaudeChromeIdentity {
   readonly executableRealpath: string;
   /** Metadata identity only: the 240 MB executable is never hashed. */
   readonly fingerprint: string;
+  /** The real home Chrome reads registrations from; journal and restore act there. */
+  readonly chromeHome: string;
+  /**
+   * Isolated profiles only: the CLI writes its registration under this HOME, and F5
+   * copies it into `chromeHome` (`projectClaudeRegistrations`).
+   */
+  readonly projection?: { readonly sourceHome: string };
+}
+
+/** The HOME an isolated profile gives its providers (`buildAccountExecutionEnvironment`). */
+export function isolatedClaudeHome(stateDir: string): string {
+  return join(stateDir, "provider-homes", "claude");
 }
 
 /**
  * Executable identity without hashing: the resolved executable must be F5's bundled
- * Claude by realpath, its platform package version must be covered by a certified record
- * floor (`claudeChromeRecordFor`), and the provider must run with the real macOS home.
+ * Claude by realpath, and its platform package version must be covered by a certified
+ * record floor (`claudeChromeRecordFor`). The provider runs with the real macOS home, or,
+ * in an isolated profile, with that profile's own home when the record certifies the
+ * isolated-profile copy.
  */
 export async function claudeChromeAvailability(input: {
   readonly platform?: string;
   readonly arch?: string;
   readonly executablePath: string | undefined;
   readonly resolveDefaultExecutable: () => string;
+  /** The HOME the Claude CLI runs with. */
   readonly userHome: string;
   readonly systemHome?: string;
   /** The provider runs with the profile's own HOME (`F5_PROFILE_ISOLATED=1`). */
   readonly isolatedProfile?: boolean;
+  /** The profile's state dir; isolated profiles need it to know their provider HOME. */
+  readonly stateDir?: string;
   readonly records?: ReadonlyArray<ClaudeChromeRecord>;
 }): Promise<ClaudeChromeIdentity | { unavailable: ChromeUnavailableReason }> {
   const platform = input.platform ?? process.platform;
@@ -96,13 +115,27 @@ export async function claudeChromeAvailability(input: {
         detail: claudeInChromeUnavailableDetail(platform, arch),
       },
     };
+  const records = input.records ?? PROVIDER_INTEGRATION_RECORDS["claude-chrome"];
+  const chromeHome = input.systemHome ?? userInfo().homedir;
   // The CLI registers its browser connection under HOME, and Chrome reads only the real
-  // home; an isolated profile deliberately keeps its own HOME, so this cannot work there.
-  if (input.isolatedProfile)
-    return {
-      unavailable: { reason: "isolated-profile", detail: CLAUDE_IN_CHROME_ISOLATED_PROFILE },
-    };
-  if ((input.systemHome ?? userInfo().homedir) !== input.userHome)
+  // home. An isolated profile keeps its own HOME, so F5 copies the registration across;
+  // only a record whose run exercised that copy may open it.
+  const isolatedUnavailable = {
+    unavailable: {
+      reason: "isolated-profile",
+      detail: CLAUDE_IN_CHROME_ISOLATED_PROFILE,
+    } satisfies ChromeUnavailableReason,
+  };
+  if (input.isolatedProfile) {
+    if (
+      !records.some(
+        (entry) => recordCertifies(entry) && claudeChromeSupportsIsolatedProfiles(entry),
+      )
+    )
+      return isolatedUnavailable;
+    if (input.stateDir === undefined || input.userHome !== isolatedClaudeHome(input.stateDir))
+      return { unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_HOME_MISMATCH } };
+  } else if (chromeHome !== input.userHome)
     return { unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_HOME_MISMATCH } };
   try {
     const bundled = await realpath(input.resolveDefaultExecutable());
@@ -121,22 +154,21 @@ export async function claudeChromeAvailability(input: {
         },
       };
     // Records are floors: the newest one at or below this build decides, and only if stamped.
-    const covering = claudeChromeRecordFor(
-      platform,
-      arch,
-      manifest.version,
-      input.records ?? PROVIDER_INTEGRATION_RECORDS["claude-chrome"],
-    );
+    const covering = claudeChromeRecordFor(platform, arch, manifest.version, records);
     if (!covering)
       return {
         unavailable: { reason: "not-certified", detail: CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED },
       };
+    if (input.isolatedProfile && !claudeChromeSupportsIsolatedProfiles(covering))
+      return isolatedUnavailable;
     const info = await stat(bundled);
     return {
       record: covering,
       sdkVersion: manifest.version,
       executableRealpath: bundled,
       fingerprint: `${bundled}\0${info.ino}\0${info.size}\0${info.mtimeMs}`,
+      chromeHome,
+      ...(input.isolatedProfile ? { projection: { sourceHome: input.userHome } } : {}),
     };
   } catch {
     return {
@@ -208,20 +240,25 @@ export const makeChromeSessionRuntime = (input: {
         executablePath: input.executablePath,
         resolveDefaultExecutable: input.resolveDefaultExecutable,
         userHome: input.userHome,
+        stateDir: input.stateDir,
         ...(input.isolatedProfile ? { isolatedProfile: true } : {}),
       }),
     );
     if ("unavailable" in identity) return identity;
+    // Journal, consent and restore act where Chrome reads; isolated profiles copy there.
+    const chromeHome = identity.chromeHome;
     const key = JSON.stringify([
       input.stateDir,
       "claude",
       input.providerHome,
       identity.fingerprint,
+      chromeHome,
+      identity.projection?.sourceHome ?? null,
     ]);
     const existing = runtimes.get(key);
     if (existing) return { runtime: existing };
     const descriptor = claudeChromeDescriptor(identity.record);
-    const locations = descriptor.locations(input.providerHome, input.userHome);
+    const locations = descriptor.locations(input.providerHome, chromeHome);
     const storage = yield* Effect.promise(() =>
       storageFor(input.stateDir, services, () => inspectChromeNativeHosts(locations)),
     );
@@ -231,9 +268,17 @@ export const makeChromeSessionRuntime = (input: {
       record: identity.record,
       sdkVersion: identity.sdkVersion,
       storage,
-      userHome: input.userHome,
+      userHome: chromeHome,
       executableRealpath: identity.executableRealpath,
       policyEnabled: input.policyEnabled,
+      ...(identity.projection
+        ? {
+            projection: {
+              sources: descriptor.locations(input.providerHome, identity.projection.sourceHome),
+              destinations: locations,
+            },
+          }
+        : {}),
     });
     runtimes.set(key, runtime);
     return { runtime };

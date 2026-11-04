@@ -3234,6 +3234,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             resolveDefaultExecutable: resolveBundledClaudeExecutable,
             userHome: environment.HOME ?? process.env.HOME ?? "",
             isolatedProfile: environment.F5_PROFILE_ISOLATED === "1",
+            stateDir: serverConfig.stateDir,
           }),
         );
         return "unavailable" in availability

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  INTEGRATION_CAPABILITY_ASSERTIONS,
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
+  claudeChromeSupportsIsolatedProfiles,
   evidenceMismatches,
   recordCertifies,
   type ClaudeChromeRecord,
@@ -113,6 +115,49 @@ describe("Claude in Chrome record merge", () => {
     expect(() =>
       mergeIntegrationRecords({ existing: [], record, report: { ...report, dirty: true } }),
     ).toThrow("dirty");
+  });
+
+  it("claims the isolated-profiles capability only when all its assertions passed", () => {
+    const isolated = Object.fromEntries(
+      INTEGRATION_CAPABILITY_ASSERTIONS["isolated-profiles"].map((name) => [name, true]),
+    );
+    expect(current(stamped).capabilities).toBeUndefined();
+    const capable = current(
+      mergeIntegrationRecords({
+        existing: [older],
+        record,
+        report: { ...report, assertions: { ...report.assertions, ...isolated } },
+      }),
+    );
+    expect(capable.capabilities).toEqual(["isolated-profiles"]);
+    expect(claudeChromeSupportsIsolatedProfiles(capable)).toBe(true);
+    // Regenerating keeps it; restamping from a run without the phase drops it.
+    expect(current(mergeIntegrationRecords({ existing: [capable], record })).capabilities).toEqual([
+      "isolated-profiles",
+    ]);
+    expect(
+      current(mergeIntegrationRecords({ existing: [capable], record, report })).capabilities,
+    ).toBeUndefined();
+    const partial = current(
+      mergeIntegrationRecords({
+        existing: [],
+        record,
+        report: {
+          ...report,
+          assertions: { ...report.assertions, ...isolated, "isolated-restore": false },
+        },
+      }),
+    );
+    expect(partial.capabilities).toBeUndefined();
+    expect(evidenceMismatches(capable, report)).toEqual([
+      "capability isolated-profiles: assertion isolated-projection",
+      "capability isolated-profiles: assertion isolated-read-only-call",
+      "capability isolated-profiles: assertion isolated-restore",
+    ]);
+    // A capability never makes a covered CLI need a new record.
+    expect(
+      coveringClaudeChromeRecord([capable], { ...record, versions: { ...record.versions } }),
+    ).toBe(capable);
   });
 });
 

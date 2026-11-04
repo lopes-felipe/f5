@@ -19,6 +19,11 @@ import {
 } from "./chromeNativeHostJournal";
 import type { PersistentChromeNativeHostStorage } from "./chromeNativeHostStorage";
 import {
+  projectClaudeRegistrations,
+  type ClaudeRegistrationProjection,
+  type ProjectionIo,
+} from "./chromeRegistrationProjection";
+import {
   CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
   CLAUDE_IN_CHROME_START_FAILED,
   CLAUDE_IN_CHROME_TOOLS_CHANGED,
@@ -94,6 +99,12 @@ export interface ChromeRuntimeDeps {
   readonly cache?: ChromeArtifactCache;
   readonly realpath?: (path: string) => Promise<string>;
   readonly launchTimeoutMs?: number;
+  /**
+   * Isolated profiles: the CLI writes under the profile's HOME and F5 copies the
+   * registration to `userHome` (Chrome's) before the launch is recorded.
+   */
+  readonly projection?: ClaudeRegistrationProjection;
+  readonly projectionIo?: ProjectionIo;
 }
 
 const withDeadline = <A>(promise: Promise<A>, ms: number, fallback: A): Promise<A> =>
@@ -285,14 +296,35 @@ export class ChromeSessionRuntime {
       );
       return false;
     }
+    const verifyWrapper = (bytes: string) =>
+      this.deps.descriptor.verifyWrapper?.(bytes, this.deps.executableRealpath, this.realpath) ??
+      Promise.resolve(false);
+    if (this.deps.projection) {
+      try {
+        await projectClaudeRegistrations(
+          {
+            projection: this.deps.projection,
+            targetPath: binding.transaction.targetPath,
+            allowedOrigins: this.deps.descriptor.allowedOrigins,
+            verifyWrapper,
+            ...(this.deps.launchTimeoutMs !== undefined
+              ? { timeoutMs: this.deps.launchTimeoutMs }
+              : {}),
+          },
+          this.deps.projectionIo,
+        );
+      } catch {
+        // Copies already written are journaled destinations: reconcile settles them.
+        if (this.current(threadId, generation) === binding)
+          await this.startupFailed(threadId, generation);
+        return false;
+      }
+      if (this.current(threadId, generation) !== binding || binding.state !== "pending")
+        return false;
+    }
     try {
       binding.transaction = await this.transactions.recordLaunch(binding.transaction, {
-        verifyWrapper: (bytes) =>
-          this.deps.descriptor.verifyWrapper?.(
-            bytes,
-            this.deps.executableRealpath,
-            this.realpath,
-          ) ?? Promise.resolve(false),
+        verifyWrapper,
         allowedOrigins: this.deps.descriptor.allowedOrigins,
         ...(this.deps.launchTimeoutMs !== undefined
           ? { timeoutMs: this.deps.launchTimeoutMs }
@@ -543,12 +575,14 @@ export function chromeRuntimeHost(input: {
   userHome: string;
   executableRealpath: string;
   policyEnabled: (threadId: string) => Promise<boolean>;
+  projection?: ClaudeRegistrationProjection;
 }) {
   const { broker } = input;
   return new ChromeSessionRuntime({
     descriptor: input.descriptor,
     record: input.record,
     ...(input.sdkVersion ? { sdkVersion: input.sdkVersion } : {}),
+    ...(input.projection ? { projection: input.projection } : {}),
     storage: input.storage,
     userHome: input.userHome,
     executableRealpath: input.executableRealpath,
