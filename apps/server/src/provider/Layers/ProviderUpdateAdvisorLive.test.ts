@@ -592,13 +592,15 @@ describe("provider update advisor", () => {
         ).toBe(true);
       }),
   );
-  it.effect("keeps bundled Claude visible without networking", () =>
+  it.effect("keeps bundled Codex visible without networking or an update command", () =>
     Effect.gen(function* () {
       const { advisory, state } = yield* makeHarness({
         target: { ...target, channel: "bundled", installKey: "bundled" },
       });
       expect((yield* advisory()).status).toBe("bundled");
       expect((yield* advisory()).message).toBe("Bundled with F5.");
+      expect((yield* advisory()).updateCommand).toBeNull();
+      expect((yield* advisory()).canRunUpdate).toBe(false);
       expect(state.httpCalls).toBe(0);
     }),
   );

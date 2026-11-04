@@ -19,6 +19,7 @@ import {
 } from "./JsonRpcStdinWriter.ts";
 import { buildCodexAppServerCommand } from "../provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
+import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { resolveCodexHome } from "../os-jank.ts";
 import { resolveInvocation } from "../spawn/resolveCommand.ts";
 import { createLogger } from "../logger.ts";
@@ -242,7 +243,7 @@ export class CodexControlClient extends EventEmitter<{
     signal?: AbortSignal,
   ): Promise<CodexControlClient> {
     signal?.throwIfAborted();
-    const binaryPath = environment.binaryPath ?? "codex";
+    const binaryPath = resolveCodexCommand(environment.binaryPath);
     const codexHomePath = resolveCodexHome({ homePath: environment.homePath });
     const cliVersion = await assertSupportedCodexCliVersion({
       processEnvironment: environment.processEnvironment ?? process.env,

@@ -10,6 +10,7 @@ import type {
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { resolveExecutable, resolveInvocation } from "../spawn/resolveCommand.ts";
 import { isDefaultClaudeBinary, resolveBundledClaudeExecutable } from "./claudeSdkExecutable.ts";
+import { isDefaultCodexBinary, resolveBundledCodexExecutable } from "./codexExecutable.ts";
 
 export const NPM_UPDATE_SOURCES: Readonly<Record<string, string>> = {
   codex: "@openai/codex",
@@ -91,6 +92,7 @@ export interface InstallTargetDependencies {
   readonly readFile: (path: string) => string;
   readonly canWrite: (path: string) => boolean;
   readonly bundledExecutable: () => string;
+  readonly bundledCodexExecutable: () => string;
   readonly homeDir: string;
   readonly platform: NodeJS.Platform;
 }
@@ -115,6 +117,7 @@ export function detectProviderInstallTarget(
     },
     readFile: (path) => readFileSync(path, "utf8"),
     bundledExecutable: resolveBundledClaudeExecutable,
+    bundledCodexExecutable: resolveBundledCodexExecutable,
     homeDir: homedir(),
     platform: process.platform,
     ...dependencies,
@@ -159,14 +162,25 @@ export function detectProviderInstallTarget(
       "Update OpenCode on the machine hosting the remote server, then refresh and verify.",
       { blockedReason: "remote" },
     );
-  if (input.driver === "claudeAgent" && isDefaultClaudeBinary(input.binaryPath)) {
+  if (
+    (input.driver === "claudeAgent" && isDefaultClaudeBinary(input.binaryPath)) ||
+    (input.driver === "codex" && isDefaultCodexBinary(input.binaryPath))
+  ) {
     let executable = "";
     try {
-      executable = deps.bundledExecutable();
+      executable =
+        input.driver === "codex" ? deps.bundledCodexExecutable() : deps.bundledExecutable();
     } catch {
       /* Keep the bundled policy visible offline. */
     }
-    return make("bundled", executable, executable, "bundled", npmSource, "Bundled with F5.");
+    return make(
+      "bundled",
+      executable,
+      executable,
+      input.driver === "codex" ? "bundled:codex" : "bundled",
+      npmSource,
+      "Bundled with F5.",
+    );
   }
   const command =
     input.binaryPath?.trim() || (input.driver === "claudeAgent" ? "claude" : input.driver);

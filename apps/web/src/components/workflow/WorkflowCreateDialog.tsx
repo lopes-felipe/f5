@@ -57,6 +57,7 @@ import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "../Compos
 import { ProjectPicker } from "../ProjectPicker";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
+import { fieldSurfaceClassName } from "../ui/input";
 import {
   WORKFLOW_TYPE_DESCRIPTION,
   WORKFLOW_TYPE_DIALOG_LABEL,
@@ -1132,7 +1133,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                           value={readerPersona}
                           onChange={(event) => setReaderPersona(event.target.value)}
                           placeholder={documentProfile.readerPersona}
-                          className="mt-1.5 min-h-20 w-full rounded-lg border border-input bg-background p-2 text-sm font-normal outline-none transition-colors focus-visible:border-ring/60"
+                          className={cn(
+                            fieldSurfaceClassName,
+                            "mt-1.5 min-h-20 w-full p-2 text-sm font-normal",
+                          )}
                         />
                       </label>
                       <p className="text-2xs text-muted-foreground tabular-nums">

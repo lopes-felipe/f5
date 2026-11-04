@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveCodexCommand } from "../../provider/codexExecutable.ts";
 
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -406,7 +407,10 @@ export const makeCodexTextGeneration = (
               dropped: launchArgs.dropped,
             });
           }
-          const binary = codexSettings?.binaryPath || "codex";
+          const binary = yield* Effect.try({
+            try: () => resolveCodexCommand(codexSettings?.binaryPath),
+            catch: (cause) => normalizeCodexError(operation, cause, "Bundled Codex is unavailable"),
+          });
           // Text generation never uses MCP tools. Each server the user's config
           // would start is turned off by name, after the user's launch args so
           // they cannot turn it back on.

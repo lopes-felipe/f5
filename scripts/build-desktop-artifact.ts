@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { DESKTOP_MAC_EXTEND_INFO } from "./lib/desktop-mac-info.ts";
+import { CODEX_WINDOWS_SIGNING_EXCLUSIONS } from "./lib/codex-signing.ts";
 import { DESKTOP_PROTOCOLS } from "./lib/desktop-protocols.ts";
 import { withoutSigningCredentials } from "./lib/signing-environment.ts";
 
@@ -552,6 +553,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     };
     if (signed) {
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
+      winConfig.signExts = CODEX_WINDOWS_SIGNING_EXCLUSIONS;
     } else {
       // `signAndEditExecutable: false` would also skip rcedit and drop the icon and
       // version metadata. Without a publisherName, updates skip signature checks;

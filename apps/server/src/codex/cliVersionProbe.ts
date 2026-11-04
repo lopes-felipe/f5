@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { stat } from "node:fs/promises";
 import { resolveInvocation } from "../spawn/resolveCommand.ts";
 import { runProcess } from "../processRunner.ts";
@@ -37,7 +38,7 @@ export async function probeCodexCliVersion(input: CodexVersionProbeInput): Promi
     home ? { CODEX_HOME: home } : undefined,
   );
   const invocation = resolveInvocation(
-    input.binaryPath,
+    resolveCodexCommand(input.binaryPath),
     prependCodexCliTelemetryDisabledConfig(["--version"], {
       managedCredentials: env.F5_PROFILE_ISOLATED === "1",
     }),

@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcessRunResult } from "../processRunner.ts";
+import { resolveBundledCodexExecutable } from "../provider/codexExecutable.ts";
 
 const { jobs, run } = vi.hoisted(() => {
   const jobs: { resolve: (result: ProcessRunResult) => void; signal: AbortSignal | undefined }[] =
@@ -48,6 +49,13 @@ afterEach(() => {
 });
 
 describe("asynchronous Codex version probes", () => {
+  it("probes the bundled native executable for the default setting", async () => {
+    const probe = probeCodexCliVersion({ ...input(), binaryPath: "codex" });
+    await vi.waitFor(() => expect(jobs).toHaveLength(1));
+    expect(run.mock.calls[0]?.[0]).toBe(resolveBundledCodexExecutable());
+    jobs[0]!.resolve(success);
+    await expect(probe).resolves.toBe("0.99.0");
+  });
   it("deduplicates concurrent probes and does not cache later invocations", async () => {
     const first = probeCodexCliVersion(input()),
       second = probeCodexCliVersion(input());
