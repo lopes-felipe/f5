@@ -26,7 +26,8 @@ import type {
   PendingApproval,
   PendingUserInput,
 } from "~/session-logic";
-import type { SessionPhase } from "~/types";
+import type { Project, SessionPhase } from "~/types";
+import type { ProjectPickerSelection } from "~/components/ProjectPicker";
 
 export type ComposerSendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 export type ComposerRuntimeMode =
@@ -149,6 +150,13 @@ export interface ComposerSendControls {
   canImplementMergeFromChat: boolean;
   setWorkflowImplementDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   onImplementPlanInNewThread: () => Promise<void>;
+}
+
+/** Project picker for an unsent draft; absent once the thread exists on the server. */
+export interface ComposerProjectPickerControls {
+  readonly projects: ReadonlyArray<Project>;
+  readonly selection: ProjectPickerSelection;
+  readonly onSelect: (selection: ProjectPickerSelection) => void;
 }
 
 /** Images, file mentions, terminal contexts and drag-and-drop. */

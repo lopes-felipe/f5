@@ -48,6 +48,7 @@ import {
 import { FileChip } from "~/components/chat/FileChip";
 import type {
   ComposerAttachments,
+  ComposerProjectPickerControls,
   ComposerModeControls,
   ComposerModelControls,
   ComposerPendingInteraction,
@@ -119,6 +120,7 @@ export interface ChatComposerProps {
   modeControls: ComposerModeControls;
   sendControls: ComposerSendControls;
   attachments: ComposerAttachments;
+  projectPicker?: ComposerProjectPickerControls | undefined;
 }
 
 const EDITOR_SELECTOR = '[data-testid="composer-editor"]';
@@ -177,6 +179,7 @@ export function ChatComposer({
   modeControls,
   sendControls,
   attachments,
+  projectPicker,
 }: ChatComposerProps) {
   const settings = useAppSettingsSelector(selectComposerSettings);
   const attachmentTrayId = useId();
@@ -862,6 +865,7 @@ export function ChatComposer({
                   }}
                   onMentionFile={handleMentionFile}
                   contextSummary={contextSummary}
+                  projectPicker={projectPicker}
                 />
                 <ComposerPrimaryAction
                   prompt={prompt}

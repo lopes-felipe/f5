@@ -91,6 +91,7 @@ import type {
   ComposerNativeGoalControls,
   ComposerModelControls,
   ComposerPendingInteraction,
+  ComposerProjectPickerControls,
   ComposerSendControls,
 } from "./chat/composer/composerControls";
 import { getServerSendLimits, useProtocolState } from "../protocolState";
@@ -275,6 +276,7 @@ import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
 import { usePromptStashController } from "../hooks/usePromptStashController";
 import { useProjectBreadcrumbActions } from "../hooks/useProjectBreadcrumbActions";
+import { useSwitchDraftProject } from "../hooks/useSwitchDraftProject";
 import { type ThreadActionId, useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
@@ -1322,6 +1324,11 @@ export default memo(function ChatView({
     project: activeProject,
     thread: activeThread,
   });
+  const switchDraftProject = useSwitchDraftProject();
+  const pickerProjects = useMemo(
+    () => projects.filter((project) => !isScratchProject(project)),
+    [projects],
+  );
   const workspaceRoot = threadWorkspaceCwd(activeThread, activeProject);
   const workflowThreadSlot = useMemo(() => {
     if (!activeThread || !activeWorkflow) {
@@ -8005,6 +8012,19 @@ export default memo(function ChatView({
     setWorkflowImplementDialogOpen,
     onImplementPlanInNewThread,
   };
+  // Only an unsent draft can change project; once a send starts the project is committed.
+  const draftProjectPicker: ComposerProjectPickerControls | undefined =
+    isLocalDraftThread && draftThread && !isSendBusy && !hasPendingTurnDispatch
+      ? {
+          projects: pickerProjects,
+          selection: isScratchProject(activeProject)
+            ? { kind: "none" }
+            : { kind: "project", projectId: draftThread.projectId },
+          onSelect: (selection) => {
+            void switchDraftProject(threadId, selection);
+          },
+        }
+      : undefined;
   const composerAttachments: ComposerAttachments = {
     composerImages,
     nonPersistedComposerImageIdSet,
@@ -8081,6 +8101,7 @@ export default memo(function ChatView({
               activeProjectKind={activeProject?.kind}
               activeProjectIcon={activeProject?.icon}
               activeProjectName={activeProject?.name}
+              projectPicker={draftProjectPicker}
               onNewThreadInProject={projectBreadcrumbActions.createThread}
               onOpenProjectSettings={
                 isScratchProject(activeProject) ? undefined : projectBreadcrumbActions.openSettings
@@ -8529,6 +8550,7 @@ export default memo(function ChatView({
                       modeControls={composerModeControls}
                       sendControls={composerSendControls}
                       attachments={composerAttachments}
+                      projectPicker={draftProjectPicker}
                     />
                     {isGitRepo && (
                       <BranchToolbar

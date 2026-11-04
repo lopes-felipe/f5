@@ -53,6 +53,7 @@ import {
 import { cn } from "../../lib/utils";
 import type { ThreadStatusPill } from "../../threadStatus";
 import type { Project } from "../../types";
+import { ProjectPicker, type ProjectPickerSelection } from "../ProjectPicker";
 import type { RightPanelSurfaceHeaderState } from "../../rightPanelStore";
 
 interface ChatHeaderProps {
@@ -65,6 +66,17 @@ interface ChatHeaderProps {
   activeProjectKind?: ProjectKind | undefined;
   activeProjectIcon?: Project["icon"] | undefined;
   activeProjectName: string | undefined;
+  /**
+   * Unsent drafts can still change project: the crumb becomes a project picker
+   * instead of the project actions menu.
+   */
+  projectPicker?:
+    | {
+        readonly projects: ReadonlyArray<Project>;
+        readonly selection: ProjectPickerSelection;
+        readonly onSelect: (selection: ProjectPickerSelection) => void;
+      }
+    | undefined;
   onNewThreadInProject?: (() => void) | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
   /** Opens Settings → Project → Actions, the only entry point while a project has no actions. */
@@ -139,6 +151,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeProjectKind,
   activeProjectIcon,
   activeProjectName,
+  projectPicker,
   onNewThreadInProject,
   onOpenProjectSettings,
   onOpenProjectActions,
@@ -268,7 +281,15 @@ export const ChatHeader = memo(function ChatHeader({
         aria-label="Breadcrumb"
         className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
       >
-        {activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
+        {projectPicker ? (
+          <ProjectPicker
+            projects={projectPicker.projects}
+            selection={projectPicker.selection}
+            onSelect={projectPicker.onSelect}
+            allowNone
+            trigger="crumb"
+          />
+        ) : activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
           <Menu>
             <MenuTrigger
               render={
@@ -321,7 +342,7 @@ export const ChatHeader = memo(function ChatHeader({
             <span className="truncate">{activeProjectName}</span>
           </span>
         ) : null}
-        {activeProjectName ? CRUMB_SEPARATOR : null}
+        {projectPicker || activeProjectName ? CRUMB_SEPARATOR : null}
         {workflowTitle && onOpenWorkflow ? (
           <>
             <button

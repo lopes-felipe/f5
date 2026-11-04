@@ -233,8 +233,13 @@ function createDialogPrimaryKeybinding(
 }
 
 function installDesktopBridgeMock() {
-  const desktopBridge: Pick<DesktopBridge, "getPathForFile" | "resolveRealPath" | "setTheme"> = {
+  const desktopBridge: Pick<
+    DesktopBridge,
+    "getPathForFile" | "getWsUrl" | "resolveRealPath" | "setTheme"
+  > = {
     getPathForFile: (file: File) => desktopBridgePathByFileName.get(file.name) ?? null,
+    // The project picker's icons resolve asset URLs against the server origin.
+    getWsUrl: () => "ws://localhost:3773",
     resolveRealPath: (pathValue: string) => pathValue,
     setTheme: async () => {},
   };
@@ -1562,6 +1567,72 @@ describe("WorkflowCreateDialog", () => {
         projectId: "project-1",
         requirementPrompt: appendAttachedFilesToPrompt("", ["packages/shared/package.json"]),
         titleGenerationModel: "custom/thread-title-model",
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("switches project in place, keeping the brief and clearing file references", async () => {
+    const baseProject = useStore.getState().projects[0]!;
+    useStore.setState({
+      projects: [
+        baseProject,
+        { ...baseProject, id: "project-2" as ProjectId, name: "Second", cwd: "/repo/second" },
+        {
+          ...baseProject,
+          id: "scratch" as ProjectId,
+          name: "Scratch home",
+          cwd: "/scratch",
+          kind: "scratch",
+        },
+      ],
+    });
+    desktopBridgePathByFileName.set("package.json", "/repo/project/packages/shared/package.json");
+    function Host() {
+      const [projectId, setProjectId] = useState("project-1" as ProjectId);
+      return (
+        <WorkflowCreateDialog
+          open
+          projectId={projectId}
+          onOpenChange={() => {}}
+          onProjectChange={setProjectId}
+        />
+      );
+    }
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(<Host />, { container: host });
+
+    try {
+      await dropFilesOnRequirement([
+        new File(['{"name":"shared"}'], "package.json", { type: "application/json" }),
+      ]);
+      await typeRequirementPrompt("Plan the import flow");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[title="packages/shared/package.json"]')).not.toBeNull();
+      });
+
+      await page.getByRole("combobox", { name: "Project: Project" }).click();
+      expect(page.getByTestId("project-picker-no-project").elements()).toHaveLength(0);
+      expect(page.getByRole("option", { name: "Scratch home" }).elements()).toHaveLength(0);
+      await page.getByRole("option", { name: "Second" }).click();
+
+      await expect
+        .element(page.getByText("File references were cleared for the new project."))
+        .toBeVisible();
+      expect(document.querySelector('[title="packages/shared/package.json"]')).toBeNull();
+      await expect.element(page.getByRole("combobox", { name: "Project: Second" })).toBeVisible();
+
+      createWorkflowButton().click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        projectId: "project-2",
+        requirementPrompt: "Plan the import flow",
       });
     } finally {
       await screen.unmount();
