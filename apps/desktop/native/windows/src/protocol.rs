@@ -1,5 +1,16 @@
 use serde_json::{json, Value};
 
+/// Only a pre-write interruption is retryable. A partly posted action needs recovery.
+pub fn interrupted_response(mut error: Value, action_started: bool) -> Value {
+    if error["_tag"] == "Interrupted" {
+        if action_started {
+            return json!({"_tag":"OutcomeUnknown"});
+        }
+        error["actionStarted"] = json!(false);
+    }
+    error
+}
+
 pub fn encode_packet(value: &Value, maximum: usize) -> Option<Vec<u8>> {
     let bytes = serde_json::to_vec(value).ok()?;
     if bytes.len() <= maximum {
@@ -19,6 +30,22 @@ pub fn encode_packet(value: &Value, maximum: usize) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preflight_interruption_is_retryable_but_partial_input_is_unknown() {
+        for cause in ["user-input", "permit-expired"] {
+            let failure = json!({"_tag":"Interrupted","cause":cause});
+            assert_eq!(
+                interrupted_response(failure.clone(), false),
+                json!({"_tag":"Interrupted","cause":cause,"actionStarted":false})
+            );
+            assert_eq!(
+                interrupted_response(failure, true),
+                json!({"_tag":"OutcomeUnknown"})
+            );
+        }
+        let failure = json!({"_tag":"ForegroundRequired","reason":"activation-side-effect"});
+        assert_eq!(interrupted_response(failure.clone(), true), failure);
+    }
     #[test]
     fn oversized_response_returns_correlated_error_without_crashing_transport() {
         let value = json!({"type":"response","requestId":"r","result":{"data":"é".repeat(256)}});

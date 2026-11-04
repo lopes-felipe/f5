@@ -34,6 +34,7 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
         },
     )?;
     let before = GetForegroundWindow();
+    let mut _activation = None;
     let mut verification = None;
     match op {
         "elementAction" => {
@@ -58,6 +59,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                         .map_err(|_| foreground_required("unsupported-in-background"))?;
                     target(request, host, "click")?;
                     snapshot_validate(&snapshot, request)?;
+                    _activation = Some(cooperation::background_action(request, before));
+                    mark_posted();
                     pattern.Invoke().map_err(|_| fail("OutcomeUnknown"))?;
                 }
                 "setValue" => {
@@ -73,6 +76,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                     }
                     target(request, host, "type")?;
                     snapshot_validate(&snapshot, request)?;
+                    _activation = Some(cooperation::background_action(request, before));
+                    mark_posted();
                     pattern
                         .SetValue(&BSTR::from(s(request, "value")))
                         .map_err(|_| fail("OutcomeUnknown"))?;
@@ -174,6 +179,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
             {
                 return Err(foreground_required("typing-unsupported"));
             }
+            _activation = Some(cooperation::background_action(request, before));
+            mark_posted();
             pattern
                 .SetValue(&BSTR::from(text.as_str()))
                 .map_err(|_| fail("OutcomeUnknown"))?;
@@ -196,7 +203,6 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    check(request)?;
     let display = displays().into_iter().find(|display| {
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &mut rect).is_ok()

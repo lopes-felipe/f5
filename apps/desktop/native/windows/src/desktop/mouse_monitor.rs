@@ -166,7 +166,16 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
             ) {
                 let mut point = POINT::default();
                 if GetCursorPos(&mut point).is_ok() {
-                    mouse_activity(point, pointer_move);
+                    let buttons = mouse.Anonymous.Anonymous.usButtonFlags;
+                    mouse_activity(
+                        point,
+                        pointer_move,
+                        if buttons & (0x0400 | 0x0800) != 0 {
+                            3
+                        } else {
+                            1
+                        },
+                    );
                 } else {
                     fail_receiver();
                 }

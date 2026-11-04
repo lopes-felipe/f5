@@ -54,6 +54,17 @@ export class ComputerLeaseAuthority {
   pendingTakeover(): ComputerTakeoverReservation | null {
     return this.pending;
   }
+  conflictsFor(input: ComputerLeaseHolder): boolean {
+    return (
+      this.entries.some(
+        ({ holder }) =>
+          !sameThread(holder, input) && computerScopesConflict(input.scope, holder.scope),
+      ) ||
+      (!!this.pending &&
+        !sameThread(this.pending.holder, input) &&
+        computerScopesConflict(input.scope, this.pending.holder.scope))
+    );
+  }
   /** The armed takeover, which blocks every other thread's background mutations. */
   takeover(): ComputerLeaseHolder | undefined {
     return this.entries.find((entry) => entry.holder.scope.kind === "takeover")?.holder;
@@ -91,6 +102,7 @@ export class ComputerLeaseAuthority {
         holder.backend === input.backend;
       if (
         sameTurn &&
+        holder.cooperative === input.cooperative &&
         holder.policyRevision === input.policyRevision &&
         sameComputerScope(holder.scope, input.scope)
       )
@@ -170,6 +182,29 @@ export class ComputerLeaseAuthority {
   touch(holder: ComputerLeaseHolder): void {
     const entry = this.entries.find((candidate) => sameComputerHolder(candidate.holder, holder));
     if (entry) entry.lastMutationAt = this.now();
+  }
+  /** Retire a yielded native generation without releasing its exclusive foreground scope. */
+  rotate(
+    holder: ComputerLeaseHolder,
+    beforePublish: (next: ComputerLeaseHolder) => void,
+    authorization: ComputerLeaseHolder = holder,
+  ): ComputerLeaseHolder {
+    const entry = this.entries.find((candidate) => sameComputerHolder(candidate.holder, holder));
+    if (!entry) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (
+      !sameThread(entry.holder, authorization) ||
+      entry.holder.sessionGeneration !== authorization.sessionGeneration ||
+      entry.holder.turnId !== authorization.turnId ||
+      entry.holder.policyRevision !== authorization.policyRevision ||
+      !sameComputerScope(entry.holder.scope, authorization.scope)
+    )
+      throw new ComputerControlError({ _tag: "ReplayRejected" });
+    const next = { ...authorization, executionGeneration: ++this.generation };
+    beforePublish(next);
+    entry.holder = next;
+    entry.lastMutationAt = this.now();
+    this.notify();
+    return next;
   }
   release(holder: ComputerLeaseHolder): void {
     const before = this.entries.length;

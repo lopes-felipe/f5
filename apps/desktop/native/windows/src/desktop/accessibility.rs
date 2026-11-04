@@ -294,6 +294,7 @@ pub(super) unsafe fn element_action(request: &Value, host: &Value) -> Result<(),
     }
     check(request)?;
     snapshot_validate(&snapshot, request)?;
+    mark_posted();
     let result = match action {
         "press" => element
             .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)

@@ -8,9 +8,98 @@ import {
   ComputerScreenshot,
   RememberedComputerConsent,
   DesktopComputerHostMessage,
+  ComputerExecutionState,
+  ComputerInterruptionCause,
+  ComputerTargetReadiness,
 } from "./computerAutomation";
 
 describe("computer observation and error metadata", () => {
+  it.each(["waiting-user", "waiting-agent"])("decodes execution state %s", (state) => {
+    expect(Schema.decodeUnknownSync(ComputerExecutionState)(state)).toBe(state);
+  });
+  it.each([
+    "pointer",
+    "key",
+    "scroll",
+    "drag",
+    "move",
+    "frontmost",
+    "readiness",
+    "monitor",
+    "input-overflow",
+    "unresolved",
+    "activation",
+    "permit-expired",
+  ])("decodes typed cause %s", (cause) => {
+    expect(Schema.decodeUnknownSync(ComputerInterruptionCause)(cause)).toBe(cause);
+  });
+  it("retains pre-write interruption evidence and validates native availability epochs", () => {
+    const error = { _tag: "Interrupted", cause: "user-input", actionStarted: false };
+    expect(Schema.decodeUnknownSync(ComputerAutomationError)(error)).toEqual(error);
+    const ready = {
+      activityEpoch: 3,
+      lastActivityAgeMs: 1500,
+      frontmost: false,
+      monitorHealthy: true,
+      inputSequence: 5,
+      lastUserInputAgeMs: -1,
+      inputHeld: false,
+    };
+    expect(Schema.decodeUnknownSync(ComputerTargetReadiness)(ready)).toEqual(ready);
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerTargetReadiness)({ ...ready, activityEpoch: -1 }),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerTargetReadiness)({ ...ready, inputHeld: undefined }),
+    ).toThrow();
+  });
+  it("decodes foreground and background yield events and rejects invalid wait durations", () => {
+    for (const message of [
+      { type: "targetYielded", threadId: "t", sessionGeneration: "s" },
+      { type: "targetYielded", threadId: "t", sessionGeneration: "s", appId: "app" },
+      { type: "computerTurnEnded", threadId: "t", sessionGeneration: "s", turnId: "turn" },
+    ])
+      expect(Schema.decodeUnknownSync(DesktopComputerHostMessage)(message)).toEqual(message);
+    const holder = {
+      profileId: "p",
+      threadId: "t",
+      sessionGeneration: "s",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: [],
+      backend: "native",
+      threadTitle: "Thread",
+      scope: { kind: "foreground" },
+      policyRevision: 0,
+    };
+    for (const timeoutMs of [100, 30_000])
+      expect(
+        Schema.decodeUnknownSync(DesktopComputerHostMessage)({
+          type: "targetWait",
+          requestId: "wait",
+          holder,
+          timeoutMs,
+        }),
+      ).toMatchObject({ timeoutMs });
+    for (const timeoutMs of [99, 30_001, 100.5])
+      expect(() =>
+        Schema.decodeUnknownSync(DesktopComputerHostMessage)({
+          type: "targetWait",
+          requestId: "wait",
+          holder,
+          timeoutMs,
+        }),
+      ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(DesktopComputerHostMessage)({
+        type: "leaseAcquire",
+        requestId: "acquire",
+        holder,
+        cooperative: true,
+      }),
+    ).toMatchObject({ cooperative: true });
+  });
   it("decodes session-close messages and rejects noncanonical typing policy", () => {
     const closed = { type: "computerSessionClosed", threadId: "t", sessionGeneration: "s" };
     expect(Schema.decodeUnknownSync(DesktopComputerHostMessage)(closed)).toEqual(closed);

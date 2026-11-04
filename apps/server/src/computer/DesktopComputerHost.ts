@@ -7,6 +7,7 @@ import {
   COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
   COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
+  COMPUTER_COOPERATION_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -70,6 +71,7 @@ export class DesktopComputerHost {
         COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
         COMPUTER_GRANT_FORGET_CAPABILITY,
         COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
+        COMPUTER_COOPERATION_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -91,6 +93,9 @@ export class DesktopComputerHost {
   }
   rememberedConsentCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY);
+  }
+  cooperationCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_COOPERATION_CAPABILITY);
   }
   /** Main sends capabilities before status; a legacy host settles readiness with status alone. */
   async handshake(): Promise<void> {

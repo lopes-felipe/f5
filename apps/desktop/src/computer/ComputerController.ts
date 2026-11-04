@@ -11,6 +11,7 @@ import type {
   ComputerPauseCause,
   ComputerScreenshot,
   ComputerInspectResult,
+  ComputerTargetAvailability,
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
@@ -28,6 +29,7 @@ import { computerModelToNative } from "@t3tools/shared/computerGeometry";
 import { COMPUTER_BACKGROUND_CAPABILITY } from "@t3tools/contracts";
 import { ComputerLeaseAuthority, sameComputerHolder } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
+import { ComputerCooperation } from "./ComputerCooperation";
 
 interface Admission {
   owner: string;
@@ -59,6 +61,7 @@ export interface ComputerOverlaySurface {
     target?: ComputerOverlayTarget,
   ): Promise<void>;
   windowIds(): ReadonlyArray<number>;
+  waiting?(holder: ComputerLeaseHolder, seconds?: number): void;
 }
 export interface ComputerOverlayTarget {
   appName?: string;
@@ -88,6 +91,14 @@ const STOP_CAUSE: Record<
 };
 const isForegroundHolder = (holder: ComputerLeaseHolder) => holder.scope.kind !== "app";
 export class ComputerController {
+  readonly cooperation: ComputerCooperation;
+  private admissionCheck: ((holder: ComputerLeaseHolder) => void) | undefined;
+  private readonly availabilityListeners = new Set<() => void>();
+  private readonly endedTurns = new Map<string, { sessionGeneration: string; turnId: string }>();
+  private readonly availabilityWaiters = new Map<
+    string,
+    { holder: ComputerLeaseHolder; cancel: () => void }
+  >();
   private readonly paused = new Set<string>();
   private readonly pauseCauses = new Map<string, ComputerPauseCause>();
   private readonly controlled = new Map<string, ComputerLeaseHolder>();
@@ -150,20 +161,43 @@ export class ComputerController {
       takeoverValid?: (holder: ComputerLeaseHolder) => boolean;
       /** Takeover receipts are revoked when their holder stops. */
       holderStopped?: (holder: ComputerLeaseHolder) => void;
+      cooperationEnabled?: (profileId: string) => boolean;
+      targetYielded?: (holder: ComputerLeaseHolder, appId?: string) => void;
+      foregroundContinued?: (previous: ComputerLeaseHolder, next: ComputerLeaseHolder) => void;
       now?: () => number;
     },
   ) {
+    this.cooperation = new ComputerCooperation(helper, () => this.now());
     this.offEvent = helper.onEvent((message) => this.helperEvent(message));
-    this.offLease = lease.subscribe((holders) => this.holdersChanged(holders));
+    this.offLease = lease.subscribe((holders) => {
+      this.holdersChanged(holders);
+      for (const changed of this.availabilityListeners) changed();
+    });
     this.permitTimer = setInterval(() => {
       lease.sweep();
       for (const holder of lease.holders())
-        if (!this.paused.has(this.key(holder)))
+        if (!this.paused.has(this.key(holder)) && !this.cooperation.yielded.has(this.key(holder)))
           helper.control({
             type: "permit",
             executionGeneration: holder.executionGeneration,
             expiresInMs: 1000,
           });
+      for (const entry of this.cooperation.yielded.values()) {
+        if (entry.appId || !this.lease.find(entry.holder)) continue;
+        const ready = this.cooperation.readiness(entry.holder);
+        const age = ready?.lastUserInputAgeMs ?? 0;
+        this.overlay.waiting?.(
+          entry.holder,
+          ready && !ready.inputHeld && age >= 0
+            ? Math.max(0, Math.ceil((entry.dwell - age) / 1000))
+            : undefined,
+        );
+        if (this.now() - entry.at >= 60_000 && this.lease.find(entry.holder)) {
+          this.lease.release(entry.holder);
+          this.options.holderStopped?.(entry.holder);
+          this.overlay.clear();
+        }
+      }
     }, 250);
     this.permitTimer.unref();
   }
@@ -177,7 +211,233 @@ export class ComputerController {
   private capable(): boolean {
     return this.helper.capabilities?.().includes(COMPUTER_BACKGROUND_CAPABILITY) ?? false;
   }
+  cooperationAvailable(): boolean {
+    return this.cooperation.supported();
+  }
+  setAdmissionCheck(check: (holder: ComputerLeaseHolder) => void): void {
+    this.admissionCheck = check;
+  }
+  private cooperates(holder: ComputerLeaseHolder): boolean {
+    return this.cooperation.supported() && !!this.options.cooperationEnabled?.(holder.profileId);
+  }
+  async prepareAcquisition(holder: ComputerLeaseHolder): Promise<void> {
+    if (this.cooperates(holder)) {
+      const auth = this.grants.get(this.key(holder));
+      if (
+        !auth ||
+        auth.sessionGeneration !== holder.sessionGeneration ||
+        auth.grantVersion !== holder.grantVersion
+      )
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+      const appId = holder.scope.kind === "app" ? holder.scope.appId : undefined;
+      if (appId && !auth.grants.some((grant) => grant.appId === appId))
+        throw new ComputerControlError({ _tag: "NotGranted", needed: "view" });
+      await this.cooperation.prepare(holder);
+    }
+  }
+  private yieldable(holder: ComputerLeaseHolder, cause: unknown): boolean {
+    if (!this.cooperates(holder)) return false;
+    if (holder.scope.kind !== "app" && !holder.cooperative) return false;
+    return (
+      typeof cause === "string" &&
+      (["pointer", "key", "scroll", "drag"].includes(cause) ||
+        (holder.scope.kind === "app" ? cause === "frontmost" : cause === "move"))
+    );
+  }
+  private yieldHolder(holder: ComputerLeaseHolder): void {
+    const key = this.key(holder);
+    if (
+      this.cooperation.yielded.get(key)?.holder.executionGeneration === holder.executionGeneration
+    )
+      return;
+    this.cooperation.yield(holder);
+    // Sent mutations settle from native confirmation or an explicit pre-write interruption.
+    this.cancelWhere(
+      (job) => this.key(job.request.authorization) === key && job.phase === "queued",
+      new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" }),
+    );
+    for (const [id, snapshot] of this.snapshots)
+      if (snapshot.owner === key) this.snapshots.delete(id);
+    this.helper.control({ type: "suspend", executionGeneration: holder.executionGeneration });
+    this.publishState(holder, "waiting-user");
+    this.options.targetYielded?.(
+      holder,
+      holder.scope.kind === "app" ? holder.scope.appId : undefined,
+    );
+    const retire = async () => {
+      try {
+        await this.helper.drain?.(holder.executionGeneration, 5000);
+      } catch {
+        // A drain failure cannot prove the in-flight action is safe to continue.
+        this.stopThread(holder, "outcome-unknown");
+        return;
+      }
+      if (
+        this.cooperation.yielded.get(key)?.holder.executionGeneration !== holder.executionGeneration
+      )
+        return;
+      this.helper.control({ type: "retire", executionGeneration: holder.executionGeneration });
+      if (holder.scope.kind === "app") {
+        this.lease.release(holder);
+        this.options.holderStopped?.(holder);
+      }
+    };
+    void retire();
+  }
+  /** One predicate for acquisition, dispatch and advisory waiting. No cross-profile labels escape. */
+  private assertAdmission(holder: ComputerLeaseHolder, foregroundOwnershipOnly = false): void {
+    const ended = this.endedTurns.get(this.key(holder));
+    if (ended?.sessionGeneration === holder.sessionGeneration && ended.turnId === holder.turnId)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (this.paused.has(this.key(holder)))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+    const status = this.helper.status();
+    if (!status.available)
+      throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
+    this.admissionCheck?.(holder);
+    if (foregroundOwnershipOnly) {
+      const other = this.lease
+        .holders()
+        .some((entry) => this.key(entry) !== this.key(holder) && entry.scope.kind !== "app");
+      const pending = this.lease.pendingTakeover()?.holder;
+      if (other || (pending && this.key(pending) !== this.key(holder)))
+        throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
+      return;
+    }
+    if (this.cooperates(holder) && (holder.scope.kind === "app" || holder.cooperative)) {
+      if (this.cooperation.blocked(holder))
+        throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+    } else if (
+      holder.scope.kind === "app"
+        ? this.frontmostAppId === holder.scope.appId
+        : this.inputIdleMs() < 1500
+    )
+      throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+    if (this.lease.conflictsFor(holder))
+      throw new ComputerControlError({ _tag: "Busy", holder: "other-profile" });
+    if (
+      this.takeoverDraining ||
+      (holder.scope.kind === "app" &&
+        this.lease.takeover() &&
+        this.key(this.lease.takeover()!) !== this.key(holder)) ||
+      this.nativeWorkConflicts(holder.scope)
+    )
+      throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
+  }
+  async waitForTarget(
+    requestId: string,
+    holder: ComputerLeaseHolder,
+    appId: string | undefined,
+    timeoutMs: number,
+  ): Promise<ComputerTargetAvailability> {
+    const waitKey = holder.profileId + "\0" + requestId;
+    if (this.availabilityWaiters.size >= 32 || this.availabilityWaiters.has(waitKey))
+      throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+    let cancelled = false;
+    let rejectCancellation!: (error: unknown) => void;
+    const interruption = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
+    const race = <T>(work: Promise<T>) => Promise.race([work, interruption]);
+    this.availabilityWaiters.set(waitKey, {
+      holder,
+      cancel: () => {
+        cancelled = true;
+        rejectCancellation(new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }));
+      },
+    });
+    const deadline = performance.now() + timeoutMs;
+    let reason: ComputerTargetAvailability["reason"] = "user-active";
+    try {
+      if (appId) await race(this.cooperation.prepare(holder, appId));
+      do {
+        if (cancelled) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+        if (this.paused.has(this.key(holder)))
+          throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+        const auth = this.grants.get(this.key(holder));
+        if (
+          !auth ||
+          auth.sessionGeneration !== holder.sessionGeneration ||
+          auth.grantVersion !== holder.grantVersion ||
+          (appId && !auth.grants.some((grant) => grant.appId === appId))
+        )
+          throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+        await race(this.cooperation.refresh(holder, appId));
+        if (cancelled) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+        try {
+          // Without an app and without a yielded foreground, only foreground ownership is relevant.
+          const yielded = this.cooperation.yielded.get(this.key(holder));
+          if (!appId && (!yielded || yielded.appId || !this.lease.find(yielded.holder))) {
+            try {
+              this.assertAdmission(holder, true);
+            } catch (error) {
+              const failure = computerError(error);
+              if (
+                failure._tag !== "Busy" &&
+                !(failure._tag === "TargetBlocked" && failure.kind === "foreground-busy")
+              )
+                throw error;
+              return {
+                available: false,
+                timedOut: false,
+                reason: "foreground-busy",
+                requiresFreshObservation: true,
+              };
+            }
+            return { available: true, timedOut: false, requiresFreshObservation: true };
+          }
+          this.assertAdmission(holder);
+          return { available: true, timedOut: false, requiresFreshObservation: true };
+        } catch (cause) {
+          const error = computerError(cause);
+          if (error._tag === "Busy") reason = "agent-busy";
+          else if (
+            error._tag === "TargetBlocked" &&
+            (error.kind === "foreground-busy" || error.kind === "user-active")
+          )
+            reason = error.kind;
+          else throw cause;
+        }
+        if (performance.now() >= deadline) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let changed!: () => void;
+        try {
+          await race(
+            new Promise<void>((resolve) => {
+              changed = resolve;
+              this.availabilityListeners.add(changed);
+              timer = setTimeout(resolve, Math.min(250, Math.max(0, deadline - performance.now())));
+            }),
+          );
+        } finally {
+          clearTimeout(timer);
+          this.availabilityListeners.delete(changed);
+        }
+      } while (performance.now() < deadline);
+      return { available: false, timedOut: true, reason, requiresFreshObservation: true };
+    } finally {
+      this.availabilityWaiters.delete(waitKey);
+    }
+  }
+  turnEnded(profileId: string, threadId: string, sessionGeneration: string, turnId?: string): void {
+    const key = this.key({ profileId, threadId });
+    const turn = turnId ?? this.controlled.get(key)?.turnId ?? this.grants.get(key)?.turnId;
+    if (turn) this.endedTurns.set(key, { sessionGeneration, turnId: turn });
+    const matches = (holder: ComputerLeaseHolder) =>
+      holder.profileId === profileId &&
+      holder.threadId === threadId &&
+      holder.sessionGeneration === sessionGeneration;
+    for (const waiter of this.availabilityWaiters.values())
+      if (matches(waiter.holder)) waiter.cancel();
+    for (const entry of this.cooperation.yielded.values())
+      if (matches(entry.holder) && this.lease.find(entry.holder)) {
+        this.lease.release(entry.holder);
+        this.options.holderStopped?.(entry.holder);
+      }
+    this.cooperation.release(matches);
+  }
   private helperEvent(message: Record<string, unknown>): void {
+    for (const changed of this.availabilityListeners) changed();
     const generation =
       typeof message.executionGeneration === "number" ? message.executionGeneration : undefined;
     const tagged = generation !== undefined ? this.permitted.get(generation) : undefined;
@@ -189,20 +449,37 @@ export class ComputerController {
       }
     } else if (message.type === "physicalInput") {
       this.physicalInputAt = this.now();
-      if (tagged) this.stopThread(tagged, "user-input");
+      if (tagged && this.yieldable(tagged, message.cause)) this.yieldHolder(tagged);
+      else if (tagged) this.stopThread(tagged, "user-input");
       else if (generation === undefined)
         // Untagged input is legacy/Windows or generic activity: it pauses only holders that
         // share the user's pointer and keyboard. Background holders pause on conflicts only.
         for (const holder of this.lease.holders())
-          if (isForegroundHolder(holder)) this.stopThread(holder, "user-input");
+          if (
+            isForegroundHolder(holder) &&
+            !(
+              message.idle === true &&
+              holder.cooperative &&
+              this.cooperates(holder) &&
+              this.cooperation.yielded.has(this.key(holder))
+            )
+          )
+            this.stopThread(holder, "user-input");
     } else if (message.type === "targetInterrupted") {
-      if (tagged) this.stopThread(tagged, "target-active");
+      if (tagged && this.yieldable(tagged, message.cause)) this.yieldHolder(tagged);
+      else if (tagged) this.stopThread(tagged, "target-active");
     } else if (message.type === "activationIncident") {
       if (tagged) this.stopThread(tagged, "activation");
     } else if (message.type === "executionState") {
-      if (tagged && (message.state === "waiting-secure-input" || message.state === "active"))
+      if (
+        tagged &&
+        !this.cooperation.yielded.has(this.key(tagged)) &&
+        !this.paused.has(this.key(tagged)) &&
+        (message.state === "waiting-secure-input" || message.state === "active")
+      )
         this.publishState(tagged, message.state);
     } else if (message.type === "heartbeat") {
+      this.cooperation.heartbeat(message);
       if (typeof message.lastUserInputAgeMs === "number" && message.lastUserInputAgeMs >= 0)
         this.physicalInputAt = Math.max(
           this.physicalInputAt,
@@ -211,6 +488,13 @@ export class ComputerController {
       this.frontmostAppId =
         typeof message.frontmostAppId === "string" ? message.frontmostAppId : undefined;
     } else if (message.type === "hello") {
+      if (
+        this.cooperation.yielded.size ||
+        this.availabilityWaiters.size ||
+        this.lease.holders().length
+      )
+        this.stop("paused");
+      this.cooperation.reset();
       // The previous helper process is gone, and with it any unresolved native work.
       this.nativeWork.clear();
       // A replacement helper starts suspended and has no remembered authorization. Existing
@@ -220,7 +504,10 @@ export class ComputerController {
     } else if (
       message.type === "status" &&
       !this.helper.status().available &&
-      (this.lease.holders().length > 0 || this.lease.pendingTakeover())
+      (this.lease.holders().length > 0 ||
+        this.lease.pendingTakeover() ||
+        this.cooperation.yielded.size ||
+        this.availabilityWaiters.size)
     )
       this.stop("paused");
     else if (message.type === "permitExpired") {
@@ -230,8 +517,14 @@ export class ComputerController {
   }
   private holdersChanged(holders: ReadonlyArray<ComputerLeaseHolder>): void {
     const next = new Map(holders.map((holder) => [holder.executionGeneration, holder]));
-    for (const [generation] of this.permitted)
+    for (const [generation, previous] of this.permitted)
       if (!next.has(generation)) {
+        if (
+          previous.scope.kind === "takeover" &&
+          this.cooperation.yielded.has(this.key(previous)) &&
+          !holders.some((holder) => this.key(holder) === this.key(previous))
+        )
+          this.options.holderStopped?.(previous);
         this.permitted.delete(generation);
         this.helper.control(
           this.capable()
@@ -241,6 +534,7 @@ export class ComputerController {
         this.forgetAdmissions((entry) => entry.generation === generation);
       }
     for (const holder of holders) {
+      if (this.cooperation.yielded.has(this.key(holder))) continue;
       if (this.permitted.has(holder.executionGeneration)) continue;
       this.permitted.set(holder.executionGeneration, holder);
       this.helper.control({
@@ -248,14 +542,24 @@ export class ComputerController {
         executionGeneration: holder.executionGeneration,
         expiresInMs: 1000,
         scope: holder.scope,
+        cooperative: holder.cooperative === true,
       });
-      const expected = holder.scope.kind === "takeover" ? this.takeoverInputSequence : undefined;
+      const expected =
+        holder.scope.kind === "takeover"
+          ? this.takeoverInputSequence
+          : holder.cooperative
+            ? this.cooperation.readiness(holder)?.inputSequence
+            : undefined;
       if (holder.scope.kind === "takeover") this.takeoverInputSequence = undefined;
       this.helper.control({
         type: "resume",
         executionGeneration: holder.executionGeneration,
         scope: holder.scope,
         ...(expected !== undefined ? { inputSequence: expected } : {}),
+        ...(this.cooperates(holder) && holder.scope.kind === "app"
+          ? { activityEpoch: this.cooperation.readiness(holder)?.activityEpoch }
+          : {}),
+        cooperative: holder.cooperative === true,
       });
     }
     // Only foreground holders own the screen; background work never draws an overlay.
@@ -277,7 +581,19 @@ export class ComputerController {
    * Native readiness for a takeover: the helper's own idle age and input sequence, read now
    * rather than from the last heartbeat. The sequence is re-checked by the helper on resume.
    */
-  async takeoverReadiness(): Promise<{ idleMs: number }> {
+  async takeoverReadiness(holder?: ComputerLeaseHolder): Promise<{ idleMs: number }> {
+    if (holder?.cooperative && this.cooperates(holder)) {
+      await this.cooperation.prepare(holder);
+      const ready = this.cooperation.readiness(holder)!;
+      this.takeoverInputSequence = ready.inputSequence;
+      return {
+        idleMs: this.cooperation.blocked(holder)
+          ? 0
+          : ready.lastUserInputAgeMs < 0
+            ? Infinity
+            : ready.lastUserInputAgeMs,
+      };
+    }
     if (!this.helper.readiness) return { idleMs: this.inputIdleMs() };
     const ready = await this.helper.readiness();
     if (ready.lastUserInputAgeMs >= 0)
@@ -386,7 +702,15 @@ export class ComputerController {
     const status = this.helper.status();
     if (!status.available)
       throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
-    if (holder.scope.kind === "takeover")
+    const yielded = this.cooperation.yielded.get(key);
+    const continuing =
+      !!yielded &&
+      yielded.appId === undefined &&
+      this.lease.find(yielded.holder) !== undefined &&
+      holder.cooperative === true &&
+      holder.sessionGeneration === yielded.holder.sessionGeneration &&
+      holder.turnId === yielded.holder.turnId;
+    if (holder.scope.kind === "takeover" && !continuing)
       throw new ComputerControlError({
         _tag: "Execution",
         message: "A foreground takeover needs approval.",
@@ -397,16 +721,29 @@ export class ComputerController {
           _tag: "ForegroundRequired",
           reason: "unsupported-in-background",
         });
-      // The user is working in that app. Non-latching: the agent may wait and retry.
-      if (this.frontmostAppId === holder.scope.appId)
+    }
+    if (this.cooperates(holder)) this.assertAdmission(holder);
+    else {
+      if (
+        holder.scope.kind === "app"
+          ? this.frontmostAppId === holder.scope.appId
+          : this.inputIdleMs() < 1500
+      )
         throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
-    } else if (this.now() - this.physicalInputAt < 1500)
-      // Non-latching: no lease exists yet, so recent input only refuses this acquisition.
-      throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
-    // A released or cancelled holder may still be executing natively; wait for its drain.
-    if (this.nativeWorkConflicts(holder.scope))
-      throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
-    const acquired = this.lease.acquire(holder);
+      if (this.nativeWorkConflicts(holder.scope))
+        throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
+    }
+    this.cooperation.continued(holder);
+    const acquired = continuing
+      ? this.lease.rotate(
+          yielded!.holder,
+          (next) => {
+            if (next.scope.kind === "takeover")
+              this.options.foregroundContinued?.(yielded!.holder, next);
+          },
+          holder,
+        )
+      : this.lease.acquire(holder);
     // A lease listener may reject control if the emergency shortcut cannot register.
     if (
       this.paused.has(key) ||
@@ -425,6 +762,7 @@ export class ComputerController {
     )
       return;
     if (previous && previous.sessionGeneration !== authorization.sessionGeneration) {
+      this.cooperation.release((holder) => this.key(holder) === key);
       this.forgetAdmissions(
         (entry) =>
           entry.owner === key && entry.sessionGeneration !== authorization.sessionGeneration,
@@ -433,6 +771,11 @@ export class ComputerController {
         if (entry.startsWith(`${key}\0`)) this.quarantined.delete(entry);
     }
     this.grants.set(key, authorization);
+    for (const waiter of this.availabilityWaiters.values())
+      if (this.key(waiter.holder) === key) waiter.cancel();
+    const ended = this.endedTurns.get(key);
+    if (ended && ended.sessionGeneration !== authorization.sessionGeneration)
+      this.endedTurns.delete(key);
     for (const [id, snapshot] of this.snapshots)
       if (snapshot.owner === key) this.snapshots.delete(id);
     this.cancelWhere(
@@ -621,6 +964,12 @@ export class ComputerController {
         throw new ComputerControlError({ _tag: "ReplayRejected" });
       const appId = "appId" in request ? request.appId : undefined;
       const action = request.op === "elementAction" ? request.action : undefined;
+      if (this.cooperates(holder) && (holder.scope.kind === "app" || holder.cooperative)) {
+        if (this.cooperation.yielded.has(this.key(holder)))
+          throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+        this.assertAdmission(holder);
+        this.cooperation.assertObserved(holder, request);
+      }
       if (delivery === "background") {
         if (holder.scope.kind !== "app" || appId !== holder.scope.appId)
           throw new ComputerControlError({ _tag: "ReplayRejected" });
@@ -649,7 +998,7 @@ export class ComputerController {
           if (!computerScopeAllows(holder.scope, delivery, request.op, appId))
             throw new ComputerControlError({ _tag: "TargetBlocked", kind: "other-app" });
         }
-        if (this.now() - this.physicalInputAt < 1500) {
+        if (!holder.cooperative && this.now() - this.physicalInputAt < 1500) {
           this.stopThread(holder, "user-input");
           throw new ComputerControlError({ _tag: "Interrupted", cause: "user-input" });
         }
@@ -669,6 +1018,13 @@ export class ComputerController {
     const { request } = job;
     const mutation = isComputerMutation(request.op);
     const background = request.delivery === "background";
+    const holder =
+      this.lease.find(request.authorization) ??
+      this.controlled.get(this.key(request.authorization));
+    const observedApp = background && "appId" in request ? request.appId : undefined;
+    const observationSequence = holder
+      ? this.cooperation.observationSequence(holder, observedApp)
+      : 0;
     try {
       this.validate(request);
       if (job.cancelled) return;
@@ -716,8 +1072,33 @@ export class ComputerController {
           ...(background ? { delivery: "background" as const } : {}),
         });
       }
+      let nativeRequest = request;
+      const observing = ["inspect", "screenshot", "zoom"].includes(request.op);
+      let observationEpoch: number | undefined;
+      if (holder && this.cooperates(holder) && (mutation || observing)) {
+        const ready = await this.cooperation.refresh(
+          holder,
+          background && "appId" in request ? request.appId : undefined,
+        );
+        if (mutation) {
+          this.validate(request);
+          const {
+            activityEpoch: _untrustedEpoch,
+            inputSequence: _untrustedSequence,
+            ...base
+          } = request;
+          nativeRequest = {
+            ...base,
+            ...(background
+              ? { activityEpoch: ready.activityEpoch }
+              : { inputSequence: ready.inputSequence }),
+          };
+        }
+        observationEpoch = background ? ready.activityEpoch : ready.inputSequence;
+      }
+      if (job.cancelled) return;
       job.phase = "sent";
-      const native = this.helper.request(request, {
+      const native = this.helper.request(nativeRequest, {
         f5Pids: this.options.f5Pids(),
         f5BundlePath: this.options.f5BundlePath,
         overlayWindowIds: this.overlay.windowIds(),
@@ -725,6 +1106,19 @@ export class ComputerController {
       this.trackNative(request, native);
       const result = await Promise.race([native, job.cancellation]);
       if (job.cancelled) return;
+      if (
+        observing &&
+        holder &&
+        observationEpoch !== undefined &&
+        !this.cooperation.observed(
+          holder,
+          observedApp,
+          request.op === "screenshot",
+          observationEpoch,
+          observationSequence,
+        )
+      )
+        throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
       job.phase = "terminal";
       this.confirmed.delete(request.requestId);
       const limit =
@@ -768,7 +1162,12 @@ export class ComputerController {
                 screenshot?: ComputerScreenshot;
               })
             : undefined;
-        if (holder && action?.waiting === "secure-input") this.publishState(holder, "active");
+        if (
+          holder &&
+          action?.waiting === "secure-input" &&
+          !this.cooperation.yielded.has(this.key(holder))
+        )
+          this.publishState(holder, "active");
         // Attribute to the app the action targeted, never to whatever happens to be frontmost.
         const targetApp =
           typeof action?.target?.appId === "string" ? action.target.appId : undefined;
@@ -798,16 +1197,52 @@ export class ComputerController {
         });
       }
       job.resolve(result);
-    } catch (error) {
+    } catch (cause) {
+      let error = cause;
       const sent = job.phase === "sent";
       job.phase = "terminal";
+      if (mutation && sent && holder && this.cooperates(holder)) {
+        const failure = computerError(error);
+        if (failure._tag === "Interrupted" && failure.actionStarted === true)
+          error = new ComputerControlError({ _tag: "OutcomeUnknown" });
+      }
       const unknown = mutation && sent && computerError(error)._tag === "OutcomeUnknown";
       // A confirmed action keeps its success even when its reply was lost afterwards.
-      if (unknown && this.confirmed.delete(request.requestId)) {
+      if (mutation && sent && this.confirmed.delete(request.requestId)) {
         job.resolve(this.completedWithoutCapture(request));
         return;
       }
-      job.reject(error);
+      const failure = computerError(error);
+      const cooperativeMutation =
+        mutation && sent && holder && this.cooperates(holder) && (background || holder.cooperative);
+      if (
+        cooperativeMutation &&
+        failure._tag === "Interrupted" &&
+        failure.actionStarted === false &&
+        !this.paused.has(this.key(holder))
+      ) {
+        if (failure.cause === "user-input") this.yieldHolder(holder);
+        else if (
+          failure.cause === "permit-expired" &&
+          !this.cooperation.yielded.has(this.key(holder))
+        )
+          this.stopThread(holder, "permit-expired");
+      }
+      const contention =
+        mutation &&
+        sent &&
+        holder &&
+        this.cooperates(holder) &&
+        (background || holder.cooperative) &&
+        failure._tag === "Interrupted" &&
+        (failure.cause === "user-input" ||
+          (failure.cause === "permit-expired" && this.cooperation.yielded.has(this.key(holder)))) &&
+        failure.actionStarted === false;
+      job.reject(
+        contention
+          ? new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" })
+          : error,
+      );
       if (unknown && !job.cancelled) this.recordUnknown(request);
       if (mutation && !job.cancelled) {
         this.options.activity(request.authorization.profileId, {
@@ -884,6 +1319,8 @@ export class ComputerController {
     for (const request of unknown) this.recordUnknown(request);
   }
   cancel(requestId: string, profileId: string): void {
+    const waiter = this.availabilityWaiters.get(profileId + "\0" + requestId);
+    if (waiter?.holder.profileId === profileId) waiter.cancel();
     this.cancelWhere(
       (job) =>
         job.request.requestId === requestId && job.request.authorization.profileId === profileId,
@@ -930,6 +1367,9 @@ export class ComputerController {
   /** Policy transition for one thread: cancel, revoke holders and await their drain. */
   async invalidateThread(profileId: string, threadId: string, revision: number): Promise<void> {
     const key = this.key({ profileId, threadId });
+    this.cooperation.release((holder) => this.key(holder) === key);
+    for (const waiter of this.availabilityWaiters.values())
+      if (this.key(waiter.holder) === key) waiter.cancel();
     for (const [id, snapshot] of this.snapshots)
       if (snapshot.owner === key) this.snapshots.delete(id);
     this.cancelWhere(
@@ -960,6 +1400,13 @@ export class ComputerController {
       throw new ComputerControlError({ _tag: "OutcomeUnknown" });
   }
   disconnect(profileId: string): void {
+    for (const key of this.endedTurns.keys())
+      if (key.startsWith(profileId + "\0")) this.endedTurns.delete(key);
+    for (const waiter of this.availabilityWaiters.values())
+      if (waiter.holder.profileId === profileId) waiter.cancel();
+    for (const entry of this.cooperation.yielded.values())
+      if (entry.holder.profileId === profileId) this.stopThread(entry.holder, "paused");
+    this.cooperation.release((holder) => holder.profileId === profileId);
     this.cancelWhere(
       (job) => job.request.authorization.profileId === profileId,
       new ComputerControlError({ _tag: "OutcomeUnknown" }),
@@ -997,6 +1444,9 @@ export class ComputerController {
   /** Stop one thread's generation; other threads' background work keeps running. */
   stopThread(holder: ComputerLeaseHolder, cause: ComputerPauseCause = "paused"): void {
     const key = this.key(holder);
+    this.cooperation.release((entry) => this.key(entry) === key);
+    for (const waiter of this.availabilityWaiters.values())
+      if (this.key(waiter.holder) === key) waiter.cancel();
     const capable = this.capable();
     this.helper.control(
       capable
@@ -1032,11 +1482,17 @@ export class ComputerController {
   }
   stop(cause: ComputerPauseCause = "paused"): void {
     const active = [...this.lease.holders()];
+    for (const { holder } of this.cooperation.yielded.values())
+      if (!active.some((entry) => this.key(entry) === this.key(holder))) active.push(holder);
+    for (const { holder } of this.availabilityWaiters.values())
+      if (!active.some((entry) => this.key(entry) === this.key(holder))) active.push(holder);
+    for (const waiter of this.availabilityWaiters.values()) waiter.cancel();
     // The chord's first physical modifier already pauses foreground input; its final key must
     // still interrupt those exact turns after main has released their leases.
     const stopped =
       cause === "kill-switch"
         ? this.recentlyStopped
+            .filter((entry) => this.now() - entry.at <= 5000)
             .map((entry) => entry.holder)
             .filter((holder) => !active.some((entry) => this.key(entry) === this.key(holder)))
         : [];
@@ -1047,6 +1503,7 @@ export class ComputerController {
       ].slice(-16);
     }
     this.helper.control({ type: "suspend" });
+    this.cooperation.reset();
     for (const holder of [...active, ...stopped]) {
       const key = this.key(holder);
       this.paused.add(key);
@@ -1085,6 +1542,8 @@ export class ComputerController {
   setPaused(profileId: string, threadId: string, paused: boolean): void {
     const key = this.key({ profileId, threadId });
     if (paused) {
+      const yielded = this.cooperation.yielded.get(key);
+      if (yielded) this.stopThread(yielded.holder, "paused");
       for (const holder of this.lease.holders())
         if (this.key(holder) === key) this.stopThread(holder, "paused");
       this.paused.add(key);
@@ -1131,6 +1590,10 @@ export class ComputerController {
     this.permitted.clear();
     this.nativeWork.clear();
     this.confirmed.clear();
+    this.cooperation.reset();
+    this.availabilityWaiters.clear();
+    this.availabilityListeners.clear();
+    this.endedTurns.clear();
     this.recentlyStopped = [];
   }
 }

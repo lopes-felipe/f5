@@ -185,6 +185,40 @@ export const COMPUTER_AGENT_IDENTITY_CAPABILITY = "computer-agent-identity-v1";
 export const COMPUTER_ACTIVITY_CORRELATION_CAPABILITY = "computer-activity-correlation-v1";
 /** The backend reports whether its Chrome holder runs a browser call (`chromeCallsChanged`). */
 export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
+export const COMPUTER_COOPERATION_CAPABILITY = "computer-cooperation-v1";
+export const ComputerInterruptionCause = Schema.Literals([
+  "pointer",
+  "key",
+  "scroll",
+  "drag",
+  "move",
+  "frontmost",
+  "readiness",
+  "monitor",
+  "input-overflow",
+  "unresolved",
+  "activation",
+  "permit-expired",
+]);
+export type ComputerInterruptionCause = typeof ComputerInterruptionCause.Type;
+/** Helper monotonic epochs, not wall-clock timestamps. Watches grant no execution permit. */
+export const ComputerTargetReadiness = Schema.Struct({
+  activityEpoch: NonNegative,
+  lastActivityAgeMs: Schema.Number,
+  frontmost: Schema.Boolean,
+  monitorHealthy: Schema.Boolean,
+  inputSequence: NonNegative,
+  lastUserInputAgeMs: Schema.Number,
+  inputHeld: Schema.Boolean,
+});
+export type ComputerTargetReadiness = typeof ComputerTargetReadiness.Type;
+export const ComputerTargetAvailability = Schema.Struct({
+  available: Schema.Boolean,
+  timedOut: Schema.Boolean,
+  reason: Schema.optionalKey(Schema.Literals(["user-active", "agent-busy", "foreground-busy"])),
+  requiresFreshObservation: Schema.Literal(true),
+});
+export type ComputerTargetAvailability = typeof ComputerTargetAvailability.Type;
 export const ComputerAgentProviderSchema = Schema.Literals([
   "claude",
   "codex",
@@ -204,6 +238,9 @@ const Envelope = {
   screenshot: Schema.optional(Schema.Boolean),
   /** Missing means foreground, the only delivery legacy peers understand. */
   delivery: Schema.optional(ComputerDelivery),
+  /** Main overwrites these from its native watch immediately before dispatch. */
+  activityEpoch: Schema.optionalKey(NonNegative),
+  inputSequence: Schema.optionalKey(NonNegative),
   /** User policy injected by the broker; absent requests retain the legacy child walk. */
   passwordMasking: Schema.optional(ComputerPasswordMasking),
 };
@@ -429,6 +466,7 @@ export const ComputerAutomationError = Schema.Union([
   }),
   Schema.Struct({
     _tag: Schema.Literal("Interrupted"),
+    actionStarted: Schema.optionalKey(Schema.Boolean),
     cause: Schema.Literals([
       "paused",
       "user-input",
@@ -569,11 +607,14 @@ export const ComputerLeaseHolder = Schema.Struct({
     Schema.withDecodingDefault((): ComputerLeaseScope => ({ kind: "foreground" })),
   ),
   policyRevision: NonNegative.pipe(Schema.withDecodingDefault(() => 0)),
+  cooperative: Schema.optionalKey(Schema.Boolean),
 });
 export type ComputerLeaseHolder = typeof ComputerLeaseHolder.Type;
 export const ComputerExecutionState = Schema.Literals([
   "pending-consent",
   "waiting-idle",
+  "waiting-user",
+  "waiting-agent",
   "active",
   "waiting-secure-input",
   "paused",
@@ -852,6 +893,25 @@ export const DesktopComputerHostMessage = Schema.Union([
     sessionGeneration: Id,
   }),
   Schema.Struct({
+    type: Schema.Literal("computerTurnEnded"),
+    threadId: Id,
+    sessionGeneration: Id,
+    turnId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("targetYielded"),
+    threadId: Id,
+    sessionGeneration: Id,
+    appId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("targetWait"),
+    requestId: Id,
+    holder: ComputerLeaseHolder,
+    appId: Schema.optionalKey(Id),
+    timeoutMs: Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 30_000 })),
+  }),
+  Schema.Struct({
     type: Schema.Literal("grantsValidate"),
     requestId: Id,
     projectId: Id,
@@ -878,6 +938,7 @@ export const DesktopComputerHostMessage = Schema.Union([
     type: Schema.Literals(["leaseAcquire", "leaseRelease"]),
     requestId: Id,
     holder: ComputerLeaseHolder,
+    cooperative: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("leaseChanged"),
@@ -905,6 +966,7 @@ export const DesktopComputerHostMessage = Schema.Union([
     requestId: Id,
     approvalRequestId: Id,
     holder: ComputerLeaseHolder,
+    cooperative: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("observationInvalidate"),

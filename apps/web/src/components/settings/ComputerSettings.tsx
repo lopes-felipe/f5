@@ -156,7 +156,7 @@ export function ComputerSettings() {
     <>
       <SettingsRow
         title="Computer use (preview)"
-        description={`Computer control preview: let supported agents (see Agent support) see and control apps you approve. Signed-build safety certification is pending. Stop: ${shortcut}. Your input pauses control. Choose Don't ask again in the native dialog to save permissions for this project.${(status ?? host).hostPlatform === "win32" ? " On Windows, app approvals govern F5 computer tools; other agent code retains its own permissions." : ""}`}
+        description={`Computer control preview: let supported agents (see Agent support) see and control apps you approve. Signed-build safety certification is pending. Stop: ${shortcut}. Interacting with an agent's background app makes it wait until you leave. Your input makes Full access foreground agents wait; other foreground agents pause. Choose Don't ask again in the native dialog to save permissions for this project.${(status ?? host).hostPlatform === "win32" ? " On Windows, app approvals govern F5 computer tools; other agent code retains its own permissions." : ""}`}
         control={
           <Switch
             aria-label="Let agents control this computer"

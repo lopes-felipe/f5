@@ -26,6 +26,7 @@ function setup(
     alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
     grants?: ComputerGrantAuthority;
     consents?: ComputerConsentStore;
+    cooperation?: boolean;
     grantForgetFailed?: (profileId: string, message: string) => void;
   } = {},
 ) {
@@ -44,6 +45,10 @@ function setup(
     drainBackground: vi.fn(async () => () => {}),
     takeoverReadiness: vi.fn(async () => ({ idleMs: 10_000 })),
     nativeWorkConflicts: vi.fn(() => false),
+    cooperationAvailable: () => options.cooperation === true,
+    cooperation: { yielded: new Map() },
+    prepareAcquisition: vi.fn(async () => {}),
+    turnEnded: vi.fn(),
   };
   const channel = new ComputerHostChannel(
     controller as unknown as ComputerController,
@@ -84,6 +89,85 @@ function setup(
   return { channel, controller, process, hello, attention };
 }
 describe("private computer host channel", () => {
+  it("publishes new waiting states only to cooperative peers, including foreground-only peers", () => {
+    const update = { threadId: "t", sessionGeneration: "s", state: "waiting-user" as const };
+    const legacy = setup(false, true);
+    const modern = setup(false, false, { cooperation: true });
+    try {
+      legacy.hello(["background-ax-v1"]);
+      modern.hello(["computer-cooperation-v1"]);
+      legacy.channel.sendExecutionState("profile", update);
+      modern.channel.sendExecutionState("profile", update);
+      expect(legacy.process.send).toHaveBeenLastCalledWith(
+        {
+          type: "executionStateChanged",
+          ...update,
+          state: "paused",
+        },
+        expect.any(Function),
+      );
+      expect(modern.process.send).toHaveBeenLastCalledWith(
+        {
+          type: "executionStateChanged",
+          ...update,
+        },
+        expect.any(Function),
+      );
+      legacy.channel.sendExecutionState("profile", { ...update, state: "waiting-agent" });
+      expect(legacy.process.send).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          state: "waiting-idle",
+        }),
+        expect.any(Function),
+      );
+    } finally {
+      legacy.channel.close();
+      modern.channel.close();
+    }
+  });
+  it("strips cooperative labels from unnegotiated holders and prepares native watches before acquisition", async () => {
+    const holder = {
+      profileId: "profile",
+      threadId: "t",
+      sessionGeneration: "s",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: [],
+      backend: "native" as const,
+      threadTitle: "Thread",
+      scope: { kind: "foreground" as const },
+      policyRevision: 0,
+    };
+    for (const capable of [false, true]) {
+      const h = setup(false, false, { cooperation: capable });
+      try {
+        h.hello(capable ? ["computer-cooperation-v1"] : []);
+        h.controller.acquire.mockReturnValue({
+          ...holder,
+          ...(capable ? { cooperative: true } : {}),
+        });
+        h.process.emit("message", {
+          type: "leaseAcquire",
+          requestId: "acquire",
+          cooperative: true,
+          holder: { ...holder, cooperative: true },
+        });
+        await vi.waitFor(() => expect(h.controller.acquire).toHaveBeenCalled());
+        expect(h.controller.acquire).toHaveBeenCalledWith({
+          ...holder,
+          ...(capable ? { cooperative: true } : {}),
+        });
+        expect(h.controller.prepareAcquisition).toHaveBeenCalledTimes(capable ? 1 : 0);
+        if (capable)
+          expect(h.controller.prepareAcquisition.mock.invocationCallOrder[0]).toBeLessThan(
+            h.controller.acquire.mock.invocationCallOrder[0]!,
+          );
+      } finally {
+        h.channel.close();
+      }
+    }
+  });
   function rememberedHarness() {
     let contents: string | undefined;
     let failing = false;

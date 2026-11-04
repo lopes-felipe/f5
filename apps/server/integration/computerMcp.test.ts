@@ -36,7 +36,7 @@ it("serves the complete computer catalog through consent, image, input, interrup
           return { status: response.status, body: (await response.json()) as any };
         };
         yield* Effect.promise(async () => {
-          expect((await rpc("tools/list")).body.result.tools).toHaveLength(17);
+          expect((await rpc("tools/list")).body.result.tools).toHaveLength(18);
           expect(
             (await rpc("tools/call", { name: "computer_status", arguments: {} })).body.result
               .isError,

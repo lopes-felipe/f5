@@ -29,6 +29,7 @@ export class ComputerConsentAuthority {
         policies?: ReadonlyArray<RememberedComputerConsent>,
       ) => void;
       remembered?: boolean;
+      cooperative?: (profileId: string) => boolean;
       show: (profileId: string, options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
       /**
        * Remembers "always allow" for a profile's Codex Chrome sessions or Claude in Chrome
@@ -63,7 +64,7 @@ export class ComputerConsentAuthority {
           type: "warning",
           title: "F5 computer access",
           message: `Let the agent take the foreground in ${appName}?`,
-          detail: `F5 waits until you stop typing and moving the pointer, then brings ${appName} to the front and controls the pointer and keyboard there until the turn ends. Your input or ⌃⌘Esc stops it.\nApp identity: ${quoteUntrusted(takeover?.appId ?? "")}\nAgent’s unverified reason: ${quoteUntrusted(takeover?.reason ?? request.reason)}`,
+          detail: `F5 waits until you stop typing and moving the pointer, then brings ${appName} to the front and controls the pointer and keyboard there until the turn ends. ${request.fullAccess && this.options.cooperative?.(profileId) ? "Your input makes the agent wait until you stop; ⌃⌘Esc stops it." : "Your input or ⌃⌘Esc stops it."}\nApp identity: ${quoteUntrusted(takeover?.appId ?? "")}\nAgent’s unverified reason: ${quoteUntrusted(takeover?.reason ?? request.reason)}`,
           buttons: ["Deny", "Allow foreground"],
           defaultId: 0,
           cancelId: 0,

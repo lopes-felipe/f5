@@ -10,6 +10,7 @@ import {
   COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
   COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
+  COMPUTER_COOPERATION_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -125,6 +126,23 @@ export class ComputerHostChannel {
       this.chromeOptions?.changed?.(holder);
     }, chromeOptions?.supervisor);
     this.execution = options.execution ?? new ComputerExecutionAuthority();
+    controller.setAdmissionCheck?.((holder) => {
+      this.chrome.assertNativeAvailable(holder.profileId, holder.scope);
+      if (
+        !this.execution.revisionAccepted(holder.profileId, holder.threadId, holder.policyRevision)
+      )
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+      if (
+        holder.scope.kind !== "foreground" &&
+        !this.execution.hasSessionApproval(
+          holder.profileId,
+          this.backends.get(holder.profileId)?.incarnation ?? "",
+          holder.threadId,
+          holder.sessionGeneration,
+        )
+      )
+        throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    });
     this.takeovers = new ComputerTakeoverCoordinator(controller, this.execution, {
       state: (profileId, holder, state) =>
         this.sendExecutionState(profileId, {
@@ -138,6 +156,12 @@ export class ComputerHostChannel {
   }
   private capable(backend: Backend | undefined): boolean {
     return backend?.capabilities.has(COMPUTER_BACKGROUND_CAPABILITY) ?? false;
+  }
+  cooperationCapable(profileId: string): boolean {
+    return (
+      this.backends.get(profileId)?.capabilities.has(COMPUTER_COOPERATION_CAPABILITY) === true &&
+      this.controller.cooperationAvailable()
+    );
   }
   /** Status as one backend sees it: only capable peers learn about background delivery. */
   private statusFor(backend: Backend): ComputerAutomationBackendStatus {
@@ -258,6 +282,8 @@ export class ComputerHostChannel {
               capability === COMPUTER_SESSION_LIFECYCLE_CAPABILITY ||
               capability === COMPUTER_GRANT_FORGET_CAPABILITY ||
               (capability === COMPUTER_REMEMBERED_CONSENT_CAPABILITY && !!this.options.consents) ||
+              (capability === COMPUTER_COOPERATION_CAPABILITY &&
+                this.controller.cooperationAvailable?.()) ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -354,43 +380,64 @@ export class ComputerHostChannel {
             message.holder.profileId !== profileId ||
             message.holder.backend !== "native" ||
             // Takeovers need approval; background scopes need a negotiated peer.
-            message.holder.scope.kind === "takeover" ||
+            (message.holder.scope.kind === "takeover" &&
+              !(
+                this.cooperationCapable(profileId) &&
+                message.cooperative &&
+                this.execution.validTakeover(message.holder, backend.incarnation) &&
+                this.controller.cooperation.yielded.has(profileId + "\0" + message.holder.threadId)
+              )) ||
             (message.holder.scope.kind === "app" && !this.capable(backend))
           ) {
             child.disconnect();
             return;
           }
-          try {
-            this.chrome.assertNativeAvailable(profileId, message.holder.scope);
-            const status = this.status();
-            if (!status.available)
-              throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
-            if (backend.acquisitions.size >= 32)
-              throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
-            if (
-              !this.execution.revisionAccepted(
-                profileId,
-                message.holder.threadId,
-                message.holder.policyRevision,
+          void (async () => {
+            try {
+              const { cooperative: _untrustedCooperative, ...legacyHolder } = message.holder;
+              const holder = {
+                ...legacyHolder,
+                ...(this.cooperationCapable(profileId) && message.cooperative
+                  ? { cooperative: true }
+                  : {}),
+              };
+              if (this.backends.get(profileId) !== backend)
+                throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+              this.chrome.assertNativeAvailable(profileId, message.holder.scope);
+              const status = this.status();
+              if (!status.available)
+                throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
+              if (backend.acquisitions.size >= 32)
+                throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+              if (
+                !this.execution.revisionAccepted(
+                  profileId,
+                  message.holder.threadId,
+                  message.holder.policyRevision,
+                )
               )
-            )
-              throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
-            if (
-              message.holder.scope.kind === "app" &&
-              !this.execution.hasSessionApproval(
-                profileId,
-                incarnation,
-                message.holder.threadId,
-                message.holder.sessionGeneration,
+                throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+              if (
+                message.holder.scope.kind === "app" &&
+                !this.execution.hasSessionApproval(
+                  profileId,
+                  incarnation,
+                  message.holder.threadId,
+                  message.holder.sessionGeneration,
+                )
               )
-            )
-              throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
-            const result = this.controller.acquire(message.holder);
-            backend.acquisitions.set(message.requestId, result);
-            this.send(profileId, { type: "response", requestId: message.requestId, result });
-          } catch (error) {
-            fail(message.requestId, error);
-          }
+                throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+              if (this.cooperationCapable(profileId))
+                await this.controller.prepareAcquisition(holder);
+              if (this.backends.get(profileId) !== backend)
+                throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+              const result = this.controller.acquire(holder);
+              backend.acquisitions.set(message.requestId, result);
+              this.send(profileId, { type: "response", requestId: message.requestId, result });
+            } catch (error) {
+              fail(message.requestId, error);
+            }
+          })();
           break;
         case "foregroundTakeoverAcquire": {
           if (
@@ -409,7 +456,10 @@ export class ComputerHostChannel {
               incarnation,
               requestId,
               message.approvalRequestId,
-              message.holder,
+              {
+                ...message.holder,
+                cooperative: this.cooperationCapable(profileId) && message.cooperative === true,
+              },
               (outcome) => {
                 if (this.backends.get(profileId) !== backend) return;
                 if ("error" in outcome) fail(requestId, new ComputerControlError(outcome.error));
@@ -726,8 +776,11 @@ export class ComputerHostChannel {
           break;
         case "computerSessionClosed":
           if (!backend.capabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY)) break;
+          this.cancelSessionAccess(profileId, message.threadId, message.sessionGeneration);
           this.grants.sessionClosed(profileId, message.threadId, message.sessionGeneration);
           this.execution.sessionClosed(profileId, message.threadId, message.sessionGeneration);
+          if (this.cooperationCapable(profileId))
+            this.controller.turnEnded(profileId, message.threadId, message.sessionGeneration);
           for (const [key, entry] of this.approvalSources)
             if (
               entry.profileId === profileId &&
@@ -735,6 +788,53 @@ export class ComputerHostChannel {
               entry.request.sessionGeneration === message.sessionGeneration
             )
               this.approvalSources.delete(key);
+          break;
+        case "computerTurnEnded":
+          if (this.cooperationCapable(profileId)) {
+            this.cancelSessionAccess(profileId, message.threadId, message.sessionGeneration);
+            this.controller.turnEnded(
+              profileId,
+              message.threadId,
+              message.sessionGeneration,
+              message.turnId,
+            );
+          }
+          break;
+        case "targetWait":
+          if (message.holder.profileId !== profileId) {
+            child.disconnect();
+            return;
+          }
+          if (!this.cooperationCapable(profileId)) {
+            fail(
+              message.requestId,
+              new ComputerControlError({
+                _tag: "Execution",
+                message: "Computer cooperation is unavailable; check the helper status.",
+              }),
+            );
+            break;
+          }
+          {
+            const holder = {
+              ...message.holder,
+              scope: message.appId
+                ? { kind: "app" as const, appId: message.appId }
+                : ([...this.controller.cooperation.yielded.values()].find(
+                    (entry) =>
+                      entry.holder.profileId === profileId &&
+                      entry.holder.threadId === message.holder.threadId &&
+                      entry.appId === undefined,
+                  )?.holder.scope ?? { kind: "foreground" as const }),
+            };
+            void this.controller
+              .waitForTarget(message.requestId, holder, message.appId, message.timeoutMs)
+              .then(
+                (result) =>
+                  this.send(profileId, { type: "response", requestId: message.requestId, result }),
+                (error: unknown) => fail(message.requestId, error),
+              );
+          }
           break;
         case "grantsValidate":
           this.send(profileId, {
@@ -876,16 +976,34 @@ export class ComputerHostChannel {
       this.send(profileId, { type: "status", status: this.statusFor(backend) });
   }
   sendExecutionState(profileId: string, update: ComputerExecutionStateUpdate): void {
-    if (!this.capable(this.backends.get(profileId))) return;
+    if (!this.capable(this.backends.get(profileId)) && !this.cooperationCapable(profileId)) return;
     this.send(profileId, {
       type: "executionStateChanged",
       threadId: update.threadId,
       sessionGeneration: update.sessionGeneration,
-      state: update.state,
+      state: this.cooperationCapable(profileId)
+        ? update.state
+        : update.state === "waiting-user"
+          ? "paused"
+          : update.state === "waiting-agent"
+            ? "waiting-idle"
+            : update.state,
       ...(update.appId ? { appId: update.appId } : {}),
       ...(update.delivery ? { delivery: update.delivery } : {}),
       ...(update.pauseCause ? { pauseCause: update.pauseCause } : {}),
     });
+  }
+  private cancelSessionAccess(
+    profileId: string,
+    threadId: string,
+    sessionGeneration: string,
+  ): void {
+    this.takeovers.cancelThread(profileId, threadId, sessionGeneration);
+    const backend = this.backends.get(profileId);
+    if (!backend) return;
+    for (const [requestId, request] of backend.pendingAccess)
+      if (request.threadId === threadId && request.sessionGeneration === sessionGeneration)
+        backend.pendingAccess.delete(requestId);
   }
   broadcast(message: DesktopComputerHostMessage): void {
     for (const profileId of this.backends.keys()) this.send(profileId, message);
@@ -1060,7 +1178,7 @@ export class ComputerHostChannel {
       stopped.add(entry.request.threadId);
     }
     const backend = this.backends.get(profileId);
-    for (const request of [...(backend?.pendingAccess.values() ?? [])]) {
+    for (const request of backend?.pendingAccess.values() ?? []) {
       const matchingApp =
         consent.kind === "app-access" &&
         request.projectId === consent.projectId &&
