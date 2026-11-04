@@ -95,6 +95,14 @@ function fixture(
   };
 }
 describe("typed GitHub forge", () => {
+  it("preserves GitHub update time separately from creation time", async () => {
+    const created = "2026-01-01T12:00:00Z";
+    const updated = "2026-11-03T12:00:00Z";
+    const { provider } = fixture([{ ...pr, created_at: created, updated_at: updated }]);
+    const detail = await Effect.runPromise(provider.getDetail(ref));
+    expect(detail.updatedAt).toBe(updated);
+    expect(detail.raw.created_at).toBe(created);
+  });
   it("updates branches with the prepared head revision in the mutation", async () => {
     const { provider, queries } = fixture();
     await Effect.runPromise(

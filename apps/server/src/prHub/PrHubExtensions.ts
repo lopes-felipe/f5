@@ -21,6 +21,7 @@ import {
 import {
   parseSourceControlPullRequestKey,
   formatSourceControlPullRequestKey,
+  sourceControlPullRequestKeysEqual,
 } from "@t3tools/shared/sourceControl";
 import { resolvePrReviewPosition, type PrReviewPosition } from "@t3tools/shared/prReview";
 import { ServerConfig } from "../config.ts";
@@ -35,6 +36,7 @@ import {
 import { readGitHubStack } from "./githubStacks.ts";
 import { mapGitHubCliError } from "../sourceControl/GitHubSourceControlProvider.ts";
 import { readThreadPullRequestLinks } from "./threadLinks.ts";
+import { peekFactsFromRaw, peekIsoDate } from "./prHubPeekFacts.ts";
 
 const failure = (detail: string, kind: SourceControlProviderError["kind"] = "generic") =>
   new SourceControlProviderError({
@@ -94,25 +96,61 @@ export const makePrHubExtensions = Effect.gen(function* () {
         if (!ref) return null;
         const runtime = yield* federation.resolve(input);
         if (runtime.account.provider !== ref.provider || runtime.account.host !== ref.host)
-          return yield* failure("Link preview account mismatch.", "forbidden");
+          return yield* new SourceControlProviderError({
+            provider: ref.provider,
+            operation: "prHub.peek",
+            kind: "forbidden",
+            detail: "Link preview account mismatch.",
+            code: "PrHubAccountMismatch",
+          });
         const identity = JSON.stringify([runtime.account.id, runtime.account.generation, ref]);
         const cached = peekCache.get(identity);
-        if (cached && cached.expires > Date.now()) return cached.value;
-        const detail = yield* runtime.provider.getDetail(ref);
-        const value = yield* Schema.decodeUnknownEffect(PrHubPeek)({
-          provider: ref.provider,
-          host: ref.host,
-          repository: ref.repository,
-          number: ref.number,
-          title: detail.title.slice(0, 1000),
-          url: detail.url,
-          state: detail.state ?? "open",
-          author: null,
-        }).pipe(Effect.mapError(() => failure("Invalid link preview.", "invalid_response")));
-        peekCache.delete(identity);
-        peekCache.set(identity, { expires: Date.now() + 60000, value });
-        while (peekCache.size > 128) peekCache.delete(peekCache.keys().next().value!);
-        return value;
+        const value =
+          cached && cached.expires > Date.now()
+            ? cached.value
+            : yield* Effect.gen(function* () {
+                const detail = yield* runtime.provider.getDetail(ref);
+                const facts = yield* Schema.decodeUnknownEffect(PrHubPeek)({
+                  provider: ref.provider,
+                  host: ref.host,
+                  repository: ref.repository,
+                  number: ref.number,
+                  title: detail.title.slice(0, 1000),
+                  url: detail.url,
+                  state: detail.state ?? "open",
+                  ...peekFactsFromRaw(detail.raw),
+                  updatedAt: peekIsoDate(detail.updatedAt),
+                }).pipe(
+                  Effect.mapError(() => failure("Invalid link preview.", "invalid_response")),
+                );
+                peekCache.delete(identity);
+                peekCache.set(identity, { expires: Date.now() + 60000, value: facts });
+                while (peekCache.size > 128) peekCache.delete(peekCache.keys().next().value!);
+                return facts;
+              });
+        const snapshot = yield* runtime.hub.getSnapshot.pipe(
+          Effect.catchCause(() => Effect.succeed(null)),
+        );
+        const key = formatSourceControlPullRequestKey(ref);
+        const tracked =
+          snapshot &&
+          [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((pr) =>
+            sourceControlPullRequestKeysEqual(pr.key, key),
+          );
+        return {
+          ...value,
+          ...(tracked
+            ? {
+                isDraft: tracked.isDraft,
+                status: {
+                  checkRollup: tracked.checkRollup,
+                  reviewDecision: tracked.reviewDecision,
+                  mergeable: tracked.mergeable,
+                  unresolvedThreadCount: tracked.unresolvedThreadCount,
+                },
+              }
+            : {}),
+        };
       }),
     );
   const getStack = (input: PrHubStackInput) =>

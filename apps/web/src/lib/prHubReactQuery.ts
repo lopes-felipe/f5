@@ -19,6 +19,16 @@ export const prHubQueryKeys = {
   files: (key: PullRequestKey) => ["prHub", "files", getPrHubAccountGeneration(), key] as const,
 };
 
+export function prHubPeekQueryOptions(url: string) {
+  const accountId = getPrHubSelectedAccountId();
+  return queryOptions({
+    queryKey: ["prHub", "peek", getPrHubAccountGeneration(), accountId, url] as const,
+    queryFn: () => ensureNativeApi().prHub.peek({ url, accountId }),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
 export function prHubOverviewQueryOptions(stalledBefore?: string) {
   return queryOptions({
     queryKey: [

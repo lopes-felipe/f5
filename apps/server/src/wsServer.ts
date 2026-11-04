@@ -140,6 +140,7 @@ import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
+import { prHubPeekErrorCode } from "./prHub/prHubPeekError.ts";
 import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
@@ -5966,7 +5967,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* forgeAccounts.value.setRouting(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.peek:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.peek(stripRequestTag(request.body));
+        return yield* prHubExtensions.value.peek(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+                code: prHubPeekErrorCode(error),
+              }),
+          ),
+        );
       case PR_HUB_WS_METHODS.getStack:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.getStack(stripRequestTag(request.body));
