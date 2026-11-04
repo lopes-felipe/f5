@@ -9,6 +9,7 @@ import {
   DesktopUpdateDownloadProgress,
   DesktopUpdateInstallProgress,
 } from "../../DesktopUpdateProgress";
+import { DesktopUpdateReleaseLink } from "../../DesktopUpdateReleaseLink";
 import { Switch } from "../../ui/switch";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -65,7 +66,12 @@ export function AboutSettings() {
             </div>
           ) : null}
           {state.availableVersion && state.releaseNotes ? (
-            <p className="my-2 whitespace-pre-wrap text-xs">{state.releaseNotes}</p>
+            <div className="my-2">
+              <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs">
+                {state.releaseNotes}
+              </p>
+              <DesktopUpdateReleaseLink version={state.availableVersion} />
+            </div>
           ) : null}
           <Button
             className="mt-2"

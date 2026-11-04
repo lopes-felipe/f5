@@ -1,7 +1,12 @@
-const MAX_RELEASE_NOTES_LENGTH = 1_200;
-const MAX_RELEASE_NOTES_INPUT_LENGTH = 8_192;
+// The renderer scrolls notes and links to the full GitHub release, so the
+// display cap only needs to bound remote input, not fit a small card. A stable
+// release's notes plus the intermediate betas the updater lists run ~6,000
+// characters; 1,200 cut 0.1.3 off mid-sentence. The input bound stays above the
+// display cap so markup stripping cannot hide that the text was truncated.
+export const MAX_RELEASE_NOTES_LENGTH = 8_192;
+const MAX_RELEASE_NOTES_INPUT_LENGTH = 16_384;
 const MAX_RELEASE_NOTES_ITEMS = 64;
-const MAX_RELEASE_NOTES_ITEM_LENGTH = 2_048;
+const MAX_RELEASE_NOTES_ITEM_LENGTH = MAX_RELEASE_NOTES_INPUT_LENGTH;
 
 const HTML_ENTITY_REPLACEMENTS: Readonly<Record<string, string>> = {
   amp: "&",
