@@ -1,6 +1,7 @@
 import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3tools/contracts";
 import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
+import { parseAnswerDeliveryText } from "~/lib/answerDelivery";
 import {
   deriveDisplayedUserMessageState,
   type DisplayedUserMessageState,
@@ -62,20 +63,8 @@ export function queuedTurnLabel(
  */
 function describeAnswerDelivery(item: NextTurnQueueItem): string | null {
   if (!item.command.commandId.startsWith("answer-delivery:")) return null;
-  try {
-    const parsed: unknown = JSON.parse(item.command.message.text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const answers: string[] = [];
-    for (const entry of Object.values(parsed)) {
-      const values = (entry as { answers?: unknown } | null)?.answers;
-      if (!Array.isArray(values) || !values.every((value) => typeof value === "string"))
-        return null;
-      answers.push(...values);
-    }
-    return answers.length > 0 ? `Answer · ${answers.join(", ")}` : null;
-  } catch {
-    return null;
-  }
+  const answers = parseAnswerDeliveryText(item.command.message.text);
+  return answers ? `Answer · ${answers.join(", ")}` : null;
 }
 
 export function moveItemInOrder(

@@ -27,7 +27,12 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
 } from "./session-logic";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
+import {
+  DEFAULT_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type ChatMessage,
+  type Thread,
+} from "./types";
 import { formatUsageResumeTime } from "./lib/usageLimits";
 
 function makeActivity(overrides: {
@@ -1256,6 +1261,63 @@ describe("deriveWorkLogEntries", () => {
 
       const cancelled = deriveWorkLogEntries([requested(), resolved({})], turn)[0];
       expect(cancelled?.userInput?.state).toBe("unanswered");
+    });
+
+    it("folds a message-mode question and its F5-recorded answer into one card", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "async-requested",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            turnId: "turn-1",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            tone: "info",
+            payload: { requestId: "codex-async:q", responseMode: "message", questions },
+          }),
+          makeActivity({
+            id: "user-input-resolved:answer-cmd",
+            createdAt: "2026-02-23T00:00:05.000Z",
+            turnId: "turn-1",
+            kind: "user-input.resolved",
+            summary: "User input submitted",
+            tone: "info",
+            payload: {
+              requestId: "codex-async:q",
+              resolution: "answered",
+              answers: { motion: { answers: ["Spring"] } },
+              answerMessageId: "answer:answer-cmd",
+            },
+          }),
+        ],
+        turn,
+      );
+      expect(entries.map((entry) => entry.id)).toEqual(["user-input-resolved:answer-cmd"]);
+      expect(entries[0]?.userInput?.state).toBe("answered");
+      expect(entries[0]?.userInput?.answerMessageId).toBe("answer:answer-cmd");
+      expect(entries[0]?.userInput?.questions[0]?.answers).toEqual([
+        { text: "Spring", custom: false },
+      ]);
+    });
+
+    it("does not link a dismissed message-mode question to a message", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          requested(),
+          makeActivity({
+            id: "q-dismissed",
+            createdAt: "2026-02-23T00:00:05.000Z",
+            turnId: "turn-2",
+            kind: "user-input.resolved",
+            summary: "User input dismissed",
+            tone: "info",
+            payload: { requestId: "req-q", resolution: "dismissed", answers: {} },
+          }),
+        ],
+        turn,
+      );
+      expect(entries[0]?.userInput?.state).toBe("unanswered");
+      expect(entries[0]?.userInput?.answerMessageId).toBeUndefined();
     });
 
     it("shows an open request as pending in the latest turn only", () => {
@@ -3733,6 +3795,58 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  describe("message-mode answers", () => {
+    const answerCard = {
+      id: "user-input-resolved:cmd",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      label: "User input submitted",
+      tone: "info" as const,
+      userInput: {
+        state: "answered" as const,
+        questions: [
+          {
+            id: "0",
+            header: "Question",
+            question: "Ready?",
+            answers: [{ text: "Yes", custom: true }],
+          },
+        ],
+        answerMessageId: "answer:cmd",
+      },
+    };
+    const answerMessage = (attachments?: ChatMessage["attachments"]): ChatMessage => ({
+      id: MessageId.makeUnsafe("answer:cmd"),
+      role: "user",
+      text: '{"0":{"answers":["Yes"]}}',
+      createdAt: "2026-02-23T00:00:02.001Z",
+      streaming: false,
+      ...(attachments ? { attachments } : {}),
+    });
+
+    it("drops the answer message that its Q&A card already shows", () => {
+      const entries = deriveTimelineEntries([answerMessage()], [], [answerCard]);
+      expect(entries.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd"]);
+    });
+
+    it("keeps an answer message that carries attachments", () => {
+      const entries = deriveTimelineEntries(
+        [
+          answerMessage([
+            { type: "file", id: "file-1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 1 },
+          ]),
+        ],
+        [],
+        [answerCard],
+      );
+      expect(entries.map((entry) => entry.id)).toEqual(["user-input-resolved:cmd", "answer:cmd"]);
+    });
+
+    it("keeps an answer message without a linked card", () => {
+      const entries = deriveTimelineEntries([answerMessage()], [], []);
+      expect(entries.map((entry) => entry.id)).toEqual(["answer:cmd"]);
+    });
+  });
+
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(
       [

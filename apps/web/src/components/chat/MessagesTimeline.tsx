@@ -165,6 +165,7 @@ import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
+import { answerDeliveryDisplayText } from "~/lib/answerDelivery";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { cn } from "~/lib/utils";
 import { type AppSettings, type TimestampFormat, useAppSettingsSelector } from "../../appSettings";
@@ -4537,7 +4538,10 @@ function UserMessageRowContent(props: {
   const userFiles = (row.message.attachments ?? []).filter(
     (attachment) => attachment.type === "file",
   );
-  const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+  // A message-mode answer is delivered as JSON for the provider; show the chosen answers.
+  const displayedUserMessage = deriveDisplayedUserMessageState(
+    answerDeliveryDisplayText(row.message) ?? row.message.text,
+  );
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = externals.canRevert;
   // Images sent without words show as media, not as a bubble around them.

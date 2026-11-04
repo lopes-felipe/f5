@@ -173,6 +173,8 @@ export interface WorkLogUserInputQuestion {
 export interface WorkLogUserInput {
   state: "answered" | "pending" | "unanswered";
   questions: ReadonlyArray<WorkLogUserInputQuestion>;
+  /** The follow-up user message that delivered a message-mode answer; the card replaces it. */
+  answerMessageId?: string;
 }
 
 export interface PendingApproval {
@@ -1128,7 +1130,13 @@ function userInputResolution(
   questions: ReadonlyArray<UserInputQuestion>,
 ): WorkLogUserInput | undefined {
   const receipt = payload?.receipt;
-  if (receipt === undefined) return workLogUserInput(questions, payload?.answers, "unanswered");
+  if (receipt === undefined) {
+    const userInput = workLogUserInput(questions, payload?.answers, "unanswered");
+    const answerMessageId = payload?.answerMessageId;
+    return userInput.state === "answered" && typeof answerMessageId === "string"
+      ? { ...userInput, answerMessageId }
+      : userInput;
+  }
   if (receipt === "indeterminate") return undefined;
   if (typeof payload?.requestId === "string" && answeredRequestIds.has(payload.requestId)) {
     return undefined;
@@ -2406,7 +2414,22 @@ export function deriveTimelineEntries(
     return entry;
   };
 
-  const messageRows: TimelineEntry[] = messages.map((message) =>
+  // An answered message-mode Q&A card already shows the answer its follow-up message
+  // delivered; that message stays only when it carries attachments the card cannot show.
+  const answerMessageIdsShownByCards = new Set<string>();
+  for (const entry of workEntries) {
+    if (entry.userInput?.answerMessageId) {
+      answerMessageIdsShownByCards.add(entry.userInput.answerMessageId);
+    }
+  }
+  const visibleMessages =
+    answerMessageIdsShownByCards.size === 0
+      ? messages
+      : messages.filter(
+          (message) =>
+            !answerMessageIdsShownByCards.has(message.id) || (message.attachments?.length ?? 0) > 0,
+        );
+  const messageRows: TimelineEntry[] = visibleMessages.map((message) =>
     reuse(message.id, [message], () => ({
       id: message.id,
       kind: "message",
