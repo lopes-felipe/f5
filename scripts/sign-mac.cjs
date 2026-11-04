@@ -1,6 +1,11 @@
 const { createRequire } = require("node:module");
 const { resolve } = require("node:path");
 
+function preserveCodexVendorSignature(file) {
+  return /\/node_modules\/@openai\/codex-[^/]+\/vendor(?:\/|$)/.test(file.replaceAll("\\", "/"));
+}
+exports.preserveCodexVendorSignature = preserveCodexVendorSignature;
+
 function perFileOptions(options, file) {
   const inherited = options.optionsForFile?.(file) ?? {};
   if (!file.replaceAll("\\", "/").endsWith("/Contents/Resources/native/f5-computer-helper"))
@@ -54,6 +59,14 @@ exports.default = async (options) => {
   const { signAsync } = libRequire("@electron/osx-sign");
   return signWithRetry(signAsync, {
     ...options,
+    // Codex Chrome certification requires OpenAI's original Developer ID signature.
+    ignore: (file) =>
+      preserveCodexVendorSignature(file) ||
+      (typeof options.ignore === "function"
+        ? options.ignore(file)
+        : (options.ignore ?? []).some((pattern) =>
+            typeof pattern === "function" ? pattern(file) : file.match(pattern),
+          )),
     preAutoEntitlements: false,
     optionsForFile: (file) => perFileOptions(options, file),
   });

@@ -1,7 +1,14 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { createBuildConfig } from "./build-desktop-artifact.ts";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
+import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import { createBuildConfig, DESKTOP_ASAR_UNPACK } from "./build-desktop-artifact.ts";
+
+it("bundles the audited Codex version and unpacks its native platform packages", () => {
+  expect(serverPackageJson.dependencies["@openai/codex"]).toBe(CODEX_PROTOCOL_BASELINE_VERSION);
+  expect(DESKTOP_ASAR_UNPACK).toContain("node_modules/@openai/codex-*/**/*");
+});
 
 describe("desktop afterPack configuration", () => {
   it.each([

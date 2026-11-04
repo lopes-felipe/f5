@@ -2,6 +2,24 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
 const require = createRequire(import.meta.url);
+const { preserveCodexVendorSignature } = require("./sign-mac.cjs") as {
+  preserveCodexVendorSignature(file: string): boolean;
+};
+it.each([
+  "/F5.app/Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+  "/F5.app/Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/codex-path/rg",
+  String.raw`C:\F5\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe`,
+])("preserves the upstream signature of Codex vendor files: %s", (file) => {
+  expect(preserveCodexVendorSignature(file)).toBe(true);
+});
+it.each([
+  "/F5.app/Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
+  "/F5.app/Contents/Resources/native/f5-computer-helper",
+  "/F5.app/Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-arm64/package.json",
+  "/F5.app/Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-arm64/vendor-other/bin/codex",
+])("keeps F5 signing enabled outside the Codex vendor directory: %s", (file) => {
+  expect(preserveCodexVendorSignature(file)).toBe(false);
+});
 const { perFileOptions } = require("./sign-mac.cjs") as {
   perFileOptions(
     options: { optionsForFile(file: string): { entitlements: string } },
