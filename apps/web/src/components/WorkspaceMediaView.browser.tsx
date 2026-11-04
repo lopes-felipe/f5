@@ -3,7 +3,8 @@ import { expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
 
-vi.mock("../nativeApi", () => ({
+vi.mock("../nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../nativeApi")>()),
   readNativeApi: () => ({
     projects: {
       issueAssetUrl: async () => [{ url: "/api/workspace-assets/security-fixture/index.html" }],

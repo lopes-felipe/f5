@@ -36,6 +36,7 @@ export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceCo
     operation: Schema.String,
     detail: Schema.String,
     kind: SourceControlProviderErrorKind,
+    code: Schema.optional(Schema.String),
     host: Schema.optional(Schema.String),
     action: Schema.optional(SourceControlPullRequestAction),
     retryAfterSeconds: Schema.optional(Schema.Number),

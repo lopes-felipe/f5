@@ -125,6 +125,7 @@ import {
   runClaudeTranscriptMaintenance,
   claudeMaintenanceErrorMessage,
 } from "./maintenance/ClaudeTranscriptMaintenance.ts";
+import { readAgentTranscript } from "./provider/agentTranscript/readAgentTranscript.ts";
 import { stampSubmissionSource } from "./provider/submissionProvenance.ts";
 import { AgentBridgeHostError, type AgentBridgeHostShape } from "./agentBridge/AgentBridgeHost.ts";
 import {
@@ -139,6 +140,7 @@ import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
+import { prHubPeekErrorCode } from "./prHub/prHubPeekError.ts";
 import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
@@ -4319,6 +4321,44 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case AGENTS_WS_METHODS.readTranscript: {
+        const { threadBackgroundWork, providerSessionDirectory } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const input = stripRequestTag(request.body);
+        const workspace = yield* projectionWorkspaceQuery
+          .getThreadWorkspace(input.threadId)
+          .pipe(
+            Effect.mapError(
+              () =>
+                new RouteRequestError({ message: "Unable to resolve the transcript workspace." }),
+            ),
+          );
+        return yield* readAgentTranscript(input, {
+          work: threadBackgroundWork,
+          directory: providerSessionDirectory,
+          service: providerService,
+          resolveAccount: (id) => accountService.resolve(id),
+          ...(Option.isSome(workspace) ? { cwd: workspace.value.workspaceRoot } : {}),
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause as Cause.Cause<never>)
+              : Effect.logWarning("Agent transcript read failed", {
+                  cause: Cause.pretty(cause),
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new RouteRequestError({
+                        message:
+                          "Unable to read this agent transcript. Retry or check the provider configuration.",
+                      }),
+                    ),
+                  ),
+                ),
+          ),
+        );
+      }
+
       case AGENTS_WS_METHODS.dismiss: {
         const { threadBackgroundWork } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* threadBackgroundWork.dismiss(stripRequestTag(request.body)).pipe(
@@ -5927,7 +5967,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* forgeAccounts.value.setRouting(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.peek:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.peek(stripRequestTag(request.body));
+        return yield* prHubExtensions.value.peek(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+                code: prHubPeekErrorCode(error),
+              }),
+          ),
+        );
       case PR_HUB_WS_METHODS.getStack:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.getStack(stripRequestTag(request.body));

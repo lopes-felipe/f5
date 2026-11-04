@@ -1,7 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { PullRequestKey, type ForgePrepareOperationInput } from "@t3tools/contracts";
+import {
+  PullRequestKey,
+  type ForgePrepareOperationInput,
+  type TrackedPullRequest,
+} from "@t3tools/contracts";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import { SqlClient } from "effect/unstable/sql";
 import Migration102 from "../persistence/Migrations/102_ForgeAccounts.ts";
@@ -114,6 +118,8 @@ const fixture = Effect.gen(function* () {
         sha: state.head,
         diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
         web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        author: { username: "alice" },
+        created_at: "2026-10-19T12:00:00.000Z",
       })) as unknown as typeof fetch,
   });
   const provider = {
@@ -206,14 +212,17 @@ const fixture = Effect.gen(function* () {
         number: 7,
       }),
   };
-  const create = () =>
+  const create = (getSnapshot = hub.getSnapshot) =>
     makePrHubExtensions.pipe(
-      Effect.provideService(PrHubFederation, federation),
+      Effect.provideService(PrHubFederation, {
+        ...federation,
+        resolve: () => Effect.succeed({ account, provider, hub: { ...hub, getSnapshot } }),
+      }),
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.provideService(ServerConfig, config),
     );
   const engine = yield* create();
-  return { state, engine, create, sql };
+  return { state, engine, create, sql, hub };
 });
 function run<A, E>(test: (value: Effect.Success<typeof fixture>) => Effect.Effect<A, E>) {
   return Effect.scoped(fixture.pipe(Effect.flatMap(test))).pipe(
@@ -227,6 +236,78 @@ function run<A, E>(test: (value: Effect.Success<typeof fixture>) => Effect.Effec
     ),
   );
 }
+
+it.effect("enriches and caches untracked previews without adding tracked status", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = { url: "https://gitlab.example/team/repo/-/merge_requests/7" };
+      const value = yield* engine.peek(input);
+      assert.strictEqual(value?.author, "alice");
+      assert.strictEqual(value?.additions, null);
+      assert.strictEqual(value?.status, undefined);
+      state.lifecycle = "closed";
+      assert.deepStrictEqual(yield* engine.peek(input), value);
+    }),
+  ),
+);
+
+it.effect("uses tracked draft and status facts, including recently resolved PRs", () =>
+  run(({ create, hub }) =>
+    Effect.gen(function* () {
+      const snapshot = yield* hub.getSnapshot;
+      const tracked = {
+        key,
+        isDraft: true,
+        checkRollup: "success",
+        reviewDecision: "approved",
+        mergeable: "mergeable",
+        unresolvedThreadCount: 2,
+      } as TrackedPullRequest;
+      for (const bucket of ["pullRequests", "recentlyResolved"] as const) {
+        let current = { ...snapshot, [bucket]: [tracked] };
+        const engine = yield* create(Effect.sync(() => current));
+        const value = yield* engine.peek({
+          url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        });
+        assert.strictEqual(value?.isDraft, true);
+        assert.deepStrictEqual(value?.status, {
+          checkRollup: "success",
+          reviewDecision: "approved",
+          mergeable: "mergeable",
+          unresolvedThreadCount: 2,
+        });
+        current = {
+          ...snapshot,
+          [bucket]: [{ ...tracked, isDraft: false, checkRollup: "failure" as const }],
+        };
+        const refreshed = yield* engine.peek({
+          url: "https://gitlab.example/team/repo/-/merge_requests/7",
+        });
+        assert.strictEqual(refreshed?.isDraft, false);
+        assert.strictEqual(refreshed?.status?.checkRollup, "failure");
+        current = snapshot;
+        assert.strictEqual(
+          (yield* engine.peek({ url: "https://gitlab.example/team/repo/-/merge_requests/7" }))
+            ?.status,
+          undefined,
+        );
+      }
+    }),
+  ),
+);
+
+it.effect("still previews when the tracked snapshot cannot be read", () =>
+  run(({ create }) =>
+    Effect.gen(function* () {
+      const engine = yield* create(Effect.die(new Error("Snapshot unavailable")));
+      const value = yield* engine.peek({
+        url: "https://gitlab.example/team/repo/-/merge_requests/7",
+      });
+      assert.strictEqual(value?.author, "alice");
+      assert.strictEqual(value?.status, undefined);
+    }),
+  ),
+);
 
 it.effect("prepares without HTTP writes, submits once and survives a service restart", () =>
   run(({ engine, state, create }) =>

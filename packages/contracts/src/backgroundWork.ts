@@ -3,10 +3,12 @@ import { Schema } from "effect";
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString, TurnId } from "./baseSchemas";
 import { ProviderKind } from "./orchestration";
 import { ProviderInstanceId } from "./providerInstance";
+import { CanonicalItemType } from "./providerRuntime";
 
 export const AGENTS_WS_METHODS = {
   getSnapshot: "agents.getSnapshot",
   dismiss: "agents.dismiss",
+  readTranscript: "agents.readTranscript",
 } as const;
 
 export const AGENTS_WS_CHANNELS = {
@@ -99,3 +101,84 @@ export const AgentsDismissResult = Schema.Struct({
   dismissedCount: Schema.Number,
 });
 export type AgentsDismissResult = typeof AgentsDismissResult.Type;
+
+export const AgentsReadTranscriptInput = Schema.Struct({
+  threadId: ThreadId,
+  workItemIds: Schema.Array(TrimmedNonEmptyString).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(16),
+  ),
+  anchor: Schema.optional(Schema.Literals(["start", "latest"])),
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(2048))),
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
+});
+export type AgentsReadTranscriptInput = typeof AgentsReadTranscriptInput.Type;
+const TranscriptBase = {
+  id: Schema.String,
+  createdAt: Schema.NullOr(IsoDateTime),
+  /** Stable native ordering, including records revisited during mutable-item polling. */
+  position: Schema.optional(
+    Schema.Struct({
+      offset: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      index: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ),
+  /** Claude checkpoint immediately before this item (or its containing record). */
+  earlierCursor: Schema.optional(Schema.NullOr(Schema.String)),
+};
+export const AgentTranscriptItem = Schema.Union([
+  Schema.Struct({
+    ...TranscriptBase,
+    kind: Schema.Literal("message"),
+    role: Schema.Literals(["user", "assistant"]),
+    text: Schema.String,
+    truncated: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...TranscriptBase,
+    kind: Schema.Literal("reasoning"),
+    text: Schema.String,
+    truncated: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...TranscriptBase,
+    kind: Schema.Literal("tool-call"),
+    toolCallId: Schema.String,
+    toolName: Schema.String,
+    itemType: CanonicalItemType,
+    title: Schema.String,
+    detail: Schema.String,
+    status: Schema.Literals(["running", "completed", "failed"]),
+    output: Schema.String,
+    outputTruncated: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...TranscriptBase,
+    kind: Schema.Literal("tool-result"),
+    toolCallId: Schema.String,
+    isError: Schema.Boolean,
+    output: Schema.String,
+    outputTruncated: Schema.Boolean,
+  }),
+  Schema.Struct({ ...TranscriptBase, kind: Schema.Literal("notice"), text: Schema.String }),
+]);
+export type AgentTranscriptItem = typeof AgentTranscriptItem.Type;
+export const AgentTranscriptPage = Schema.Struct({
+  availability: Schema.Literals(["ok", "unavailable"]),
+  reason: Schema.optional(
+    Schema.Literals([
+      "unsupported-provider",
+      "session-not-running",
+      "not-started",
+      "not-found",
+      "identity-unavailable",
+    ]),
+  ),
+  items: Schema.Array(AgentTranscriptItem).check(Schema.isMaxLength(500)),
+  nextCursor: Schema.NullOr(Schema.String),
+  earlierCursor: Schema.NullOr(Schema.String),
+  tailCursor: Schema.NullOr(Schema.String),
+  pendingTail: Schema.Boolean,
+  reset: Schema.Boolean,
+});
+export type AgentTranscriptPage = typeof AgentTranscriptPage.Type;

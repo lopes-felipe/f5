@@ -1047,6 +1047,7 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     agents: {
+      readTranscript: (input) => transport.request(AGENTS_WS_METHODS.readTranscript, input),
       getSnapshot: (input) => transport.request(AGENTS_WS_METHODS.getSnapshot, input ?? {}),
       dismiss: (input) => transport.request(AGENTS_WS_METHODS.dismiss, input),
       onSnapshotUpdated: (callback) => {

@@ -501,6 +501,9 @@ const UserInputResolvedPayload = Schema.Struct({
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
 const TaskStartedPayload = Schema.Struct({
+  nativeParentSessionId: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128)),
+  ),
   runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64)))),

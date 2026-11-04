@@ -51,12 +51,13 @@ export interface PrHubFederationShape {
 export class PrHubFederation extends ServiceMap.Service<PrHubFederation, PrHubFederationShape>()(
   "t3/prHub/Layers/PrHubFederation",
 ) {}
-const failure = (detail: string) =>
+const failure = (detail: string, code = "PrHubAccountMismatch") =>
   new SourceControlProviderError({
     provider: "github",
     operation: "prHub.route",
     kind: "forbidden",
     detail,
+    code,
   });
 const sameRef = (left: SourceControlPullRequestRef, right: SourceControlPullRequestRef) =>
   left.provider === right.provider &&
@@ -79,6 +80,16 @@ export function makePrHubAccountRouter(options: {
   ) => Effect.Effect<SourceControlPullRequestRef | null, SourceControlProviderError>;
   readonly contextGeneration: (accountId: string, managerGeneration?: string) => string | undefined;
 }) {
+  const routeAccount = (ref: SourceControlPullRequestRef) =>
+    options
+      .routeAccount(ref)
+      .pipe(
+        Effect.mapError((error) =>
+          error.code || (error.kind !== "forbidden" && error.kind !== "unauthenticated")
+            ? error
+            : new SourceControlProviderError({ ...error, code: "PrHubAccountMismatch" }),
+        ),
+      );
   return (input: PrHubRouteInput) =>
     Effect.gen(function* () {
       const values = yield* options.listAccounts();
@@ -101,8 +112,8 @@ export function makePrHubAccountRouter(options: {
       let selected: ForgeAccount | undefined;
       if (input.accountId) {
         selected = values.find((account) => account.id === input.accountId);
-        if (!selected) return yield* failure("Account was not found.");
-      } else if (hasManagedHost && ref) selected = yield* options.routeAccount(ref);
+        if (!selected) return yield* failure("Account was not found.", "PrHubAccountChanged");
+      } else if (hasManagedHost && ref) selected = yield* routeAccount(ref);
       else if (input.accountGeneration)
         selected = values.find(
           (account) =>
@@ -117,7 +128,7 @@ export function makePrHubAccountRouter(options: {
           return yield* failure(
             "Pull request provider or host does not match the selected account.",
           );
-        if (hasManagedHost && (yield* options.routeAccount(ref)).id !== selected.id)
+        if (hasManagedHost && (yield* routeAccount(ref)).id !== selected.id)
           return yield* failure("This repository is routed to a different account.");
       }
       const runtime = selected ? yield* options.build(selected) : yield* options.legacy;
@@ -128,12 +139,9 @@ export function makePrHubAccountRouter(options: {
         )
           return yield* failure(
             "Pull request provider or host does not match the selected account.",
+            selected ? "PrHubAccountMismatch" : "PrHubAccountRequired",
           );
-        if (
-          !selected &&
-          hasManagedHost &&
-          (yield* options.routeAccount(ref)).id !== runtime.account.id
-        )
+        if (!selected && hasManagedHost && (yield* routeAccount(ref)).id !== runtime.account.id)
           return yield* failure("This repository is routed to a different account.");
       }
       if (
@@ -142,7 +150,10 @@ export function makePrHubAccountRouter(options: {
         input.accountGeneration !==
           options.contextGeneration(runtime.account.id, runtime.account.generation)
       )
-        return yield* failure("The account changed. Refresh PR Hub before continuing.");
+        return yield* failure(
+          "The account changed. Refresh PR Hub before continuing.",
+          "PrHubAccountChanged",
+        );
       return runtime;
     });
 }
@@ -282,7 +293,8 @@ export const PrHubFederationLive = Layer.effect(
       );
     const legacyRuntime = Effect.gen(function* () {
       const snapshot = yield* legacy.getSnapshot;
-      if (!snapshot.account) return yield* failure("Connect an account before using PR Hub.");
+      if (!snapshot.account)
+        return yield* failure("Connect an account before using PR Hub.", "PrHubAccountRequired");
       return {
         hub: legacy,
         github: legacyCli,

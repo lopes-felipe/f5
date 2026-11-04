@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { ThreadPrLinks } from "./ThreadPrLinks";
+import { OpenLinkThread } from "../../hooks/useOpenLink";
 
 const api = vi.hoisted(() => ({
   list: vi.fn(),
@@ -83,10 +84,22 @@ async function mount() {
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <ThreadPrLinks threadId={threadId} />
+      <OpenLinkThread.Provider value={threadId}>
+        <ThreadPrLinks threadId={threadId} />
+      </OpenLinkThread.Provider>
     </QueryClientProvider>,
   );
 }
+it("opens the preview in the owning thread", async () => {
+  await mount();
+  await expect.element(page.getByRole("link", { name: "github #7", exact: true })).toBeVisible();
+  page.getByRole("link", { name: "github #7", exact: true }).element().focus();
+  await page.getByRole("button", { name: "Open in F5", exact: true }).click();
+  expect(useRightPanelStore.getState().byThreadId[threadId]).toMatchObject({
+    activeSurfaceId: "pr:" + key,
+    surfaces: [expect.objectContaining({ kind: "pull-request", key, url })],
+  });
+});
 it("starts from the PR menu and stops from the header eye", async () => {
   await mount();
   await page.getByRole("button", { name: "PR #7 actions", exact: true }).click();

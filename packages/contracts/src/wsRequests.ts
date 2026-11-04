@@ -117,7 +117,12 @@ import {
   UpstreamUnlinkPortInput,
   UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
-import { AGENTS_WS_METHODS, AgentsDismissInput, AgentsGetSnapshotInput } from "./backgroundWork";
+import {
+  AGENTS_WS_METHODS,
+  AgentsDismissInput,
+  AgentsGetSnapshotInput,
+  AgentsReadTranscriptInput,
+} from "./backgroundWork";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
 import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
 import { ELICITATION_WS_METHODS, ElicitationSubmitInput } from "./elicitation";
@@ -393,6 +398,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerAccountStatus, ProviderAccountStartInput),
   tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
   tagRequestBody(AGENTS_WS_METHODS.dismiss, AgentsDismissInput),
+  tagRequestBody(AGENTS_WS_METHODS.readTranscript, AgentsReadTranscriptInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.getState, AgentBridgeGetStateInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.setSchedulingGrant, AgentBridgeSchedulingGrantInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.getTasks, AgentBridgeGetTasksInput),

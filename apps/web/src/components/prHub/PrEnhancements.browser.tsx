@@ -1,11 +1,15 @@
 import "../../index.css";
 import { beforeEach, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThreadId, PullRequestKey, type TrackedPullRequest } from "@t3tools/contracts";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrSendToAgent } from "./PrSendToAgent";
 import { useComposerDraftStore } from "../../composerDraftStore";
+import { WsRequestError } from "../../wsTransport";
+import { OpenLinkThread } from "../../hooks/useOpenLink";
+import { useRightPanelStore } from "../../rightPanelStore";
 const api = vi.hoisted(() => ({
   peek: vi.fn(),
   getThreadsForPr: vi.fn(),
@@ -35,7 +39,18 @@ beforeEach(() => {
   useComposerDraftStore.getState().clearDraftThread(thread);
   api.getThreadsForPr.mockResolvedValue([{ threadId: thread, title: "Linked thread" }]);
   api.navigate.mockResolvedValue(undefined);
-  api.peek.mockResolvedValue({ ...pr, repository: "team/repo", state: "open", author: "alice" });
+  api.peek.mockResolvedValue({
+    ...pr,
+    repository: "team/repo",
+    state: "open",
+    author: "alice",
+    isDraft: false,
+    additions: 12,
+    deletions: 3,
+    createdAt: null,
+    updatedAt: null,
+    mergedAt: null,
+  });
 });
 it("places a diff request in the existing composer once and preserves the draft without sending a turn", async () => {
   useComposerDraftStore.getState().setPrompt(thread, "Existing draft");
@@ -74,11 +89,163 @@ it("proxies authenticated UUID video HTML and images without enabling arbitrary 
   ).toBe(false);
 });
 it("loads link previews on focus and exposes copy without submitting a write", async () => {
-  render(<PrMarkdown host="github.com" body="[Linked PR](https://github.com/team/repo/pull/7)" />);
-  const link = page.getByRole("link", { name: "Linked PR" });
-  await link.click({ modifiers: ["Control"] });
-  await link.element().focus();
-  await expect.element(page.getByRole("tooltip")).toHaveTextContent("Pinned PR");
-  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeVisible();
+  await renderPreview();
+  await focusPreview();
+  await expect.element(page.getByText("Pinned PR", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("Open", { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  expect(document.querySelector('[aria-label="CI passed"]')).toBeNull();
+  await page.getByRole("button", { name: "Copy link" }).click();
   expect(api.dispatchCommand).not.toHaveBeenCalled();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByText("Pinned PR", { exact: true })).not.toBeInTheDocument();
+});
+
+it("tabs into the preview actions and back to the surrounding page", async () => {
+  await renderPreview();
+  await userEvent.keyboard("{Tab}");
+  await expect.element(page.getByRole("link", { name: "Linked PR" })).toHaveFocus();
+  await expect.element(page.getByText("Pinned PR", { exact: true })).toBeVisible();
+  await userEvent.keyboard("{Tab}");
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toHaveFocus();
+  await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
+  await expect.element(page.getByRole("link", { name: "Linked PR" })).toHaveFocus();
+  await userEvent.keyboard("{Tab}{Tab}");
+  await expect.element(page.getByRole("button", { name: "Open on github.com" })).toHaveFocus();
+  await userEvent.keyboard("{Tab}");
+  await expect.element(page.getByRole("button", { name: "After preview" })).toHaveFocus();
+});
+
+function renderPreview(url = "https://github.com/team/repo/pull/7") {
+  return render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PrMarkdown host="github.com" body={"[Linked PR](" + url + ")"} />
+      <button type="button">After preview</button>
+    </QueryClientProvider>,
+  );
+}
+
+it("prefetches only when the pointer rests on the link", async () => {
+  await renderPreview();
+  const link = page.getByRole("link", { name: "Linked PR" });
+  await link.hover();
+  await page.getByRole("button", { name: "After preview" }).hover();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(api.peek).not.toHaveBeenCalled();
+  await link.hover();
+  await expect.poll(() => api.peek.mock.calls.length).toBe(1);
+});
+
+it("does not open instantly on mouse focus", async () => {
+  await renderPreview();
+  await page.getByRole("link", { name: "Linked PR" }).click();
+  expect(document.querySelector('[aria-label="Pull request preview"]')).toBeNull();
+});
+
+it("uses a readable fallback and the server's reference for unusual URLs", async () => {
+  let finish: ((value: unknown) => void) | undefined;
+  const value = await api.peek();
+  api.peek.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  useRightPanelStore.setState({ byThreadId: {}, closedHistory: [] });
+  await render(
+    <OpenLinkThread.Provider value={thread}>
+      <QueryClientProvider client={new QueryClient()}>
+        <PrMarkdown host="github.com" body="[Linked PR](/unusual/pull/7)" />
+      </QueryClientProvider>
+    </OpenLinkThread.Provider>,
+  );
+  await focusPreview();
+  await expect.element(page.getByText("Pull request preview", { exact: true })).toBeVisible();
+  finish?.(value);
+  await page.getByRole("button", { name: "Open in F5" }).click();
+  expect(useRightPanelStore.getState().byThreadId[thread]).toMatchObject({
+    activeSurfaceId: "pr:github:github.com/team/repo#7",
+    surfaces: [expect.objectContaining({ url: value.url })],
+  });
+});
+
+async function focusPreview() {
+  await userEvent.keyboard("{ArrowRight}");
+  page.getByRole("link", { name: "Linked PR" }).element().focus();
+}
+
+it("shows the URL header and usable actions while the preview loads", async () => {
+  api.peek.mockImplementation(() => new Promise(() => {}));
+  await renderPreview();
+  await focusPreview();
+  await expect.element(page.getByText("team/repo #7", { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  await expect.element(page.getByRole("button", { name: "Open on github.com" })).toBeEnabled();
+});
+
+it("shows tracked status chips", async () => {
+  const value = await api.peek();
+  api.peek.mockResolvedValue({
+    ...value,
+    status: {
+      checkRollup: "success",
+      reviewDecision: "approved",
+      mergeable: "mergeable",
+      unresolvedThreadCount: 2,
+    },
+  });
+  await renderPreview();
+  await focusPreview();
+  await expect.poll(() => document.querySelector('[aria-label="CI passed"]')).not.toBeNull();
+  await expect
+    .poll(() => document.querySelector('[aria-label="2 unresolved threads"]'))
+    .not.toBeNull();
+});
+
+it.each([
+  [new Error("network"), "Preview unavailable"],
+  [
+    new WsRequestError("Connect an account before using PR Hub.", "PrHubAccountRequired"),
+    "Connect a github.com account in PR Hub to preview this pull request.",
+  ],
+  [
+    new WsRequestError(
+      "Pull request provider or host does not match the selected account.",
+      "PrHubAccountMismatch",
+    ),
+    "Select the account for this repository in PR Hub to preview this pull request.",
+  ],
+  [
+    new WsRequestError("Account was not found.", "PrHubAccountChanged"),
+    "Refresh PR Hub and select an account to preview this pull request.",
+  ],
+  [
+    new WsRequestError("Forbidden", "PrHubAccessDenied"),
+    "Your account does not have access to this pull request.",
+  ],
+])("keeps actions available on preview failure %s", async (error, message) => {
+  api.peek.mockRejectedValue(error);
+  await renderPreview();
+  await focusPreview();
+  await expect.element(page.getByText(message, { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+});
+
+it.each(["merged", "closed"])("hides actionable status chips for %s PRs", async (state) => {
+  const value = await api.peek();
+  api.peek.mockResolvedValue({
+    ...value,
+    state,
+    status: {
+      checkRollup: "failure",
+      reviewDecision: "approved",
+      mergeable: "conflicting",
+      unresolvedThreadCount: 0,
+    },
+  });
+  await renderPreview();
+  await userEvent.keyboard("{Tab}");
+  await expect.element(page.getByText("Pinned PR", { exact: true })).toBeVisible();
+  expect(document.querySelector('[aria-label="CI failed"]')).toBeNull();
+  expect(document.querySelector('[aria-label="Conflicts"]')).toBeNull();
 });

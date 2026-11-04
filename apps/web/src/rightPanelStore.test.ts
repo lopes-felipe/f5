@@ -1,5 +1,10 @@
 import { ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
+import {
+  transcriptKey,
+  useAgentTranscriptStore,
+  newTranscriptState,
+} from "./lib/agentTranscriptStore";
 
 import {
   selectSurfaceHeaderState,
@@ -11,6 +16,19 @@ const THREAD_A = ThreadId.makeUnsafe("thread-a");
 const THREAD_B = ThreadId.makeUnsafe("thread-b");
 
 describe("rightPanelStore", () => {
+  it("deduplicates transcript tabs and evicts their cache on close", () => {
+    const input = { nativeWorkItemId: "task", workItemIds: ["task"], title: "Agent" };
+    useRightPanelStore.getState().open(THREAD_A, "agents");
+    useRightPanelStore.getState().openAgentTranscript(THREAD_A, input);
+    useRightPanelStore.getState().openAgentTranscript(THREAD_A, input);
+    const panel = selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_A);
+    expect(panel.surfaces).toHaveLength(2);
+    expect(panel.activeSurfaceId).toBe("agent:task");
+    const key = transcriptKey(THREAD_A, "task");
+    useAgentTranscriptStore.getState().update(key, () => newTranscriptState());
+    useRightPanelStore.getState().closeSurface(THREAD_A, "agent:task");
+    expect(useAgentTranscriptStore.getState().entries[key]).toBeUndefined();
+  });
   beforeEach(() => {
     useRightPanelStore.setState({ byThreadId: {}, closedHistory: [], tabMenuThreadId: null });
   });

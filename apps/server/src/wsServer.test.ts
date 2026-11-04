@@ -824,6 +824,7 @@ describe("WebSocket Server", () => {
             start: () => Effect.void,
           }),
           Layer.succeed(threadBackgroundWorkModule.ThreadBackgroundWork, {
+            getOwnedEntries: () => Effect.succeed([]),
             recordProviderEvent: () => Effect.void,
             getSnapshot: Effect.succeed({
               entries: [],
@@ -1241,6 +1242,7 @@ describe("WebSocket Server", () => {
           start: () => Effect.void,
         }),
         Layer.succeed(threadBackgroundWorkModule.ThreadBackgroundWork, {
+          getOwnedEntries: () => Effect.succeed([]),
           recordProviderEvent: () => Effect.void,
           getSnapshot: Effect.succeed({
             entries: [],

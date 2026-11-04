@@ -2,6 +2,7 @@ import "../index.css";
 
 import { afterEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ThreadId } from "@t3tools/contracts";
 
@@ -98,7 +99,11 @@ it("keeps the default menu for non-web links and outside the desktop app", async
 
 it("offers the link menu on pull request links", async () => {
   const href = "https://github.com/org/repo/pull/7";
-  const view = await render(<ChatMarkdown text={`[the PR](${href})`} cwd={undefined} />);
+  const view = await render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ChatMarkdown text={`[the PR](${href})`} cwd={undefined} />
+    </QueryClientProvider>,
+  );
   const link = view.getByRole("link", { name: "the PR" }).element() as HTMLElement;
   vi.stubGlobal("desktopBridge", {});
   showContextMenu.mockResolvedValueOnce("open-external");

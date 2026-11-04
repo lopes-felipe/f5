@@ -76,6 +76,7 @@ export const RPC_METHOD_POLICY = {
 
   "agents.dismiss": MUTATION_RT,
   "agents.getSnapshot": READ_RT,
+  "agents.readTranscript": READ_RT,
 
   "attachments.cloneToUpload": MUTATION,
   "attachments.getUploads": READ,

@@ -312,7 +312,7 @@ describe("AgentsPanelView", () => {
     }
   });
 
-  it("loads a missing prompt and appends output pages", async () => {
+  it("loads a missing shell prompt and appends output pages", async () => {
     const onLoadPrompt = vi.fn(async () => "Loaded prompt from the thread snapshot.");
     const onInspect = vi.fn(async (_entry: AgentsPanelEntry, cursor?: string) =>
       cursor
@@ -320,7 +320,7 @@ describe("AgentsPanelView", () => {
         : { page: { entries: ["first page"] }, nextCursor: "cursor-2" },
     );
     const models = {
-      thread: buildAgentsPanelModel([entry({ prompt: null })], null),
+      thread: buildAgentsPanelModel([entry({ prompt: null, kind: "shell" })], null),
       all: allModel,
     };
     const screen = await render(
@@ -332,6 +332,10 @@ describe("AgentsPanelView", () => {
       />,
     );
     try {
+      await page
+        .getByRole("region", { name: "Background tasks" })
+        .getByRole("button", { name: /Background tasks/ })
+        .click();
       await page.getByRole("button", { name: "Expand Review pagination" }).click();
       const detail = page.getByTestId("agent-detail");
       await expect

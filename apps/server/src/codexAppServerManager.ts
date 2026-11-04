@@ -1995,6 +1995,38 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.lastProviderTitle = title;
   }
 
+  async readChildThreadItems(
+    threadId: ThreadId,
+    childId: string,
+    cursor: string | null,
+    limit: number,
+  ): Promise<{ data: unknown[]; nextCursor: string | null } | "unsupported-provider" | null> {
+    const context = this.sessions.get(threadId);
+    if (!context || context.session.status === "closed" || context.phase === "draining")
+      return null;
+    if (!context.childThreadIds?.has(childId)) return null;
+    try {
+      const response = asObject(
+        await this.sendRequest(context, "thread/items/list", {
+          threadId: childId,
+          cursor,
+          limit,
+          sortDirection: "asc",
+        }),
+      );
+      if (!Array.isArray(response?.data) || response.data.length > limit)
+        throw new Error("Invalid child transcript page.");
+      return {
+        data: response.data,
+        nextCursor: typeof response.nextCursor === "string" ? response.nextCursor : null,
+      };
+    } catch (error) {
+      if (error instanceof CodexJsonRpcError && error.code === -32601)
+        return "unsupported-provider";
+      throw error;
+    }
+  }
+
   private cacheReadState(context: CodexSessionContext, value: unknown): void {
     if (value === null) {
       context.readState = null;

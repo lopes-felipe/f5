@@ -1,4 +1,14 @@
-import { claudeSkillToolTitle } from "@t3tools/shared/toolActivity";
+import { resolveClaudeSubagentFile } from "../agentTranscript/claudeSubagentTranscript.ts";
+import {
+  classifyToolItemType,
+  readToolImagePath,
+  formatSubagentLabel,
+  fileOrientedToolDetail,
+  summarizeToolRequest,
+  titleForTool,
+  extractTextContent,
+  normalizeOptionalString,
+} from "../claudeToolPresentation.ts";
 import {
   rememberClaudeSubagentLaunch,
   resolveClaudeSubagentEffort,
@@ -67,7 +77,6 @@ import {
   buildClaudeToolCompletion,
   CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES,
   claudeSubagentTaskToolOutput,
-  isClaudeTaskToolName,
   readClaudeToolNonExecutionKind,
   storeClaudeToolCompletionArtifact,
 } from "../claudeToolCompletion.ts";
@@ -208,7 +217,6 @@ import {
   filterReservedClaudeLaunchArgs,
 } from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
-import { isImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   buildMcpToolFilters,
   claudeDisallowedMcpToolNames,
@@ -1245,79 +1253,6 @@ function toPermissionMode(value: unknown): PermissionMode | undefined {
   }
 }
 
-/** A Claude `Read` of an image renders as a viewed image rather than a text read. */
-function readToolImagePath(toolName: string, input: Record<string, unknown>): string | undefined {
-  const normalized = toolName.trim().toLowerCase();
-  if (normalized !== "read" && normalized !== "read file") {
-    return undefined;
-  }
-  const pathValue = input.file_path ?? input.path;
-  if (typeof pathValue !== "string") {
-    return undefined;
-  }
-  const path = pathValue.trim();
-  return path.length > 0 && isImagePreviewPath(path) ? path : undefined;
-}
-
-function classifyToolItemType(
-  toolName: string,
-  options?: { readonly blockType?: string; readonly input?: Record<string, unknown> },
-): CanonicalItemType {
-  if (options?.blockType?.toLowerCase() === "mcp_tool_use") {
-    return "mcp_tool_call";
-  }
-  if (options?.input && readToolImagePath(toolName, options.input)) {
-    return "image_view";
-  }
-
-  const normalized = toolName.toLowerCase();
-  // Task-tracking tools are bookkeeping, not file edits ("TaskCreate" would
-  // otherwise match the "create" heuristic below) and not sub-agent delegation.
-  if (normalized === "todowrite" || isClaudeTaskToolName(toolName)) {
-    return "dynamic_tool_call";
-  }
-  if (normalized.includes("agent")) {
-    return "collab_agent_tool_call";
-  }
-  if (
-    normalized === "task" ||
-    normalized === "agent" ||
-    normalized.includes("subagent") ||
-    normalized.includes("sub-agent")
-  ) {
-    return "collab_agent_tool_call";
-  }
-  if (
-    normalized.includes("bash") ||
-    normalized.includes("command") ||
-    normalized.includes("shell") ||
-    normalized.includes("terminal")
-  ) {
-    return "command_execution";
-  }
-  if (normalized.includes("mcp")) {
-    return "mcp_tool_call";
-  }
-  if (
-    normalized.includes("edit") ||
-    normalized.includes("write") ||
-    normalized.includes("file") ||
-    normalized.includes("patch") ||
-    normalized.includes("replace") ||
-    normalized.includes("create") ||
-    normalized.includes("delete")
-  ) {
-    return "file_change";
-  }
-  if (normalized.includes("websearch") || normalized.includes("web search")) {
-    return "web_search";
-  }
-  if (normalized.includes("image")) {
-    return "image_view";
-  }
-  return "dynamic_tool_call";
-}
-
 function classifyToolRequestKind(
   toolName: string,
   options?: { readonly blockType?: string },
@@ -1354,14 +1289,6 @@ function classifyRequestType(toolName: string): CanonicalRequestType {
     : itemType === "file_change"
       ? "file_change_approval"
       : "dynamic_tool_call";
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function normalizeOptionalNumber(value: unknown): number | undefined {
@@ -1775,14 +1702,6 @@ async function lookupClaudeReportedModelContextWindowTokens(
   });
 }
 
-function formatSubagentLabel(subagentType: string): string {
-  return subagentType
-    .split(/[-_\s]+/g)
-    .filter((segment) => segment.length > 0)
-    .map((segment) => `${segment.charAt(0).toUpperCase()}${segment.slice(1)}`)
-    .join(" ");
-}
-
 function readSubagentMetadata(
   input: Record<string, unknown>,
   result?: Record<string, unknown>,
@@ -1836,85 +1755,6 @@ function buildToolLifecycleData(input: {
     ...(changes ? { changes } : {}),
     ...subagentMetadata,
   };
-}
-
-function fileOrientedToolDetail(
-  toolName: string,
-  input: Record<string, unknown>,
-): string | undefined {
-  const n = toolName.toLowerCase();
-  const isFileTool =
-    n === "read" || n === "edit" || n === "write" || n === "multiedit" || n === "notebookedit";
-  if (!isFileTool) return undefined;
-  return (
-    normalizeOptionalString(input.file_path) ??
-    normalizeOptionalString(input.notebook_path) ??
-    normalizeOptionalString(input.path)
-  );
-}
-
-function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
-  if (classifyToolItemType(toolName) === "collab_agent_tool_call") {
-    const description = normalizeOptionalString(input.description);
-    if (description) {
-      return `${toolName}: ${description.slice(0, 400)}`;
-    }
-
-    const prompt = normalizeOptionalString(input.prompt);
-    if (prompt) {
-      return `${toolName}: ${prompt.slice(0, 400)}`;
-    }
-  }
-
-  if (toolName.toLowerCase() === "todowrite" && Array.isArray(input.todos)) {
-    const total = input.todos.length;
-    return `${toolName}: ${total} task${total === 1 ? "" : "s"}`;
-  }
-
-  const filePath = fileOrientedToolDetail(toolName, input);
-  if (filePath) return filePath;
-
-  const commandValue = input.command ?? input.cmd;
-  const command = typeof commandValue === "string" ? commandValue : undefined;
-  if (command && command.trim().length > 0) {
-    return `${toolName}: ${command.trim().slice(0, 400)}`;
-  }
-
-  const serialized = JSON.stringify(input);
-  if (serialized.length <= 400) {
-    return `${toolName}: ${serialized}`;
-  }
-  return `${toolName}: ${serialized.slice(0, 397)}...`;
-}
-
-function titleForTool(
-  itemType: CanonicalItemType,
-  input?: Record<string, unknown>,
-  toolName?: string,
-): string {
-  const skillTitle =
-    itemType === "dynamic_tool_call" ? claudeSkillToolTitle(toolName, input) : undefined;
-  if (skillTitle) return skillTitle;
-  switch (itemType) {
-    case "command_execution":
-      return "Command run";
-    case "file_change":
-      return "File change";
-    case "mcp_tool_call":
-      return "MCP tool call";
-    case "collab_agent_tool_call": {
-      const subagentType = input ? normalizeOptionalString(input.subagent_type) : undefined;
-      return subagentType ? `${formatSubagentLabel(subagentType)} agent` : "Subagent task";
-    }
-    case "web_search":
-      return "Web search";
-    case "image_view":
-      return "Image view";
-    case "dynamic_tool_call":
-      return "Tool call";
-    default:
-      return "Item";
-  }
 }
 
 const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
@@ -2227,31 +2067,6 @@ function extractContentBlockText(block: unknown): string {
 
   const candidate = block as { type?: unknown; text?: unknown };
   return candidate.type === "text" && typeof candidate.text === "string" ? candidate.text : "";
-}
-
-function extractTextContent(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => extractTextContent(entry)).join("");
-  }
-
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-
-  const record = value as {
-    text?: unknown;
-    content?: unknown;
-  };
-
-  if (typeof record.text === "string") {
-    return record.text;
-  }
-
-  return extractTextContent(record.content);
 }
 
 function safeJsonLength(value: unknown): number {
@@ -6118,6 +5933,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               resumeCursor: context.session.resumeCursor,
               type: "task.started",
               payload: {
+                ...(context.resumeSessionId
+                  ? { nativeParentSessionId: context.resumeSessionId }
+                  : {}),
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
                 ...nativeTaskRunReference(context, message.task_id, message),
                 ...(context.taskStates.get(message.task_id)?.model
@@ -10324,49 +10142,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               /shell|bash|monitor/i.test(knownTask.taskType ?? knownTask.tool?.toolName ?? "")
             )
               return readShellOutput();
-            let parent: string;
-            try {
-              parent = await findClaudeTranscript(configDir, context.resumeSessionId!);
-            } catch (cause) {
+            const resolved = await resolveClaudeSubagentFile({
+              configDir,
+              sessionId: context.resumeSessionId!,
+              agentId: agent,
+            }).catch((cause: unknown) => {
+              // Preserve inspection's native owned-task fallback when lookup
+              // is ambiguous or unreadable. Never read a rejected file path.
               if (context.nativeTaskIds.has(agent) && context.query.getTaskOutput)
-                return readShellOutput();
+                return { kind: "missing" as const };
               throw cause;
-            }
-            const directory = NodePath.join(
-              NodePath.dirname(parent),
-              context.resumeSessionId!,
-              "subagents",
-            );
-            const file = NodePath.join(directory, `agent-${agent}.jsonl`);
-            // Reject links so the isolated-store path cannot escape to another profile.
-            const realConfig = await NodeFs.realpath(configDir);
-            let realDirectory: string;
-            try {
-              realDirectory = await NodeFs.realpath(directory);
-            } catch (cause) {
-              if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-              return readShellOutput();
-            }
-            const relativeDirectory = NodePath.relative(realConfig, realDirectory);
-            if (
-              NodePath.isAbsolute(relativeDirectory) ||
-              relativeDirectory === ".." ||
-              relativeDirectory.startsWith(`..${NodePath.sep}`)
-            )
-              throw new Error("Native output escapes this instance’s isolated store.");
-            let realFile: string;
-            try {
-              realFile = await NodeFs.realpath(file);
-            } catch (cause) {
-              if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-              return readShellOutput();
-            }
-            if (
-              NodePath.dirname(realFile) !== realDirectory ||
-              !(await NodeFs.lstat(file)).isFile()
-            )
-              throw new Error("Native output path is not a regular isolated transcript.");
-            return readClaudeTranscriptPage(realFile, offset, input.limit ?? 20);
+            });
+            if (resolved.kind === "missing") return readShellOutput();
+            return readClaudeTranscriptPage(resolved.path, offset, input.limit ?? 20);
           },
           catch: (cause) =>
             new ProviderAdapterRequestError({

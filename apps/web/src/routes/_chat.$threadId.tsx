@@ -51,6 +51,7 @@ import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useContextDocumentTitle } from "../hooks/useDocumentTitle";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useAgentsPanelStore } from "../agentsPanelStore";
+import { AgentTranscriptPanel } from "../components/AgentTranscriptPanel";
 import { useAgentsPanelModel } from "../lib/agentsReactQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
 import { useStartupReady } from "../lib/startupReady";
@@ -757,6 +758,20 @@ function ChatThreadRouteView() {
                   onRetry={retryAgents}
                 />
               </Suspense>
+            );
+          case "agent-transcript":
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading agent transcript..." />
+            ) : (
+              <AgentTranscriptPanel
+                threadId={threadId}
+                nativeWorkItemId={surface.id.slice(6)}
+                focusActivityId={surface.focusActivityId}
+                workItemIds={surface.workItemIds}
+                title={surface.title}
+                visible={rightPanelState.isOpen}
+                cwd={workspaceBrowserRoot ?? undefined}
+              />
             );
         }
       },

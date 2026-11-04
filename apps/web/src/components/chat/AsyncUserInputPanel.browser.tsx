@@ -6,7 +6,8 @@ import { AsyncUserInputPanel } from "./AsyncUserInputPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { usePendingUserInputDraftStore } from "../../pendingUserInputDraftStore";
 const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), release: vi.fn() }));
-vi.mock("~/nativeApi", () => ({
+vi.mock("~/nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../nativeApi")>()),
   readNativeApi: () => ({
     orchestration: { dispatchCommand: mocks.dispatch },
     attachments: { releaseUploads: mocks.release },

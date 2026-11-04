@@ -107,6 +107,7 @@ export interface AgentsPanelViewProps {
   readonly onBackgroundTasksExpandedChange: (expanded: boolean) => void;
   readonly onRetry: () => void;
   readonly onNavigate: (entry: AgentsPanelEntry) => void;
+  readonly onOpenTranscript?: (entry: AgentsPanelEntry) => void;
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly onStop: (entry: AgentsPanelEntry) => void;
   readonly onStopAll: (entries: ReadonlyArray<AgentsPanelEntry>) => void;
@@ -301,6 +302,7 @@ function EntryList(props: {
           onStop: () => view.onStop(entry),
           onDismiss: () => view.onDismiss(entry),
           onNavigate: () => view.onNavigate(entry),
+          onOpenTranscript: () => view.onOpenTranscript?.(entry),
           onOpenThread: () => view.onOpenThread(entry.threadId),
           onInspect: (cursor) => view.onInspect(entry, cursor),
           onLoadPrompt: () => view.onLoadPrompt(entry),
@@ -769,6 +771,10 @@ export function AgentsPanel(props: {
       onBackgroundTasksExpandedChange={setBackgroundTasksExpanded}
       onRetry={props.onRetry}
       onNavigate={(entry) => navigateToThread(entry.threadId, entry.focusActivityId)}
+      onOpenTranscript={(entry) => {
+        navigateToThread(entry.threadId, null);
+        useRightPanelStore.getState().openAgentTranscript(entry.threadId, entry);
+      }}
       onOpenThread={(threadId) => navigateToThread(threadId, null)}
       onStop={(entry) => stop([entry])}
       onStopAll={stop}

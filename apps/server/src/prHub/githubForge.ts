@@ -113,6 +113,7 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
       return {
         number: ref.number,
         title: text(r.title)!,
+        updatedAt: text(r.updated_at),
         url: text(r.html_url) ?? `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
         baseRefName: text(base.ref) ?? "",
         headRefName: text(head.ref) ?? "",
