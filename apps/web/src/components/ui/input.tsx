@@ -5,6 +5,19 @@ import type * as React from "react";
 
 import { cn } from "~/lib/utils";
 
+/**
+ * Quiet tonal field (docs/design/direction.md): a borderless `secondary` fill
+ * that takes a ring-coloured border and a canvas fill when focused. For
+ * elements that are the field themselves (native `<input>`, `<select>`,
+ * `<textarea>`); add size, padding and font classes at the call site.
+ */
+const fieldSurfaceClassName =
+  "rounded-md border border-transparent bg-secondary text-foreground outline-none ring-ring/24 transition-[border-color,box-shadow,background-color] duration-(--duration-fast) placeholder:text-muted-foreground focus-visible:border-ring focus-visible:bg-background focus-visible:ring-[3px] aria-invalid:border-destructive/36 focus-visible:aria-invalid:border-destructive/64 focus-visible:aria-invalid:ring-destructive/16 dark:aria-invalid:ring-destructive/24 disabled:opacity-64";
+
+/** The same field look for a wrapper around the real control (`has-*` states). */
+const fieldShellClassName =
+  "relative inline-flex w-full rounded-md border border-transparent bg-secondary text-base text-foreground ring-ring/24 transition-[border-color,box-shadow,background-color] duration-(--duration-fast) has-focus-visible:border-ring has-focus-visible:bg-background has-focus-visible:ring-[3px] has-aria-invalid:border-destructive/36 has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 dark:has-aria-invalid:ring-destructive/24 has-autofill:bg-foreground/4 dark:has-autofill:bg-foreground/8 has-disabled:opacity-64 sm:text-sm";
+
 type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputElement>, "size"> & {
   size?: "sm" | "default" | "lg" | number;
   unstyled?: boolean;
@@ -30,13 +43,7 @@ function Input({
 
   return (
     <span
-      className={
-        cn(
-          !unstyled &&
-            "relative inline-flex w-full rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 has-aria-invalid:border-destructive/36 has-focus-visible:border-ring has-autofill:bg-foreground/4 has-disabled:opacity-64 has-[:disabled,:focus-visible,[aria-invalid]]:shadow-none has-focus-visible:ring-[3px] sm:text-sm dark:bg-input/32 dark:has-autofill:bg-foreground/8 dark:has-aria-invalid:ring-destructive/24 dark:not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)]",
-          className,
-        ) || undefined
-      }
+      className={cn(!unstyled && fieldShellClassName, className) || undefined}
       data-size={size}
       data-slot="input-control"
     >
@@ -59,4 +66,4 @@ function Input({
   );
 }
 
-export { Input, type InputProps };
+export { Input, type InputProps, fieldShellClassName, fieldSurfaceClassName };

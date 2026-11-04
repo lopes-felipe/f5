@@ -60,7 +60,7 @@ export default function ProjectScriptsControl({
         <Group aria-label="Project scripts">
           <Button
             size="sm"
-            variant="outline"
+            variant="ghost"
             onClick={() => onRunScript(primaryScript)}
             title={`Run ${primaryScript.name}`}
           >
@@ -72,7 +72,14 @@ export default function ProjectScriptsControl({
           <GroupSeparator className="hidden @xl/header-actions:block" />
           <Menu highlightItemOnHover={false}>
             <MenuTrigger
-              render={<Button size="icon-sm" variant="outline" aria-label="Script actions" />}
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Script actions"
+                  className="text-muted-foreground hover:text-foreground"
+                />
+              }
             >
               <ChevronDownIcon className="size-4" />
             </MenuTrigger>

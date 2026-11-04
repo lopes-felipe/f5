@@ -1,6 +1,7 @@
 import { useAppSettingsSelector } from "../appSettings";
 import { pickSnoozePreset, resolveSnoozePresets } from "../lib/snoozePresets";
 import { cn } from "../lib/utils";
+import { fieldSurfaceClassName } from "./ui/input";
 import { formatTimeOfDay } from "../timestampFormat";
 
 export function SnoozePresetPicker({
@@ -50,7 +51,7 @@ export function SnoozePresetPicker({
       <label className="block space-y-1 text-xs text-muted-foreground">
         <span>Custom</span>
         <input
-          className="h-8 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground"
+          className={cn(fieldSurfaceClassName, "h-8 w-full px-3 text-sm")}
           type="datetime-local"
           value={localValue}
           min={localMinimum}

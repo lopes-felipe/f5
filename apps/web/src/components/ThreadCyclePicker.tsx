@@ -49,7 +49,7 @@ interface ThreadCyclePickerRowProps {
 const BACKDROP_CLASS =
   "fixed inset-0 z-[135] flex flex-col items-center bg-black/32 px-4 py-[max(--spacing(4),4vh)] backdrop-blur-sm sm:py-[10vh]";
 const POPUP_CLASS =
-  "relative flex max-h-105 min-h-0 w-full min-w-0 max-w-xl flex-col overflow-hidden rounded-2xl border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 outline-none before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:bg-muted/72 before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]";
+  "relative flex max-h-105 min-h-0 w-full min-w-0 max-w-xl flex-col overflow-hidden rounded-2xl border bg-popover text-popover-foreground shadow-lg/5 outline-none before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:bg-muted/72";
 
 function getModifierLabel(): string {
   if (typeof navigator === "undefined") {

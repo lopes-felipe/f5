@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor, PROVIDER_ACCENT_SWATCHES } from "../../providerInstances";
 import { Button } from "../ui/button";
+import { fieldSurfaceClassName } from "../ui/input";
 
 export interface AccentColorPickerProps {
   /** Accessible name for the native color input, e.g. `Accent color for Work`. */
@@ -81,7 +82,10 @@ export function AccentColorPicker({
           }}
           onBlur={commitDraft}
           aria-label={ariaLabel}
-          className="h-8 w-10 cursor-pointer rounded border border-input bg-background p-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+          className={cn(
+            fieldSurfaceClassName,
+            "h-8 w-10 cursor-pointer p-0.5 disabled:cursor-not-allowed",
+          )}
         />
         <div className="flex flex-wrap gap-1.5">
           {PROVIDER_ACCENT_SWATCHES.map((swatch) => {
