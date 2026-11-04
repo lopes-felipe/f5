@@ -95,6 +95,7 @@ import { prependCodexCliTelemetryDisabledConfig } from "./provider/codexCliConfi
 import { buildCodexAppServerCommand } from "./provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "./providerProcessEnv";
 import { withBrowserOpenThreadToken } from "./browser/BrowserOpenThreadToken";
+import { resolveCodexCommand } from "./provider/codexExecutable.ts";
 import {
   fingerprintSupportedSlashCommands,
   normalizeSupportedSlashCommands,
@@ -1133,7 +1134,7 @@ export function codexOneOffPoolKey(
 ): string {
   const options = providerOptions?.codex;
   return JSON.stringify([
-    options?.binaryPath ?? "codex",
+    resolveCodexCommand(options?.binaryPath),
     resolveCodexHome({ homePath: options?.homePath }) ?? "",
     options?.launchArgs ?? [],
   ]);
@@ -1282,7 +1283,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       };
 
       const codexOptions = readCodexProviderOptions(input);
-      const codexBinaryPath = codexOptions.binaryPath ?? "codex";
+      const codexBinaryPath = resolveCodexCommand(codexOptions.binaryPath);
       const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
       const processCwd = input.processCwd ?? resolvedCwd;
       const cliVersion = await this.assertSupportedCodexCliVersion({

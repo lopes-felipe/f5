@@ -8,7 +8,7 @@ You pick the provider and model per thread in the composer.
 ## How to
 
 1. Install Git.
-2. Install at least one provider below and sign in once in a terminal.
+2. Enable a bundled provider or install one below, then sign in.
 3. Open **Settings → Providers**, enable the provider, and check that it shows **Authenticated**.
 4. If F5 can't find the executable, set **Binary path** on the provider.
 
@@ -19,7 +19,7 @@ send a message with it.
 
 | Provider    | Install                                                                           | Sign in                                                                                      |
 | ----------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Codex       | [Codex CLI](https://github.com/openai/codex) on your PATH                         | `codex login` (ChatGPT or API key)                                                           |
+| Codex       | Bundled with F5; set **Binary path** to use your own CLI                          | Sign in from **Settings → Profiles & Accounts** (ChatGPT or API key)                         |
 | Claude Code | Bundled with F5; no global `claude` needed                                        | `claude auth login` from a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI |
 | Cursor      | Cursor CLI, so `agent` is on your PATH                                            | `agent login`                                                                                |
 | OpenCode    | `opencode` on your PATH, or an external server URL                                | OpenCode's own provider setup                                                                |

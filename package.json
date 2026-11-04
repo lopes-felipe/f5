@@ -50,7 +50,7 @@
     "test:server:git:smoke": "bun run --cwd apps/server test:git:smoke",
     "test:server:git:extended": "bun run --cwd apps/server test:git:extended",
     "protocol:audit": "bun scripts/audit-codex-protocol.ts",
-    "protocol:audit:baseline": "bun scripts/audit-codex-protocol.ts --install-baseline",
+    "protocol:audit:baseline": "bun scripts/audit-codex-protocol.ts --bundled-baseline",
     "protocol:audit:muse": "bun scripts/audit-muse-protocol.ts",
     "upstream-ports:check": "bun scripts/check-upstream-ports.ts",
     "test:server:integration": "bun run --cwd apps/server test:integration",
@@ -81,7 +81,7 @@
     "test:cli-smoke": "node scripts/cli-archive-smoke.ts",
     "sdk:audit": "bun scripts/audit-claude-sdk.ts",
     "protocol:audit:requests": "bun scripts/audit-codex-request-shapes.ts",
-    "protocol:audit:requests:baseline": "bun scripts/audit-codex-request-shapes.ts --install-baseline",
+    "protocol:audit:requests:baseline": "bun scripts/audit-codex-request-shapes.ts --bundled-baseline",
     "test:ci:workspaces": "node node_modules/turbo/bin/turbo run test --filter=!t3 --concurrency=2 --continue=always"
   },
   "devDependencies": {

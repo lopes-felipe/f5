@@ -1,4 +1,5 @@
 import { ProviderRegistry } from "../Services/ProviderRegistry";
+import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 import { stripClaudeHostSessionEnvironment } from "../Drivers/ClaudeHome";
 import { ProviderKind } from "@t3tools/contracts";
 import { Schema } from "effect";
@@ -67,6 +68,7 @@ function parseSimpleCommandVersion(stdout: string, stderr: string): string | und
 }
 
 function isCommandMissingCause(error: unknown, binary: string): boolean {
+  if (error instanceof CommandNotFoundError) return true;
   const lowerMessages: Array<string> = [];
   let enoent = false;
   let spawnNotFound = false;
@@ -412,9 +414,12 @@ export const checkCodexProviderPreflight = (input?: {
         failureReason: isCommandMissingCause(error, binaryPath)
           ? "notInstalled"
           : "versionProbeFailed",
-        message: isCommandMissingCause(error, binaryPath)
-          ? `Could not start Codex CLI (${binaryPath}). Check Settings → Providers → Codex → Binary path on the server. ${binaryPath === "codex" ? "Installing ChatGPT or Codex desktop may not add codex to PATH." : "Make sure the configured executable exists and can be run."}`
-          : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          error instanceof CommandNotFoundError
+            ? error.message
+            : isCommandMissingCause(error, binaryPath)
+              ? `Could not start Codex CLI (${binaryPath}). Check Settings → Providers → Codex → Binary path on the server. ${!binaryPath.trim() || binaryPath.trim() === "codex" ? "Reinstall F5 to restore its bundled Codex runtime." : "Make sure the configured executable exists and can be run."}`
+              : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }
 
@@ -558,9 +563,12 @@ export const checkClaudeProviderPreflight = (input?: {
         authStatus: "unknown" as const,
         checkedAt,
         failureReason: missing ? "notInstalled" : "versionProbeFailed",
-        message: missing
-          ? claudeMissingExecutableMessage(binaryPath)
-          : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          error instanceof CommandNotFoundError
+            ? error.message
+            : missing
+              ? claudeMissingExecutableMessage(binaryPath)
+              : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }
 

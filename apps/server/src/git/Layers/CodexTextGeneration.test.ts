@@ -6,7 +6,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Cause, Effect, Exit, Fiber, FileSystem, Layer, Path, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+// These process fixtures supply a fake CLI on PATH. Resolver behavior is covered
+// separately; keep their structured-output and cancellation tests offline.
+vi.mock("../../provider/codexExecutable.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../provider/codexExecutable.ts")>()),
+  resolveCodexCommand: (binary?: string) => binary?.trim() || "codex",
+}));
 
 import { PositiveInt, ProviderInstanceId } from "@t3tools/contracts";
 

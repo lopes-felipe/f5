@@ -30,6 +30,8 @@ import {
 import { ServerConfig } from "../../config.ts";
 import * as browserAccess from "../../mcp/browserAccess.ts";
 import * as codexChromeIntegration from "../codexChromeIntegration.ts";
+import * as codexExecutable from "../codexExecutable.ts";
+import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { readRuntimeConfiguredPayload } from "@t3tools/shared/orchestrationActivityPayload";
@@ -3738,6 +3740,63 @@ it.effect(
       Effect.ensuring(
         Effect.sync(() => {
           for (const spy of [...spies, interrupted]) spy.mockRestore();
+        }),
+      ),
+    );
+  },
+);
+
+it.effect(
+  "returns a typed error and disposes preview state when Chrome's bundled resolver fails",
+  () => {
+    const manager = new FakeCodexManager();
+    const dispose = vi.fn();
+    const createSessionConfig = vi.fn(() => ({
+      serverName: "f5_preview",
+      serverDefinition: { type: "http", url: "http://127.0.0.1/mcp" },
+      env: {},
+      dispose,
+    }));
+    const policy = vi
+      .spyOn(browserAccess, "resolveAgentBrowserPolicy")
+      .mockReturnValue(Effect.succeed({ codexChrome: true } as never));
+    const resolver = vi.spyOn(codexExecutable, "resolveCodexCommand").mockImplementation(() => {
+      throw new CommandNotFoundError("codex", "Command not found: codex. Reinstall F5.");
+    });
+    const layer = makeCodexAdapterLive({
+      manager,
+      previewMcpHttpServer: { createSessionConfig } as never,
+      computerAutomationBroker: {
+        host: { status: () => ({ available: false, reason: "no-host" }) },
+        onChromeDisabled: () => () => undefined,
+        pause: { subscribe: () => () => undefined, has: () => false },
+      } as never,
+    }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-missing-" }, { mode: "desktop" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const error = yield* adapter
+        .startSession({
+          threadId: asThreadId("missing-codex"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterProcessError");
+      assert.match(error.message, /Reinstall F5/);
+      assert.equal(dispose.mock.calls.length, 1);
+      assert.equal(manager.startSessionImpl.mock.calls.length, 0);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.scoped,
+      Effect.ensuring(
+        Effect.sync(() => {
+          policy.mockRestore();
+          resolver.mockRestore();
         }),
       ),
     );
