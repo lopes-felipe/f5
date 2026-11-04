@@ -2176,6 +2176,13 @@ heartbeat.setEventHandler {
   if inputAge >= 0 { beat["lastUserInputAgeMs"] = Int(inputAge) }
   if let front { beat["frontmostAppId"] = front }
   beat["inputHeld"] = physicalInputHeld()
+  beat["targets"] = locked {
+    targetWatches.map { appId, watch in
+      ["appId": appId, "activityEpoch": watch.activityEpoch,
+        "lastActivityAgeMs": watch.activityAgeMs(now: ProcessInfo.processInfo.systemUptime),
+        "frontmost": watch.frontmost] as [String: Any]
+    }
+  }
   emit(beat)
   emitStatus(permissions())
 }

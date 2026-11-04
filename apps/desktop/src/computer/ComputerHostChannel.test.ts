@@ -125,6 +125,53 @@ describe("private computer host channel", () => {
       modern.channel.close();
     }
   });
+  it("cancels during asynchronous watch preparation without acquiring a late lease", async () => {
+    const h = setup(false, false, { cooperation: true });
+    let finish!: () => void;
+    h.controller.prepareAcquisition.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    try {
+      h.hello(["computer-cooperation-v1"]);
+      h.process.emit("message", {
+        type: "leaseAcquire",
+        requestId: "preparing",
+        waitMs: 20_000,
+        holder: {
+          profileId: "profile",
+          threadId: "t",
+          sessionGeneration: "s",
+          turnId: "turn",
+          executionGeneration: 1,
+          grantVersion: 1,
+          grants: [],
+          backend: "native",
+          threadTitle: "Thread",
+          scope: { kind: "foreground" },
+          policyRevision: 0,
+        },
+      });
+      await vi.waitFor(() => expect(h.controller.prepareAcquisition).toHaveBeenCalled());
+      h.process.emit("message", { type: "cancel", requestId: "preparing" });
+      finish();
+      await vi.waitFor(() =>
+        expect(h.process.send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "response",
+            requestId: "preparing",
+            error: expect.objectContaining({ _tag: "Interrupted" }),
+          }),
+          expect.any(Function),
+        ),
+      );
+      expect(h.controller.acquire).not.toHaveBeenCalled();
+    } finally {
+      h.channel.close();
+    }
+  });
   it("strips cooperative labels from unnegotiated holders and prepares native watches before acquisition", async () => {
     const holder = {
       profileId: "profile",

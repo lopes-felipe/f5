@@ -97,8 +97,20 @@ describe("computer observation and error metadata", () => {
         requestId: "acquire",
         holder,
         cooperative: true,
+        waitMs: 20_000,
       }),
-    ).toMatchObject({ cooperative: true });
+    ).toMatchObject({ cooperative: true, waitMs: 20_000 });
+    for (const waitMs of [-1, 20_001, 1.5])
+      expect(() =>
+        Schema.decodeUnknownSync(DesktopComputerHostMessage)({
+          type: "leaseAcquire",
+          requestId: "acquire",
+          holder,
+          waitMs,
+        }),
+      ).toThrow();
+    const reserved = { type: "takeoverReserved", requestId: "reservation" };
+    expect(Schema.decodeUnknownSync(DesktopComputerHostMessage)(reserved)).toEqual(reserved);
   });
   it("decodes session-close messages and rejects noncanonical typing policy", () => {
     const closed = { type: "computerSessionClosed", threadId: "t", sessionGeneration: "s" };
