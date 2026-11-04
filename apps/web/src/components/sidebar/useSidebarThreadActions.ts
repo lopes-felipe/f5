@@ -232,29 +232,6 @@ export function useSidebarThreadActions(input: {
     [executeThreadAction, threadActionMenuItems, threads],
   );
 
-  /** A row's Snooze quick action: just the snooze options of the thread's menu. */
-  const openSnoozeMenu = useCallback(
-    async (threadId: ThreadId, position: { x: number; y: number }) => {
-      const api = readNativeApi();
-      if (!api) return;
-      const thread = threads.find((entry) => entry.id === threadId);
-      if (!thread) return;
-      // Built from the full menu so the controller remembers the wake times it showed.
-      const items = (await threadActionMenuItems(thread)).filter((item) =>
-        item.id.startsWith("snooze:"),
-      );
-      if (items.length === 0) return;
-      setContextMenuOpen(true);
-      try {
-        const clicked = await api.contextMenu.show(nativeThreadActionMenuItems(items), position);
-        if (clicked) await executeThreadAction(threadId, clicked);
-      } finally {
-        setContextMenuOpen(false);
-      }
-    },
-    [executeThreadAction, threadActionMenuItems, threads],
-  );
-
   const togglePinThread = useCallback(
     (threadId: ThreadId) => {
       const thread = threads.find((entry) => entry.id === threadId);
@@ -511,7 +488,6 @@ export function useSidebarThreadActions(input: {
     renamingThreadId,
     contextMenuOpen,
     togglePinThread,
-    openSnoozeMenu,
     attachDropToThread,
     openPrLink,
     handleNewThread,

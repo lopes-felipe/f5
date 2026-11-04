@@ -51,6 +51,7 @@ export interface PrStatusIndicator {
   colorClass: string;
   tooltip: string;
   url: string;
+  number: number;
 }
 
 export type ThreadPr = GitStatusResult["pr"];
@@ -450,6 +451,7 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
       colorClass: "text-success-foreground",
       tooltip: `#${pr.number} PR open: ${pr.title}`,
       url: pr.url,
+      number: pr.number,
     };
   }
   if (pr.state === "closed") {
@@ -458,6 +460,7 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
       colorClass: "text-muted-foreground",
       tooltip: `#${pr.number} PR closed: ${pr.title}`,
       url: pr.url,
+      number: pr.number,
     };
   }
   if (pr.state === "merged") {
@@ -466,9 +469,22 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
       colorClass: "text-attention-foreground",
       tooltip: `#${pr.number} PR merged: ${pr.title}`,
       url: pr.url,
+      number: pr.number,
     };
   }
   return null;
+}
+
+/** A finished workflow's step line: "PR #462 open", "Merged #462" or "PR #462 closed". */
+export function workflowPrLabel(pr: PrStatusIndicator): string {
+  switch (pr.label) {
+    case "PR open":
+      return `PR #${pr.number} open`;
+    case "PR merged":
+      return `Merged #${pr.number}`;
+    case "PR closed":
+      return `PR #${pr.number} closed`;
+  }
 }
 
 const PINNED_THREAD_SORTABLE_PREFIX = "pinned-thread:";
