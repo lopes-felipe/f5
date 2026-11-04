@@ -8,7 +8,7 @@ Codex history.
 ## How to
 
 1. Codex is bundled with F5. Sign in to the first account from **Settings → Profiles & Accounts**.
-   For a second account using a **Shadow home path**, use the terminal command in
+   In the **Default profile**, for a second account using a **Shadow home path**, use the terminal command in
    [Work and personal accounts](#work-and-personal-accounts).
 2. Open **Settings → Providers**. The default Codex provider uses **CODEX_HOME path** `~/.codex`
    with an empty **Shadow home path**.
@@ -42,7 +42,10 @@ also sends a best-effort read receipt; F5 keeps its own unread markers.
 
 ## Work and personal accounts
 
-Keep one shared Codex home and give the second account a shadow home that holds only its login:
+In the **Default profile**, keep one shared Codex home and give the second account a
+shadow home that holds only its login. Isolated profiles ignore **Shadow home path**.
+To keep separate accounts in isolated mode, create a separate [profile](../profiles.md)
+for each account and sign in from that profile's **Settings → Profiles & Accounts**.
 
 The following terminal commands require a separately installed Codex CLI on PATH;
 F5's bundled executable is managed by F5. Settings sign-in targets the shared

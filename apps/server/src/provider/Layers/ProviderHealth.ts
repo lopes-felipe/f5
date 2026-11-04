@@ -563,9 +563,12 @@ export const checkClaudeProviderPreflight = (input?: {
         authStatus: "unknown" as const,
         checkedAt,
         failureReason: missing ? "notInstalled" : "versionProbeFailed",
-        message: missing
-          ? claudeMissingExecutableMessage(binaryPath)
-          : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          error instanceof CommandNotFoundError
+            ? error.message
+            : missing
+              ? claudeMissingExecutableMessage(binaryPath)
+              : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }
 

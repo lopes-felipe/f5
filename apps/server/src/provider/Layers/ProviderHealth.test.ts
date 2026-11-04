@@ -19,6 +19,7 @@ import {
 import { prependCodexCliTelemetryDisabledConfig } from "../codexCliConfig";
 import { resolveBundledCodexExecutable } from "../codexExecutable.ts";
 import * as codexExecutable from "../codexExecutable.ts";
+import * as claudeExecutable from "../claudeSdkExecutable.ts";
 import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 import { runCodexCliCommand } from "../providerCli.ts";
 
@@ -869,6 +870,21 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   });
 
   describe("checkClaudeProviderPreflight", () => {
+    it.effect("preserves actionable resolver advice for unsupported custom command shims", () => {
+      const detail = "Use an .exe or cli.js instead of this unsupported Claude .cmd shim.";
+      const resolver = vi
+        .spyOn(claudeExecutable, "resolveClaudeCliInvocation")
+        .mockImplementation(() => {
+          throw new CommandNotFoundError("claude.cmd", detail);
+        });
+      return Effect.gen(function* () {
+        const result = yield* checkClaudeProviderPreflight({
+          providerOptions: { claudeAgent: { binaryPath: "claude.cmd" } },
+        });
+        assert.equal(result.message, detail);
+        assert.equal(result.available, false);
+      }).pipe(Effect.ensuring(Effect.sync(() => resolver.mockRestore())));
+    });
     it.effect("strips the launching Claude session from harness preflight children", () =>
       Effect.gen(function* () {
         vi.stubEnv("CLAUDECODE", "1");
