@@ -1,15 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { Effect, Fiber } from "effect";
-import type {
-  HtmlPreviewRequest,
-  HtmlPreviewHostRequest,
-  HtmlPreviewResponse,
-  HtmlPreviewResult,
-  ThreadId,
+import {
+  HTML_PREVIEW_BROKER_DEADLINE_MS,
+  type HtmlPreviewRequest,
+  type HtmlPreviewHostRequest,
+  type HtmlPreviewResponse,
+  type HtmlPreviewResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 
-/** Stays under THREAD_TOOL_TIMEOUT_MS (35 s). */
-export const HTML_PREVIEW_BROKER_DEADLINE_MS = 20_000;
 type Host = { readonly push: (request: HtmlPreviewHostRequest) => Effect.Effect<void> };
 const unavailable = (
   message = "Preview unavailable; html_render still works.",
@@ -46,11 +45,15 @@ export function makeHtmlPreviewBroker() {
         const [hostId, owner] = host;
         const requestId = randomUUID();
         return Effect.callback<HtmlPreviewResult>((resume) => {
-          // Longer than the desktop's own 12 second deadline, so a stalled render
-          // reports its stage; reaching this means the push, fetch or reply leg went silent.
+          // Covers the document fetch and the desktop's own deadline, so a stalled
+          // render reports its stage; reaching this means the push or reply leg went silent.
           const timer = setTimeout(
             () =>
-              finish(unavailable("HTML preview got no answer from the desktop within 20 seconds.")),
+              finish(
+                unavailable(
+                  `HTML preview got no answer from the desktop within ${HTML_PREVIEW_BROKER_DEADLINE_MS / 1000} seconds.`,
+                ),
+              ),
             HTML_PREVIEW_BROKER_DEADLINE_MS,
           );
           const finish = (result: HtmlPreviewResult) => {

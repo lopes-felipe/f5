@@ -1,6 +1,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { Effect } from "effect";
-import { ThreadId, type HtmlPreviewHostRequest } from "@t3tools/contracts";
+import {
+  HTML_PREVIEW_BROKER_DEADLINE_MS,
+  HTML_PREVIEW_FETCH_TIMEOUT_MS,
+  HTML_PREVIEW_RENDER_DEADLINE_MS,
+  ThreadId,
+  type HtmlPreviewHostRequest,
+} from "@t3tools/contracts";
+import { THREAD_TOOL_TIMEOUT_MS } from "../mcp/threadMcpTools.ts";
 import { makeHtmlPreviewBroker } from "./HtmlPreviewBroker.ts";
 
 const threadId = ThreadId.makeUnsafe("html-thread");
@@ -53,7 +60,7 @@ it("bounds concurrent requests and retires work after the 20 second deadline", a
     _tag: "Unavailable",
     message: "HTML preview is busy. Retry shortly.",
   });
-  await vi.advanceTimersByTimeAsync(19_999);
+  await vi.advanceTimersByTimeAsync(HTML_PREVIEW_BROKER_DEADLINE_MS - 1);
   let settled = false;
   void first.then(() => (settled = true));
   await Promise.resolve();
@@ -66,7 +73,13 @@ it("bounds concurrent requests and retires work after the 20 second deadline", a
   await second;
   broker.close();
 });
-it("passes on the desktop's stage-specific timeout from its shorter deadline", async () => {
+it("orders the preview deadlines: fetch, then render, inside the broker, inside the tool call", () => {
+  expect(HTML_PREVIEW_FETCH_TIMEOUT_MS + HTML_PREVIEW_RENDER_DEADLINE_MS).toBeLessThan(
+    HTML_PREVIEW_BROKER_DEADLINE_MS,
+  );
+  expect(HTML_PREVIEW_BROKER_DEADLINE_MS).toBeLessThan(THREAD_TOOL_TIMEOUT_MS);
+});
+it("passes on the desktop's stage-specific timeout after a slow fetch and a full render", async () => {
   vi.useFakeTimers();
   const broker = makeHtmlPreviewBroker();
   let request: HtmlPreviewHostRequest | undefined;
@@ -77,7 +90,9 @@ it("passes on the desktop's stage-specific timeout from its shorter deadline", a
       }),
   });
   const pending = Effect.runPromise(broker.render(threadId, input));
-  await vi.advanceTimersByTimeAsync(12_000);
+  await vi.advanceTimersByTimeAsync(
+    HTML_PREVIEW_FETCH_TIMEOUT_MS + HTML_PREVIEW_RENDER_DEADLINE_MS,
+  );
   const result = {
     _tag: "Unavailable" as const,
     message: "HTML preview timed out while loading page after 12 seconds.",

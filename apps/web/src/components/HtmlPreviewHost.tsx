@@ -1,4 +1,4 @@
-import { HTML_RENDER_MAX_PAGE_BYTES } from "@t3tools/contracts";
+import { HTML_PREVIEW_FETCH_TIMEOUT_MS, HTML_RENDER_MAX_PAGE_BYTES } from "@t3tools/contracts";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { readBoundedResponseText } from "../lib/readBoundedResponseText";
 import { useEffect, useRef } from "react";
@@ -32,7 +32,10 @@ export function HtmlPreviewHost() {
       let failure = "The desktop could not load the preview document.";
       void fetch(`${getServerHttpOrigin()}${request.documentPath}`, {
         credentials: "include",
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(HTML_PREVIEW_FETCH_TIMEOUT_MS),
+        ]),
       })
         .then((response) => readBoundedResponseText(response, HTML_RENDER_MAX_PAGE_BYTES))
         .then((html) => {
