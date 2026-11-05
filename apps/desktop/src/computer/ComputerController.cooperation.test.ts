@@ -115,6 +115,52 @@ function fixture(
     event: (message: Record<string, unknown>) => event(message),
   };
 }
+it.each([true, false])("idle sweep preserves yielded holders only: yielded=%s", async (yielded) => {
+  vi.useFakeTimers();
+  const h = fixture({ kind: "foreground" });
+  try {
+    const held = await h.acquire();
+    if (yielded) {
+      h.event({
+        type: "physicalInput",
+        cause: "pointer",
+        executionGeneration: held.executionGeneration,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await vi.advanceTimersByTimeAsync(10_001);
+    const queued = { ...h.holder, threadId: "waiting" };
+    h.controller.updateGrants(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "idle-sweep",
+      waitMs: 20_000,
+      admit: () => h.lease.acquire(queued),
+    });
+    const outcome = pending.then(
+      () => "admitted",
+      () => "blocked",
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    if (yielded) {
+      expect(h.lease.holders()).toEqual([held]);
+      expect(h.controller.cooperation.yielded.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await outcome).toBe("blocked");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(h.lease.holders()).toEqual([]);
+      expect(h.paused).not.toHaveBeenCalled();
+    } else {
+      expect(await outcome).toBe("admitted");
+      expect(h.lease.holders()[0]?.threadId).toBe("waiting");
+    }
+  } finally {
+    h.controller.close();
+    vi.useRealTimers();
+  }
+});
 it("pauses a queued thread without suspending the current holder's placeholder generation", async () => {
   const h = fixture();
   try {

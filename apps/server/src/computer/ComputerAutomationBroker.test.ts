@@ -879,7 +879,8 @@ describe("background delivery", () => {
       );
       const acquire = h.ipc.messages.findLast((m) => m.type === "leaseAcquire");
       if (acquire?.type !== "leaseAcquire") throw new Error("no acquire");
-      expect(acquire.waitMs).toBe(7000);
+      expect(acquire.waitMs).toBeGreaterThan(0);
+      expect(acquire.waitMs).toBeLessThanOrEqual(7000);
       h.broker.endTurn("t", "turn", "s");
       await rejected;
       expect(h.ipc.messages).toContainEqual({ type: "cancel", requestId: acquire.requestId });
@@ -888,6 +889,60 @@ describe("background delivery", () => {
       h.broker.close();
     }
   });
+  it.each([7000, 12_000])(
+    "keeps retry admission and dispatch inside the original invocation budget: admission=%s",
+    async (admissionMs) => {
+      const h = await backgroundHarness();
+      try {
+        const initial = h.broker.invoke("t", "s", {
+          op: "type",
+          appId: "com.apple.TextEdit",
+          text: "x",
+        });
+        await approveBackgroundSession(h);
+        await initial;
+        h.ipc.emit("message", {
+          type: "hostCapabilities",
+          capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+        });
+        h.ipc.messages.length = 0;
+        let elapsed = 0;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        const send = h.ipc.send.bind(h.ipc);
+        let acquisitions = 0;
+        const forwarding = vi.spyOn(h.ipc, "send").mockImplementation((raw, callback) => {
+          const message = raw as DesktopComputerHostMessage;
+          if (message.type === "request") elapsed = 19_000;
+          if (message.type === "leaseAcquire" && ++acquisitions === 2) elapsed += admissionMs;
+          return send(raw, callback);
+        });
+        try {
+          h.ipc.requestErrors.push({ _tag: "TargetBlocked", kind: "foreground-busy" });
+          const pending = h.broker.invoke(
+            "t",
+            "s",
+            { op: "type", appId: "com.apple.TextEdit", text: "x" },
+            30_000,
+          );
+          if (admissionMs === 7000) await expect(pending).resolves.toEqual({ ok: true });
+          else await expect(pending).rejects.toMatchObject({ error: { _tag: "Execution" } });
+          const acquires = h.ipc.messages.filter((m) => m.type === "leaseAcquire");
+          expect(acquires.map((m) => (m.type === "leaseAcquire" ? m.waitMs : undefined))).toEqual([
+            20_000, 6000,
+          ]);
+          const requests = h.ipc.messages.filter((m) => m.type === "request");
+          expect(requests).toHaveLength(admissionMs === 7000 ? 2 : 1);
+          if (admissionMs === 7000)
+            expect(requests[1]!.request.deadlineAtMs - Date.now()).toBeLessThanOrEqual(4000);
+        } finally {
+          forwarding.mockRestore();
+          clock.mockRestore();
+        }
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
   it.each(["foreground-busy", "user-active"] as const)(
     "retries only a pre-write background foreground conflict: %s",
     async (kind) => {

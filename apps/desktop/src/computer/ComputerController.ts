@@ -176,6 +176,7 @@ export class ComputerController {
       sweep: (head) => {
         for (const holder of lease.idleConflicts(head.scope, 10_000)) {
           if (this.key(holder) === this.key(head)) continue;
+          if (this.cooperation.yielded.has(this.key(holder))) continue;
           const key = this.key(holder);
           const jobs = [
             ...this.activeMutations.values(),
