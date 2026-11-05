@@ -283,6 +283,36 @@ describe("ComposerStatusStrip", () => {
     }
   });
 
+  it("opens a chip's popover on hover without taking focus", async () => {
+    const screen = await render(
+      <>
+        <textarea aria-label="Composer" />
+        <Harness
+          chips={
+            <QueueStatusChip summary={{ count: 1, preview: null, paused: false, warning: false }}>
+              <div id="next-turn-queue-panel" tabIndex={-1}>
+                Queued turns panel
+              </div>
+            </QueueStatusChip>
+          }
+        />
+      </>,
+    );
+    try {
+      const composer = page.getByRole("textbox", { name: "Composer" });
+      await composer.click();
+      const chip = page.getByRole("button", { name: "1 queued" });
+      expect(chip.element().hasAttribute("title")).toBe(false);
+      await userEvent.hover(chip);
+      await expect.element(page.getByText("Queued turns panel")).toBeVisible();
+      expect(document.activeElement).toBe(composer.element());
+      await userEvent.unhover(chip);
+      await expect.element(page.getByText("Queued turns panel")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   describe("background work", () => {
     it("moves a background shell from the tray into a chip with Output and Stop", async () => {
       mocks.snapshot.mockResolvedValue({ entries: [shellTask("b1", "Run full browser suite")] });

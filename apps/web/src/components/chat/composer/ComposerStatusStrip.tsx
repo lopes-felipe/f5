@@ -18,6 +18,9 @@ const CHIP_TONE_CLASS_NAMES: Record<StatusChipTone, string> = {
   info: "border-info/40 bg-info/8 text-info-foreground",
 };
 
+/** Open and close delay for hover; the close grace lets the pointer cross into the popup. */
+const STATUS_CHIP_HOVER_DELAY_MS = 150;
+
 interface StatusStripHostValue {
   readonly host: HTMLElement | null;
   readonly setHost: (element: HTMLElement | null) => void;
@@ -90,9 +93,12 @@ export function StatusChip(props: {
       {...(props.onOpenChange ? { onOpenChange: props.onOpenChange } : {})}
     >
       <PopoverTrigger
+        // Hover previews the popover without moving focus; a click still pins it open.
+        openOnHover
+        delay={STATUS_CHIP_HOVER_DELAY_MS}
+        closeDelay={STATUS_CHIP_HOVER_DELAY_MS}
         data-status-chip={props.chipId ?? ""}
         aria-label={props.ariaLabel}
-        title={props.ariaLabel}
         className={cn(
           "inline-flex h-6 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-xs outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent",
           CHIP_TONE_CLASS_NAMES[props.tone ?? "neutral"],
