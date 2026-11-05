@@ -354,4 +354,45 @@ describe("ChatHeader", () => {
       await screen.unmount();
     }
   });
+
+  it("replaces the project actions with a project picker on an unsent draft", async () => {
+    const onSelect = vi.fn();
+    const project = (id: string, name: string) => ({
+      id: id as never,
+      name,
+      cwd: `/repo/${id}`,
+      model: "gpt-5.1",
+      createdAt: "2026-11-01T00:00:00.000Z",
+      expanded: true,
+      scripts: [],
+      memories: [],
+    });
+    const screen = await renderHeader({
+      isServerThread: false,
+      activeProjectId: "alpha" as never,
+      activeProjectName: "Project Alpha",
+      onNewThreadInProject: () => {},
+      onOpenProjectSettings: () => {},
+      projectPicker: {
+        projects: [project("alpha", "Project Alpha"), project("beta", "Project Beta")],
+        selection: { kind: "project", projectId: "alpha" as never },
+        onSelect,
+      },
+    });
+
+    try {
+      expect(
+        page.getByRole("button", { name: "Project actions for Project Alpha" }).elements(),
+      ).toHaveLength(0);
+      await page.getByRole("combobox", { name: "Project: Project Alpha" }).click();
+      await page.getByRole("option", { name: "Project Beta" }).click();
+      expect(onSelect).toHaveBeenCalledWith({ kind: "project", projectId: "beta" });
+
+      await page.getByRole("combobox", { name: "Project: Project Alpha" }).click();
+      await page.getByTestId("project-picker-no-project").click();
+      expect(onSelect).toHaveBeenLastCalledWith({ kind: "none" });
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

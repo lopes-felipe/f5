@@ -63,6 +63,7 @@ import {
   scratchWorkspaceRefusal,
 } from "./project/scratchProject.ts";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { readWorktreeClaims } from "./project/worktreeClaims.ts";
 import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
@@ -1997,7 +1998,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           commandId: command.commandId,
           threadId: command.threadId,
           message: {
-            messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+            messageId: MessageId.makeUnsafe(answerMessageIdFor(command.commandId)),
             role: "user",
             text: JSON.stringify(command.answers),
             attachments: command.attachments ?? [],

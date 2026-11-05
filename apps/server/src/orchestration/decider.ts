@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
-import { CommandId, MessageId } from "@t3tools/contracts";
+import { CommandId, EventId, MessageId } from "@t3tools/contracts";
+import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import {
   MAX_PINNED_THREADS,
   SCRIPT_RUN_COMMAND_PATTERN,
@@ -1815,7 +1816,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
               commandId: CommandId.makeUnsafe(`answer-delivery:${command.commandId}`),
               threadId: thread.id,
               message: {
-                messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+                messageId: MessageId.makeUnsafe(answerMessageIdFor(command.commandId)),
                 role: "user" as const,
                 text: JSON.stringify(answers),
                 attachments,
@@ -1845,7 +1846,39 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           createdAt: command.createdAt,
         },
       };
-      if (pending?.responseMode === "message") return resolved;
+      if (pending?.responseMode === "message") {
+        // No provider resolution follows a message-mode answer, so record the
+        // timeline's Q&A row here. Attachments stay on the delivered message.
+        const answerMessageId = queueCommand?.message.messageId;
+        const resolvedActivity: Omit<OrchestrationEvent, "sequence"> = {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            commandId: command.commandId,
+            occurredAt: command.createdAt,
+            metadata: { requestId: command.requestId },
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: thread.id,
+            activity: {
+              id: EventId.makeUnsafe(`user-input-resolved:${command.commandId}`),
+              tone: "info",
+              kind: "user-input.resolved",
+              summary: dismissed ? "User input dismissed" : "User input submitted",
+              payload: {
+                requestId: command.requestId,
+                resolution: dismissed ? "dismissed" : "answered",
+                answers,
+                ...(answerMessageId ? { answerMessageId } : {}),
+              },
+              turnId: pending.turnId,
+              createdAt: command.createdAt,
+            },
+          },
+        };
+        return [resolved, resolvedActivity];
+      }
       return [
         resolved,
         {

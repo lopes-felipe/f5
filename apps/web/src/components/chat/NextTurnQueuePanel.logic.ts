@@ -2,6 +2,11 @@ import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3too
 import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
 import {
+  formatAnswerDeliveryAnswers,
+  isAnswerMessageId,
+  parseAnswerDeliveryText,
+} from "@t3tools/shared/answerDelivery";
+import {
   deriveDisplayedUserMessageState,
   type DisplayedUserMessageState,
 } from "~/lib/terminalContext";
@@ -58,24 +63,18 @@ export function queuedTurnLabel(
 
 /**
  * Message-mode question answers are delivered as JSON for the provider; show
- * the chosen answers instead. Display only; the queued text is unchanged.
+ * the chosen answers instead. Display only; the queued text is unchanged. An
+ * edited or retried answer gets a new command id but keeps its answer message id.
  */
 function describeAnswerDelivery(item: NextTurnQueueItem): string | null {
-  if (!item.command.commandId.startsWith("answer-delivery:")) return null;
-  try {
-    const parsed: unknown = JSON.parse(item.command.message.text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const answers: string[] = [];
-    for (const entry of Object.values(parsed)) {
-      const values = (entry as { answers?: unknown } | null)?.answers;
-      if (!Array.isArray(values) || !values.every((value) => typeof value === "string"))
-        return null;
-      answers.push(...values);
-    }
-    return answers.length > 0 ? `Answer · ${answers.join(", ")}` : null;
-  } catch {
+  if (
+    !item.command.commandId.startsWith("answer-delivery:") &&
+    !isAnswerMessageId(item.command.message.messageId)
+  ) {
     return null;
   }
+  const answers = parseAnswerDeliveryText(item.command.message.text);
+  return answers ? `Answer · ${formatAnswerDeliveryAnswers(answers)}` : null;
 }
 
 export function moveItemInOrder(

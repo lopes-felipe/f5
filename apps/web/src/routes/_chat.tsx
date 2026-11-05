@@ -57,6 +57,7 @@ function WorkflowCreateDialogHost() {
   const projectId = useWorkflowCreateDialogStore((state) => state.projectId);
   const close = useWorkflowCreateDialogStore((state) => state.close);
   const notifyCreated = useWorkflowCreateDialogStore((state) => state.notifyCreated);
+  const setProject = useWorkflowCreateDialogStore((state) => state.setProject);
   if (!projectId) return null;
   return (
     <Suspense fallback={null}>
@@ -67,6 +68,7 @@ function WorkflowCreateDialogHost() {
           if (!open) close();
         }}
         onWorkflowCreated={notifyCreated}
+        onProjectChange={setProject}
       />
     </Suspense>
   );

@@ -87,6 +87,40 @@ for (const rollback of [false, true])
               yield* store.sql`UPDATE projection_pending_user_inputs SET resolution='answered' WHERE thread_id=${threadId}`;
               yield* projectScheduledRunEvent(event);
               expect((yield* store.run(run.id))!.owner).toBe(true);
+              // The decider's Q&A activity for the same answer must not release the run
+              // either, even if it is projected before the delivery is linked.
+              yield* projectScheduledRunEvent(
+                Schema.decodeUnknownSync(OrchestrationEvent)({
+                  type: "thread.activity-appended",
+                  sequence: 11,
+                  eventId: "answer-activity-event",
+                  aggregateKind: "thread",
+                  aggregateId: threadId,
+                  occurredAt: at,
+                  commandId: "answer",
+                  causationEventId: null,
+                  correlationId: null,
+                  metadata: { requestId: "request" },
+                  payload: {
+                    threadId,
+                    activity: {
+                      id: "user-input-resolved:answer",
+                      tone: "info",
+                      kind: "user-input.resolved",
+                      summary: "User input submitted",
+                      payload: {
+                        requestId: "request",
+                        resolution: "answered",
+                        answers: { "0": { answers: ["yes"] } },
+                        answerMessageId: "answer-message",
+                      },
+                      turnId,
+                      createdAt: at,
+                    },
+                  },
+                }),
+              );
+              expect((yield* store.run(run.id))!.owner).toBe(true);
               yield* commit(event, {
                 commandType: "thread.user-input.respond",
                 steerFallback: false,

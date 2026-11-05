@@ -39,6 +39,18 @@ vi.mock("../ProviderInstanceCard", () => ({
     <div>
       {props.headerAction}
       {props.onDelete && <button onClick={props.onDelete}>Delete {props.instanceId}</button>}
+      <output data-favorites={props.instanceId}>{props.favoriteModels.join(",")}</output>
+      <button
+        onClick={() =>
+          props.onFavoriteModelsChange(
+            props.favoriteModels.includes("gpt-5.4")
+              ? props.favoriteModels.filter((model) => model !== "gpt-5.4")
+              : [...props.favoriteModels, "gpt-5.4"],
+          )
+        }
+      >
+        Toggle gpt-5.4 on {props.instanceId}
+      </button>
     </div>
   ),
 }));
@@ -131,3 +143,35 @@ it.each(["Reset Codex provider settings", "Delete custom"])(
       );
   },
 );
+
+it("keeps pinned-effort presets and their order when another model is toggled", async () => {
+  const codex = ProviderInstanceId.make("codex");
+  const custom = ProviderInstanceId.make("custom");
+  const presets = [
+    { provider: codex, model: "gpt-5.5", effort: "high" },
+    { provider: custom, model: "gpt-5.2" },
+    { provider: codex, model: "gpt-5.5", effort: "xhigh" },
+  ];
+  settings = { ...settings, favorites: presets };
+  const screen = await render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProvidersSettings />
+    </QueryClientProvider>,
+  );
+  // A model with two presets is a single favorite in Settings.
+  expect(document.querySelector('[data-favorites="codex"]')?.textContent).toBe("gpt-5.5");
+
+  await screen.getByRole("button", { name: "Toggle gpt-5.4 on codex", exact: true }).click();
+  expect(mocks.update).toHaveBeenLastCalledWith({
+    favorites: [...presets, { provider: codex, model: "gpt-5.4" }],
+  });
+
+  settings = { ...settings, favorites: [...presets, { provider: codex, model: "gpt-5.4" }] };
+  await screen.rerender(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProvidersSettings />
+    </QueryClientProvider>,
+  );
+  await screen.getByRole("button", { name: "Toggle gpt-5.4 on codex", exact: true }).click();
+  expect(mocks.update).toHaveBeenLastCalledWith({ favorites: presets });
+});
