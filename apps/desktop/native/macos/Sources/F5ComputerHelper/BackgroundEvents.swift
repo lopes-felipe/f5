@@ -17,6 +17,16 @@ private func eventObservation(_ element: AXUIElement) -> [String: CFTypeRef] {
   return values
 }
 
+private func selectedRange(_ values: [String: CFTypeRef]) -> CFRange? {
+  guard let raw = values[kAXSelectedTextRangeAttribute], CFGetTypeID(raw) == AXValueGetTypeID()
+  else { return nil }
+  let value = unsafeBitCast(raw, to: AXValue.self)
+  var range = CFRange()
+  guard AXValueGetType(value) == .cfRange && AXValueGetValue(value, .cfRange, &range)
+  else { return nil }
+  return range
+}
+
 /// Process-directed events never move the session cursor or select a foreground app.
 /// Only applications certified by real desktop rehearsals are eligible.
 func backgroundEvents(_ request: [String: Any], _ host: [String: Any]) throws -> [String: Any] {
@@ -112,8 +122,17 @@ func backgroundEvents(_ request: [String: Any], _ host: [String: Any]) throws ->
   try endBackgroundAction(dispatch, succeeded: true)
   Thread.sleep(forTimeInterval: 0.05)
   let after = eventObservation(element)
-  let changed = before.contains { name, value in
+  var changed = before.contains { name, value in
     after[name].map { !CFEqual(value, $0) } ?? false
+  }
+  // Certification must detect an ignored Shift modifier, rather than any selection change.
+  if key && request["chords"] as? [String] == ["Shift+Left"] && integer(request, "repeat") == 1 {
+    if let previous = selectedRange(before), let current = selectedRange(after),
+      let previousValue = before[kAXValueAttribute], let currentValue = after[kAXValueAttribute] {
+      changed = CFEqual(previousValue, currentValue) && computerSelectionExtendedLeft(
+        beforeStart: previous.location, beforeLength: previous.length,
+        afterStart: current.location, afterLength: current.length)
+    } else { changed = false }
   }
   return ["readBack": !before.isEmpty && !after.isEmpty, "verified": changed]
 }

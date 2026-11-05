@@ -27,10 +27,16 @@ Use an unlocked test desktop and a debug helper. No other helper may be active.
 If startup reports `other-instance`, leave that helper untouched and use a
 separate test session. Never bypass the single-helper lock.
 
-Prepare a disposable, scrollable document in the candidate app. Put the caret in
-its text field near existing text, then switch to another app. The runner sends
+Prepare a disposable, scrollable document in the candidate app. Leave a collapsed
+caret immediately after a plain ASCII character in its text field, then switch to another app. The runner sends
 `Shift+Left`, a single `x`, and an element scroll. It does not send Enter,
 launch apps, move the pointer, or restore focus.
+
+The macOS chord check requires unchanged text and a selection extending exactly one
+character left of the original caret; merely changing or collapsing a selection fails.
+Windows currently rejects Shift plus navigation and Control/Alt chords because posted
+messages cannot establish the target thread's modifier state. Its chord rehearsal
+therefore fails closed, and no Windows app can be certified by this runner yet.
 
 On macOS:
 

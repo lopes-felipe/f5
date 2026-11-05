@@ -8,7 +8,8 @@ import { appTier, BACKGROUND_EVENT_CANDIDATES } from "@t3tools/shared/computerAp
 import { ComputerControlError, computerRequestPayload } from "@t3tools/shared/computerControl";
 import { ComputerHelperClient } from "./ComputerHelperClient";
 
-// Prepare a disposable, scrollable document, select text in its field, then switch to another
+// Prepare a disposable, scrollable document, leave a collapsed caret after a plain ASCII character,
+// then switch to another
 // app before running. This inserts one "x"; it never sends Enter, launches apps or restores focus.
 const args = process.argv.slice(2);
 const arg = (key: string) => (args.includes(key) ? args[args.indexOf(key) + 1] : undefined);
@@ -25,7 +26,7 @@ if (
   !BACKGROUND_EVENT_CANDIDATES[platform].some((id) => id.toLowerCase() === appId.toLowerCase())
 )
   throw new Error(
-    "Use an interactive desktop, F5_COMPUTER_BACKGROUND_EVENTS_REHEARSAL=1, --helper <debug helper>, --app <candidate id>, --output <new report.json>. Prepare a disposable scrollable document and leave its app first.",
+    "Use an interactive desktop, F5_COMPUTER_BACKGROUND_EVENTS_REHEARSAL=1, --helper <debug helper>, --app <candidate id>, --output <new report.json>. Prepare a disposable scrollable document with a collapsed caret after a plain ASCII character, then leave its app.",
   );
 await writeFile(resolve(output), "", { flag: "wx", mode: 0o600 });
 const helper = new ComputerHelperClient(

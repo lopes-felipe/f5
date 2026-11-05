@@ -48,8 +48,8 @@ import { ServerConfig } from "../config";
 
 /**
  * Electron decides every takeover: its worst case is 300 s consent + 30 s idle window + up to
- * 5 s drain and 1 s readiness per arming attempt. This sits well above that and below the
- * tool transport timeout.
+ * 5 s drain and 1 s readiness per arming attempt, plus a 20 s reservation wait and 2 s
+ * transport margin. This sits above that budget and below the tool transport timeout.
  */
 export const COMPUTER_TAKEOVER_HOST_TIMEOUT_MS = 380_000;
 import { ServerSettingsService } from "../serverSettings";
