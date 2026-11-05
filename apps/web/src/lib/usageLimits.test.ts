@@ -134,8 +134,15 @@ describe("shared quota windows", () => {
         label: "5-hour limit",
         usedPercent: 5,
         resetsAt: new Date(1_792_000_000_000).toISOString(),
+        durationMinutes: 300,
       },
-      { windowKey: "spark:secondary", label: "Secondary limit", usedPercent: 1, resetsAt: null },
+      {
+        windowKey: "spark:secondary",
+        label: "Secondary limit",
+        usedPercent: 1,
+        resetsAt: null,
+        durationMinutes: null,
+      },
     ]);
     const claude = {
       ...base,
@@ -151,7 +158,13 @@ describe("shared quota windows", () => {
       },
     };
     expect(quotaWindowsFromSection(claude)).toEqual([
-      { windowKey: "five_hour", label: "5-hour limit", usedPercent: null, resetsAt: null },
+      {
+        windowKey: "five_hour",
+        label: "5-hour limit",
+        usedPercent: null,
+        resetsAt: null,
+        durationMinutes: 300,
+      },
     ]);
     expect(
       quotaWindowsFromSection({
@@ -168,7 +181,15 @@ describe("shared quota windows", () => {
           data: { windows: [{ id: "monthly", label: "Monthly", usedPercent: 3, resetsAt: at }] },
         },
       }),
-    ).toEqual([{ windowKey: "monthly", label: "Monthly", usedPercent: 3, resetsAt: at }]);
+    ).toEqual([
+      {
+        windowKey: "monthly",
+        label: "Monthly",
+        usedPercent: 3,
+        resetsAt: at,
+        durationMinutes: null,
+      },
+    ]);
     expect(
       quotaWindowsFromSection({
         ...base,
