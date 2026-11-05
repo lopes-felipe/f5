@@ -7,6 +7,7 @@
  * @module Open
  */
 import { spawn } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 import NodeOs from "node:os";
 import NodePath from "node:path";
 
@@ -14,7 +15,11 @@ import { EDITORS, type EditorId } from "@t3tools/contracts";
 import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
 
 import { editorLaunchTotal, increment } from "./observability/Metrics.ts";
-import { isCommandAvailable, resolveInvocation } from "./spawn/resolveCommand.ts";
+import {
+  isCommandAvailable,
+  resolveExecutables,
+  resolveInvocation,
+} from "./spawn/resolveCommand.ts";
 
 export { isCommandAvailable } from "./spawn/resolveCommand.ts";
 
@@ -151,15 +156,47 @@ function resolveEditorCommandCandidates(
   }
 }
 
+/**
+ * Launchers that share an editor's command name but do not open the editor.
+ * Cursor Agent installs `~/.local/bin/cursor`, which forwards to the IDE's CLI
+ * when another `cursor` is on PATH and otherwise prints this message and exits 1.
+ */
+const EDITOR_SHIM_MARKERS: Partial<Record<EditorId, string>> = {
+  cursor: "No Cursor IDE installation found",
+};
+const MAX_EDITOR_SHIM_BYTES = 4096;
+
+export function isEditorShim(editorId: EditorId, filePath: string): boolean {
+  const marker = EDITOR_SHIM_MARKERS[editorId];
+  if (!marker) return false;
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size > MAX_EDITOR_SHIM_BYTES) return false;
+    return readFileSync(filePath, "utf8").includes(marker);
+  } catch {
+    return false;
+  }
+}
+
+/** Absolute paths of usable editor executables, in preference order, shims removed. */
+function resolveEditorExecutables(
+  editor: (typeof EDITORS)[number],
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): ReadonlyArray<string> {
+  return resolveEditorCommandCandidates(editor, platform, env)
+    .flatMap((candidate) => resolveExecutables(candidate, env, { platform }))
+    .filter((executable) => !isEditorShim(editor.id, executable));
+}
+
 function resolveEditorCommand(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
 ): string {
-  const candidates = resolveEditorCommandCandidates(editor, platform, env);
-  return (
-    candidates.find((command) => isCommandAvailable(command, { platform, env })) ?? editor.command!
-  );
+  // Launch the accepted path itself: a bare command would resolve through PATH
+  // again and could land on a skipped shim.
+  return resolveEditorExecutables(editor, platform, env)[0] ?? editor.command!;
 }
 
 function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
@@ -181,9 +218,7 @@ export function resolveAvailableEditors(
 
   for (const editor of EDITORS) {
     const commandAvailable = editor.command
-      ? resolveEditorCommandCandidates(editor, platform, env).some((command) =>
-          isCommandAvailable(command, { platform, env }),
-        )
+      ? resolveEditorExecutables(editor, platform, env).length > 0
       : isCommandAvailable(fileManagerCommandForPlatform(platform), { platform, env });
     if (commandAvailable) {
       available.push(editor.id);
@@ -338,7 +373,9 @@ export const launchDetached = (launch: EditorLaunch, checkEarlyExit = true) =>
           code === 0
             ? undefined
             : new OpenError({
-                message: `Launcher failed (${signal ?? code}): ${launch.command}`,
+                message: signal
+                  ? `Editor launcher terminated by ${signal}: ${launch.command}`
+                  : `Editor launcher exited with code ${code}: ${launch.command}`,
               }),
         );
       };

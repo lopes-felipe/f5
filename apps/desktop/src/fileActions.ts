@@ -104,12 +104,26 @@ export function registerDesktopFileActions(
   };
 }
 
-/** Finder processes reveal and activate in one ordered request; the path is an argv value. */
-export function finderRevealArgs(filePath: string): string[] {
-  return [
-    "-e",
-    'on run argv\n tell application "Finder"\n  reveal POSIX file (item 1 of argv)\n  activate\n end tell\nend run',
-    "--",
-    filePath,
-  ];
+/**
+ * `open -R` asks LaunchServices to select the item in Finder and bring Finder
+ * forward. It sends no Apple Events, so it needs no Automation permission, and
+ * it fails with a readable message when the file is missing. A Finder
+ * `reveal POSIX file (item 1 of argv)` script cannot work: inside a Finder
+ * `tell` block a runtime `POSIX file` becomes a Finder object reference that
+ * Finder cannot resolve (-1728).
+ */
+export function macRevealLaunch(filePath: string): { file: string; args: string[] } {
+  // `open` would read a leading "-" as an option; callers pass canonical absolute paths.
+  if (!Path.isAbsolute(filePath)) throw new Error("Reveal needs an absolute path.");
+  return { file: "/usr/bin/open", args: ["-R", filePath] };
+}
+
+/** The launcher's own first stderr line, e.g. `The file /x does not exist.`, not the command dump. */
+export function launcherFailureMessage(error: Error & { readonly stderr?: unknown }): string {
+  const stderr = typeof error.stderr === "string" ? error.stderr : String(error.stderr ?? "");
+  const firstLine = stderr
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean);
+  return firstLine ?? error.message;
 }

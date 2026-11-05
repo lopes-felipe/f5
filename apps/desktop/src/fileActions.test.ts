@@ -7,7 +7,8 @@ import {
   assertFileActionCaller,
   registerDesktopFileActions,
   vscodeFileUrl,
-  finderRevealArgs,
+  launcherFailureMessage,
+  macRevealLaunch,
 } from "./fileActions";
 
 const roots: string[] = [];
@@ -68,12 +69,22 @@ it("reveals the canonical file using one native operation", async () => {
   expect(f.actions.revealFile).toHaveBeenCalledWith(f.canonical);
 });
 
-it("orders Finder reveal and activation in one script with a separate path argument", () => {
-  const path = '/tmp/file "quoted".json';
-  const args = finderRevealArgs(path);
-  expect(args.at(-1)).toBe(path);
-  expect(args[1]).not.toContain(path);
-  expect(args[1]!.indexOf("reveal POSIX file")).toBeLessThan(args[1]!.indexOf("activate"));
+it("reveals on macOS through LaunchServices with the path as its own argument", () => {
+  const path = '/tmp/file "quoted"; $(x).json';
+  expect(macRevealLaunch(path)).toEqual({ file: "/usr/bin/open", args: ["-R", path] });
+  expect(() => macRevealLaunch("-a Terminal")).toThrow("absolute path");
+  expect(() => macRevealLaunch("relative.json")).toThrow("absolute path");
+});
+
+it("reports a launcher's first stderr line instead of the command dump", () => {
+  const failure = Object.assign(new Error("Command failed: /usr/bin/open -R /x\nThe file…"), {
+    stderr: "\nThe file /x does not exist.\nmore detail\n",
+  });
+  expect(launcherFailureMessage(failure)).toBe("The file /x does not exist.");
+  expect(launcherFailureMessage(new Error("spawn EACCES"))).toBe("spawn EACCES");
+  expect(launcherFailureMessage(Object.assign(new Error("timed out"), { stderr: "" }))).toBe(
+    "timed out",
+  );
 });
 
 it.each(["desktop:reveal-file", "desktop:open-in-vscode"])(

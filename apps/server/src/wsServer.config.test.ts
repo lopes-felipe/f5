@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { type OpenShape } from "./open";
+import { OpenError, type OpenShape } from "./open";
 import { ProviderValidationBusyError } from "./provider/Errors.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import { type HarnessValidationShape } from "./provider/Services/HarnessValidation";
@@ -889,6 +889,28 @@ describe("WebSocket Server", () => {
     });
     expect(response.error).toBeUndefined();
     expect(openCalls).toEqual([{ cwd: "/my/workspace", editor: "cursor" }]);
+  });
+
+  it("reports a failed editor launch as its message, without a stack trace", async () => {
+    const message = "Editor launcher exited with code 1: /home/user/.local/bin/cursor";
+    const openService: OpenShape = {
+      openBrowser: () => Effect.void,
+      openInEditor: () => Effect.fail(new OpenError({ message })),
+      revealInFileManager: () => Effect.void,
+    };
+
+    h.server = await createTestServer({ cwd: "/my/workspace", open: openService });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.shellOpenInEditor, {
+      cwd: "/my/workspace",
+      editor: "cursor",
+    });
+    expect(response.error?.message).toBe(message);
   });
 
   it("routes shell.revealInFileManager through the injected open service", async () => {

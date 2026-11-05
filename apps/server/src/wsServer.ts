@@ -322,7 +322,7 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
-import { Open, resolveAvailableEditors } from "./open";
+import { Open, OpenError, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { IMMUTABLE_PRIVATE_CACHE_CONTROL, openContainedFile, serveAsset } from "./assetHttp";
@@ -966,7 +966,7 @@ function formatRouteFailure(
       checkoutConflict: squashed.checkoutConflict,
     };
   }
-  if (Schema.is(AttachmentIngressError)(squashed)) {
+  if (Schema.is(AttachmentIngressError)(squashed) || Schema.is(OpenError)(squashed)) {
     return { message: squashed.message };
   }
   if (Schema.is(RouteRequestError)(squashed)) {

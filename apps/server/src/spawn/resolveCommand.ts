@@ -164,6 +164,61 @@ export function clearCommandResolutionCache(): void {
   resolutionCache.clear();
 }
 
+function findExecutables(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  cwd: string | undefined,
+  firstOnly: boolean,
+): string[] {
+  const pathExtensions =
+    platform === "win32" ? resolveWindowsPathExtensions(env) : ([] as ReadonlyArray<string>);
+  const pathQualified = isPathQualified(command, platform);
+  const candidates = commandCandidates(command, platform, pathExtensions, pathQualified);
+
+  if (pathQualified) {
+    const found = candidates
+      .map((candidate) => resolveQualifiedCandidate(candidate, platform, cwd))
+      .find((candidate) => isExecutableFile(candidate, platform));
+    return found ? [found] : [];
+  }
+
+  // Skip exact repeats only. Windows can make a directory case-sensitive, so
+  // entries that differ in case are not provably the same directory.
+  const pathEntries = new Set(
+    resolvePathValue(env)
+      .split(platform === "win32" ? ";" : ":")
+      .map(stripWrappingQuotes)
+      .filter(Boolean),
+  );
+  const found: string[] = [];
+  for (const pathEntry of pathEntries) {
+    for (const candidate of candidates) {
+      const candidatePath = joinForPlatform(pathEntry, candidate, platform);
+      if (isExecutableFile(candidatePath, platform)) {
+        found.push(candidatePath);
+        if (firstOnly) return found;
+        // One match per directory, as PATH lookup would pick it.
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Every executable match for `command`, in PATH order and at most one per PATH
+ * entry. Used where the first match may be a launcher that must be skipped.
+ * Not cached.
+ */
+export function resolveExecutables(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: Omit<CommandResolutionOptions, "useCache"> = {},
+): string[] {
+  return findExecutables(command, env, options.platform ?? process.platform, options.cwd, false);
+}
+
 export function resolveExecutable(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -178,36 +233,7 @@ export function resolveExecutable(
   }
   if (cached) resolutionCache.delete(cacheKey);
 
-  const pathExtensions =
-    platform === "win32" ? resolveWindowsPathExtensions(env) : ([] as ReadonlyArray<string>);
-  const pathQualified = isPathQualified(command, platform);
-  const candidates = commandCandidates(command, platform, pathExtensions, pathQualified);
-  let resolved: string | null = null;
-
-  if (pathQualified) {
-    resolved =
-      candidates
-        .map((candidate) => resolveQualifiedCandidate(candidate, platform, options.cwd))
-        .find((candidate) => isExecutableFile(candidate, platform)) ?? null;
-  } else {
-    // Skip exact repeats only. Windows can make a directory case-sensitive, so
-    // entries that differ in case are not provably the same directory.
-    const pathEntries = new Set(
-      resolvePathValue(env)
-        .split(platform === "win32" ? ";" : ":")
-        .map(stripWrappingQuotes)
-        .filter(Boolean),
-    );
-    search: for (const pathEntry of pathEntries) {
-      for (const candidate of candidates) {
-        const candidatePath = joinForPlatform(pathEntry, candidate, platform);
-        if (isExecutableFile(candidatePath, platform)) {
-          resolved = candidatePath;
-          break search;
-        }
-      }
-    }
-  }
+  const resolved = findExecutables(command, env, platform, options.cwd, true)[0] ?? null;
 
   // Misses must self-heal immediately when a CLI is installed into an
   // existing PATH directory. Positive entries are bounded to avoid stale
