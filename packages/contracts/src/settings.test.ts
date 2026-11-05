@@ -307,6 +307,17 @@ describe("ClientSettings.dismissedProviderUpdateAdvisories", () => {
   });
 });
 
+describe("ClientSettings.favorites", () => {
+  it("decodes legacy model-only favorites and pinned-effort presets", () => {
+    const favorites = [
+      { provider: "codex", model: "gpt-5.5" },
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "high" },
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "xhigh" },
+    ];
+    expect(decodeClientSettings({ favorites }).favorites).toEqual(favorites);
+  });
+});
+
 describe("thread settlement opt-ins", () => {
   it("decodes legacy settings with automatic settlement and cleanup disabled", () => {
     const settings = decodeServerSettings({});

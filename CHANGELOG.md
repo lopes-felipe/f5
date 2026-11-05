@@ -10,6 +10,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
 - A profile can always allow Claude in Chrome taking the browser connection back from your terminal Claude, revocable in Settings → Browser & Computer. Replacing another F5 profile's setup always asks.
+- Favorite models can pin an effort, so the same model can be a favorite at several efforts. `Ctrl+1` to `Ctrl+9` in the desktop app switch to favorite N, `Mod+Alt+Right` and `Mod+Alt+Left` cycle through favorites, and `Mod+Alt+Up` and `Mod+Alt+Down` step the effort. "Save current model and effort as favorite" is in the command palette, and `Mod+1` to `Mod+9` pick a row in the open model picker.
 
 ### Changed
 

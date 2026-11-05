@@ -45,6 +45,17 @@ function toggledProfileValue(
 }
 
 describe("parsePersistedAppSettings", () => {
+  it("keeps favorite presets with and without a pinned effort", () => {
+    const favorites = [
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "high" },
+      { provider: "claudeAgent", model: "claude-opus-5-5", effort: "xhigh" },
+      { provider: "codex", model: "gpt-5.5" },
+    ];
+    const parsed = parsePersistedAppSettings(JSON.stringify({ favorites }));
+    expect(parsed.favorites).toEqual(favorites);
+    expect(parsePersistedAppSettings(JSON.stringify(parsed)).favorites).toEqual(favorites);
+  });
+
   it("defaults and preserves local palette selections and opaque invalid theme sources", () => {
     expect(parsePersistedAppSettings(null).themeId).toBe("f5-black");
     const customThemes = [{ version: 99, raw: "keep me" }];

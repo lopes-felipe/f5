@@ -12,6 +12,7 @@ import {
 import { MAX_CONSECUTIVE_AUTO_RESUMES } from "../usageLimitResume.ts";
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
+import { nextQueuedMessageId } from "@t3tools/shared/answerDelivery";
 
 import {
   CommandId,
@@ -1028,7 +1029,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             yield* rejectAcceptedMutation(item);
             const at = now();
             const commandId = CommandId.makeUnsafe(randomUUID());
-            const messageId = MessageId.makeUnsafe(randomUUID());
+            const messageId = MessageId.makeUnsafe(
+              nextQueuedMessageId(item.command.message.messageId, randomUUID()),
+            );
             const source = yield* readSubmissionSource(item.command.commandId, item.threadId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
@@ -1081,7 +1084,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             yield* rejectAcceptedMutation(item);
             const at = now();
             const commandId = CommandId.makeUnsafe(randomUUID());
-            const messageId = MessageId.makeUnsafe(randomUUID());
+            const messageId = MessageId.makeUnsafe(
+              nextQueuedMessageId(item.command.message.messageId, randomUUID()),
+            );
             const source = yield* readSubmissionSource(item.command.commandId, item.threadId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
@@ -1636,7 +1641,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             { concurrency: 1, discard: true },
           );
         const commandId = CommandId.makeUnsafe(randomUUID());
-        const messageId = MessageId.makeUnsafe(randomUUID());
+        const messageId = MessageId.makeUnsafe(
+          nextQueuedMessageId(item.command.message.messageId, randomUUID()),
+        );
         const submissionId = CommandId.makeUnsafe(randomUUID());
         const duplicateId = CommandId.makeUnsafe(randomUUID());
         const attachments = yield* Effect.forEach(

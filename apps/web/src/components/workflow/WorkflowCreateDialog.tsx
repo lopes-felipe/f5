@@ -31,6 +31,7 @@ import type {
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 
 import { resolveThreadTitleModel, useAppSettings } from "../../appSettings";
 import { isElectron } from "../../env";
@@ -53,6 +54,7 @@ import {
 } from "../../composer-editor-mentions";
 import { collapseExpandedComposerCursor } from "../../composer-logic";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "../ComposerPromptEditor";
+import { ProjectPicker } from "../ProjectPicker";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import { fieldSurfaceClassName } from "../ui/input";
@@ -124,6 +126,8 @@ interface WorkflowCreateDialogProps {
   projectId: ProjectId;
   onOpenChange: (open: boolean) => void;
   onWorkflowCreated?: (workflowId: string) => void;
+  /** Retargets the open dialog; the typed brief and settings are kept. */
+  onProjectChange?: (projectId: ProjectId) => void;
 }
 
 export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
@@ -134,6 +138,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const keybindings = useServerKeybindings();
   const project = useStore(
     (store) => store.projects.find((entry) => entry.id === props.projectId) ?? null,
+  );
+  const allProjects = useStore((store) => store.projects);
+  // Workflows need a real workspace, so the scratch project is not offered.
+  const pickerProjects = useMemo(
+    () => allProjects.filter((entry) => !isScratchProject(entry)),
+    [allProjects],
   );
   const modelOptionsByProvider = useMemo(
     () =>
@@ -187,6 +197,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const documentProfile = WORKFLOW_DOCUMENT_PROFILES[documentType];
 
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
+  /** What a project change dropped; cleared once new references are added. */
+  const [projectChangeNote, setProjectChangeNote] = useState<string | null>(null);
+  /** Bumped on every project change so late file-tree authorizations can tell they are stale. */
+  const projectGenerationRef = useRef(0);
   const [reviewBranch, setReviewBranch] = useState("");
   const [plansDirectory, setPlansDirectory] = useState("plans");
   const [branchAProvider, setBranchAProvider] = useState<ProviderKind>(
@@ -377,6 +391,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setReaderSlot(null);
     setRequirementDraft({ text: "", mentions: [], cursor: 0 });
     setAttachedFilePaths([]);
+    setProjectChangeNote(null);
     setReviewBranch("");
     setPlansDirectory("plans");
     setBranchAProvider(branchADefaults.provider);
@@ -398,6 +413,31 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setSubmitting(false);
   };
 
+  const changeProject = (projectId: ProjectId) => {
+    if (projectId === props.projectId || submittingRef.current) return;
+    // A file-tree drop still authorizing against the old project must not land afterwards.
+    projectGenerationRef.current += 1;
+    // File chips, @-mentions and the review branch belong to the old project's repository.
+    const dropsFiles = attachedFilePaths.length > 0 || requirementDraft.mentions.length > 0;
+    const dropsBranch = reviewBranch.trim().length > 0;
+    if (requirementDraft.mentions.length > 0) {
+      setRequirementDraft((current) => ({ ...current, mentions: [] }));
+    }
+    setAttachedFilePaths([]);
+    setReviewBranch("");
+    setProjectChangeNote(
+      dropsFiles && dropsBranch
+        ? "File references and the review branch were cleared for the new project."
+        : dropsFiles
+          ? "File references were cleared for the new project."
+          : dropsBranch
+            ? "The review branch was cleared for the new project."
+            : null,
+    );
+    setError(null);
+    props.onProjectChange?.(projectId);
+  };
+
   const addAttachedFiles = (files: File[]) => {
     if (files.length === 0) {
       return;
@@ -416,6 +456,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
     if (filePaths.length > 0) {
       setAttachedFilePaths((current) => normalizeAttachedFilePaths([...current, ...filePaths]));
+      setProjectChangeNote(null);
       setError(null);
     }
 
@@ -516,6 +557,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       toastManager.add({ type: "error", title: "Unable to add the dragged file." });
       return;
     }
+    const projectGeneration = projectGenerationRef.current;
     void authorizeFileTreeMention({
       api,
       payload,
@@ -524,6 +566,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       workspaceRoot: project.cwd,
     })
       .then((relativePath) => {
+        // The project changed while authorizing: the path belongs to the old workspace.
+        if (projectGeneration !== projectGenerationRef.current) return;
+        setProjectChangeNote(null);
         const mention = composerFileMention(relativePath);
         if (mention === null) throw new Error("The file path is invalid.");
         setRequirementDraft((current) => {
@@ -763,7 +808,22 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogPopup className="max-w-4xl" onKeyDownCapture={onDialogKeyDown}>
         <DialogHeader>
-          <DialogTitle>New Workflow</DialogTitle>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <DialogTitle>New Workflow</DialogTitle>
+            {props.onProjectChange ? (
+              <ProjectPicker
+                projects={pickerProjects}
+                selection={{ kind: "project", projectId: props.projectId }}
+                onSelect={(selection) => {
+                  if (selection.kind === "project") changeProject(selection.projectId);
+                }}
+                allowNone={false}
+                trigger="crumb"
+                disabled={submitting}
+                className="max-w-64"
+              />
+            ) : null}
+          </div>
           <DialogDescription>
             Create a feature workflow, code review, root-cause investigation, or document. The title
             will be generated from your prompt.
@@ -886,6 +946,11 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     }
                   />
                 </div>
+                {projectChangeNote ? (
+                  <p className="text-2xs text-muted-foreground" role="status">
+                    {projectChangeNote}
+                  </p>
+                ) : null}
               </div>
               {workflowType === "document" ? (
                 <div className="space-y-2">
