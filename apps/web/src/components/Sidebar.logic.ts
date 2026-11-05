@@ -387,4 +387,28 @@ export function polledSidebarGitStatusCwds(
   return cwds;
 }
 
+export interface SidebarPullRequestLinkThread {
+  readonly id: ThreadId;
+  readonly archived: boolean;
+  readonly lookupCwd: string | null;
+  readonly pullRequests: ReadonlyArray<{ readonly url: string }> | undefined;
+}
+
+/**
+ * Linked PRs whose state the sidebar resolves. Like git status, archived threads keep a
+ * disabled lookup (cached state only) unless they are the open thread.
+ */
+export function sidebarPullRequestLinkTargets(
+  threads: ReadonlyArray<SidebarPullRequestLinkThread>,
+  routeThreadId: ThreadId | null | undefined,
+): Array<{ cwd: string | null; url: string; enabled: boolean }> {
+  return threads.flatMap((thread) =>
+    (thread.pullRequests ?? []).map((link) => ({
+      cwd: thread.lookupCwd,
+      url: link.url,
+      enabled: thread.lookupCwd !== null && (!thread.archived || thread.id === routeThreadId),
+    })),
+  );
+}
+
 export { hasUnseenCompletion, resolveThreadStatusPill, type ThreadStatusPill };

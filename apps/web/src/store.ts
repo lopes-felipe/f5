@@ -1209,6 +1209,7 @@ function buildThreadFromReadModel(
     existing.error === error &&
     existing.createdAt === thread.createdAt &&
     areUnknownEqual(existing.scheduledOrigin ?? null, thread.scheduledOrigin ?? null) &&
+    areUnknownEqual(existing.pullRequests ?? [], thread.pullRequests ?? []) &&
     existing.archivedAt === thread.archivedAt &&
     (existing.settledAt ?? null) === (thread.settledAt ?? null) &&
     (existing.settledBy ?? null) === (thread.settledBy ?? null) &&
@@ -1255,6 +1256,13 @@ function buildThreadFromReadModel(
     projectId: thread.projectId,
     title: thread.title,
     scheduledOrigin: thread.scheduledOrigin ?? null,
+    ...(thread.pullRequests && thread.pullRequests.length > 0
+      ? {
+          pullRequests: areUnknownEqual(existing?.pullRequests ?? [], thread.pullRequests)
+            ? existing!.pullRequests
+            : thread.pullRequests,
+        }
+      : {}),
     model,
     ...(thread.modelSelection !== undefined ? { modelSelection: thread.modelSelection } : {}),
     runtimeMode: thread.runtimeMode,

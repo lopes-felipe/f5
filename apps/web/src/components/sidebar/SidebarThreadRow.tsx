@@ -40,6 +40,8 @@ import {
 import { ThreadRelativeActivityTime } from "../thread/ThreadActivityTime";
 import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
+import { ThreadPullRequestMenuItems } from "../pullRequests/ThreadPullRequestMenuItems";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -337,35 +339,11 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           ) : null}
         </span>
         {section !== "snoozed" && prStatus ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label={prStatus.tooltip}
-                  className={cn(
-                    "-mx-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring",
-                    section === "settled"
-                      ? cn(
-                          "text-muted-foreground",
-                          prStatus.state === "open"
-                            ? "group-hover/thread-row:text-success-foreground group-focus-within/thread-row:text-success-foreground"
-                            : prStatus.state === "merged"
-                              ? "group-hover/thread-row:text-attention-foreground group-focus-within/thread-row:text-attention-foreground"
-                              : "group-hover/thread-row:text-muted-foreground",
-                        )
-                      : prStatus.colorClass,
-                  )}
-                  onClick={(event) => {
-                    actions.openPrLink(event, prStatus.url);
-                  }}
-                >
-                  <GitPullRequestIcon className="size-3.5" />
-                </button>
-              }
-            />
-            <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
-          </Tooltip>
+          <SidebarThreadPrStatus
+            prStatus={prStatus}
+            settled={section === "settled"}
+            onOpen={(event, url) => actions.openPrLink(event, url)}
+          />
         ) : null}
         {canRename && !isDraft && isRenaming ? (
           <InlineTitleEditor
@@ -642,5 +620,115 @@ export function ThreadRowTrailingMeta(props: {
         ) : null}
       </span>
     </div>
+  );
+}
+
+const PR_STATUS_BUTTON_CLASS_NAME =
+  "relative -mx-0.5 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring";
+
+/** Settled rows keep their PR icon muted until hovered or focused. */
+function settledPrColorClass(state: PrStatusIndicator["state"]): string {
+  return cn(
+    "text-muted-foreground",
+    state === "open"
+      ? "group-hover/thread-row:text-success-foreground group-focus-within/thread-row:text-success-foreground"
+      : state === "merged"
+        ? "group-hover/thread-row:text-attention-foreground group-focus-within/thread-row:text-attention-foreground"
+        : "group-hover/thread-row:text-muted-foreground",
+  );
+}
+
+/**
+ * The row's PR icon: one icon colored by the most actionable PR, with a count when the thread
+ * has several. One PR opens directly; several open a menu of them.
+ */
+export function SidebarThreadPrStatus({
+  prStatus,
+  settled,
+  onOpen,
+}: {
+  prStatus: PrStatusIndicator;
+  settled: boolean;
+  onOpen: (event: React.MouseEvent<HTMLElement> | null, url: string) => void;
+}) {
+  const count = prStatus.items.length;
+  const className = cn(
+    PR_STATUS_BUTTON_CLASS_NAME,
+    settled ? settledPrColorClass(prStatus.state) : prStatus.colorClass,
+  );
+  const icon = (
+    <>
+      <GitPullRequestIcon className="size-3.5" />
+      {count > 1 ? (
+        <span
+          aria-hidden="true"
+          data-testid="sidebar-pr-count"
+          className="-top-1 -right-1 absolute font-medium text-2xs tabular-nums leading-none"
+        >
+          {count}
+        </span>
+      ) : null}
+    </>
+  );
+  const tooltip = (
+    <TooltipPopup side="top" className="whitespace-pre-line">
+      {prStatus.tooltip}
+    </TooltipPopup>
+  );
+  if (count <= 1) {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              aria-label={prStatus.tooltip}
+              className={className}
+              onClick={(event) => onOpen(event, prStatus.url)}
+            >
+              {icon}
+            </button>
+          }
+        />
+        {tooltip}
+      </Tooltip>
+    );
+  }
+  // The menu portals out of the row, but React events still bubble to the row's handlers.
+  const stopRowEvent = (event: React.SyntheticEvent) => event.stopPropagation();
+  return (
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`${count} pull requests`}
+                  className={className}
+                  onClick={stopRowEvent}
+                  onDoubleClick={stopRowEvent}
+                >
+                  {icon}
+                </button>
+              }
+            />
+          }
+        />
+        {tooltip}
+      </Tooltip>
+      <MenuPopup
+        align="start"
+        onClick={stopRowEvent}
+        onDoubleClick={stopRowEvent}
+        onContextMenu={stopRowEvent}
+      >
+        <ThreadPullRequestMenuItems
+          items={prStatus.items}
+          onOpen={(item) => onOpen(null, item.url)}
+        />
+      </MenuPopup>
+    </Menu>
   );
 }
