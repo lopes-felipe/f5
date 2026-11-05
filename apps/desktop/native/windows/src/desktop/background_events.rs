@@ -209,6 +209,11 @@ pub(super) unsafe fn execute(request: &Value, host: &Value, hwnd: HWND) -> Resul
                         }
                         continue;
                     }
+                    // Dead keys/layouts may not translate a nominally printable chord.
+                    // Never fall back to key messages that discard Shift state.
+                    if chord.contains(&VK_SHIFT.0) {
+                        return Err(foreground_required());
+                    }
                     for code in chord {
                         check(request)?;
                         let scan = MapVirtualKeyW(*code as u32, MAPVK_VK_TO_VSC);
