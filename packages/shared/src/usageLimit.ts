@@ -55,6 +55,56 @@ export interface QuotaWindow {
   readonly label: string;
   readonly usedPercent: number | null;
   readonly resetsAt: string | null;
+  /** Rolling window length, when the provider reports or implies one. */
+  readonly durationMinutes: number | null;
+}
+
+/** Claude window keys imply their length; other keys (spend, unknown) have none. */
+export function claudeQuotaWindowDurationMinutes(key: string): number | null {
+  if (key === "five_hour") return 300;
+  if (key.startsWith("seven_day")) return 10_080;
+  return null;
+}
+
+/** Usage within this many points of elapsed time reads as "on pace". */
+export const QUOTA_ON_PACE_POINTS = 5;
+
+export interface QuotaPace {
+  /** Share of the window elapsed at `observedAt`, 0-100. */
+  readonly elapsedPercent: number;
+  /** `usedPercent - elapsedPercent`; positive means usage is ahead of the clock. */
+  readonly deltaPoints: number;
+}
+
+/**
+ * Compares usage with elapsed window time at the snapshot's observation time.
+ * Null when the window length or reset is unknown, or the reset is not after `observedAt`.
+ */
+export function quotaPace(input: {
+  readonly usedPercent: number | null;
+  readonly resetsAt: string | null;
+  readonly durationMinutes: number | null;
+  readonly observedAt: string | null;
+}): QuotaPace | null {
+  if (input.usedPercent === null || !input.durationMinutes || input.durationMinutes <= 0)
+    return null;
+  if (!input.resetsAt || !input.observedAt) return null;
+  const reset = Date.parse(input.resetsAt);
+  const observed = Date.parse(input.observedAt);
+  if (!Number.isFinite(reset) || !Number.isFinite(observed) || reset <= observed) return null;
+  const durationMs = input.durationMinutes * 60_000;
+  const elapsedPercent = Math.min(
+    100,
+    Math.max(0, ((durationMs - (reset - observed)) / durationMs) * 100),
+  );
+  const used = Math.min(100, Math.max(0, input.usedPercent));
+  return { elapsedPercent, deltaPoints: used - elapsedPercent };
+}
+
+export function quotaPaceLabel(pace: QuotaPace): string {
+  const points = Math.round(Math.abs(pace.deltaPoints));
+  if (Math.abs(pace.deltaPoints) < QUOTA_ON_PACE_POINTS) return "on pace";
+  return pace.deltaPoints > 0 ? `${points} pts ahead of pace` : `${points} pts under pace`;
 }
 
 function epochSecondsToIso(value: number | null): string | null {
@@ -76,6 +126,7 @@ export function quotaWindowsFromSection(section: AccountUsageSection): Array<Quo
         label: window.label,
         usedPercent: window.usedPercent,
         resetsAt: window.resetsAt,
+        durationMinutes: null,
       }));
     case "claude-usage":
       if (!section.snapshot.data.limitsAvailable) return [];
@@ -84,6 +135,7 @@ export function quotaWindowsFromSection(section: AccountUsageSection): Array<Quo
         label: window.label,
         usedPercent: window.utilization,
         resetsAt: window.resetsAt,
+        durationMinutes: claudeQuotaWindowDurationMinutes(window.key),
       }));
     case "codex-limits":
       return section.snapshot.data.rateLimits.flatMap((limit) =>
@@ -101,6 +153,7 @@ export function quotaWindowsFromSection(section: AccountUsageSection): Array<Quo
                   label: codexRateLimitWindowLabel(window, fallback),
                   usedPercent: window.usedPercent,
                   resetsAt: epochSecondsToIso(window.resetsAt),
+                  durationMinutes: window.windowDurationMins || null,
                 },
               ]
             : [],

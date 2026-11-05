@@ -1,7 +1,8 @@
 import type {
   AccountUsageErrorCode,
   AccountUsageSection,
-  CodexAccountUsage,
+  CodexAccountDailyUsageBucket,
+  CodexAccountTokenSummary,
   UsageAccount,
   UsageAccounts,
   UsageQuotaHistory,
@@ -11,11 +12,15 @@ import type {
 import {
   CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
   codexRateLimitWindowLabel,
+  type QuotaWindow,
   quotaWindowsFromSection,
 } from "@t3tools/shared/usageLimit";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
-import { QuotaMeter } from "./charts/QuotaMeter";
+import { DailyTokenBars } from "./charts/DailyTokenBars";
+import { QuotaMeter, QuotaMeterLegend } from "./charts/QuotaMeter";
+import { TightestLimitCallout, tightestQuotaWindow } from "./charts/TightestLimitCallout";
+import { codexAccountRangeTokens, codexDailyTokenSeries } from "./codexDailyTokens";
 import { providerLabel } from "./format";
 import { ResetCreditButton } from "./ResetCreditButton";
 import { ClaudeUsageAnalysisPanel } from "./ClaudeUsageAnalysisPanel";
@@ -71,87 +76,152 @@ function compactDecimalCount(value: string | null): string {
   }
 }
 
-function codexAccountRangeTokens(input: {
-  readonly usage: CodexAccountUsage;
-  readonly range: UsageRange;
-}): string | null {
-  const rangeDays = input.range === "24h" ? 1 : Number.parseInt(input.range, 10);
-  const firstDay = new Date(input.usage.fetchedAt);
-  firstDay.setUTCHours(0, 0, 0, 0);
-  firstDay.setUTCDate(firstDay.getUTCDate() - (rangeDays - 1));
-  const firstDate = firstDay.toISOString().slice(0, 10);
-  let total = 0n;
-  let found = false;
-  for (const bucket of input.usage.dailyUsageBuckets) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(bucket.startDate)) continue;
-    const date = new Date(`${bucket.startDate}T00:00:00.000Z`);
-    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== bucket.startDate)
-      continue;
-    if (bucket.startDate < firstDate || bucket.startDate > input.usage.fetchedAt.slice(0, 10))
-      continue;
-    total += BigInt(bucket.tokens);
-    found = true;
-  }
-  return found ? total.toString() : null;
-}
-
-function CodexTokenSummary(props: {
-  readonly usage: CodexAccountUsage;
-  readonly range: UsageRange;
-}) {
-  const summary = props.usage.tokenSummary;
-  if (!summary) return null;
-  const rangeTokens = codexAccountRangeTokens(props);
+function StatTile(props: { readonly label: string; readonly value: string }) {
   return (
-    <div className="grid gap-3 pt-2 sm:grid-cols-2 xl:grid-cols-4">
-      <div>
-        <p className="text-2xs text-muted-foreground">
-          Account tokens ·{" "}
-          {props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`}
-        </p>
-        <p className="mt-0.5 text-lg font-semibold tabular-nums">
-          {compactDecimalCount(rangeTokens)}
-        </p>
-      </div>
-      <div>
-        <p className="text-2xs text-muted-foreground">Lifetime tokens</p>
-        <p className="mt-0.5 text-lg font-semibold tabular-nums">
-          {compactDecimalCount(summary.lifetimeTokens)}
-        </p>
-      </div>
-      <div>
-        <p className="text-2xs text-muted-foreground">Peak daily tokens</p>
-        <p className="mt-0.5 text-lg font-semibold tabular-nums">
-          {compactDecimalCount(summary.peakDailyTokens)}
-        </p>
-      </div>
-      <div>
-        <p className="text-2xs text-muted-foreground">Current usage streak</p>
-        <p className="mt-0.5 text-lg font-semibold tabular-nums">
-          {summary.currentStreakDays === null
-            ? "Unavailable"
-            : `${summary.currentStreakDays} day${summary.currentStreakDays === "1" ? "" : "s"}`}
-        </p>
-      </div>
+    <div className="rounded-lg border border-border/60 px-3 py-2">
+      <p className="text-2xs text-muted-foreground">{props.label}</p>
+      <p className="mt-0.5 text-lg font-semibold tabular-nums">{props.value}</p>
     </div>
   );
 }
 
+function CodexTokenSummary(props: {
+  readonly fetchedAt: string;
+  readonly tokenSummary: CodexAccountTokenSummary | null;
+  readonly dailyUsageBuckets: ReadonlyArray<CodexAccountDailyUsageBucket>;
+  readonly range: UsageRange;
+}) {
+  const summary = props.tokenSummary;
+  const series = codexDailyTokenSeries(props);
+  if (!summary && !series) return null;
+  return (
+    <div className="space-y-3 pt-2">
+      {summary ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <StatTile
+            label={`Account tokens · ${
+              props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`
+            }`}
+            value={compactDecimalCount(codexAccountRangeTokens(props))}
+          />
+          <StatTile label="Lifetime tokens" value={compactDecimalCount(summary.lifetimeTokens)} />
+          <StatTile
+            label="Peak daily tokens"
+            value={compactDecimalCount(summary.peakDailyTokens)}
+          />
+          <StatTile
+            label="Current usage streak"
+            value={
+              summary.currentStreakDays === null
+                ? "Unavailable"
+                : `${summary.currentStreakDays} day${summary.currentStreakDays === "1" ? "" : "s"}`
+            }
+          />
+        </div>
+      ) : null}
+      {series ? <DailyTokenBars days={series.days} peakDate={series.peakDate} /> : null}
+    </div>
+  );
+}
+
+/** "Codex" + "Weekly limit" → "Codex weekly limit". */
+function qualifiedWindowLabel(groupName: string, label: string): string {
+  return `${groupName} ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+}
+
+type CodexLimitsSection = Extract<AccountUsageSection, { kind: "codex-limits" }>;
+
+/** Every Codex window across limit groups, labelled with its group for the callout. */
+function codexCalloutWindows(section: CodexLimitsSection) {
+  const names = new Map(
+    (section.snapshot?.data.rateLimits ?? []).map((limit) => [limit.id, limit.name ?? limit.id]),
+  );
+  return quotaWindowsFromSection(section).map((window) => {
+    const limitId = window.windowKey.slice(0, window.windowKey.lastIndexOf(":"));
+    return {
+      ...window,
+      limitId,
+      label: qualifiedWindowLabel(names.get(limitId) ?? limitId, window.label),
+    };
+  });
+}
+
+/** Reset credits restore the main Codex allowance only. */
+function codexResetWindowName(section: CodexLimitsSection): string {
+  return (
+    (section.snapshot?.data.rateLimits ?? [])
+      .filter((limit) => limit.id === "codex")
+      .flatMap((limit) => [limit.primary, limit.secondary])
+      .flatMap((window) =>
+        window && window.usedPercent >= 100
+          ? [codexRateLimitWindowLabel(window, "main Codex allowance")]
+          : [],
+      )
+      .join(" and ") || "the main Codex allowance"
+  );
+}
+
+/**
+ * The reset button joins the callout when the tightest window is an exhausted main
+ * Codex window and a credit is available; otherwise it keeps its own row.
+ */
+function resetCreditInCallout(section: CodexLimitsSection): boolean {
+  const credits = section.snapshot?.data.resetCredits;
+  if (!credits || credits.availableCount <= 0) return false;
+  const tightest = tightestQuotaWindow(codexCalloutWindows(section));
+  return tightest !== null && tightest.limitId === "codex" && tightest.usedPercent! >= 100;
+}
+
+function hasPaceWindow(windows: ReadonlyArray<QuotaWindow>): boolean {
+  return windows.some((window) => window.durationMinutes !== null);
+}
+
 function CodexLimits(props: {
   readonly account: UsageAccount;
-  readonly section: Extract<AccountUsageSection, { kind: "codex-limits" }>;
+  readonly section: CodexLimitsSection;
   readonly history: QuotaHistoryIndex | undefined;
 }) {
   const snapshot = props.section.snapshot;
   if (!snapshot || snapshot.data.rateLimits.length === 0) return null;
-  const windows = new Map(
-    quotaWindowsFromSection(props.section).map((window) => [window.windowKey, window]),
-  );
+  const allWindows = quotaWindowsFromSection(props.section);
+  const windows = new Map(allWindows.map((window) => [window.windowKey, window]));
+  const instanceId = props.account.providerInstanceId;
+  const resetCredits = snapshot.data.resetCredits;
+  const withCredits = snapshot.data.rateLimits.filter((limit) => limit.credits?.hasCredits);
+  const creditParts = [
+    ...withCredits.map(
+      (limit) =>
+        `${withCredits.length > 1 ? `${limit.name ?? limit.id} credits` : "Credits"}: ${
+          limit.credits!.unlimited ? "Unlimited" : (limit.credits!.balance ?? "—")
+        }`,
+    ),
+    ...(resetCredits && resetCredits.availableCount > 0
+      ? [
+          `${resetCredits.availableCount} limit reset${resetCredits.availableCount === 1 ? "" : "s"} available`,
+        ]
+      : []),
+  ];
   return (
-    <div className="grid gap-4 border-t border-border/60 pt-4 md:grid-cols-2">
+    <div className="space-y-3 border-t border-border/60 pt-4">
+      <TightestLimitCallout
+        windows={codexCalloutWindows(props.section)}
+        {...(instanceId && resetCreditInCallout(props.section)
+          ? {
+              action: () => (
+                <ResetCreditButton
+                  instanceId={instanceId}
+                  accountName={props.account.displayName}
+                  count={resetCredits!.availableCount}
+                  windowName={codexResetWindowName(props.section)}
+                />
+              ),
+            }
+          : {})}
+      />
+      {hasPaceWindow(allWindows) ? <QuotaMeterLegend /> : null}
       {snapshot.data.rateLimits.map((limit) => (
         <div key={limit.id} className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
             <p className="text-xs font-medium">{limit.name ?? limit.id}</p>
             {limit.planType ? (
               <span className="rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
@@ -170,6 +240,7 @@ function CodexLimits(props: {
                 utilization={window.usedPercent}
                 resetsAt={window.resetsAt}
                 observedAt={snapshot.fetchedAt}
+                durationMinutes={window.durationMinutes}
                 {...withHistory(
                   props.history,
                   props.account.key,
@@ -179,12 +250,41 @@ function CodexLimits(props: {
               />
             );
           })}
-          {limit.credits?.hasCredits ? (
-            <p className="text-2xs text-muted-foreground">
-              Credits: {limit.credits.unlimited ? "Unlimited" : (limit.credits.balance ?? "—")}
-            </p>
-          ) : null}
         </div>
+      ))}
+      {creditParts.length > 0 ? (
+        <p className="text-2xs text-muted-foreground">{creditParts.join(" · ")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Claude and generic provider windows: callout, legend, then one row per window. */
+function QuotaWindowRows(props: {
+  readonly account: UsageAccount;
+  readonly windows: ReadonlyArray<QuotaWindow>;
+  readonly observedAt: string;
+  readonly history: QuotaHistoryIndex | undefined;
+}) {
+  return (
+    <div className="space-y-3">
+      <TightestLimitCallout
+        windows={props.windows.filter(
+          (window) => window.windowKey !== CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
+        )}
+      />
+      {hasPaceWindow(props.windows) ? <QuotaMeterLegend /> : null}
+      {props.windows.map((window) => (
+        <QuotaMeter
+          key={window.windowKey}
+          label={window.label}
+          utilization={window.usedPercent}
+          resetsAt={window.resetsAt}
+          observedAt={props.observedAt}
+          durationMinutes={window.durationMinutes}
+          accessibleName={`${props.account.displayName} · ${window.label}`}
+          {...withHistory(props.history, props.account.key, window.windowKey, window.resetsAt)}
+        />
       ))}
     </div>
   );
@@ -280,38 +380,22 @@ export function AccountUsageCards({
               <div key={section.kind} className="space-y-2">
                 <SectionStatus account={account} section={section} />
                 {section.kind === "provider-limits" && section.snapshot && (
-                  <div className="grid gap-4 md:grid-cols-2">
-                    {quotaWindowsFromSection(section).map((window) => (
-                      <QuotaMeter
-                        key={window.windowKey}
-                        label={window.label}
-                        utilization={window.usedPercent}
-                        resetsAt={window.resetsAt}
-                        observedAt={section.snapshot!.fetchedAt}
-                        accessibleName={`${account.displayName} · ${window.label}`}
-                        {...withHistory(history, account.key, window.windowKey, window.resetsAt)}
-                      />
-                    ))}
-                  </div>
+                  <QuotaWindowRows
+                    account={account}
+                    windows={quotaWindowsFromSection(section)}
+                    observedAt={section.snapshot.fetchedAt}
+                    history={history}
+                  />
                 )}
                 {section.kind === "codex-limits" &&
                   section.snapshot?.data.resetCredits &&
-                  account.providerInstanceId && (
+                  account.providerInstanceId &&
+                  !resetCreditInCallout(section) && (
                     <ResetCreditButton
                       instanceId={account.providerInstanceId}
                       accountName={account.displayName}
                       count={section.snapshot.data.resetCredits.availableCount}
-                      windowName={
-                        section.snapshot.data.rateLimits
-                          .filter((limit) => limit.id === "codex")
-                          .flatMap((limit) => [limit.primary, limit.secondary])
-                          .flatMap((window) =>
-                            window && window.usedPercent >= 100
-                              ? [codexRateLimitWindowLabel(window, "main Codex allowance")]
-                              : [],
-                          )
-                          .join(" and ") || "the main Codex allowance"
-                      }
+                      windowName={codexResetWindowName(section)}
                     />
                   )}
                 {section.kind === "claude-usage" && section.snapshot && (
@@ -330,24 +414,12 @@ export function AccountUsageCards({
                         Account usage is temporarily unavailable.
                       </p>
                     ) : (
-                      <div className="grid gap-4 md:grid-cols-2">
-                        {quotaWindowsFromSection(section).map((window) => (
-                          <QuotaMeter
-                            key={window.windowKey}
-                            label={window.label}
-                            utilization={window.usedPercent}
-                            resetsAt={window.resetsAt}
-                            observedAt={section.snapshot!.fetchedAt}
-                            accessibleName={`${account.displayName} · ${window.label}`}
-                            {...withHistory(
-                              history,
-                              account.key,
-                              window.windowKey,
-                              window.resetsAt,
-                            )}
-                          />
-                        ))}
-                      </div>
+                      <QuotaWindowRows
+                        account={account}
+                        windows={quotaWindowsFromSection(section)}
+                        observedAt={section.snapshot.fetchedAt}
+                        history={history}
+                      />
                     )}
                     {section.snapshot.data.extraUsage && (
                       <div className="space-y-2">
@@ -374,13 +446,9 @@ export function AccountUsageCards({
                 {section.kind === "codex-tokens" && section.snapshot && (
                   <CodexTokenSummary
                     range={range}
-                    usage={{
-                      ...section.snapshot.data,
-                      status: "available",
-                      fetchedAt: section.snapshot.fetchedAt,
-                      rateLimits: [],
-                      message: null,
-                    }}
+                    fetchedAt={section.snapshot.fetchedAt}
+                    tokenSummary={section.snapshot.data.tokenSummary}
+                    dailyUsageBuckets={section.snapshot.data.dailyUsageBuckets}
                   />
                 )}
                 {section.kind === "codex-limits" && (
