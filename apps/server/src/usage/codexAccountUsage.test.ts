@@ -95,6 +95,7 @@ describe("Codex account usage", () => {
         label: "Monthly credit limit",
         usedPercent: 1,
         resetsAt: "2026-07-19T22:26:40.000Z",
+        durationMinutes: null,
       },
     ]);
   });
