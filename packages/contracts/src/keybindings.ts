@@ -27,6 +27,29 @@ export const MODEL_PICKER_KEYBINDING_COMMANDS = [
 ] as const;
 export type ModelPickerKeybindingCommand = (typeof MODEL_PICKER_KEYBINDING_COMMANDS)[number];
 
+/** Apply favorite preset N (model plus optional pinned effort) without opening the picker. */
+export const MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS = [
+  "model.favorite.1",
+  "model.favorite.2",
+  "model.favorite.3",
+  "model.favorite.4",
+  "model.favorite.5",
+  "model.favorite.6",
+  "model.favorite.7",
+  "model.favorite.8",
+  "model.favorite.9",
+] as const;
+export type ModelFavoriteJumpKeybindingCommand =
+  (typeof MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS)[number];
+
+export const MODEL_FAVORITE_KEYBINDING_COMMANDS = [
+  "model.favorite.next",
+  "model.favorite.previous",
+  ...MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
+  "model.favorite.saveCurrent",
+] as const;
+export type ModelFavoriteKeybindingCommand = (typeof MODEL_FAVORITE_KEYBINDING_COMMANDS)[number];
+
 /** Upstream page list commands, in the order of their default keys. */
 export const UPSTREAM_KEYBINDING_COMMANDS = [
   "upstream.next",
@@ -103,6 +126,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "thread.switchRecentNext",
   "thread.switchRecentPrevious",
   "model.switchRecent",
+  ...MODEL_FAVORITE_KEYBINDING_COMMANDS,
   "prHub.open",
   "palette.files",
   "projectContentSearch.toggle",

@@ -21,7 +21,7 @@ const queueItem = (id: string, text: string, overrides: Partial<NextTurnQueueIte
     status: "queued",
     command: {
       commandId: CommandId.makeUnsafe(`cmd-${id}`),
-      message: { text, attachments: [] },
+      message: { messageId: `message-${id}`, text, attachments: [] },
     },
     ...overrides,
   }) as unknown as NextTurnQueueItem;
