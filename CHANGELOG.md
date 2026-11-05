@@ -11,12 +11,19 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Computer access requests appear in a non-modal panel that leaves F5 interactive and keeps composer focus.
+- Closed computer sessions release their permission receipts without requiring a backend disconnect.
 - The default Codex switch can select an older version than your current PATH installation and bypass PATH wrappers. To retain a newer CLI or wrapper, configure its absolute Binary path before starting a session. Settings now calls out this migration next to the Binary path field.
 
 - F5 bundles the audited Codex 0.166.0 runtime. Existing empty or default `codex` Binary paths now use the bundled copy. Set an explicit Binary path to keep a PATH or Homebrew install; isolated profiles still accept custom Codex at or above 0.144.3. Bundled Codex updates with F5. Settings shows bundled/custom runtime sources and a Use bundled reset; isolated Claude profiles keep their bundled-runtime restriction.
 
 - Claude in Chrome certification records are version floors: a Claude update with the same browser setup stays covered, and a changed setup or tool list closes Claude in Chrome with its reason until a new live run. Withdrawing the covering record turns it off, and desktop and server use the same gate.
 - The Claude in Chrome live harness observes terminal `claude --chrome` coexistence; permission-mode behaviour, routing isolation, stale native hosts and frozen-server stop are no longer required of the live run.
+
+### Fixed
+
+- Temporary keychain failures no longer replace the consent signing key or erase saved approvals during unrelated writes.
+- Windows CLI packaging preserves npm aliases when pinning native dependency overrides.
 
 ## [0.1.3] - 2026-11-03
 

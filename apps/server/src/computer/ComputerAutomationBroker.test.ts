@@ -111,6 +111,57 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
 }
 describe("computer broker safety boundaries", () => {
+  it("awaits main's correlated forget result and surfaces persistence failure to Settings", async () => {
+    const h = await harness();
+    try {
+      h.ipc.emit("message", {
+        type: "hostCapabilities",
+        capabilities: ["computer-grant-forget-v1"],
+      });
+      const forget = h.broker.access.forgetRemembered("project", "com.apple.TextEdit");
+      const rejected = expect(forget).rejects.toThrow("could not save revocation");
+      await vi.waitFor(() =>
+        expect(
+          h.ipc.messages.some((message) => message.type === "grantForget" && message.requestId),
+        ).toBe(true),
+      );
+      const request = h.ipc.messages.findLast((message) => message.type === "grantForget");
+      if (request?.type !== "grantForget") throw new Error("Missing forget request");
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: request.requestId,
+        error: { _tag: "Execution", message: "could not save revocation" },
+      });
+      await rejected;
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each([false, true])(
+    "notifies capable hosts on actual session release, capable=%s",
+    async (capable) => {
+      const h = await harness();
+      try {
+        if (capable)
+          h.ipc.emit("message", {
+            type: "hostCapabilities",
+            capabilities: ["computer-session-lifecycle-v1"],
+          });
+        h.broker.releaseSession("t", "obsolete");
+        expect(
+          h.ipc.messages.filter((message) => message.type === "computerSessionClosed"),
+        ).toEqual([]);
+        h.broker.releaseSession("t", "s");
+        expect(
+          h.ipc.messages.filter((message) => message.type === "computerSessionClosed"),
+        ).toEqual(
+          capable ? [{ type: "computerSessionClosed", threadId: "t", sessionGeneration: "s" }] : [],
+        );
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
   it("keeps action success but discards a late capture after a masking change", async () => {
     const h = await harness();
     try {

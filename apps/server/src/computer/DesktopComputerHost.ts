@@ -4,6 +4,8 @@ import {
   SCHEDULED_NOTIFICATIONS_CAPABILITY,
   OPEN_EXTERNAL_URL_CAPABILITY,
   COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+  COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -64,6 +66,8 @@ export class DesktopComputerHost {
         SCHEDULED_NOTIFICATIONS_CAPABILITY,
         OPEN_EXTERNAL_URL_CAPABILITY,
         COMPUTER_BACKGROUND_CAPABILITY,
+        COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+        COMPUTER_GRANT_FORGET_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -76,6 +80,12 @@ export class DesktopComputerHost {
   /** Background delivery needs the desktop to have answered with the same capability. */
   backgroundCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_BACKGROUND_CAPABILITY);
+  }
+  sessionLifecycleCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY);
+  }
+  grantForgetCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_GRANT_FORGET_CAPABILITY);
   }
   supportsAgentIdentity(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_AGENT_IDENTITY_CAPABILITY);

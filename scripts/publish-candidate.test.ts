@@ -502,6 +502,10 @@ it.skipIf(process.platform === "win32")(
       );
     }
   },
+  // Real ZIP subprocesses and three HTTP reconciliation cycles share the machine
+  // with the workspace suites; keep this integration rehearsal bounded without
+  // imposing the five-second unit-test budget on it.
+  20_000,
 );
 describe("publisher integration with immutable platform fixtures", () => {
   it("resumes a matching draft with an interrupted starter asset without replacing uploaded bytes", async () => {

@@ -20,3 +20,14 @@ export function selectCliRuntimeExternalDependencies(
     Object.entries(dependencies).filter(([name]) => isRuntimeExternalCliDependency(name)),
   );
 }
+
+/** Bun lock keys can be install aliases, while the resolution names the real package. */
+export function pinnedCliDependency(
+  packages: Readonly<Record<string, readonly unknown[]>>,
+  name: string,
+): string {
+  const entry = packages[name]?.[0];
+  const resolution = typeof entry === "string" ? /^((?:@[^/]+\/)?[^@]+)@(.+)$/.exec(entry) : null;
+  if (!resolution) throw new Error("Missing pinned native dependency: " + name);
+  return resolution[1] === name ? resolution[2]! : "npm:" + entry;
+}

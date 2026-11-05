@@ -6,6 +6,8 @@ import {
   OPEN_EXTERNAL_URL_CAPABILITY,
   type OpenExternalUrlStatus,
   COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+  COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -96,6 +98,7 @@ export class ComputerHostChannel {
         options?: { preapproved?: boolean },
       ) => Promise<OpenExternalUrlStatus>;
       cancelBrowserOpen?: (profileId: string) => void;
+      grantForgetFailed?: (profileId: string, message: string) => void;
     } = {},
   ) {
     this.chrome = new ChromeLeaseAuthority((holder) => {
@@ -236,6 +239,8 @@ export class ComputerHostChannel {
               capability === COMPUTER_AGENT_IDENTITY_CAPABILITY ||
               capability === COMPUTER_ACTIVITY_CORRELATION_CAPABILITY ||
               capability === COMPUTER_CHROME_CALLS_CAPABILITY ||
+              capability === COMPUTER_SESSION_LIFECYCLE_CAPABILITY ||
+              capability === COMPUTER_GRANT_FORGET_CAPABILITY ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -653,7 +658,23 @@ export class ComputerHostChannel {
           backend.acquisitions.delete(message.requestId);
           break;
         case "grantForget":
-          this.grants.forget(profileId, message.projectId, message.appId);
+          try {
+            this.grants.forget(profileId, message.projectId, message.appId);
+            if (message.requestId)
+              this.send(profileId, { type: "response", requestId: message.requestId, result: {} });
+          } catch (error) {
+            if (message.requestId) fail(message.requestId, error);
+            else
+              this.options.grantForgetFailed?.(
+                profileId,
+                error instanceof Error ? error.message : "Could not forget this app.",
+              );
+          }
+          break;
+        case "computerSessionClosed":
+          if (!backend.capabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY)) break;
+          this.grants.sessionClosed(profileId, message.threadId, message.sessionGeneration);
+          this.execution.sessionClosed(profileId, message.threadId, message.sessionGeneration);
           break;
         case "grantsValidate":
           this.send(profileId, {
@@ -864,8 +885,27 @@ export class ComputerHostChannel {
     const { sessionReceipt: _untrusted, ...base } = answer;
     answer = base;
     let forwarded: ComputerAccessAnswer = answer;
-    if (request.kind === "apps") forwarded = this.grants.issue(profileId, request, answer);
-    else if (
+    if (request.kind === "apps") {
+      try {
+        forwarded = this.grants.issue(profileId, request, answer);
+      } catch (error) {
+        // The request has been consumed. Settle the backend before surfacing the native
+        // review error; otherwise it hangs until its tool timeout.
+        this.send(profileId, {
+          type: "accessAnswer",
+          answer: {
+            ...answer,
+            decisions: answer.decisions.map((decision) => ({
+              ...decision,
+              allow: false,
+              allowTyping: false,
+              remember: false,
+            })),
+          },
+        });
+        throw error;
+      }
+    } else if (
       request.kind === "session-actions" &&
       request.background === true &&
       answer.allowSessionActions === true &&

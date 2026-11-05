@@ -259,7 +259,21 @@ export class ComputerAutomationBrokerRuntime {
     });
     this.access = new ComputerAccessService({
       platform: options.platform,
-      forgotten: (projectId, appId) => this.host.send({ type: "grantForget", projectId, appId }),
+      forgotten: (projectId, appId) =>
+        this.host.grantForgetCapable()
+          ? this.host
+              .correlated(
+                {
+                  type: "grantForget",
+                  requestId: randomUUID(),
+                  projectId,
+                  appId,
+                },
+                10_000,
+                false,
+              )
+              .then(() => undefined)
+          : this.host.send({ type: "grantForget", projectId, appId }),
       backendIncarnation: host.backendIncarnation,
       storage: options.storage,
       request: (request, expiresAtMs) => {
@@ -1515,6 +1529,8 @@ export class ComputerAutomationBrokerRuntime {
       data: { threadId, grantVersion, grants: [] },
     });
     this.access.clearSession(threadId, generation);
+    if (this.host.sessionLifecycleCapable())
+      this.host.send({ type: "computerSessionClosed", threadId, sessionGeneration: generation });
     this.threadRevisions.delete(threadId);
     this.threadRevisions.set(threadId, binding.policyRevision);
     if (this.threadRevisions.size > 4096)
