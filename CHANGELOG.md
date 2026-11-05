@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-05
+
 ### Added
 
 - Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
