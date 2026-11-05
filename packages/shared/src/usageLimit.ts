@@ -59,10 +59,13 @@ export interface QuotaWindow {
   readonly durationMinutes: number | null;
 }
 
-/** Claude window keys imply their length; other keys (spend, unknown) have none. */
+/**
+ * Claude window keys imply their length; other keys (spend, unknown) have none.
+ * `model:<name>` keys come from the weekly `model_scoped` limits.
+ */
 export function claudeQuotaWindowDurationMinutes(key: string): number | null {
   if (key === "five_hour") return 300;
-  if (key.startsWith("seven_day")) return 10_080;
+  if (key.startsWith("seven_day") || key.startsWith("model:")) return 10_080;
   return null;
 }
 

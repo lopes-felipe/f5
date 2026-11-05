@@ -26,10 +26,11 @@ describe("canResumeAtUsageReset", () => {
 });
 
 describe("claudeQuotaWindowDurationMinutes", () => {
-  it("maps the 5-hour and every seven_day key, and nothing else", () => {
+  it("maps the 5-hour, seven_day and model-scoped keys, and nothing else", () => {
     expect(claudeQuotaWindowDurationMinutes("five_hour")).toBe(300);
     expect(claudeQuotaWindowDurationMinutes("seven_day")).toBe(10_080);
     expect(claudeQuotaWindowDurationMinutes("seven_day_opus")).toBe(10_080);
+    expect(claudeQuotaWindowDurationMinutes("model:claude fable 5")).toBe(10_080);
     expect(claudeQuotaWindowDurationMinutes("monthly_spend")).toBeNull();
     expect(claudeQuotaWindowDurationMinutes("something_new")).toBeNull();
   });

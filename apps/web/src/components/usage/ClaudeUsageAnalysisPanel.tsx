@@ -97,15 +97,28 @@ function FactorTable(props: {
               </div>
             </td>
             <td className="py-2">
-              {row.action ? (
-                <>
-                  {row.action.title !== row.label && (
-                    <p className="font-medium">{row.action.title}</p>
-                  )}
-                  {row.action.detail && (
-                    <p className="text-muted-foreground">{row.action.detail}</p>
-                  )}
-                </>
+              {row.actions.length > 0 ? (
+                <ul className="space-y-1.5">
+                  {row.actions.map((action) => {
+                    // A period tag only means something when both scans are shown.
+                    const tagged = props.series.length > 1 && action.period !== "both";
+                    return (
+                      <li key={action.title}>
+                        {(action.title !== row.label || row.actions.length > 1 || tagged) && (
+                          <p className="font-medium">
+                            {action.title}
+                            {tagged && (
+                              <span className="ml-1.5 font-normal text-muted-foreground">
+                                ({action.period} only)
+                              </span>
+                            )}
+                          </p>
+                        )}
+                        {action.detail && <p className="text-muted-foreground">{action.detail}</p>}
+                      </li>
+                    );
+                  })}
+                </ul>
               ) : (
                 <span className="text-muted-foreground">No recommendation</span>
               )}

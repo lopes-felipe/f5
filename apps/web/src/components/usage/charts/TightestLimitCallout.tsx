@@ -12,15 +12,24 @@ export interface CalloutWindow {
   readonly resetsAt: string | null;
 }
 
-/** The window with the least left; null when fewer than two windows compete. */
-export function tightestQuotaWindow<W extends CalloutWindow>(windows: ReadonlyArray<W>): W | null {
-  if (windows.length < 2) return null;
-  let tightest: W | null = null;
-  for (const window of windows) {
-    if (window.usedPercent === null) continue;
-    if (!tightest || window.usedPercent > tightest.usedPercent!) tightest = window;
-  }
-  return tightest;
+/**
+ * The live window with the least left; null when fewer than two compete. A window
+ * whose reset has passed is stale snapshot data and does not compete, nor does one
+ * with unknown usage. A window with an unknown reset is still treated as live.
+ */
+export function tightestQuotaWindow<W extends CalloutWindow>(
+  windows: ReadonlyArray<W>,
+  nowMs: number,
+): W | null {
+  const live = windows.filter((window) => {
+    if (window.usedPercent === null) return false;
+    const reset = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
+    return !(Number.isFinite(reset) && reset <= nowMs);
+  });
+  if (live.length < 2) return null;
+  return live.reduce((tightest, window) =>
+    window.usedPercent! > tightest.usedPercent! ? window : tightest,
+  );
 }
 
 /** Names the limit that runs out first, with its reset; warning-colored at 90% used. */
@@ -34,7 +43,7 @@ export function TightestLimitCallout(props: {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
-  const window = tightestQuotaWindow(props.windows);
+  const window = tightestQuotaWindow(props.windows, now);
   if (!window) return null;
   const used = Math.min(100, Math.max(0, window.usedPercent!));
   const resetMs = window.resetsAt ? Date.parse(window.resetsAt) : NaN;

@@ -42,6 +42,13 @@ export function DailyTokenBars(props: {
           <span className="size-2.5 rounded-sm bg-muted-foreground/35" />
           Before range
         </span>
+        {props.peakDate ? (
+          // The ring marks the busiest shown day, not the lifetime peak in the tiles.
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2.5 rounded-sm outline-2 outline-offset-1 outline-foreground" />
+            Peak in chart
+          </span>
+        ) : null}
       </div>
       <div
         aria-hidden="true"

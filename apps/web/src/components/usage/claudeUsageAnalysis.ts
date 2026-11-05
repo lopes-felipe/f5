@@ -19,6 +19,15 @@ export function claudeUsageBehaviorLabel(key: string): string {
 /** Recommendation keys that name a specific source; each title is its own factor. */
 const NAMED_SOURCE_KEYS = new Set(["agent", "skill", "plugin", "mcp_server"]);
 
+/** Which scans recommended an action. */
+export type UsageFactorPeriod = "24h" | "7d" | "both";
+
+export interface UsageFactorAction {
+  readonly title: string;
+  readonly detail: string | null;
+  readonly period: UsageFactorPeriod;
+}
+
 export interface UsageFactorRow {
   /** Stable row identity: the behavior key, or key + title for a named source. */
   readonly id: string;
@@ -26,19 +35,46 @@ export interface UsageFactorRow {
   readonly label: string;
   readonly dayPct: number | null;
   readonly weekPct: number | null;
-  readonly action: { readonly title: string; readonly detail: string | null } | null;
+  /** Every distinct recommendation for this factor, 7-day ones first. */
+  readonly actions: ReadonlyArray<UsageFactorAction>;
 }
 
 interface Accumulator {
   key: string;
   label: string | null;
   behaviorPct: [number | null, number | null];
-  recommendation: [ClaudeUsageRecommendation | null, ClaudeUsageRecommendation | null];
+  recommendations: [Array<ClaudeUsageRecommendation>, Array<ClaudeUsageRecommendation>];
+}
+
+function unique(values: ReadonlyArray<string | undefined>): Array<string> {
+  return [...new Set(values.filter((value): value is string => value !== undefined))];
+}
+
+/**
+ * One action per distinct title. A title both scans recommend keeps the 7-day
+ * details and appends differing 24-hour ones with a "(24h)" suffix.
+ */
+function factorActions(
+  day: ReadonlyArray<ClaudeUsageRecommendation>,
+  week: ReadonlyArray<ClaudeUsageRecommendation>,
+): Array<UsageFactorAction> {
+  const titles = unique([...week, ...day].map((recommendation) => recommendation.title));
+  return titles.map((title) => {
+    const weekDetails = unique(week.filter((r) => r.title === title).map((r) => r.detail));
+    const dayRecs = day.filter((r) => r.title === title);
+    const inWeek = week.some((r) => r.title === title);
+    const period: UsageFactorPeriod = inWeek && dayRecs.length > 0 ? "both" : inWeek ? "7d" : "24h";
+    const dayDetails = unique(dayRecs.map((r) => r.detail))
+      .filter((detail) => !weekDetails.includes(detail))
+      .map((detail) => (period === "both" ? `${detail} (24h)` : detail));
+    const details = [...weekDetails, ...dayDetails];
+    return { title, detail: details.length > 0 ? details.join(" · ") : null, period };
+  });
 }
 
 /**
  * Joins the 24-hour and 7-day scans into one row per factor, pairing each behavior
- * share with the recommendation for the same key. Sorted by 7-day share (24-hour
+ * share with every recommendation for the same key. Sorted by 7-day share (24-hour
  * when the factor is absent from the week), largest first.
  */
 export function mergeUsageAnalysis(
@@ -49,7 +85,7 @@ export function mergeUsageAnalysis(
   const row = (id: string, key: string) => {
     let entry = rows.get(id);
     if (!entry) {
-      entry = { key, label: null, behaviorPct: [null, null], recommendation: [null, null] };
+      entry = { key, label: null, behaviorPct: [null, null], recommendations: [[], []] };
       rows.set(id, entry);
     }
     return entry;
@@ -65,31 +101,25 @@ export function mergeUsageAnalysis(
       const id = NAMED_SOURCE_KEYS.has(recommendation.key)
         ? `${recommendation.key}\u0000${recommendation.title}`
         : recommendation.key;
-      row(id, recommendation.key).recommendation[index] ??= recommendation;
+      row(id, recommendation.key).recommendations[index as 0 | 1].push(recommendation);
     }
   });
   const result = [...rows].map(([id, entry]): UsageFactorRow => {
-    const [dayRec, weekRec] = entry.recommendation;
-    const share = (index: 0 | 1) =>
-      entry.behaviorPct[index] ?? entry.recommendation[index]?.pct ?? null;
-    const lead = weekRec ?? dayRec;
-    let action: UsageFactorRow["action"] = null;
-    if (lead) {
-      const weekDetail = weekRec?.detail ?? null;
-      const dayDetail = dayRec?.detail ?? null;
-      const details = [
-        weekDetail,
-        dayDetail && dayDetail !== weekDetail ? `${dayDetail} (24h)` : null,
-      ].filter((detail): detail is string => detail !== null);
-      action = { title: lead.title, detail: details.length > 0 ? details.join(" · ") : null };
-    }
+    const share = (index: 0 | 1) => {
+      const recommended = entry.recommendations[index];
+      return (
+        entry.behaviorPct[index] ??
+        (recommended.length > 0 ? Math.max(...recommended.map((r) => r.pct)) : null)
+      );
+    };
+    const actions = factorActions(entry.recommendations[0], entry.recommendations[1]);
     return {
       id,
       key: entry.key,
-      label: entry.label ?? lead!.title,
+      label: entry.label ?? actions[0]!.title,
       dayPct: share(0),
       weekPct: share(1),
-      action,
+      actions,
     };
   });
   return result.sort(

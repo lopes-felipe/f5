@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  type CodexAccountRateLimit,
   ProjectId,
   ProviderInstanceId,
   type ProviderKind,
@@ -1341,10 +1342,8 @@ describe("limits", () => {
     );
     try {
       await expect.element(page.getByText(/^in 5d 10h/)).toBeVisible();
-      // The weekly window has the least left, so the callout names it with its countdown.
-      await expect
-        .element(page.getByTestId("tightest-limit"))
-        .toHaveTextContent(/60% left · Weekly limit resets .+ \(in 5d 10h\)/);
+      // The 5-hour reset has passed, which leaves one live window and nothing to compare.
+      await expect.element(page.getByTestId("tightest-limit")).not.toBeInTheDocument();
       // 40% used with about 23% of the week elapsed; the expired 5-hour window has no tick.
       await expect.element(page.getByText("17 pts ahead of pace")).toBeVisible();
       expect(page.getByTestId("quota-pace-tick").all()).toHaveLength(1);
@@ -1602,21 +1601,11 @@ describe("limits", () => {
     }
   });
 
-  it("names the tightest Codex window across groups and offers the reset there", async () => {
+  const codexAccountWith = (
+    rateLimits: ReadonlyArray<CodexAccountRateLimit>,
+  ): UsageAccounts[number] => {
     const [codexAccount] = accounts();
-    const exhausted = {
-      ...codex.rateLimits[0]!,
-      secondary: { ...codex.rateLimits[0]!.secondary, usedPercent: 100 },
-    };
-    const spark = {
-      ...codex.rateLimits[0]!,
-      id: "codex_spark",
-      name: "Spark",
-      planType: null,
-      secondary: null,
-      credits: null,
-    };
-    const account = {
+    return {
       ...codexAccount!,
       providerInstanceId: ProviderInstanceId.make("codex-test"),
       sections: [
@@ -1625,14 +1614,31 @@ describe("limits", () => {
           ...codexAccount!.sections[1]!,
           snapshot: {
             fetchedAt: codex.fetchedAt,
-            data: {
-              rateLimits: [exhausted, spark],
-              resetCredits: { availableCount: 2, nextExpiresAt: null },
-            },
+            data: { rateLimits, resetCredits: { availableCount: 2, nextExpiresAt: null } },
           },
         },
       ],
     } as UsageAccounts[number];
+  };
+
+  it("names the tightest Codex window across groups and offers the reset there", async () => {
+    // The shared fixture's resets are in the past; this test needs live windows.
+    const future = Math.floor(Date.now() / 1000) + 3_600;
+    const exhausted = {
+      ...codex.rateLimits[0]!,
+      primary: { ...codex.rateLimits[0]!.primary, resetsAt: future },
+      secondary: { ...codex.rateLimits[0]!.secondary, usedPercent: 100, resetsAt: future },
+    };
+    const spark = {
+      ...codex.rateLimits[0]!,
+      id: "codex_spark",
+      name: "Spark",
+      planType: null,
+      primary: { ...codex.rateLimits[0]!.primary, resetsAt: future },
+      secondary: null,
+      credits: null,
+    };
+    const account = codexAccountWith([exhausted, spark]);
     const queryClient = new QueryClient();
     const screen = await render(
       <QueryClientProvider client={queryClient}>
@@ -1663,6 +1669,113 @@ describe("limits", () => {
     } finally {
       await screen.unmount();
       queryClient.clear();
+    }
+  });
+
+  it("skips an already-reset Codex window and names an unnamed group by its id", async () => {
+    const future = Math.floor(Date.now() / 1000) + 3_600;
+    const stale = {
+      ...codex.rateLimits[0]!,
+      primary: { ...codex.rateLimits[0]!.primary, resetsAt: future },
+      // Exhausted, but its reset passed before this render.
+      secondary: { ...codex.rateLimits[0]!.secondary, usedPercent: 100 },
+    };
+    const unnamed = {
+      ...codex.rateLimits[0]!,
+      id: "codex_spark",
+      name: null,
+      planType: null,
+      primary: { usedPercent: 80, windowDurationMins: 300, resetsAt: future },
+      secondary: null,
+      credits: null,
+    };
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <UsageDashboardView
+          summary={summary()}
+          accounts={[codexAccountWith([stale, unnamed])]}
+          range="7d"
+          onRangeChange={() => {}}
+          fetching={false}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      const callout = page.getByTestId("tightest-limit");
+      await expect.element(callout).toHaveTextContent(/20% left · codex_spark 5-hour limit/);
+      await expect.element(callout.getByRole("button")).not.toBeInTheDocument();
+      // The reset button keeps its own row instead.
+      expect(page.getByRole("button", { name: /reset credit/ }).all()).toHaveLength(1);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("does not name an already-reset Claude window as the tightest", async () => {
+    const now = Date.now();
+    const claude: UsageAccounts[number] = {
+      key: "claude:stale",
+      provider: "claudeAgent",
+      providerInstanceId: null,
+      displayName: "Claude",
+      enabled: true,
+      refreshState: "idle",
+      sections: [
+        {
+          kind: "claude-usage",
+          outcome: "available",
+          lastAttemptAt: new Date(now - 60_000).toISOString(),
+          errorCode: null,
+          snapshot: {
+            fetchedAt: new Date(now - 60_000).toISOString(),
+            data: {
+              subscriptionLabel: null,
+              limitsAvailable: true,
+              windows: [
+                {
+                  key: "five_hour",
+                  label: "5-hour limit",
+                  utilization: 100,
+                  resetsAt: new Date(now - 30_000).toISOString(),
+                },
+                {
+                  key: "seven_day",
+                  label: "Weekly limit",
+                  utilization: 40,
+                  resetsAt: new Date(now + 3 * 86_400_000).toISOString(),
+                },
+                {
+                  key: "model:fable",
+                  label: "Fable weekly limit",
+                  utilization: 10,
+                  resetsAt: new Date(now + 3 * 86_400_000).toISOString(),
+                },
+              ],
+              extraUsage: null,
+            },
+          },
+        },
+      ],
+    };
+    const screen = await render(
+      <UsageDashboardView
+        summary={summary()}
+        accounts={[claude]}
+        range="7d"
+        onRangeChange={() => {}}
+        fetching={false}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByTestId("tightest-limit"))
+        .toHaveTextContent(/60% left · Weekly limit resets/);
+      // The model-scoped weekly window gets a pace tick too; the expired one does not.
+      expect(page.getByTestId("quota-pace-tick").all()).toHaveLength(2);
+    } finally {
+      await screen.unmount();
     }
   });
 

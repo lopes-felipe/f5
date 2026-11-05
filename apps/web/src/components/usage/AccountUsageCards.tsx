@@ -131,7 +131,11 @@ function qualifiedWindowLabel(groupName: string, label: string): string {
 
 type CodexLimitsSection = Extract<AccountUsageSection, { kind: "codex-limits" }>;
 
-/** Every Codex window across limit groups, labelled with its group for the callout. */
+/**
+ * Every Codex window across limit groups, labelled with its group for the callout.
+ * The monthly credit limit (`individual`) competes too: unlike Claude's monthly spend
+ * meter, the usage gate treats an exhausted `codex:individual` as blocking.
+ */
 function codexCalloutWindows(section: CodexLimitsSection) {
   const names = new Map(
     (section.snapshot?.data.rateLimits ?? []).map((limit) => [limit.id, limit.name ?? limit.id]),
@@ -146,14 +150,16 @@ function codexCalloutWindows(section: CodexLimitsSection) {
   });
 }
 
-/** Reset credits restore the main Codex allowance only. */
-function codexResetWindowName(section: CodexLimitsSection): string {
+/** Reset credits restore the main Codex allowance only; windows already reset are skipped. */
+function codexResetWindowName(section: CodexLimitsSection, nowMs: number): string {
   return (
     (section.snapshot?.data.rateLimits ?? [])
       .filter((limit) => limit.id === "codex")
       .flatMap((limit) => [limit.primary, limit.secondary])
       .flatMap((window) =>
-        window && window.usedPercent >= 100
+        window &&
+        window.usedPercent >= 100 &&
+        !(window.resetsAt !== null && window.resetsAt * 1000 <= nowMs)
           ? [codexRateLimitWindowLabel(window, "main Codex allowance")]
           : [],
       )
@@ -162,13 +168,13 @@ function codexResetWindowName(section: CodexLimitsSection): string {
 }
 
 /**
- * The reset button joins the callout when the tightest window is an exhausted main
- * Codex window and a credit is available; otherwise it keeps its own row.
+ * The reset button joins the callout when the tightest live window is an exhausted
+ * main Codex window and a credit is available; otherwise it keeps its own row.
  */
-function resetCreditInCallout(section: CodexLimitsSection): boolean {
+function resetCreditInCallout(section: CodexLimitsSection, nowMs: number): boolean {
   const credits = section.snapshot?.data.resetCredits;
   if (!credits || credits.availableCount <= 0) return false;
-  const tightest = tightestQuotaWindow(codexCalloutWindows(section));
+  const tightest = tightestQuotaWindow(codexCalloutWindows(section), nowMs);
   return tightest !== null && tightest.limitId === "codex" && tightest.usedPercent! >= 100;
 }
 
@@ -187,6 +193,7 @@ function CodexLimits(props: {
   const windows = new Map(allWindows.map((window) => [window.windowKey, window]));
   const instanceId = props.account.providerInstanceId;
   const resetCredits = snapshot.data.resetCredits;
+  const nowMs = Date.now();
   const withCredits = snapshot.data.rateLimits.filter((limit) => limit.credits?.hasCredits);
   const creditParts = [
     ...withCredits.map(
@@ -205,14 +212,14 @@ function CodexLimits(props: {
     <div className="space-y-3 border-t border-border/60 pt-4">
       <TightestLimitCallout
         windows={codexCalloutWindows(props.section)}
-        {...(instanceId && resetCreditInCallout(props.section)
+        {...(instanceId && resetCreditInCallout(props.section, nowMs)
           ? {
               action: () => (
                 <ResetCreditButton
                   instanceId={instanceId}
                   accountName={props.account.displayName}
                   count={resetCredits!.availableCount}
-                  windowName={codexResetWindowName(props.section)}
+                  windowName={codexResetWindowName(props.section, nowMs)}
                 />
               ),
             }
@@ -390,12 +397,12 @@ export function AccountUsageCards({
                 {section.kind === "codex-limits" &&
                   section.snapshot?.data.resetCredits &&
                   account.providerInstanceId &&
-                  !resetCreditInCallout(section) && (
+                  !resetCreditInCallout(section, Date.now()) && (
                     <ResetCreditButton
                       instanceId={account.providerInstanceId}
                       accountName={account.displayName}
                       count={section.snapshot.data.resetCredits.availableCount}
-                      windowName={codexResetWindowName(section)}
+                      windowName={codexResetWindowName(section, Date.now())}
                     />
                   )}
                 {section.kind === "claude-usage" && section.snapshot && (
