@@ -38,7 +38,8 @@ import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
-  launcherFailureMessage,
+  MAC_REVEAL_TIMEOUT_MS,
+  macRevealFailureMessage,
   macRevealLaunch,
   registerDesktopFileActions,
 } from "./fileActions";
@@ -3557,10 +3558,10 @@ function registerIpcHandlers(): void {
             ChildProcess.execFile(
               launch.file,
               launch.args,
-              { timeout: 5000 },
+              { timeout: MAC_REVEAL_TIMEOUT_MS },
               (error, _stdout, stderr) =>
                 error
-                  ? reject(new Error(launcherFailureMessage(Object.assign(error, { stderr }))))
+                  ? reject(new Error(macRevealFailureMessage(Object.assign(error, { stderr }))))
                   : resolve(),
             );
           }),

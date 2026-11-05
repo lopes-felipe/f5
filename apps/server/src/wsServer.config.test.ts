@@ -891,27 +891,45 @@ describe("WebSocket Server", () => {
     expect(openCalls).toEqual([{ cwd: "/my/workspace", editor: "cursor" }]);
   });
 
-  it("reports a failed editor launch as its message, without a stack trace", async () => {
-    const message = "Editor launcher exited with code 1: /home/user/.local/bin/cursor";
-    const openService: OpenShape = {
-      openBrowser: () => Effect.void,
-      openInEditor: () => Effect.fail(new OpenError({ message })),
-      revealInFileManager: () => Effect.void,
-    };
+  it.each([
+    {
+      name: "its message",
+      error: new OpenError({
+        message: "Editor launcher exited with code 1: /home/user/.local/bin/cursor",
+      }),
+      expected: "Editor launcher exited with code 1: /home/user/.local/bin/cursor",
+    },
+    {
+      name: "its message and its cause's message",
+      error: new OpenError({
+        message: "failed to spawn detached process",
+        cause: new Error("Command not found: cursor"),
+      }),
+      expected: "failed to spawn detached process: Command not found: cursor",
+    },
+  ])(
+    "reports a failed editor launch as $name, without a stack trace",
+    async ({ error, expected }) => {
+      const openService: OpenShape = {
+        openBrowser: () => Effect.void,
+        openInEditor: () => Effect.fail(error),
+        revealInFileManager: () => Effect.void,
+      };
 
-    h.server = await createTestServer({ cwd: "/my/workspace", open: openService });
-    const addr = h.server.address();
-    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      h.server = await createTestServer({ cwd: "/my/workspace", open: openService });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
 
-    const [ws] = await connectAndAwaitWelcome(port);
-    connections.push(ws);
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
 
-    const response = await sendRequest(ws, WS_METHODS.shellOpenInEditor, {
-      cwd: "/my/workspace",
-      editor: "cursor",
-    });
-    expect(response.error?.message).toBe(message);
-  });
+      const response = await sendRequest(ws, WS_METHODS.shellOpenInEditor, {
+        cwd: "/my/workspace",
+        editor: "cursor",
+      });
+      expect(response.error?.message).toBe(expected);
+    },
+  );
 
   it("routes shell.revealInFileManager through the injected open service", async () => {
     const workspaceRoot = makeTempDir("t3code-reveal-workspace-");

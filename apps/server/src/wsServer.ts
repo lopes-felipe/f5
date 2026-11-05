@@ -966,8 +966,14 @@ function formatRouteFailure(
       checkoutConflict: squashed.checkoutConflict,
     };
   }
-  if (Schema.is(AttachmentIngressError)(squashed) || Schema.is(OpenError)(squashed)) {
+  if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
+  }
+  if (Schema.is(OpenError)(squashed)) {
+    // Generic launch failures ("failed to spawn detached process") keep the
+    // real reason in `cause`; carry its message without the stack.
+    const cause = squashed.cause instanceof Error ? squashed.cause.message.trim() : "";
+    return { message: cause ? `${squashed.message}: ${cause}` : squashed.message };
   }
   if (Schema.is(RouteRequestError)(squashed)) {
     return {

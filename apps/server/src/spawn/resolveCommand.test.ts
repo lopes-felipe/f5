@@ -119,23 +119,27 @@ describe("resolveExecutable", () => {
 });
 
 describe("resolveExecutables", () => {
-  it("returns every PATH match in order, once per directory", () => {
-    const first = tempDir("f5-resolve-all-");
-    const second = tempDir("f5-resolve-all-");
-    const empty = tempDir("f5-resolve-all-");
-    writeExecutable(path.join(first, "tool"));
-    writeExecutable(path.join(second, "tool"));
-    const env = { PATH: [first, empty, second, first].join(":") };
-    try {
-      expect(resolveExecutables("tool", env, { platform: "linux" })).toEqual([
-        path.join(first, "tool"),
-        path.join(second, "tool"),
-      ]);
-      expect(resolveExecutables("missing", env, { platform: "linux" })).toEqual([]);
-    } finally {
-      for (const directory of [first, second, empty]) rmSync(directory, { recursive: true });
-    }
-  });
+  // POSIX PATH splitting on ":" cannot express a Windows temp directory (C:\...).
+  it.skipIf(process.platform === "win32")(
+    "returns every PATH match in order, once per directory",
+    () => {
+      const first = tempDir("f5-resolve-all-");
+      const second = tempDir("f5-resolve-all-");
+      const empty = tempDir("f5-resolve-all-");
+      writeExecutable(path.join(first, "tool"));
+      writeExecutable(path.join(second, "tool"));
+      const env = { PATH: [first, empty, second, first].join(":") };
+      try {
+        expect(resolveExecutables("tool", env, { platform: "linux" })).toEqual([
+          path.join(first, "tool"),
+          path.join(second, "tool"),
+        ]);
+        expect(resolveExecutables("missing", env, { platform: "linux" })).toEqual([]);
+      } finally {
+        for (const directory of [first, second, empty]) rmSync(directory, { recursive: true });
+      }
+    },
+  );
 
   it("takes the first PATHEXT match in each Windows PATH directory", () => {
     const first = tempDir("f5-resolve-all-");

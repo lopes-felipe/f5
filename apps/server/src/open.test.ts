@@ -24,8 +24,8 @@ import {
   resolveFileManagerRevealLaunch,
 } from "./open";
 
-// No PATH and no HOME, on a platform without app-bundle lookup, so launches
-// fall back to bare commands regardless of what this host has installed.
+// An empty PATH on linux, which has no app-bundle lookup, so launches fall back
+// to bare commands regardless of what this host has installed.
 const NO_EDITOR_ENV: NodeJS.ProcessEnv = { PATH: "" };
 
 it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
@@ -40,16 +40,6 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       assert.deepEqual(antigravityLaunch, {
         command: "antigravity-ide",
         args: ["/tmp/workspace"],
-      });
-
-      const cursorLaunch = yield* resolveEditorLaunch(
-        { cwd: "/tmp/workspace", editor: "cursor" },
-        "linux",
-        NO_EDITOR_ENV,
-      );
-      assert.deepEqual(cursorLaunch, {
-        command: "cursor",
-        args: ["--classic", "/tmp/workspace"],
       });
 
       const traeLaunch = yield* resolveEditorLaunch(
@@ -124,28 +114,47 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
     }),
   );
 
+  // Cursor never falls back to a bare `cursor`, which could be the Agent shim, so
+  // these cases need a resolvable CLI. Simulated win32 PATH lookup works on any host.
+  it.effect("launches a resolved Cursor CLI with Cursor's arguments", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-open-test-" });
+      yield* fs.writeFileString(path.join(dir, "cursor.CMD"), "@echo off\r\n");
+      const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+      const command = path.join(dir, "cursor.CMD");
+
+      for (const [cwd, args] of [
+        ["/tmp/workspace", ["--classic", "/tmp/workspace"]],
+        ["/tmp/workspace/AGENTS.md:48", ["--classic", "--goto", "/tmp/workspace/AGENTS.md:48"]],
+        [
+          "/tmp/workspace/src/open.ts:71:5",
+          ["--classic", "--goto", "/tmp/workspace/src/open.ts:71:5"],
+        ],
+      ] as const) {
+        const launch = yield* resolveEditorLaunch({ cwd, editor: "cursor" }, "win32", env);
+        assert.deepEqual(launch, { command, args: [...args] });
+      }
+    }),
+  );
+
+  it.effect("reports Cursor as not found instead of launching a bare command", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace", editor: "cursor" },
+        "linux",
+        NO_EDITOR_ENV,
+      ).pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure.message, "Editor command not found: cursor");
+      }
+    }),
+  );
+
   it.effect("applies editor-specific navigation arguments", () =>
     Effect.gen(function* () {
-      const lineOnly = yield* resolveEditorLaunch(
-        { cwd: "/tmp/workspace/AGENTS.md:48", editor: "cursor" },
-        "linux",
-        NO_EDITOR_ENV,
-      );
-      assert.deepEqual(lineOnly, {
-        command: "cursor",
-        args: ["--classic", "--goto", "/tmp/workspace/AGENTS.md:48"],
-      });
-
-      const lineAndColumn = yield* resolveEditorLaunch(
-        { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "cursor" },
-        "linux",
-        NO_EDITOR_ENV,
-      );
-      assert.deepEqual(lineAndColumn, {
-        command: "cursor",
-        args: ["--classic", "--goto", "/tmp/workspace/src/open.ts:71:5"],
-      });
-
       const traeLineAndColumn = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "trae" },
         "linux",
@@ -492,9 +501,10 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
         yield* open.openInEditor({ cwd: "/tmp/workspace", editor: "file-manager" });
         yield* open.revealInFileManager("/tmp/workspace/report.json");
 
-        // macOS also searches /Applications bundles, so the "unavailable" case
-        // needs an editor whose app is not installed on this host.
-        // These editors' bundles are named after their labels.
+        // macOS also searches the hard-coded /Applications, so the "unavailable"
+        // case needs an editor whose app is not installed on this host; a Mac
+        // with all of these installed skips that assertion. These editors'
+        // bundles are named after their labels.
         const missingEditor = (
           [
             ["kiro", "Kiro"],
@@ -508,9 +518,10 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
               fs.existsSync(path.join(root, `${label}.app`)),
             ),
         )?.[0];
-        assert.isDefined(missingEditor);
         process.env.PATH = "";
-        yield* Effect.exit(open.openInEditor({ cwd: "/tmp/workspace", editor: missingEditor! }));
+        if (missingEditor) {
+          yield* Effect.exit(open.openInEditor({ cwd: "/tmp/workspace", editor: missingEditor }));
+        }
 
         const snapshots = yield* Metric.snapshot;
         assert.equal(
@@ -531,15 +542,17 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
           ),
           true,
         );
-        assert.equal(
-          snapshots.some(
-            (snapshot) =>
-              snapshot.id === "t3_editor_launch_total" &&
-              snapshot.attributes?.editorId === missingEditor &&
-              snapshot.attributes?.outcome === "unavailable-command",
-          ),
-          true,
-        );
+        if (missingEditor) {
+          assert.equal(
+            snapshots.some(
+              (snapshot) =>
+                snapshot.id === "t3_editor_launch_total" &&
+                snapshot.attributes?.editorId === missingEditor &&
+                snapshot.attributes?.outcome === "unavailable-command",
+            ),
+            true,
+          );
+        }
       } finally {
         process.env.PATH = originalPath;
         fs.rmSync(tempDir, { recursive: true, force: true });
@@ -727,14 +740,19 @@ fi
       resolveEditorLaunch({ editor: "cursor", cwd: "/repo/file.ts:4" }, platform, env),
     );
 
-  vitestIt("does not offer Cursor when only the Cursor Agent shim is on PATH", () => {
+  // These fixtures use POSIX PATH lookup (":"-separated, no PATHEXT), which
+  // cannot express a Windows temp directory such as C:\Users\...
+  const posixIt = vitestIt.skipIf(process.platform === "win32");
+
+  posixIt("does not offer Cursor when only the Cursor Agent shim is on PATH", () => {
     writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
     const env = { HOME: path.join(root, "home"), PATH: path.join(root, "shim") };
     expect(resolveAvailableEditors("linux", env)).not.toContain("cursor");
   });
 
   vitestIt.skipIf(
-    fs.existsSync("/Applications/Cursor.app") ||
+    process.platform === "win32" ||
+      fs.existsSync("/Applications/Cursor.app") ||
       fs.existsSync(path.join(os.homedir(), "Applications/Cursor.app")),
   )("does not offer Cursor on macOS when only the shim is installed", () => {
     writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
@@ -742,7 +760,7 @@ fi
     expect(resolveAvailableEditors("darwin", env)).not.toContain("cursor");
   });
 
-  vitestIt("launches a real cursor later on PATH by its absolute path", async () => {
+  posixIt("launches a real cursor later on PATH by its absolute path", async () => {
     writeExecutable(path.join(root, "shim/cursor"), CURSOR_AGENT_SHIM);
     const real = writeExecutable(path.join(root, "real/cursor"), "#!/bin/sh\nexit 0\n");
     const env = { PATH: `${path.join(root, "shim")}:${path.join(root, "real")}` };
@@ -765,17 +783,24 @@ fi
     expect((await launch(env, "darwin")).command).toBe(bundled);
   });
 
-  vitestIt("only treats small readable scripts with the marker as shims", () => {
+  vitestIt("only treats small scripts with the marker as shims", () => {
     const shim = writeExecutable(path.join(root, "a/cursor"), CURSOR_AGENT_SHIM);
     const oversized = writeExecutable(
       path.join(root, "b/cursor"),
       `${CURSOR_AGENT_SHIM}${"#".repeat(8192)}\n`,
     );
-    const unreadable = writeExecutable(path.join(root, "c/cursor"), CURSOR_AGENT_SHIM, 0o111);
     expect(isEditorShim("cursor", shim)).toBe(true);
     expect(isEditorShim("vscode", shim)).toBe(false);
     expect(isEditorShim("cursor", oversized)).toBe(false);
-    expect(isEditorShim("cursor", unreadable)).toBe(false);
     expect(isEditorShim("cursor", path.join(root, "missing"))).toBe(false);
   });
+
+  // Windows ignores mode bits, so only POSIX can make the file unreadable.
+  vitestIt.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "does not treat an unreadable script as a shim",
+    () => {
+      const unreadable = writeExecutable(path.join(root, "c/cursor"), CURSOR_AGENT_SHIM, 0o111);
+      expect(isEditorShim("cursor", unreadable)).toBe(false);
+    },
+  );
 });

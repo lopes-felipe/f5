@@ -36,7 +36,8 @@ async function resolveLocalTarget(raw: unknown, withPosition: boolean) {
   try {
     absolutePath = await realpath(filePath);
   } catch (error) {
-    if (!withPosition || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!withPosition) throw new Error(`File not found: ${filePath}`);
     const parent = await realpath(Path.dirname(filePath));
     if (!(await stat(parent)).isDirectory()) throw new Error("File parent is not a directory.");
     return {
@@ -118,12 +119,25 @@ export function macRevealLaunch(filePath: string): { file: string; args: string[
   return { file: "/usr/bin/open", args: ["-R", filePath] };
 }
 
-/** The launcher's own first stderr line, e.g. `The file /x does not exist.`, not the command dump. */
-export function launcherFailureMessage(error: Error & { readonly stderr?: unknown }): string {
+export const MAC_REVEAL_TIMEOUT_MS = 5000;
+
+/**
+ * A one-line reason for a failed `execFile` of `macRevealLaunch`: `open`'s own
+ * first stderr line (e.g. `The file /x does not exist.`), never the
+ * `Command failed: …` dump.
+ */
+export function macRevealFailureMessage(
+  error: Error & { readonly stderr?: unknown; readonly killed?: boolean; readonly code?: unknown },
+): string {
+  if (error.killed) {
+    return `Finder did not respond within ${MAC_REVEAL_TIMEOUT_MS / 1000} seconds.`;
+  }
   const stderr = typeof error.stderr === "string" ? error.stderr : String(error.stderr ?? "");
   const firstLine = stderr
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .find(Boolean);
-  return firstLine ?? error.message;
+  if (firstLine) return firstLine;
+  // A numeric code means `open` ran and failed silently; otherwise it is a spawn error.
+  return typeof error.code === "number" ? `open -R exited with code ${error.code}.` : error.message;
 }

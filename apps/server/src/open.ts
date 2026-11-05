@@ -193,10 +193,13 @@ function resolveEditorCommand(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-): string {
+): string | null {
   // Launch the accepted path itself: a bare command would resolve through PATH
   // again and could land on a skipped shim.
-  return resolveEditorExecutables(editor, platform, env)[0] ?? editor.command!;
+  const executable = resolveEditorExecutables(editor, platform, env)[0];
+  if (executable) return executable;
+  // The bare name would only reach a shim; report the editor as missing instead.
+  return EDITOR_SHIM_MARKERS[editor.id] ? null : editor.command!;
 }
 
 function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
@@ -273,10 +276,11 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
   }
 
   if (editorDef.command) {
-    return {
-      command: resolveEditorCommand(editorDef, platform, env),
-      args: resolveEditorArgs(editorDef.id, input.cwd),
-    };
+    const command = resolveEditorCommand(editorDef, platform, env);
+    if (!command) {
+      return yield* new OpenError({ message: `Editor command not found: ${editorDef.command}` });
+    }
+    return { command, args: resolveEditorArgs(editorDef.id, input.cwd) };
   }
 
   if (editorDef.id !== "file-manager") {

@@ -7,7 +7,7 @@ import {
   assertFileActionCaller,
   registerDesktopFileActions,
   vscodeFileUrl,
-  launcherFailureMessage,
+  macRevealFailureMessage,
   macRevealLaunch,
 } from "./fileActions";
 
@@ -76,15 +76,25 @@ it("reveals on macOS through LaunchServices with the path as its own argument", 
   expect(() => macRevealLaunch("relative.json")).toThrow("absolute path");
 });
 
-it("reports a launcher's first stderr line instead of the command dump", () => {
-  const failure = Object.assign(new Error("Command failed: /usr/bin/open -R /x\nThe file…"), {
-    stderr: "\nThe file /x does not exist.\nmore detail\n",
-  });
-  expect(launcherFailureMessage(failure)).toBe("The file /x does not exist.");
-  expect(launcherFailureMessage(new Error("spawn EACCES"))).toBe("spawn EACCES");
-  expect(launcherFailureMessage(Object.assign(new Error("timed out"), { stderr: "" }))).toBe(
-    "timed out",
+it("reports open's first stderr line instead of the command dump", () => {
+  const dump = "Command failed: /usr/bin/open -R /x";
+  expect(
+    macRevealFailureMessage(
+      Object.assign(new Error(dump), {
+        code: 1,
+        stderr: "\nThe file /x does not exist.\nmore detail\n",
+      }),
+    ),
+  ).toBe("The file /x does not exist.");
+  expect(
+    macRevealFailureMessage(
+      Object.assign(new Error(dump), { killed: true, signal: "SIGTERM", stderr: "" }),
+    ),
+  ).toBe("Finder did not respond within 5 seconds.");
+  expect(macRevealFailureMessage(Object.assign(new Error(dump), { code: 1, stderr: "" }))).toBe(
+    "open -R exited with code 1.",
   );
+  expect(macRevealFailureMessage(new Error("spawn EACCES"))).toBe("spawn EACCES");
 });
 
 it.each(["desktop:reveal-file", "desktop:open-in-vscode"])(
@@ -92,7 +102,9 @@ it.each(["desktop:reveal-file", "desktop:open-in-vscode"])(
   async (channel) => {
     const f = await fixture();
     if (channel === "desktop:reveal-file")
-      await expect(f.invoke(channel, f.file + ".missing")).rejects.toThrow();
+      await expect(f.invoke(channel, f.file + ".missing")).rejects.toThrow(
+        `File not found: ${f.file}.missing`,
+      );
     await expect(f.invoke(channel, "relative.json")).rejects.toThrow("absolute path");
     await expect(f.invoke(channel, f.file, false)).rejects.toThrow("user gesture");
     expect(f.actions.openExternal).not.toHaveBeenCalled();
