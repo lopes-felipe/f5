@@ -9,6 +9,7 @@ import {
   isTrailingDoubleClick,
   partitionAgedSidebarItems,
   polledSidebarGitStatusCwds,
+  sidebarPullRequestLinkTargets,
   reconcileFrozenOrder,
   resolveSidebarComposerDraftPreview,
   resolvePrimaryNewThreadProjectId,
@@ -731,5 +732,28 @@ describe("resolveThreadRowClassName", () => {
     const read = resolveThreadRowClassName({ isActive: false, isSelected: false });
     expect(read).toContain("text-muted-foreground");
     expect(read).not.toContain("font-medium");
+  });
+});
+
+describe("sidebarPullRequestLinkTargets", () => {
+  const thread = (id: string, archived: boolean, lookupCwd: string | null = "/repo") => ({
+    id: ThreadId.makeUnsafe(id),
+    archived,
+    lookupCwd,
+    pullRequests: [{ url: `https://github.com/o/r/pull/${id.length}` }],
+  });
+
+  it("resolves links of live threads and the open thread only", () => {
+    const targets = sidebarPullRequestLinkTargets(
+      [thread("live", false), thread("archived", true), thread("opened", true)],
+      ThreadId.makeUnsafe("opened"),
+    );
+    expect(targets.map((target) => target.enabled)).toEqual([true, false, true]);
+  });
+
+  it("never resolves a thread without a repository to read from", () => {
+    expect(sidebarPullRequestLinkTargets([thread("scratch", false, null)], null)).toEqual([
+      { cwd: null, url: "https://github.com/o/r/pull/7", enabled: false },
+    ]);
   });
 });

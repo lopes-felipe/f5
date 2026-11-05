@@ -1,6 +1,7 @@
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { commandCreatesPullRequest, detectCreatedPullRequest } from "@t3tools/shared/sourceControl";
 import { LosslessCommandAdmission } from "../commandAdmission.ts";
 import { startTerminalReceiptRetries } from "../terminalReceiptRecovery.ts";
 import { PerformanceStageProbe } from "../../observability/Metrics.ts";
@@ -352,6 +353,21 @@ interface OpenCommandExecutionState {
   updatedAt: string;
   bufferedOutput: string;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The output tail of a `gh pr create` run, scanned for the new PR URL on completion;
+   * null for every other command.
+   */
+  pullRequestCreateOutput: string | null;
+}
+
+/** `gh` prints the PR URL last; a bounded tail is enough to find it. */
+const PULL_REQUEST_CREATE_OUTPUT_SCAN_CHARS = 64 * 1024;
+
+function appendPullRequestCreateOutput(current: string, delta: string): string {
+  const next = current + delta;
+  return next.length > PULL_REQUEST_CREATE_OUTPUT_SCAN_CHARS
+    ? next.slice(-PULL_REQUEST_CREATE_OUTPUT_SCAN_CHARS)
+    : next;
 }
 
 interface PendingCommandExecutionOutputState {
@@ -3995,6 +4011,7 @@ const make = Effect.gen(function* () {
             : laterIsoTimestamp(input.event.createdAt, pendingOutput.updatedAt),
         bufferedOutput: pendingOutput?.bufferedOutput ?? "",
         flushTimer: null,
+        pullRequestCreateOutput: null,
       } satisfies OpenCommandExecutionState);
 
     commandExecution.cwd = eventCwd ?? commandExecution.cwd ?? fallbackCwd;
@@ -4009,6 +4026,18 @@ const make = Effect.gen(function* () {
         : laterIsoTimestamp(input.event.createdAt, pendingOutput.updatedAt);
     commandExecution.completedAt =
       input.event.type === "item.completed" ? input.event.createdAt : commandExecution.completedAt;
+    // Claude names the tool in `command` and puts the shell text in `detail`; either may
+    // arrive after the item starts. Output not flushed yet is still in `bufferedOutput`.
+    if (
+      commandExecution.pullRequestCreateOutput === null &&
+      (commandCreatesPullRequest(commandExecution.command) ||
+        commandCreatesPullRequest(commandExecution.detail))
+    ) {
+      commandExecution.pullRequestCreateOutput = appendPullRequestCreateOutput(
+        "",
+        commandExecution.bufferedOutput,
+      );
+    }
     openCommandExecutions.set(input.commandExecutionId, commandExecution);
     pendingCommandExecutionOutput.delete(input.commandExecutionId);
 
@@ -4036,7 +4065,49 @@ const make = Effect.gen(function* () {
 
     if (input.event.type === "item.completed") {
       yield* flushCommandExecutionOutput(input.commandExecutionId);
+      yield* recordCreatedPullRequest(input.event, commandExecution);
     }
+  });
+
+  /**
+   * Links the PR a completed `gh pr create` printed to its thread. Runs on completion and
+   * again on output that arrives after it (Codex can stream the tail late), until a PR is
+   * found. No network calls.
+   */
+  const recordCreatedPullRequest = Effect.fnUntraced(function* (
+    event: ProviderRuntimeEvent,
+    commandExecution: OpenCommandExecutionState,
+  ) {
+    if (
+      commandExecution.pullRequestCreateOutput === null ||
+      commandExecution.completedAt === null ||
+      commandExecution.status !== "completed" ||
+      (commandExecution.exitCode !== null && commandExecution.exitCode !== 0)
+    )
+      return;
+    const pullRequest = detectCreatedPullRequest({
+      command: commandExecution.command,
+      detail: commandExecution.detail,
+      output: commandExecution.pullRequestCreateOutput,
+    });
+    if (!pullRequest) return;
+    commandExecution.pullRequestCreateOutput = null;
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.meta.update",
+        commandId: providerCommandId(event, "thread-pr-link"),
+        threadId: commandExecution.threadId,
+        pullRequest,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("could not link the pull request a command created", {
+            threadId: commandExecution.threadId,
+            pullRequest: pullRequest.url,
+            error: String(error),
+          }),
+        ),
+      );
   });
 
   const appendCommandExecutionOutput = Effect.fnUntraced(function* (input: {
@@ -4058,6 +4129,13 @@ const make = Effect.gen(function* () {
 
     commandExecution.bufferedOutput = `${commandExecution.bufferedOutput}${input.event.payload.delta}`;
     commandExecution.updatedAt = input.event.createdAt;
+    if (commandExecution.pullRequestCreateOutput !== null) {
+      commandExecution.pullRequestCreateOutput = appendPullRequestCreateOutput(
+        commandExecution.pullRequestCreateOutput,
+        input.event.payload.delta,
+      );
+      yield* recordCreatedPullRequest(input.event, commandExecution);
+    }
 
     if (
       Buffer.byteLength(commandExecution.bufferedOutput, "utf8") >=

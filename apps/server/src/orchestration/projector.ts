@@ -10,6 +10,7 @@ import {
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import type { ProviderKind } from "@t3tools/contracts";
 import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
+import { updateThreadPullRequestLinks } from "@t3tools/shared/sourceControl";
 import { REASONING_STATUS_ACTIVITY_KIND } from "@t3tools/shared/orchestrationActivityPayload";
 import {
   CodeReviewWorkflow,
@@ -705,6 +706,7 @@ export function projectEvent(
             compaction: null,
             sessionNotes: null,
             ...(payload.scheduledOrigin ? { scheduledOrigin: payload.scheduledOrigin } : {}),
+            ...(payload.pullRequest ? { pullRequests: [payload.pullRequest] } : {}),
             threadReferences: payload.threadReferences,
             activities: [],
             checkpoints: [],
@@ -772,6 +774,14 @@ export function projectEvent(
                 : {}),
               ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
               ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.pullRequest || payload.pullRequestUnlinked
+                ? {
+                    pullRequests: updateThreadPullRequestLinks(currentThread?.pullRequests, {
+                      link: payload.pullRequest,
+                      unlink: payload.pullRequestUnlinked,
+                    }),
+                  }
+                : {}),
               updatedAt: payload.updatedAt,
             }),
           };

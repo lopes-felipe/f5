@@ -1,6 +1,7 @@
 import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
+import { resolveThreadPullRequests } from "../../lib/threadPullRequests";
 import type { ThreadListItem } from "../../types";
 import {
   orderThreadsByPipeline,
@@ -19,39 +20,63 @@ const thread = (id: string, lastInteractionAt: string) =>
   }) as unknown as ThreadListItem;
 
 describe("prStatusIndicator", () => {
-  const pr = (state: "open" | "closed" | "merged"): ThreadPr =>
+  const pr = (state: "open" | "closed" | "merged", number = 462): ThreadPr =>
     ({
-      number: 462,
+      number,
       title: "Sidebar redesign",
-      url: "https://github.com/acme/repo/pull/462",
+      url: `https://github.com/acme/repo/pull/${number}`,
       baseBranch: "main",
       headBranch: "feature",
       state,
     }) as ThreadPr;
+  const items = (branchPr: ThreadPr) =>
+    resolveThreadPullRequests({ branchPr, links: [], linkState: () => undefined });
 
   it("carries the PR number with each state", () => {
-    expect(prStatusIndicator(pr("open"))).toMatchObject({
+    expect(prStatusIndicator(items(pr("open")))).toMatchObject({
       state: "open",
       label: "PR open",
       number: 462,
     });
-    expect(prStatusIndicator(pr("merged"))).toMatchObject({
+    expect(prStatusIndicator(items(pr("merged")))).toMatchObject({
       state: "merged",
       label: "PR merged",
       number: 462,
     });
-    expect(prStatusIndicator(pr("closed"))).toMatchObject({
+    expect(prStatusIndicator(items(pr("closed")))).toMatchObject({
       state: "closed",
       label: "PR closed",
       number: 462,
     });
-    expect(prStatusIndicator(null)).toBeNull();
+    expect(prStatusIndicator(items(null))).toBeNull();
   });
 
   it("labels a finished workflow's PR status tooltip by PR state", () => {
-    expect(workflowPrLabel(prStatusIndicator(pr("open"))!)).toBe("PR #462 open");
-    expect(workflowPrLabel(prStatusIndicator(pr("merged"))!)).toBe("Merged #462");
-    expect(workflowPrLabel(prStatusIndicator(pr("closed"))!)).toBe("PR #462 closed");
+    expect(workflowPrLabel(prStatusIndicator(items(pr("open")))!)).toBe("PR #462 open");
+    expect(workflowPrLabel(prStatusIndicator(items(pr("merged")))!)).toBe("Merged #462");
+    expect(workflowPrLabel(prStatusIndicator(items(pr("closed")))!)).toBe("PR #462 closed");
+  });
+
+  it("colors several PRs by the most actionable one and lists each in the tooltip", () => {
+    const indicator = prStatusIndicator(
+      resolveThreadPullRequests({
+        branchPr: pr("merged", 10),
+        links: [
+          {
+            provider: "github",
+            host: "github.com",
+            repository: "acme/repo",
+            number: 11,
+            title: "Linked",
+            url: "https://github.com/acme/repo/pull/11",
+          },
+        ],
+        linkState: () => ({ state: "open", title: "Linked fix" }),
+      }),
+    );
+    expect(indicator).toMatchObject({ state: "open", label: "PR open", number: 11 });
+    expect(indicator?.items.map((item) => item.number)).toEqual([11, 10]);
+    expect(indicator?.tooltip).toBe("#11 open · Linked fix\n#10 merged · Sidebar redesign");
   });
 });
 
