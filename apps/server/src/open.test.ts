@@ -9,7 +9,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import { Effect, FileSystem, Metric, Path } from "effect";
-import { expect, it as vitestIt } from "vitest";
+import { expect, it as vitestIt, vi } from "vitest";
+import * as commandResolution from "./spawn/resolveCommand.ts";
 
 import {
   Open,
@@ -455,6 +456,14 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
       writeCliCommand(fileManagerCommand, "process.exit(1)");
 
       const originalPath = process.env.PATH ?? "";
+      const isAvailable = commandResolution.isCommandAvailable;
+      // An installed /Applications/Cursor.app is a valid fallback even with PATH empty.
+      // Model an unavailable editor without launching an application on the test host.
+      const availability = vi
+        .spyOn(commandResolution, "isCommandAvailable")
+        .mockImplementation((command, options) =>
+          process.env.PATH === "" ? false : isAvailable(command, options),
+        );
       try {
         process.env.PATH = `${tempDir}${path.delimiter}${originalPath}`;
         const open = yield* Open;
@@ -503,6 +512,7 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
           true,
         );
       } finally {
+        availability.mockRestore();
         process.env.PATH = originalPath;
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
