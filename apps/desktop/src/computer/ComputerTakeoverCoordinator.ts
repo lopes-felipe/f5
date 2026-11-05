@@ -107,6 +107,14 @@ export class ComputerTakeoverCoordinator {
    * must describe exactly this reservation: same thread, session, turn and app. A mismatched
    * pair never mints a receipt.
    */
+  awaitingConsent(profileId: string, approvalRequestId: string): boolean {
+    return [...this.takeovers.values()].some(
+      (entry) =>
+        entry.profileId === profileId &&
+        entry.approvalRequestId === approvalRequestId &&
+        entry.phase === "consent",
+    );
+  }
   answered(profileId: string, approval: ComputerAccessRequested, allowed: boolean): void {
     const takeover = [...this.takeovers.values()].find(
       (entry) =>

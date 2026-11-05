@@ -25,6 +25,7 @@ function setup(
     cancelBrowserOpen?: (profileId: string) => void;
     alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
     grants?: ComputerGrantAuthority;
+    consents?: ComputerConsentStore;
     grantForgetFailed?: (profileId: string, message: string) => void;
   } = {},
 ) {
@@ -33,6 +34,7 @@ function setup(
   const controller = {
     disconnect: vi.fn(),
     setPaused: vi.fn(),
+    updateGrants: vi.fn(),
     lease: new ComputerLeaseAuthority(),
     invoke: vi.fn(),
     cancel: vi.fn(),
@@ -59,6 +61,7 @@ function setup(
       ...(options.cancelBrowserOpen ? { cancelBrowserOpen: options.cancelBrowserOpen } : {}),
       ...(notification ? { notification } : {}),
       ...(options.grantForgetFailed ? { grantForgetFailed: options.grantForgetFailed } : {}),
+      ...(options.consents ? { consents: options.consents } : {}),
       background: () => ({ available: true }),
       ...(advertiseBackground !== undefined ? { advertiseBackground } : {}),
     },
@@ -81,6 +84,351 @@ function setup(
   return { channel, controller, process, hello, attention };
 }
 describe("private computer host channel", () => {
+  function rememberedHarness() {
+    let contents: string | undefined;
+    let failing = false;
+    const io = {
+      read: () => contents,
+      write: (value: string) => {
+        if (failing) throw new Error("disk full");
+        contents = value;
+      },
+      remove: () => {
+        if (failing) throw new Error("read-only");
+        contents = undefined;
+      },
+    };
+    const store = new ComputerConsentStore(io, () => Buffer.alloc(32, 7));
+    const grants = new ComputerGrantAuthority("darwin", store);
+    const h = setup(false, true, { grants, consents: store });
+    h.hello([
+      "background-ax-v1",
+      "computer-remembered-consent-v1",
+      "computer-session-lifecycle-v1",
+    ]);
+    const base = {
+      projectId: "project",
+      threadId: "thread",
+      sessionGeneration: "session",
+      reason: "Edit",
+      apps: [],
+    };
+    const receive = (request: import("@t3tools/contracts").ComputerAccessRequested) =>
+      h.process.emit("message", { type: "accessRequested", request });
+    const answers = () =>
+      h.process.send.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type === "accessAnswer")
+        .map((message) => message.answer);
+    return {
+      ...h,
+      store,
+      grants,
+      io,
+      base,
+      receive,
+      answers,
+      fail: () => {
+        failing = true;
+      },
+    };
+  }
+  it("restores native app decisions after restart with fresh receipts and no notification", () => {
+    const h = rememberedHarness();
+    const policy = {
+      version: 1 as const,
+      kind: "app-access" as const,
+      projectId: "project",
+      appId: "com.apple.TextEdit",
+      tier: "full" as const,
+      allowTyping: false,
+      policyVersion: 1 as const,
+    };
+    const request = {
+      ...h.base,
+      requestId: "native",
+      kind: "apps" as const,
+      apps: [{ appId: policy.appId, name: "TextEdit", tier: "full" as const }],
+    };
+    h.receive(request);
+    h.channel.answerAccess(
+      "profile",
+      {
+        requestId: "native",
+        backendIncarnation: "incarnation",
+        decisions: [{ appId: policy.appId, allow: true, allowTyping: false, remember: true }],
+      },
+      [policy],
+    );
+    const first = h.answers()[0]!;
+    expect(first.persistence).toBe("durable");
+    h.channel.close();
+    const store = new ComputerConsentStore(h.io, () => Buffer.alloc(32, 7));
+    const grants = new ComputerGrantAuthority("darwin", store);
+    const restarted = setup(false, true, { grants, consents: store });
+    restarted.hello(["background-ax-v1", "computer-remembered-consent-v1"]);
+    restarted.process.emit("message", {
+      type: "accessRequested",
+      request: {
+        ...request,
+        requestId: "restored",
+        threadId: "sibling",
+        sessionGeneration: "new",
+      },
+    });
+    const restored = restarted.process.send.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "accessAnswer").answer;
+    expect(restored.decisions[0].receipt).toBeTruthy();
+    expect(restored.decisions[0].receipt).not.toBe(first.decisions[0].receipt);
+    expect(restarted.attention).not.toHaveBeenCalled();
+    restarted.process.emit("message", {
+      type: "grantsRemembered",
+      requestId: "load",
+      projectId: "project",
+      profileId: "untrusted-other",
+    });
+    // Unknown extra fields are ignored by the decoder; identity remains the authenticated profile.
+    expect(restarted.process.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "response",
+        requestId: "load",
+        result: [
+          expect.objectContaining({
+            projectId: "project",
+            receipt: restored.decisions[0].receipt,
+          }),
+        ],
+      }),
+      expect.any(Function),
+    );
+    restarted.channel.close();
+  });
+  it("revokes an active app receipt and cancels its open native review before a failed disk removal", () => {
+    const h = rememberedHarness();
+    const policy = {
+      version: 1 as const,
+      kind: "app-access" as const,
+      projectId: "project",
+      appId: "com.apple.Terminal",
+      tier: "click" as const,
+      allowTyping: false,
+      policyVersion: 1 as const,
+    };
+    const request = {
+      ...h.base,
+      requestId: "app",
+      kind: "apps" as const,
+      apps: [{ appId: policy.appId, name: "Terminal", tier: policy.tier }],
+    };
+    h.receive(request);
+    h.channel.answerAccess(
+      "profile",
+      {
+        requestId: "app",
+        backendIncarnation: "incarnation",
+        decisions: [{ appId: policy.appId, allow: true, allowTyping: false, remember: true }],
+      },
+      [policy],
+    );
+    const authorization = {
+      profileId: "profile",
+      projectId: "project",
+      threadId: "thread",
+      sessionGeneration: "session",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: h.grants.listRemembered("profile", "project"),
+    };
+    expect(h.grants.validate(authorization).grants).toHaveLength(1);
+    h.receive({ ...request, requestId: "typing-review", typingRequested: true });
+    const offered = {
+      requestId: "typing-review",
+      backendIncarnation: "incarnation",
+      decisions: [],
+    };
+    expect(h.channel.accessRequest("profile", offered)).toMatchObject({
+      requestId: "typing-review",
+    });
+    h.fail();
+    expect(() => h.channel.revokeRemembered("profile", policy)).toThrow("restart could restore");
+    expect(h.grants.validate(authorization).grants).toEqual([]);
+    expect(h.controller.updateGrants).toHaveBeenCalledWith(expect.objectContaining({ grants: [] }));
+    expect(() => h.channel.accessRequest("profile", offered)).toThrow("expired");
+    expect(
+      h.answers().find((answer) => answer.requestId === "typing-review")?.decisions[0].allow,
+    ).toBe(false);
+    h.channel.close();
+  });
+  it("auto-answers only covered project sessions and mints a separate session receipt", () => {
+    const h = rememberedHarness();
+    h.store.allow("profile", {
+      version: 1,
+      kind: "session-actions",
+      projectId: "project",
+      background: false,
+      policyVersion: 1,
+    });
+    h.receive({ ...h.base, requestId: "foreground", kind: "session-actions" });
+    expect(h.answers()).toHaveLength(1);
+    expect(h.answers()[0].allowSessionActions).toBe(true);
+    h.receive({
+      ...h.base,
+      requestId: "background-denied",
+      kind: "session-actions",
+      background: true,
+    });
+    expect(h.attention).toHaveBeenCalledTimes(1);
+    h.store.allow("profile", {
+      version: 1,
+      kind: "session-actions",
+      projectId: "project",
+      background: true,
+      policyVersion: 1,
+    });
+    h.channel.answerPendingRemembered("profile");
+    expect(h.answers()[1].sessionReceipt).toBeTruthy();
+    expect(
+      h.channel.execution.hasSessionApproval("profile", "incarnation", "thread", "session"),
+    ).toBe(true);
+    h.process.emit("message", {
+      type: "computerSessionClosed",
+      threadId: "thread",
+      sessionGeneration: "session",
+    });
+    expect(
+      h.channel.execution.hasSessionApproval("profile", "incarnation", "thread", "session"),
+    ).toBe(false);
+    h.channel.close();
+  });
+  it("applies profile-wide session policy only to Full access background requests", () => {
+    const h = rememberedHarness();
+    h.store.allow("profile", { version: 1, kind: "full-access-session", policyVersion: 1 });
+    for (const [requestId, fullAccess, background] of [
+      ["normal", false, true],
+      ["foreground", true, false],
+      ["full", true, true],
+    ] as const)
+      h.receive({ ...h.base, requestId, fullAccess, background, kind: "session-actions" });
+    expect(h.answers().map((answer) => answer.requestId)).toEqual(["full"]);
+    expect(h.answers()[0].sessionReceipt).toBeTruthy();
+    expect(h.attention).toHaveBeenCalledTimes(2);
+    h.channel.close();
+  });
+  it("auto-answers Full access takeover policy only after its reservation exists", () => {
+    const h = rememberedHarness();
+    h.store.allow("profile", {
+      version: 1,
+      kind: "takeover",
+      projectId: "project",
+      appId: "com.apple.TextEdit",
+      policyVersion: 1,
+    });
+    const takeover = {
+      appId: "com.apple.TextEdit",
+      threadId: "thread",
+      turnId: "turn",
+      reason: "Drag",
+    };
+    h.receive({
+      ...h.base,
+      requestId: "unreserved",
+      kind: "foreground-takeover",
+      fullAccess: true,
+      takeover,
+    });
+    expect(h.answers()).toEqual([]);
+    h.channel.execution.approveSession({
+      profileId: "profile",
+      backendIncarnation: "incarnation",
+      threadId: "thread",
+      sessionGeneration: "session",
+      policyRevision: 0,
+    });
+    h.process.emit("message", {
+      type: "foregroundTakeoverAcquire",
+      requestId: "takeover",
+      approvalRequestId: "reserved",
+      holder: {
+        profileId: "profile",
+        projectId: "project",
+        threadId: "thread",
+        sessionGeneration: "session",
+        turnId: "turn",
+        executionGeneration: 1,
+        grantVersion: 1,
+        grants: [],
+        backend: "native",
+        threadTitle: "Thread",
+        scope: { kind: "takeover", appId: "com.apple.TextEdit", approvalReceipt: "reserved" },
+        policyRevision: 0,
+      },
+    });
+    expect(h.channel.takeovers.awaitingConsent("profile", "reserved")).toBe(true);
+    h.receive({
+      ...h.base,
+      requestId: "reserved",
+      kind: "foreground-takeover",
+      fullAccess: true,
+      takeover,
+    });
+    expect(h.answers()).toEqual([
+      expect.objectContaining({
+        requestId: "reserved",
+        allowForegroundTakeover: true,
+      }),
+    ]);
+    expect(h.attention).toHaveBeenCalledTimes(1);
+    h.channel.close();
+  });
+  it("keeps a failed write run-only and revokes it immediately even if deletion also fails", () => {
+    const h = rememberedHarness();
+    const policy = {
+      version: 1 as const,
+      kind: "session-actions" as const,
+      projectId: "project",
+      background: true,
+      policyVersion: 1 as const,
+    };
+    h.receive({ ...h.base, requestId: "run-only", kind: "session-actions", background: true });
+    h.fail();
+    h.channel.answerAccess(
+      "profile",
+      {
+        requestId: "run-only",
+        backendIncarnation: "incarnation",
+        decisions: [],
+        allowSessionActions: true,
+      },
+      [policy],
+    );
+    expect(h.answers()[0]).toMatchObject({
+      allowSessionActions: true,
+      persistence: "session-only",
+      persistenceReason: expect.any(String),
+      sessionReceipt: expect.any(String),
+    });
+    expect(h.channel.rememberedConsents("profile")[0]?.persistence).toBe("session-only");
+    h.receive({ ...h.base, requestId: "dialog", threadId: "normal", kind: "session-actions" });
+    expect(() => h.channel.revokeRemembered("profile", policy)).toThrow("restart could restore");
+    expect(
+      h.channel.execution.hasSessionApproval("profile", "incarnation", "thread", "session"),
+    ).toBe(false);
+    expect(h.controller.setPaused).toHaveBeenCalledWith("profile", "thread", true);
+    expect(h.process.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rememberedChanged",
+        revokedSessions: expect.arrayContaining([
+          { threadId: "thread", sessionGeneration: "session" },
+        ]),
+      }),
+      expect.any(Function),
+    );
+    h.receive({ ...h.base, requestId: "after-revoke", kind: "session-actions", background: true });
+    expect(h.answers().some((answer) => answer.requestId === "after-revoke")).toBe(false);
+    h.channel.close();
+  });
   it("reports a failed revocation without throwing out of the authenticated IPC listener", () => {
     let contents: string | undefined;
     let failing = false;
@@ -157,7 +505,8 @@ describe("private computer host channel", () => {
       remember: true,
     };
     const answer = { requestId: "limit", backendIncarnation: "incarnation", decisions: [decision] };
-    for (let index = 0; index < 9999; index++) grants.issue("profile", request, answer);
+    for (let index = 0; index < 9999; index++)
+      grants.issue("profile", { ...request, projectId: "project-" + index }, answer);
     const h = setup(false, false, { grants });
     h.hello();
     h.process.emit("message", {

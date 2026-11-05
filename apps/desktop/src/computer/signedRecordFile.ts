@@ -195,6 +195,9 @@ export class SignedRecordFile<R extends object> {
   profilesList(): ReadonlyArray<string> {
     return [...this.profiles.keys()];
   }
+  persistence(profileId: string, id: string): "durable" | "session-only" {
+    return this.unsaved.has(JSON.stringify([profileId, id])) ? "session-only" : "durable";
+  }
 
   allow(profileId: string, id: string, record: R): "durable" | "session-only" {
     if (!this.options.validate(record, id)) throw new Error("Invalid consent record.");

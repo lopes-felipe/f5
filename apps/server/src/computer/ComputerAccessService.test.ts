@@ -30,6 +30,108 @@ async function harness(
   return { service, requests, save, changed, settled };
 }
 describe("server-owned computer grants", () => {
+  it("uses main-owned receipts without reading or writing the legacy file", async () => {
+    const legacy = { load: vi.fn(async () => []), save: vi.fn(async () => {}) };
+    const source = {
+      load: vi.fn(async () => [
+        {
+          projectId: "p",
+          appId: app.appId,
+          tier: "click" as const,
+          allowTyping: false,
+          receipt: "main-receipt",
+        },
+      ]),
+      forget: vi.fn(async () => {}),
+    };
+    const requests: ComputerAccessRequested[] = [];
+    const settled = vi.fn();
+    const service = new ComputerAccessService({
+      platform: "darwin",
+      backendIncarnation: "backend",
+      storage: legacy,
+      mainOwned: () => true,
+      remembered: source,
+      request: (request) => requests.push(request),
+      changed: vi.fn(),
+      settled,
+    });
+    await service.initialize();
+    service.bind("t", "p", "s");
+    expect(service.grants("t")[0]?.receipt).toBe("main-receipt");
+    const pending = service.requestAccess("t", "turn", [app], "Type", { typing: true });
+    await service.answerFromHost({
+      requestId: requests[0]!.requestId,
+      backendIncarnation: "backend",
+      decisions: [
+        { appId: app.appId, allow: true, allowTyping: true, remember: true, receipt: "new" },
+      ],
+      persistence: "session-only",
+      persistenceReason: "Disk full",
+    });
+    await pending;
+    expect(legacy.load).not.toHaveBeenCalled();
+    expect(legacy.save).not.toHaveBeenCalled();
+    expect(settled).toHaveBeenLastCalledWith(
+      requests[0]!.requestId,
+      "t",
+      true,
+      expect.objectContaining({ persistence: "session-only", persistenceReason: "Disk full" }),
+    );
+    source.forget.mockRejectedValueOnce(new Error("Could not forget this app."));
+    await expect(service.forgetRemembered("p", app.appId)).rejects.toThrow("Could not forget");
+    service.close();
+  });
+  it("reloads after a failed startup load, preserves receipts on failure, and removes revoked overrides", async () => {
+    const grant = {
+      projectId: "p",
+      appId: app.appId,
+      tier: "click" as const,
+      allowTyping: false,
+      receipt: "fresh-main-receipt",
+    };
+    const source = {
+      load: vi
+        .fn<() => Promise<ReadonlyArray<RememberedComputerGrant>>>()
+        .mockRejectedValueOnce(new Error("Disconnected"))
+        .mockResolvedValueOnce([grant])
+        .mockRejectedValueOnce(new Error("Disconnected"))
+        .mockResolvedValueOnce([]),
+      forget: vi.fn(async () => {}),
+    };
+    const service = new ComputerAccessService({
+      platform: "darwin",
+      backendIncarnation: "backend",
+      storage: { load: vi.fn(async () => []), save: vi.fn(async () => {}) },
+      mainOwned: () => true,
+      remembered: source,
+      request: vi.fn(),
+      changed: vi.fn(),
+      settled: vi.fn(),
+    });
+    await service.initialize();
+    service.bind("t", "p", "s");
+    expect(service.grants("t")).toEqual([]);
+    await service.refreshRemembered();
+    expect(service.grants("t")[0]?.receipt).toBe(grant.receipt);
+    await service.refreshRemembered();
+    expect(service.grants("t")[0]?.receipt).toBe(grant.receipt);
+    await service.refreshRemembered("p");
+    expect(service.grants("t")).toEqual([]);
+    service.close();
+  });
+  it("labels only background session requests as Full access and never grants from that label", async () => {
+    const h = await harness();
+    const pending = h.service.requestAccess("t", "turn", [], "Background", {
+      kind: "session-actions",
+      background: true,
+      fullAccess: true,
+    });
+    expect(h.requests[0]).toMatchObject({ fullAccess: true, background: true });
+    expect(h.service.backgroundApproved("t")).toBe(false);
+    h.service.close();
+    await pending;
+  });
   it("explicitly upgrades click-only access to typing without re-prompting ordinary duplicate requests", async () => {
     const h = await harness([
       { projectId: "p", appId: app.appId, tier: "click", allowTyping: false },
@@ -38,7 +140,9 @@ describe("server-owned computer grants", () => {
       expect(await h.service.requestAccess("t", "turn", [app], "Click")).toBeNull();
       expect(h.requests).toHaveLength(0);
       const before = h.service.version("t");
-      const upgrade = h.service.requestAccess("t", "turn", [app], "Typing needed", "apps", true);
+      const upgrade = h.service.requestAccess("t", "turn", [app], "Typing needed", {
+        typing: true,
+      });
       expect(h.requests[0]?.typingRequested).toBe(true);
       await h.service.answerFromHost({
         requestId: h.requests[0]!.requestId,
@@ -48,7 +152,9 @@ describe("server-owned computer grants", () => {
       await upgrade;
       expect(() => h.service.require("t", app.appId, "type")).not.toThrow();
       expect(h.service.version("t")).toBeGreaterThan(before);
-      expect(await h.service.requestAccess("t", "turn", [app], "Typing", "apps", true)).toBeNull();
+      expect(
+        await h.service.requestAccess("t", "turn", [app], "Typing", { typing: true }),
+      ).toBeNull();
       expect(h.requests).toHaveLength(1);
     } finally {
       h.service.close();
@@ -59,7 +165,7 @@ describe("server-owned computer grants", () => {
       { projectId: "p", appId: app.appId, tier: "click", allowTyping: false },
     ]);
     try {
-      const upgrade = h.service.requestAccess("t", "turn", [app], "Typing", "apps", true);
+      const upgrade = h.service.requestAccess("t", "turn", [app], "Typing", { typing: true });
       await h.service.answerFromHost({
         requestId: h.requests[0]!.requestId,
         backendIncarnation: "backend",
@@ -68,7 +174,9 @@ describe("server-owned computer grants", () => {
       await upgrade;
       expect(() => h.service.require("t", app.appId, "click")).not.toThrow();
       expect(() => h.service.require("t", app.appId, "type")).toThrow();
-      expect(await h.service.requestAccess("t", "turn", [app], "Retry", "apps", true)).toBeNull();
+      expect(
+        await h.service.requestAccess("t", "turn", [app], "Retry", { typing: true }),
+      ).toBeNull();
       expect(h.requests).toHaveLength(1);
     } finally {
       h.service.close();
@@ -330,7 +438,7 @@ it("denying typing keeps clicks, and app denial is not reported as session appro
   const h = await harness([
     { projectId: "p", appId: app.appId, tier: "click", allowTyping: false },
   ]);
-  const session = h.service.requestAccess("t", "turn", [], "Actions", "session-actions");
+  const session = h.service.requestAccess("t", "turn", [], "Actions", { kind: "session-actions" });
   await h.service.answerFromHost({
     requestId: h.requests[0]!.requestId,
     backendIncarnation: "backend",
@@ -338,7 +446,7 @@ it("denying typing keeps clicks, and app denial is not reported as session appro
     allowSessionActions: true,
   });
   await session;
-  const typing = h.service.requestAccess("t", "turn", [app], "Type", "apps", true);
+  const typing = h.service.requestAccess("t", "turn", [app], "Type", { typing: true });
   await h.service.answerFromHost({
     requestId: h.requests[1]!.requestId,
     backendIncarnation: "backend",
@@ -347,10 +455,15 @@ it("denying typing keeps clicks, and app denial is not reported as session appro
   await typing;
   expect(() => h.service.require("t", app.appId, "click")).not.toThrow();
   expect(() => h.service.require("t", app.appId, "type")).toThrow();
-  expect(h.settled).toHaveBeenLastCalledWith(h.requests[1]!.requestId, "t", false);
+  expect(h.settled).toHaveBeenLastCalledWith(
+    h.requests[1]!.requestId,
+    "t",
+    false,
+    expect.objectContaining({ decisions: [expect.objectContaining({ allow: false })] }),
+  );
   h.service.clearSession("t");
   h.service.bind("t", "p", "replacement");
-  const retry = h.service.requestAccess("t", "turn", [app], "Type", "apps", true);
+  const retry = h.service.requestAccess("t", "turn", [app], "Type", { typing: true });
   expect(h.requests).toHaveLength(3);
   h.service.close();
   await retry;

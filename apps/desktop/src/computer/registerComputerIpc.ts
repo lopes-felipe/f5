@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import {
   ComputerAccessAnswer,
   ComputerPermission,
+  RememberedComputerConsent,
+  type RememberedComputerConsentEntry,
   type ComputerAutomationBackendStatus,
 } from "@t3tools/contracts";
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
@@ -23,6 +25,10 @@ export function registerComputerIpc(
     integrationConsents?: {
       list: (profileId: string) => ReadonlyArray<AlwaysAllowableIntegration>;
       revoke: (profileId: string, integration: AlwaysAllowableIntegration) => void;
+    };
+    computerConsents?: {
+      list: (profileId: string) => ReadonlyArray<RememberedComputerConsentEntry>;
+      revoke: (profileId: string, consent: RememberedComputerConsent) => void;
     };
   },
 ): void {
@@ -57,6 +63,13 @@ export function registerComputerIpc(
   register("integration-consents", (profile) => [
     ...(input.integrationConsents?.list(profile) ?? []),
   ]);
+  register("remembered-consents", (profile) => input.computerConsents?.list(profile) ?? []);
+  register("revoke-remembered-consent", (profile, args) => {
+    const consent = Schema.decodeUnknownSync(RememberedComputerConsent)(args[0], {
+      onExcessProperty: "error",
+    });
+    input.computerConsents?.revoke(profile, consent);
+  });
   register("revoke-integration-consent", (profile, args) => {
     if (!isAlwaysAllowableIntegration(args[0])) throw new Error("Invalid integration.");
     input.integrationConsents?.revoke(profile, args[0]);

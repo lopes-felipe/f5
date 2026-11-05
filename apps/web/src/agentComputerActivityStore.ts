@@ -10,7 +10,12 @@ import type {
 import { isAgentActivityRecent } from "./agentActivityWindow";
 export const COMPUTER_ACCESS_HISTORY_LIMIT = 20;
 export const COMPUTER_ACTION_HISTORY_LIMIT = 30;
-type AccessRequest = typeof ComputerAccessPush.Type & { settled?: boolean; allowed?: boolean };
+type AccessRequest = typeof ComputerAccessPush.Type & {
+  settled?: boolean;
+  allowed?: boolean;
+  persistence?: "durable" | "session-only";
+  persistenceReason?: string;
+};
 type Activity = ComputerActivity & { at: number };
 const EMPTY_REQUESTS: ReadonlyArray<AccessRequest> = [];
 
@@ -71,10 +76,7 @@ interface ComputerState {
   activity: Record<string, (ComputerActivity & { at: number }) | undefined>;
   lastCapture: Record<string, (ComputerActivity & { at: number }) | undefined>;
   grants: Record<string, ReadonlyArray<ComputerGrant> | undefined>;
-  requests: Record<
-    string,
-    (typeof ComputerAccessPush.Type & { settled?: boolean; allowed?: boolean }) | undefined
-  >;
+  requests: Record<string, AccessRequest | undefined>;
   paused: Record<string, boolean | undefined>;
   /** Every holder in this profile: delivery, target app, execution state and pause cause. */
   leases: typeof AgentComputerUseChanged.Type;
@@ -181,7 +183,7 @@ export const useAgentComputerActivityStore = create<ComputerState>((set) => ({
       if (!request) return state;
       const requests = pruneRequests({
         ...state.requests,
-        [event.requestId]: { ...request, settled: true, allowed: event.allowed },
+        [event.requestId]: { ...request, ...event, settled: true },
       });
       return { requests, requestsByThread: indexRequests(requests, state.requestsByThread) };
     }),

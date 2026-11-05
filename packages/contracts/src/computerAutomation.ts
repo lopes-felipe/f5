@@ -51,6 +51,7 @@ export const COMPUTER_BACKGROUND_CAPABILITY = "background-ax-v1";
 /** Session receipt reclamation, independently negotiated from durable policy support. */
 export const COMPUTER_SESSION_LIFECYCLE_CAPABILITY = "computer-session-lifecycle-v1";
 export const COMPUTER_GRANT_FORGET_CAPABILITY = "computer-grant-forget-v1";
+export const COMPUTER_REMEMBERED_CONSENT_CAPABILITY = "computer-remembered-consent-v1";
 export const ComputerBackgroundUnavailableReason = Schema.Literals([
   "unsupported-platform",
   "peer-capability",
@@ -123,6 +124,13 @@ export const RememberedComputerConsent = Schema.Union([
   }),
 ]);
 export type RememberedComputerConsent = typeof RememberedComputerConsent.Type;
+export const ComputerConsentPersistence = Schema.Literals(["durable", "session-only"]);
+export const RememberedComputerConsentEntry = Schema.Struct({
+  consent: RememberedComputerConsent,
+  persistence: ComputerConsentPersistence,
+  reason: Schema.optionalKey(Schema.String),
+});
+export type RememberedComputerConsentEntry = typeof RememberedComputerConsentEntry.Type;
 export const ComputerGrant = Schema.Struct({
   receipt: Schema.optionalKey(Id),
   appId: Id,
@@ -130,6 +138,13 @@ export const ComputerGrant = Schema.Struct({
   allowTyping: Schema.Boolean,
 });
 export type ComputerGrant = typeof ComputerGrant.Type;
+export const RememberedComputerGrant = Schema.Struct({
+  projectId: Id,
+  ...ComputerGrant.fields,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  persistenceReason: Schema.optionalKey(Schema.String),
+});
+export type RememberedComputerGrant = typeof RememberedComputerGrant.Type;
 export const ComputerApp = Schema.Struct({
   appId: Id,
   name: Schema.String.check(Schema.isMaxLength(200)),
@@ -484,6 +499,7 @@ export const ComputerAccessRequested = Schema.Struct({
   typingRequested: Schema.optionalKey(Schema.Boolean),
   /** Session approval that also covers background control while the user works elsewhere. */
   background: Schema.optionalKey(Schema.Boolean),
+  fullAccess: Schema.optionalKey(Schema.Boolean),
   takeover: Schema.optionalKey(
     Schema.Struct({
       appId: Id,
@@ -534,6 +550,8 @@ export const ComputerAccessAnswer = Schema.Struct({
   allowForegroundTakeover: Schema.optionalKey(Schema.Boolean),
   /** Minted by Electron main only; renderer and model input never supply it. */
   sessionReceipt: Schema.optionalKey(Id),
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  persistenceReason: Schema.optionalKey(Schema.String),
 });
 export type ComputerAccessAnswer = typeof ComputerAccessAnswer.Type;
 export const ComputerLeaseScope = Schema.Union([
@@ -840,6 +858,23 @@ export const DesktopComputerHostMessage = Schema.Union([
     grants: Schema.Array(ComputerGrant),
   }),
   Schema.Struct({
+    type: Schema.Literal("grantsRemembered"),
+    requestId: Id,
+    projectId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("rememberedChanged"),
+    projectId: Schema.optionalKey(Id),
+    revokedSessions: Schema.optionalKey(
+      Schema.Array(
+        Schema.Struct({
+          threadId: Id,
+          sessionGeneration: Id,
+        }),
+      ).check(Schema.isMaxLength(10_000)),
+    ),
+  }),
+  Schema.Struct({
     type: Schema.Literals(["leaseAcquire", "leaseRelease"]),
     requestId: Id,
     holder: ComputerLeaseHolder,
@@ -914,4 +949,8 @@ export interface DesktopComputerAutomationBridge {
   readonly integrationConsents?: () => Promise<ReadonlyArray<AlwaysAllowedIntegration>>;
   /** Rejects when the revocation couldn't be saved. */
   readonly revokeIntegrationConsent?: (integration: AlwaysAllowedIntegration) => Promise<void>;
+  readonly rememberedComputerConsents?: () => Promise<
+    ReadonlyArray<RememberedComputerConsentEntry>
+  >;
+  readonly revokeRememberedComputerConsent?: (consent: RememberedComputerConsent) => Promise<void>;
 }

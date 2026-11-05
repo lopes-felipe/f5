@@ -1,4 +1,5 @@
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
+import { ComputerConsentStore, computerConsentKey } from "./ComputerConsentStore";
 import type { ChildProcess } from "node:child_process";
 import { Schema } from "effect";
 import {
@@ -8,6 +9,7 @@ import {
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
   COMPUTER_GRANT_FORGET_CAPABILITY,
+  COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -19,8 +21,10 @@ import {
   type ComputerLeaseHolder,
   type ChromeLeaseHolder,
   type ChromeProcessRegistration,
+  type RememberedComputerConsent,
 } from "@t3tools/contracts";
 import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
+import { appTier, restrictComputerTier } from "@t3tools/shared/computerApps";
 import type { ComputerController, ComputerExecutionStateUpdate } from "./ComputerController";
 import { ChromeLeaseAuthority } from "./ChromeLeaseAuthority";
 import type { ChromeProcessSupervisor } from "./ChromeProcessSupervisor";
@@ -59,6 +63,15 @@ export class ComputerHostChannel {
   private readonly builtinQuarantine = new Map<string, ComputerLeaseHolder[]>();
   readonly execution: ComputerExecutionAuthority;
   readonly takeovers: ComputerTakeoverCoordinator;
+  private readonly consentBarriers = new Set<string>();
+  private readonly approvalSources = new Map<
+    string,
+    {
+      profileId: string;
+      request: ComputerAccessRequested;
+      source?: RememberedComputerConsent;
+    }
+  >();
   constructor(
     private readonly controller: ComputerController,
     private readonly status: () => ComputerAutomationBackendStatus,
@@ -99,6 +112,7 @@ export class ComputerHostChannel {
       ) => Promise<OpenExternalUrlStatus>;
       cancelBrowserOpen?: (profileId: string) => void;
       grantForgetFailed?: (profileId: string, message: string) => void;
+      consents?: ComputerConsentStore;
     } = {},
   ) {
     this.chrome = new ChromeLeaseAuthority((holder) => {
@@ -138,6 +152,8 @@ export class ComputerHostChannel {
     };
   }
   private disconnectProfile(profileId: string): void {
+    for (const [key, entry] of this.approvalSources)
+      if (entry.profileId === profileId) this.approvalSources.delete(key);
     this.options.cancelBrowserOpen?.(profileId);
     const builtin = this.controller.lease
       .holders()
@@ -241,6 +257,7 @@ export class ComputerHostChannel {
               capability === COMPUTER_CHROME_CALLS_CAPABILITY ||
               capability === COMPUTER_SESSION_LIFECYCLE_CAPABILITY ||
               capability === COMPUTER_GRANT_FORGET_CAPABILITY ||
+              (capability === COMPUTER_REMEMBERED_CONSENT_CAPABILITY && !!this.options.consents) ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -659,7 +676,17 @@ export class ComputerHostChannel {
           break;
         case "grantForget":
           try {
-            this.grants.forget(profileId, message.projectId, message.appId);
+            if (this.options.consents)
+              this.revokeRemembered(profileId, {
+                version: 1,
+                kind: "app-access",
+                projectId: message.projectId,
+                appId: message.appId,
+                tier: "view",
+                allowTyping: false,
+                policyVersion: 1,
+              });
+            else this.grants.forget(profileId, message.projectId, message.appId);
             if (message.requestId)
               this.send(profileId, { type: "response", requestId: message.requestId, result: {} });
           } catch (error) {
@@ -671,10 +698,43 @@ export class ComputerHostChannel {
               );
           }
           break;
+        case "grantsRemembered":
+          if (!backend.capabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY)) {
+            fail(message.requestId, new Error("Remembered computer consent is unavailable."));
+            break;
+          }
+          {
+            const entries = this.rememberedConsents(profileId);
+            this.send(profileId, {
+              type: "response",
+              requestId: message.requestId,
+              result: this.grants.listRemembered(profileId, message.projectId).map((grant) => {
+                const status = entries.find(
+                  (entry) =>
+                    entry.consent.kind === "app-access" &&
+                    entry.consent.projectId === grant.projectId &&
+                    entry.consent.appId === grant.appId,
+                );
+                return {
+                  ...grant,
+                  persistence: status?.persistence ?? "session-only",
+                  ...(status?.reason ? { persistenceReason: status.reason } : {}),
+                };
+              }),
+            });
+          }
+          break;
         case "computerSessionClosed":
           if (!backend.capabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY)) break;
           this.grants.sessionClosed(profileId, message.threadId, message.sessionGeneration);
           this.execution.sessionClosed(profileId, message.threadId, message.sessionGeneration);
+          for (const [key, entry] of this.approvalSources)
+            if (
+              entry.profileId === profileId &&
+              entry.request.threadId === message.threadId &&
+              entry.request.sessionGeneration === message.sessionGeneration
+            )
+              this.approvalSources.delete(key);
           break;
         case "grantsValidate":
           this.send(profileId, {
@@ -716,7 +776,7 @@ export class ComputerHostChannel {
         case "accessRequested": {
           backend.pendingAccess.set(message.request.requestId, message.request);
           // An earlier "always allow" answers here, without a dialog. The grant is main's own.
-          if (this.answerAlwaysAllowed(profileId, message.request)) break;
+          if (this.answerRemembered(profileId, message.request)) break;
           this.attention(profileId, message.request);
           break;
         }
@@ -834,9 +894,83 @@ export class ComputerHostChannel {
    * Answers a pending request the profile always allows: a Codex Chrome session or a
    * Claude in Chrome setup.
    */
-  private answerAlwaysAllowed(profileId: string, request: ComputerAccessRequested): boolean {
-    const integration = alwaysAllowableIntegration(request);
+  private answerRemembered(profileId: string, request: ComputerAccessRequested): boolean {
     const backend = this.backends.get(profileId);
+    if (!backend) return false;
+    if (backend.capabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY)) {
+      const policies =
+        this.options.consents
+          ?.list(profileId)
+          .filter(
+            (policy) =>
+              !this.consentBarriers.has(JSON.stringify([profileId, computerConsentKey(policy)])),
+          ) ?? [];
+      let source: RememberedComputerConsent | undefined;
+      let answer: ComputerAccessAnswer | undefined;
+      const base = {
+        requestId: request.requestId,
+        backendIncarnation: backend.incarnation,
+        decisions: [],
+      };
+      if (request.kind === "apps" && request.projectId) {
+        const grants = this.grants.listRemembered(profileId, request.projectId);
+        const matches = request.apps.map((app) =>
+          grants.find(
+            (grant) =>
+              grant.appId === app.appId &&
+              grant.tier ===
+                restrictComputerTier(
+                  app.tier,
+                  appTier(app.appId, process.platform === "win32" ? "win32" : "darwin"),
+                ) &&
+              (!request.typingRequested || grant.tier !== "click" || grant.allowTyping),
+          ),
+        );
+        if (matches.every((grant) => grant !== undefined))
+          answer = {
+            ...base,
+            decisions: matches.map((grant) => ({
+              appId: grant!.appId,
+              allow: true,
+              allowTyping: grant!.allowTyping,
+              remember: true,
+            })),
+          };
+      } else if (request.kind === "session-actions") {
+        source =
+          policies.find(
+            (policy) =>
+              policy.kind === "session-actions" &&
+              policy.projectId === request.projectId &&
+              (!request.background || policy.background),
+          ) ??
+          (request.fullAccess && request.background
+            ? policies.find((policy) => policy.kind === "full-access-session")
+            : undefined);
+        if (source) answer = { ...base, allowSessionActions: true };
+      } else if (
+        request.kind === "foreground-takeover" &&
+        request.fullAccess &&
+        this.takeovers.awaitingConsent(profileId, request.requestId)
+      ) {
+        source = policies.find(
+          (policy) =>
+            policy.kind === "takeover" &&
+            policy.projectId === request.projectId &&
+            policy.appId === request.takeover?.appId,
+        );
+        if (source) answer = { ...base, allowForegroundTakeover: true };
+      }
+      if (answer) {
+        try {
+          this.answerAccess(profileId, answer, [], source);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+    const integration = alwaysAllowableIntegration(request);
     if (!backend || !integration || !this.chromeOptions?.alwaysAllowed?.(profileId, integration))
       return false;
     try {
@@ -859,10 +993,128 @@ export class ComputerHostChannel {
    * waiting, such as those of threads that restarted together.
    */
   answerPendingAlwaysAllowed(profileId: string): void {
+    this.answerPendingRemembered(profileId);
+  }
+  answerPendingRemembered(profileId: string): void {
     const backend = this.backends.get(profileId);
     if (!backend) return;
-    for (const request of backend.pendingAccess.values())
-      this.answerAlwaysAllowed(profileId, request);
+    for (const request of backend.pendingAccess.values()) this.answerRemembered(profileId, request);
+  }
+  rememberedConsents(profileId: string) {
+    return this.options.consents?.entries(profileId) ?? [];
+  }
+  private rememberedChanged(
+    profileId: string,
+    projectId?: string,
+    revokedSessions?: ReadonlyArray<{ threadId: string; sessionGeneration: string }>,
+  ): void {
+    if (this.backends.get(profileId)?.capabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY))
+      this.send(profileId, {
+        type: "rememberedChanged",
+        ...(projectId ? { projectId } : {}),
+        ...(revokedSessions?.length ? { revokedSessions } : {}),
+      });
+  }
+  revokeRemembered(profileId: string, consent: RememberedComputerConsent): void {
+    this.consentBarriers.add(JSON.stringify([profileId, computerConsentKey(consent)]));
+    const sourced = [...this.approvalSources.values()].filter(
+      (entry) =>
+        entry.profileId === profileId &&
+        entry.source &&
+        computerConsentKey(entry.source) === computerConsentKey(consent),
+    );
+    const threads =
+      consent.kind === "app-access"
+        ? undefined
+        : new Set(sourced.map((entry) => entry.request.threadId));
+    const affected = this.grants.revoke(profileId, consent, threads);
+    const stopped = new Set<string>();
+    for (const authorization of affected) {
+      if (consent.kind === "app-access")
+        this.execution.sessionClosed(
+          profileId,
+          authorization.threadId,
+          authorization.sessionGeneration,
+        );
+      this.controller.setPaused(profileId, authorization.threadId, true);
+      this.controller.updateGrants(authorization);
+      stopped.add(authorization.threadId);
+    }
+    for (const entry of sourced) {
+      if (entry.request.sessionGeneration) {
+        if (consent.kind === "takeover")
+          this.execution.revokeTakeovers(
+            (receipt) =>
+              receipt.profileId === profileId &&
+              receipt.threadId === entry.request.threadId &&
+              receipt.appId === consent.appId,
+          );
+        else
+          this.execution.sessionClosed(
+            profileId,
+            entry.request.threadId,
+            entry.request.sessionGeneration,
+          );
+      }
+      this.controller.setPaused(profileId, entry.request.threadId, true);
+      stopped.add(entry.request.threadId);
+    }
+    const backend = this.backends.get(profileId);
+    for (const request of [...(backend?.pendingAccess.values() ?? [])]) {
+      const matchingApp =
+        consent.kind === "app-access" &&
+        request.projectId === consent.projectId &&
+        (request.apps.some((app) => app.appId === consent.appId) ||
+          request.takeover?.appId === consent.appId);
+      const matchingPolicy =
+        consent.kind === "session-actions"
+          ? request.kind === "session-actions" && request.projectId === consent.projectId
+          : consent.kind === "full-access-session"
+            ? request.kind === "session-actions" && request.fullAccess && request.background
+            : consent.kind === "takeover" &&
+              request.kind === "foreground-takeover" &&
+              request.projectId === consent.projectId &&
+              request.takeover?.appId === consent.appId;
+      if (!matchingApp && !matchingPolicy && !stopped.has(request.threadId)) continue;
+      this.answerAccess(profileId, {
+        requestId: request.requestId,
+        backendIncarnation: backend!.incarnation,
+        decisions: request.apps.map((app) => ({
+          appId: app.appId,
+          allow: false,
+          allowTyping: false,
+          remember: false,
+        })),
+        allowSessionActions: false,
+        allowForegroundTakeover: false,
+      });
+    }
+    for (const threadId of stopped)
+      this.send(profileId, { type: "pauseChanged", threadId, paused: true });
+    this.rememberedChanged(
+      profileId,
+      "projectId" in consent ? consent.projectId : undefined,
+      consent.kind === "takeover"
+        ? undefined
+        : [
+            ...affected.map((authorization) => ({
+              threadId: authorization.threadId,
+              sessionGeneration: authorization.sessionGeneration,
+            })),
+            ...sourced.flatMap((entry) =>
+              entry.request.sessionGeneration
+                ? [
+                    {
+                      threadId: entry.request.threadId,
+                      sessionGeneration: entry.request.sessionGeneration,
+                    },
+                  ]
+                : [],
+            ),
+          ],
+    );
+    // A failed durable revocation never removes the barrier or restores current authority.
+    this.options.consents?.revoke(profileId, consent);
   }
   accessRequest(profileId: string, answer: ComputerAccessAnswer): ComputerAccessRequested {
     const backend = this.backends.get(profileId);
@@ -871,7 +1123,12 @@ export class ComputerHostChannel {
       throw new Error("This request expired or belongs to another backend.");
     return request;
   }
-  answerAccess(profileId: string, answer: ComputerAccessAnswer): void {
+  answerAccess(
+    profileId: string,
+    answer: ComputerAccessAnswer,
+    policies: ReadonlyArray<RememberedComputerConsent> = [],
+    source?: RememberedComputerConsent,
+  ): void {
     const backend = this.backends.get(profileId);
     const request = backend?.pendingAccess.get(answer.requestId);
     if (
@@ -885,6 +1142,9 @@ export class ComputerHostChannel {
     const { sessionReceipt: _untrusted, ...base } = answer;
     answer = base;
     let forwarded: ComputerAccessAnswer = answer;
+    const takeoverReserved =
+      request.kind === "foreground-takeover" &&
+      this.takeovers.awaitingConsent(profileId, request.requestId);
     if (request.kind === "apps") {
       try {
         forwarded = this.grants.issue(profileId, request, answer);
@@ -924,12 +1184,71 @@ export class ComputerHostChannel {
       };
     else if (request.kind === "foreground-takeover")
       this.takeovers.answered(profileId, request, answer.allowForegroundTakeover === true);
+    if (
+      (request.kind === "session-actions" && answer.allowSessionActions) ||
+      (request.kind === "foreground-takeover" && answer.allowForegroundTakeover && takeoverReserved)
+    ) {
+      const selected =
+        source ??
+        policies.find(
+          (policy) =>
+            policy.kind === "session-actions" ||
+            policy.kind === "full-access-session" ||
+            policy.kind === "takeover",
+        );
+      this.approvalSources.set(
+        JSON.stringify([profileId, request.threadId, request.sessionGeneration, request.kind]),
+        {
+          profileId,
+          request,
+          ...(selected ? { source: selected } : {}),
+        },
+      );
+    }
+    if (policies.length && this.options.consents) {
+      let persistence: "durable" | "session-only" = "durable";
+      let reason: string | undefined;
+      for (const policy of policies) {
+        if (policy.kind === "takeover" && !takeoverReserved) continue;
+        try {
+          if (this.options.consents.allow(profileId, policy) === "session-only") {
+            persistence = "session-only";
+            reason = "F5 could not save this choice. It applies until F5 closes.";
+          }
+          this.consentBarriers.delete(JSON.stringify([profileId, computerConsentKey(policy)]));
+        } catch (error) {
+          persistence = "session-only";
+          reason = error instanceof Error ? error.message : "F5 could not save this choice.";
+          if (policy.kind === "app-access") {
+            this.grants.unremember(profileId, policy.projectId, policy.appId);
+            forwarded = {
+              ...forwarded,
+              decisions: forwarded.decisions.map((decision) =>
+                decision.appId === policy.appId ? { ...decision, remember: false } : decision,
+              ),
+            };
+          }
+        }
+      }
+      forwarded = { ...forwarded, persistence, ...(reason ? { persistenceReason: reason } : {}) };
+    }
     this.send(profileId, { type: "accessAnswer", answer: forwarded });
+    if (policies.length) {
+      this.rememberedChanged(
+        profileId,
+        policies.every((policy) => "projectId" in policy && policy.projectId === request.projectId)
+          ? request.projectId
+          : undefined,
+      );
+      this.answerPendingRemembered(profileId);
+    }
   }
   incarnation(profileId: string): string | undefined {
     return this.backends.get(profileId)?.incarnation;
   }
   close(): void {
     this.takeovers.close();
+    this.approvalSources.clear();
+    this.consentBarriers.clear();
   }
 }

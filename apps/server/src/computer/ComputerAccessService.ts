@@ -5,6 +5,7 @@ import type {
   ComputerAccessRequested,
   ComputerApp,
   ComputerGrant,
+  RememberedComputerGrant,
 } from "@t3tools/contracts";
 import {
   appTier,
@@ -29,8 +30,10 @@ export interface ComputerTakeoverConsent {
   readonly appName?: string;
   readonly turnId: string;
 }
-export interface RememberedComputerGrant extends ComputerGrant {
-  readonly projectId: string;
+export type { RememberedComputerGrant } from "@t3tools/contracts";
+export interface RememberedGrantSource {
+  load: (projectId?: string) => Promise<ReadonlyArray<RememberedComputerGrant>>;
+  forget: (projectId: string, appId: string) => Promise<void>;
 }
 interface Pending {
   request: ComputerAccessRequested;
@@ -44,7 +47,7 @@ export interface ComputerAccessStorage {
   load: () => Promise<ReadonlyArray<RememberedComputerGrant>>;
   save: (grants: ReadonlyArray<RememberedComputerGrant>) => Promise<void>;
 }
-/** Server-owned storage; settings and agent tool inputs cannot supply grants. */
+/** Main-owned policy for capable desktops; legacy storage never creates native receipts. */
 export class ComputerAccessService {
   private remembered: ReadonlyArray<RememberedComputerGrant> = [];
   private readonly bindings = new Map<string, Binding>();
@@ -56,15 +59,37 @@ export class ComputerAccessService {
       platform: ComputerPlatform;
       backendIncarnation: string;
       storage: ComputerAccessStorage;
+      remembered?: RememberedGrantSource;
+      mainOwned?: () => boolean;
       request: (request: ComputerAccessRequested, expiresAtMs: number) => void;
-      settled: (requestId: string, threadId: string, allowed: boolean) => void;
+      settled: (
+        requestId: string,
+        threadId: string,
+        allowed: boolean,
+        persistence?: Pick<ComputerAccessAnswer, "persistence" | "persistenceReason">,
+      ) => void;
       changed: (threadId: string) => void;
       timeoutMs?: number;
       forgotten?: (projectId: string, appId: string) => void | Promise<void>;
     },
   ) {}
   async initialize(): Promise<void> {
-    this.remembered = (await this.options.storage.load())
+    const mainOwned = this.options.mainOwned?.() === true;
+    let loaded: ReadonlyArray<RememberedComputerGrant>;
+    try {
+      loaded = mainOwned
+        ? await this.options.remembered!.load()
+        : await this.options.storage.load();
+    } catch (error) {
+      if (mainOwned) return;
+      throw error;
+    }
+    this.remembered = this.normalize(loaded);
+  }
+  private normalize(
+    loaded: ReadonlyArray<RememberedComputerGrant>,
+  ): ReadonlyArray<RememberedComputerGrant> {
+    return loaded
       .filter((grant) => grant.appId && grant.projectId && grant.tier !== "blocked")
       .map((grant) => ({
         ...grant,
@@ -74,6 +99,51 @@ export class ComputerAccessService {
           restrictComputerTier(grant.tier, appTier(grant.appId, this.options.platform)) ===
             "click" && grant.allowTyping,
       }));
+  }
+  refreshRemembered(projectId?: string): Promise<void> {
+    const task = async () => {
+      if (!this.options.mainOwned?.() || !this.options.remembered) return;
+      let loaded: ReadonlyArray<RememberedComputerGrant>;
+      try {
+        loaded = await this.options.remembered.load(projectId);
+      } catch {
+        return;
+      }
+      loaded = this.normalize(loaded);
+      const previous = this.remembered;
+      this.remembered =
+        projectId === undefined
+          ? loaded
+          : [...previous.filter((grant) => grant.projectId !== projectId), ...loaded];
+      for (const [threadId, binding] of this.bindings) {
+        if (projectId !== undefined && projectId !== binding.projectId) continue;
+        for (const grant of previous)
+          if (
+            grant.projectId === binding.projectId &&
+            !this.remembered.some(
+              (next) => next.projectId === grant.projectId && next.appId === grant.appId,
+            )
+          )
+            binding.overrides.set(grant.appId, null);
+        // Main is authoritative after a remembered-policy change, including a replacement
+        // receipt or an approval added by a sibling session.
+        for (const grant of loaded)
+          if (grant.projectId === binding.projectId) binding.overrides.delete(grant.appId);
+        ++binding.version;
+        this.options.changed(threadId);
+      }
+    };
+    const result = this.writes.then(task);
+    this.writes = result.catch(() => undefined);
+    return result;
+  }
+  revokeSessionApproval(threadId: string): void {
+    const binding = this.bindings.get(threadId);
+    if (!binding) return;
+    binding.actionsApproved = false;
+    binding.backgroundApproved = false;
+    ++binding.version;
+    this.options.changed(threadId);
   }
   bind(threadId: string, projectId: string, generation: string): void {
     if (this.bindings.get(threadId)?.generation === generation) return;
@@ -108,6 +178,7 @@ export class ComputerAccessService {
     threadId: string,
     takeover: ComputerTakeoverConsent,
     reason: string,
+    options: { fullAccess?: boolean } = {},
   ): Promise<boolean> {
     const binding = this.bindings.get(threadId);
     if (!binding) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
@@ -125,6 +196,7 @@ export class ComputerAccessService {
       threadId,
       reason: reason.slice(0, 500),
       kind: "foreground-takeover",
+      ...(options.fullAccess ? { fullAccess: true } : {}),
       takeover: {
         appId: takeover.appId,
         ...(takeover.appName ? { appName: takeover.appName.slice(0, 200) } : {}),
@@ -204,10 +276,14 @@ export class ComputerAccessService {
     turnId: string,
     apps: ReadonlyArray<ComputerApp>,
     reason: string,
-    kind: "apps" | "session-actions" = "apps",
-    typing = false,
-    background = false,
+    options: {
+      kind?: "apps" | "session-actions";
+      typing?: boolean;
+      background?: boolean;
+      fullAccess?: boolean;
+    } = {},
   ): Promise<ComputerAccessAnswer | null> {
+    const { kind = "apps", typing = false, background = false, fullAccess = false } = options;
     const binding = this.bindings.get(threadId);
     if (!binding) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
     const candidates = apps
@@ -251,6 +327,7 @@ export class ComputerAccessService {
       kind,
       ...(typing ? { typingRequested: true } : {}),
       ...(background && kind === "session-actions" ? { background: true } : {}),
+      ...(fullAccess && background && kind === "session-actions" ? { fullAccess: true } : {}),
       apps: candidates.slice(0, 10).map((app) => ({
         appId: app.appId,
         name: app.name,
@@ -293,6 +370,7 @@ export class ComputerAccessService {
           answer.requestId,
           pending.request.threadId,
           answer.allowForegroundTakeover === true,
+          answer,
         );
         return;
       }
@@ -321,10 +399,12 @@ export class ComputerAccessService {
             tier: app.tier,
             allowTyping: decision.allowTyping,
             ...(decision.receipt ? { receipt: decision.receipt } : {}),
+            ...(answer.persistence ? { persistence: answer.persistence } : {}),
+            ...(answer.persistenceReason ? { persistenceReason: answer.persistenceReason } : {}),
           });
         }
       const rememberChanged = decisions.some((decision) => decision.allow && decision.remember);
-      if (rememberChanged) {
+      if (rememberChanged && !this.options.mainOwned?.()) {
         try {
           await this.options.storage.save(next);
         } catch {
@@ -341,7 +421,8 @@ export class ComputerAccessService {
         binding.version !== approvalVersion
       ) {
         try {
-          if (rememberChanged) await this.options.storage.save(this.remembered);
+          if (rememberChanged && !this.options.mainOwned?.())
+            await this.options.storage.save(this.remembered);
         } finally {
           this.deny(answer.requestId);
         }
@@ -397,6 +478,7 @@ export class ComputerAccessService {
         pending.request.kind === "session-actions"
           ? binding.actionsApproved
           : decisions.some((decision) => decision.allow),
+        answer,
       );
     };
     const result = this.writes.then(task);
@@ -451,14 +533,15 @@ export class ComputerAccessService {
       const next = this.remembered.filter(
         (grant) => grant.projectId !== projectId || grant.appId !== appId,
       );
-      await this.options.forgotten?.(projectId, appId);
+      if (this.options.mainOwned?.()) await this.options.remembered!.forget(projectId, appId);
+      else await this.options.forgotten?.(projectId, appId);
       this.remembered = next;
       for (const [threadId, binding] of this.bindings)
         if (binding.projectId === projectId) {
           ++binding.version;
           this.options.changed(threadId);
         }
-      await this.options.storage.save(next);
+      if (!this.options.mainOwned?.()) await this.options.storage.save(next);
     });
     this.writes = result.catch(() => undefined);
     return result;
