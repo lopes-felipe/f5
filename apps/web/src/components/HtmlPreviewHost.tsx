@@ -28,6 +28,8 @@ export function HtmlPreviewHost() {
       if (requests.has(request.requestId)) return;
       const controller = new AbortController();
       requests.set(request.requestId, controller);
+      // Which leg failed goes back to the agent, so a failure names itself.
+      let failure = "The desktop could not load the preview document.";
       void fetch(`${getServerHttpOrigin()}${request.documentPath}`, {
         credentials: "include",
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
@@ -35,6 +37,7 @@ export function HtmlPreviewHost() {
         .then((response) => readBoundedResponseText(response, HTML_RENDER_MAX_PAGE_BYTES))
         .then((html) => {
           if (disposed || controller.signal.aborted) throw new Error("Preview host closed");
+          failure = "The desktop could not render this HTML preview.";
           return render({
             requestId: request.requestId,
             threadId: request.threadId,
@@ -53,10 +56,7 @@ export function HtmlPreviewHost() {
             void api
               .respond({
                 requestId: request.requestId,
-                result: {
-                  _tag: "Unavailable",
-                  message: "The desktop could not render this HTML preview.",
-                },
+                result: { _tag: "Unavailable", message: failure },
               })
               .catch(() => undefined);
         })
