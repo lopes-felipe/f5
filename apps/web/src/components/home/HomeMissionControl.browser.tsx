@@ -107,7 +107,7 @@ function scratchSuccess() {
 
 async function pickNoProject() {
   await page.getByRole("combobox", { name: "Project" }).click();
-  await page.getByTestId("home-picker-no-project").click();
+  await page.getByTestId("project-picker-no-project").click();
 }
 
 const APPROVAL_THREAD = makeThread(PROJECT_A.id, "thread-approval", {
@@ -337,7 +337,7 @@ describe("HomeMissionControl", () => {
       await search.fill("scr");
       await expect.element(page.getByRole("option")).toHaveTextContent("No project");
       await search.fill("bet");
-      expect(page.getByTestId("home-picker-no-project").all()).toHaveLength(0);
+      expect(page.getByTestId("project-picker-no-project").all()).toHaveLength(0);
       await userEvent.keyboard("{Escape}");
     } finally {
       await view.cleanup();

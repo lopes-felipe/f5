@@ -295,6 +295,30 @@ export function formatKeybindingCommandLabel(
       return "Previous recent thread";
     case "model.switchRecent":
       return "Switch recent model";
+    case "model.favorite.next":
+      return "Next favorite model";
+    case "model.favorite.previous":
+      return "Previous favorite model";
+    case "model.favorite.1":
+      return "Use favorite model 1";
+    case "model.favorite.2":
+      return "Use favorite model 2";
+    case "model.favorite.3":
+      return "Use favorite model 3";
+    case "model.favorite.4":
+      return "Use favorite model 4";
+    case "model.favorite.5":
+      return "Use favorite model 5";
+    case "model.favorite.6":
+      return "Use favorite model 6";
+    case "model.favorite.7":
+      return "Use favorite model 7";
+    case "model.favorite.8":
+      return "Use favorite model 8";
+    case "model.favorite.9":
+      return "Use favorite model 9";
+    case "model.favorite.saveCurrent":
+      return "Save current model and effort as favorite";
     case "prHub.open":
       return "Open Pull Requests";
     case "palette.files":

@@ -22,6 +22,7 @@ import {
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { resolveDefaultProviderModelSelection } from "../providerInstances";
+import { MODEL_FAVORITE_SAVE_EVENT } from "../favoritePresets";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -43,6 +44,7 @@ import {
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
+  StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import {
@@ -848,6 +850,21 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "chat.find",
       run: async () => {
         window.dispatchEvent(new CustomEvent("f5:find-thread", { detail: activeThread.id }));
+      },
+    });
+  const composerThreadId = activeThread?.id ?? (activeDraftThread ? routeThreadId : null);
+  if (composerThreadId)
+    actionItems.push({
+      kind: "action",
+      value: "action:save-favorite-model",
+      searchTerms: ["favorite", "model", "effort", "preset", "star", "save"],
+      title: "Save current model and effort as favorite",
+      icon: <StarIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "model.favorite.saveCurrent",
+      run: async () => {
+        window.dispatchEvent(
+          new CustomEvent(MODEL_FAVORITE_SAVE_EVENT, { detail: composerThreadId }),
+        );
       },
     });
   // Only an idle process: stopping keeps the conversation, and the next message
