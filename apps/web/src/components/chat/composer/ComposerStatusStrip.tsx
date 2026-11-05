@@ -1,3 +1,4 @@
+import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import type { LucideIcon } from "lucide-react";
 import {
   createContext,
@@ -87,14 +88,33 @@ export function StatusChip(props: {
   readonly initialFocus?: ComponentProps<typeof PopoverPopup>["initialFocus"];
 }) {
   const Icon = props.icon;
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = props.open ?? uncontrolledOpen;
+  // A click on the chip or any use of the popup pins it: hover stops closing it
+  // until it is dismissed. Base UI alone closes a hover-opened popover on a click
+  // after its 500ms "patient click" window, and on leaving while its editor has focus.
+  const [pinned, setPinned] = useState(false);
+  const pin = () => {
+    if (open) setPinned(true);
+  };
+  const handleOpenChange = (
+    nextOpen: boolean,
+    details: PopoverPrimitive.Root.ChangeEventDetails,
+  ) => {
+    if (details.reason === "trigger-press" && !nextOpen && open && !pinned) {
+      details.cancel();
+      setPinned(true);
+      return;
+    }
+    setPinned(nextOpen && details.reason === "trigger-press");
+    setUncontrolledOpen(nextOpen);
+    props.onOpenChange?.(nextOpen);
+  };
   return (
-    <Popover
-      {...(props.open !== undefined ? { open: props.open } : {})}
-      {...(props.onOpenChange ? { onOpenChange: props.onOpenChange } : {})}
-    >
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger
-        // Hover previews the popover without moving focus; a click still pins it open.
-        openOnHover
+        // Hover previews the popover without moving focus; a click pins it open.
+        openOnHover={!(open && pinned)}
         delay={STATUS_CHIP_HOVER_DELAY_MS}
         closeDelay={STATUS_CHIP_HOVER_DELAY_MS}
         data-status-chip={props.chipId ?? ""}
@@ -112,6 +132,8 @@ export function StatusChip(props: {
         align="start"
         sideOffset={6}
         aria-label={props.popupLabel}
+        onPointerDownCapture={pin}
+        onFocusCapture={pin}
         {...(props.initialFocus !== undefined ? { initialFocus: props.initialFocus } : {})}
         // No --available-height in the min(): Base UI sets it to max-content while measuring, which voids the clamp and detaches tall popovers from the chip.
         className="w-[min(28rem,calc(100vw-2rem))] [&>[data-slot=popover-viewport]]:max-h-[min(50dvh,26rem)] [&>[data-slot=popover-viewport]]:p-0"

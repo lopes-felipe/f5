@@ -283,34 +283,79 @@ describe("ComposerStatusStrip", () => {
     }
   });
 
-  it("opens a chip's popover on hover without taking focus", async () => {
-    const screen = await render(
-      <>
-        <textarea aria-label="Composer" />
-        <Harness
-          chips={
-            <QueueStatusChip summary={{ count: 1, preview: null, paused: false, warning: false }}>
-              <div id="next-turn-queue-panel" tabIndex={-1}>
-                Queued turns panel
-              </div>
-            </QueueStatusChip>
-          }
-        />
-      </>,
-    );
-    try {
-      const composer = page.getByRole("textbox", { name: "Composer" });
-      await composer.click();
-      const chip = page.getByRole("button", { name: "1 queued" });
-      expect(chip.element().hasAttribute("title")).toBe(false);
-      await userEvent.hover(chip);
-      await expect.element(page.getByText("Queued turns panel")).toBeVisible();
-      expect(document.activeElement).toBe(composer.element());
-      await userEvent.unhover(chip);
-      await expect.element(page.getByText("Queued turns panel")).not.toBeInTheDocument();
-    } finally {
-      await screen.unmount();
-    }
+  describe("hover", () => {
+    // Longer than the 150ms close grace and Base UI's 500ms patient-click window.
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 600));
+    const renderQueueChip = () =>
+      render(
+        <>
+          <textarea aria-label="Composer" />
+          <Harness
+            chips={
+              <QueueStatusChip summary={{ count: 1, preview: null, paused: false, warning: false }}>
+                <div id="next-turn-queue-panel" tabIndex={-1}>
+                  Queued turns panel
+                  <textarea aria-label="Edit queued turn" />
+                </div>
+              </QueueStatusChip>
+            }
+          />
+        </>,
+      );
+    const panel = () => page.getByText("Queued turns panel");
+    const chip = () => page.getByRole("button", { name: "1 queued" });
+
+    it("opens a chip's popover on hover without taking focus", async () => {
+      const screen = await renderQueueChip();
+      try {
+        const composer = page.getByRole("textbox", { name: "Composer" });
+        await composer.click();
+        expect(chip().element().hasAttribute("title")).toBe(false);
+        await userEvent.hover(chip());
+        await expect.element(panel()).toBeVisible();
+        expect(document.activeElement).toBe(composer.element());
+        // The close grace lets the pointer cross into the popup.
+        await userEvent.hover(panel());
+        await settle();
+        await expect.element(panel()).toBeVisible();
+        await userEvent.unhover(panel());
+        await expect.element(panel()).not.toBeInTheDocument();
+      } finally {
+        await screen.unmount();
+      }
+    });
+
+    it("pins a hover-opened popover on a later click", async () => {
+      const screen = await renderQueueChip();
+      try {
+        await userEvent.hover(chip());
+        await expect.element(panel()).toBeVisible();
+        await settle();
+        await chip().click();
+        await userEvent.unhover(chip());
+        await settle();
+        await expect.element(panel()).toBeVisible();
+        await chip().click();
+        await expect.element(panel()).not.toBeInTheDocument();
+      } finally {
+        await screen.unmount();
+      }
+    });
+
+    it("keeps a hover-opened popover open while its editor has focus", async () => {
+      const screen = await renderQueueChip();
+      try {
+        await userEvent.hover(chip());
+        await page.getByRole("textbox", { name: "Edit queued turn" }).click();
+        await userEvent.unhover(panel());
+        await settle();
+        await expect.element(panel()).toBeVisible();
+        await userEvent.keyboard("{Escape}");
+        await expect.element(panel()).not.toBeInTheDocument();
+      } finally {
+        await screen.unmount();
+      }
+    });
   });
 
   describe("background work", () => {
