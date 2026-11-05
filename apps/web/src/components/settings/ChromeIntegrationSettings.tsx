@@ -3,6 +3,7 @@ import type { AlwaysAllowedIntegration, ChromeReadiness } from "@t3tools/contrac
 import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { desktopIpcErrorMessage } from "../../lib/desktopIpcError";
 import { readNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -123,12 +124,7 @@ function AlwaysAllowRow({ provider }: { provider: keyof typeof INTEGRATIONS }) {
       await bridge.revokeIntegrationConsent?.(integration);
       setAllowed(false);
     } catch (cause) {
-      // Electron prefixes errors thrown in main with the IPC channel.
-      setError(
-        cause instanceof Error
-          ? cause.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "")
-          : "F5 couldn't revoke Always allow.",
-      );
+      setError(desktopIpcErrorMessage(cause, "F5 couldn't revoke Always allow."));
     } finally {
       setBusy(false);
     }

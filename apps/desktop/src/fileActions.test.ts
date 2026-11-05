@@ -7,7 +7,8 @@ import {
   assertFileActionCaller,
   registerDesktopFileActions,
   vscodeFileUrl,
-  finderRevealArgs,
+  macRevealFailureMessage,
+  macRevealLaunch,
 } from "./fileActions";
 
 const roots: string[] = [];
@@ -68,12 +69,32 @@ it("reveals the canonical file using one native operation", async () => {
   expect(f.actions.revealFile).toHaveBeenCalledWith(f.canonical);
 });
 
-it("orders Finder reveal and activation in one script with a separate path argument", () => {
-  const path = '/tmp/file "quoted".json';
-  const args = finderRevealArgs(path);
-  expect(args.at(-1)).toBe(path);
-  expect(args[1]).not.toContain(path);
-  expect(args[1]!.indexOf("reveal POSIX file")).toBeLessThan(args[1]!.indexOf("activate"));
+it("reveals on macOS through LaunchServices with the path as its own argument", () => {
+  const path = '/tmp/file "quoted"; $(x).json';
+  expect(macRevealLaunch(path)).toEqual({ file: "/usr/bin/open", args: ["-R", path] });
+  expect(() => macRevealLaunch("-a Terminal")).toThrow("absolute path");
+  expect(() => macRevealLaunch("relative.json")).toThrow("absolute path");
+});
+
+it("reports open's first stderr line instead of the command dump", () => {
+  const dump = "Command failed: /usr/bin/open -R /x";
+  expect(
+    macRevealFailureMessage(
+      Object.assign(new Error(dump), {
+        code: 1,
+        stderr: "\nThe file /x does not exist.\nmore detail\n",
+      }),
+    ),
+  ).toBe("The file /x does not exist.");
+  expect(
+    macRevealFailureMessage(
+      Object.assign(new Error(dump), { killed: true, signal: "SIGTERM", stderr: "" }),
+    ),
+  ).toBe("Finder did not respond within 5 seconds.");
+  expect(macRevealFailureMessage(Object.assign(new Error(dump), { code: 1, stderr: "" }))).toBe(
+    "open -R exited with code 1.",
+  );
+  expect(macRevealFailureMessage(new Error("spawn EACCES"))).toBe("spawn EACCES");
 });
 
 it.each(["desktop:reveal-file", "desktop:open-in-vscode"])(
@@ -81,7 +102,9 @@ it.each(["desktop:reveal-file", "desktop:open-in-vscode"])(
   async (channel) => {
     const f = await fixture();
     if (channel === "desktop:reveal-file")
-      await expect(f.invoke(channel, f.file + ".missing")).rejects.toThrow();
+      await expect(f.invoke(channel, f.file + ".missing")).rejects.toThrow(
+        `File not found: ${f.file}.missing`,
+      );
     await expect(f.invoke(channel, "relative.json")).rejects.toThrow("absolute path");
     await expect(f.invoke(channel, f.file, false)).rejects.toThrow("user gesture");
     expect(f.actions.openExternal).not.toHaveBeenCalled();

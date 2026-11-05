@@ -38,7 +38,9 @@ import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
-  finderRevealArgs,
+  MAC_REVEAL_TIMEOUT_MS,
+  macRevealFailureMessage,
+  macRevealLaunch,
   registerDesktopFileActions,
 } from "./fileActions";
 import { profilePreviewPartition } from "./profileRuntime";
@@ -3554,11 +3556,15 @@ function registerIpcHandlers(): void {
       process.platform !== "darwin"
         ? Promise.resolve(shell.showItemInFolder(filePath))
         : new Promise<void>((resolve, reject) => {
+            const launch = macRevealLaunch(filePath);
             ChildProcess.execFile(
-              "/usr/bin/osascript",
-              finderRevealArgs(filePath),
-              { timeout: 5000 },
-              (error) => (error ? reject(error) : resolve()),
+              launch.file,
+              launch.args,
+              { timeout: MAC_REVEAL_TIMEOUT_MS },
+              (error, _stdout, stderr) =>
+                error
+                  ? reject(new Error(macRevealFailureMessage(Object.assign(error, { stderr }))))
+                  : resolve(),
             );
           }),
   });
