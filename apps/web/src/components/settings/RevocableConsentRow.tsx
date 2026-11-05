@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { desktopIpcErrorMessage } from "../../lib/desktopIpcError";
 import { Button } from "../ui/button";
 import { SettingsRow } from "./SettingsCard";
 
-export function consentError(cause: unknown, fallback: string): string {
-  return cause instanceof Error
-    ? cause.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "")
-    : fallback;
-}
+export const consentError = desktopIpcErrorMessage;
 
 /** Native dialogs may change policy while Settings is open. Ignore stale async loads. */
 export function useConsentList<T>(load: () => Promise<ReadonlyArray<T>>) {

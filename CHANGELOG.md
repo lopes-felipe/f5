@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-05
+
 ### Added
 
 - Cooperative computer use waits for ordinary user contention without a Resume dialog, including foreground control in Full access threads. A wait tool, fresh-observation checks, and a foreground countdown support continuation after you go idle.
@@ -13,6 +15,12 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
 - A profile can always allow Claude in Chrome taking the browser connection back from your terminal Claude, revocable in Settings → Browser & Computer. Replacing another F5 profile's setup always asks.
 - Favorite models can pin an effort, so the same model can be a favorite at several efforts. `Ctrl+1` to `Ctrl+9` in the desktop app switch to favorite N, `Mod+Alt+Right` and `Mod+Alt+Left` cycle through favorites, and `Mod+Alt+Up` and `Mod+Alt+Down` step the effort. "Save current model and effort as favorite" is in the command palette, and `Mod+1` to `Mod+9` pick a row in the open model picker.
+- A redesigned sidebar: a nav strip of icon buttons with badges, a project shelf, folded idle threads, workflow rows (finished workflows show their PR state), a Recent view, and peek cards with quick actions.
+- Open transcript on agent rows opens a readable, live-updating transcript of a subagent's work in the thread's right panel. Claude transcripts stay readable after the session ends and after a restart.
+- Claude in Chrome works in isolated F5 profiles.
+- Codex 0.166.0 capabilities: cancellable `/aside` questions with saved answer cards, memory and dollar-usage inspection, account workspace and Vertex AI display, and local feedback bundles.
+- Unsent new thread drafts and the New workflow dialog can change their project.
+- Project actions are set up in Settings → Project, and a project with no actions no longer shows an Add action button in the chat header.
 
 ### Changed
 
@@ -21,6 +29,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Computer access requests appear in a non-modal panel that leaves F5 interactive and keeps composer focus.
 - Closed computer sessions release their permission receipts without requiring a backend disconnect.
 - The default Codex switch can select an older version than your current PATH installation and bypass PATH wrappers. To retain a newer CLI or wrapper, configure its absolute Binary path before starting a session. Settings now calls out this migration next to the Binary path field.
+- The "Open in browser?" request is a pill at the top of the window instead of a card covering the send button, and full-access threads open links without asking.
+- Buttons, inputs and other controls use a quieter tonal style, and command cards use quiet inline actions instead of boxed buttons.
+- The computer-use banner says an agent is using Chrome only while a Chrome call runs, and hides another profile's idle Chrome session.
+- Removing or resetting a provider asks for confirmation first.
+- The in-app update notes show the full release notes, scroll, and link to the GitHub release.
 
 - F5 bundles the audited Codex 0.166.0 runtime. Existing empty or default `codex` Binary paths now use the bundled copy. Set an explicit Binary path to keep a PATH or Homebrew install; isolated profiles still accept custom Codex at or above 0.144.3. Bundled Codex updates with F5. Settings shows bundled/custom runtime sources and a Use bundled reset; isolated Claude profiles keep their bundled-runtime restriction.
 
@@ -31,6 +44,23 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Temporary keychain failures no longer replace the consent signing key or erase saved approvals during unrelated writes.
 - Windows CLI packaging preserves npm aliases when pinning native dependency overrides.
+- Codex questions answered asynchronously show their answers in the Q&A card instead of a raw JSON message.
+- Transcripts open for Codex subagents reported only through subagent activity, instead of "session not running".
+- Codex filesystem permission requests appear as file read or file change approvals.
+- Cancelled ACP tool calls end as failed instead of appearing completed.
+- Deleting a thread no longer offers to remove a worktree another thread still uses.
+- Pasted Finder or Explorer folder paths resolve to the folder, and settings fields save only after an edit.
+- The model picker fits short windows, handles IME input, and keeps the chosen effort across instance fallback.
+- Expanded SVG diagrams fit the image viewer, and TypeScript attachments labeled as video preview as text.
+- Horizontal scrolling in diff and file viewers no longer switches threads when the viewer remounts.
+- Login-shell environment probes that ignore SIGTERM are killed after their timeout instead of blocking startup.
+- Antigravity profile preparation no longer fails on stale or missing skill links.
+- Git auto-refresh and PR hub polling interval changes save after editing stops.
+
+### Releases
+
+- The release publisher loads its certification checks under plain Node again, with a test that catches imports Node cannot resolve.
+- Main CI groups macOS suites into 6 jobs instead of 14, so fewer jobs wait for scarce macOS runners.
 
 ## [0.1.3] - 2026-11-03
 

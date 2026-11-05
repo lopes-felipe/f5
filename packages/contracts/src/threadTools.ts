@@ -3,6 +3,17 @@ import { ThreadId } from "./baseSchemas";
 
 export const HTML_RENDER_MAX_SOURCE_BYTES = 512 * 1024;
 export const HTML_RENDER_MAX_PAGE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * html_preview deadlines, run in sequence after the server pushes a request: the
+ * renderer reads the document from the server, then the desktop renders it. The
+ * server waits for both plus a margin, so a stalled render always reports its
+ * own stage. The total stays under the 35 second thread-tool timeout.
+ */
+export const HTML_PREVIEW_FETCH_TIMEOUT_MS = 5_000;
+export const HTML_PREVIEW_RENDER_DEADLINE_MS = 12_000;
+export const HTML_PREVIEW_BROKER_DEADLINE_MS =
+  HTML_PREVIEW_FETCH_TIMEOUT_MS + HTML_PREVIEW_RENDER_DEADLINE_MS + 3_000;
 const HtmlSource = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(HTML_RENDER_MAX_SOURCE_BYTES),
