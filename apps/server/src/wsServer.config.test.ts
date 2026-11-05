@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { type OpenShape } from "./open";
+import { OpenError, type OpenShape } from "./open";
 import { ProviderValidationBusyError } from "./provider/Errors.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import { type HarnessValidationShape } from "./provider/Services/HarnessValidation";
@@ -890,6 +890,46 @@ describe("WebSocket Server", () => {
     expect(response.error).toBeUndefined();
     expect(openCalls).toEqual([{ cwd: "/my/workspace", editor: "cursor" }]);
   });
+
+  it.each([
+    {
+      name: "its message",
+      error: new OpenError({
+        message: "Editor launcher exited with code 1: /home/user/.local/bin/cursor",
+      }),
+      expected: "Editor launcher exited with code 1: /home/user/.local/bin/cursor",
+    },
+    {
+      name: "its message and its cause's message",
+      error: new OpenError({
+        message: "failed to spawn detached process",
+        cause: new Error("Command not found: cursor"),
+      }),
+      expected: "failed to spawn detached process: Command not found: cursor",
+    },
+  ])(
+    "reports a failed editor launch as $name, without a stack trace",
+    async ({ error, expected }) => {
+      const openService: OpenShape = {
+        openBrowser: () => Effect.void,
+        openInEditor: () => Effect.fail(error),
+        revealInFileManager: () => Effect.void,
+      };
+
+      h.server = await createTestServer({ cwd: "/my/workspace", open: openService });
+      const addr = h.server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+
+      const response = await sendRequest(ws, WS_METHODS.shellOpenInEditor, {
+        cwd: "/my/workspace",
+        editor: "cursor",
+      });
+      expect(response.error?.message).toBe(expected);
+    },
+  );
 
   it("routes shell.revealInFileManager through the injected open service", async () => {
     const workspaceRoot = makeTempDir("t3code-reveal-workspace-");

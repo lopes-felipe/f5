@@ -1,5 +1,6 @@
 import { readNativeApi } from "../nativeApi";
 import { toastManager } from "../components/ui/toast";
+import { desktopIpcErrorMessage } from "./desktopIpcError";
 import { resolveFilePreviewTarget } from "./filePreviewTarget";
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
 
@@ -29,7 +30,7 @@ export async function revealFile(
     toastManager.add({
       type: "error",
       title: "Unable to reveal file",
-      description: `${filePath}: ${error instanceof Error ? error.message : "An error occurred."}`,
+      description: `${filePath}: ${desktopIpcErrorMessage(error, "An error occurred.")}`,
     });
   }
 }

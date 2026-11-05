@@ -38,7 +38,9 @@ import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
-  finderRevealArgs,
+  MAC_REVEAL_TIMEOUT_MS,
+  macRevealFailureMessage,
+  macRevealLaunch,
   registerDesktopFileActions,
 } from "./fileActions";
 import { profilePreviewPartition } from "./profileRuntime";
@@ -3599,11 +3601,15 @@ function registerIpcHandlers(): void {
       process.platform !== "darwin"
         ? Promise.resolve(shell.showItemInFolder(filePath))
         : new Promise<void>((resolve, reject) => {
+            const launch = macRevealLaunch(filePath);
             ChildProcess.execFile(
-              "/usr/bin/osascript",
-              finderRevealArgs(filePath),
-              { timeout: 5000 },
-              (error) => (error ? reject(error) : resolve()),
+              launch.file,
+              launch.args,
+              { timeout: MAC_REVEAL_TIMEOUT_MS },
+              (error, _stdout, stderr) =>
+                error
+                  ? reject(new Error(macRevealFailureMessage(Object.assign(error, { stderr }))))
+                  : resolve(),
             );
           }),
   });
@@ -3611,19 +3617,23 @@ function registerIpcHandlers(): void {
     authorize: (event) => authorizeAppMainFrame(event, "Browser open answers"),
     prompt: browserOpenPrompt,
   });
-  registerHtmlPreviewIpc(ipcMain, (event) => {
-    if (
-      !appRendererWebContentsIds.has(event.sender.id) ||
-      event.senderFrame !== event.sender.mainFrame
-    )
-      throw new Error("HTML previews require an F5 app main frame.");
-    const expectedOrigin = isDevelopment
-      ? new URL(mainRendererUrl()).origin
-      : `${DESKTOP_SCHEME}://app`;
-    if (event.senderFrame.origin !== expectedOrigin)
-      throw new Error("Untrusted HTML preview origin.");
-    runtimeForRenderer(event.sender.id);
-  });
+  registerHtmlPreviewIpc(
+    ipcMain,
+    (event) => {
+      if (
+        !appRendererWebContentsIds.has(event.sender.id) ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error("HTML previews require an F5 app main frame.");
+      const expectedOrigin = isDevelopment
+        ? new URL(mainRendererUrl()).origin
+        : `${DESKTOP_SCHEME}://app`;
+      if (event.senderFrame.origin !== expectedOrigin)
+        throw new Error("Untrusted HTML preview origin.");
+      runtimeForRenderer(event.sender.id);
+    },
+    writeDesktopLogHeader,
+  );
   // Startup diagnostics: only the first marker per main window is logged.
   ipcMain.on("desktop:startup-marker", (event, marker: unknown) => {
     const createdAt = windowCreatedAtByWebContentsId.get(event.sender.id);
