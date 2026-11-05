@@ -932,16 +932,34 @@ try {
       // Windows children can retain inherited output handles even after
       // taskkill terminates the launcher. Release our pipe ends now; waiting
       // for an exit notification first can itself stall behind those handles.
-      // The close event below still requires the launcher process to exit.
+      // Playwright's close event can remain blocked on its inspector transport
+      // even after both OS processes exit. Verify those PIDs below instead.
       electronProcess.stdout?.destroy();
       electronProcess.stderr?.destroy();
     } else electronProcess.kill();
-    await Promise.race([
-      closed,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("F5 did not exit after its shutdown")), 10_000),
-      ),
-    ]);
+    if (process.platform === "win32" && electronProcess.pid) {
+      const stillRunning = (pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          if (error.code === "ESRCH") return false;
+          throw error;
+        }
+      };
+      const exitDeadline = Date.now() + 10_000;
+      while (stillRunning(mainProcessId) || stillRunning(electronProcess.pid)) {
+        if (Date.now() > exitDeadline) throw new Error("F5 did not exit after its shutdown");
+        await sleep(50);
+      }
+    } else {
+      await Promise.race([
+        closed,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("F5 did not exit after its shutdown")), 10_000),
+        ),
+      ]);
+    }
   }
   // Reopen the same isolated profile after a real app quit with a live PTY.
   application = await _electron.launch({
