@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { Effect, Fiber } from "effect";
-import type {
-  HtmlPreviewRequest,
-  HtmlPreviewHostRequest,
-  HtmlPreviewResponse,
-  HtmlPreviewResult,
-  ThreadId,
+import {
+  HTML_PREVIEW_BROKER_DEADLINE_MS,
+  type HtmlPreviewRequest,
+  type HtmlPreviewHostRequest,
+  type HtmlPreviewResponse,
+  type HtmlPreviewResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 
 type Host = { readonly push: (request: HtmlPreviewHostRequest) => Effect.Effect<void> };
@@ -44,9 +45,16 @@ export function makeHtmlPreviewBroker() {
         const [hostId, owner] = host;
         const requestId = randomUUID();
         return Effect.callback<HtmlPreviewResult>((resume) => {
+          // Covers the document fetch and the desktop's own deadline, so a stalled
+          // render reports its stage; reaching this means the push or reply leg went silent.
           const timer = setTimeout(
-            () => finish(unavailable("HTML preview timed out after 15 seconds.")),
-            15_000,
+            () =>
+              finish(
+                unavailable(
+                  `HTML preview got no answer from the desktop within ${HTML_PREVIEW_BROKER_DEADLINE_MS / 1000} seconds.`,
+                ),
+              ),
+            HTML_PREVIEW_BROKER_DEADLINE_MS,
           );
           const finish = (result: HtmlPreviewResult) => {
             if (!pending.delete(requestId)) return;

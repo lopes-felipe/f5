@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
 import {
+  HTML_PREVIEW_RENDER_DEADLINE_MS,
   HTML_RENDER_MAX_PAGE_BYTES,
   HtmlPreviewRequest,
   type HtmlPreviewResult,
@@ -9,9 +10,51 @@ import { HTML_RENDER_MEASURE_SOURCE, htmlRenderDocument } from "@t3tools/shared/
 import { Schema } from "effect";
 
 export const HTML_PREVIEW_CHANNEL = "desktop:html-preview";
+/** Color-scheme emulation is best effort; the page still gets the theme's CSS variables. */
+const EMULATION_TIMEOUT_MS = 1_000;
 const unavailable = (message: string): HtmlPreviewResult => ({ _tag: "Unavailable", message });
 
-export function createHtmlPreviewRenderer() {
+/**
+ * Error text for the desktop log: one line, and without data: URLs, since
+ * Electron's load errors quote the URL and so the start of the agent's page.
+ */
+export const logSafeErrorText = (error: unknown): string =>
+  (error instanceof Error ? error.message : "unknown")
+    .replace(/data:\S*/g, "data:<omitted>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+
+const TIMED_OUT = Symbol("timed out");
+/** Settles with the promise, or with `TIMED_OUT` after `ms`; a late rejection is swallowed. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// Both page-side waits fall back to a timer: font loading can stall, and a hidden
+// offscreen widget may never receive the BeginFrames that drive rAF.
+export const MEASURE_SCRIPT = `Promise.race([document.fonts.ready,new Promise(r=>setTimeout(r,2000))]).then(()=>${HTML_RENDER_MEASURE_SOURCE})`;
+export const SETTLE_SCRIPT =
+  "new Promise(resolve=>{const t=setTimeout(resolve,500);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(t);resolve()}))})";
+
+type Stage =
+  | "creating window"
+  | "clearing storage"
+  | "starting renderer"
+  | "emulating color scheme"
+  | "loading page"
+  | "measuring"
+  | "settling frames"
+  | "capturing"
+  | "encoding";
+
+export function createHtmlPreviewRenderer(log?: (message: string) => void) {
   const busy = new Set<number>();
   const partitionPrefix = `f5-html-${randomUUID()}`;
   return async (value: unknown): Promise<HtmlPreviewResult> => {
@@ -24,6 +67,10 @@ export function createHtmlPreviewRenderer() {
     let window: BrowserWindow | undefined;
     let debuggerAttached = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stage: Stage = "creating window";
+    const startedAt = Date.now();
+    const report = (outcome: string) =>
+      log?.(`html preview ${outcome} stage="${stage}" ms=${Date.now() - startedAt}`);
     try {
       window = new BrowserWindow({
         show: false,
@@ -66,37 +113,61 @@ export function createHtmlPreviewRenderer() {
             },
           },
         );
+        stage = "clearing storage";
         await owner.webContents.session.clearStorageData();
         if (owner.isDestroyed()) return unavailable("HTML preview was cancelled.");
-        // Best effort: without emulation the page still gets the theme's CSS variables.
-        try {
-          owner.webContents.debugger.attach("1.3");
-          debuggerAttached = true;
-          await owner.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
-            features: [{ name: "prefers-color-scheme", value: input.appearance }],
-          });
-        } catch {
-          /* prefers-color-scheme follows the system instead. */
-        }
+        // A new window has no renderer until it navigates, and Blink answers
+        // setEmulatedMedia, so the command would wait for a navigation that only
+        // starts after it settles. Load a blank page first so a renderer exists.
+        stage = "starting renderer";
+        await owner.loadURL("about:blank");
+        // Best effort, and skipped (with a log line) when it fails or never answers;
+        // prefers-color-scheme then follows the system.
+        let emulationSkipped = false;
+        const emulate = async () => {
+          if (emulationSkipped) return;
+          stage = "emulating color scheme";
+          try {
+            if (!debuggerAttached) {
+              owner.webContents.debugger.attach("1.3");
+              debuggerAttached = true;
+            }
+            const answer = await withTimeout(
+              owner.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+                features: [{ name: "prefers-color-scheme", value: input.appearance }],
+              }),
+              EMULATION_TIMEOUT_MS,
+            );
+            if (answer === TIMED_OUT) throw new Error("no answer");
+          } catch (error) {
+            emulationSkipped = true;
+            report(`emulation skipped error="${logSafeErrorText(error)}"`);
+          }
+        };
+        await emulate();
+        stage = "loading page";
         await owner.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-        const height: unknown = await owner.webContents.executeJavaScript(
-          `document.fonts.ready.then(()=>${HTML_RENDER_MEASURE_SOURCE})`,
-        );
+        // Again on the live document, in case the emulation did not carry over
+        // the navigation; the page's own load-time media checks saw the first one.
+        await emulate();
+        stage = "measuring";
+        const height: unknown = await owner.webContents.executeJavaScript(MEASURE_SCRIPT);
         const contentHeight =
           typeof height === "number" && Number.isFinite(height)
             ? Math.max(1, Math.min(100_000, Math.ceil(height)))
             : 800;
         const capturedHeight = Math.min(2000, contentHeight);
         owner.setContentSize(input.width, capturedHeight);
-        await owner.webContents.executeJavaScript(
-          "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))",
-        );
+        stage = "settling frames";
+        await owner.webContents.executeJavaScript(SETTLE_SCRIPT);
+        stage = "capturing";
         const image = await owner.webContents.capturePage({
           x: 0,
           y: 0,
           width: input.width,
           height: capturedHeight,
         });
+        stage = "encoding";
         const png = image.toPNG();
         if (png.byteLength > 8 * 1024 * 1024)
           return unavailable("The preview screenshot exceeds 8 MiB.");
@@ -112,14 +183,19 @@ export function createHtmlPreviewRenderer() {
       return await Promise.race([
         render(),
         new Promise<HtmlPreviewResult>((resolve) => {
-          timer = setTimeout(
-            () => resolve(unavailable("HTML preview timed out after 15 seconds.")),
-            15_000,
-          );
+          timer = setTimeout(() => {
+            report("timed out");
+            resolve(
+              unavailable(
+                `HTML preview timed out while ${stage} after ${HTML_PREVIEW_RENDER_DEADLINE_MS / 1000} seconds.`,
+              ),
+            );
+          }, HTML_PREVIEW_RENDER_DEADLINE_MS);
         }),
       ]);
-    } catch {
-      return unavailable("The desktop could not render this HTML preview.");
+    } catch (error) {
+      report(`failed error="${logSafeErrorText(error)}"`);
+      return unavailable(`The desktop could not render this HTML preview (${stage}).`);
     } finally {
       if (timer) clearTimeout(timer);
       if (debuggerAttached && window && !window.isDestroyed()) {
@@ -138,8 +214,9 @@ export function createHtmlPreviewRenderer() {
 export function registerHtmlPreviewIpc(
   ipc: IpcMain,
   authorize: (event: IpcMainInvokeEvent) => void,
+  log?: (message: string) => void,
 ): void {
-  const render = createHtmlPreviewRenderer();
+  const render = createHtmlPreviewRenderer(log);
   ipc.removeHandler(HTML_PREVIEW_CHANNEL);
   ipc.handle(HTML_PREVIEW_CHANNEL, (event, value: unknown) => {
     authorize(event);
