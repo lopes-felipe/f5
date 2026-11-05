@@ -70,3 +70,29 @@ it("renders each preview with the reader's theme for the appearance the agent as
   expect(themes!.appearance).toBe("dark");
   await view.unmount();
 });
+
+it("reports a document fetch failure separately from a render failure", async () => {
+  const htmlPreview = vi.fn();
+  window.desktopBridge = { htmlPreview } as never;
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+  host.listener = undefined;
+  host.respond.mockClear();
+  const view = await render(<HtmlPreviewHost />);
+  await expect.poll(() => host.listener).toBeDefined();
+  host.listener!({
+    requestId: "preview-2",
+    threadId: ThreadId.makeUnsafe("thread"),
+    width: 880,
+    appearance: "dark",
+    documentPath: "/api/html-renders/preview/00000000-0000-0000-0000-000000000000",
+  });
+  await expect.poll(() => host.respond.mock.calls.length).toBe(1);
+  expect(host.respond.mock.calls[0]).toEqual([
+    {
+      requestId: "preview-2",
+      result: { _tag: "Unavailable", message: "The desktop could not load the preview document." },
+    },
+  ]);
+  expect(htmlPreview).not.toHaveBeenCalled();
+  await view.unmount();
+});

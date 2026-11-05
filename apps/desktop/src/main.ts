@@ -3566,19 +3566,23 @@ function registerIpcHandlers(): void {
     authorize: (event) => authorizeAppMainFrame(event, "Browser open answers"),
     prompt: browserOpenPrompt,
   });
-  registerHtmlPreviewIpc(ipcMain, (event) => {
-    if (
-      !appRendererWebContentsIds.has(event.sender.id) ||
-      event.senderFrame !== event.sender.mainFrame
-    )
-      throw new Error("HTML previews require an F5 app main frame.");
-    const expectedOrigin = isDevelopment
-      ? new URL(mainRendererUrl()).origin
-      : `${DESKTOP_SCHEME}://app`;
-    if (event.senderFrame.origin !== expectedOrigin)
-      throw new Error("Untrusted HTML preview origin.");
-    runtimeForRenderer(event.sender.id);
-  });
+  registerHtmlPreviewIpc(
+    ipcMain,
+    (event) => {
+      if (
+        !appRendererWebContentsIds.has(event.sender.id) ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error("HTML previews require an F5 app main frame.");
+      const expectedOrigin = isDevelopment
+        ? new URL(mainRendererUrl()).origin
+        : `${DESKTOP_SCHEME}://app`;
+      if (event.senderFrame.origin !== expectedOrigin)
+        throw new Error("Untrusted HTML preview origin.");
+      runtimeForRenderer(event.sender.id);
+    },
+    writeDesktopLogHeader,
+  );
   // Startup diagnostics: only the first marker per main window is logged.
   ipcMain.on("desktop:startup-marker", (event, marker: unknown) => {
     const createdAt = windowCreatedAtByWebContentsId.get(event.sender.id);
