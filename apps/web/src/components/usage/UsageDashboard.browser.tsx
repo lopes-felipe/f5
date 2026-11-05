@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  type CodexAccountRateLimit,
   ProjectId,
   ProviderInstanceId,
   type ProviderKind,
@@ -1340,7 +1341,12 @@ describe("limits", () => {
       <UsageDashboard search={{ tab: "limits" }} onSearchChange={() => {}} />,
     );
     try {
-      await expect.element(page.getByText(/in 5d 10h/)).toBeVisible();
+      await expect.element(page.getByText(/^in 5d 10h/)).toBeVisible();
+      // The 5-hour reset has passed, which leaves one live window and nothing to compare.
+      await expect.element(page.getByTestId("tightest-limit")).not.toBeInTheDocument();
+      // 40% used with about 23% of the week elapsed; the expired 5-hour window has no tick.
+      await expect.element(page.getByText("17 pts ahead of pace")).toBeVisible();
+      expect(page.getByTestId("quota-pace-tick").all()).toHaveLength(1);
       await expect
         .element(page.getByText("Reset time passed; awaiting updated usage"))
         .toBeVisible();
@@ -1592,6 +1598,283 @@ describe("limits", () => {
         .toBeVisible();
     } finally {
       await screen.unmount();
+    }
+  });
+
+  const codexAccountWith = (
+    rateLimits: ReadonlyArray<CodexAccountRateLimit>,
+  ): UsageAccounts[number] => {
+    const [codexAccount] = accounts();
+    return {
+      ...codexAccount!,
+      providerInstanceId: ProviderInstanceId.make("codex-test"),
+      sections: [
+        codexAccount!.sections[0]!,
+        {
+          ...codexAccount!.sections[1]!,
+          snapshot: {
+            fetchedAt: codex.fetchedAt,
+            data: { rateLimits, resetCredits: { availableCount: 2, nextExpiresAt: null } },
+          },
+        },
+      ],
+    } as UsageAccounts[number];
+  };
+
+  it("names the tightest Codex window across groups and offers the reset there", async () => {
+    // The shared fixture's resets are in the past; this test needs live windows.
+    const future = Math.floor(Date.now() / 1000) + 3_600;
+    const exhausted = {
+      ...codex.rateLimits[0]!,
+      primary: { ...codex.rateLimits[0]!.primary, resetsAt: future },
+      secondary: { ...codex.rateLimits[0]!.secondary, usedPercent: 100, resetsAt: future },
+    };
+    const spark = {
+      ...codex.rateLimits[0]!,
+      id: "codex_spark",
+      name: "Spark",
+      planType: null,
+      primary: { ...codex.rateLimits[0]!.primary, resetsAt: future },
+      secondary: null,
+      credits: null,
+    };
+    const account = codexAccountWith([exhausted, spark]);
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <UsageDashboardView
+          summary={summary()}
+          accounts={[account]}
+          range="7d"
+          onRangeChange={() => {}}
+          fetching={false}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      const callout = page.getByTestId("tightest-limit");
+      await expect.element(callout).toHaveTextContent(/0% left · Codex weekly limit/);
+      await expect
+        .element(callout.getByRole("button", { name: "Use reset credit (2)" }))
+        .toBeVisible();
+      expect(page.getByRole("button", { name: /reset credit/ }).all()).toHaveLength(1);
+      await expect.element(page.getByText("plus", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Spark", { exact: true })).toBeVisible();
+      await expect
+        .element(page.getByText("Credits: 12.50 · 2 limit resets available"))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("progressbar", { name: "Spark · 5-hour limit" }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("skips an already-reset Codex window and names an unnamed group by its id", async () => {
+    const future = Math.floor(Date.now() / 1000) + 3_600;
+    const stale = {
+      ...codex.rateLimits[0]!,
+      primary: { ...codex.rateLimits[0]!.primary, resetsAt: future },
+      // Exhausted, but its reset passed before this render.
+      secondary: { ...codex.rateLimits[0]!.secondary, usedPercent: 100 },
+    };
+    const unnamed = {
+      ...codex.rateLimits[0]!,
+      id: "codex_spark",
+      name: null,
+      planType: null,
+      primary: { usedPercent: 80, windowDurationMins: 300, resetsAt: future },
+      secondary: null,
+      credits: null,
+    };
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <UsageDashboardView
+          summary={summary()}
+          accounts={[codexAccountWith([stale, unnamed])]}
+          range="7d"
+          onRangeChange={() => {}}
+          fetching={false}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      const callout = page.getByTestId("tightest-limit");
+      await expect.element(callout).toHaveTextContent(/20% left · codex_spark 5-hour limit/);
+      await expect.element(callout.getByRole("button")).not.toBeInTheDocument();
+      // The reset button keeps its own row instead.
+      expect(page.getByRole("button", { name: /reset credit/ }).all()).toHaveLength(1);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("does not name an already-reset Claude window as the tightest", async () => {
+    const now = Date.now();
+    const claude: UsageAccounts[number] = {
+      key: "claude:stale",
+      provider: "claudeAgent",
+      providerInstanceId: null,
+      displayName: "Claude",
+      enabled: true,
+      refreshState: "idle",
+      sections: [
+        {
+          kind: "claude-usage",
+          outcome: "available",
+          lastAttemptAt: new Date(now - 60_000).toISOString(),
+          errorCode: null,
+          snapshot: {
+            fetchedAt: new Date(now - 60_000).toISOString(),
+            data: {
+              subscriptionLabel: null,
+              limitsAvailable: true,
+              windows: [
+                {
+                  key: "five_hour",
+                  label: "5-hour limit",
+                  utilization: 100,
+                  resetsAt: new Date(now - 30_000).toISOString(),
+                },
+                {
+                  key: "seven_day",
+                  label: "Weekly limit",
+                  utilization: 40,
+                  resetsAt: new Date(now + 3 * 86_400_000).toISOString(),
+                },
+                {
+                  key: "model:fable",
+                  label: "Fable weekly limit",
+                  utilization: 10,
+                  resetsAt: new Date(now + 3 * 86_400_000).toISOString(),
+                },
+              ],
+              extraUsage: null,
+            },
+          },
+        },
+      ],
+    };
+    const screen = await render(
+      <UsageDashboardView
+        summary={summary()}
+        accounts={[claude]}
+        range="7d"
+        onRangeChange={() => {}}
+        fetching={false}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByTestId("tightest-limit"))
+        .toHaveTextContent(/60% left · Weekly limit resets/);
+      // The model-scoped weekly window gets a pace tick too; the expired one does not.
+      expect(page.getByTestId("quota-pace-tick").all()).toHaveLength(2);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("charts daily Codex tokens with the range highlighted and exact values on hover", async () => {
+    const screen = await render(
+      <UsageDashboardView
+        summary={summary()}
+        accounts={accounts()}
+        range="7d"
+        onRangeChange={() => {}}
+        fetching={false}
+      />,
+    );
+    try {
+      await expect.element(page.getByTestId("daily-token-bars")).toBeInTheDocument();
+      const bars = page.getByTestId("daily-token-bar");
+      expect(bars.all()).toHaveLength(14);
+      expect(
+        bars.all().filter((bar) => bar.element().getAttribute("data-in-range") === "true"),
+      ).toHaveLength(7);
+      await userEvent.hover(bars.last());
+      await expect.element(page.getByText("Aug 15 · 40,000 tokens")).toBeVisible();
+      // The screen-reader table carries every day.
+      await expect
+        .element(page.getByRole("table", { name: "Daily account tokens (UTC)" }))
+        .toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows the usage analysis as one row per factor with both shares", async () => {
+    const claude: UsageAccounts[number] = {
+      key: "claude:analysis",
+      provider: "claudeAgent",
+      providerInstanceId: ProviderInstanceId.make("claude-test"),
+      displayName: "Claude",
+      enabled: true,
+      refreshState: "idle",
+      sections: [],
+      usageAnalysis: {
+        analyzedAt: "2026-08-15T12:00:00.000Z",
+        day: {
+          requestCount: 1_742,
+          sessionCount: 50,
+          behaviors: [{ key: "long_context", pct: 69, count: 1 }],
+          recommendations: [
+            {
+              key: "long_context",
+              pct: 69,
+              title: "Start fresh when you switch tasks",
+              detail: "run /clear",
+            },
+          ],
+        },
+        week: {
+          requestCount: 17_471,
+          sessionCount: 395,
+          behaviors: [
+            { key: "long_context", pct: 69, count: 1 },
+            { key: "cron", pct: 43, count: 1 },
+          ],
+          recommendations: [
+            {
+              key: "long_context",
+              pct: 69,
+              title: "Start fresh when you switch tasks",
+              detail: "run /clear",
+            },
+          ],
+        },
+      },
+    };
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <UsageDashboardView
+          summary={summary()}
+          accounts={[claude]}
+          range="7d"
+          onRangeChange={() => {}}
+          fetching={false}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      const table = page.getByRole("table", { name: "What drives usage" });
+      await expect.element(table).toBeVisible();
+      await expect.element(page.getByText("17,471 req · 395 sessions")).toBeVisible();
+      const longContext = table.getByRole("row", { name: /Long context/ });
+      await expect.element(longContext).toHaveTextContent(/24 hours: 69%.*7 days: 69%/);
+      await expect.element(longContext).toHaveTextContent(/Start fresh when you switch tasks/);
+      const scheduled = table.getByRole("row", { name: /Scheduled runs/ });
+      await expect.element(scheduled).toHaveTextContent(/24 hours: none.*7 days: 43%/);
+      await expect.element(scheduled).toHaveTextContent(/No recommendation/);
+      expect(table.getByRole("row").all()).toHaveLength(3);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
     }
   });
 
