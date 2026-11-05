@@ -1,0 +1,306 @@
+{
+  "baseSha": "8b44f42b14c8e273156474a924ccf29680dd7857",
+  "commits": [
+    {
+      "pr": 31317,
+      "sha": "337c5858c33bc7f8f6dfd391a2c279fa0f7e4d17",
+      "subject": "fix(mobile): composer keeps the keyboard when a queued edit ends (#31317)",
+      "topic": "pr-31317"
+    },
+    {
+      "pr": 31277,
+      "sha": "8a14762c9093ea11e1e58d65cfe788f458a0d6b5",
+      "subject": "fix(mobile): one aligned notice for ChatGPT sharing limits (#31277)",
+      "topic": "pr-31277"
+    },
+    {
+      "pr": 31342,
+      "sha": "01a8db0aad27fa18010c552340e1b36168707ae8",
+      "subject": "fix(server): refresh divergence after a merged branch ref changes (#31342)",
+      "topic": "pr-31342"
+    },
+    {
+      "pr": 31266,
+      "sha": "67eebaca23f8f7bc46e8817434087fc9c5acf8e3",
+      "subject": "fix(server): a stopped run no longer shrinks thread history to one row (#31266)",
+      "topic": "pr-26435"
+    },
+    {
+      "pr": 31216,
+      "sha": "298cb24140fdddebfbfaedad3a097e86ff3d9d04",
+      "subject": "refactor: errors are Schema.TaggedError, not Data.TaggedError or native Error (#31216)",
+      "topic": "pr-31218"
+    },
+    {
+      "pr": 29639,
+      "sha": "20e92ffe022fe7813c854eeb68195ffa8e04850f",
+      "subject": "fix(web): sidebar project filter rows line up and stay still on hover (#29639)",
+      "topic": "pr-29704"
+    },
+    {
+      "pr": 31217,
+      "sha": "5a906583fed3fa41dc806f2a19bd9d095537ed3e",
+      "subject": "refactor: Effect.try calls map failures to typed errors (#31217)",
+      "topic": "pr-31218"
+    },
+    {
+      "pr": 31218,
+      "sha": "e313a122452835da330feef41d0b74a4d2eddbeb",
+      "subject": "refactor: Effect code reads env through HostProcess.Environment (#31218)",
+      "topic": "pr-31218"
+    },
+    {
+      "pr": 31269,
+      "sha": "34701646e39077be00302a7fd66a12a96e2fcf37",
+      "subject": "revert(web): working threads stay in the Working shelf when their environment disconnects (#31269)",
+      "topic": "pr-31269"
+    },
+    {
+      "pr": 25341,
+      "sha": "935818e422f9b58c46e14d70f4ef386fa3575105",
+      "subject": "fix(codex): sharing usage limits offer the existing recovery options (#25341)",
+      "topic": "pr-25341"
+    },
+    {
+      "pr": 30377,
+      "sha": "3f905cac2e4dd968684298673546aacca3323b1d",
+      "subject": "fix(acp): time out silent Antigravity prompts (#30377)",
+      "topic": "pr-30377"
+    },
+    {
+      "pr": 29838,
+      "sha": "90f0158e60b08946bcaae1df07109a893e7c36af",
+      "subject": "fix(server): attribute usage-limit auto-resume to T3 Code (#29838)",
+      "topic": "pr-29838"
+    },
+    {
+      "pr": 28204,
+      "sha": "4dff7de3f99677dd886018dbc195062c0768f2c7",
+      "subject": "fix(server): preserve sibling wakeups when interrupting a completion wake (#28204)",
+      "topic": "pr-28204"
+    },
+    {
+      "pr": 29000,
+      "sha": "9bfecb8f1e91892a5f87020203bde70694ab256e",
+      "subject": "fix(web): deleted forks no longer remain in Lineage (#29000)",
+      "topic": "pr-29000"
+    },
+    {
+      "pr": 26435,
+      "sha": "c15e49a77cbbc071f68f18cbf65e1b1e3481d036",
+      "subject": "fix: keep older pending questions answerable (#26435)",
+      "topic": "pr-26435"
+    },
+    {
+      "pr": 26464,
+      "sha": "d520d5bb850de9c17c2bbec0f9a37593a2d78d09",
+      "subject": "fix(web): show saved service access with Local environment off (#26464)",
+      "topic": "pr-26464"
+    },
+    {
+      "pr": 27935,
+      "sha": "754e1d1534ce38a21927756cabcaad1d67f944fc",
+      "subject": "fix(mobile): compact stale Claude threads before sending (#27935)",
+      "topic": "pr-27935"
+    },
+    {
+      "pr": 24946,
+      "sha": "c192c439c15f85310b6f1732d83c562c19d5978a",
+      "subject": "fix(server): restart T3 Connect's tunnel client when Cloudflare drops it (#24946)",
+      "topic": "pr-24946"
+    },
+    {
+      "pr": 23758,
+      "sha": "b9522c845b06cb8c852c28e9fa747c6335e9f6b3",
+      "subject": "fix(client): a big server config on a slow link no longer drops the connection in a loop (#23758)",
+      "topic": "pr-23758"
+    },
+    {
+      "pr": 30704,
+      "sha": "7384cf20da1a1031c58b91d5900e4f81ae7d0024",
+      "subject": "fix(web,mobile): save pull request description checkbox changes (#30704)",
+      "topic": "pr-30704"
+    },
+    {
+      "pr": 28928,
+      "sha": "e4e3657344e5ed70afd671e8d0ff5c2573f90f52",
+      "subject": "fix(mobile): configure another Claude account from Providers (#28928)",
+      "topic": "pr-28928"
+    },
+    {
+      "pr": 30421,
+      "sha": "af54fe23442617c7269d3447d84d2b1241a02692",
+      "subject": "fix(web): make styled composer Markdown markers editable (#30421)",
+      "topic": "pr-30421"
+    },
+    {
+      "pr": 30941,
+      "sha": "8a65c000433b1a1d7da65897af6456488a9aafc7",
+      "subject": "fix(devices): explain Windows SSH host failures (#30941)",
+      "topic": "pr-30941"
+    },
+    {
+      "pr": 24904,
+      "sha": "707dcdaa16b749ef73513187829cb71564d8628a",
+      "subject": "feat: optionally clone repos into ghq-style <host>/<owner>/<repo> folders (#24904)",
+      "topic": "pr-24904"
+    },
+    {
+      "pr": 29044,
+      "sha": "70738cbd8aa94e506801c00df22d5d6ab5b86c83",
+      "subject": "fix(mobile): iOS image previews open without waiting for the gallery (#29044)",
+      "topic": "pr-29044"
+    },
+    {
+      "pr": 28622,
+      "sha": "b28bb8fc9d582ca7cc95aebb9fd6ceb24cc28884",
+      "subject": "fix(mobile): use H.264 for iOS previews and keep Close reachable (#28622)",
+      "topic": "pr-28622"
+    },
+    {
+      "pr": 30085,
+      "sha": "199cb5b6a9d17f2b55881338dc4381ca59d0e5e9",
+      "subject": "fix(web): show the comparison base beside Changes totals (#30085)",
+      "topic": "pr-30085"
+    },
+    {
+      "pr": 30944,
+      "sha": "c9d29e09efc64775eb387714d873b442da9e6967",
+      "subject": "fix(mobile): keep iOS thread menus short enough for drag selection (#30944)",
+      "topic": "pr-30944"
+    },
+    {
+      "pr": 28832,
+      "sha": "b3041a8cb9e69856be5a48602a06fe480b70d4b1",
+      "subject": "fix(web): show Setting up during worktree setup (#28832)",
+      "topic": "pr-28832"
+    },
+    {
+      "pr": 30744,
+      "sha": "cda88429475ba7e21098af10b5ad305009ec65fd",
+      "subject": "fix(mobile): preserve autocorrect in custom question answers (#30744)",
+      "topic": "pr-30744"
+    },
+    {
+      "pr": 30929,
+      "sha": "c94ad22ad135d72c81ac728e54be44156ebc0050",
+      "subject": "fix(mobile): pinch wide images from anywhere in the Android viewer (#30929)",
+      "topic": "pr-30929"
+    },
+    {
+      "pr": 26806,
+      "sha": "c1f91b5be101820daa7006336f1d143528f5028f",
+      "subject": "fix(web): keep message navigation visible on touch when there is room (#26806)",
+      "topic": "pr-26806"
+    },
+    {
+      "pr": 24186,
+      "sha": "2ef6435f5092a9aa3dfe19a7ef9a98d8c1ecc945",
+      "subject": "fix(server): idle agent tabs free a slot when the server's 32-tab browser limit is full (#24186)",
+      "topic": "pr-24186"
+    },
+    {
+      "pr": 30308,
+      "sha": "299f0db1e51a91dad6126b4e4927d5de63108b6f",
+      "subject": "fix(mobile): keep iOS composer empty after sending an autocorrected word (#30308)",
+      "topic": "pr-30308"
+    },
+    {
+      "pr": 31111,
+      "sha": "4b87a45770d24a47f7e6bc40e3f19011e41c7724",
+      "subject": "build: run Effect rules on mobile and lock in clean suggestion rules (#31111)",
+      "topic": "pr-31028"
+    },
+    {
+      "pr": 29803,
+      "sha": "a21d788752695764028e6d26ba924f3963e05806",
+      "subject": "feat(server): render MCP Apps from Claude tool calls (#29803)",
+      "topic": "pr-29803"
+    },
+    {
+      "pr": 30900,
+      "sha": "df70f505a3c3e3ad7ea0fde2ad2c01a6d57d2297",
+      "subject": "docs: scope managed-policy LAN note to old background services (#30900)",
+      "topic": "pr-30900"
+    },
+    {
+      "pr": 31104,
+      "sha": "7f6f47b27b44456f1c8214d3b566b375c09f629e",
+      "subject": "test(web): PDF preview tests wait on pdf.js loads and stop timing out (#31104)",
+      "topic": "pr-31104"
+    },
+    {
+      "pr": 30554,
+      "sha": "62db6623cb30ed32968fc9ee0db1ea5355f9b39a",
+      "subject": "test(server): AgentSessionScanner blocked-repo test no longer races the git-read timeout (#30554)",
+      "topic": "pr-30554"
+    },
+    {
+      "pr": 31071,
+      "sha": "8ab024f31a6d285015c4fb84e52a0183f614e237",
+      "subject": "fix(client-runtime): a thread keeps syncing after a stream defect (#31071)",
+      "topic": "pr-31071"
+    },
+    {
+      "pr": 30540,
+      "sha": "a07be97ab0753b2b5b0caecebba69d7f872594fa",
+      "subject": "refactor(client-runtime): share DPoP proof creation across web and mobile (#30540)",
+      "topic": "pr-30474"
+    },
+    {
+      "pr": 30529,
+      "sha": "33ba7bf5ef098cd7c27d9cf44b79e2b06c020e6a",
+      "subject": "refactor: hold relay signing keys in EnvironmentSigningKey and CloudMintSigner (#30529)",
+      "topic": "pr-30474"
+    },
+    {
+      "pr": 30523,
+      "sha": "16fc3cc45b3816184efe4061195d695efc8cafea",
+      "subject": "refactor(server): sign server tokens through PayloadSigner (#30523)",
+      "topic": "pr-30474"
+    },
+    {
+      "pr": 30501,
+      "sha": "fb99a5e4b026162812bf078ea37f161f6ae007c8",
+      "subject": "refactor: move HMAC, key, and random work to effect/crypto (#30501)",
+      "topic": "pr-30474"
+    },
+    {
+      "pr": 30474,
+      "sha": "14e8f393faeb7e74f576525d63b540d61e4331fc",
+      "subject": "refactor: replace jose with effect/jose (#30474)",
+      "topic": "pr-30474"
+    },
+    {
+      "pr": 31028,
+      "sha": "95e53a54dbd312fea7e8a2ef94514dc5f1c8ee3d",
+      "subject": "build: typecheck with tsrs and Effect's rules through @effect/tsgo (#31028)",
+      "topic": "pr-31028"
+    },
+    {
+      "pr": 31016,
+      "sha": "dd5f98eeecad5db5b10314296221df115f130fbd",
+      "subject": "fix(relay): use released drizzle rc.5 and fail installs on unmet peers (#31016)",
+      "topic": "pr-31016"
+    },
+    {
+      "pr": 30257,
+      "sha": "9e85538535c8553901351112ab02dd1dd62db5ee",
+      "subject": "feat(server): agents ask for secrets through request_secret instead of chat (#30257)",
+      "topic": "pr-30256"
+    },
+    {
+      "pr": 30256,
+      "sha": "7f782b4d6da6493fb7b0d9f12290480e0c8f16f1",
+      "subject": "test(evals): measure how agents get secrets only the user has (#30256)",
+      "topic": "pr-30256"
+    }
+  ],
+  "count": 49,
+  "createdAt": "2026-11-05T11:02:07.777Z",
+  "digest": "bc852b4a983edda6c7c55d613bea41fa4029f2873816c1cecc3fdeb3ddddf4ea",
+  "interval": 16,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "337c5858c33bc7f8f6dfd391a2c279fa0f7e4d17"
+}
