@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ComputerLeaseHolder } from "@t3tools/contracts";
+import { ComputerControlError } from "@t3tools/shared/computerControl";
 
 interface Receipt {
   kind: "session" | "takeover";
@@ -73,6 +74,16 @@ export class ComputerExecutionAuthority {
     const receipt = this.receipts.get(receiptId);
     if (receipt?.kind === "takeover" && receipt.executionGeneration === undefined)
       receipt.executionGeneration = executionGeneration;
+  }
+  continueTakeover(
+    previous: ComputerLeaseHolder,
+    next: ComputerLeaseHolder,
+    backendIncarnation: string | undefined,
+  ): void {
+    if (previous.scope.kind !== "takeover" || !this.validTakeover(previous, backendIncarnation))
+      throw new ComputerControlError({ _tag: "ReplayRejected" });
+    this.receipts.get(previous.scope.approvalReceipt)!.executionGeneration =
+      next.executionGeneration;
   }
   /** A takeover holder is valid only with its exact, still-bound receipt. */
   validTakeover(holder: ComputerLeaseHolder, backendIncarnation: string | undefined): boolean {

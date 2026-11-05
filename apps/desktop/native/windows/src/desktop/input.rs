@@ -1,4 +1,14 @@
 use super::*;
+thread_local! { static POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub(super) fn reset_posted() {
+    POSTED.with(|posted| posted.set(false));
+}
+pub(super) fn mark_posted() {
+    POSTED.with(|posted| posted.set(true));
+}
+pub(super) fn action_posted() -> bool {
+    POSTED.with(|posted| posted.get())
+}
 
 pub(super) unsafe fn hit(point: POINT, request: &Value, host: &Value) -> Result<(), Value> {
     check(request)?;
@@ -78,6 +88,7 @@ pub(super) unsafe fn send(input: INPUT) -> Result<(), Value> {
     if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) != 1 {
         return Err(blocked("elevated"));
     }
+    mark_posted();
     Ok(())
 }
 pub(super) fn keyboard(code: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
@@ -176,7 +187,7 @@ pub(super) fn interrupt_from_hook(kill: bool) {
 }
 /// Hook-safe: no locks, allocation, IPC or synthetic input. The atomic latch is
 /// checked immediately before every dispatch; the reporting thread does cleanup.
-pub(super) unsafe fn physical_input(window: HWND, pointer_move: bool) {
+pub(super) unsafe fn physical_input(window: HWND, pointer_move: bool, cause: u64) {
     let state = STATE.get().unwrap();
     state.input_sequence.fetch_add(1, Ordering::SeqCst);
     state.last_input_ms.store(
@@ -184,6 +195,7 @@ pub(super) unsafe fn physical_input(window: HWND, pointer_move: bool) {
         Ordering::SeqCst,
     );
     let recipient_pid = pid(window) as u64;
+    cooperation::physical(window.0 as u64, recipient_pid, pointer_move);
     for control in &state.controls {
         let generation = control.generation.load(Ordering::SeqCst);
         if generation == 0 || control.paused.load(Ordering::SeqCst) {
@@ -207,6 +219,7 @@ pub(super) unsafe fn physical_input(window: HWND, pointer_move: bool) {
                 Ordering::SeqCst,
             );
             control.paused.store(true, Ordering::SeqCst);
+            control.input_cause.store(cause, Ordering::SeqCst);
             // Report the interrupted generation even if the slot is retired
             // and reused before the reporting thread runs.
             control.input_pending.store(generation, Ordering::SeqCst);
@@ -233,7 +246,7 @@ pub(super) unsafe extern "system" fn key_hook(code: i32, w: WPARAM, l: LPARAM) -
             ) {
                 interrupt_from_hook(true)
             } else {
-                physical_input(GetForegroundWindow(), false);
+                physical_input(GetForegroundWindow(), false, 2);
             }
         }
     }
@@ -245,14 +258,31 @@ pub(super) unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM)
         if input.dwExtraInfo == PROBE_MARK {
             return LRESULT(1);
         } else if input.dwExtraInfo != MARK {
-            mouse_activity(input.pt, w.0 as u32 == WM_MOUSEMOVE);
+            let message = w.0 as u32;
+            mouse_activity(
+                input.pt,
+                message == WM_MOUSEMOVE,
+                if message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL {
+                    3
+                } else {
+                    1
+                },
+            );
         }
     }
     CallNextHookEx(None, code, w, l)
 }
-pub(super) unsafe fn mouse_activity(point: POINT, pointer_move: bool) {
-    if !pointer_move {
-        physical_input(GetAncestor(WindowFromPoint(point), GA_ROOT), false);
+pub(super) unsafe fn mouse_activity(point: POINT, pointer_move: bool, cause: u64) {
+    let dragging = pointer_move
+        && (GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0
+            || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0
+            || GetAsyncKeyState(VK_MBUTTON.0 as i32) < 0);
+    if !pointer_move || dragging {
+        physical_input(
+            GetAncestor(WindowFromPoint(point), GA_ROOT),
+            false,
+            if dragging { 4 } else { cause },
+        );
     } else {
         thread_local! {static LAST:std::cell::RefCell<(Instant,POINT)>=std::cell::RefCell::new((Instant::now(),POINT{x:0,y:0}));}
         LAST.with(|last| {
@@ -263,7 +293,7 @@ pub(super) unsafe fn mouse_activity(point: POINT, pointer_move: bool) {
                 .hypot(f64::from(point.y) - f64::from(last.1.y))
                 > 8.0
             {
-                physical_input(GetAncestor(WindowFromPoint(point), GA_ROOT), true);
+                physical_input(GetAncestor(WindowFromPoint(point), GA_ROOT), true, 5);
             }
         })
     }

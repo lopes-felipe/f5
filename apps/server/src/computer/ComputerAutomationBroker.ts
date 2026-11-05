@@ -9,6 +9,7 @@ import {
   type AgentComputerUseChanged,
   ComputerGrant,
   RememberedComputerGrant,
+  ComputerTargetAvailability,
   ComputerLeaseHolder,
   type ComputerDelivery,
   type ComputerElementAction,
@@ -204,6 +205,7 @@ export class ComputerAutomationBrokerRuntime {
       generation: string;
       turnId: string;
       epoch: number;
+      mutation: boolean;
       suppressActivity?: boolean;
     }
   >();
@@ -216,6 +218,7 @@ export class ComputerAutomationBrokerRuntime {
     }
   >();
   private readonly observationEpochs = new Map<string, number>();
+  private readonly yieldEpochs = new Map<string, number>();
   private readonly listeners = new Set<(event: ComputerBrokerEvent) => void>();
   private readonly nativePaused = new Set<string>();
   private mainHolders: ReadonlyArray<ComputerLeaseHolder> = [];
@@ -387,6 +390,25 @@ export class ComputerAutomationBrokerRuntime {
           this.publishUse();
         }
       }
+      if (
+        message.type === "targetYielded" &&
+        this.host.cooperationCapable() &&
+        this.bindings.get(message.threadId)?.generation === message.sessionGeneration
+      ) {
+        this.yieldEpochs.set(message.threadId, (this.yieldEpochs.get(message.threadId) ?? 0) + 1);
+        this.invalidateObservations(message.threadId);
+        const contention = new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+        this.queue.flush(message.threadId, contention);
+        for (const [requestId, pending] of this.inFlight)
+          if (pending.threadId === message.threadId && !pending.mutation)
+            this.host.abandon(requestId, contention);
+        this.executionStates.set(message.threadId, {
+          state: "waiting-user",
+          delivery: message.appId ? "background" : "foreground",
+          ...(message.appId ? { appId: message.appId } : {}),
+        });
+        this.publishUse();
+      }
       if (message.type === "chromeLeaseChanged") {
         // A lease that ended takes its call report with it; the session needn't say so.
         const previous = this.chromeHolder;
@@ -522,6 +544,8 @@ export class ComputerAutomationBrokerRuntime {
         !this.mainHolders.some((holder) => holder.threadId === threadId) &&
         execution.state !== "paused" &&
         execution.state !== "recovery" &&
+        execution.state !== "waiting-user" &&
+        execution.state !== "waiting-agent" &&
         this.pendingTakeover?.threadId !== threadId
       )
         this.executionStates.delete(threadId);
@@ -557,7 +581,10 @@ export class ComputerAutomationBrokerRuntime {
     for (const [threadId, execution] of this.executionStates)
       if (
         !holders.some((holder) => holder.threadId === threadId) &&
-        (execution.state === "paused" || execution.state === "recovery")
+        (execution.state === "paused" ||
+          execution.state === "recovery" ||
+          execution.state === "waiting-user" ||
+          execution.state === "waiting-agent")
       )
         holders.push({
           threadId,
@@ -930,6 +957,7 @@ export class ComputerAutomationBrokerRuntime {
       onDispatch?: (delivery: ComputerDelivery) => void;
     },
   ): Promise<unknown> {
+    const yieldEpoch = this.yieldEpochs.get(threadId) ?? 0;
     await this.admitted();
     const ctx = await this.context(threadId, generation);
     if (!ctx.policy.computerUse)
@@ -1058,18 +1086,32 @@ export class ComputerAutomationBrokerRuntime {
       )
         throw new ComputerControlError({ _tag: "NotGranted", needed: "type" });
       let executionGeneration = binding.holder?.executionGeneration ?? 1;
-      if (mutation && delivery === "foreground" && binding.holder?.scope.kind === "takeover") {
+      if (
+        mutation &&
+        delivery === "foreground" &&
+        binding.holder?.scope.kind === "takeover" &&
+        this.executionStates.get(threadId)?.state !== "waiting-user"
+      ) {
         // The armed takeover is the lease; every foreground step reuses it.
         executionGeneration = binding.holder.executionGeneration;
       } else if (mutation) {
         const scope: ComputerLeaseScope =
-          delivery === "background" ? { kind: "app", appId: appId! } : { kind: "foreground" };
+          delivery === "background"
+            ? { kind: "app", appId: appId! }
+            : binding.holder?.scope.kind === "takeover"
+              ? binding.holder.scope
+              : { kind: "foreground" };
         const acquisitionId = randomUUID();
         const holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(
           await this.host.correlated(
             {
               type: "leaseAcquire",
               requestId: acquisitionId,
+              ...(this.host.cooperationCapable() &&
+              live.runtimeMode === "full-access" &&
+              delivery === "foreground"
+                ? { cooperative: true }
+                : {}),
               holder: {
                 ...this.authorization(live, executionGeneration),
                 backend: "native",
@@ -1123,12 +1165,15 @@ export class ComputerAutomationBrokerRuntime {
         (await import("@t3tools/contracts")).ComputerAutomationRequest,
       )({ ...envelope, payloadHash });
       if (mutation) this.invalidateObservations(threadId, "action");
+      if (mutation && (this.yieldEpochs.get(threadId) ?? 0) !== yieldEpoch)
+        throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
       options?.onDispatch?.(delivery);
       this.inFlight.set(requestId, {
         threadId,
         generation,
         turnId: live.turnId,
         epoch: this.observationEpochs.get(threadId) ?? 0,
+        mutation,
         ...(options?.suppressActivity ? { suppressActivity: true } : {}),
       });
       const onAbort = () => this.host.abandon(requestId, options!.signal!.reason);
@@ -1332,6 +1377,9 @@ export class ComputerAutomationBrokerRuntime {
         type: "foregroundTakeoverAcquire",
         requestId: acquireId,
         approvalRequestId: approvalId,
+        ...(this.host.cooperationCapable() && live.runtimeMode === "full-access"
+          ? { cooperative: true }
+          : {}),
         holder: {
           ...this.authorization(live, binding.holder?.executionGeneration ?? 1),
           backend: "native",
@@ -1551,6 +1599,14 @@ export class ComputerAutomationBrokerRuntime {
     )
       return;
     binding.endedTurnId = turnId;
+    if (this.host.cooperationCapable())
+      this.host.send({
+        type: "computerTurnEnded",
+        threadId,
+        sessionGeneration: binding.generation,
+        turnId,
+      });
+    if (this.executionStates.delete(threadId)) this.publishUse();
     ++binding.turnRevision;
     // Startup waiters are pinned to the lifecycle turn before resolving context.
     const waiter = this.waits.get(threadId);
@@ -1568,6 +1624,7 @@ export class ComputerAutomationBrokerRuntime {
     // earlier must not expose an active native host to another profile.
     automationEventSanitizer.clear(threadId);
     this.nativePaused.delete(threadId);
+    this.yieldEpochs.delete(threadId);
     for (const key of this.sessionConsents)
       if (key.startsWith(`${threadId}\0${generation}\0`)) this.sessionConsents.delete(key);
     if (this.executionStates.delete(threadId)) this.publishUse();
@@ -1665,11 +1722,35 @@ export class ComputerAutomationBrokerRuntime {
         .catch(() => undefined);
   }
   /** A single monotonic budget covers resolution, IPC and the backoff sleeps. */
+  async waitForTarget(
+    threadId: string,
+    generation: string,
+    input: { app?: string; timeoutMs?: number },
+  ): Promise<ComputerTargetAvailability> {
+    if (!this.host.cooperationCapable())
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Update F5 to wait for a computer target.",
+      });
+    const timeoutMs = input.timeoutMs ?? 10_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000)
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "timeoutMs must be between 100 and 30000.",
+      });
+    return Schema.decodeUnknownSync(ComputerTargetAvailability)(
+      await this.wait(threadId, generation, {
+        deadlineMs: performance.now() + timeoutMs,
+        target: input,
+      }),
+    );
+  }
   async wait(
     threadId: string,
     generation: string,
     input: {
       deadlineMs: number;
+      target?: { app?: string };
       condition?: {
         app: string;
         role?: string;
@@ -1683,6 +1764,9 @@ export class ComputerAutomationBrokerRuntime {
     timedOut?: boolean;
     snapshotId?: string;
     elementRefs?: string[];
+    available?: boolean;
+    reason?: ComputerTargetAvailability["reason"];
+    requiresFreshObservation?: true;
   }> {
     if (this.waits.has(threadId))
       throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
@@ -1764,6 +1848,79 @@ export class ComputerAutomationBrokerRuntime {
         data: { threadId, backend: "native", op: "wait", status: "started" },
       });
       started = true;
+      if (input.target) {
+        let appId: string | undefined;
+        if (input.target.app) {
+          const apps = selectComputerApp(
+            (await race(
+              this.invoke(
+                threadId,
+                generation,
+                {
+                  op: "resolveApps",
+                  queries: [input.target.app],
+                },
+                Math.max(1, input.deadlineMs - performance.now()),
+                {
+                  signal: controller.signal,
+                  beforeDispatch: validate,
+                  suppressActivity: true,
+                },
+              ),
+            )) as ReadonlyArray<ComputerApp>,
+            input.target.app,
+          );
+          if (apps.length !== 1)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "App could not be resolved uniquely; use an appId from computer_list_apps.",
+            });
+          appId = apps[0]!.appId;
+          this.access.require(threadId, appId, "view");
+        }
+        await validate();
+        const requestId = randomUUID();
+        const cancel = () =>
+          this.host.abandon(
+            requestId,
+            new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }),
+          );
+        controller.signal.addEventListener("abort", cancel, { once: true });
+        try {
+          const remaining = Math.max(
+            100,
+            Math.min(30_000, Math.floor(input.deadlineMs - performance.now())),
+          );
+          const outcome = Schema.decodeUnknownSync(ComputerTargetAvailability)(
+            await race(
+              this.host.correlated(
+                {
+                  type: "targetWait",
+                  requestId,
+                  holder: {
+                    ...this.authorization(ctx, binding.holder?.executionGeneration ?? 1),
+                    backend: "native",
+                    threadTitle: ctx.threadTitle,
+                    scope: appId
+                      ? { kind: "app", appId }
+                      : (binding.holder?.scope ?? { kind: "foreground" }),
+                    policyRevision: revision,
+                    ...(ctx.runtimeMode === "full-access" ? { cooperative: true } : {}),
+                  },
+                  ...(appId ? { appId } : {}),
+                  timeoutMs: remaining,
+                },
+                remaining + 1000,
+                false,
+              ),
+            ),
+          );
+          await validate();
+          return { ...result(), ...outcome };
+        } finally {
+          controller.signal.removeEventListener("abort", cancel);
+        }
+      }
       if (!input.condition) {
         await cancelled;
         throw deadline;
@@ -1843,6 +2000,8 @@ export class ComputerAutomationBrokerRuntime {
       }
     } catch (error) {
       if (error === deadline) {
+        if (input.target && started)
+          return { ...result(), available: false, timedOut: true, requiresFreshObservation: true };
         if (!started)
           throw new ComputerControlError({
             _tag: "Execution",

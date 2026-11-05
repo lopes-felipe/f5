@@ -1335,3 +1335,117 @@ it("rejects a lease acquisition that outlives two turn transitions", async () =>
     h.broker.close();
   }
 });
+
+it("keeps sent actions and pending consent through yielding, publishes the wait after release, and clears it on turn end", async () => {
+  const h = await harness();
+  try {
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    h.ipc.holdRequests = true;
+    const mutation = h.broker.invoke("t", "s", { op: "type", text: "confirmed once" });
+    await vi.waitFor(() =>
+      expect(
+        h.ipc.messages.some(
+          (message) => message.type === "request" && message.request.op === "type",
+        ),
+      ).toBe(true),
+    );
+    const requested = h.ipc.messages.findLast((message) => message.type === "request");
+    const consent = h.broker.access.requestAccess(
+      "t",
+      "turn",
+      [
+        {
+          appId: "com.apple.Notes",
+          name: "Notes",
+          tier: "full",
+          running: true,
+          frontmost: false,
+        },
+      ],
+      "Access another app",
+    );
+    expect(h.broker.access.pendingRequests()).toHaveLength(1);
+    h.ipc.emit("message", { type: "targetYielded", threadId: "t", sessionGeneration: "s" });
+    h.ipc.emit("message", { type: "leasesChanged", holders: [], otherProfile: false });
+    expect(h.broker.pause.has("t")).toBe(false);
+    expect(h.broker.access.pendingRequests()).toHaveLength(1);
+    expect(h.broker.computerUse().holders).toContainEqual(
+      expect.objectContaining({
+        threadId: "t",
+        state: "waiting-user",
+        leaseHeld: false,
+      }),
+    );
+    expect(
+      h.ipc.messages.some(
+        (message) =>
+          message.type === "cancel" &&
+          requested?.type === "request" &&
+          message.requestId === requested.request.requestId,
+      ),
+    ).toBe(false);
+    h.ipc.finish({ actionCompleted: true, screenshotError: "Interrupted" });
+    await expect(mutation).resolves.toMatchObject({ actionCompleted: true });
+    h.broker.endTurn("t", "turn", "s");
+    expect(h.ipc.messages).toContainEqual({
+      type: "computerTurnEnded",
+      threadId: "t",
+      sessionGeneration: "s",
+      turnId: "turn",
+    });
+    expect(h.broker.computerUse().holders).toEqual([]);
+    expect(h.broker.access.pendingRequests()).toEqual([]);
+    await consent;
+  } finally {
+    h.broker.close();
+  }
+});
+
+it("uses the existing per-thread wait slot for foreground availability and validates app access without prompting", async () => {
+  const h = await harness();
+  try {
+    h.broker.beginTurn("t", "turn");
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    const pending = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() =>
+      expect(h.ipc.messages.some((message) => message.type === "targetWait")).toBe(true),
+    );
+    await expect(h.broker.waitForTarget("t", "s", {})).rejects.toMatchObject({
+      error: { _tag: "Busy" },
+    });
+    const request = h.ipc.messages.findLast((message) => message.type === "targetWait");
+    if (request?.type !== "targetWait") throw new Error("Availability request missing");
+    expect(request).not.toHaveProperty("appId");
+    h.ipc.emit("message", {
+      type: "response",
+      requestId: request.requestId,
+      result: { available: true, timedOut: false, requiresFreshObservation: true },
+    });
+    await expect(pending).resolves.toEqual({
+      available: true,
+      timedOut: false,
+      requiresFreshObservation: true,
+    });
+    h.ipc.appResults = [
+      { appId: "not-granted", name: "Other", tier: "full", running: true, frontmost: false },
+    ];
+    await expect(h.broker.waitForTarget("t", "s", { app: "Other" })).rejects.toMatchObject({
+      error: { _tag: "NotGranted" },
+    });
+    expect(h.ipc.messages.some((message) => message.type === "accessRequested")).toBe(false);
+    expect(
+      h.ipc.messages.some(
+        (message) =>
+          message.type === "request" && ["screenshot", "inspect"].includes(message.request.op),
+      ),
+    ).toBe(false);
+  } finally {
+    h.broker.close();
+  }
+});

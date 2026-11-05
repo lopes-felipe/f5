@@ -61,6 +61,20 @@ const controller = new ComputerController(
     f5BundlePath: resolve(import.meta.dirname, "../../.."),
     platform: "darwin",
     activity: (profileId, activity) => channel.send(profileId, { type: "activity", activity }),
+    executionState: (_profileId, update) => {
+      if (update.state === "waiting-user") {
+        physicalInterruption = true;
+        worker?.kill();
+      }
+    },
+    cooperationEnabled: (profileId) => channel.cooperationCapable(profileId),
+    targetYielded: (holder, appId) =>
+      channel.send(holder.profileId, {
+        type: "targetYielded",
+        threadId: holder.threadId,
+        sessionGeneration: holder.sessionGeneration,
+        ...(appId ? { appId } : {}),
+      }),
     paused: (holder, cause) => {
       if (cause === "user-input" || cause === "kill-switch") physicalInterruption = true;
       channel.send(holder.profileId, {

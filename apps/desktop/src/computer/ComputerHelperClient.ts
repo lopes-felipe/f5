@@ -5,12 +5,14 @@ import { randomUUID } from "node:crypto";
 import type {
   ComputerAutomationBackendStatus,
   ComputerAutomationRequest,
+  ComputerTargetReadiness,
 } from "@t3tools/contracts";
 import { ComputerControlError, isComputerMutation } from "@t3tools/shared/computerControl";
 import { Schema } from "effect";
 import {
   ComputerAutomationBackendStatus as BackendStatusSchema,
   ComputerAutomationError as ErrorSchema,
+  ComputerTargetReadiness as TargetReadinessSchema,
 } from "@t3tools/contracts";
 
 interface Pending {
@@ -39,6 +41,8 @@ export interface ComputerHelper {
   drain?(executionGeneration: number, timeoutMs: number): Promise<void>;
   /** The helper's current physical-input sequence and idle age, read synchronously by it. */
   readiness?(): Promise<{ inputSequence: number; lastUserInputAgeMs: number }>;
+  watch?(appId: string, owner: string): Promise<ComputerTargetReadiness>;
+  availability?(appId?: string): Promise<ComputerTargetReadiness>;
 }
 export class ComputerHelperClient implements ComputerHelper {
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -403,6 +407,22 @@ export class ComputerHelperClient implements ComputerHelper {
     if (typeof result?.inputSequence !== "number" || typeof result.lastUserInputAgeMs !== "number")
       throw new ComputerControlError({ _tag: "Execution", message: "Helper readiness invalid." });
     return { inputSequence: result.inputSequence, lastUserInputAgeMs: result.lastUserInputAgeMs };
+  }
+  private async targetReadiness(
+    message: Record<string, unknown>,
+  ): Promise<ComputerTargetReadiness> {
+    if (!this.child || !this.ready)
+      throw new ComputerControlError({ _tag: "Unavailable", reason: "helper-missing" });
+    const requestId = randomUUID();
+    return Schema.decodeUnknownSync(TargetReadinessSchema)(
+      await this.sendRequest(requestId, { ...message, requestId }, 1000, false),
+    );
+  }
+  watch(appId: string, owner: string): Promise<ComputerTargetReadiness> {
+    return this.targetReadiness({ type: "watchRegister", appId, owner });
+  }
+  availability(appId?: string): Promise<ComputerTargetReadiness> {
+    return this.targetReadiness({ type: "availability", ...(appId ? { appId } : {}) });
   }
   async suspend(executionGeneration?: number): Promise<void> {
     const child = this.child;

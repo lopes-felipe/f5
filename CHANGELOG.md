@@ -8,6 +8,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Cooperative computer use waits for ordinary user contention without a Resume dialog, including foreground control in Full access threads. A wait tool, fresh-observation checks, and a foreground countdown support continuation after you go idle.
+
 - Native computer approvals can persist per project, including app access and session actions, with profile-wide Full access session opt-in. Settings lists and immediately revokes saved permissions; failed saves are shown as lasting until F5 closes.
 
 - Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
@@ -21,6 +23,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Project actions are set up in Settings → Project, and a project with no actions no longer shows an Add action button in the chat header.
 
 ### Changed
+
+- Interacting with an agent's background app makes it wait until you leave. Explicit Pause, Stop, the stop shortcut, and uncertain outcomes still require confirmed Resume.
 
 - Computer access requests appear in a non-modal panel that leaves F5 interactive and keeps composer focus.
 - Closed computer sessions release their permission receipts without requiring a backend disconnect.
