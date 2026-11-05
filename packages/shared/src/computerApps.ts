@@ -21,7 +21,7 @@ export const BACKGROUND_EVENT_CANDIDATES: Readonly<
     "com.apple.Terminal",
     "com.apple.dt.Xcode",
   ],
-  win32: ["notepad.exe", "explorer.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"],
+  win32: ["notepad.exe", "explorer.exe", "microsoft.windowsterminal_8wekyb3d8bbwe!app"],
 };
 export function computerBackgroundEventAppAllowed(
   appId: string,

@@ -28,7 +28,7 @@ import {
   type RememberedComputerConsent,
 } from "@t3tools/contracts";
 import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
-import { appTier, restrictComputerTier } from "@t3tools/shared/computerApps";
+import { restrictComputerTier } from "@t3tools/shared/computerApps";
 import type { ComputerController, ComputerExecutionStateUpdate } from "./ComputerController";
 import { ChromeLeaseAuthority } from "./ChromeLeaseAuthority";
 import type { ChromeProcessSupervisor } from "./ChromeProcessSupervisor";
@@ -403,16 +403,19 @@ export class ComputerHostChannel {
             message.holder.backend !== "native" ||
             // Takeovers need approval; background scopes need a negotiated peer.
             (message.holder.scope.kind === "takeover" &&
-              !(
-                this.cooperationCapable(profileId) &&
-                message.cooperative &&
-                this.execution.validTakeover(message.holder, backend.incarnation) &&
-                this.controller.cooperation.yielded.has(profileId + "\0" + message.holder.threadId)
-              )) ||
+              !(this.cooperationCapable(profileId) && message.cooperative)) ||
             (message.holder.scope.kind === "app" && !this.capable(backend))
           ) {
             child.disconnect();
             return;
+          }
+          if (
+            message.holder.scope.kind === "takeover" &&
+            (!this.execution.validTakeover(message.holder, backend.incarnation) ||
+              !this.controller.cooperation.yielded.has(profileId + "\0" + message.holder.threadId))
+          ) {
+            fail(message.requestId, new ComputerControlError({ _tag: "ReplayRejected" }));
+            break;
           }
           if (
             backend.acquisitions.size + backend.acquiring.size >= 32 ||
@@ -462,6 +465,7 @@ export class ComputerHostChannel {
                   throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
               };
               check();
+              const preparationStarted = performance.now();
               if (this.cooperationCapable(profileId))
                 await this.controller.prepareAcquisition(holder);
               const admit = () => {
@@ -475,7 +479,12 @@ export class ComputerHostChannel {
                     profileId,
                     requestId: message.requestId,
                     ...(this.cooperationCapable(profileId) && message.waitMs !== undefined
-                      ? { waitMs: message.waitMs }
+                      ? {
+                          waitMs: Math.max(
+                            0,
+                            message.waitMs - (performance.now() - preparationStarted),
+                          ),
+                        }
                       : {}),
                     admit,
                   })
@@ -908,6 +917,12 @@ export class ComputerHostChannel {
           {
             const holder = {
               ...message.holder,
+              cooperative:
+                [...this.controller.cooperation.yielded.values()].find(
+                  (entry) =>
+                    entry.holder.profileId === profileId &&
+                    entry.holder.threadId === message.holder.threadId,
+                )?.holder.cooperative === true,
               scope: message.appId
                 ? { kind: "app" as const, appId: message.appId }
                 : ([...this.controller.cooperation.yielded.values()].find(
@@ -1134,11 +1149,8 @@ export class ComputerHostChannel {
           grants.find(
             (grant) =>
               grant.appId === app.appId &&
-              grant.tier ===
-                restrictComputerTier(
-                  app.tier,
-                  appTier(app.appId, process.platform === "win32" ? "win32" : "darwin"),
-                ) &&
+              !this.grants.sessionRevoked(profileId, request, grant.receipt!) &&
+              grant.tier === restrictComputerTier(app.tier, grant.tier) &&
               (!request.typingRequested || grant.tier !== "click" || grant.allowTyping),
           ),
         );
@@ -1223,10 +1235,12 @@ export class ComputerHostChannel {
     profileId: string,
     projectId?: string,
     revokedSessions?: ReadonlyArray<{ threadId: string; sessionGeneration: string }>,
+    backgroundOnly = false,
   ): void {
     if (this.backends.get(profileId)?.capabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY))
       this.send(profileId, {
         type: "rememberedChanged",
+        ...(backgroundOnly ? { backgroundOnly: true } : {}),
         ...(projectId ? { projectId } : {}),
         ...(revokedSessions?.length ? { revokedSessions } : {}),
       });
@@ -1292,18 +1306,22 @@ export class ComputerHostChannel {
               request.projectId === consent.projectId &&
               request.takeover?.appId === consent.appId;
       if (!matchingApp && !matchingPolicy && !stopped.has(request.threadId)) continue;
-      this.answerAccess(profileId, {
-        requestId: request.requestId,
-        backendIncarnation: backend!.incarnation,
-        decisions: request.apps.map((app) => ({
-          appId: app.appId,
-          allow: false,
-          allowTyping: false,
-          remember: false,
-        })),
-        allowSessionActions: false,
-        allowForegroundTakeover: false,
-      });
+      try {
+        this.answerAccess(profileId, {
+          requestId: request.requestId,
+          backendIncarnation: backend!.incarnation,
+          decisions: request.apps.map((app) => ({
+            appId: app.appId,
+            allow: false,
+            allowTyping: false,
+            remember: false,
+          })),
+          allowSessionActions: false,
+          allowForegroundTakeover: false,
+        });
+      } catch {
+        backend?.pendingAccess.delete(request.requestId);
+      }
     }
     for (const threadId of stopped)
       this.send(profileId, { type: "pauseChanged", threadId, paused: true });
@@ -1328,6 +1346,7 @@ export class ComputerHostChannel {
                 : [],
             ),
           ],
+      consent.kind === "app-access",
     );
     // A failed durable revocation never removes the barrier or restores current authority.
     this.options.consents?.revoke(profileId, consent);
@@ -1425,7 +1444,11 @@ export class ComputerHostChannel {
       let persistence: "durable" | "session-only" = "durable";
       let reason: string | undefined;
       for (const policy of policies) {
-        if (policy.kind === "takeover" && !takeoverReserved) continue;
+        if (policy.kind === "takeover" && !takeoverReserved) {
+          persistence = "session-only";
+          reason = "The foreground reservation expired before this choice could be saved.";
+          continue;
+        }
         try {
           if (this.options.consents.allow(profileId, policy) === "session-only") {
             persistence = "session-only";

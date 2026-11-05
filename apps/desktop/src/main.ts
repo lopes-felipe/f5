@@ -79,7 +79,11 @@ import {
   chromeControlCertified,
   verifyCodexChromeAdoption,
 } from "./computer/certification";
-import { COMPUTER_BACKGROUND_CAPABILITY, type ComputerBackgroundStatus } from "@t3tools/contracts";
+import {
+  COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  type ComputerBackgroundStatus,
+} from "@t3tools/contracts";
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
 import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
@@ -441,7 +445,7 @@ function initializeComputerSystem(): void {
     Path.join(root, process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"),
   );
   const lease = new ComputerLeaseAuthority(Date.now, {
-    shareApps: () => helper.capabilities().includes("background-shared-app-v1"),
+    shareApps: () => helper.capabilities().includes(COMPUTER_SHARED_APP_CAPABILITY),
   });
   const overlay = new ComputerOverlay();
   const nativeStatus = () => {

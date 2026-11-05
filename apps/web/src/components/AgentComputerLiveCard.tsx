@@ -56,7 +56,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
   );
   const actions = useAgentComputerActivityStore((state) => state.history[threadId]);
   const stopUnconfirmed = useAgentComputerActivityStore((state) => state.stopUnconfirmed[threadId]);
-  const paused = useAgentComputerActivityStore((state) => state.paused[threadId]);
+  const pausedLocally = useAgentComputerActivityStore((state) => state.paused[threadId]);
   const held = useAgentComputerActivityStore(
     (state) =>
       state.leases.holders.some((holder) => holder.threadId === threadId) ||
@@ -69,13 +69,16 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
     computerHolderFor(state.leases, threadId),
   );
   const waiting =
-    execution?.state === "waiting-agent"
-      ? "Waiting for another agent"
-      : execution?.state === "waiting-user"
-        ? execution.appName
-          ? "Waiting for you to finish in " + execution.appName
-          : "Waiting while you use the computer"
-        : undefined;
+    execution?.state === "paused" || execution?.state === "recovery"
+      ? undefined
+      : execution?.state === "waiting-agent"
+        ? "Waiting for another agent"
+        : execution?.state === "waiting-user"
+          ? execution.appName
+            ? "Waiting for you to finish in " + execution.appName
+            : "Waiting while you use the computer"
+          : undefined;
+  const paused = pausedLocally || execution?.state === "paused" || execution?.state === "recovery";
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState("");
@@ -138,7 +141,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
   const summary =
     execution?.state === "recovery"
       ? "Needs recovery"
-      : paused || execution?.state === "paused"
+      : paused
         ? "Paused"
         : (waiting ??
           (execution?.delivery === "background" && execution.state === "active"

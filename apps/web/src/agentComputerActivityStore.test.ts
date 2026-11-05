@@ -172,6 +172,13 @@ describe("computer use banner text", () => {
     state: "active" as const,
   };
   it("names the app for background control and counts several agents", () => {
+    for (const state of ["waiting-user", "waiting-agent"] as const)
+      expect(computerUseBannerText({ holders: [{ ...holder, state }] }, true)).toBe(
+        "Computer control paused",
+      );
+    expect(
+      computerUseBannerText({ holders: [{ ...holder, state: "pending-consent" }] }, true),
+    ).toBe("Agent waiting for computer access approval");
     expect(computerUseBannerText({ holders: [holder] }, false)).toBe(
       "Working in background · TextEdit",
     );

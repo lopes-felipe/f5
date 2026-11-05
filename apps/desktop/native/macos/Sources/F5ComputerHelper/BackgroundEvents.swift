@@ -60,7 +60,9 @@ func backgroundEvents(_ request: [String: Any], _ host: [String: Any]) throws ->
   let before = eventObservation(element)
   let dispatch = beginBackgroundAction(request, app: app)
   var succeeded = false
+  var posted = false
   defer { if !succeeded { try? endBackgroundAction(dispatch, succeeded: false) } }
+  do {
   if key {
     let chords = request["chords"] as? [String] ?? []
     guard !chords.isEmpty && chords.count <= 16 &&
@@ -75,22 +77,22 @@ func backgroundEvents(_ request: [String: Any], _ host: [String: Any]) throws ->
       else { throw Failure("UnsupportedAction") }
       return (down, up)
     }
-    for _ in 0..<max(1, min(20, integer(request, "repeat"))) {
-      for (down, up) in events {
-        try validate()
+    try computerRunEventBatch(count: events.count * max(1, min(20, integer(request, "repeat"))),
+      validate: { try validate(); try checkPermit(request) },
+      post: { index in
+        let (down, up) = events[index % events.count]
         down.setIntegerValueField(.eventSourceUserData, value: 0xF5C0)
         up.setIntegerValueField(.eventSourceUserData, value: 0xF5C0)
-        try checkPermit(request)
         markActionStarted(request)
         down.postToPid(app.processIdentifier)
+        posted = true
         // Always release into this same process, including if input revoked the generation.
         up.postToPid(app.processIdentifier)
-      }
-    }
+      })
   } else {
     guard let frame = axRect(element), !frame.isEmpty,
       let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2,
-        wheel1: -Int32(number(request, "deltaY")), wheel2: -Int32(number(request, "deltaX")), wheel3: 0)
+        wheel1: -Int32(number(request, "deltaY").rounded(.awayFromZero)), wheel2: -Int32(number(request, "deltaX").rounded(.awayFromZero)), wheel3: 0)
     else { throw Failure("ForegroundRequired", "reason", "unsupported-in-background") }
     _ = try onScreenWindow(window, pid: app.processIdentifier)
     event.location = CGPoint(x: frame.midX, y: frame.midY)
@@ -100,6 +102,11 @@ func backgroundEvents(_ request: [String: Any], _ host: [String: Any]) throws ->
     try checkPermit(request)
     markActionStarted(request)
     event.postToPid(app.processIdentifier)
+    posted = true
+  }
+  } catch {
+    if posted { throw Failure("OutcomeUnknown") }
+    throw error
   }
   succeeded = true
   try endBackgroundAction(dispatch, succeeded: true)

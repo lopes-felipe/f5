@@ -76,7 +76,10 @@ pub fn background_event_app_allowed(app: &str) -> bool {
     if std::env::args().any(|arg| arg == format!("--rehearse-background-events={app}"))
         && table["backgroundEventCandidates"]["win32"]
             .as_array()
-            .is_some_and(|apps| apps.iter().any(|id| id.as_str() == Some(app)))
+            .is_some_and(|apps| {
+                apps.iter()
+                    .any(|id| id.as_str().is_some_and(|id| id.eq_ignore_ascii_case(app)))
+            })
     {
         return true;
     }
@@ -148,6 +151,21 @@ pub fn system_process(executable: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn posted_keys_cannot_silently_drop_shortcut_modifiers() {
+        for raw in ["Control+A", "Control+Z", "Alt+A", "Shift+Left", "Shift+Tab"] {
+            assert!(
+                !background_chord_supported(&parse_chord(raw).unwrap()),
+                "{raw}"
+            );
+        }
+        for raw in ["Shift+A", "Down", "x"] {
+            assert!(
+                background_chord_supported(&parse_chord(raw).unwrap()),
+                "{raw}"
+            );
+        }
+    }
     #[test]
     fn window_key_messages_include_extended_scan_and_balanced_release_bits() {
         assert_eq!(message_key_flags(0x41, 0x1e, false) as u32, 0x001e0001);
@@ -309,6 +327,14 @@ mod release_tests {
 }
 
 /// LPARAM for process-directed key messages, including navigation's extended-key bit.
+pub fn background_chord_supported(keys: &[u16]) -> bool {
+    !keys.contains(&0x11)
+        && !keys.contains(&0x12)
+        && (!keys.contains(&0x10)
+            || keys.last().is_some_and(
+                |key| matches!(*key, 0x20 | 0x30..=0x39 | 0x41..=0x5a | 0xba..=0xc0 | 0xdb..=0xde),
+            ))
+}
 pub fn message_key_flags(code: u16, scan: u32, up: bool) -> isize {
     let extended = matches!(code, 0x21..=0x28 | 0x2d | 0x2e | 0xa3 | 0xa5);
     (1u32

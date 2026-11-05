@@ -566,7 +566,7 @@ func installMonitor() {
           inputSequence += 1
         }
         guard let kind else { return false }
-        if kind == .scroll, let last = pendingInputs.last, last.kind == .scroll,
+        if kind == .scroll || kind == .dragStart, let last = pendingInputs.last, last.kind == kind,
           hypot(last.location.x - event.location.x, last.location.y - event.location.y) < 20
         {
           return false
@@ -2224,9 +2224,11 @@ DispatchQueue.global(qos: .userInteractive).async {
             "error": ["_tag": "Execution", "message": "Computer target watch limit reached."]])
           continue
         }
-        conflictQueue.sync { refreshWindowCache(); resolveInputs() }
+        conflictQueue.async {
+          refreshWindowCache(); resolveInputs()
         emit(["type": "response", "requestId": message["requestId"] ?? "",
           "result": targetReadiness(appId)])
+        }
       case "watchRelease":
         let appId = string(message, "appId")
         let owner = string(message, "owner")
@@ -2241,9 +2243,11 @@ DispatchQueue.global(qos: .userInteractive).async {
             "error": ["_tag": "Execution", "message": "Computer target is not watched."]])
           continue
         }
-        conflictQueue.sync { refreshWindowCache(); resolveInputs() }
+        conflictQueue.async {
+          refreshWindowCache(); resolveInputs()
         emit(["type": "response", "requestId": message["requestId"] ?? "",
           "result": targetReadiness(appId)])
+        }
       case "permit":
         let duration = Double(integer(message, "expiresInMs")) / 1000
         // The first permit fixes the scope; renewals carry only the generation. A permit with

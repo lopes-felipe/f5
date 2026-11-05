@@ -442,7 +442,8 @@ export class ComputerAutomationBrokerRuntime {
       if (message.type === "rememberedChanged") {
         for (const session of message.revokedSessions ?? [])
           if (this.bindings.get(session.threadId)?.generation === session.sessionGeneration)
-            this.access.revokeSessionApproval(session.threadId);
+            if (message.backgroundOnly) this.access.revokeBackgroundApproval(session.threadId);
+            else this.access.revokeSessionApproval(session.threadId);
         void this.access.refreshRemembered(message.projectId).catch(() => undefined);
       }
       if (
@@ -517,7 +518,7 @@ export class ComputerAutomationBrokerRuntime {
   }
   async initialize(): Promise<void> {
     await this.host.handshake();
-    await this.access.initialize();
+    if (!this.host.awaitingHandshake()) await this.access.initialize();
     this.initialized = true;
   }
   bindSession(threadId: string, generation: string, provider: ComputerAgentProvider): void {
@@ -1329,6 +1330,15 @@ export class ComputerAutomationBrokerRuntime {
         message: `Background computer control is unavailable (${background.reason ?? "unknown"}); set Computer use to foreground mode in Settings.`,
       });
     const takeover = binding.holder?.scope.kind === "takeover" ? binding.holder.scope : undefined;
+    if (
+      (op === "key" || (op === "scroll" && input.elementRef !== undefined)) &&
+      !appId &&
+      !takeover
+    )
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Specify app: the app to act in.",
+      });
     if (input.executionMode === "background") {
       if (takeover && !classifyOnly) this.endTakeover(ctx.threadId, binding);
     } else if (takeover && (appId === undefined || appId === takeover.appId)) return "foreground";
@@ -1729,7 +1739,11 @@ export class ComputerAutomationBrokerRuntime {
         sessionGeneration: binding.generation,
         turnId,
       });
-    if (this.executionStates.delete(threadId)) this.publishUse();
+    if (
+      ["waiting-user", "waiting-agent"].includes(this.executionStates.get(threadId)?.state ?? "") &&
+      this.executionStates.delete(threadId)
+    )
+      this.publishUse();
     ++binding.turnRevision;
     // Startup waiters are pinned to the lifecycle turn before resolving context.
     const waiter = this.waits.get(threadId);

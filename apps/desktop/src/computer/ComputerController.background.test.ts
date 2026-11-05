@@ -203,10 +203,13 @@ describe("background computer control", () => {
       rejectAction(new ComputerControlError({ _tag: "OutcomeUnknown" }));
       await rejected;
       expect(h.request).toHaveBeenCalledTimes(1);
+      await expect(
+        h.controller.invoke(envelope("inspect-draining", b, { op: "inspect" })),
+      ).rejects.toMatchObject({ error: { _tag: "TargetBlocked", kind: "foreground-busy" } });
       await vi.waitFor(() => expect(h.helper.drain).toHaveBeenCalled());
       drain();
       await expect(second).resolves.toEqual({ ok: true });
-      expect(h.request).toHaveBeenCalledTimes(2);
+      expect(h.request).toHaveBeenCalledTimes(3);
     } finally {
       h.controller.close();
     }

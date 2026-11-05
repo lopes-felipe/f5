@@ -76,7 +76,10 @@ export function computerUseBannerText(
       : null;
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
-  const state = pausedLocally && holder.state !== "recovery" ? "paused" : holder.state;
+  const state =
+    pausedLocally && ["active", "waiting-user", "waiting-agent"].includes(holder.state)
+      ? "paused"
+      : holder.state;
   switch (state) {
     case "paused":
       return `Computer control paused${cause ? ` · ${cause}` : ""}`;

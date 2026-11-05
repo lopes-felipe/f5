@@ -67,7 +67,13 @@ export function RememberedComputerApps({ projectId }: { projectId?: ProjectId })
                   allowTyping: grant.allowTyping,
                   policyVersion: 1,
                 },
-                persistence: "session-only" as const,
+                ...("persistence" in grant &&
+                (grant.persistence === "durable" || grant.persistence === "session-only")
+                  ? { persistence: grant.persistence }
+                  : {}),
+                ...("persistenceReason" in grant && typeof grant.persistenceReason === "string"
+                  ? { reason: grant.persistenceReason }
+                  : {}),
               },
             ],
       ),

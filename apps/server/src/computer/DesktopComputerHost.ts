@@ -46,6 +46,7 @@ export class DesktopComputerHost {
   >();
   private readonly listeners = new Set<(message: DesktopComputerHostMessage) => void>();
   private connected = false;
+  private awaitingHost = false;
   private hostCapabilities = new Set<string>();
   constructor(
     readonly profileId: string,
@@ -55,6 +56,7 @@ export class DesktopComputerHost {
   ) {
     if (!enabled || !ipc.send || ipc.connected === false) return;
     this.connected = true;
+    this.awaitingHost = true;
     this.state = {
       available: false,
       reason: "no-host",
@@ -149,12 +151,7 @@ export class DesktopComputerHost {
   }
   /** Main sends capabilities before status; a legacy host settles readiness with status alone. */
   async handshake(): Promise<void> {
-    if (
-      !this.connected ||
-      this.hostCapabilities.size ||
-      this.state.available ||
-      this.state.detail !== "Waiting for desktop host."
-    )
+    if (!this.connected || this.hostCapabilities.size || this.state.available || !this.awaitingHost)
       return;
     await new Promise<void>((resolve) => {
       const off = this.onMessage((message) => {
@@ -168,6 +165,9 @@ export class DesktopComputerHost {
         resolve();
       }, 2000);
     });
+  }
+  awaitingHandshake(): boolean {
+    return this.connected && this.awaitingHost;
   }
   supportsAgentIdentity(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_AGENT_IDENTITY_CAPABILITY);
@@ -225,8 +225,14 @@ export class DesktopComputerHost {
       this.disconnect();
       return;
     }
-    if (message.type === "hostCapabilities") this.hostCapabilities = new Set(message.capabilities);
-    if (message.type === "status") this.state = message.status;
+    if (message.type === "hostCapabilities") {
+      this.hostCapabilities = new Set(message.capabilities);
+      this.awaitingHost = false;
+    }
+    if (message.type === "status") {
+      this.state = message.status;
+      this.awaitingHost = false;
+    }
     if (message.type === "openExternalUrlResult") {
       const pending = this.browserPending.get(message.id);
       if (pending) {

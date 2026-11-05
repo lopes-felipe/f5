@@ -23,6 +23,32 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => ({}),
 }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
+it.each(["paused", "recovery"] as const)(
+  "uses server-only %s state after a renderer reload",
+  async (state) => {
+    window.desktopBridge = { computerAutomation: { setPaused: vi.fn() } } as never;
+    useAgentComputerActivityStore.getState().setLeases({
+      holders: [
+        {
+          threadId,
+          backend: "native",
+          delivery: "foreground",
+          state,
+          leaseHeld: false,
+        },
+      ],
+    });
+    const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+    try {
+      await expect
+        .element(page.getByText(state === "paused" ? "Paused" : "Needs recovery", { exact: true }))
+        .toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  },
+);
 it.each([
   ["waiting-user", "background"],
   ["waiting-agent", "background"],
@@ -58,6 +84,12 @@ it.each([
         : "Waiting for another agent";
     await expect.element(page.getByText(text, { exact: true }).first()).toBeVisible();
     await expect.element(page.getByTestId("computer-use-banner")).toHaveClass("border-border");
+    await expect
+      .element(page.getByRole("button", { name: "Pause", exact: true }).first())
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Stop", exact: true }).first())
+      .toBeVisible();
     await expect
       .element(page.getByRole("button", { name: "Resume", exact: true }))
       .not.toBeInTheDocument();

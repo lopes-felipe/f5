@@ -115,6 +115,48 @@ function fixture(
     event: (message: Record<string, unknown>) => event(message),
   };
 }
+it("arms a new takeover after an app yield without inheriting the old yielded generation", async () => {
+  const h = fixture();
+  try {
+    const held = await h.acquire();
+    h.event({
+      type: "targetInterrupted",
+      cause: "frontmost",
+      executionGeneration: held.executionGeneration,
+    });
+    await vi.waitFor(() => expect(h.lease.holders()).toEqual([]));
+    const takeover = {
+      ...h.holder,
+      scope: { kind: "takeover" as const, appId: "app", approvalReceipt: "approval" },
+    };
+    const armed = h.lease.armTakeover(h.lease.reserveTakeover(takeover), "receipt");
+    expect(h.controller.cooperation.yielded.size).toBe(0);
+    expect(h.helper.control).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "permit",
+        executionGeneration: armed.executionGeneration,
+      }),
+    );
+  } finally {
+    h.controller.close();
+  }
+});
+it("clears retained foreground waiting state when its lease is released", async () => {
+  const h = fixture({ kind: "foreground" });
+  try {
+    const held = await h.acquire();
+    h.event({
+      type: "physicalInput",
+      cause: "move",
+      executionGeneration: held.executionGeneration,
+    });
+    h.lease.release(held);
+    expect(h.controller.cooperation.yielded.size).toBe(0);
+    expect(h.state).toHaveBeenLastCalledWith("p", expect.objectContaining({ state: null }));
+  } finally {
+    h.controller.close();
+  }
+});
 it("does not shorten native activity dwell when the wall clock jumps forward", async () => {
   const h = fixture();
   let clock: ReturnType<typeof vi.spyOn> | undefined;

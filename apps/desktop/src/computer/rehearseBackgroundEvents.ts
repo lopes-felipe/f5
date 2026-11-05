@@ -22,7 +22,7 @@ if (
   !appId ||
   !output ||
   process.env.F5_COMPUTER_BACKGROUND_EVENTS_REHEARSAL !== "1" ||
-  !BACKGROUND_EVENT_CANDIDATES[platform].includes(appId)
+  !BACKGROUND_EVENT_CANDIDATES[platform].some((id) => id.toLowerCase() === appId.toLowerCase())
 )
   throw new Error(
     "Use an interactive desktop, F5_COMPUTER_BACKGROUND_EVENTS_REHEARSAL=1, --helper <debug helper>, --app <candidate id>, --output <new report.json>. Prepare a disposable scrollable document and leave its app first.",
