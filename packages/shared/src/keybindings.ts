@@ -4,6 +4,7 @@ import {
   type KeybindingWhenNode,
   MAX_KEYBINDINGS_COUNT,
   MAX_WHEN_EXPRESSION_DEPTH,
+  MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingRule,
   type ResolvedKeybindingsConfig,
@@ -85,6 +86,16 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     when: "isElectron && !terminalFocus && !dialogFocus",
   },
   {
+    key: "mod+alt+arrowup",
+    command: "composer.effortUp",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+alt+arrowdown",
+    command: "composer.effortDown",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  {
     key: "mod+shift+a",
     command: "composer.runtimeMode",
     when: "isElectron && !terminalFocus && !dialogFocus",
@@ -143,6 +154,24 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "ctrl+tab", command: "thread.switchRecentNext" },
   { key: "ctrl+shift+tab", command: "thread.switchRecentPrevious" },
   { key: "alt+tab", command: "model.switchRecent" },
+  {
+    key: "mod+alt+arrowright",
+    command: "model.favorite.next",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+alt+arrowleft",
+    command: "model.favorite.previous",
+    when: "!terminalFocus && !dialogFocus",
+  },
+  // Literal ctrl on every platform: macOS keeps cmd+N for the open picker's row
+  // jumps. Elsewhere ctrl+N is that same key, so the picker owns it while open.
+  // Browsers reserve ctrl+1..9 for tab switching, hence desktop-only.
+  ...MODEL_FAVORITE_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: `ctrl+${index + 1}`,
+    command,
+    when: "isElectron && !terminalFocus && !dialogFocus && !modelPickerOpen",
+  })),
   { key: "mod+shift+p", command: "prHub.open", when: "!terminalFocus" },
   { key: "mod+p", command: "palette.files", when: "!terminalFocus" },
   { key: "mod+shift+f", command: "projectContentSearch.toggle", when: "!terminalFocus" },

@@ -1,4 +1,5 @@
 import {
+  MODEL_FAVORITE_KEYBINDING_COMMANDS,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   STATIC_KEYBINDING_COMMANDS,
   type KeybindingCommand,
@@ -138,6 +139,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "modelPicker.previousProvider",
       "modelPicker.nextProvider",
       "model.switchRecent",
+      ...MODEL_FAVORITE_KEYBINDING_COMMANDS,
     ],
   },
   {

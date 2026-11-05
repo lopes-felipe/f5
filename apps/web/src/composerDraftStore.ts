@@ -853,6 +853,8 @@ interface ComposerDraftStoreState {
     replaceNonEmpty?: boolean | undefined;
     dropInvalidTerminalContexts?: boolean | undefined;
     warnings?: ReadonlyArray<string> | undefined;
+    /** Moving a draft between projects expects re-authorization; only losses are worth reporting. */
+    omitReauthorizationWarning?: boolean | undefined;
   }) => Promise<PromptStashRestoreResult>;
   deletePromptStash: (stashId: string) => void;
 }
@@ -3380,7 +3382,11 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           codexFastMode: selection.codexFastMode === true,
         };
         const warnings = [...(input.warnings ?? [])];
-        if (stash.sourceProjectId !== input.projectId && stash.draft.filePaths.length > 0) {
+        if (
+          input.omitReauthorizationWarning !== true &&
+          stash.sourceProjectId !== input.projectId &&
+          stash.draft.filePaths.length > 0
+        ) {
           warnings.push("Saved file references were re-authorized for this project.");
         }
         if (invalidTerminalContextCount > 0) {

@@ -4803,6 +4803,156 @@ it("reads one bounded native item page for an owned child thread", async () => {
   expect(sendRequest).toHaveBeenCalledTimes(1);
 });
 
+it.each(
+  ["started", "interacted", "completed", "interrupted"].flatMap((kind) => [
+    {
+      kind,
+      type: "subAgentActivity",
+      identity: { agentThreadId: "native-child", agentPath: "/root/child" },
+    },
+    {
+      kind,
+      type: "sub_agent_activity",
+      identity: { agent_thread_id: " native-child ", agent_path: " /root/child " },
+    },
+  ]),
+)(
+  "registers children from parent subagent activity ($type, $kind) for transcript reads",
+  async ({ kind, type, identity }) => {
+    const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
+    const threadId = asThreadId("thread_1");
+    (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+    const notify = (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification.bind(manager);
+    notify(context, {
+      method: "item/completed",
+      params: {
+        threadId: "thread_1",
+        item: {
+          type,
+          kind,
+          ...identity,
+        },
+      },
+    });
+    expect(updateSession).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        resumeCursor: { threadId: "thread_1", childThreadIds: ["native-child"] },
+      }),
+    );
+    sendRequest.mockResolvedValue({ data: [], nextCursor: null });
+    expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toEqual({
+      data: [],
+      nextCursor: null,
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
+      threadId: "native-child",
+      cursor: null,
+      limit: 50,
+      sortDirection: "asc",
+    });
+    expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+  },
+);
+
+it.each([
+  { threadId: "other-parent", kind: "started", agentPath: "/root/child" },
+  { threadId: "review-1", kind: "started", agentPath: "/root/child" },
+  { threadId: undefined, kind: "started", agentPath: "/root/child" },
+  { threadId: "thread_1", kind: "unknown", agentPath: "/root/child" },
+  { threadId: "thread_1", kind: "started", agentPath: "" },
+  { threadId: "thread_1", kind: "started", agentPath: "  " },
+  { threadId: "thread_1", kind: "started", agentPath: "/root/child", agentThreadId: "  " },
+  { threadId: "thread_1", kind: "started", agentPath: "/root/child", missingPrimary: true },
+  { threadId: "thread_1", kind: "started", agentPath: "/root/child", type: "collab agent" },
+  { threadId: "thread_1", kind: "collab agent", agentPath: "/root/child", type: undefined },
+])(
+  "refuses foreign or malformed subagent ownership ($threadId, $kind, $agentPath)",
+  async (input) => {
+    const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
+    Object.assign(context, { reviewThreadIds: new Set(["review-1"]) });
+    if ("missingPrimary" in input) Object.assign(context.session, { resumeCursor: {} });
+    const threadId = asThreadId("thread_1");
+    (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/completed",
+      params: {
+        threadId: input.threadId,
+        item: {
+          type: "type" in input ? input.type : "subAgentActivity",
+          kind: input.kind,
+          agentThreadId: "agentThreadId" in input ? input.agentThreadId : "foreign-child",
+          agentPath: input.agentPath,
+          receiverThreadIds: ["foreign-child"],
+        },
+      },
+    });
+    expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+  },
+);
+
+it("persists new child ownership at capacity without refreshing duplicate activity", async () => {
+  const { manager, context, updateSession, sendRequest } = createThreadControlHarness();
+  const threadId = asThreadId("thread_1");
+  const children = new Set(Array.from({ length: 512 }, (_, i) => "child-" + i));
+  Object.assign(context, { childThreadIds: children });
+  (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions.set(threadId, context);
+  vi.spyOn(
+    manager as unknown as { emitEvent: (...args: unknown[]) => void },
+    "emitEvent",
+  ).mockImplementation(() => {});
+  const notify = (
+    manager as unknown as {
+      handleServerNotification: (context: unknown, notification: unknown) => void;
+    }
+  ).handleServerNotification.bind(manager);
+  const notification = {
+    method: "item/completed",
+    params: {
+      threadId: "thread_1",
+      item: {
+        type: "subAgentActivity",
+        kind: "completed",
+        agentThreadId: "newest-child",
+        agentPath: "/root/newest",
+      },
+    },
+  };
+  notify(context, notification);
+  expect(children.size).toBe(512);
+  expect(children.has("child-0")).toBe(false);
+  expect(children.has("newest-child")).toBe(true);
+  expect(updateSession).toHaveBeenCalledWith(context, {
+    resumeCursor: { threadId: "thread_1", childThreadIds: [...children] },
+  });
+  notify(context, notification);
+  expect(updateSession).toHaveBeenCalledTimes(1);
+  sendRequest.mockResolvedValue({ data: [], nextCursor: null });
+  expect(await manager.readChildThreadItems(threadId, "newest-child", null, 50)).toEqual({
+    data: [],
+    nextCursor: null,
+  });
+  expect(await manager.readChildThreadItems(threadId, "child-0", null, 50)).toBeNull();
+});
+
 it("reads raw child transcript pages with ownership and envelope checks", async () => {
   const { manager, context, sendRequest } = createThreadControlHarness();
   const threadId = asThreadId("thread_1");

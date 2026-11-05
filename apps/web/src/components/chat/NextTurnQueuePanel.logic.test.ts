@@ -118,11 +118,11 @@ describe("describeQueueBlockedState", () => {
 });
 
 describe("buildQueueRowDisplay", () => {
-  const item = (commandId: string, text: string) =>
+  const item = (commandId: string, text: string, messageId = `message:${commandId}`) =>
     ({
       command: {
         commandId: CommandId.makeUnsafe(commandId),
-        message: { text, attachments: [] },
+        message: { messageId, text, attachments: [] },
       },
     }) as unknown as NextTurnQueueItem;
 
@@ -132,6 +132,18 @@ describe("buildQueueRowDisplay", () => {
         item("answer-delivery:1", JSON.stringify({ 0: { answers: ["Connected successfully"] } })),
       ).label,
     ).toBe("Answer · Connected successfully");
+  });
+
+  it("still recognizes an answer after an edit or retry renamed its command", () => {
+    expect(
+      buildQueueRowDisplay(
+        item(
+          "edited-command",
+          JSON.stringify({ 0: { answers: ["A", "B"] }, 1: { answers: ["C"] } }),
+          "answer:respond#retry",
+        ),
+      ).label,
+    ).toBe("Answer · A · B · C");
   });
 
   it("keeps the raw text for malformed answers and ordinary turns", () => {
@@ -168,7 +180,7 @@ const imageOnlyItem = (
   ({
     command: {
       commandId: CommandId.makeUnsafe("image-only"),
-      message: { text, attachments },
+      message: { messageId: "image-only-message", text, attachments },
     },
   }) as unknown as NextTurnQueueItem;
 

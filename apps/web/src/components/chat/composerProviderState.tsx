@@ -76,6 +76,19 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
 export function getComposerReasoningStep(
   input: ComposerProviderStateInput & { direction: 1 | -1 },
 ) {
+  const next = stepEffortOptions(getComposerEffortDescriptors(input), input.direction);
+  if (!next) return null;
+  const updatedIds = new Set(next.map((entry) => entry.id));
+  return [...(input.modelOptions ?? []).filter((entry) => !updatedIds.has(entry.id)), ...next];
+}
+
+/**
+ * Option descriptors as the effort controls see them; Codex's effort comes from
+ * the same reported/fallback policy as its picker.
+ */
+export function getComposerEffortDescriptors(
+  input: ComposerProviderStateInput,
+): ReadonlyArray<ProviderOptionDescriptor> {
   const reported = getProviderModelCapabilities(input.models, input.model, input.provider);
   let descriptors = getProviderOptionDescriptors({
     caps: reported,
@@ -105,10 +118,7 @@ export function getComposerReasoningStep(
       : [];
     descriptors = [...descriptors.filter((entry) => entry.id !== "reasoningEffort"), ...effort];
   }
-  const next = stepEffortOptions(descriptors, input.direction);
-  if (!next) return null;
-  const updatedIds = new Set(next.map((entry) => entry.id));
-  return [...(input.modelOptions ?? []).filter((entry) => !updatedIds.has(entry.id)), ...next];
+  return descriptors;
 }
 
 function renderTraitsControl(

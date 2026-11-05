@@ -842,6 +842,56 @@ layer("NextTurnQueueStore", (it) => {
     }),
   );
 
+  it.effect("keeps a queued answer linked to its Q&A card across edit, retry and duplicate", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("queue-answer-link-thread");
+      yield* seedThread(threadId);
+      const answer = command(7, threadId);
+      const created = yield* store.insertSubmission({
+        submissionId: CommandId.makeUnsafe("answer-delivery:respond"),
+        requestHash: "answer-hash",
+        itemId: CommandId.makeUnsafe("answer-delivery:respond"),
+        command: {
+          ...answer,
+          commandId: CommandId.makeUnsafe("answer-delivery:respond"),
+          message: { ...answer.message, messageId: MessageId.makeUnsafe("answer:respond") },
+        },
+        atHead: false,
+      });
+      if (created.kind !== "created") return assert.fail("expected a new queue item");
+      const edited = yield* store.updateCommand({
+        itemId: created.item.itemId,
+        expectedUpdatedAt: created.item.updatedAt,
+        update: (current) => ({ ...current, model: "gpt-5.2-codex" }),
+      });
+      yield* store.markFailed({
+        itemId: edited.itemId,
+        leaseOwner: null,
+        errorCode: "rejected",
+        errorDetail: "rejected",
+      });
+      const failed = yield* store.getItem(edited.itemId);
+      const retried = yield* store.retry({
+        itemId: edited.itemId,
+        expectedUpdatedAt: failed!.updatedAt,
+      });
+      const duplicated = yield* store.duplicate({ itemId: retried.itemId });
+      const ids = [edited, retried, duplicated].map((item) => item.command.message.messageId);
+      for (const id of ids) assert.match(id, /^answer:respond#.+/);
+      assert.equal(new Set(ids).size, 3);
+      // An ordinary queued turn still gets a plain fresh id.
+      const plain = yield* insert(store, 8, threadId);
+      if (plain.kind !== "created") return assert.fail("expected a new queue item");
+      const plainEdited = yield* store.updateCommand({
+        itemId: plain.item.itemId,
+        expectedUpdatedAt: plain.item.updatedAt,
+        update: (current) => current,
+      });
+      assert.notMatch(plainEdited.command.message.messageId, /^answer:/);
+    }),
+  );
+
   it.effect(
     "replays identical submissions, rejects changed hashes, and keeps revisions monotonic",
     () =>
