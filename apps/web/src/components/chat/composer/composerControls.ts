@@ -13,6 +13,7 @@ import type { ExpandedImagePreview } from "~/components/chat/ExpandedImagePrevie
 import type { ImageAttachmentActionItem } from "~/components/chat/imageAttachmentActions";
 import type { ProviderInstanceModelPicker } from "~/components/chat/ProviderInstanceModelPicker";
 import type { ComposerImageAttachment } from "~/composerDraftStore";
+import type { FavoritePreset } from "~/favoritePresets";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { NextTurnQueueThreadState } from "~/nextTurnQueueStore";
 import type {
@@ -80,6 +81,8 @@ export interface ComposerModelControls {
   onProviderModelSelect: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["onInstanceModelChange"];
+  /** The favorite preset the composer currently shows, marked active in the picker. */
+  activeFavoritePreset?: FavoritePreset | null;
   /** Multi-model fan-out for a new thread's first message (empty draft, git project). */
   fanOutModels?: React.ComponentProps<typeof ProviderInstanceModelPicker>["selectedModels"];
   onToggleFanOutModel?: React.ComponentProps<typeof ProviderInstanceModelPicker>["onToggleModel"];

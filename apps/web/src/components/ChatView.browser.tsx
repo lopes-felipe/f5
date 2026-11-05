@@ -6227,6 +6227,84 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("applies favorite presets by number and cycles them with their pinned efforts", async () => {
+    persistAppSettings({
+      favorites: [
+        { provider: "codex", model: "gpt-5.4", effort: "low" },
+        { provider: "codex", model: "gpt-5.5", effort: "xhigh" },
+      ],
+    });
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep this draft");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-favorite-presets" as MessageId,
+        targetText: "Favorite presets target",
+      }),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [
+            {
+              command: "model.favorite.1",
+              shortcut: {
+                key: "1",
+                metaKey: false,
+                ctrlKey: true,
+                shiftKey: false,
+                altKey: false,
+                modKey: false,
+              },
+              whenAst: { type: "not", node: { type: "identifier", name: "modelPickerOpen" } },
+            },
+            {
+              command: "model.favorite.next",
+              shortcut: {
+                key: "arrowright",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: true,
+                modKey: true,
+              },
+            },
+          ],
+        };
+      },
+    });
+    const draft = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const next = useMetaForMod
+      ? "{Meta>}{Alt>}{ArrowRight}{/Alt}{/Meta}"
+      : "{Control>}{Alt>}{ArrowRight}{/Alt}{/Control}";
+    try {
+      const editor = await waitForComposerEditor();
+      await userEvent.click(editor);
+      await userEvent.keyboard("{Control>}1{/Control}");
+      await vi.waitFor(() => {
+        expect(draft()?.model).toBe("gpt-5.4");
+        expect(draft()?.modelOptions?.codex).toMatchObject({ reasoningEffort: "low" });
+      });
+      await vi.waitFor(() => expect(document.body.textContent ?? "").toContain("· low (1/2)"));
+
+      await userEvent.keyboard(next);
+      await vi.waitFor(() => {
+        expect(draft()?.model).toBe("gpt-5.5");
+        expect(draft()?.modelOptions?.codex).toMatchObject({ reasoningEffort: "xhigh" });
+      });
+
+      await userEvent.keyboard(next);
+      await vi.waitFor(() => {
+        expect(draft()?.model).toBe("gpt-5.4");
+        expect(draft()?.modelOptions?.codex).toMatchObject({ reasoningEffort: "low" });
+      });
+      expect(draft()?.prompt).toBe("Keep this draft");
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("sends an explicit Codex effort for an untouched draft", async () => {
     // The draft stores no effort; the turn must still name the shown one so a
     // session reporting another default cannot substitute it.

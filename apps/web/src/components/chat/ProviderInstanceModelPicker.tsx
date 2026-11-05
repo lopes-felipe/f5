@@ -1,6 +1,19 @@
 import { filterPickerVisibleModels } from "./providerIconUtils";
 import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
-import { resolveShortcutCommand } from "~/keybindings";
+import {
+  modelPickerJumpCommandForIndex,
+  modelPickerJumpIndexFromCommand,
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
+} from "~/keybindings";
+import {
+  type FavoritePreset,
+  isSameFavoritePreset,
+  isSelectableProviderInstance,
+  listUsableFavoritePresets,
+  removeFavoritePreset,
+  toggleModelFavorite,
+} from "~/favoritePresets";
 import {
   type ModelSlug,
   type ProviderDriverKind,
@@ -38,6 +51,10 @@ import { getModelCompanyLabel } from "./providerInstanceModelGrouping";
 
 interface InstanceModelItem extends ModelPickerModelOption {
   readonly instance: ProviderInstanceEntry;
+  /** Set on Favorites rows: the stored preset, which may pin an effort. */
+  readonly preset?: FavoritePreset | undefined;
+  /** Zero-based favorite number shared with `model.favorite.N`, across all instances. */
+  readonly presetIndex?: number | undefined;
 }
 
 type ModelPickerSource =
@@ -58,17 +75,13 @@ function modelKey(instanceId: ProviderInstanceId, model: string): string {
   return `${instanceId}\0${model}`;
 }
 
-function isSelectable(instance: ProviderInstanceEntry): boolean {
-  return (
-    instance.enabled &&
-    instance.isAvailable &&
-    instance.status !== "error" &&
-    instance.status !== "disabled"
-  );
+function itemKey(item: InstanceModelItem): string {
+  const base = modelKey(item.instance.instanceId, item.slug);
+  return item.preset ? `${base}\0${item.preset.effort ?? ""}` : base;
 }
 
 function unavailableReason(instance: ProviderInstanceEntry): string | null {
-  if (isSelectable(instance)) return null;
+  if (isSelectableProviderInstance(instance)) return null;
   return (
     instance.snapshot.message ??
     instance.snapshot.unavailableReason ??
@@ -117,11 +130,20 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"] | undefined;
   triggerClassName?: string | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
+  /** `preset` is the picked Favorites row's stored preset, only with `favoritePresets`. */
   onInstanceModelChange: (
     instanceId: ProviderInstanceId,
     driver: ProviderDriverKind,
     model: ModelSlug,
-  ) => void;
+    preset?: FavoritePreset,
+  ) => unknown;
+  /**
+   * Favorites rows are presets: a model may appear once per pinned effort, and
+   * picking one passes the preset. Off, Favorites lists each model once.
+   */
+  favoritePresets?: boolean;
+  /** The preset the composer currently shows, marked active among the Favorites rows. */
+  activePreset?: FavoritePreset | null;
   /** Models chosen for multi-model fan-out; more than one shows a combined trigger. */
   selectedModels?: ReadonlyArray<{
     readonly instanceId: ProviderInstanceId;
@@ -160,7 +182,59 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
         : { kind: "favorites" },
   );
   const isSearching = search.trim().length > 0;
+  const showFavorites = !isSearching && selectedSource.kind === "favorites";
+  // Favorites follow the stored order. With presets on, rows carry their
+  // favorite number across every instance, so `mod+N` here and `model.favorite.N`
+  // name the same preset even when a locked thread hides other instances.
+  const favoriteItems = useMemo((): InstanceModelItem[] => {
+    if (!showFavorites) return [];
+    const optionFor = (instanceId: ProviderInstanceId, slug: string): ModelPickerModelOption =>
+      props.modelOptionsByInstance.get(instanceId)?.find((option) => option.slug === slug) ?? {
+        slug,
+        name: slug,
+      };
+    const seen = new Set<string>();
+    const out: InstanceModelItem[] = [];
+    const push = (item: InstanceModelItem) => {
+      const key = itemKey(item);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(item);
+    };
+    const visibleIds = new Set(visibleEntries.map((entry) => entry.instanceId));
+    listUsableFavoritePresets(settings.favorites, entries, props.modelOptionsByInstance).forEach(
+      (preset, presetIndex) => {
+        if (!visibleIds.has(preset.instance.instanceId)) return;
+        push({
+          ...optionFor(preset.instance.instanceId, preset.model),
+          instance: preset.instance,
+          ...(props.favoritePresets ? { preset: preset.favorite, presetIndex } : {}),
+        });
+      },
+    );
+    // Favorites on an unavailable instance stay visible (disabled) after the usable ones.
+    for (const favorite of settings.favorites) {
+      const instance = visibleEntries.find((entry) => entry.instanceId === favorite.provider);
+      if (!instance || isSelectableProviderInstance(instance)) continue;
+      push({
+        ...optionFor(instance.instanceId, favorite.model),
+        instance,
+        ...(props.favoritePresets ? { preset: favorite } : {}),
+      });
+    }
+    return out;
+  }, [
+    entries,
+    props.favoritePresets,
+    props.modelOptionsByInstance,
+    settings.favorites,
+    showFavorites,
+    visibleEntries,
+  ]);
   const groups = useMemo(() => {
+    if (showFavorites) {
+      return favoriteItems.length > 0 ? [{ company: "Favorites", items: favoriteItems }] : [];
+    }
     const byCompany = new Map<string, InstanceModelItem[]>();
     for (const instance of visibleEntries) {
       if (
@@ -182,13 +256,6 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       )) {
         const item = { ...model, instance } satisfies InstanceModelItem;
         if (!matchesSearch(item, search)) continue;
-        if (
-          !isSearching &&
-          selectedSource.kind === "favorites" &&
-          !favoriteKeys.has(modelKey(instance.instanceId, model.slug))
-        ) {
-          continue;
-        }
         const company = getModelCompanyLabel({
           driverKind: instance.driverKind,
           instanceDisplayName: instance.displayName,
@@ -215,6 +282,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       }),
     }));
   }, [
+    favoriteItems,
     favoriteKeys,
     isSearching,
     props.modelOptionsByInstance,
@@ -223,9 +291,26 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     props.selectedModels,
     search,
     selectedSource,
+    showFavorites,
     visibleEntries,
   ]);
   const items = useMemo(() => groups.flatMap((group) => group.items), [groups]);
+  // `mod+N` targets: favorite N on numbered preset rows, otherwise row N.
+  const jumpTargets = useMemo((): ReadonlyArray<InstanceModelItem | undefined> => {
+    const numbered = items.some((item) => item.presetIndex !== undefined);
+    return Array.from({ length: 9 }, (_, index) =>
+      numbered ? items.find((item) => item.presetIndex === index) : items[index],
+    );
+  }, [items]);
+  const jumpLabelByItem = useMemo(() => {
+    const labels = new Map<InstanceModelItem, string>();
+    jumpTargets.forEach((item, index) => {
+      const command = modelPickerJumpCommandForIndex(index);
+      const label = command ? shortcutLabelForCommand(props.keybindings ?? [], command) : null;
+      if (item && label) labels.set(item, label);
+    });
+    return labels;
+  }, [jumpTargets, props.keybindings]);
   const selectedOptions = selectedInstance
     ? (props.modelOptionsByInstance.get(selectedInstance.instanceId) ?? [])
     : [];
@@ -294,7 +379,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   }, [isOpen, props.disabled, setOpen]);
 
   const selectModel = (item: InstanceModelItem, additive = false) => {
-    if (props.disabled || !isSelectable(item.instance)) return;
+    if (props.disabled || !isSelectableProviderInstance(item.instance)) return;
     const resolved = resolveSelectableModel(
       item.instance.driverKind,
       item.slug,
@@ -306,9 +391,21 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       props.onToggleModel(item.instance.instanceId, item.instance.driverKind, resolved);
       return;
     }
-    props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
+    if (item.preset)
+      props.onInstanceModelChange(
+        item.instance.instanceId,
+        item.instance.driverKind,
+        resolved,
+        item.preset,
+      );
+    else props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
     setOpen(false);
   };
+  // The window keydown listener reads the latest rows without resubscribing per render.
+  const jumpTargetsRef = useRef({ jumpTargets, selectModel });
+  useEffect(() => {
+    jumpTargetsRef.current = { jumpTargets, selectModel };
+  });
   const fanOutCount = props.selectedModels?.length ?? 0;
   const isFanOutSelected = (item: InstanceModelItem) =>
     fanOutCount > 1 &&
@@ -316,16 +413,13 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       (entry) => entry.instanceId === item.instance.instanceId && entry.model === item.slug,
     );
 
+  // A preset row's star removes just that preset; elsewhere the star covers the model.
   const toggleFavorite = (item: InstanceModelItem) => {
-    const key = modelKey(item.instance.instanceId, item.slug);
-    const existing = settings.favorites;
-    const next = favoriteKeys.has(key)
-      ? existing.filter(
-          (favorite) =>
-            favorite.provider !== item.instance.instanceId || favorite.model !== item.slug,
-        )
-      : [...existing, { provider: item.instance.instanceId, model: item.slug }];
-    void updateSettings({ favorites: next });
+    void updateSettings({
+      favorites: item.preset
+        ? removeFavoritePreset(settings.favorites, item.preset)
+        : toggleModelFavorite(settings.favorites, item.instance.instanceId, item.slug),
+    });
   };
 
   useEffect(() => {
@@ -335,9 +429,18 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       const command = resolveShortcutCommand(event, props.keybindings ?? [], {
         context: { modelPickerOpen: true },
       });
+      const jumpIndex = modelPickerJumpIndexFromCommand(command ?? "");
+      if (jumpIndex !== null) {
+        const target = jumpTargetsRef.current.jumpTargets[jumpIndex];
+        if (!target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) jumpTargetsRef.current.selectModel(target);
+        return;
+      }
       if (command !== "modelPicker.previousProvider" && command !== "modelPicker.nextProvider")
         return;
-      const available = visibleEntries.filter(isSelectable);
+      const available = visibleEntries.filter(isSelectableProviderInstance);
       if (!available.length) return;
       const current =
         selectedSource.kind === "instance"
@@ -522,13 +625,25 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                           </span>
                         </div>
                         {group.items.map((item) => {
-                          const key = modelKey(item.instance.instanceId, item.slug);
-                          const isFavorite = favoriteKeys.has(key);
+                          const key = itemKey(item);
+                          const isFavorite = favoriteKeys.has(
+                            modelKey(item.instance.instanceId, item.slug),
+                          );
                           const reason = unavailableReason(item.instance);
                           const Icon = PROVIDER_ICON_BY_PROVIDER[item.instance.driverKind];
+                          const jumpLabel = jumpLabelByItem.get(item) ?? null;
+                          const presetEffort = item.preset?.effort;
+                          const isActive =
+                            fanOutCount <= 1 &&
+                            (item.preset && props.activePreset !== undefined
+                              ? props.activePreset !== null &&
+                                isSameFavoritePreset(item.preset, props.activePreset)
+                              : item.instance.instanceId === activeInstanceId &&
+                                item.slug === props.model);
                           return (
                             <div
                               key={key}
+                              data-model-picker-row={key}
                               className={cn(
                                 "group flex items-center gap-2 rounded-md px-2 py-1.5",
                                 reason ? "opacity-55" : "hover:bg-muted",
@@ -538,7 +653,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                 type="button"
                                 className="rounded p-1 text-muted-foreground opacity-45 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:cursor-not-allowed"
                                 aria-label={
-                                  isFavorite ? "Remove from favorites" : "Add to favorites"
+                                  item.preset
+                                    ? `Remove ${getDisplayModelName(item)}${presetEffort ? ` · ${presetEffort}` : ""} from favorites`
+                                    : isFavorite
+                                      ? "Remove from favorites"
+                                      : "Add to favorites"
                                 }
                                 onClick={() => toggleFavorite(item)}
                                 disabled={Boolean(reason)}
@@ -546,7 +665,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                 <StarIcon
                                   className={cn(
                                     "size-3.5",
-                                    isFavorite &&
+                                    (isFavorite || item.preset) &&
                                       "fill-current text-warning-foreground opacity-100",
                                   )}
                                 />
@@ -570,13 +689,19 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                 <span className="min-w-0 flex-1">
                                   <span className="flex items-center gap-2 text-xs font-medium">
                                     <span className="truncate">{getDisplayModelName(item)}</span>
+                                    {presetEffort ? (
+                                      <span
+                                        className="shrink-0 rounded border border-border px-1 text-2xs font-normal text-muted-foreground"
+                                        data-model-picker-preset-effort={presetEffort}
+                                      >
+                                        {presetEffort}
+                                      </span>
+                                    ) : null}
                                     {isFanOutSelected(item) ? (
                                       <span className="rounded border border-primary/30 bg-primary/10 px-1 text-2xs uppercase text-primary">
                                         Selected
                                       </span>
-                                    ) : fanOutCount <= 1 &&
-                                      item.instance.instanceId === activeInstanceId &&
-                                      item.slug === props.model ? (
+                                    ) : isActive ? (
                                       <span className="rounded border border-primary/30 bg-primary/10 px-1 text-2xs uppercase text-primary">
                                         Active
                                       </span>
@@ -587,6 +712,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                     {reason ? ` · ${reason}` : ""}
                                   </span>
                                 </span>
+                                {jumpLabel && !reason ? (
+                                  <kbd className="shrink-0 font-sans text-2xs text-faint-foreground tabular-nums">
+                                    {jumpLabel}
+                                  </kbd>
+                                ) : null}
                               </button>
                             </div>
                           );

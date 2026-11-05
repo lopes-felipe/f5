@@ -22,6 +22,7 @@ import { Switch } from "../../ui/switch";
 import { toastManager } from "../../ui/toast";
 
 export { PROVIDERS_SETTINGS_DESCRIPTORS } from "./ProvidersSettings.descriptors";
+import { withInstanceFavoriteModels } from "../../../favoritePresets";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "../ProviderInstanceCard";
 import { getDriverOption } from "../providerDriverMeta";
@@ -245,14 +246,16 @@ export function ProvidersSettings() {
     instanceId: ProviderInstanceId,
     nextFavoriteModels: ReadonlyArray<string>,
   ) => {
-    const favoriteModels = [
-      ...new Set(nextFavoriteModels.map((slug) => slug.trim()).filter((slug) => slug.length > 0)),
-    ];
+    const favoriteModels = nextFavoriteModels
+      .map((slug) => slug.trim())
+      .filter((slug) => slug.length > 0);
+    // Keeps pinned-effort presets and their positions for models that stay favorited.
     updateUnifiedSettings({
-      favorites: [
-        ...withoutProviderInstanceFavorites(unifiedSettings.favorites ?? [], instanceId),
-        ...favoriteModels.map((model) => ({ provider: instanceId, model })),
-      ],
+      favorites: withInstanceFavoriteModels(
+        unifiedSettings.favorites ?? [],
+        instanceId,
+        favoriteModels,
+      ),
     });
   };
 
@@ -389,9 +392,14 @@ export function ProvidersSettings() {
               hiddenModels: [],
               modelOrder: [],
             };
-            const favoriteModels = (unifiedSettings.favorites ?? [])
-              .filter((favorite) => favorite.provider === row.instanceId)
-              .map((favorite) => favorite.model);
+            // One entry per model: a model with several effort presets is one favorite here.
+            const favoriteModels = [
+              ...new Set(
+                (unifiedSettings.favorites ?? [])
+                  .filter((favorite) => favorite.provider === row.instanceId)
+                  .map((favorite) => favorite.model),
+              ),
+            ];
             const resetLabel = driverOption?.label ?? String(row.driver);
             return (
               <ProviderInstanceCard
