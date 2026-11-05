@@ -469,6 +469,57 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("divides the model and effort pickers only when reasoning controls render", async () => {
+    const modelOptionsByProvider = {
+      codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
+      claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+      cursor: [{ slug: "auto", name: "Auto" }],
+      opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
+      grok: [{ slug: "grok-build", name: "Grok Build" }],
+      antigravity: [],
+      muse: [],
+      acp: [],
+      pi: [],
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <>
+        <SlotRow
+          label="With reasoning"
+          provider="codex"
+          model="gpt-5-codex"
+          modelOptions={{ codex: { reasoningEffort: "high" } }}
+          modelOptionsByProvider={modelOptionsByProvider}
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+        <SlotRow
+          label="Without reasoning"
+          provider="cursor"
+          model="auto"
+          modelOptions={undefined}
+          modelOptionsByProvider={modelOptionsByProvider}
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+      </>,
+      { container: host },
+    );
+
+    try {
+      const withReasoning = page.getByRole("group", { name: "With reasoning" }).element();
+      const withoutReasoning = page.getByRole("group", { name: "Without reasoning" }).element();
+      expect(withReasoning.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(withReasoning.querySelector("button[aria-haspopup='menu']")?.textContent).toBe("High");
+      expect(withoutReasoning.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(withoutReasoning.querySelector("button[aria-haspopup='menu']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("omits Ultra for Astra and normalizes persisted Ultra to Max", async () => {
     const host = document.createElement("div");
     document.body.append(host);
