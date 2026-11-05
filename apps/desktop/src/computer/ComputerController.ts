@@ -175,6 +175,8 @@ export class ComputerController {
       renewal: (holder) => lease.renewal(holder),
       sweep: (head) => {
         for (const holder of lease.idleConflicts(head.scope, 10_000)) {
+          // Builtin processes can still act without a native job to track or drain.
+          if (holder.backend !== "native") continue;
           if (this.key(holder) === this.key(head)) continue;
           if (this.cooperation.yielded.has(this.key(holder))) continue;
           const key = this.key(holder);
