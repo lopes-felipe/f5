@@ -3586,49 +3586,53 @@ it.layer(
         }),
       ),
   );
-  it.effect("discovers linked worktrees in selected folders without importing a project", () =>
-    withHomeSandbox(
-      Effect.gen(function* () {
-        const storage = yield* StorageMaintenance,
-          settings = yield* ServerSettingsService,
-          sql = yield* SqlClient.SqlClient;
-        const repo = yield* Effect.promise(() => makeClonedRepo("f5-unregistered-discovery-"));
-        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
-        const target = NodePath.join(repo.dir, "unregistered-worktree");
-        runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
-        const previous = (yield* settings.getSettings).storageDiscovery;
-        yield* settings.updateSettings({
-          storageDiscovery: {
-            machineCleanupEnabled: false,
-            repositoryRoots: [repo.root, target],
-            searchProjectFolders: true,
-          },
-        });
-        yield* Effect.addFinalizer(() =>
-          settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
-        );
-        const report = yield* storage.inspect({ force: true });
-        const targets = report.categories.find((c) => c.id === "externalWorktrees")?.targets;
-        assert.equal(targets?.filter((t) => t.path === target).length, 1);
-        const reviewed = targets?.find((t) => t.path === target);
-        assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
-        const result = yield* storage.cleanup({
-          operationId: "unregistered-discovery",
-          scanId: report.scanId,
-          nonce: report.confirmationNonce,
-          categoryIds: ["externalWorktrees"],
-          targetSelections: [{ categoryId: "externalWorktrees", targetIds: [reviewed!.id] }],
-          confirmationText: "DELETE",
-          options: { vacuumAfterDeletes: false },
-        });
-        assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result.warnings));
-        assert.isFalse(yield* Effect.promise(() => pathExists(target)));
-        assert.include(localBranches(repo.root), "unregistered-worktree");
-        const projects =
-          yield* sql`SELECT project_id FROM projection_projects WHERE workspace_root = ${repo.root}`;
-        assert.lengthOf(projects, 0);
-      }),
-    ),
+  it.effect(
+    "discovers linked worktrees in selected folders without importing a project",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            settings = yield* ServerSettingsService,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-unregistered-discovery-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(repo.dir, "unregistered-worktree");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
+          const previous = (yield* settings.getSettings).storageDiscovery;
+          yield* settings.updateSettings({
+            storageDiscovery: {
+              machineCleanupEnabled: false,
+              repositoryRoots: [repo.root, target],
+              searchProjectFolders: true,
+            },
+          });
+          yield* Effect.addFinalizer(() =>
+            settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+          );
+          const report = yield* storage.inspect({ force: true });
+          const targets = report.categories.find((c) => c.id === "externalWorktrees")?.targets;
+          assert.equal(targets?.filter((t) => t.path === target).length, 1);
+          const reviewed = targets?.find((t) => t.path === target);
+          assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+          const result = yield* storage.cleanup({
+            operationId: "unregistered-discovery",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["externalWorktrees"],
+            targetSelections: [{ categoryId: "externalWorktrees", targetIds: [reviewed!.id] }],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result.warnings));
+          assert.isFalse(yield* Effect.promise(() => pathExists(target)));
+          assert.include(localBranches(repo.root), "unregistered-worktree");
+          const projects =
+            yield* sql`SELECT project_id FROM projection_projects WHERE workspace_root = ${repo.root}`;
+          assert.lengthOf(projects, 0);
+        }),
+      ),
+    // About 17 s on idle Windows runners; load pushed it past the 30 s Windows default.
+    process.platform === "win32" ? 90_000 : 30_000,
   );
   it.effect(
     "searches a registered folder of repositories and cleans its dependency folders and leftover packs",
@@ -3719,6 +3723,8 @@ it.layer(
           );
         }),
       ),
+    // About 14 s on idle Windows runners; load pushed it past the 30 s Windows default.
+    process.platform === "win32" ? 90_000 : 30_000,
   );
   it.effect("keeps dependency folders of a checkout a thread used recently", () =>
     withHomeSandbox(
