@@ -8672,11 +8672,21 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:20:59.266Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/persistence/NodeSqliteClient.ts:187",
+          "apps/server/src/persistence/sqliteCheckpointWorker.ts:26"
+        ],
+        "f5Refs": [
+          "621c22cfe04496dcf27b2d56e770b0f00f38bd02"
+        ]
+      },
       "id": "pr-28288",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "persistence",
