@@ -74,6 +74,8 @@ import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
 import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
+import { createDesktopTheme } from "./desktopTheme";
+import { watchLinuxColorScheme } from "./linuxColorScheme";
 import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
@@ -3729,7 +3731,7 @@ function registerIpcHandlers(): void {
       return;
     }
 
-    nativeTheme.themeSource = theme;
+    desktopTheme?.setSource(theme);
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
@@ -4673,10 +4675,17 @@ async function initializeKeepAwake(): Promise<void> {
   });
 }
 
+let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
+
 app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
+    desktopTheme = createDesktopTheme(
+      nativeTheme,
+      process.platform === "linux" ? watchLinuxColorScheme : undefined,
+    );
+    app.once("quit", () => desktopTheme?.stop());
     configureAppIdentity();
     if (
       app.isPackaged &&
