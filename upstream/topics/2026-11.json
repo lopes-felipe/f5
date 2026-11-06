@@ -306,14 +306,24 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:00.543Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/toolUpdateCoalescing.ts:80",
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:6400"
+        ],
+        "f5Refs": [
+          "621c22cfe04496dcf27b2d56e770b0f00f38bd02"
+        ]
+      },
       "id": "pr-16317",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-29758"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
@@ -10413,14 +10423,24 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:00.543Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:5920",
+          "apps/server/src/orchestration/decider.ts:2176"
+        ],
+        "f5Refs": [
+          "621c22cfe04496dcf27b2d56e770b0f00f38bd02"
+        ]
+      },
       "id": "pr-28646",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-30357"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
@@ -11958,11 +11978,22 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:00.633Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/wsTransport.ts:768",
+          "apps/web/src/wsTransport.ts:814",
+          "apps/web/src/wsTransport.ts:1261"
+        ],
+        "f5Refs": [
+          "621c22cfe04496dcf27b2d56e770b0f00f38bd02"
+        ]
+      },
       "id": "pr-29347",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "connection",
@@ -13842,11 +13873,13 @@
     },
     {
       "createdAt": "2026-11-03T20:57:03.039Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:00.543Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29755",
-      "status": "port",
+      "reason": "F5 has no selection-to-Markdown serializer; code-copy writes source text directly.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
