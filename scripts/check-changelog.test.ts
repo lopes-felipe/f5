@@ -2,18 +2,44 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
-  addsChangelogEntry,
+  addsUnreleasedEntry,
   checkChangelog,
   exemptPath,
   readPullRequestFacts,
+  unreleasedBullets,
+  type PullRequestFacts,
   type PullRequestFile,
 } from "./check-changelog.ts";
 import type { Gh } from "./lib/github-cli.ts";
 
-const entry = "@@ -5,2 +5,4 @@\n ## [Unreleased]\n+\n+- Fixed a thing users saw.\n";
-const facts = (files: PullRequestFile[], overrides: { headRef?: string; labels?: string[] } = {}) =>
-  checkChangelog({ headRef: "fix/thing", labels: [], files, ...overrides });
+const changelog = (unreleased: string[], released: string[] = ["- Shipped thing."]) =>
+  [
+    "# Changelog",
+    "",
+    "## [Unreleased]",
+    "",
+    ...unreleased,
+    "",
+    "## [0.1.4] - 2026-11-05",
+    "",
+    "### Added",
+    "",
+    ...released,
+    "",
+  ].join("\n");
+const base = changelog([]);
+const changelogFile = { filename: "CHANGELOG.md", status: "modified" };
 const code = { filename: "apps/web/src/main.ts" };
+const facts = (files: PullRequestFile[], overrides: Partial<PullRequestFacts> = {}) =>
+  checkChangelog({
+    headRef: "fix/thing",
+    author: "contributor",
+    sameRepository: true,
+    labels: [],
+    files,
+    ...overrides,
+  });
+const withChangelog = (after: string, before = base) => ({ changelog: { before, after } });
 
 describe("exemptPath", () => {
   it.each([
@@ -22,8 +48,12 @@ describe("exemptPath", () => {
     ".github/workflows/ci.yml",
     "upstream/ledger.json",
     "apps/server/src/git/GitCore.test.ts",
+    "apps/server/src/git/GitCore.logic.test.ts",
     "apps/web/src/ChatView.test.tsx",
     "apps/web/src/ChatView.browser.tsx",
+    "apps/desktop/scripts/electron-launcher.test.mjs",
+    "apps/server/integration/TestProviderAdapter.integration.ts",
+    "apps/server/integration/fixtures/repo.json",
     "README.md",
     "apps/server/AGENTS.md",
   ])("exempts %s", (path) => expect(exemptPath(path)).toBe(true));
@@ -35,22 +65,43 @@ describe("exemptPath", () => {
     "bun.lock",
     "scripts/check-changelog.ts",
     "apps/web/src/docs/page.ts",
+    "apps/server/src/integration/client.ts",
   ])("does not exempt %s", (path) => expect(exemptPath(path)).toBe(false));
 });
 
-describe("addsChangelogEntry", () => {
-  it("needs an added top-level bullet with text", () => {
-    expect(addsChangelogEntry(entry)).toBe(true);
-    expect(addsChangelogEntry("+## [0.1.5]\n+\n")).toBe(false);
-    expect(addsChangelogEntry("-- Removed entry.\n")).toBe(false);
-    expect(addsChangelogEntry("+- \n")).toBe(false);
-    expect(addsChangelogEntry(" - Existing entry.\n")).toBe(false);
+describe("unreleased entries", () => {
+  it("reads only top-level bullets under ## [Unreleased]", () => {
+    expect(
+      unreleasedBullets(changelog(["### Fixed", "", "- New fix.", "  - detail"], ["- Old."])),
+    ).toEqual(["- New fix."]);
+    expect(unreleasedBullets("# Changelog\n\n- Stray bullet.\n")).toEqual([]);
+  });
+
+  it("counts a new Unreleased bullet", () => {
+    expect(addsUnreleasedEntry(base, changelog(["- Fixed a thing users saw."]))).toBe(true);
+  });
+
+  it.each([
+    ["a bullet added under a released heading", changelog([], ["- Shipped thing.", "- Late."])],
+    ["a wording fix to a released bullet", changelog([], ["- Shipped thing, reworded."])],
+    ["an empty bullet", changelog(["- "])],
+    ["a heading without a bullet", changelog(["### Fixed"])],
+  ])("ignores %s", (_label, after) => expect(addsUnreleasedEntry(base, after)).toBe(false));
+
+  it("ignores reordering or moving an existing bullet into Unreleased", () => {
+    const before = changelog(["- First.", "- Second."]);
+    expect(addsUnreleasedEntry(before, changelog(["- Second.", "- First."]))).toBe(false);
+    expect(addsUnreleasedEntry(base, changelog(["- Shipped thing."], []))).toBe(false);
   });
 });
 
 describe("checkChangelog", () => {
-  it("passes a code change with a changelog entry", () => {
-    expect(facts([code, { filename: "CHANGELOG.md", patch: entry }]).ok).toBe(true);
+  it("passes a code change with a new Unreleased entry", () => {
+    const verdict = facts([code, changelogFile], withChangelog(changelog(["- Fixed it."])));
+    expect(verdict).toEqual({
+      ok: true,
+      reason: "CHANGELOG.md adds an entry under ## [Unreleased].",
+    });
   });
 
   it("fails a code change without an entry and names the label", () => {
@@ -59,23 +110,38 @@ describe("checkChangelog", () => {
     expect(verdict.reason).toContain('"no-changelog" label');
   });
 
-  it("fails when the changelog edit adds no bullet", () => {
-    const verdict = facts([code, { filename: "CHANGELOG.md", patch: "-- Old entry.\n+- \n" }]);
-    expect(verdict.ok).toBe(false);
+  it("fails a code change whose changelog edit only touches a released section", () => {
+    const after = changelog([], ["- Shipped thing, reworded."]);
+    expect(facts([code, changelogFile], withChangelog(after)).ok).toBe(false);
   });
 
-  it("trusts a changelog whose diff GitHub omitted, unless the file was removed", () => {
-    expect(facts([code, { filename: "CHANGELOG.md", status: "modified" }]).ok).toBe(true);
-    expect(facts([code, { filename: "CHANGELOG.md", status: "removed" }]).ok).toBe(false);
+  it("passes a PR that only edits the changelog, even without a new bullet", () => {
+    const after = changelog([], []);
+    expect(facts([changelogFile], withChangelog(after)).ok).toBe(true);
+    expect(facts([changelogFile, { filename: "docs/release.md" }], withChangelog(after)).ok).toBe(
+      true,
+    );
   });
 
   it("passes with the no-changelog label", () => {
     expect(facts([code], { labels: ["no-changelog"] }).ok).toBe(true);
   });
 
-  it.each(["dependabot/npm/vite-8", "release/prepare-abc", "f5/upstream-ledger-20261103"])(
-    "passes the exempt branch %s",
-    (headRef) => expect(facts([code], { headRef }).ok).toBe(true),
+  it.each([
+    { headRef: "dependabot/npm/vite-8", author: "dependabot[bot]" },
+    { headRef: "release/prepare-abc", author: "f5-release-automation-lopes-felipe[bot]" },
+    { headRef: "f5/upstream-ledger-20261103", author: "lopes-felipe" },
+  ])("passes the automation branch $headRef", (overrides) =>
+    expect(facts([code], overrides).ok).toBe(true),
+  );
+
+  it.each([
+    { headRef: "dependabot/npm/vite-8", author: "contributor" },
+    { headRef: "release/prepare-abc", author: "contributor" },
+    { headRef: "f5/upstream-ledger-x", author: "lopes-felipe", sameRepository: false },
+    { headRef: "dependabot/npm/vite-8", author: "dependabot[bot]", sameRepository: false },
+  ])("does not trust $headRef from $author (same repo: $sameRepository)", (overrides) =>
+    expect(facts([code], overrides).ok).toBe(false),
   );
 
   it("still requires entries from upstream port branches", () => {
@@ -94,6 +160,11 @@ describe("checkChangelog", () => {
     );
   });
 
+  it("does not let a file renamed to CHANGELOG.md stand in for an entry", () => {
+    const renamed = { filename: "CHANGELOG.md", previous_filename: "apps/web/src/notes.ts" };
+    expect(facts([renamed], withChangelog(changelog([]), "")).ok).toBe(false);
+  });
+
   it("never treats an empty or truncated file list as exempt", () => {
     expect(facts([]).ok).toBe(false);
     expect(
@@ -103,21 +174,47 @@ describe("checkChangelog", () => {
 });
 
 describe("readPullRequestFacts", () => {
-  it("reads labels, the head branch, and every page of files", async () => {
-    const gh = vi.fn<Gh>(async (args) => {
+  const pull = {
+    user: { login: "contributor" },
+    head: { ref: "fix/x", sha: "head-sha", repo: { full_name: "fork/r" } },
+    base: { sha: "base-sha", repo: { full_name: "o/r" } },
+    labels: [{ name: "no-changelog" }],
+  };
+
+  function harness(files: PullRequestFile[][], contents: Record<string, string | null>) {
+    return vi.fn<Gh>(async (args) => {
       const path = args.at(-1)!;
-      if (path === "repos/o/r/pulls/9")
-        return JSON.stringify({ head: { ref: "fix/x" }, labels: [{ name: "no-changelog" }] });
+      if (path === "repos/o/r/pulls/9") return JSON.stringify(pull);
       if (path === "repos/o/r/pulls/9/files?per_page=100") {
         expect(args).toContain("--paginate");
-        return JSON.stringify([[{ filename: "a.ts" }], [{ filename: "b.ts" }]]);
+        return JSON.stringify(files);
+      }
+      const ref = /^repos\/o\/r\/contents\/CHANGELOG\.md\?ref=(.+)$/.exec(path)?.[1];
+      if (ref !== undefined && ref in contents) {
+        expect(args).toContain("Accept: application/vnd.github.raw");
+        const content = contents[ref];
+        if (content === null) throw new Error("gh api exited 1: HTTP 404: Not Found");
+        return content ?? "";
       }
       throw new Error("Unexpected API " + path);
     });
+  }
+
+  it("reads the author, fork status, labels, and every page of files", async () => {
+    const gh = harness([[{ filename: "a.ts" }], [{ filename: "b.ts" }]], {});
     await expect(readPullRequestFacts("o/r", 9, gh)).resolves.toEqual({
       headRef: "fix/x",
+      author: "contributor",
+      sameRepository: false,
       labels: ["no-changelog"],
       files: [{ filename: "a.ts" }, { filename: "b.ts" }],
+    });
+  });
+
+  it("reads CHANGELOG.md at both commits when the PR touches it", async () => {
+    const gh = harness([[changelogFile]], { "base-sha": null, "head-sha": "after" });
+    await expect(readPullRequestFacts("o/r", 9, gh)).resolves.toMatchObject({
+      changelog: { before: "", after: "after" },
     });
   });
 });

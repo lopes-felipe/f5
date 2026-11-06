@@ -4,67 +4,88 @@ import { pathToFileURL } from "node:url";
 import { runGh, type Gh } from "./lib/github-cli.ts";
 
 export const SKIP_LABEL = "no-changelog";
-const EXEMPT_BRANCH_PREFIXES = ["dependabot/", "release/prepare-", "f5/upstream-ledger-"];
+const CHANGELOG = "CHANGELOG.md";
+
+// Automation branches, trusted only from this repository and, where a bot opens them, that bot.
+const EXEMPT_BRANCHES: readonly { prefix: string; author?: string }[] = [
+  { prefix: "dependabot/", author: "dependabot[bot]" },
+  { prefix: "release/prepare-", author: "f5-release-automation-lopes-felipe[bot]" },
+  { prefix: "f5/upstream-ledger-" },
+];
 
 export interface PullRequestFile {
   filename: string;
   previous_filename?: string;
   status?: string;
-  patch?: string;
 }
 
 export interface PullRequestFacts {
   headRef: string;
+  author: string;
+  sameRepository: boolean;
   labels: readonly string[];
   files: readonly PullRequestFile[];
+  /** CHANGELOG.md at the base and head commits, read only when the PR touches it. */
+  changelog?: { before: string; after: string };
 }
 
 export type ChangelogVerdict = { ok: true; reason: string } | { ok: false; reason: string };
 
 /** Paths that never ship to users, so they need no changelog entry. */
 export function exemptPath(path: string): boolean {
-  if (path === "CHANGELOG.md") return false;
+  if (path === CHANGELOG) return false;
   return (
-    /^(docs|\.github|upstream)\//.test(path) ||
-    /\.test\.tsx?$/.test(path) ||
+    /^(docs|\.github|upstream|apps\/server\/integration)\//.test(path) ||
+    /\.test\.[cm]?[jt]sx?$/.test(path) ||
     path.endsWith(".browser.tsx") ||
     path.endsWith(".md")
   );
 }
 
-/** An added top-level bullet, so a whitespace or heading edit does not count. */
-export function addsChangelogEntry(patch: string): boolean {
-  return patch.split("\n").some((line) => line.startsWith("+- ") && line.trim().length > 3);
+const bullets = (lines: readonly string[]) =>
+  lines.filter((line) => /^- \S/.test(line)).map((line) => line.trimEnd());
+
+/** Top-level bullets between `## [Unreleased]` and the next release heading. */
+export function unreleasedBullets(changelog: string): string[] {
+  const lines = changelog.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^## \[Unreleased\]/i.test(line));
+  if (start === -1) return [];
+  const end = lines.findIndex((line, index) => index > start && line.startsWith("## "));
+  return bullets(lines.slice(start + 1, end === -1 ? undefined : end));
+}
+
+/**
+ * Whether the head adds an Unreleased bullet that the base had nowhere, so edits to released
+ * entries, reordering, and moving an old bullet up do not count as a new entry.
+ */
+export function addsUnreleasedEntry(before: string, after: string): boolean {
+  const existing = new Set(bullets(before.split(/\r?\n/)));
+  return unreleasedBullets(after).some((bullet) => !existing.has(bullet));
 }
 
 export function checkChangelog(facts: PullRequestFacts): ChangelogVerdict {
   if (facts.labels.includes(SKIP_LABEL)) {
     return { ok: true, reason: `The "${SKIP_LABEL}" label is set.` };
   }
-  const prefix = EXEMPT_BRANCH_PREFIXES.find((candidate) => facts.headRef.startsWith(candidate));
-  if (prefix) return { ok: true, reason: `Branches starting with ${prefix} are exempt.` };
-  const changelog = facts.files.find((file) => file.filename === "CHANGELOG.md");
-  if (changelog) {
-    // GitHub omits patches for very large diffs; the file changed, so trust it.
-    if (changelog.patch === undefined && changelog.status !== "removed") {
-      return { ok: true, reason: "CHANGELOG.md changed (its diff is too large to inspect)." };
-    }
-    if (changelog.patch !== undefined && addsChangelogEntry(changelog.patch)) {
-      return { ok: true, reason: "CHANGELOG.md adds an entry." };
-    }
+  const branch = EXEMPT_BRANCHES.find(({ prefix }) => facts.headRef.startsWith(prefix));
+  if (branch && facts.sameRepository && (!branch.author || branch.author === facts.author)) {
+    return { ok: true, reason: `Automation branches starting with ${branch.prefix} are exempt.` };
+  }
+  if (facts.changelog && addsUnreleasedEntry(facts.changelog.before, facts.changelog.after)) {
+    return { ok: true, reason: "CHANGELOG.md adds an entry under ## [Unreleased]." };
   }
   // The files API stops at 3000 entries, so a full page cannot prove every file is exempt.
-  const complete = facts.files.length < 3000;
+  const shipped = facts.files.flatMap((file) =>
+    [file.filename, file.previous_filename].filter(
+      (path): path is string => path !== undefined && !exemptPath(path),
+    ),
+  );
   if (
-    complete &&
     facts.files.length > 0 &&
-    facts.files.every(
-      (file) =>
-        exemptPath(file.filename) &&
-        (file.previous_filename === undefined || exemptPath(file.previous_filename)),
-    )
+    facts.files.length < 3000 &&
+    shipped.every((path) => path === CHANGELOG)
   ) {
-    return { ok: true, reason: "Only docs, tests, and workflow files changed." };
+    return { ok: true, reason: "Only the changelog, docs, tests, and workflow files changed." };
   }
   return {
     ok: false,
@@ -74,6 +95,20 @@ export function checkChangelog(facts: PullRequestFacts): ChangelogVerdict {
   };
 }
 
+async function readFileAt(repository: string, sha: string, gh: Gh): Promise<string> {
+  try {
+    return await gh([
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw",
+      "repos/" + repository + "/contents/" + CHANGELOG + "?ref=" + sha,
+    ]);
+  } catch (error) {
+    if (/\b404\b|Not Found/.test(String(error))) return "";
+    throw error;
+  }
+}
+
 export async function readPullRequestFacts(
   repository: string,
   number: number,
@@ -81,16 +116,32 @@ export async function readPullRequestFacts(
 ): Promise<PullRequestFacts> {
   const root = "repos/" + repository + "/pulls/" + number;
   const pull = JSON.parse(await gh(["api", root])) as {
-    head: { ref: string };
+    user: { login: string };
+    head: { ref: string; sha: string; repo: { full_name: string } | null };
+    base: { sha: string; repo: { full_name: string } };
     labels: { name: string }[];
   };
   const pages = JSON.parse(
     await gh(["api", "--paginate", "--slurp", root + "/files?per_page=100"]),
   ) as PullRequestFile[][];
+  const files = pages.flat();
+  const touchesChangelog = files.some(
+    (file) => file.filename === CHANGELOG || file.previous_filename === CHANGELOG,
+  );
   return {
     headRef: pull.head.ref,
+    author: pull.user.login,
+    sameRepository: pull.head.repo?.full_name === pull.base.repo.full_name,
     labels: pull.labels.map((label) => label.name),
-    files: pages.flat(),
+    files,
+    ...(touchesChangelog
+      ? {
+          changelog: {
+            before: await readFileAt(repository, pull.base.sha, gh),
+            after: await readFileAt(repository, pull.head.sha, gh),
+          },
+        }
+      : {}),
   };
 }
 
