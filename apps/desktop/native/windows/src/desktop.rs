@@ -602,16 +602,16 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
     release();
     outcome?;
     confirm_action(request);
-    let list = displays();
     let settle = crate::timing::post_action_settle_ms(
         op,
         request["screenshot"] == true,
         !s(request, "appId").is_empty(),
-        list.len(),
+        displays().len(),
     );
     if settle > 0 {
         std::thread::sleep(Duration::from_millis(settle));
     }
+    let list = displays();
     let mut pointer = POINT::default();
     let cursor_known = GetCursorPos(&mut pointer).is_ok();
     let cursor_display = if cursor_known {
