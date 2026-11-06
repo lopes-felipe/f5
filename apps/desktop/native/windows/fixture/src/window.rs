@@ -6,6 +6,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Controls::EM_SETPASSWORDCHAR;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::Input::*;
@@ -21,6 +22,8 @@ const SECURE_ID: usize = 102;
 const FINISH_ID: usize = 103;
 const INSTRUCTION_ID: usize = 104;
 struct State {
+    delayed_input: bool,
+    tree: Vec<HWND>,
     mode: Mode,
     input: HWND,
     secure: HWND,
@@ -106,6 +109,25 @@ unsafe fn observation(hwnd: HWND) -> windows::core::Result<()> {
 }
 unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match message {
+        WM_TIMER if w.0 == 2 => {
+            let _ = KillTimer(Some(hwnd), 2);
+            let _ = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("BUTTON"),
+                w!("Delayed ready"),
+                WS_CHILD | WS_VISIBLE,
+                30,
+                190,
+                180,
+                22,
+                Some(hwnd),
+                Some(HMENU(PRESS_ID as *mut _)),
+                None,
+                None,
+            );
+            println!("FIXTURE_DELAYED_READY");
+            LRESULT(0)
+        }
         WM_COMMAND => {
             let id = w.0 & 0xffff;
             let notification = (w.0 >> 16) & 0xffff;
@@ -191,6 +213,34 @@ unsafe extern "system" fn finish_button(
         if GetCurrentInputMessageSource(&mut source).is_ok() && source.originId == IMO_HARDWARE {
             println!("FIXTURE_ACKNOWLEDGED");
             let _ = EnableWindow(hwnd, false);
+        }
+    }
+    DefSubclassProc(hwnd, message, w, l)
+}
+unsafe extern "system" fn delayed_input(
+    hwnd: HWND,
+    message: u32,
+    w: WPARAM,
+    l: LPARAM,
+    _: usize,
+    _: usize,
+) -> LRESULT {
+    let delayed = STATE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|state| state.delayed_input)
+    });
+    if delayed && matches!(message, WM_SETFOCUS | WM_CHAR) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    if message == WM_KEYDOWN && w.0 == 13 {
+        let verified = STATE.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|state| state.receipt.expected_text_received)
+        });
+        if verified {
+            println!("FIXTURE_ENTERED");
         }
     }
     DefSubclassProc(hwnd, message, w, l)
@@ -322,6 +372,8 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                 input,
                 secure,
                 receipt: Receipt::default(),
+                delayed_input: false,
+                tree: Vec::new(),
             })
         });
         if mode == Mode::Transparent {
@@ -401,6 +453,84 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     break;
                                 }
                                 WindowCommand::Status => {}
+                                WindowCommand::Reset => {
+                                    SetWindowTextW(input, w!(""))?;
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow_mut().as_mut() {
+                                            state.receipt = Receipt::default();
+                                        }
+                                    });
+                                    println!("FIXTURE_RESET");
+                                }
+                                WindowCommand::PerformanceTree { nodes } => {
+                                    let old = STATE.with(|slot| {
+                                        slot.borrow_mut()
+                                            .as_mut()
+                                            .map(|state| std::mem::take(&mut state.tree))
+                                            .unwrap_or_default()
+                                    });
+                                    for child in old {
+                                        let _ = DestroyWindow(child);
+                                    }
+                                    let mut tree = Vec::new();
+                                    for index in 0..nodes {
+                                        let label = format!("Fixture node {index}")
+                                            .encode_utf16()
+                                            .chain([0])
+                                            .collect::<Vec<_>>();
+                                        let edge = index == 0 || index == nodes - 1;
+                                        let child = CreateWindowExW(
+                                            WINDOW_EX_STYLE(0),
+                                            if edge { w!("BUTTON") } else { w!("STATIC") },
+                                            PCWSTR(label.as_ptr()),
+                                            WS_CHILD | WS_VISIBLE,
+                                            5 + (index % 20) as i32 * 24,
+                                            30 + (index / 20) as i32 * 8,
+                                            22,
+                                            7,
+                                            Some(hwnd),
+                                            if edge {
+                                                Some(HMENU(PRESS_ID as *mut _))
+                                            } else {
+                                                None
+                                            },
+                                            Some(instance),
+                                            None,
+                                        )?;
+                                        tree.push(child);
+                                    }
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow_mut().as_mut() {
+                                            state.tree = tree;
+                                        }
+                                    });
+                                    println!("FIXTURE_TREE_READY");
+                                }
+                                WindowCommand::DelayedInput => {
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow_mut().as_mut() {
+                                            state.delayed_input = true;
+                                        }
+                                    });
+                                    if !SetWindowSubclass(input, Some(delayed_input), 1, 0)
+                                        .as_bool()
+                                    {
+                                        return Err(windows::core::Error::from_thread());
+                                    }
+                                }
+                                WindowCommand::PasswordTransition => {
+                                    // The driver sends this between cache construction and materialization.
+                                    SendMessageW(
+                                        input,
+                                        EM_SETPASSWORDCHAR,
+                                        Some(WPARAM(0x2022)),
+                                        Some(LPARAM(0)),
+                                    );
+                                    println!("FIXTURE_PASSWORD_CHANGED");
+                                }
+                                WindowCommand::DelayButton => {
+                                    SetTimer(Some(hwnd), 2, 1000, None);
+                                }
                                 WindowCommand::Cue(text) => {
                                     let text = text.encode_utf16().chain([0]).collect::<Vec<_>>();
                                     SetWindowTextW(instruction, PCWSTR(text.as_ptr()))?;

@@ -111,7 +111,106 @@ pub(super) unsafe fn app_window(id: &str) -> Result<HWND, Value> {
         })
         .ok_or(fail("StaleElement"))
 }
+/// Cache identity and non-text metadata only. Masking continues to use walk_report unchanged.
+unsafe fn inspection_cache(resolution: bool) -> Result<IUIAutomationCacheRequest, Value> {
+    let cache = automation()?
+        .CreateCacheRequest()
+        .map_err(|_| fail("Execution"))?;
+    cache
+        .SetAutomationElementMode(AutomationElementMode_Full)
+        .map_err(|_| fail("Execution"))?;
+    cache
+        .SetTreeScope(TreeScope_Element)
+        .map_err(|_| fail("Execution"))?;
+    let mut properties = vec![UIA_ProcessIdPropertyId, UIA_RuntimeIdPropertyId];
+    if !resolution {
+        properties.extend([
+            UIA_IsPasswordPropertyId,
+            UIA_ControlTypePropertyId,
+            UIA_LocalizedControlTypePropertyId,
+            UIA_HasKeyboardFocusPropertyId,
+            UIA_IsEnabledPropertyId,
+            UIA_BoundingRectanglePropertyId,
+            UIA_IsInvokePatternAvailablePropertyId,
+            UIA_IsValuePatternAvailablePropertyId,
+            UIA_IsRangeValuePatternAvailablePropertyId,
+            UIA_IsScrollItemPatternAvailablePropertyId,
+        ]);
+    }
+    for property in properties {
+        cache.AddProperty(property).map_err(|_| fail("Execution"))?;
+    }
+    Ok(cache)
+}
+unsafe fn cached_bool(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Option<bool> {
+    element
+        .GetCachedPropertyValueEx(property, true)
+        .ok()
+        .and_then(|value| bool::try_from(&value).ok())
+}
+unsafe fn cached_runtime_id(element: &IUIAutomationElement) -> Result<String, Value> {
+    let value = element
+        .GetCachedPropertyValueEx(UIA_RuntimeIdPropertyId, true)
+        .map_err(|_| fail("StaleElement"))?;
+    let body = &value.Anonymous.Anonymous;
+    if body.vt
+        != (windows::Win32::System::Variant::VT_ARRAY | windows::Win32::System::Variant::VT_I4)
+    {
+        return Err(fail("StaleElement"));
+    }
+    let array = body.Anonymous.parray;
+    let low = SafeArrayGetLBound(array, 1).map_err(|_| fail("StaleElement"))?;
+    let high = SafeArrayGetUBound(array, 1).map_err(|_| fail("StaleElement"))?;
+    let mut data = std::ptr::null_mut();
+    SafeArrayAccessData(array, &mut data).map_err(|_| fail("StaleElement"))?;
+    let id = format!(
+        "{:?}",
+        std::slice::from_raw_parts(data as *const i32, (high - low + 1).max(0) as usize)
+    );
+    let _ = SafeArrayUnaccessData(array);
+    // The VARIANT owns the array; never destroy it separately.
+    Ok(id)
+}
+unsafe fn cached_walk(
+    root: &IUIAutomationElement,
+    max: usize,
+    cache: &IUIAutomationCacheRequest,
+    budget: Duration,
+    mut validate: impl FnMut() -> Result<(), Value>,
+    mut stop: impl FnMut(&IUIAutomationElement) -> bool,
+) -> Result<(Vec<IUIAutomationElement>, crate::traversal::Report), Value> {
+    let started = Instant::now();
+    validate()?;
+    let root = root
+        .BuildUpdatedCache(cache)
+        .map_err(|_| fail("Execution"))?;
+    let walker = automation()?
+        .ControlViewWalker()
+        .map_err(|_| fail("Execution"))?;
+    let error = std::cell::RefCell::new(None);
+    let validate = std::cell::RefCell::new(&mut validate);
+    let call = |operation: &mut dyn FnMut() -> windows::core::Result<IUIAutomationElement>| {
+        if let Err(cause) = (validate.borrow_mut())() {
+            *error.borrow_mut() = Some(cause);
+            return Err(-1);
+        }
+        crate::traversal::optional(operation().map_err(|e| e.code().0))
+    };
+    let result = crate::traversal::walk_until(
+        root,
+        max,
+        budget.saturating_sub(started.elapsed()),
+        |node| call(&mut || walker.GetFirstChildElementBuildCache(node, cache)),
+        |node| call(&mut || walker.GetNextSiblingElementBuildCache(node, cache)),
+        |node| error.borrow().is_some() || stop(node),
+    );
+    if let Some(error) = error.into_inner() {
+        return Err(error);
+    }
+    Ok(result)
+}
 pub(super) unsafe fn inspect(request: &Value, host: &Value) -> Result<Value, Value> {
+    let deadline = Instant::now() + Duration::from_secs(6);
     check_observation_delivery(request, host)?;
     let app = s(request, "appId");
     let prior = if !s(request, "snapshotId").is_empty() {
@@ -143,65 +242,117 @@ pub(super) unsafe fn inspect(request: &Value, host: &Value) -> Result<Value, Val
     let mut elements = HashMap::new();
     let process_id = owner(hwnd)?.1;
     let process_birth = process_started(process_id)?;
-    let (visited, report) = walk_report(&root, n(request, "maxNodes").clamp(1, 800) as usize);
+    let all_displays = displays();
+    let cache_request = inspection_cache(false)?;
+    let (visited, mut report) = cached_walk(
+        &root,
+        n(request, "maxNodes").clamp(1, 400) as usize,
+        &cache_request,
+        Duration::from_secs(1).min(deadline.saturating_duration_since(Instant::now())),
+        || {
+            check_observation_delivery(request, host)?;
+            authorize(hwnd, request, host, "view").map(|_| ())
+        },
+        |_| Instant::now() >= deadline,
+    )?;
     let visited_count = visited.len();
     let mut process_skipped = 0usize;
     let mut runtime_skipped = 0usize;
     for element in visited {
-        if element.CurrentProcessId().ok().map(|id| id as u32) != Some(process_id) {
+        check_observation_delivery(request, host)?;
+        authorize(hwnd, request, host, "view")?;
+        if Instant::now() >= deadline {
+            report.complete = false;
+            break;
+        }
+        if element.CachedProcessId().ok().map(|id| id as u32) != Some(process_id) {
             process_skipped += 1;
             continue;
         }
-        let Ok(runtime) = runtime_id(&element) else {
+        let Ok(runtime) = cached_runtime_id(&element) else {
             runtime_skipped += 1;
             continue;
         };
         let reference = uuid::Uuid::new_v4().to_string();
         elements.insert(reference.clone(), runtime);
-        let secure = element
-            .CurrentIsPassword()
-            .map(|value| value.as_bool())
-            .unwrap_or(true);
+        let secure = cached_bool(&element, UIA_IsPasswordPropertyId) != Some(false);
         let mut actions = Vec::new();
         if !secure {
-            if element
-                .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
-                .is_ok()
-            {
+            if cached_bool(&element, UIA_IsInvokePatternAvailablePropertyId) == Some(true) {
                 actions.push("press")
             }
-            if element
-                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-                .is_ok()
-            {
+            if cached_bool(&element, UIA_IsValuePatternAvailablePropertyId) == Some(true) {
                 actions.push("setValue")
             }
             actions.push("focus");
-            if element
-                .GetCurrentPatternAs::<IUIAutomationRangeValuePattern>(UIA_RangeValuePatternId)
-                .is_ok()
-            {
+            if cached_bool(&element, UIA_IsRangeValuePatternAvailablePropertyId) == Some(true) {
                 actions.extend(["increment", "decrement"])
             }
-            if element
-                .GetCurrentPatternAs::<IUIAutomationScrollItemPattern>(UIA_ScrollItemPatternId)
-                .is_ok()
-            {
+            if cached_bool(&element, UIA_IsScrollItemPatternAvailablePropertyId) == Some(true) {
                 actions.push("scrollIntoView")
             }
         }
-        let mut node = json!({"elementRef":reference,"role":element.CurrentLocalizedControlType().map(|value|value.to_string()).unwrap_or_default().chars().take(200).collect::<String>(),"name":if secure{String::new()}else{element.CurrentName().map(|value|value.to_string()).unwrap_or_default().chars().take(200).collect()},"focused":element.CurrentHasKeyboardFocus().map(|value|value.as_bool()).unwrap_or(false),"enabled":element.CurrentIsEnabled().map(|value|value.as_bool()).unwrap_or(false),"actions":actions});
+        check_observation_delivery(request, host)?;
+        if Instant::now() >= deadline {
+            report.complete = false;
+            break;
+        }
+        let password = || {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            element
+                .GetCurrentPropertyValueEx(UIA_IsPasswordPropertyId, true)
+                .ok()
+                .and_then(|value| bool::try_from(&value).ok())
+        };
+        let name = crate::inspection::read_text(
+            cached_bool(&element, UIA_IsPasswordPropertyId),
+            password,
+            || {
+                element
+                    .CurrentName()
+                    .ok()
+                    .map(|value| value.to_string().chars().take(200).collect::<String>())
+            },
+        )
+        .unwrap_or_default();
+        let mut node = json!({"elementRef":reference,"role":element.CachedLocalizedControlType().map(|value|value.to_string()).unwrap_or_default().chars().take(200).collect::<String>(),"name":name,"focused":element.CachedHasKeyboardFocus().map(|value|value.as_bool()).unwrap_or(false),"enabled":element.CachedIsEnabled().map(|value|value.as_bool()).unwrap_or(false),"actions":actions});
         if !secure {
+            check_observation_delivery(request, host)?;
+            if Instant::now() >= deadline {
+                report.complete = false;
+                break;
+            }
             if let Ok(pattern) =
                 element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
             {
-                if let Ok(value) = pattern.CurrentValue() {
-                    node["value"] = json!(value.to_string().chars().take(200).collect::<String>());
+                if let Some(value) = crate::inspection::read_text(
+                    cached_bool(&element, UIA_IsPasswordPropertyId),
+                    password,
+                    || {
+                        pattern
+                            .CurrentValue()
+                            .ok()
+                            .map(|value| value.to_string().chars().take(200).collect::<String>())
+                    },
+                ) {
+                    node["value"] = json!(value);
                 }
             }
         }
-        if let Ok(rect) = element.CurrentBoundingRectangle() {
-            for display in displays() {
+        check_observation_delivery(request, host)?;
+        if Instant::now() >= deadline {
+            report.complete = false;
+            break;
+        }
+        if password() != Some(false) {
+            node["name"] = json!("");
+            node["actions"] = json!([]);
+            node.as_object_mut().unwrap().remove("value");
+        }
+        if let Ok(rect) = element.CachedBoundingRectangle() {
+            for display in &all_displays {
                 let x = ((rect.left - display.bounds.left) as f64 * display.width as f64
                     / (display.bounds.right - display.bounds.left) as f64)
                     .floor()
@@ -224,6 +375,9 @@ pub(super) unsafe fn inspect(request: &Value, host: &Value) -> Result<Value, Val
             }
         }
         nodes.push(node);
+    }
+    if Instant::now() >= deadline {
+        report.complete = false;
     }
     let snapshot = Snapshot {
         id: snapshot_id.clone(),
@@ -261,7 +415,7 @@ pub(super) unsafe fn inspect(request: &Value, host: &Value) -> Result<Value, Val
     }
     Ok(value)
 }
-pub(super) unsafe fn element_action(request: &Value, host: &Value) -> Result<(), Value> {
+pub(super) unsafe fn element_action(request: &Value, host: &Value) -> Result<Option<Value>, Value> {
     check(request)?;
     let snapshot = snapshot(request)?;
     let hwnd = HWND(snapshot.hwnd as *mut _);
@@ -318,7 +472,22 @@ pub(super) unsafe fn element_action(request: &Value, host: &Value) -> Result<(),
             }),
         _ => return Err(fail("UnsupportedAction")),
     };
-    result.map_err(|_| fail("OutcomeUnknown"))
+    result.map_err(|_| fail("OutcomeUnknown"))?;
+    if action == "focus" {
+        let verified = crate::timing::poll_until(
+            Duration::from_millis(500),
+            || check(request).is_err(),
+            || {
+                element
+                    .CurrentHasKeyboardFocus()
+                    .is_ok_and(|value| value.as_bool())
+            },
+        );
+        check(request)?;
+        Ok(Some(json!({"verified":verified})))
+    } else {
+        Ok(None)
+    }
 }
 pub(super) fn snapshot_authorization(request: &Value) -> Value {
     let auth = &request["authorization"];
@@ -369,11 +538,30 @@ pub(super) unsafe fn snapshot_element(
         .elements
         .get(reference)
         .ok_or(fail("StaleElement"))?;
-    walk(root, 4000)
-        .into_iter()
-        .find(|element| {
-            element.CurrentProcessId().ok().map(|id| id as u32) == Some(snapshot.pid)
-                && runtime_id(element).is_ok_and(|id| id == *identity)
-        })
-        .ok_or(fail("StaleElement"))
+    let cache = inspection_cache(true)?;
+    let mut found = None;
+    cached_walk(
+        root,
+        4000,
+        &cache,
+        Duration::from_secs(1),
+        || Ok(()),
+        |element| {
+            if element.CachedProcessId().ok().map(|id| id as u32) == Some(snapshot.pid)
+                && cached_runtime_id(element).is_ok_and(|id| id == *identity)
+            {
+                found = Some(element.clone());
+                true
+            } else {
+                false
+            }
+        },
+    )?;
+    let element = found.ok_or(fail("StaleElement"))?;
+    if element.CurrentProcessId().ok().map(|id| id as u32) != Some(snapshot.pid)
+        || runtime_id(&element)? != *identity
+    {
+        return Err(fail("StaleElement"));
+    }
+    Ok(element)
 }

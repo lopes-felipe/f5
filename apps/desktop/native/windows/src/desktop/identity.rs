@@ -133,40 +133,42 @@ pub(super) unsafe fn integrity(process_id: u32) -> Result<u32, Value> {
     let _ = CloseHandle(token);
     Ok(level)
 }
+/// Build a record from one HWND; foreground results must not enumerate unrelated apps.
+pub(super) unsafe fn app_record(hwnd: HWND) -> Result<Value, Value> {
+    if !IsWindowVisible(hwnd).as_bool() {
+        return Err(fail("StaleElement"));
+    }
+    let (id, process_id) = owner(hwnd)?;
+    let executable = process_image(process_id);
+    let executable_tier = executable
+        .as_ref()
+        .map(|exe| app_tier(exe))
+        .unwrap_or_else(|_| "blocked".into());
+    let identity_tier = app_tier(&id);
+    let tier = crate::safety::restrict_tier(&identity_tier, &executable_tier);
+    let name = id.rsplit(['\\', '/']).next().unwrap_or(&id).to_string();
+    let mut record = json!({"appId":id,"name":name,"running":true,
+        "frontmost":hwnd == GetForegroundWindow(),"tier":tier});
+    if browser(&id) || executable.as_ref().map(|exe| browser(exe)).unwrap_or(false) {
+        record["warning"] = json!("browser");
+    }
+    Ok(record)
+}
 pub(super) unsafe fn apps() -> Vec<Value> {
     let mut unique = HashMap::new();
     for hwnd in windows() {
-        if !IsWindowVisible(hwnd).as_bool() {
-            continue;
-        }
-        if let Ok((id, process_id)) = owner(hwnd) {
-            let identity_tier = app_tier(&id);
-            let executable = process_image(process_id);
-            let executable_tier = executable
-                .as_ref()
-                .map(|exe| app_tier(exe))
-                .unwrap_or_else(|_| "blocked".into());
-            let tier = crate::safety::restrict_tier(&identity_tier, &executable_tier);
-            let name = id.rsplit(['\\', '/']).next().unwrap_or(&id).to_string();
-            let frontmost = hwnd == GetForegroundWindow();
-            unique.entry(id.clone())
+        if let Ok(record) = app_record(hwnd) {
+            unique
+                .entry(s(&record, "appId").to_owned())
                 .and_modify(|app: &mut Value| {
-                    if frontmost {
+                    if record["frontmost"] == true {
                         app["frontmost"] = json!(true);
                     }
                 })
-                .or_insert(json!({"appId":id,"name":name,"running":true,"frontmost":frontmost,"tier":tier,"warning":if browser(&id) || executable.as_ref().map(|exe|browser(exe)).unwrap_or(false){json!("browser")}else{Value::Null}}));
+                .or_insert(record);
         }
     }
-    unique
-        .into_values()
-        .map(|mut value| {
-            if value["warning"].is_null() {
-                value.as_object_mut().unwrap().remove("warning");
-            }
-            value
-        })
-        .collect()
+    unique.into_values().collect()
 }
 pub(super) unsafe fn resolve_installed(host: &Value) -> Vec<Value> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
