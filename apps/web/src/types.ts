@@ -169,6 +169,8 @@ export interface Thread {
   projectId: ProjectId;
   title: string;
   scheduledOrigin?: import("@t3tools/contracts").ScheduledOrigin | null;
+  /** PRs linked to this thread, newest first. */
+  pullRequests?: ReadonlyArray<import("@t3tools/contracts").ThreadPullRequestLink> | undefined;
   model: string;
   modelSelection?: ModelSelection | undefined;
   runtimeMode: RuntimeMode;
@@ -238,6 +240,7 @@ export type ThreadListItem = Pick<
   | "projectId"
   | "title"
   | "scheduledOrigin"
+  | "pullRequests"
   | "titleState"
   | "titleSource"
   | "titleRevision"

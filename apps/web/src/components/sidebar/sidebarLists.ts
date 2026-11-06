@@ -20,6 +20,12 @@ import {
   partitionThreadsByArchive,
   sortThreadsByActivity,
 } from "../../lib/threadOrdering";
+import {
+  summarizeThreadPullRequestState,
+  threadPullRequestStateColorClass,
+  threadPullRequestTooltipLines,
+  type ThreadPullRequestItem,
+} from "../../lib/threadPullRequests";
 import { workflowDisplayType } from "../../lib/workflowType";
 import type { Project, Thread, ThreadListItem } from "../../types";
 import { orderActiveSidebarThreads, projectSnoozedThreads } from "../Sidebar.pinSnooze.logic";
@@ -47,12 +53,16 @@ export interface TerminalStatusIndicator {
 }
 
 export interface PrStatusIndicator {
+  /** The most actionable state across `items`: any open, else merged, else closed. */
   state: "open" | "closed" | "merged";
   label: "PR open" | "PR closed" | "PR merged";
   colorClass: string;
   tooltip: string;
+  /** The top PR (open first, then newest). */
   url: string;
   number: number;
+  /** Every PR of the thread, top first; never empty. */
+  items: ReadonlyArray<ThreadPullRequestItem>;
 }
 
 export type ThreadPr = GitStatusResult["pr"];
@@ -443,40 +453,32 @@ export function terminalStatusFromRunningIds(
   };
 }
 
-export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
-  if (!pr) return null;
+const PR_STATE_LABEL = {
+  open: "PR open",
+  merged: "PR merged",
+  closed: "PR closed",
+} as const satisfies Record<PrStatusIndicator["state"], PrStatusIndicator["label"]>;
 
-  if (pr.state === "open") {
-    return {
-      state: "open",
-      label: "PR open",
-      colorClass: "text-success-foreground",
-      tooltip: `#${pr.number} PR open: ${pr.title}`,
-      url: pr.url,
-      number: pr.number,
-    };
-  }
-  if (pr.state === "closed") {
-    return {
-      state: "closed",
-      label: "PR closed",
-      colorClass: "text-muted-foreground",
-      tooltip: `#${pr.number} PR closed: ${pr.title}`,
-      url: pr.url,
-      number: pr.number,
-    };
-  }
-  if (pr.state === "merged") {
-    return {
-      state: "merged",
-      label: "PR merged",
-      colorClass: "text-attention-foreground",
-      tooltip: `#${pr.number} PR merged: ${pr.title}`,
-      url: pr.url,
-      number: pr.number,
-    };
-  }
-  return null;
+/** One indicator for all of a thread's PRs, colored by the most actionable state. */
+export function prStatusIndicator(
+  items: ReadonlyArray<ThreadPullRequestItem>,
+): PrStatusIndicator | null {
+  const top = items[0];
+  const state = summarizeThreadPullRequestState(items);
+  if (!top || !state) return null;
+  const label = PR_STATE_LABEL[state];
+  return {
+    state,
+    label,
+    colorClass: threadPullRequestStateColorClass(state),
+    tooltip:
+      items.length === 1
+        ? `#${top.number} ${label}: ${top.title}`
+        : threadPullRequestTooltipLines(items).join("\n"),
+    url: top.url,
+    number: top.number,
+    items,
+  };
 }
 
 /** A finished workflow's PR status tooltip: "PR #462 open", "Merged #462" or "PR #462 closed". */

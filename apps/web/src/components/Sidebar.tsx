@@ -34,6 +34,11 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { gitStatusQueryOptions } from "../lib/gitReactQuery";
+import { resolveThreadPullRequests } from "../lib/threadPullRequests";
+import {
+  linkedPullRequestLookupCwd,
+  useLinkedPullRequestStates,
+} from "../hooks/useLinkedPullRequestStates";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -79,6 +84,7 @@ import { setWorkflowArchived } from "../archiveActions";
 import {
   findShelfBucketForThread,
   polledSidebarGitStatusCwds,
+  sidebarPullRequestLinkTargets,
   reconcileFrozenOrder,
   type SidebarShelfBucket,
   resolvePrimaryNewThreadProjectId,
@@ -344,10 +350,54 @@ export default function Sidebar() {
     }
     return { prByThreadId: map, prPendingThreadIds: pending };
   }, [polledGitStatusCwds, threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
+  const threadPullRequestLookupCwds = useMemo(
+    () =>
+      new Map(
+        threads.map(
+          (thread) =>
+            [thread.id, linkedPullRequestLookupCwd(projectById.get(thread.projectId))] as const,
+        ),
+      ),
+    [projectById, threads],
+  );
+  const linkedPullRequestTargets = useMemo(
+    () =>
+      sidebarPullRequestLinkTargets(
+        threads.map((thread) => ({
+          id: thread.id,
+          archived: thread.archivedAt !== null,
+          lookupCwd: threadPullRequestLookupCwds.get(thread.id) ?? null,
+          pullRequests: thread.pullRequests,
+        })),
+        routeThreadId,
+      ),
+    [routeThreadId, threadPullRequestLookupCwds, threads],
+  );
+  const linkedPullRequestState = useLinkedPullRequestStates(linkedPullRequestTargets);
+  // The branch PR and the thread's links, merged once per change instead of once per row render.
+  const prStatusByThreadId = useMemo(
+    () =>
+      new Map(
+        threads.map((thread) => {
+          const lookupCwd = threadPullRequestLookupCwds.get(thread.id) ?? null;
+          return [
+            thread.id,
+            prStatusIndicator(
+              resolveThreadPullRequests({
+                branchPr: prByThreadId.get(thread.id) ?? null,
+                links: thread.pullRequests,
+                linkState: (url) => linkedPullRequestState(lookupCwd, url),
+              }),
+            ),
+          ] as const;
+        }),
+      ),
+    [linkedPullRequestState, prByThreadId, threadPullRequestLookupCwds, threads],
+  );
   const indicatorsForThread: SidebarIndicatorsForThread = (thread) => ({
     threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),
     isUnread: unreadThreadIds.has(thread.id),
-    prStatus: prStatusIndicator(prByThreadId.get(thread.id) ?? null),
+    prStatus: prStatusByThreadId.get(thread.id) ?? null,
     prPending: prPendingThreadIds.has(thread.id),
     terminalStatus: terminalStatusFromRunningIds(
       selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,

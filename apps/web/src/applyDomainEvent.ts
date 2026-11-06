@@ -1,5 +1,6 @@
 import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
 import { resolveTurnAssistantMessage } from "@t3tools/shared/turnAssistantMessage";
+import { updateThreadPullRequestLinks } from "@t3tools/shared/sourceControl";
 import { recordMessageAppend, recordMessageListChange } from "./lib/streamingTextRevision";
 import { detailEntityKey, detailEventIsCovered } from "./orchestration/detailCoverage";
 import {
@@ -929,6 +930,7 @@ function reduceDomainEvent(
         projectId: event.payload.projectId,
         title: event.payload.title,
         scheduledOrigin: event.payload.scheduledOrigin ?? null,
+        ...(event.payload.pullRequest ? { pullRequests: [event.payload.pullRequest] } : {}),
         model: resolveThreadModel({
           model: event.payload.model,
           sessionProviderName: null,
@@ -1138,7 +1140,15 @@ function reduceDomainEvent(
           event.payload.modelSelection !== undefined
             ? event.payload.modelSelection
             : thread.modelSelection;
+        const pullRequests =
+          event.payload.pullRequest || event.payload.pullRequestUnlinked
+            ? updateThreadPullRequestLinks(thread.pullRequests, {
+                link: event.payload.pullRequest,
+                unlink: event.payload.pullRequestUnlinked,
+              })
+            : thread.pullRequests;
         if (
+          pullRequests === thread.pullRequests &&
           (event.payload.title ?? thread.title) === thread.title &&
           (event.payload.titleSource ?? thread.titleSource) === thread.titleSource &&
           (event.payload.titleRevision ?? thread.titleRevision) === thread.titleRevision &&
@@ -1182,6 +1192,7 @@ function reduceDomainEvent(
           ...(event.payload.worktreePath !== undefined
             ? { worktreePath: event.payload.worktreePath }
             : {}),
+          ...(pullRequests !== thread.pullRequests ? { pullRequests } : {}),
         };
       });
       return threads === state.threads ? state : { ...state, threads };

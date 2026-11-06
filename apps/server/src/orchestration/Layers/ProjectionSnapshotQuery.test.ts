@@ -1145,6 +1145,64 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     60_000,
   );
 
+  it.effect("getSnapshot carries each thread's newest PR links, capped at 20", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_pull_requests`;
+      yield* sql`DELETE FROM projection_state`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model, scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-links', 'Project', '/tmp/project-links', 'gpt-5-codex', '[]',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:01.000Z', NULL
+        )
+      `;
+      for (const threadId of ["thread-links", "thread-no-links"])
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+            estimated_context_tokens, created_at, last_interaction_at, updated_at, deleted_at
+          ) VALUES (
+            ${threadId}, 'project-links', 'Thread', 'gpt-5-codex', NULL, NULL, NULL,
+            NULL, '2026-02-24T00:00:02.000Z', '2026-02-24T00:00:03.000Z', '2026-02-24T00:00:03.000Z', NULL
+          )
+        `;
+      for (let number = 1; number <= 22; number += 1) {
+        const updatedAt = new Date(Date.UTC(2026, 1, 24, 1, 0, number)).toISOString();
+        yield* sql`
+          INSERT INTO projection_thread_pull_requests (
+            link_id, thread_id, provider, host, repository, number, title, url, updated_at
+          ) VALUES (
+            ${`link-${number}`}, 'thread-links', 'github', 'github.com', 'o/r', ${number},
+            ${`PR ${number}`}, ${`https://github.com/o/r/pull/${number}`}, ${updatedAt}
+          )
+        `;
+      }
+
+      const snapshot = yield* snapshotQuery.getSnapshot();
+      const linked = snapshot.threads.find((thread) => thread.id === "thread-links");
+      const unlinked = snapshot.threads.find((thread) => thread.id === "thread-no-links");
+      assert.deepEqual(
+        linked?.pullRequests?.map((link) => link.number),
+        Array.from({ length: 20 }, (_, index) => 22 - index),
+      );
+      assert.deepEqual(linked?.pullRequests?.[0], {
+        provider: "github",
+        host: "github.com",
+        repository: "o/r",
+        number: 22,
+        title: "PR 22",
+        url: "https://github.com/o/r/pull/22",
+      });
+      assert.isUndefined(unlinked?.pullRequests);
+    }),
+  );
+
   it.effect("getRewindDrafts returns only one thread's unresolved drafts", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

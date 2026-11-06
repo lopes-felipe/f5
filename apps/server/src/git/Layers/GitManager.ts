@@ -356,6 +356,22 @@ function toPullRequestHeadRemoteInfo(pr: {
   };
 }
 
+const STATUS_PULL_REQUEST_CACHE_LIMIT = 256;
+
+/** Sets `key` as the newest entry, evicting the oldest past the cache limit. */
+function setBoundedRecent<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  if (map.size >= STATUS_PULL_REQUEST_CACHE_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
+function statusPullRequestCacheKey(cwd: string, branch: string): string {
+  return `${cwd}\0${branch}`;
+}
+
 export const makeGitManager = Effect.gen(function* () {
   // The last PR state each status read saw. Thread details show this read, so a merge it sees
   // must reach settlement right away instead of waiting for the next sweep.
@@ -365,16 +381,14 @@ export const makeGitManager = Effect.gen(function* () {
     Effect.suspend(() => {
       // An unseen PR counts as open, so only a terminal first read announces.
       const previous = statusPullRequestStates.get(pr.url) ?? "open";
-      statusPullRequestStates.delete(pr.url);
-      if (statusPullRequestStates.size >= 256) {
-        const oldest = statusPullRequestStates.keys().next().value;
-        if (oldest !== undefined) statusPullRequestStates.delete(oldest);
-      }
-      statusPullRequestStates.set(pr.url, pr.state);
+      setBoundedRecent(statusPullRequestStates, pr.url, pr.state);
       return previous === pr.state
         ? Effect.void
         : PubSub.publish(pullRequestStateChanges, pr.url).pipe(Effect.asVoid);
     });
+  // The last PR a status lookup found per checkout and branch. A failed or deferred lookup
+  // (GitHub's retry window) returns it instead of erasing a known PR.
+  const lastStatusPullRequests = new Map<string, PullRequestInfo>();
   const gitCore = yield* GitCore;
   const gitHubCli = yield* GitHubCli;
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
@@ -1375,7 +1389,19 @@ export const makeGitManager = Effect.gen(function* () {
                 Effect.catch(() => Effect.succeed(latest)),
               );
             }),
-            Effect.catch(() => Effect.succeed(null)),
+            Effect.tap((latest) =>
+              Effect.sync(() => {
+                const key = statusPullRequestCacheKey(input.cwd, details.branch!);
+                if (latest) setBoundedRecent(lastStatusPullRequests, key, latest);
+                else lastStatusPullRequests.delete(key);
+              }),
+            ),
+            Effect.catch(() =>
+              Effect.succeed(
+                lastStatusPullRequests.get(statusPullRequestCacheKey(input.cwd, details.branch!)) ??
+                  null,
+              ),
+            ),
           )
         : null;
     if (latestPr) yield* noteStatusPullRequestState(latestPr);

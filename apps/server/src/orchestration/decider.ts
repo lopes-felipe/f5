@@ -1163,6 +1163,12 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: "Threads without a project cannot have a branch or worktree.",
         });
       }
+      if (command.pullRequest !== undefined && command.pullRequestUnlink !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A metadata update cannot link and unlink a pull request at once.",
+        });
+      }
       if (
         command.expectedArchivedAt !== undefined &&
         thread.archivedAt !== command.expectedArchivedAt
@@ -1225,6 +1231,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         payload: {
           threadId: command.threadId,
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
+          ...(command.pullRequestUnlink ? { pullRequestUnlinked: command.pullRequestUnlink } : {}),
           ...(command.title !== undefined
             ? {
                 title: command.title,

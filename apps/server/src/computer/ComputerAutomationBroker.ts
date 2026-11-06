@@ -1050,8 +1050,22 @@ export class ComputerAutomationBrokerRuntime {
     let requestId = randomUUID();
     let dispatched = false;
     let retrying = false;
-    const retryDeadline =
-      performance.now() + Math.min(COMPUTER_LEASE_WAIT_MAX_MS, Math.max(0, timeoutMs - 5000));
+    // Queueing, admission and retries share one budget; contention never renews it.
+    const invokeDeadline = performance.now() + timeoutMs;
+    /** Reject expiry before admitting more work or dispatching any native action. */
+    const remainingBudget = () => {
+      const remaining = Math.floor(invokeDeadline - performance.now());
+      if (remaining <= 0)
+        throw new ComputerControlError({
+          _tag: "Execution",
+          message: "Computer request timed out before dispatch.",
+        });
+      return remaining;
+    };
+    const retryDeadline = Math.min(
+      invokeDeadline - 5000,
+      performance.now() + COMPUTER_LEASE_WAIT_MAX_MS,
+    );
     const controller = new AbortController();
     const slot = mutation
       ? await this.queue.acquire(threadId, controller.signal, Math.min(60_000, timeoutMs))
@@ -1140,8 +1154,9 @@ export class ComputerAutomationBrokerRuntime {
                   ? binding.holder.scope
                   : { kind: "foreground" };
             const acquisitionId = randomUUID();
+            const remainingMs = remainingBudget();
             const waitMs = this.host.cooperationCapable()
-              ? Math.min(COMPUTER_LEASE_WAIT_MAX_MS, Math.max(0, timeoutMs - 5000))
+              ? Math.min(COMPUTER_LEASE_WAIT_MAX_MS, Math.max(0, remainingMs - 5000))
               : 0;
             binding.acquiring = { requestId: acquisitionId, turnId: ctx.turnId };
             let holder: ComputerLeaseHolder;
@@ -1165,7 +1180,7 @@ export class ComputerAutomationBrokerRuntime {
                     policyRevision: revision,
                   },
                 },
-                waitMs + 2000,
+                Math.min(waitMs + 2000, remainingMs),
                 false,
               );
               options?.signal?.addEventListener("abort", abortAcquire, { once: true });
@@ -1207,7 +1222,7 @@ export class ComputerAutomationBrokerRuntime {
               : {}),
             requestId,
             authorization: this.authorization(live, executionGeneration),
-            deadlineAtMs: Date.now() + Math.min(60_000, Math.max(1, Math.floor(timeoutMs))),
+            deadlineAtMs: Date.now() + Math.min(60_000, remainingBudget()),
             agent: { provider: live.provider, threadTitle: live.threadTitle.slice(0, 200) },
           };
           const payloadHash = createHash("sha256")

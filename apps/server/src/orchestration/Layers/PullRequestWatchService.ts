@@ -10,7 +10,9 @@ import {
 } from "@t3tools/contracts";
 import {
   formatSourceControlPullRequestKey,
+  hasThreadPullRequestLink,
   parseSourceControlPullRequestKey,
+  toThreadPullRequestLink,
 } from "@t3tools/shared/sourceControl";
 import {
   Cause,
@@ -225,6 +227,17 @@ export const makePullRequestWatchService = Effect.gen(function* () {
         },
       });
       yield* changed(thread.id);
+      // A watched PR belongs to the thread, so the sidebar and View PR show it.
+      const link = toThreadPullRequestLink(ref, { url: detail.url, title: detail.title });
+      if (link && !hasThreadPullRequestLink(thread.pullRequests, ref))
+        yield* engine
+          .dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.makeUnsafe(`watch-link:${row.watchId}`),
+            threadId: thread.id,
+            pullRequest: link,
+          })
+          .pipe(Effect.ignore);
       return { threadId: thread.id, key, watch: row.watch };
     }).pipe(
       Effect.mapError((error) => (error instanceof PullRequestWatchError ? error : storageError())),

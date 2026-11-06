@@ -272,6 +272,40 @@ describe("applyDomainEvent", () => {
     });
   });
 
+  it("links PRs newest first and removes an unlinked PR", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const pr = (number: number) => ({
+      provider: "github" as const,
+      host: "github.com",
+      repository: "o/r",
+      number,
+      title: `PR ${number}`,
+      url: `https://github.com/o/r/pull/${number}`,
+    });
+    const meta = (
+      payload: Omit<
+        Extract<OrchestrationEvent, { type: "thread.meta-updated" }>["payload"],
+        "threadId" | "updatedAt"
+      >,
+      sequence: number,
+    ) =>
+      makeEvent(
+        "thread.meta-updated",
+        { threadId, updatedAt: "2026-04-01T09:05:00.000Z", ...payload },
+        { sequence },
+      );
+    let state = applyDomainEvent(makeState(), meta({ pullRequest: pr(1) }, 1));
+    state = applyDomainEvent(state, meta({ pullRequest: pr(2) }, 2));
+    state = applyDomainEvent(state, meta({ pullRequest: pr(1) }, 3));
+    expect(state.threads[0]?.pullRequests?.map((link) => link.number)).toEqual([1, 2]);
+
+    state = applyDomainEvent(state, meta({ pullRequestUnlinked: pr(2) }, 4));
+    expect(state.threads[0]?.pullRequests?.map((link) => link.number)).toEqual([1]);
+
+    const unchanged = applyDomainEvent(state, meta({ pullRequestUnlinked: pr(9) }, 5));
+    expect(unchanged.threads).toBe(state.threads);
+  });
+
   it("marks newly created threads as detail-ready", () => {
     const next = applyDomainEvent(
       makeState({ threads: [] }),

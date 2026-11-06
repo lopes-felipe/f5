@@ -10,6 +10,7 @@ import {
   resolveQuickAction,
   summarizeGitResult,
   shouldSavePullRequestLink,
+  withThreadPullRequests,
 } from "./GitActionsControl.logic";
 
 function status(overrides: Partial<GitStatusResult> = {}): GitStatusResult {
@@ -1067,4 +1068,32 @@ it("reports a changed commit context without presenting success", () => {
       description: "Review the suggested message and current changes before trying again.",
     },
   );
+});
+
+describe("withThreadPullRequests", () => {
+  it("keeps the quick action when the thread has no PRs", () => {
+    const hint = { label: "Commit", disabled: true, kind: "show_hint" as const, hint: "x" };
+    assert.strictEqual(withThreadPullRequests(hint, 0), hint);
+  });
+
+  it("turns a disabled hint or View PR into a counted View PR", () => {
+    assert.deepEqual(
+      withThreadPullRequests({ label: "Push", disabled: true, kind: "show_hint", hint: "x" }, 2),
+      { label: "View PR", disabled: false, kind: "open_pr", pullRequestCount: 2 },
+    );
+    assert.deepEqual(
+      withThreadPullRequests({ label: "View PR", disabled: false, kind: "open_pr" }, 1),
+      { label: "View PR", disabled: false, kind: "open_pr", pullRequestCount: 1 },
+    );
+  });
+
+  it("keeps git work the user can do ahead of View PR", () => {
+    const push = {
+      label: "Push",
+      disabled: false,
+      kind: "run_action" as const,
+      action: "commit_push" as const,
+    };
+    assert.strictEqual(withThreadPullRequests(push, 3), push);
+  });
 });

@@ -8,7 +8,12 @@ import {
   InvestigationWorkflowSummary,
 } from "@t3tools/contracts";
 import { ThreadTitleState } from "@t3tools/contracts";
-import { RewindDraft, PendingUserInput } from "@t3tools/contracts";
+import {
+  RewindDraft,
+  PendingUserInput,
+  THREAD_PULL_REQUEST_SHELL_LIMIT,
+  ThreadPullRequestLink,
+} from "@t3tools/contracts";
 import {
   ChatAttachment,
   CodeReviewWorkflow,
@@ -2733,6 +2738,43 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             threadId: row.threadId,
           });
       }
+      const pullRequestRows = yield* sql<{
+        readonly threadId: string;
+        readonly provider: string;
+        readonly host: string;
+        readonly repository: string;
+        readonly number: number;
+        readonly title: string;
+        readonly url: string;
+      }>`SELECT thread_id AS "threadId", provider, host, repository, number, title, url
+        FROM (
+          SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY thread_id ORDER BY updated_at DESC, link_id DESC
+          ) AS link_rank
+          FROM projection_thread_pull_requests
+        )
+        WHERE link_rank <= ${THREAD_PULL_REQUEST_SHELL_LIMIT}
+        ORDER BY thread_id, link_rank`.pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.threadPullRequests:query",
+            "ProjectionSnapshotQuery.threadPullRequests:decode",
+          ),
+        ),
+      );
+      const pullRequestsByThread = new Map<string, ThreadPullRequestLink[]>();
+      for (const { threadId, ...row } of pullRequestRows) {
+        const decoded = Schema.decodeUnknownOption(ThreadPullRequestLink)(row);
+        if (Option.isNone(decoded)) {
+          yield* Effect.logWarning("Skipping invalid thread pull request link in snapshot", {
+            threadId,
+          });
+          continue;
+        }
+        const links = pullRequestsByThread.get(threadId) ?? [];
+        links.push(decoded.value);
+        pullRequestsByThread.set(threadId, links);
+      }
       const threads = threadRows.map((row) =>
         buildThreadSnapshot({
           row,
@@ -2751,6 +2793,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ...thread,
         pendingUserInputs: inputsByThread.get(thread.id) ?? [],
         rewindDrafts: draftsByThread.get(thread.id) ?? [],
+        ...(pullRequestsByThread.has(thread.id)
+          ? { pullRequests: pullRequestsByThread.get(thread.id)! }
+          : {}),
       }));
       const unsortedProjects: Array<OrchestrationProject> = projectRows.map((row) => ({
         id: row.projectId,

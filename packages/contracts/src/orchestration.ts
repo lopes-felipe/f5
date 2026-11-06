@@ -975,7 +975,19 @@ export type RewindDraft = typeof RewindDraft.Type;
 export const ThreadSettledBy = Schema.Literals(["user", "auto", "agent"]);
 export type ThreadSettledBy = typeof ThreadSettledBy.Type;
 
+export const ThreadPullRequestLink = Schema.Struct({
+  ...SourceControlPullRequestRef.fields,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048), Schema.isPattern(/^https?:\/\//)),
+});
+export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
+
+/** The most links a thread shell carries; older links stay in the projection table. */
+export const THREAD_PULL_REQUEST_SHELL_LIMIT = 20;
+
 export const OrchestrationThread = Schema.Struct({
+  /** PRs linked to this thread, newest first, at most `THREAD_PULL_REQUEST_SHELL_LIMIT`. */
+  pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   settledAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
@@ -1269,13 +1281,6 @@ const ProjectInvestigationWorkflowDeleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-export const ThreadPullRequestLink = Schema.Struct({
-  ...SourceControlPullRequestRef.fields,
-  title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
-  url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048), Schema.isPattern(/^https?:\/\//)),
-});
-export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
-
 const ThreadCreateCommand = Schema.Struct({
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   sharedFilesystemConfirmed: Schema.optional(Schema.Boolean),
@@ -1390,6 +1395,8 @@ const ThreadUnsnoozeCommand = Schema.Struct({
 
 const ThreadMetaUpdateCommand = Schema.Struct({
   pullRequest: Schema.optional(ThreadPullRequestLink),
+  /** Removes this PR link from the thread. Exclusive with `pullRequest`. */
+  pullRequestUnlink: Schema.optional(SourceControlPullRequestRef),
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -2299,6 +2306,7 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   pullRequest: Schema.optional(ThreadPullRequestLink),
+  pullRequestUnlinked: Schema.optional(SourceControlPullRequestRef),
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
   titleOrigin: Schema.optional(Schema.Literals(["host", "provider"])),

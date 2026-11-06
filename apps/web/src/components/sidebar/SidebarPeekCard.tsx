@@ -378,7 +378,9 @@ function ThreadPeekContent({
         {prStatus ? (
           <span className={cn("inline-flex items-center gap-0.5", prStatus.colorClass)}>
             <GitPullRequestIcon aria-hidden="true" className="size-3" />
-            {`${prStatus.label} #${prStatus.number}`}
+            {prStatus.items.length > 1
+              ? `${prStatus.items.length} PRs · ${prStatus.label} #${prStatus.number}`
+              : `${prStatus.label} #${prStatus.number}`}
           </span>
         ) : null}
         {context !== null ? <span className="tabular-nums">{`${context}% context`}</span> : null}

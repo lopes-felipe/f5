@@ -7482,6 +7482,128 @@ describe("ProviderRuntimeIngestion", () => {
     expect(detail.commandExecution?.output).toContain("Darwin kernel-version");
   });
 
+  describe("PRs a command creates", () => {
+    const prUrl = "https://github.com/lopes-felipe/f5/pull/493";
+    const linksOf = async (harness: Awaited<ReturnType<typeof createHarness>>) =>
+      (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === asThreadId("thread-1"),
+      )?.pullRequests ?? [];
+    const runCommand = async (input: {
+      readonly key: string;
+      readonly provider: "codex" | "claudeAgent";
+      readonly detail: string;
+      readonly status: "completed" | "failed";
+      readonly output: string;
+      readonly outputAfterCompletion?: boolean;
+    }) => {
+      const harness = await createHarness();
+      const now = new Date().toISOString();
+      const base = {
+        provider: input.provider,
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId(`turn-${input.key}`),
+      } as const;
+      const item = { ...base, itemId: asItemId(`item-${input.key}`) } as const;
+      const output = () =>
+        harness.emit({
+          ...item,
+          type: "content.delta",
+          eventId: asEventId(`evt-${input.key}-output`),
+          payload: { streamKind: "command_output", delta: input.output },
+        });
+      harness.emit({
+        ...base,
+        type: "turn.started",
+        eventId: asEventId(`evt-${input.key}-turn`),
+        payload: {},
+      });
+      harness.emit({
+        ...item,
+        type: "item.started",
+        eventId: asEventId(`evt-${input.key}-started`),
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          title: "Command run",
+          detail: input.detail,
+        },
+      });
+      if (!input.outputAfterCompletion) output();
+      harness.emit({
+        ...item,
+        type: "item.completed",
+        eventId: asEventId(`evt-${input.key}-completed`),
+        payload: {
+          itemType: "command_execution",
+          status: input.status,
+          title: "Command run",
+          detail: input.detail,
+        },
+      });
+      if (input.outputAfterCompletion) output();
+      harness.emit({
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId(`evt-${input.key}-turn-completed`),
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+      return harness;
+    };
+
+    it("links the PR a completed Claude gh pr create printed", async () => {
+      const harness = await runCommand({
+        key: "claude-pr",
+        provider: "claudeAgent",
+        detail: 'Bash: cd /tmp/wt && gh pr create --base main --title "Fix preview"',
+        status: "completed",
+        output: `Creating pull request\n${prUrl}\n`,
+      });
+      expect(await linksOf(harness)).toEqual([
+        {
+          provider: "github",
+          host: "github.com",
+          repository: "lopes-felipe/f5",
+          number: 493,
+          title: "Fix preview",
+          url: prUrl,
+        },
+      ]);
+    });
+
+    it("links a PR whose URL arrives after the command completed", async () => {
+      const harness = await runCommand({
+        key: "codex-late-pr",
+        provider: "codex",
+        detail: "/bin/zsh -lc 'gh pr create --fill'",
+        status: "completed",
+        output: `${prUrl}\n`,
+        outputAfterCompletion: true,
+      });
+      expect((await linksOf(harness)).map((link) => link.number)).toEqual([493]);
+    });
+
+    it("links nothing for a failed run or another command", async () => {
+      const failed = await runCommand({
+        key: "failed-pr",
+        provider: "codex",
+        detail: "/bin/zsh -lc 'gh pr create --fill'",
+        status: "failed",
+        output: prUrl,
+      });
+      expect(await linksOf(failed)).toEqual([]);
+      const viewed = await runCommand({
+        key: "viewed-pr",
+        provider: "codex",
+        detail: "/bin/zsh -lc 'gh pr view 493 --json url'",
+        status: "completed",
+        output: prUrl,
+      });
+      expect(await linksOf(viewed)).toEqual([]);
+    });
+  });
+
   it("stores the Claude Bash description and keeps it across later updates", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

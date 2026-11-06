@@ -116,9 +116,10 @@ export function useSidebarThreadActions(input: {
     });
   };
 
-  const openPrLink = useCallback((event: React.MouseEvent<HTMLElement>, prUrl: string) => {
-    event.preventDefault();
-    event.stopPropagation();
+  // A PR menu choice passes no event: the menu already handled its click.
+  const openPrLink = useCallback((event: React.MouseEvent<HTMLElement> | null, prUrl: string) => {
+    event?.preventDefault();
+    event?.stopPropagation();
 
     const api = readNativeApi();
     if (!api) {

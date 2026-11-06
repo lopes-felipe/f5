@@ -55,9 +55,11 @@ export class ComputerAdmissionQueue {
   private now(): number {
     return this.options.now?.() ?? performance.now();
   }
+  /** Snapshot queued owners so pause and disconnect can include waiting threads. */
   holders(): ReadonlyArray<ComputerLeaseHolder> {
     return this.waiting.map((entry) => entry.holder);
   }
+  /** Admit immediately when eligible, otherwise wait behind earlier conflicting scopes. */
   admit<T>(input: ComputerAdmission<T>): Promise<T> {
     if (this.closed) return Promise.reject(interrupted());
     const earlier = this.waiting.find((entry) =>
@@ -116,6 +118,7 @@ export class ComputerAdmissionQueue {
       this.changed();
     });
   }
+  /** Coalesce readiness notifications into a non-reentrant FIFO pass. */
   changed(): void {
     if (this.closed || !this.waiting.length) return;
     if (this.draining) {
@@ -162,6 +165,7 @@ export class ComputerAdmissionQueue {
       }
     }
   }
+  /** Reject matching requests and release their queue positions and waiting states. */
   cancel(
     predicate: (entry: Pick<Waiting, "profileId" | "requestId" | "holder">) => boolean,
     error: unknown = interrupted(),
@@ -169,6 +173,7 @@ export class ComputerAdmissionQueue {
     for (const entry of [...this.waiting]) if (predicate(entry)) entry.reject(error);
     this.changed();
   }
+  /** Stop admission permanently, rejecting all outstanding waiters. */
   close(): void {
     this.closed = true;
     clearInterval(this.timer);

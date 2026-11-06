@@ -16,6 +16,7 @@ import {
   GitBranchPlusIcon,
   GitCommitIcon,
   InfoIcon,
+  LinkIcon,
 } from "lucide-react";
 import { GitHubIcon } from "./Icons";
 import {
@@ -31,7 +32,25 @@ import {
   resolveQuickAction,
   summarizeGitResult,
   shouldSavePullRequestLink,
+  withThreadPullRequests,
 } from "./GitActionsControl.logic";
+import {
+  linkedPullRequestLookupCwd,
+  useLinkedPullRequestStates,
+} from "../hooks/useLinkedPullRequestStates";
+import { resolveThreadPullRequests, type ThreadPullRequestItem } from "../lib/threadPullRequests";
+import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
+import {
+  ThreadPullRequestMenuItems,
+  threadPullRequestsSpanRepositories,
+} from "./pullRequests/ThreadPullRequestMenuItems";
+import {
+  LinkPullRequestDialog,
+  ThreadPullRequestSubmenu,
+  unlinkThreadPullRequest,
+  useThreadPullRequestWatches,
+} from "./pullRequests/threadPullRequestActions";
 import { useAppSettings } from "~/appSettings";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -45,7 +64,15 @@ import {
   DialogTitle,
 } from "~/components/ui/dialog";
 import { Group, GroupSeparator } from "~/components/ui/group";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "~/components/ui/menu";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Textarea } from "~/components/ui/textarea";
@@ -300,10 +327,55 @@ export default function GitActionsControl({
     () => buildMenuItems(gitStatusForActions, isGitActionRunning, hasOriginRemote),
     [gitStatusForActions, hasOriginRemote, isGitActionRunning],
   );
+  // The thread's PRs: the checkout's branch PR plus PRs linked to the thread.
+  const threadPullRequestLinks = useStore((state) =>
+    isServerThread ? selectThreadById(state, activeThreadId)?.pullRequests : undefined,
+  );
+  const pullRequestLookupCwd = useStore((state) => {
+    const thread = isServerThread ? selectThreadById(state, activeThreadId) : undefined;
+    return linkedPullRequestLookupCwd(
+      thread ? state.projects.find((project) => project.id === thread.projectId) : undefined,
+    );
+  });
+  const linkedPullRequestTargets = useMemo(
+    () =>
+      (threadPullRequestLinks ?? []).map((link) => ({
+        cwd: pullRequestLookupCwd,
+        url: link.url,
+        enabled: true,
+      })),
+    [pullRequestLookupCwd, threadPullRequestLinks],
+  );
+  const linkedPullRequestState = useLinkedPullRequestStates(linkedPullRequestTargets);
+  const threadPullRequests = useMemo(
+    () =>
+      resolveThreadPullRequests({
+        branchPr: gitStatusForActions?.pr ?? null,
+        links: threadPullRequestLinks,
+        linkState: (url) => linkedPullRequestState(pullRequestLookupCwd, url),
+      }),
+    [gitStatusForActions?.pr, linkedPullRequestState, pullRequestLookupCwd, threadPullRequestLinks],
+  );
+  const pullRequestWatches = useThreadPullRequestWatches(isServerThread ? activeThreadId : null);
+  const [isLinkPullRequestOpen, setIsLinkPullRequestOpen] = useState(false);
   const quickAction = useMemo(
     () =>
-      resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultBranch, hasOriginRemote),
-    [gitStatusForActions, hasOriginRemote, isDefaultBranch, isGitActionRunning],
+      withThreadPullRequests(
+        resolveQuickAction(
+          gitStatusForActions,
+          isGitActionRunning,
+          isDefaultBranch,
+          hasOriginRemote,
+        ),
+        threadPullRequests.length,
+      ),
+    [
+      gitStatusForActions,
+      hasOriginRemote,
+      isDefaultBranch,
+      isGitActionRunning,
+      threadPullRequests.length,
+    ],
   );
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
@@ -410,7 +482,9 @@ export default function GitActionsControl({
       });
       return;
     }
-    const prUrl = gitStatusForActions?.pr?.state === "open" ? gitStatusForActions.pr.url : null;
+    const prUrl =
+      threadPullRequests[0]?.url ??
+      (gitStatusForActions?.pr?.state === "open" ? gitStatusForActions.pr.url : null);
     if (!prUrl) {
       toastManager.add({
         type: "error",
@@ -427,7 +501,26 @@ export default function GitActionsControl({
         data: threadToastData,
       });
     });
-  }, [gitStatusForActions?.pr?.state, gitStatusForActions?.pr?.url, threadToastData]);
+  }, [
+    gitStatusForActions?.pr?.state,
+    gitStatusForActions?.pr?.url,
+    threadPullRequests,
+    threadToastData,
+  ]);
+
+  const openThreadPullRequest = useCallback(
+    (item: ThreadPullRequestItem) => {
+      void openLink(item.url).catch((err) => {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open PR link",
+          description: err instanceof Error ? err.message : "An error occurred.",
+          data: threadToastData,
+        });
+      });
+    },
+    [openLink, threadToastData],
+  );
 
   const runGitActionWithToast = useCallback(
     async ({
@@ -903,6 +996,33 @@ export default function GitActionsControl({
                 {quickActionDisabledReason}
               </PopoverPopup>
             </Popover>
+          ) : quickAction.kind === "open_pr" && (quickAction.pullRequestCount ?? 0) > 1 ? (
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`View PR (${quickAction.pullRequestCount})`}
+                    disabled={isGitActionRunning}
+                  />
+                }
+              >
+                <GitQuickActionIcon quickAction={quickAction} />
+                <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
+                  {quickAction.label}
+                </span>
+                <span className="rounded-sm bg-muted px-1 text-2xs tabular-nums text-muted-foreground">
+                  {quickAction.pullRequestCount}
+                </span>
+              </MenuTrigger>
+              <MenuPopup align="start">
+                <ThreadPullRequestMenuItems
+                  items={threadPullRequests}
+                  onOpen={(item) => openThreadPullRequest(item)}
+                />
+              </MenuPopup>
+            </Menu>
           ) : (
             <Button
               variant="ghost"
@@ -936,7 +1056,11 @@ export default function GitActionsControl({
               <ChevronDownIcon aria-hidden="true" className="size-4" />
             </MenuTrigger>
             <MenuPopup align="end" className="w-full">
-              {gitActionMenuItems.map((item) => {
+              {(threadPullRequests.length > 0
+                ? // The Pull requests group below lists the branch PR with the rest.
+                  gitActionMenuItems.filter((item) => item.kind !== "open_pr")
+                : gitActionMenuItems
+              ).map((item) => {
                 const disabledReason = getMenuActionDisabledReason({
                   item,
                   gitStatus: gitStatusForActions,
@@ -998,10 +1122,65 @@ export default function GitActionsControl({
               {gitStatusError && (
                 <p className="px-2 py-1.5 text-xs text-destructive">{gitStatusError.message}</p>
               )}
+              {isServerThread && activeThreadId ? (
+                <>
+                  <MenuSeparator />
+                  <MenuGroup>
+                    <MenuGroupLabel>Pull requests</MenuGroupLabel>
+                    {threadPullRequests.map((item) => (
+                      <ThreadPullRequestSubmenu
+                        key={item.key}
+                        threadId={activeThreadId}
+                        item={item}
+                        showRepository={threadPullRequestsSpanRepositories(threadPullRequests)}
+                        watched={pullRequestWatches.isWatched(item.key)}
+                        watchBusy={
+                          pullRequestWatches.busy ||
+                          pullRequestWatches.watches.isPending ||
+                          pullRequestWatches.watches.isError
+                        }
+                        onWatch={(stop) => {
+                          void pullRequestWatches.watchAction(item.url, stop).then((ok) =>
+                            ok
+                              ? undefined
+                              : toastManager.add({
+                                  type: "error",
+                                  title: "Could not update the PR watch.",
+                                  description: "Check the PR, thread and forge account.",
+                                  data: threadToastData,
+                                }),
+                          );
+                        }}
+                        onUnlink={() => {
+                          void unlinkThreadPullRequest(activeThreadId, item).catch((error) =>
+                            toastManager.add({
+                              type: "error",
+                              title: "Could not unlink the PR.",
+                              description: error instanceof Error ? error.message : String(error),
+                              data: threadToastData,
+                            }),
+                          );
+                        }}
+                      />
+                    ))}
+                    <MenuItem onClick={() => setIsLinkPullRequestOpen(true)}>
+                      <LinkIcon aria-hidden="true" />
+                      Link PR…
+                    </MenuItem>
+                  </MenuGroup>
+                </>
+              ) : null}
             </MenuPopup>
           </Menu>
         </Group>
       )}
+      {isServerThread && activeThreadId ? (
+        <LinkPullRequestDialog
+          threadId={activeThreadId}
+          open={isLinkPullRequestOpen}
+          onOpenChange={setIsLinkPullRequestOpen}
+        />
+      ) : null}
 
       <Dialog
         open={isCommitDialogOpen}

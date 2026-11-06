@@ -189,6 +189,40 @@ export async function refreshCheckedOutGitBranch(queryClient: QueryClient, cwd: 
   }
 }
 
+const THREAD_PULL_REQUEST_REFRESH_MS = 5 * 60_000;
+
+/**
+ * The state of a PR linked to a thread. Shared by sidebar rows and View PR (same key, same
+ * cache), outside the `git` key root so git actions do not refetch it. Open PRs refresh every
+ * five minutes; merged and closed PRs stop polling.
+ */
+export function threadPullRequestQueryOptions(input: {
+  readonly cwd: string | null;
+  readonly url: string;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: ["thread-pull-request", input.cwd, input.url] as const,
+    queryFn: async (context) => {
+      if (!input.cwd) throw new Error("Pull request lookup is unavailable.");
+      return ensureNativeApi().git.resolvePullRequest(
+        { cwd: input.cwd, reference: input.url },
+        rpcQueryContext(context),
+      );
+    },
+    meta: rpcQueryMeta("background"),
+    enabled: input.cwd !== null && input.enabled !== false,
+    staleTime: THREAD_PULL_REQUEST_REFRESH_MS,
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.pullRequest.state !== "open"
+        ? false
+        : THREAD_PULL_REQUEST_REFRESH_MS,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: 1,
+  });
+}
+
 export function gitResolvePullRequestQueryOptions(input: {
   cwd: string | null;
   reference: string | null;
