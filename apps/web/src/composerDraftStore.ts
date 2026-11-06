@@ -31,7 +31,7 @@ import {
   type ProviderModelOptions,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { normalizeCustomModelSlug, normalizeModelSlug } from "@t3tools/shared/model";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { DEFAULT_INTERACTION_MODE, type ChatImageAttachment } from "./types";
 import {
@@ -65,6 +65,17 @@ export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
 export const MAX_PROMPT_STASH_IMAGE_DATA_CHARS = 3_000_000;
+
+/** Instance picks are resolved by the picker; only legacy picks need alias migration. */
+function normalizeDraftModel(
+  model: string | null | undefined,
+  provider: ProviderKind | null,
+  instanceId: ProviderInstanceId | null | undefined,
+) {
+  return instanceId
+    ? normalizeCustomModelSlug(model, provider ?? "codex")
+    : normalizeModelSlug(model, provider ?? "codex");
+}
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
@@ -1351,7 +1362,9 @@ function normalizePromptStashEntry(value: unknown): PromptStashEntry | null {
   const provider = normalizeProviderKind(draft.provider);
   const providerInstanceId = normalizeProviderInstanceId(draft.providerInstanceId);
   const model =
-    typeof draft.model === "string" ? normalizeModelSlug(draft.model, provider ?? "codex") : null;
+    typeof draft.model === "string"
+      ? normalizeDraftModel(draft.model, provider, providerInstanceId)
+      : null;
   const attachments = Array.isArray(draft.attachments)
     ? draft.attachments.flatMap((attachment) => {
         const normalized = normalizePersistedAttachment(attachment);
@@ -1564,7 +1577,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     const providerInstanceId = normalizeProviderInstanceId(draftCandidate.providerInstanceId);
     const model =
       typeof draftCandidate.model === "string"
-        ? normalizeModelSlug(draftCandidate.model, provider ?? "codex")
+        ? normalizeDraftModel(draftCandidate.model, provider, providerInstanceId)
         : null;
     const modelOptions = normalizeProviderModelOptions(draftCandidate.modelOptions, provider, {
       effort:
@@ -2343,12 +2356,17 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         });
       },
       setModel: (threadId, model) => {
+        // Set the provider instance first for resolved picks, so alias-shaped custom names stay exact.
         if (threadId.length === 0) {
           return;
         }
         set((state) => {
           const existing = state.draftsByThreadId[threadId];
-          const normalizedModel = normalizeModelSlug(model, existing?.provider ?? "codex") ?? null;
+          const normalizedModel = normalizeDraftModel(
+            model,
+            existing?.provider ?? null,
+            existing?.providerInstanceId,
+          );
           if (!existing && normalizedModel === null) {
             return state;
           }
@@ -3367,7 +3385,11 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           providerInstanceId: normalizeProviderInstanceId(selection.providerInstanceId),
           model:
             typeof selection.model === "string"
-              ? (normalizeModelSlug(selection.model, provider ?? "codex") ?? null)
+              ? normalizeDraftModel(
+                  selection.model,
+                  provider,
+                  normalizeProviderInstanceId(selection.providerInstanceId),
+                )
               : null,
           modelOptions: normalizeProviderModelOptions(selection.modelOptions) ?? null,
           runtimeMode: isRuntimeMode(selection.runtimeMode) ? selection.runtimeMode : null,

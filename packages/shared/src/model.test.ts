@@ -30,6 +30,7 @@ import {
   normalizeClaudeModelOptions,
   normalizeClaudeContextWindow,
   normalizeModelSlug,
+  normalizeCustomModelSlug,
   roughTokenEstimateFromCharacters,
   resolveSelectableModel,
   resolveCodexReasoningEffortForModel,
@@ -103,6 +104,17 @@ describe("Claude Fable 5.1", () => {
       }),
     ).toEqual({ effort: "xhigh" });
     expect(normalizeClaudeModelOptions(model, { effort: "high" })).toBeUndefined();
+  });
+});
+
+describe("normalizeCustomModelSlug", () => {
+  it("cleans Claude context suffixes without migrating alias-shaped custom names", () => {
+    expect(normalizeCustomModelSlug(" opus-5[1m] ", "claudeAgent")).toBe("opus-5");
+    expect(normalizeCustomModelSlug(" opus-5[200k] ", "claudeAgent")).toBe("opus-5");
+    expect(normalizeCustomModelSlug(" gpt-5.3 ", "codex")).toBe("gpt-5.3");
+    expect(normalizeCustomModelSlug("custom[1m]", "opencode")).toBe("custom[1m]");
+    expect(normalizeCustomModelSlug(" ")).toBeNull();
+    expect(normalizeCustomModelSlug(null)).toBeNull();
   });
 });
 
