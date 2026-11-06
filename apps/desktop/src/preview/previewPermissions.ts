@@ -14,6 +14,8 @@ import { isLoopbackPreviewHost } from "@t3tools/shared/preview";
 export const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "clipboard-sanitized-write",
   "fullscreen",
+  // Sign-in widgets query this before contacting local authenticators such as Okta FastPass.
+  "loopback-network",
 ]);
 
 /**
