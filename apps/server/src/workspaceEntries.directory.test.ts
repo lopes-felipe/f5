@@ -57,6 +57,36 @@ describe("lazy directory listing", () => {
     ]);
   });
 
+  it("filters ignored children through a folder alias using the target's Git rules", async () => {
+    const cwd = await fixture();
+    execFileSync("git", ["init", "-q", cwd]);
+    await fs.writeFile(path.join(cwd, ".gitignore"), "/src/secret.env\n");
+    await fs.writeFile(path.join(cwd, "src", "secret.env"), "synthetic");
+    await fs.writeFile(path.join(cwd, "src", ".gitignore"), "local.env\n");
+    await fs.writeFile(path.join(cwd, "src", "local.env"), "synthetic");
+    await fs.symlink(
+      path.join(cwd, "src"),
+      path.join(cwd, "link"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    for (const relativePath of ["src", "link"]) {
+      const hidden = await listWorkspaceDirectory({ cwd, relativePath });
+      expect(hidden.entries.map((entry) => entry.path)).toEqual([
+        relativePath + "/.gitignore",
+        relativePath + "/nested.ts",
+      ]);
+      expect(hidden.totalEntries).toBe(2);
+      const shown = await listWorkspaceDirectory({ cwd, relativePath, includeIgnored: true });
+      expect(shown.entries.map((entry) => entry.path)).toEqual([
+        relativePath + "/.gitignore",
+        relativePath + "/local.env",
+        relativePath + "/nested.ts",
+        relativePath + "/secret.env",
+      ]);
+      expect(shown.totalEntries).toBe(4);
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "hides unsafe links and prevents cycles through sibling folders",
     async () => {
@@ -116,5 +146,6 @@ describe("lazy directory listing", () => {
     expect(result.totalEntries).toBe(202);
     expect(result.entries.filter((entry) => entry.kind === "directory")).toHaveLength(201);
     expect(maxInFlight).toBeLessThanOrEqual(64);
+    expect(maxInFlight).toBeGreaterThan(1);
   });
 });

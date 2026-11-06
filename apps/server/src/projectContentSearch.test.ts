@@ -119,6 +119,28 @@ describe("project content search", () => {
     }
   });
 
+  it("recovers whole-word literal matches beyond the native snippet boundary", async () => {
+    const workspaceRoot = makeTempDir();
+    fs.writeFileSync(path.join(workspaceRoot, "minified.js"), "x".repeat(2_000) + " needle;\n");
+    const manager = makeProjectContentSearchManager();
+    try {
+      const result = await manager.search({
+        requestKey: "client:long-line-whole-word",
+        workspaceRoot,
+        request: { ...request("long-line-whole-word"), wholeWord: true },
+      });
+      expect(result.matches).toEqual([
+        expect.objectContaining({
+          path: "minified.js",
+          lineNumber: 1,
+          matchRanges: [{ start: 2_001, end: 2_007 }],
+        }),
+      ]);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "does not index content through a symlink escape",
     async () => {

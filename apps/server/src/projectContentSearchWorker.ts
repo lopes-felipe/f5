@@ -71,9 +71,11 @@ function projectContentSearchWorkerMain(loadModule: NodeJS.Require): void {
     const deadline = Date.now() + SCAN_TIMEOUT_MS;
     while (true) {
       const progress = unwrap(finder.getScanProgress());
-      indexedPathCount = progress.scannedFilesCount;
-      indexTruncated ||= indexedPathCount > MAX_INDEXED_PATHS;
-      if (!progress.isScanning && progress.isWarmupComplete) return;
+      if (!progress.isScanning && progress.isWarmupComplete) {
+        indexedPathCount = progress.scannedFilesCount;
+        indexTruncated ||= indexedPathCount > MAX_INDEXED_PATHS;
+        return;
+      }
       if (Date.now() >= deadline) {
         // Rescans continue in the background and keep the previous index usable.
         if (refresh) return;

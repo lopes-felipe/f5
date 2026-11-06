@@ -937,16 +937,15 @@ export async function listWorkspaceDirectory(
     );
     for (const entry of batch) if (entry) entries.push(entry);
   }
+  // Git rejects paths beneath a symlink. Check children at their canonical
+  // parent, while keeping the alias paths in the listing returned to the UI.
+  const ignorePath = (entry: ProjectEntry) =>
+    path.posix.join(relative.replaceAll(path.sep, "/"), path.posix.basename(entry.path));
   const allowed = input.includeIgnored
     ? null
-    : new Set(
-        await filterGitIgnoredPaths(
-          root,
-          entries.map((entry) => entry.path),
-        ),
-      );
+    : new Set(await filterGitIgnoredPaths(root, entries.map(ignorePath)));
   const sorted = entries
-    .filter((entry) => !allowed || allowed.has(entry.path))
+    .filter((entry) => !allowed || allowed.has(ignorePath(entry)))
     .sort((a, b) =>
       a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === "directory" ? -1 : 1,
     );

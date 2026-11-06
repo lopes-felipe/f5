@@ -19,7 +19,11 @@ function workerHarness(initiallyScanning = false) {
         ? { ok: false, error: "scan failed" }
         : {
             ok: true,
-            value: { scannedFilesCount: 1, isScanning: scanning, isWarmupComplete: true },
+            value: {
+              scannedFilesCount: scanning ? 0 : 3,
+              isScanning: scanning,
+              isWarmupComplete: true,
+            },
           },
     grep: () => ({
       ok: true,
@@ -90,7 +94,10 @@ it("retains range-less regex hits unless whole-word verification is requested", 
 it("keeps the live finder after a refresh timeout but propagates scan failures", async () => {
   const worker = workerHarness();
   expect((await worker.call({ type: "initialize", rootPath: "/workspace" })).type).toBe("result");
-  expect((await worker.call({ type: "refresh" })).type).toBe("result");
+  expect(await worker.call({ type: "refresh" })).toMatchObject({
+    type: "result",
+    value: { indexedPathCount: 3 },
+  });
   const result = await worker.call({
     type: "search",
     query: "needle.*",
@@ -100,6 +107,7 @@ it("keeps the live finder after a refresh timeout but propagates scan failures",
     useRegex: true,
   });
   expect(result.value.matches).toHaveLength(1);
+  expect(result.value.indexedPathCount).toBe(3);
   expect(worker.create).toHaveBeenCalledTimes(1);
   worker.failProgress();
   expect(await worker.call({ type: "refresh" })).toMatchObject({
