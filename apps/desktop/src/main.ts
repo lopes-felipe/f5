@@ -74,6 +74,7 @@ import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
 import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
+import { createDesktopTheme } from "./desktopTheme";
 import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
@@ -3733,7 +3734,8 @@ function registerIpcHandlers(): void {
       return;
     }
 
-    nativeTheme.themeSource = theme;
+    if (desktopTheme) desktopTheme.setSource(theme);
+    else nativeTheme.themeSource = theme;
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
@@ -4677,10 +4679,28 @@ async function initializeKeepAwake(): Promise<void> {
   });
 }
 
+let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
+
 app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
+    // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
+    const watchLinuxColorScheme =
+      process.platform === "linux"
+        ? (await import("./linuxColorScheme")).watchLinuxColorScheme
+        : undefined;
+    desktopTheme = createDesktopTheme(
+      nativeTheme,
+      watchLinuxColorScheme
+        ? (onChange, onError) => watchLinuxColorScheme(onChange, undefined, onError)
+        : undefined,
+      (cause) =>
+        writeDesktopLogHeader(
+          `Linux system appearance watcher failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+    );
+    app.once("quit", () => desktopTheme?.stop());
     configureAppIdentity();
     if (
       app.isPackaged &&

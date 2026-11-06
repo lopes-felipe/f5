@@ -16,6 +16,7 @@
     "test:preview-snapshot:electron": "node scripts/preview-snapshot-electron-smoke.mjs"
   },
   "dependencies": {
+    "dbus-next": "0.10.2",
     "effect": "catalog:",
     "electron": "44.9.3",
     "electron-updater": "6.8.3"
