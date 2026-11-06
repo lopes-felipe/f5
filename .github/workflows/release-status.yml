@@ -1,0 +1,87 @@
+name: Release status
+on:
+  workflow_run:
+    workflows: [Release publisher]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Release publisher run to report
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+  issues: write
+jobs:
+  report:
+    concurrency:
+      group: release-status-reporting
+      cancel-in-progress: false
+      queue: max
+    if: >-
+      github.repository == 'lopes-felipe/f5' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.path == '.github/workflows/release-publish.yml' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'success' ||
+      github.event.workflow_run.conclusion == 'failure')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+    steps:
+      # No checkout, candidate artifacts, or source-controlled code execution.
+      - name: Reconcile release blocked issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid run id"; exit 1; }
+          read -r path result url < <(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" \
+            --jq '[.path, (.conclusion // "none"), .html_url] | @tsv')
+          if [[ "$path" != .github/workflows/release-publish.yml ]]; then
+            echo "Run $RUN_ID is not a Release publisher run"
+            exit 1
+          fi
+          if [[ "$result" != success && "$result" != failure ]]; then
+            echo "Ignoring $result publisher run"
+            exit 0
+          fi
+          # Runs finish out of order; only the newest completed, non-cancelled run decides.
+          newest="$(gh api "repos/$GH_REPO/actions/workflows/release-publish.yml/runs?status=completed&per_page=30" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")][0].id')"
+          if [[ "$newest" != "$RUN_ID" && "${{ github.event_name }}" != workflow_dispatch ]]; then
+            echo "Stale result for $RUN_ID; newest is $newest"
+            exit 0
+          fi
+          title='Release publication blocked'
+          issue="$(gh issue list --state open --label release-blocked --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+          if [[ "$result" == success ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue close "$issue" --comment "The release publisher succeeded again: $url"
+            fi
+            exit 0
+          fi
+          errors="$(gh run view "$RUN_ID" --log-failed 2>/dev/null \
+            | cut -f3- \
+            | sed -E 's/\x1b\[[0-9;]*m//g; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' \
+            | grep -E '(^|[^A-Za-z])Error( \[[A-Z_]+\])?: ' \
+            | grep -v 'Process completed with exit code' \
+            | awk '!seen[$0]++' | tail -n 5 | cut -c1-500 || true)"
+          [[ -n "$errors" ]] || errors="No error line was found; see the run log."
+          digest="$(printf '%s' "$errors" | sha256sum | cut -c1-16)"
+          marker="<!-- release-blocked:$digest -->"
+          body="$(printf 'The release publisher failed: %s\n\n```\n%s\n```\n\nSee docs/release.md for recovery steps. %s' "$url" "$errors" "$marker")"
+          gh label create release-blocked --color B60205 --description 'Release publication is blocked' --force
+          if [[ -z "$issue" ]]; then
+            gh issue create --title "$title" --label release-blocked --body "$body"
+            exit 0
+          fi
+          # Comment again only when the failure reason changes.
+          latest="$(gh issue view "$issue" --json body,comments --jq '(.comments | last | .body) // .body')"
+          if [[ "$latest" != *"$marker"* ]]; then
+            gh issue comment "$issue" --body "$body"
+          fi
