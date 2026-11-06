@@ -7,6 +7,7 @@ function harness() {
   const callbacks: Array<() => void> = [];
   const terminal = {
     cols: 80,
+    element: undefined,
     getSelectionPosition: vi.fn(() => ({ start: { x: 0, y: 0 }, end: { x: 8, y: 0 } })),
     getSelection: vi.fn(() => text),
     clearSelection: vi.fn(),
@@ -38,7 +39,7 @@ describe("terminal output selection", () => {
     const h = harness();
     h.writer.write("\r\x1b[2Kselected");
     h.writer.write("\r\x1b[2Kchanged");
-    expect(h.terminal.write).toHaveBeenCalledTimes(1);
+    expect(h.terminal.write).toHaveBeenCalledTimes(2);
     h.parsed();
     expect(h.terminal.clearSelection).not.toHaveBeenCalled();
     expect(h.terminal.write).toHaveBeenCalledTimes(2);
@@ -65,7 +66,7 @@ describe("terminal output selection", () => {
     h.writer.write("redraw");
     h.parsed();
     expect(h.terminal.getSelection).not.toHaveBeenCalled();
-    expect(h.terminal.clearSelection).toHaveBeenCalledOnce();
+    expect(h.terminal.clearSelection).not.toHaveBeenCalled();
   });
 
   it("does not clear a newer gesture while parsing output", () => {
@@ -76,7 +77,7 @@ describe("terminal output selection", () => {
     expect(h.terminal.clearSelection).not.toHaveBeenCalled();
   });
 
-  it("ignores empty output and stops queued work on disposal", () => {
+  it("submits all output to xterm immediately and ignores callbacks after disposal", () => {
     const h = harness();
     h.writer.write("");
     expect(h.terminal.getSelection).not.toHaveBeenCalled();
@@ -84,7 +85,8 @@ describe("terminal output selection", () => {
     h.writer.write("second");
     h.writer.dispose();
     h.parsed("changed");
-    expect(h.terminal.write).toHaveBeenCalledTimes(1);
+    h.writer.write("disposed");
+    expect(h.terminal.write).toHaveBeenCalledTimes(2);
     expect(h.terminal.clearSelection).not.toHaveBeenCalled();
   });
 

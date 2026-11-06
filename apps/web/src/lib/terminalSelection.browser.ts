@@ -59,7 +59,13 @@ it.each([false, true])(
         );
       };
       mouse("mousedown", 0);
+      mouse("mousemove", 4);
+      expect(terminal.getSelection()).toBe("row ");
+      // Move before xterm parses the write. It does not emit onSelectionChange
+      // for this extension until mouseup.
+      writer.write("\x1b[1;1Hunrelated\x1b[10;6H");
       mouse("mousemove", 5);
+      await parsed("");
       expect(terminal.getSelection()).toBe("row 6");
       writer.write("\r\nrow 10\r\nrow 11");
       await parsed("");
@@ -73,3 +79,25 @@ it.each([false, true])(
     }
   },
 );
+
+it("keeps selectAll copyable while output streams beyond the comparison cap", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const terminal = new Terminal({ cols: 80, rows: 10, scrollback: 100 });
+  terminal.open(mount);
+  const writer = createTerminalOutputWriter(terminal);
+  const parsed = (data: string) => new Promise<void>((resolve) => terminal.write(data, resolve));
+  try {
+    await parsed(Array.from({ length: 60 }, (_, i) => "row " + i).join("\r\n"));
+    terminal.selectAll();
+    const text = terminal.getSelection();
+    for (let i = 0; i < 5; i++) writer.write("\r\nstream " + i);
+    await parsed("");
+    expect(terminal.hasSelection()).toBe(true);
+    expect(terminal.getSelection()).toContain(text);
+  } finally {
+    writer.dispose();
+    terminal.dispose();
+    mount.remove();
+  }
+});

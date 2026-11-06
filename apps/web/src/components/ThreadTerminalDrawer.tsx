@@ -455,8 +455,7 @@ function TerminalViewport({
             nextAction.selection,
             readSelectionAction()?.selection ?? null,
           );
-          if (!current) return;
-          onAddTerminalContextRef.current(current);
+          if (current) onAddTerminalContextRef.current(current);
         }
         terminalRef.current?.clearSelection();
         terminalRef.current?.focus();
