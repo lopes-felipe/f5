@@ -4122,6 +4122,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "decidedAt": "2026-11-06T11:04:35.225Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25971",
+      "reason": "This only changes the upstream devices and simulators subsystem, which f5 does not have.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "devices"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "This only changes the upstream devices and simulators subsystem, which f5 does not have.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The device service keeps known devices when a listing fails or times out, and reports incompletePlatforms so setup stops giving wrong runtime advice.",
+      "title": "Devices stay listed when simulator discovery fails",
+      "upstreamPrs": [
+        25971
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -11849,6 +11875,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "decidedAt": "2026-11-06T11:04:35.225Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-29285",
+      "reason": "It only affects subagents on linked environments, shown in upstream's Lineage control. That file does not exist in f5, and f5 keeps its own Agents panel.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "agents"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "It only affects subagents on linked environments, shown in upstream's Lineage control. That file does not exist in f5, and f5 keeps its own Agents panel.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Subagents running on a linked environment go into the same active and Previous agents groups as local subagents, instead of a separate list.",
+      "title": "Remote subagents are grouped with local ones in the Lineage list",
+      "upstreamPrs": [
+        29285
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:17.708Z",
       "decidedBy": "user",
@@ -18664,6 +18716,54 @@
       ]
     },
     {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "decidedAt": "2026-11-06T11:04:35.225Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-31142",
+      "reason": "Changes only the upstream marketing site.",
+      "reasonKey": "marketing",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "marketing"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Changes only the upstream marketing site.",
+        "reasonKey": "marketing",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Aligns canonical URLs and adds a sitemap, robots.txt, llms.txt, a 404 page and security.txt to t3.codes.",
+      "title": "Marketing site SEO: canonical URLs, sitemap, llms.txt, security.txt",
+      "upstreamPrs": [
+        31142
+      ]
+    },
+    {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "epoch": 1,
+      "id": "pr-31158",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 send its own client name to Antigravity, or 't3-code' as upstream does?",
+        "reason": "f5 ships the Antigravity provider. Correct client identification with a version guard is a reliability improvement and keeps model access on newer agy CLIs.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "For Antigravity runtimes at 1.5.1 or newer, ACP initialize sends the app's own clientInfo instead of Zed's. Older runtimes keep the Zed name so the models other than Gemini stay available.",
+      "title": "Antigravity ACP identifies as the app instead of Zed on agy acp 1.5.1+",
+      "upstreamPrs": [
+        31158
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:00.915Z",
       "decidedBy": "rule",
@@ -19471,6 +19571,83 @@
       "title": "Skip Koffi source builds during cross-packaging",
       "upstreamPrs": [
         31864
+      ]
+    },
+    {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "epoch": 1,
+      "id": "pr-31888",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Small timeline UX fix in MessagesTimeline.logic, a file f5 also has. A misleading running indicator can show up in f5's timeline too.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "todo_list entries go into static timeline rows, like notifications. Unfinished task updates no longer shimmer as if they were running, so the live shimmer stays on the tools that are actually running.",
+      "title": "Task updates stay static in the timeline instead of shimmering like running tools",
+      "upstreamPrs": [
+        31888
+      ]
+    },
+    {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "decidedAt": "2026-11-06T11:04:35.225Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-31937",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "ci: stacked PRs stop evicting the shared pnpm cache (#31937)",
+      "upstreamPrs": [
+        31937
+      ]
+    },
+    {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "decidedAt": "2026-11-06T11:04:35.225Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-31941",
+      "reason": "Upstream CI and release pipeline change only. It has no user-visible behavior.",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "ci"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Upstream CI and release pipeline change only. It has no user-visible behavior.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds a build:desktop:bundle task and drops the libsecret apt steps from the release and macOS preview bundle jobs.",
+      "title": "Release JS bundle jobs stop building the unused Linux secret helper",
+      "upstreamPrs": [
+        31941
+      ]
+    },
+    {
+      "createdAt": "2026-11-06T11:04:35.225Z",
+      "decidedAt": "2026-11-06T11:04:35.225Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-31942",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "perf(ci): release uploads stop recompressing installers and CLI archives (#31942)",
+      "upstreamPrs": [
+        31942
       ]
     },
     {
