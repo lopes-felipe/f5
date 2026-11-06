@@ -8,7 +8,14 @@ import { validateCoverage } from "./lib/performance/coverage.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const args = process.argv.slice(2);
-if (args[0] === "computer") {
+if (args[0] === "computer-tasks") {
+  const run = spawnSync("bun", ["scripts/performance-computer.mjs", ...args.slice(1)], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  if (run.error) throw run.error;
+  process.exitCode = run.status ?? 1;
+} else if (args[0] === "computer") {
   const run = spawnSync(
     "bun",
     ["apps/desktop/src/computer/rehearseInspectMacos.ts", ...args.slice(1), "--performance"],

@@ -278,6 +278,7 @@ try {
           "Performance acceptance requires matched baseline and candidate reports; this run is not certification.",
         ],
         computer: {
+          coverage: "inspection",
           fixtureDigest: fixtureSourceSha256,
           harnessDigest: sourceSha256,
           platform: process.platform,
