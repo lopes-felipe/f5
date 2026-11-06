@@ -449,6 +449,7 @@ try {
       document.body.innerHTML = '<button id="focus-target" style="position:absolute;left:100px;top:10px;width:40px;height:40px">Click</button>';
       globalThis.focusClicks = 0;
       document.getElementById('focus-target').onclick = () => globalThis.focusClicks++;
+      void 0;
     `);
   }, zoomGuestId);
   await page.evaluate(() => {
