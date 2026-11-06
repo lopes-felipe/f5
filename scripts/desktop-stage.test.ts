@@ -62,6 +62,16 @@ describe.each([
     verifyStagedLockfile(rootLock, staged);
     const root = parse(rootLock).packages;
     const resolved = parse(staged).packages;
+    if (platform === "linux") {
+      expect(manifest.dependencies["dbus-next"]).toBe(desktopPackageJson.dependencies["dbus-next"]);
+      expect(resolved["dbus-next"]).toBeDefined();
+      expect(resolved.usocket).toBeDefined();
+    } else {
+      expect(manifest.dependencies).not.toHaveProperty("dbus-next");
+      expect(
+        Object.keys(resolved).filter((name) => /(^|\/)(dbus-next|usocket)(\/|$)/.test(name)),
+      ).toEqual([]);
+    }
     for (const name of Object.keys(manifest.dependencies))
       expect(resolved[name]?.[0], name).toBe(root[name]?.[0]);
   });

@@ -75,7 +75,6 @@ import { closeWindowsForQuit } from "./quitPreflight";
 import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
 import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
 import { createDesktopTheme } from "./desktopTheme";
-import { watchLinuxColorScheme } from "./linuxColorScheme";
 import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
@@ -4682,9 +4681,14 @@ app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
+    // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
+    const watchLinuxColorScheme =
+      process.platform === "linux"
+        ? (await import("./linuxColorScheme")).watchLinuxColorScheme
+        : undefined;
     desktopTheme = createDesktopTheme(
       nativeTheme,
-      process.platform === "linux"
+      watchLinuxColorScheme
         ? (onChange, onError) => watchLinuxColorScheme(onChange, undefined, onError)
         : undefined,
       (cause) =>
