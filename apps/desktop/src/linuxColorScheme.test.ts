@@ -126,3 +126,18 @@ it("does not report an initial read that completes after shutdown", async () => 
   await ready;
   expect(schemes).toEqual([]);
 });
+
+it("reports portal read failures and bus errors without rejecting readiness", async () => {
+  const bus = new FakeBus({});
+  const onError = vi.fn();
+  const { ready, stop } = watchLinuxColorScheme(() => {}, bus as unknown as MessageBus, onError);
+  await ready;
+  expect(onError).toHaveBeenCalledWith(expect.any(DBusError));
+  const error = new Error("disconnected");
+  bus.emit("error", error);
+  expect(onError).toHaveBeenLastCalledWith(error);
+  stop();
+  onError.mockClear();
+  bus.emit("error", error);
+  expect(onError).not.toHaveBeenCalled();
+});

@@ -35,6 +35,7 @@ const settingsCall = (member: "ReadOne" | "Read") =>
 export function watchLinuxColorScheme(
   onChange: (scheme: LinuxColorScheme) => void,
   bus: MessageBus = sessionBus(),
+  onError: (cause: unknown) => void = () => {},
 ) {
   let closed = false;
   let changed = false;
@@ -54,9 +55,11 @@ export function watchLinuxColorScheme(
     changed = true;
     report(value);
   };
-  const ignore = () => undefined;
+  const reportFailure = (cause: unknown) => {
+    if (!closed) onError(cause);
+  };
 
-  bus.on("error", ignore);
+  bus.on("error", reportFailure);
   bus.on("message", onMessage);
   const ready = (async () => {
     await bus.call(
@@ -78,7 +81,7 @@ export function watchLinuxColorScheme(
     // The portal answers reads through its backend asynchronously, so a change signal can
     // overtake this reply; the reply then carries the older value.
     if (reply && !changed) report(reply.body[0]);
-  })().catch(ignore);
+  })().catch(reportFailure);
 
   return {
     ready,

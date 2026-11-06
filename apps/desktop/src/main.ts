@@ -3731,7 +3731,8 @@ function registerIpcHandlers(): void {
       return;
     }
 
-    desktopTheme?.setSource(theme);
+    if (desktopTheme) desktopTheme.setSource(theme);
+    else nativeTheme.themeSource = theme;
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
@@ -4683,7 +4684,13 @@ app
     writeDesktopLogHeader("app ready");
     desktopTheme = createDesktopTheme(
       nativeTheme,
-      process.platform === "linux" ? watchLinuxColorScheme : undefined,
+      process.platform === "linux"
+        ? (onChange, onError) => watchLinuxColorScheme(onChange, undefined, onError)
+        : undefined,
+      (cause) =>
+        writeDesktopLogHeader(
+          `Linux system appearance watcher failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
     );
     app.once("quit", () => desktopTheme?.stop());
     configureAppIdentity();
