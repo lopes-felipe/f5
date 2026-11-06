@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ProviderDriverKind,
+  ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
+  composerDraftMatchesInstance,
   getComposerProviderState,
   getComposerReasoningStep,
   renderProviderTraitsMenuContent,
@@ -18,6 +20,25 @@ import {
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
+
+it.each(["codex", "opencode", "antigravity", "claudeAgent"])(
+  "keeps legacy %s draft selections on the default instance",
+  (driverName) => {
+    const driver = ProviderDriverKind.make(driverName);
+    const defaultId = ProviderInstanceId.make(driverName);
+    const customId = ProviderInstanceId.make(driverName + "_custom");
+    const legacyDraft = { provider: driverName, providerInstanceId: null };
+    expect(composerDraftMatchesInstance(legacyDraft, defaultId, driver)).toBe(true);
+    expect(composerDraftMatchesInstance(legacyDraft, customId, driver)).toBe(false);
+    expect(
+      composerDraftMatchesInstance(
+        { ...legacyDraft, providerInstanceId: customId },
+        customId,
+        driver,
+      ),
+    ).toBe(true);
+  },
+);
 
 function selectDescriptor(
   id: string,

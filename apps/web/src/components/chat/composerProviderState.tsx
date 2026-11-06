@@ -1,5 +1,7 @@
 import { stepEffortOptions } from "./effortLevels";
 import {
+  defaultInstanceIdForDriver,
+  type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -19,6 +21,18 @@ import type { ReactNode } from "react";
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+
+/** Legacy driver-scoped drafts belong only to that driver's default instance. */
+export function composerDraftMatchesInstance(
+  draft: { providerInstanceId: ProviderInstanceId | null; provider: string | null },
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+): boolean {
+  return draft.providerInstanceId
+    ? draft.providerInstanceId === instanceId
+    : (draft.provider === null || draft.provider === driver) &&
+        instanceId === defaultInstanceIdForDriver(driver);
+}
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;

@@ -629,7 +629,7 @@ describe("composerDraftStore prompt stash", () => {
     );
     store.setProvider(sourceThreadId, "codex");
     store.setProviderInstance(sourceThreadId, ProviderInstanceId.make("codex-work"));
-    store.setModel(sourceThreadId, "gpt-5.1");
+    store.setModel(sourceThreadId, "gpt-5.3");
     store.setRuntimeMode(sourceThreadId, "auto");
 
     const result = await store.stashPromptDraft({
@@ -645,7 +645,7 @@ describe("composerDraftStore prompt stash", () => {
       filePaths: ["src/example.ts"],
       provider: "codex",
       providerInstanceId: "codex-work",
-      model: "gpt-5.1",
+      model: "gpt-5.3",
       runtimeMode: "auto",
       attachments: [{ id: "image-stash" }],
       terminalContexts: [{ id: "ctx-stash", text: "git status\nOn branch main" }],
@@ -655,10 +655,17 @@ describe("composerDraftStore prompt stash", () => {
       filePaths: [],
       terminalContexts: [],
       provider: "codex",
-      model: "gpt-5.1",
+      model: "gpt-5.3",
     });
     expect(baseStorage.setItem).toHaveBeenCalled();
 
+    const persistOptions = useComposerDraftStore.persist.getOptions();
+    const hydrated = persistOptions.merge!(
+      persistOptions.partialize!(useComposerDraftStore.getState()),
+      useComposerDraftStore.getInitialState(),
+    );
+    expect(hydrated.promptStashes[0]?.draft.model).toBe("gpt-5.3");
+    useComposerDraftStore.setState(hydrated);
     const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
     const restored = await useComposerDraftStore.getState().restorePromptStash({
       stashId,
@@ -667,6 +674,9 @@ describe("composerDraftStore prompt stash", () => {
       workspaceRoots: ["/repo"],
     });
     expect(restored).toMatchObject({ status: "restored" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.model).toBe(
+      "gpt-5.3",
+    );
     expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.images).toHaveLength(
       1,
     );
@@ -1461,6 +1471,43 @@ describe("composerDraftStore setModel", () => {
 
     store.setModel(threadId, "gpt-5.3-codex");
 
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe(
+      "gpt-5.3-codex",
+    );
+  });
+
+  it.each(["codex", "codex_personal"])(
+    "preserves an alias-shaped custom model for instance %s across persistence",
+    (instance) => {
+      const store = useComposerDraftStore.getState();
+      store.setProvider(threadId, "codex");
+      store.setProviderInstance(threadId, ProviderInstanceId.make(instance));
+      store.setModel(threadId, " gpt-5.3 ");
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe("gpt-5.3");
+
+      const merge = useComposerDraftStore.persist.getOptions().merge!;
+      const merged = merge(
+        {
+          draftsByThreadId: {
+            [threadId]: {
+              prompt: "keep draft",
+              provider: "codex",
+              providerInstanceId: instance,
+              model: "gpt-5.3",
+            },
+          },
+        },
+        useComposerDraftStore.getInitialState(),
+      ) as ReturnType<typeof useComposerDraftStore.getState>;
+      expect(merged.draftsByThreadId[threadId]).toMatchObject({
+        prompt: "keep draft",
+        model: "gpt-5.3",
+      });
+    },
+  );
+
+  it("still upgrades aliases in legacy drafts without an instance", () => {
+    useComposerDraftStore.getState().setModel(threadId, "gpt-5.3");
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe(
       "gpt-5.3-codex",
     );

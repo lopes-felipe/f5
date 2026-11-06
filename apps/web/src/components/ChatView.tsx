@@ -445,6 +445,7 @@ import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueu
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
 
 import {
+  composerDraftMatchesInstance,
   getComposerEffortDescriptors,
   getComposerProviderState,
   getComposerReasoningStep,
@@ -1663,6 +1664,13 @@ export default memo(function ChatView({
     );
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = selectedProviderEntry?.instanceId ?? NO_PROVIDER_INSTANCE_ID;
+  const instanceDraftModel = composerDraftMatchesInstance(
+    composerDraft,
+    selectedProviderInstanceId,
+    selectedProviderDriver,
+  )
+    ? composerDraft.model
+    : null;
   const modelOptionsByProvider = useMemo(
     () =>
       getCustomModelOptionsByProvider(
@@ -1729,7 +1737,7 @@ export default memo(function ChatView({
     selectedProviderPickerOptions,
   ]);
   const selectedModel = useMemo(() => {
-    const draftModel = providerSelectionChanged && !sameDriverFallback ? null : composerDraft.model;
+    const draftModel = providerSelectionChanged && !sameDriverFallback ? null : instanceDraftModel;
     if (!draftModel) {
       return baseThreadModel;
     }
@@ -1740,7 +1748,7 @@ export default memo(function ChatView({
     ) ?? baseThreadModel) as ModelSlug;
   }, [
     baseThreadModel,
-    composerDraft.model,
+    instanceDraftModel,
     providerSelectionChanged,
     sameDriverFallback,
     selectedProviderDriver,
