@@ -120,6 +120,11 @@ input price, and zero is a valid price.
 | OpenCode Go | Local API credentials. Externally managed servers are not probed                                                                                                                                                                                                                                                                                                  |
 | Antigravity | A CLIProxyAPI hub: set `F5_CLIPROXY_HUB_URL`, `F5_CLIPROXY_ACCOUNT_ID` and a sensitive `F5_CLIPROXY_API_KEY` (optionally `F5_ANTIGRAVITY_PROJECT`) in the instance environment. Alternatively, `F5_CLIPROXY_USAGE_URL` returning `{windows: [{id, label, usedPercent, resetsAt}]}`. The management key goes only to the configured hub, and redirects are refused |
 
+`F5_CLIPROXY_HUB_URL` is the hub's base URL. A path prefix is allowed, for example
+`https://hub.example/cliproxy`. The panel URL
+`https://hub.example/cliproxy/management.html` is also accepted. Do not include the API path
+`/v0/management`: F5 appends it to the base URL when requesting accounts and quotas.
+
 </details>
 
 ## Related

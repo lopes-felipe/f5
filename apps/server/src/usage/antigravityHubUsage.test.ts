@@ -98,6 +98,7 @@ describe("Antigravity hub quotas", () => {
     ["/cliproxy/management.html/?tab=accounts", "/cliproxy"],
     ["/cliproxy/management.html/#accounts", "/cliproxy"],
     ["/team-management.html", "/team-management.html"],
+    ["/v0/management", "/v0/management"],
   ])("resolves hub management requests from %s", async (path, prefix) => {
     const { section, fetchMock } = await probe(
       () => hubResponse({ buckets: [bucket("gemini-5h", 0.75)] }),
