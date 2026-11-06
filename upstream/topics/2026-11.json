@@ -1457,11 +1457,21 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:48:04.646Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/browserImport/readCookies.ts:8",
+          "apps/desktop/src/browserImport/readCookies.ts:33"
+        ],
+        "f5Refs": [
+          "621c22cfe04496dcf27b2d56e770b0f00f38bd02"
+        ]
+      },
       "id": "pr-23157",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview-browser",
@@ -3631,11 +3641,20 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:48:04.645Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/preview/agentDownloads.ts:108"
+        ],
+        "f5Refs": [
+          "621c22cfe04496dcf27b2d56e770b0f00f38bd02"
+        ]
+      },
       "id": "pr-25428",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview-browser",
