@@ -441,9 +441,104 @@ try {
     if (owner.webContents.getZoomLevel() !== 0 || Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
       throw new Error("Resetting app zoom changed the preview zoom");
   }, zoomGuestId);
+  // Exercise real native keyboard focus twice on a previously focused, zoomed guest.
+  // DOM-only mocks cannot detect keystrokes being routed to the guest after restoration.
+  await application.evaluate(async ({ webContents }, guestId) => {
+    const guest = webContents.fromId(guestId);
+    await guest.executeJavaScript(`
+      document.body.innerHTML = '<button id="focus-target" style="position:absolute;left:100px;top:10px;width:40px;height:40px">Click</button>';
+      globalThis.focusClicks = 0;
+      globalThis.focusKeys = 0;
+      document.addEventListener('keydown', () => globalThis.focusKeys++);
+      document.getElementById('focus-target').onclick = () => globalThis.focusClicks++;
+      void 0;
+    `);
+  }, zoomGuestId);
+  await page.evaluate(() => {
+    const guest = document.getElementById("smoke-untrusted-guest");
+    Object.assign(guest.style, {
+      position: "fixed",
+      top: "150px",
+      right: "0",
+      width: "250px",
+      height: "120px",
+      zIndex: "2147483647",
+    });
+    const input = document.createElement("input");
+    input.id = "smoke-focus-input";
+    Object.assign(input.style, { position: "fixed", top: "0", left: "0", zIndex: "2147483647" });
+    document.body.append(input);
+  });
+  let focusTyped = "";
+  for (const input of [{ selector: "#focus-target" }, { x: 120, y: 30 }]) {
+    await application.evaluate(({ webContents }, guestId) => {
+      const guest = webContents.fromId(guestId);
+      guest.focus();
+      guest.hostWebContents.focus();
+    }, zoomGuestId);
+    await page.locator("#smoke-focus-input").focus();
+    await page.evaluate(
+      (input) => window.desktopBridge.preview.automation.click("smoke-zoom", input),
+      input,
+    );
+    if (process.platform === "linux") {
+      // Child-frame views can report their parent's focus, making the global focused
+      // contents lookup ambiguous. XTest targets Xvfb's focused window, not a renderer.
+      execFileSync(
+        "python3",
+        [
+          "-c",
+          `import ctypes as c
+from ctypes.util import find_library
+x = c.CDLL(find_library("X11"))
+t = c.CDLL(find_library("Xtst"))
+x.XOpenDisplay.argtypes = [c.c_char_p]
+x.XOpenDisplay.restype = c.c_void_p
+x.XKeysymToKeycode.argtypes = [c.c_void_p, c.c_ulong]
+x.XKeysymToKeycode.restype = c.c_uint
+x.XFlush.argtypes = [c.c_void_p]
+x.XCloseDisplay.argtypes = [c.c_void_p]
+t.XTestFakeKeyEvent.argtypes = [c.c_void_p, c.c_uint, c.c_int, c.c_ulong]
+d = x.XOpenDisplay(None)
+if not d: raise RuntimeError("Cannot open smoke-test X display")
+try:
+    key = x.XKeysymToKeycode(d, ord("x"))
+    if not key: raise RuntimeError("Cannot map smoke-test key")
+    t.XTestFakeKeyEvent(d, key, 1, 0)
+    t.XTestFakeKeyEvent(d, key, 0, 0)
+    x.XFlush(d)
+finally:
+    x.XCloseDisplay(d)
+`,
+        ],
+        { timeout: 5000 },
+      );
+    } else {
+      await application.evaluate(({ webContents }, guestId) => {
+        webContents.fromId(guestId).hostWebContents.sendInputEvent({ type: "char", keyCode: "x" });
+      }, zoomGuestId);
+    }
+    focusTyped += "x";
+    await page.waitForFunction(
+      (expected) => document.getElementById("smoke-focus-input").value === expected,
+      focusTyped,
+    );
+  }
+  const focusResult = await application.evaluate(
+    ({ webContents }, guestId) =>
+      webContents
+        .fromId(guestId)
+        .executeJavaScript("({ clicks: globalThis.focusClicks, keys: globalThis.focusKeys })"),
+    zoomGuestId,
+  );
+  if (focusResult.clicks !== 2)
+    throw new Error("Preview clicks missed their CSS coordinates at 125% zoom");
+  if (focusResult.keys !== 0)
+    throw new Error("Preview guest received host typing after an agent click");
   await page.evaluate(async () => {
     await window.desktopBridge.preview.closeTab("smoke-zoom");
     document.getElementById("smoke-untrusted-guest")?.remove();
+    document.getElementById("smoke-focus-input")?.remove();
   });
 
   const workspace = join(directory, "workspace");

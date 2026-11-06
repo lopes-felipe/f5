@@ -24,6 +24,8 @@ export function taggedAutomationError(tag: string, message: string): Error {
 export interface PreviewAutomationCheckpoint {
   /** Throws a tagged interruption when the user took over since this action started. */
   readonly check: () => void;
+  /** Aborts pending native input when the user takes over. */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -34,6 +36,7 @@ export class PreviewAutomationControl {
   private readonly tails = new Map<string, Promise<void>>();
   private readonly generations = new Map<string, number>();
   private readonly active = new Map<string, number>();
+  private readonly cancellations = new Map<string, AbortController>();
 
   /** True while an automation action is executing on the tab. */
   isActive(tabId: string): boolean {
@@ -46,6 +49,15 @@ export class PreviewAutomationControl {
 
   cancel(tabId: string): void {
     this.generations.set(tabId, this.generation(tabId) + 1);
+    this.cancellations
+      .get(tabId)
+      ?.abort(
+        taggedAutomationError(
+          "PreviewAutomationControlInterruptedError",
+          PREVIEW_CONTROL_INTERRUPTED_MESSAGE,
+        ),
+      );
+    this.cancellations.delete(tabId);
   }
 
   forget(tabId: string): void {
@@ -56,7 +68,13 @@ export class PreviewAutomationControl {
   /** Interruptible by a takeover from now on, without joining the tab's action queue. */
   checkpoint(tabId: string): PreviewAutomationCheckpoint {
     const startGeneration = this.generation(tabId);
+    let cancellation = this.cancellations.get(tabId);
+    if (!cancellation) {
+      cancellation = new AbortController();
+      this.cancellations.set(tabId, cancellation);
+    }
     return {
+      signal: cancellation.signal,
       check: () => {
         if (this.generation(tabId) !== startGeneration) {
           throw taggedAutomationError(
