@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -10,6 +10,48 @@ import { makeSqlitePersistenceLive } from "./Sqlite.ts";
 import { ReadSqlClient } from "../ReadSqlClient.ts";
 
 describe("SQLite persistence setup", () => {
+  it("preserves a reader snapshot across a 48 MiB WAL burst", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "f5-sqlite-burst-"));
+    const filename = join(directory, "state.sqlite");
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`CREATE TABLE burst_probe(id INTEGER PRIMARY KEY, payload BLOB)`;
+          yield* sql`INSERT INTO burst_probe VALUES (1, NULL)`;
+          yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
+          const reader = yield* Effect.acquireRelease(
+            Effect.sync(() => new DatabaseSync(filename, { readOnly: true })),
+            (database) => Effect.sync(() => database.close()),
+          );
+          reader.exec("BEGIN");
+          expect(reader.prepare("SELECT COUNT(*) AS count FROM burst_probe").get()?.count).toBe(1);
+          yield* sql.withTransaction(
+            sql`INSERT INTO burst_probe VALUES (2, zeroblob(${48 * 1024 * 1024}))`,
+          );
+          // Windows can report stale sizes by path while SQLite holds the WAL open.
+          const wal = openSync(`${filename}-wal`, "r");
+          try {
+            expect(fstatSync(wal).size).toBeGreaterThan(48 * 1024 * 1024);
+          } finally {
+            closeSync(wal);
+          }
+          yield* sql.withTransaction(sql`INSERT INTO burst_probe VALUES (3, NULL)`);
+          expect(reader.prepare("SELECT COUNT(*) AS count FROM burst_probe").get()?.count).toBe(1);
+          reader.exec("COMMIT");
+          expect(reader.prepare("SELECT COUNT(*) AS count FROM burst_probe").get()?.count).toBe(3);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            makeSqlitePersistenceLive(filename).pipe(Layer.provide(NodeServices.layer)),
+          ),
+        ),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps reads in a deferred read-only snapshot while the writer commits independently", async () => {
     const directory = mkdtempSync(join(tmpdir(), "f5-sqlite-reader-"));
     try {
@@ -84,7 +126,7 @@ describe("SQLite persistence setup", () => {
             expect(
               (yield* sql<{ journal_size_limit: number }>`PRAGMA journal_size_limit`)[0]
                 ?.journal_size_limit,
-            ).toBe(33554432);
+            ).toBe(134217728);
             expect(
               (yield* sql<{ foreign_keys: number }>`PRAGMA foreign_keys`)[0]?.foreign_keys,
             ).toBe(1);
