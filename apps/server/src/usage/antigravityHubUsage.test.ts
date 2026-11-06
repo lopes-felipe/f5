@@ -19,12 +19,12 @@ const hubResponse = (body: unknown, status_code = 200) =>
 
 async function probe(
   respond: (endpoint: URL, signal: AbortSignal) => Response | Promise<Response>,
-  options: { discoveryDelayMs?: number; stallDiscovery?: boolean } = {},
+  options: { discoveryDelayMs?: number; stallDiscovery?: boolean; hubUrl?: string } = {},
 ) {
   const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     expect(new URL(url).hostname).toBe("hub.example");
     expect(init.headers).toMatchObject({ Authorization: "Bearer management-key" });
-    if (new URL(url).pathname === "/v0/management/auth-files") {
+    if (new URL(url).pathname.endsWith("/v0/management/auth-files")) {
       if (options.stallDiscovery) return new Promise<Response>(() => {});
       if (options.discoveryDelayMs)
         await new Promise((resolve) => setTimeout(resolve, options.discoveryDelayMs));
@@ -53,7 +53,7 @@ async function probe(
         displayName: "Antigravity",
         enabled: true,
         environment: {
-          F5_CLIPROXY_HUB_URL: "https://hub.example",
+          F5_CLIPROXY_HUB_URL: options.hubUrl ?? "https://hub.example",
           F5_CLIPROXY_API_KEY: "management-key",
           F5_CLIPROXY_ACCOUNT_ID: "chosen",
           F5_ANTIGRAVITY_PROJECT: "my-project",
@@ -84,6 +84,33 @@ afterEach(() => {
 });
 
 describe("Antigravity hub quotas", () => {
+  it.each([
+    ["", ""],
+    ["/management.html", ""],
+    ["/management.html/?tab=accounts#accounts", ""],
+    ["/cliproxy", "/cliproxy"],
+    ["/cliproxy/", "/cliproxy"],
+    ["/cliproxy/management.html", "/cliproxy"],
+    ["/cliproxy/management.html/", "/cliproxy"],
+    ["/cliproxy/MANAGEMENT.HTML", "/cliproxy"],
+    ["/cliproxy/management.html?tab=accounts", "/cliproxy"],
+    ["/cliproxy/management.html#accounts", "/cliproxy"],
+    ["/cliproxy/management.html/?tab=accounts", "/cliproxy"],
+    ["/cliproxy/management.html/#accounts", "/cliproxy"],
+    ["/team-management.html", "/team-management.html"],
+  ])("resolves hub management requests from %s", async (path, prefix) => {
+    const { section, fetchMock } = await probe(
+      () => hubResponse({ buckets: [bucket("gemini-5h", 0.75)] }),
+      { hubUrl: "https://hub.example" + path },
+    );
+    expect(section.outcome).toBe("available");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://hub.example" + prefix + "/v0/management/auth-files",
+      "https://hub.example" + prefix + "/v0/management/api-call",
+      "https://hub.example" + prefix + "/v0/management/api-call",
+    ]);
+  });
+
   it("queries both hosts concurrently and keeps Gemini and the most-used duplicate buckets", async () => {
     const pending: Array<() => void> = [];
     const called: string[] = [];
