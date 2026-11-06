@@ -618,69 +618,73 @@ describe("composerDraftStore prompt stash", () => {
     expect(hydrated.draftsByThreadId[sourceThreadId]?.mentions).toEqual([]);
   });
 
-  it("stores the complete draft and clears only sendable composer content", async () => {
-    const store = useComposerDraftStore.getState();
-    store.setPrompt(sourceThreadId, `Review ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`);
-    store.addFilePaths(sourceThreadId, ["src/example.ts"]);
-    store.addTerminalContext(sourceThreadId, makeTerminalContext({ id: "ctx-stash" }));
-    store.addImage(
-      sourceThreadId,
-      makeImage({ id: "image-stash", previewUrl: "blob:image-stash" }),
-    );
-    store.setProvider(sourceThreadId, "codex");
-    store.setProviderInstance(sourceThreadId, ProviderInstanceId.make("codex-work"));
-    store.setModel(sourceThreadId, "gpt-5.3");
-    store.setRuntimeMode(sourceThreadId, "auto");
+  it.each([
+    { provider: "codex", instance: "codex-work", raw: "gpt-5.3", model: "gpt-5.3" },
+    { provider: "claudeAgent", instance: "claude-work", raw: "opus-5[1m]", model: "opus-5" },
+  ] as const)(
+    "stores and restores the complete $provider draft",
+    async ({ provider, instance, raw, model }) => {
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(sourceThreadId, `Review ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`);
+      store.addFilePaths(sourceThreadId, ["src/example.ts"]);
+      store.addTerminalContext(sourceThreadId, makeTerminalContext({ id: "ctx-stash" }));
+      store.addImage(
+        sourceThreadId,
+        makeImage({ id: "image-stash", previewUrl: "blob:image-stash" }),
+      );
+      store.setProvider(sourceThreadId, provider);
+      store.setProviderInstance(sourceThreadId, ProviderInstanceId.make(instance));
+      store.setModel(sourceThreadId, raw);
+      store.setRuntimeMode(sourceThreadId, "auto");
 
-    const result = await store.stashPromptDraft({
-      threadId: sourceThreadId,
-      projectId,
-      workspaceRoot: "/repo",
-    });
+      const result = await store.stashPromptDraft({
+        threadId: sourceThreadId,
+        projectId,
+        workspaceRoot: "/repo",
+      });
 
-    expect(result.status).toBe("stored");
-    expect(useComposerDraftStore.getState().promptStashes).toHaveLength(1);
-    expect(useComposerDraftStore.getState().promptStashes[0]?.draft).toMatchObject({
-      prompt: `Review ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`,
-      filePaths: ["src/example.ts"],
-      provider: "codex",
-      providerInstanceId: "codex-work",
-      model: "gpt-5.3",
-      runtimeMode: "auto",
-      attachments: [{ id: "image-stash" }],
-      terminalContexts: [{ id: "ctx-stash", text: "git status\nOn branch main" }],
-    });
-    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]).toMatchObject({
-      prompt: "",
-      filePaths: [],
-      terminalContexts: [],
-      provider: "codex",
-      model: "gpt-5.3",
-    });
-    expect(baseStorage.setItem).toHaveBeenCalled();
+      expect(result.status).toBe("stored");
+      expect(useComposerDraftStore.getState().promptStashes).toHaveLength(1);
+      expect(useComposerDraftStore.getState().promptStashes[0]?.draft).toMatchObject({
+        prompt: `Review ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`,
+        filePaths: ["src/example.ts"],
+        provider,
+        providerInstanceId: instance,
+        model,
+        runtimeMode: "auto",
+        attachments: [{ id: "image-stash" }],
+        terminalContexts: [{ id: "ctx-stash", text: "git status\nOn branch main" }],
+      });
+      expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]).toMatchObject({
+        prompt: "",
+        filePaths: [],
+        terminalContexts: [],
+        provider,
+        model,
+      });
+      expect(baseStorage.setItem).toHaveBeenCalled();
 
-    const persistOptions = useComposerDraftStore.persist.getOptions();
-    const hydrated = persistOptions.merge!(
-      persistOptions.partialize!(useComposerDraftStore.getState()),
-      useComposerDraftStore.getInitialState(),
-    );
-    expect(hydrated.promptStashes[0]?.draft.model).toBe("gpt-5.3");
-    useComposerDraftStore.setState(hydrated);
-    const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
-    const restored = await useComposerDraftStore.getState().restorePromptStash({
-      stashId,
-      threadId: sourceThreadId,
-      projectId,
-      workspaceRoots: ["/repo"],
-    });
-    expect(restored).toMatchObject({ status: "restored" });
-    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.model).toBe(
-      "gpt-5.3",
-    );
-    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.images).toHaveLength(
-      1,
-    );
-  });
+      const persistOptions = useComposerDraftStore.persist.getOptions();
+      const hydrated = persistOptions.merge!(
+        persistOptions.partialize!(useComposerDraftStore.getState()),
+        useComposerDraftStore.getInitialState(),
+      );
+      expect(hydrated.promptStashes[0]?.draft.model).toBe(model);
+      useComposerDraftStore.setState(hydrated);
+      const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+      const restored = await useComposerDraftStore.getState().restorePromptStash({
+        stashId,
+        threadId: sourceThreadId,
+        projectId,
+        workspaceRoots: ["/repo"],
+      });
+      expect(restored).toMatchObject({ status: "restored" });
+      expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.model).toBe(model);
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.images,
+      ).toHaveLength(1);
+    },
+  );
 
   it("requires confirmations before replacing content or dropping cross-thread terminals", async () => {
     const store = useComposerDraftStore.getState();
@@ -1512,6 +1516,31 @@ describe("composerDraftStore setModel", () => {
       "gpt-5.3-codex",
     );
   });
+
+  it.each(["[1m]", "[200k]"])(
+    "cleans Claude suffix %s without rewriting the custom slug",
+    (suffix) => {
+      const store = useComposerDraftStore.getState();
+      store.setProvider(threadId, "claudeAgent");
+      store.setProviderInstance(threadId, ProviderInstanceId.make("claude_personal"));
+      store.setModel(threadId, " opus-5" + suffix + " ");
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe("opus-5");
+      const merged = useComposerDraftStore.persist.getOptions().merge!(
+        {
+          draftsByThreadId: {
+            [threadId]: {
+              prompt: "keep draft",
+              provider: "claudeAgent",
+              providerInstanceId: "claude_personal",
+              model: "opus-5" + suffix,
+            },
+          },
+        },
+        useComposerDraftStore.getInitialState(),
+      );
+      expect(merged.draftsByThreadId[threadId]?.model).toBe("opus-5");
+    },
+  );
 });
 
 describe("composerDraftStore setProvider", () => {

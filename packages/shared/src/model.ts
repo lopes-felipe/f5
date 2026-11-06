@@ -577,7 +577,8 @@ function stripClaudeContextWindowSuffix(model: string): string {
   return model.replace(/\[(?:1m|200k)\]$/i, "");
 }
 
-export function normalizeModelSlug(
+/** Clean a custom slug without rewriting names that also happen to be static aliases. */
+export function normalizeCustomModelSlug(
   model: string | null | undefined,
   provider: ProviderKind | ProviderDriverKind = "codex",
 ): ModelSlug | null {
@@ -593,7 +594,19 @@ export function normalizeModelSlug(
   const builtInProvider = toBuiltInProviderKind(provider);
   const slug =
     builtInProvider === "claudeAgent" ? stripClaudeContextWindowSuffix(trimmed) : trimmed;
-  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[builtInProvider] as Record<string, ModelSlug>;
+  return slug as ModelSlug;
+}
+
+export function normalizeModelSlug(
+  model: string | null | undefined,
+  provider: ProviderKind | ProviderDriverKind = "codex",
+): ModelSlug | null {
+  const slug = normalizeCustomModelSlug(model, provider);
+  if (slug === null) return null;
+  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[toBuiltInProviderKind(provider)] as Record<
+    string,
+    ModelSlug
+  >;
   const aliased = Object.prototype.hasOwnProperty.call(aliases, slug) ? aliases[slug] : undefined;
   return typeof aliased === "string" ? aliased : (slug as ModelSlug);
 }

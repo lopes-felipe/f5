@@ -6335,13 +6335,15 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it.each([
-    { model: "gpt-5.4", source: "draft", reset: false },
-    { model: "5.4", source: "draft", reset: false },
-    { model: "gpt-5.4", source: "project", reset: false },
-    { model: "5.4", source: "project", reset: true },
+    { model: "gpt-5.4", source: "draft", reset: false, unscoped: false },
+    { model: "5.4", source: "draft", reset: false, unscoped: false },
+    { model: "gpt-5.4", source: "project", reset: false, unscoped: false },
+    { model: "5.4", source: "project", reset: true, unscoped: false },
+    { model: "gpt-5.5", source: "draft", reset: false, unscoped: false },
+    { model: "gpt-5.5", source: "draft", reset: false, unscoped: true },
   ])(
-    "keeps $source effort visible and dispatchable on same-driver fallback from $model (reset=$reset)",
-    async ({ model, source, reset }) => {
+    "keeps $source effort visible and dispatchable on same-driver fallback from $model (reset=$reset, unscoped=$unscoped)",
+    async ({ model, source, reset, unscoped }) => {
       useComposerDraftStore.setState({
         draftThreadsByThreadId: {
           [THREAD_ID]: {
@@ -6365,34 +6367,32 @@ describe("ChatView timeline (full app)", () => {
           projects: snapshot.projects.map((project) => ({
             ...project,
             defaultModelSelection: {
-              instanceId: ProviderInstanceId.make("codex"),
-              model,
+              instanceId: unscoped ? fallback : ProviderInstanceId.make("codex"),
+              model: source === "draft" ? "gpt-5.4" : model,
               options: [{ id: "reasoningEffort", value: "low" }],
             },
           })),
         },
         configureFixture: (fixture) => {
           const stock = createTestServerProvider("codex", {
-            models: [
-              {
-                slug: "gpt-5.4",
-                name: "GPT-5.4",
-                isCustom: false,
-                capabilities: {
-                  optionDescriptors: [
-                    {
-                      id: "reasoningEffort",
-                      label: "Effort",
-                      type: "select",
-                      options: [
-                        { id: "low", label: "Low" },
-                        { id: "high", label: "High", isDefault: true },
-                      ],
-                    },
-                  ],
-                },
+            models: ["gpt-5.4", "gpt-5.5"].map((slug) => ({
+              slug,
+              name: slug,
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Effort",
+                    type: "select",
+                    options: [
+                      { id: "low", label: "Low" },
+                      { id: "high", label: "High", isDefault: true },
+                    ],
+                  },
+                ],
               },
-            ],
+            })),
           });
           fixture.serverConfig = {
             ...fixture.serverConfig,
@@ -6413,7 +6413,7 @@ describe("ChatView timeline (full app)", () => {
       try {
         const draft = useComposerDraftStore.getState();
         draft.setProvider(THREAD_ID, "codex");
-        draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
+        if (!unscoped) draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
         draft.setModel(THREAD_ID, model);
         if (source === "draft") {
           draft.setModelOptions(THREAD_ID, { codex: { reasoningEffort: "low" } });
@@ -6448,7 +6448,10 @@ describe("ChatView timeline (full app)", () => {
         ) as {
           modelSelection?: { instanceId: string; model: string; options?: unknown };
         };
-        expect(command.modelSelection).toMatchObject({ instanceId: fallback, model: "gpt-5.4" });
+        expect(command.modelSelection).toMatchObject({
+          instanceId: fallback,
+          model: model === "5.4" ? "gpt-5.4" : model,
+        });
         expect(command.modelSelection?.options).toContainEqual({
           id: "reasoningEffort",
           value: reset ? "high" : "low",

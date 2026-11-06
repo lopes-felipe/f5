@@ -31,7 +31,7 @@ import {
   type ProviderModelOptions,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { normalizeCustomModelSlug, normalizeModelSlug } from "@t3tools/shared/model";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { DEFAULT_INTERACTION_MODE, type ChatImageAttachment } from "./types";
 import {
@@ -72,7 +72,9 @@ function normalizeDraftModel(
   provider: ProviderKind | null,
   instanceId: ProviderInstanceId | null | undefined,
 ) {
-  return instanceId ? model?.trim() || null : normalizeModelSlug(model, provider ?? "codex");
+  return instanceId
+    ? normalizeCustomModelSlug(model, provider ?? "codex")
+    : normalizeModelSlug(model, provider ?? "codex");
 }
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
@@ -2354,6 +2356,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         });
       },
       setModel: (threadId, model) => {
+        // Set the provider instance first for resolved picks, so alias-shaped custom names stay exact.
         if (threadId.length === 0) {
           return;
         }
