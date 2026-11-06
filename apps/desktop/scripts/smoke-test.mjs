@@ -441,9 +441,62 @@ try {
     if (owner.webContents.getZoomLevel() !== 0 || Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
       throw new Error("Resetting app zoom changed the preview zoom");
   }, zoomGuestId);
+  // Exercise real native keyboard focus twice on a previously focused, zoomed guest.
+  // DOM-only mocks cannot detect keystrokes being routed to the guest after restoration.
+  await application.evaluate(async ({ webContents }, guestId) => {
+    const guest = webContents.fromId(guestId);
+    await guest.executeJavaScript(`
+      document.body.innerHTML = '<button id="focus-target" style="position:absolute;left:100px;top:10px;width:40px;height:40px">Click</button>';
+      globalThis.focusClicks = 0;
+      document.getElementById('focus-target').onclick = () => globalThis.focusClicks++;
+    `);
+  }, zoomGuestId);
+  await page.evaluate(() => {
+    const guest = document.getElementById("smoke-untrusted-guest");
+    Object.assign(guest.style, {
+      position: "fixed",
+      top: "150px",
+      right: "0",
+      width: "250px",
+      height: "120px",
+      zIndex: "2147483647",
+    });
+    const input = document.createElement("input");
+    input.id = "smoke-focus-input";
+    Object.assign(input.style, { position: "fixed", top: "0", left: "0", zIndex: "2147483647" });
+    document.body.append(input);
+  });
+  for (const input of [{ selector: "#focus-target" }, { x: 120, y: 30 }]) {
+    await application.evaluate(({ webContents }, guestId) => {
+      const guest = webContents.fromId(guestId);
+      guest.focus();
+      guest.hostWebContents.focus();
+    }, zoomGuestId);
+    await page.locator("#smoke-focus-input").focus();
+    await page.evaluate(
+      (input) => window.desktopBridge.preview.automation.click("smoke-zoom", input),
+      input,
+    );
+    await application.evaluate(({ webContents }, guestId) => {
+      const guest = webContents.fromId(guestId);
+      const focused = webContents.getFocusedWebContents();
+      if (focused?.id !== guest.hostWebContents.id)
+        throw new Error("Preview click retained native guest keyboard focus");
+      focused.sendInputEvent({ type: "char", keyCode: "X" });
+    }, zoomGuestId);
+  }
+  await page.waitForFunction(() => document.getElementById("smoke-focus-input").value === "XX");
+  const focusClicks = await application.evaluate(
+    ({ webContents }, guestId) =>
+      webContents.fromId(guestId).executeJavaScript("globalThis.focusClicks"),
+    zoomGuestId,
+  );
+  if (focusClicks !== 2)
+    throw new Error("Preview clicks missed their CSS coordinates at 125% zoom");
   await page.evaluate(async () => {
     await window.desktopBridge.preview.closeTab("smoke-zoom");
     document.getElementById("smoke-untrusted-guest")?.remove();
+    document.getElementById("smoke-focus-input")?.remove();
   });
 
   const workspace = join(directory, "workspace");

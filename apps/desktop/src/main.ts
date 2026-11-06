@@ -1915,7 +1915,6 @@ async function previewAutomationClick(
     const point = await resolveAutomationClickPoint(guest, input, checkpoint);
     const x = Math.round(point.x);
     const y = Math.round(point.y);
-    checkpoint.check();
     await clickPreviewGuest(guest, x, y, checkpoint);
     return { point: { x, y } };
   });

@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 
 import { installPreviewPermissionPolicy } from "./previewPermissions";
 
-it("allows preview clipboard writes, fullscreen and loopback access through both handlers", () => {
+it("allows clipboard writes and fullscreen, but only reports loopback access without granting requests", () => {
   let request:
     | ((contents: unknown, permission: string, done: (ok: boolean) => void) => void)
     | null = null;
@@ -26,10 +26,12 @@ it("allows preview clipboard writes, fullscreen and loopback access through both
     });
     return result;
   };
-  for (const permission of ["clipboard-sanitized-write", "fullscreen", "loopback-network"]) {
+  for (const permission of ["clipboard-sanitized-write", "fullscreen"]) {
     expect(granted(permission)).toBe(true);
     expect(check!({}, permission)).toBe(true);
   }
+  expect(granted("loopback-network")).toBe(false);
+  expect(check!({}, "loopback-network")).toBe(true);
   for (const permission of [
     "openExternal",
     "clipboard-read",
