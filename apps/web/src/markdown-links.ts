@@ -16,8 +16,11 @@ import {
 
 const EXTERNAL_SCHEME_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/;
 const RELATIVE_PATH_PREFIX_PATTERN = /^(~\/|\.{1,2}\/)/;
-const RELATIVE_FILE_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}$/;
-const RELATIVE_FILE_NAME_PATTERN = /^[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+(?::\d+){0,2}$/;
+// Allow routing punctuation in path segments, including explicit folder links.
+const RELATIVE_FILE_PATH_PATTERN =
+  /^[A-Za-z0-9._$+@()[\]-]+(?:\/[A-Za-z0-9._$+@()[\]-]+)*\/(?:[A-Za-z0-9._$+@()[\]-]+(?::\d+){0,2})?$/;
+// A bare name excludes @ so email addresses remain external links.
+const RELATIVE_FILE_NAME_PATTERN = /^[A-Za-z0-9._$+()[\]-]+\.[A-Za-z0-9_-]+(?::\d+){0,2}$/;
 const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
 const POSITION_ONLY_PATTERN = /^\d+(?::\d+)?$/;
 const POSIX_FILE_ROOT_PREFIXES = [
