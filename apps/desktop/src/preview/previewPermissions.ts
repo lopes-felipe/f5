@@ -83,7 +83,8 @@ export function installPreviewPermissionPolicy(
   );
   session.setPermissionCheckHandler(
     (webContents, permission, requestingOrigin) =>
-      // Electron 44 disables LNA enforcement; do not preapprove requests on a future version.
+      // The pinned Electron disables LNA enforcement. An upgrade regression test forces
+      // reassessment: a granted check can itself authorize APIs without a later request.
       permission === "loopback-network" || allows(webContents, permission, requestingOrigin),
   );
 }
