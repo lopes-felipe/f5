@@ -14947,11 +14947,13 @@
     },
     {
       "createdAt": "2026-11-03T20:57:03.039Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:20:19.227Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29891",
-      "status": "port",
+      "reason": "F5 represents subagents as parent-thread activities and has no sidebar-hidden subagent or side-chat threads that project opening could select.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "command palette",
