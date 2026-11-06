@@ -16028,11 +16028,20 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:00:58.381Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/prHub/Layers/PrHubService.ts:745"
+        ],
+        "f5Refs": [
+          "1f1336e7aed6c170df0cb2f32ddfe52abf9e2330"
+        ]
+      },
       "id": "pr-30293",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr hub"
