@@ -72,11 +72,24 @@ describe("resolveMarkdownFileLinkTarget", () => {
     ["+page.svelte", "+page.svelte"],
     ["[id].tsx", "[id].tsx"],
     ["$postId.tsx", "$postId.tsx"],
-    ["docs/My%20File%20(draft).md", "docs/My File (draft).md"],
-    ["線性代數/考試.pdf", "線性代數/考試.pdf"],
+    ["docs/My(draft).md", "docs/My(draft).md"],
   ])("resolves routing punctuation in %s", (href, path) => {
     expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + path);
   });
+
+  it.each(["foo/", "foo /", "docs/My Folder /"])(
+    "preserves existing folder matching for %s",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + href);
+    },
+  );
+
+  it.each(["線性代數/考試.pdf", "a b.md", "a/b c.ts", "README (copy).md"])(
+    "leaves other relative filename expansions out of scope: %s",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBeNull();
+    },
+  );
 
   it.each(["me@example.com", "foo(bar)", "$HOME", "patches", "TODO:12"])(
     "does not treat %s as a file",
