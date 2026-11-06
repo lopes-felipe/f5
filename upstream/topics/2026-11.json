@@ -324,13 +324,11 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedAt": "2026-11-06T08:53:40.754Z",
       "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21045",
-      "reason": "Revisit after 2026-12-06",
-      "revisitAfter": "2026-12-06",
-      "status": "watch",
+      "status": "inbox",
       "suggestion": {
         "areas": [
           "providers",
@@ -3846,13 +3844,11 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
-      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedAt": "2026-11-06T08:53:40.753Z",
       "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26435",
-      "reason": "Revisit after 2026-12-06",
-      "revisitAfter": "2026-12-06",
-      "status": "watch",
+      "status": "inbox",
       "suggestion": {
         "areas": [
           "threads",
@@ -8691,16 +8687,18 @@
       "id": "pr-28446",
       "status": "inbox",
       "suggestion": {
-        "areas": [],
-        "confidence": 0,
+        "areas": [
+          "composer",
+          "banners"
+        ],
+        "confidence": 0.7,
         "model": "claude-opus-5-5",
-        "reason": "Triage did not classify this commit; review it manually.",
+        "reason": "Fixes a visible popup bug in the composer's background-work banner, which f5 has.",
         "status": "port",
-        "triageError": "omitted by triage",
-        "userImpact": "medium"
+        "userImpact": "low"
       },
-      "summary": "",
-      "title": "fix(web): background command details open above their button (#28446)",
+      "summary": "The Running <command> info popup no longer jumps beside its button or flickers, because the measured-height override that broke its cap is removed. Command labels drop the shell wrapper and keep line breaks in the popup.",
+      "title": "Background command details open above their button and show the script cleanly",
       "upstreamPrs": [
         28446
       ]
@@ -9968,13 +9966,11 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedAt": "2026-11-06T08:53:40.754Z",
       "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28987",
-      "reason": "Revisit after 2026-12-06",
-      "revisitAfter": "2026-12-06",
-      "status": "watch",
+      "status": "inbox",
       "suggestion": {
         "areas": [
           "providers",
@@ -13935,13 +13931,11 @@
     },
     {
       "createdAt": "2026-11-03T20:57:03.039Z",
-      "decidedAt": "2026-11-06T08:53:23.153Z",
+      "decidedAt": "2026-11-06T08:53:40.754Z",
       "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29908",
-      "reason": "Revisit after 2026-12-06",
-      "revisitAfter": "2026-12-06",
-      "status": "watch",
+      "status": "inbox",
       "suggestion": {
         "areas": [
           "git",
@@ -14522,13 +14516,11 @@
     },
     {
       "createdAt": "2026-11-03T20:57:03.039Z",
-      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedAt": "2026-11-06T08:53:40.754Z",
       "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30187",
-      "reason": "Revisit after 2026-12-06",
-      "revisitAfter": "2026-12-06",
-      "status": "watch",
+      "status": "inbox",
       "suggestion": {
         "areas": [
           "providers",
