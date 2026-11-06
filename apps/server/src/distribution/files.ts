@@ -50,6 +50,43 @@ export async function copyDurable(source: string, destination: string): Promise<
   }
 }
 
+const RENAME_LOCK_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+export interface RenameRetryOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly rename?: (from: string, to: string) => Promise<void>;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly attempts?: number;
+  readonly delayMs?: number;
+}
+
+/**
+ * Rename, retrying while Windows reports the source or target as in use. Antivirus and the
+ * search indexer briefly open freshly extracted files, which makes a directory rename fail
+ * with EPERM/EBUSY/EACCES. A denial that outlasts the attempts (10 s by default) is rethrown.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  options: RenameRetryOptions = {},
+): Promise<void> {
+  const rename = options.rename ?? fs.rename;
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const attempts =
+    (options.platform ?? process.platform) === "win32" ? (options.attempts ?? 50) : 1;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= attempts || code === undefined || !RENAME_LOCK_CODES.has(code)) throw error;
+      await sleep(options.delayMs ?? 200);
+    }
+  }
+}
+
 /** Publish fully synced metadata without exposing an empty file or replacing another writer. */
 export async function exclusiveJson(file: string, value: unknown): Promise<void> {
   const temporary = `${file}.${randomUUID()}.tmp`;

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { exists, atomicJson, readJson } from "./files";
+import { exists, atomicJson, readJson, renameWithRetry } from "./files";
 import {
   cliTarget,
   parseRelease,
@@ -203,11 +203,11 @@ export async function stageRelease(
       target: artifact.target,
     });
     await fs.mkdir(path.dirname(paths.directory), { recursive: true });
-    await fs.rename(content, paths.directory);
+    await renameWithRetry(content, paths.directory);
     try {
       await preflightRuntime(root, release.version);
     } catch (error) {
-      await fs.rename(paths.directory, path.join(root, `.rejected-${randomUUID()}`));
+      await renameWithRetry(paths.directory, path.join(root, `.rejected-${randomUUID()}`));
       throw error;
     }
     progress("Verified and prepared immutable runtime.");

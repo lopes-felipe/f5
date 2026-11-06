@@ -4,6 +4,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
+- Writes to a repository's shared Git config start a single Git process per attempt while another writer holds the lock, instead of two.
+
 ## [0.1.4] - 2026-11-05
 
 ### Added
