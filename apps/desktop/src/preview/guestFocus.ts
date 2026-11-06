@@ -1,4 +1,6 @@
 import type { WebContents } from "electron";
+import type { PreviewAutomationCheckpoint } from "./automationControl";
+import { previewDebugger } from "./previewDebugger";
 
 const HOST_FOCUS = "globalThis.__f5PreviewFocus";
 
@@ -10,6 +12,7 @@ const HOST_FOCUS = "globalThis.__f5PreviewFocus";
 export async function preservePreviewHostFocus<T>(
   guest: Pick<WebContents, "id" | "hostWebContents" | "focusedFrame">,
   action: () => T | Promise<T>,
+  canRestore: () => boolean = () => true,
 ): Promise<T> {
   const host = guest.hostWebContents;
   if (!host || host.isDestroyed() || guest.focusedFrame) return action();
@@ -33,6 +36,8 @@ export async function preservePreviewHostFocus<T>(
         const state = ${HOST_FOCUS};
         const index = state ? state.presses.indexOf(${guest.id}) : -1;
         if (index < 0) return;
+        // A user takeover invalidates the shared save, including sibling presses still in flight.
+        if (!${canRestore()}) state.saved = null;
         state.presses.splice(index, 1);
         if (state.presses.length === 0) delete ${HOST_FOCUS};
         const current = document.activeElement;
@@ -43,4 +48,49 @@ export async function preservePreviewHostFocus<T>(
       })()`);
     }
   }
+}
+
+/** CDP acknowledges renderer input; sendInputEvent returns before the guest takes focus. */
+export async function clickPreviewGuest(
+  guest: WebContents,
+  x: number,
+  y: number,
+  checkpoint: PreviewAutomationCheckpoint,
+): Promise<void> {
+  const debuggee = previewDebugger(guest);
+  if (!debuggee.isAttached()) debuggee.attach("1.3");
+  await preservePreviewHostFocus(
+    guest,
+    async () => {
+      checkpoint.check();
+      await debuggee.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      checkpoint.check();
+      await debuggee.sendCommand("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x,
+        y,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      // Finish the pointer batch even if takeover happened while the press was being handled.
+      await debuggee.sendCommand("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x,
+        y,
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+      });
+    },
+    () => {
+      try {
+        checkpoint.check();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  );
+  checkpoint.check();
 }

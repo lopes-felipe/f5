@@ -107,7 +107,7 @@ import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
-import { preservePreviewHostFocus } from "./preview/guestFocus";
+import { clickPreviewGuest } from "./preview/guestFocus";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -1916,12 +1916,7 @@ async function previewAutomationClick(
     const x = Math.round(point.x);
     const y = Math.round(point.y);
     checkpoint.check();
-    await preservePreviewHostFocus(guest, () => {
-      checkpoint.check();
-      guest.sendInputEvent({ type: "mouseMove", x, y });
-      guest.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
-      guest.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
-    });
+    await clickPreviewGuest(guest, x, y, checkpoint);
     return { point: { x, y } };
   });
 }

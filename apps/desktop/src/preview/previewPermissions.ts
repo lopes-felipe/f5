@@ -9,7 +9,10 @@ import { isLoopbackPreviewHost } from "@t3tools/shared/preview";
  * `clipboard-sanitized-write` backs `navigator.clipboard.writeText()`, so a page's Copy
  * buttons work; the check handler gates it too, so both handlers allow it. `fullscreen`
  * fills the preview's own webview, since guests attach with HTML fullscreen window resizing
- * disabled.
+ * disabled. `loopback-network` lets sign-in widgets query permission before contacting
+ * local authenticators. Electron 44.9.3 disables LocalNetworkAccessChecks in its
+ * shell/browser/feature_list.cc, so this reflects existing network access rather than
+ * expanding it. Reassess this grant if that Electron default changes on upgrade.
  */
 export const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "clipboard-sanitized-write",
