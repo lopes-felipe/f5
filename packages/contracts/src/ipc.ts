@@ -977,6 +977,15 @@ export interface NativeApi {
       onSettled: (listener: (event: typeof ComputerAccessSettled.Type) => void) => () => void;
       onGrantsChanged: (listener: (event: typeof ComputerGrantsChanged.Type) => void) => () => void;
     };
+    /**
+     * Frees Chrome from an idle holder thread. `outcome` says why it didn't: the thread no
+     * longer holds Chrome (`not-holder`), it is busy (`working`), or it didn't let go in
+     * time (`timeout`).
+     */
+    releaseChrome: (input: { threadId: ThreadId }) => Promise<{
+      released: boolean;
+      outcome?: "released" | "not-holder" | "working" | "timeout";
+    }>;
     onObservationsInvalidated: (listener: (event: { threadId: string }) => void) => () => void;
     onActivity: (listener: (event: ComputerActivity) => void) => () => void;
     onLeaseChanged: (listener: (event: typeof AgentComputerUseChanged.Type) => void) => () => void;

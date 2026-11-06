@@ -57,7 +57,11 @@ import {
 import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 import type { AgentBrowserPolicy } from "../../mcp/browserAccess.ts";
-import { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
+import {
+  ComputerAutomationBrokerRuntime,
+  type ChromeReleaser,
+} from "../../computer/ComputerAutomationBroker";
+import { CLAUDE_CHROME_RELEASED } from "../claudeChromeActivity";
 import { DesktopComputerHost } from "../../computer/DesktopComputerHost";
 import { ChromeSessionRuntime } from "../chromeSessionRuntime";
 import { ChromeArtifactCache } from "../chromeArtifactCache";
@@ -1509,6 +1513,145 @@ describe("ClaudeAdapter agent browser", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  /** A certified Claude in Chrome launch with an in-memory lease, registration and broker. */
+  function certifiedChromeFixture() {
+    const artifacts = new Map<string, string>();
+    const saved = new Map<string, ChromeNativeHostTransaction>();
+    const release = vi.fn();
+    const acquire = vi.fn(async () => {});
+    const record: ClaudeChromeRecord = {
+      ...PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!,
+      evidenceId: "fixture-evidence",
+      toolNames: ["navigate"],
+      evidenceCommit: "a".repeat(40),
+    };
+    const descriptor: ChromeNativeHostDescriptor = {
+      ...claudeChromeDescriptor(record),
+      expectedTarget: () => "/test/host",
+      verifyWrapper: async (bytes) => bytes === "wrapper",
+      verifyServer: async (status) => status?.source === "dynamic",
+    };
+    const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
+    const computerBroker = new ComputerAutomationBrokerRuntime(host, {
+      platform: "darwin",
+      storage: { load: async () => [], save: async () => {} },
+      resolve: async () => {
+        throw new Error("not used in Chrome-only fixture");
+      },
+    });
+    const releasers: ChromeReleaser[] = [];
+    const unregistered = vi.fn();
+    const register = computerBroker.registerChromeReleaser.bind(computerBroker);
+    vi.spyOn(computerBroker, "registerChromeReleaser").mockImplementation(
+      (threadId, generation, releaser) => {
+        releasers.push(releaser);
+        const off = register(threadId, generation, releaser);
+        return () => {
+          unregistered();
+          off();
+        };
+      },
+    );
+    const policyRef: { current?: { current: AgentBrowserPolicy } } = {};
+    const runtime = new ChromeSessionRuntime({
+      profileId: "profile",
+      descriptor,
+      record,
+      userHome: "/Users/me",
+      executableRealpath: "/bundle/claude",
+      acquire,
+      release,
+      validate: async () => {},
+      consent: async () => true,
+      paused: () => computerBroker.pause.has(THREAD_ID),
+      policyEnabled: async () => policyRef.current?.current.claudeInChrome ?? false,
+      currentGeneration: (threadId) => computerBroker.generation(threadId),
+      cache: new ChromeArtifactCache({
+        fingerprint: async (path) => artifacts.get(path) ?? null,
+        read: async (path) => artifacts.get(path) ?? null,
+        hash: sha256,
+      }),
+      storage: {
+        inspect: async () => [
+          parseNativeHostManifest("chrome", "user", artifacts.get("user") ?? null),
+        ],
+        readArtifact: async (location) => ({ bytes: artifacts.get(location) ?? null }),
+        writeArtifact: async (location, bytes) => {
+          if (bytes === null) artifacts.delete(location);
+          else artifacts.set(location, bytes);
+        },
+        saveTransaction: async (entry) => {
+          saved.set(entry.id, entry);
+        },
+        listTransactions: async () => [...saved.values()],
+        loadTransaction: async (_, id) => saved.get(id),
+      },
+    });
+    const { harness, policy } = makeBrowserHarness(
+      { claudeInChrome: true },
+      { computerAutomationBroker: computerBroker, chromeRuntime: runtime },
+    );
+    policyRef.current = policy;
+    return { harness, policy, computerBroker, acquire, release, releasers, unregistered };
+  }
+
+  it.effect(
+    "stops an idle Chrome session to free Chrome, and refuses while a turn or background task runs",
+    () => {
+      const { harness, computerBroker, release, releasers, unregistered } =
+        certifiedChromeFixture();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        assert.equal(releasers.length, 1);
+        const releaser = releasers[0]!;
+        // Between turns with nothing running: idle.
+        assert.equal(releaser.idle(), true);
+        // A background task outlives its turn and would die with the CLI.
+        emitClaudeTaskStarted(harness.query, { taskId: "shell-task", toolUseId: "bg-tool" });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(releaser.idle(), false)));
+        assert.equal(yield* Effect.promise(async () => releaser.release()), false);
+        emitClaudeTaskUpdated(harness.query, {
+          taskId: "shell-task",
+          patch: { status: "completed" },
+        });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(releaser.idle(), true)));
+        // A turn in progress refuses too.
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        assert.equal(releaser.idle(), false);
+        assert.equal(yield* Effect.promise(async () => releaser.release()), false);
+        emitClaudeSuccessResult(harness.query, { uuid: "result-turn" });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(releaser.idle(), true)));
+        // Idle again: the release stops the session with its reason and frees the lease.
+        assert.equal(yield* Effect.promise(async () => releaser.release()), true);
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            const exited = events.find((event) => event.type === "session.exited");
+            assert.equal(
+              (exited?.payload as { reason?: string } | undefined)?.reason,
+              CLAUDE_CHROME_RELEASED,
+            );
+          }),
+        );
+        assert.equal(release.mock.calls.length, 1);
+        assert.equal(unregistered.mock.calls.length, 1);
+        assert.equal(computerBroker.generation(THREAD_ID), undefined);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect(
     "routes a certified Chrome launch through its lease, status verifier and live veto",

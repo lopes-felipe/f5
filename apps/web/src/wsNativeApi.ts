@@ -613,6 +613,7 @@ export function createWsNativeApi(): NativeApi {
             listener(message.data),
           ),
       },
+      releaseChrome: requestMethod(WS_METHODS.computerChromeRelease),
       onObservationsInvalidated: (listener) =>
         transport.subscribe(WS_CHANNELS.computerObservationsInvalidated, (message) =>
           listener(message.data),

@@ -477,6 +477,12 @@ export const ComputerAutomationError = Schema.Union([
     holder: Schema.Literals(["same-profile", "other-profile"]),
     threadTitle: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.Literal("observation-backlog")),
+    /** What is held: the Chrome lease or a native computer lease. */
+    resource: Schema.optional(Schema.Literals(["chrome", "computer"])),
+    /** The holding thread, same-profile holders only; other profiles stay anonymous. */
+    holderThreadId: Schema.optional(Schema.String),
+    /** Whether the holder is between turns with no call running (server-side enrichment). */
+    holderIdle: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     _tag: Schema.Literal("Interrupted"),
@@ -779,6 +785,8 @@ export const ComputerActivity = Schema.Struct({
   appName: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   thumbnailDataUrl: Schema.optional(Schema.String.check(Schema.isMaxLength(40 * 1024))),
   delivery: Schema.optional(ComputerDelivery),
+  /** A `Busy` failure's holder in this profile, for "Held by" on the card. */
+  heldByThreadId: Schema.optional(Id),
 });
 export type ComputerActivity = typeof ComputerActivity.Type;
 export const SCHEDULED_NOTIFICATIONS_CAPABILITY = "scheduled-notifications-v1";

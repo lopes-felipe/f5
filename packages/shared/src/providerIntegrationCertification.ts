@@ -68,6 +68,11 @@ export const CODEX_CHROME_DRAIN_TOOL = "turn_ended";
  */
 export const CODEX_CHROME_IDLE_MS = 10 * 60_000;
 /**
+ * A Chrome-enabled Claude session holds the Chrome lease for its CLI's life, so it stops
+ * this long after its last turn or Chrome call; the next message resumes it with Chrome.
+ */
+export const CLAUDE_CHROME_IDLE_MS = 10 * 60_000;
+/**
  * Signing identifiers ChatGPT's Chrome host accepts for `node_repl`'s parent (with the
  * record's team): its only connection check is that a signed Codex started the runtime.
  */

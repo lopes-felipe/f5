@@ -266,13 +266,16 @@ export class ComputerLeaseAuthority {
     return () => this.listeners.delete(listener);
   }
   private busy(
-    holder: Pick<ComputerLeaseHolder, "profileId" | "threadTitle">,
+    holder: Pick<ComputerLeaseHolder, "profileId" | "threadId" | "threadTitle">,
     profileId: string,
   ): ComputerControlError {
     return new ComputerControlError({
       _tag: "Busy",
       holder: holder.profileId === profileId ? "same-profile" : "other-profile",
-      ...(holder.profileId === profileId ? { threadTitle: holder.threadTitle } : {}),
+      resource: "computer",
+      ...(holder.profileId === profileId
+        ? { threadTitle: holder.threadTitle, holderThreadId: holder.threadId }
+        : {}),
     });
   }
   private notify(): void {

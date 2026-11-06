@@ -24,6 +24,8 @@ export const CODEX_CHROME_STOPPED_IDLE =
 export const CODEX_CHROME_STOPPED_PAUSED =
   "Paused. Chrome control restarts with your next message after you resume.";
 export const CODEX_CHROME_STOPPED_OFF = "Turned off for this thread.";
+export const CODEX_CHROME_STOPPED_RELEASED =
+  "Released while idle so another thread could use Chrome. Chrome control restarts with your next message.";
 export const CODEX_CHROME_STOPPED_INTERRUPTED =
   "Stopped with the interrupted turn. Chrome control restarts with your next message.";
 export const CODEX_CHROME_START_TIMED_OUT =
@@ -60,6 +62,8 @@ export type CodexChromeBroker = Pick<
   | "stopIntegrationProcess"
   | "reportChromeCalls"
   | "onChromeDisabled"
+  | "acquireChromeLease"
+  | "registerChromeReleaser"
 >;
 
 export interface CodexChromeSessionDeps {
@@ -142,6 +146,15 @@ export class CodexChromeSession {
         if (threadId === deps.threadId && generation === deps.generation)
           this.stop("off", CODEX_CHROME_STOPPED_OFF);
       }),
+      // Another thread needs Chrome (or the user pressed Release): give way only while idle.
+      deps.broker.registerChromeReleaser(deps.threadId, deps.generation, {
+        idle: () => this.idle,
+        release: () => {
+          if (!this.idle) return false;
+          this.stop("pending", CODEX_CHROME_STOPPED_RELEASED, "release");
+          return true;
+        },
+      }),
     );
     deps.stateChanged("pending");
   }
@@ -186,6 +199,11 @@ export class CodexChromeSession {
     if (running) this.calls.add(itemId);
     else this.calls.delete(itemId);
     this.reportCalls();
+  }
+
+  /** A ready runtime between turns with no call running: safe to stop for another thread. */
+  private get idle(): boolean {
+    return this.phase === "ready" && !this.turnActive && !this.callRunning;
   }
 
   /** Whether a model call to `node_repl` is running; read before interrupting its turn. */
@@ -320,11 +338,7 @@ export class CodexChromeSession {
     // Reported first, so the lease main announces on acquiring never reads as unknown.
     deps.broker.reportChromeCalls(deps.threadId, deps.generation, this.callRunning);
     try {
-      await deps.broker.host.correlated(
-        { type: "chromeLeaseAcquire", requestId: randomUUID(), holder: this.holder() },
-        HOST_TIMEOUT_MS,
-        false,
-      );
+      await deps.broker.acquireChromeLease(this.holder(), HOST_TIMEOUT_MS);
       this.leaseHeld = true;
       this.reportCalls();
     } catch (error) {

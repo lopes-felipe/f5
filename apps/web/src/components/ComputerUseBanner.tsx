@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
+import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import { Button } from "./ui/button";
 import {
@@ -50,6 +51,25 @@ export function computerUseBannerTargets(
     .map((entry) => entry.threadId);
 }
 /**
+ * A Chrome runtime that only holds its lease: idle, past the linger after its last call,
+ * with nothing else to report. It still blocks other threads' Chrome and foreground
+ * control, so the banner names it quietly with a way to release it.
+ */
+export function chromeIdleReservation(
+  leases: typeof AgentComputerUseChanged.Type,
+  pausedLocally: boolean,
+  chromeLinger = false,
+): boolean {
+  const holder = primaryComputerHolder(leases);
+  return (
+    !leases.pendingTakeover &&
+    holder?.browser === "idle" &&
+    holder.state === "active" &&
+    !pausedLocally &&
+    !chromeLinger
+  );
+}
+/**
  * `chromeLinger`: a Chrome call ended moments ago, so an idle runtime still reads as in use
  * and the banner doesn't flicker between back-to-back calls.
  */
@@ -66,14 +86,14 @@ export function computerUseBannerText(
       : `An agent is asking to take over ${app}`;
   }
   const holder = primaryComputerHolder(leases);
-  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life, so an
-  // idle runtime past the linger after its last call has nothing to report.
-  const chromeIdle =
-    holder?.browser === "idle" && holder.state === "active" && !pausedLocally && !chromeLinger;
-  if (!holder || chromeIdle)
+  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
+  const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger);
+  // Another profile's control outranks this profile's idle reservation.
+  if (!holder || (reserved && leases.otherProfile))
     return leases.otherProfile
       ? "An agent in another F5 profile is controlling this computer"
       : null;
+  if (reserved) return "Chrome reserved · idle";
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
   const state =
@@ -125,16 +145,33 @@ export function computerUseBannerText(
 export function computerUseBannerAmbient(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
+  chromeLinger = false,
 ): boolean {
   const holder = primaryComputerHolder(leases);
+  if (leases.pendingTakeover || leases.otherProfile || pausedLocally) return false;
+  // An idle Chrome reservation is ambient too: nothing is happening, it just holds Chrome.
+  if (chromeIdleReservation(leases, pausedLocally, chromeLinger)) return true;
   return (
-    !leases.pendingTakeover &&
-    !leases.otherProfile &&
-    (holder?.state === "waiting-user" ||
-      holder?.state === "waiting-agent" ||
-      (holder?.delivery === "background" && holder.state === "active")) &&
-    !pausedLocally
+    holder?.state === "waiting-user" ||
+    holder?.state === "waiting-agent" ||
+    (holder?.delivery === "background" && holder.state === "active")
   );
+}
+
+/** Why Release didn't free Chrome, from the server's outcome (older servers send none). */
+export function chromeReleaseFailureText(
+  outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
+): string {
+  switch (outcome) {
+    case "not-holder":
+      return "That thread no longer holds Chrome.";
+    case "timeout":
+      return "That thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
+    case "working":
+      return "That thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
+    default:
+      return "Chrome wasn't released. Try again.";
+  }
 }
 
 /** How long the banner keeps saying Chrome is in use after its last call ends. */
@@ -175,7 +212,11 @@ export function ComputerUseBanner() {
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
-  const ambient = computerUseBannerAmbient(leases, paused);
+  const ambient = computerUseBannerAmbient(leases, paused, chromeLinger);
+  const reserved =
+    !retryTargets.length &&
+    !leases.otherProfile &&
+    chromeIdleReservation(leases, paused, chromeLinger);
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
@@ -209,7 +250,39 @@ export function ComputerUseBanner() {
         {title ? ` · ${title}` : ""}
         {backend ? ` · ${backend === "native" ? "F5" : backend}` : ""}
       </span>
-      {threadId ? (
+      {threadId && reserved ? (
+        <>
+          <Button
+            size="xs"
+            variant="ghost"
+            title="Go to the thread holding Chrome"
+            onClick={() => void navigate({ to: "/$threadId", params: { threadId } })}
+          >
+            View
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            title="Stops that thread's idle session; its next message restarts Chrome control"
+            onClick={() => {
+              setError("");
+              const api = readNativeApi();
+              if (!api?.computer) {
+                setError("The host is disconnected.");
+                return;
+              }
+              void api.computer.releaseChrome({ threadId }).then(
+                ({ released, outcome }) => {
+                  if (!released) setError(chromeReleaseFailureText(outcome));
+                },
+                () => setError("Chrome could not be released. Try again."),
+              );
+            }}
+          >
+            Release
+          </Button>
+        </>
+      ) : threadId ? (
         <>
           <Button
             size="xs"

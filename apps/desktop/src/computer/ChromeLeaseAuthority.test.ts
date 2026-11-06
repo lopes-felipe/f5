@@ -24,6 +24,54 @@ describe("Chrome device lease", () => {
     expect(lease.current()).toBeNull();
     expect(() => lease.assertNativeAvailable("profile-b")).not.toThrow();
   });
+  it("names a same-profile holder in its refusal and keeps other profiles anonymous", () => {
+    const lease = new ChromeLeaseAuthority(vi.fn());
+    lease.acquire(holder, null);
+    const refusal = (run: () => void) => {
+      try {
+        run();
+      } catch (error) {
+        return (error as { error: unknown }).error;
+      }
+      throw new Error("expected Busy");
+    };
+    expect(refusal(() => lease.acquire({ ...holder, threadId: "other" }, null))).toEqual({
+      _tag: "Busy",
+      resource: "chrome",
+      holder: "same-profile",
+      holderThreadId: "thread",
+    });
+    expect(refusal(() => lease.assertNativeAvailable("profile-a"))).toEqual({
+      _tag: "Busy",
+      resource: "chrome",
+      holder: "same-profile",
+      holderThreadId: "thread",
+    });
+    expect(refusal(() => lease.acquire({ ...holder, profileId: "profile-b" }, null))).toEqual({
+      _tag: "Busy",
+      resource: "chrome",
+      holder: "other-profile",
+    });
+    // Native control blocks a Chrome acquisition: named with its title in the same profile.
+    const native = {
+      profileId: "profile-b",
+      threadId: "native-thread",
+      threadTitle: "Native work",
+    } as ComputerLeaseHolder;
+    const fresh = new ChromeLeaseAuthority(vi.fn());
+    expect(refusal(() => fresh.acquire({ ...holder, profileId: "profile-b" }, native))).toEqual({
+      _tag: "Busy",
+      resource: "computer",
+      holder: "same-profile",
+      holderThreadId: "native-thread",
+      threadTitle: "Native work",
+    });
+    expect(refusal(() => fresh.acquire(holder, native))).toEqual({
+      _tag: "Busy",
+      resource: "computer",
+      holder: "other-profile",
+    });
+  });
   it("rolls back ownership when its emergency shortcut cannot be registered", () => {
     const changed = vi.fn((current) => {
       if (current) throw new Error("shortcut unavailable");
