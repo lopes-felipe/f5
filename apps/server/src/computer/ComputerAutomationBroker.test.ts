@@ -9,6 +9,7 @@ import {
   type ComputerInvocationContext,
 } from "./ComputerAutomationBroker";
 import { DesktopComputerHost } from "./DesktopComputerHost";
+import * as computerApps from "@t3tools/shared/computerApps";
 
 class Ipc extends EventEmitter {
   connected = true;
@@ -797,6 +798,44 @@ describe("background delivery", () => {
       },
     });
   }
+  it("selects background events only with certification, capability and an app-local key or element target", async () => {
+    const h = await backgroundHarness();
+    try {
+      await expect(
+        h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+      ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+      const certified = vi
+        .spyOn(computerApps, "computerBackgroundEventAppAllowed")
+        .mockReturnValue(true);
+      try {
+        await expect(
+          h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+        ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+        h.ipc.emit("message", {
+          type: "hostCapabilities",
+          capabilities: ["background-ax-v1", "background-events-v1"],
+        });
+        await expect(
+          h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+        ).resolves.toBe("background");
+        await expect(
+          h.broker.classify("t", "s", "scroll", "com.apple.TextEdit", { elementRef: "element" }),
+        ).resolves.toBe("background");
+        for (const [op, input] of [
+          ["key", { chords: ["Meta+Tab"] }],
+          ["scroll", {}],
+          ["click", {}],
+        ] as const)
+          await expect(
+            h.broker.classify("t", "s", op, "com.apple.TextEdit", input),
+          ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+      } finally {
+        certified.mockRestore();
+      }
+    } finally {
+      h.broker.close();
+    }
+  });
   it("waits for a takeover reservation before showing exactly one consent, and none on Busy", async () => {
     const h = await backgroundHarness();
     h.ipc.emit("message", {

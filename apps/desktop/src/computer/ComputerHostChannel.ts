@@ -12,6 +12,8 @@ import {
   COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
   COMPUTER_COOPERATION_CAPABILITY,
   COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -289,6 +291,10 @@ export class ComputerHostChannel {
                 this.controller.cooperationAvailable?.()) ||
               (capability === COMPUTER_TAKEOVER_RESERVATION_CAPABILITY &&
                 !!this.controller.admitWhenFree) ||
+              (capability === COMPUTER_SHARED_APP_CAPABILITY &&
+                this.controller.sharedAppsAvailable?.()) ||
+              (capability === COMPUTER_BACKGROUND_EVENTS_CAPABILITY &&
+                this.controller.backgroundEventsAvailable?.()) ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -305,8 +311,19 @@ export class ComputerHostChannel {
           this.sendChromeLease(profileId, this.chrome.current());
         return;
       }
-      const fail = (requestId: string, error: unknown) =>
-        this.send(profileId, { type: "response", requestId, error: computerError(error) });
+      const fail = (requestId: string, error: unknown) => {
+        const failure = computerError(error);
+        this.send(profileId, {
+          type: "response",
+          requestId,
+          error:
+            failure._tag === "TargetBlocked" &&
+            failure.kind === "shared-focus" &&
+            !backend.capabilities.has(COMPUTER_SHARED_APP_CAPABILITY)
+              ? { _tag: "TargetBlocked", kind: "focus-unknown" }
+              : failure,
+        });
+      };
       switch (message.type) {
         case "openExternalUrlRequest":
           if (!backend.capabilities.has(OPEN_EXTERNAL_URL_CAPABILITY)) return;

@@ -18,7 +18,7 @@ import { z } from "zod";
 import type { McpToolResult } from "../mcp/previewMcpTools";
 import type { ComputerAutomationBrokerRuntime } from "./ComputerAutomationBroker";
 
-/** Above the 360 s takeover host correlation, so the broker always answers first. */
+/** Above the 380 s takeover host correlation, so the broker always answers first. */
 export const COMPUTER_TOOL_TIMEOUT_MS = 400_000;
 const coordinate = z.number().int().min(0);
 const displayId = z.string().min(1).max(1024).optional();
@@ -134,7 +134,13 @@ const shapes: Record<
   computer_scroll: {
     op: "scroll",
     shape: {
-      ...point,
+      x: coordinate.optional(),
+      y: coordinate.optional(),
+      displayId,
+      app: app.optional(),
+      snapshotId: app.optional(),
+      elementRef: app.optional(),
+      executionMode,
       deltaX: z.number().min(-50).max(50).optional(),
       deltaY: z.number().min(-50).max(50).optional(),
       screenshot,
@@ -154,6 +160,8 @@ const shapes: Record<
     op: "key",
     shape: {
       ...trailingInspect,
+      app: app.optional(),
+      executionMode,
       keys: z.union([app, z.array(app).min(1).max(16)]),
       repeat: z.number().int().min(1).max(20).optional(),
       screenshot,
@@ -510,6 +518,25 @@ async function executeComputerTool(
       };
     }
     const op = tool.op;
+    if (op === "scroll") {
+      const element = input.snapshotId !== undefined || input.elementRef !== undefined;
+      const valid = element
+        ? input.app &&
+          input.snapshotId &&
+          input.elementRef &&
+          input.x === undefined &&
+          input.y === undefined &&
+          input.displayId === undefined
+        : input.x !== undefined && input.y !== undefined && input.app === undefined;
+      if (!valid)
+        throw new z.ZodError([
+          {
+            code: "custom",
+            path: [],
+            message: "Pass either x and y, or app, snapshotId and elementRef; never combine them.",
+          },
+        ]);
+    }
     if (op === "inspect" && (input.snapshotId !== undefined) !== (input.elementRef !== undefined))
       throw new z.ZodError([
         { code: "custom", path: [], message: "Pass snapshotId and elementRef together." },
@@ -549,7 +576,12 @@ async function executeComputerTool(
       context.sessionGeneration,
       op,
       typeof request.appId === "string" ? request.appId : undefined,
-      { executionMode: input.executionMode, action: input.action },
+      {
+        executionMode: input.executionMode,
+        action: input.action,
+        chords: typeof input.keys === "string" ? [input.keys] : input.keys,
+        elementRef: input.elementRef,
+      },
     );
     if (delivery === "background" && computerOpRequiresApp(op) && typeof request.appId !== "string")
       throw new ComputerControlError({
@@ -557,7 +589,8 @@ async function executeComputerTool(
         message: "Specify app: the app to act in.",
       });
     if (
-      ["click", "move", "drag", "scroll"].includes(op) ||
+      ["click", "move", "drag"].includes(op) ||
+      (op === "scroll" && input.elementRef === undefined) ||
       (op === "screenshot" && delivery === "foreground")
     ) {
       const status = context.broker.host.status();

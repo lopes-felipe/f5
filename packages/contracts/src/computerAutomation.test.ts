@@ -14,6 +14,58 @@ import {
 } from "./computerAutomation";
 
 describe("computer observation and error metadata", () => {
+  it("decodes app keys and mutually exclusive coordinate/element scroll requests", () => {
+    const base = {
+      requestId: "r",
+      payloadHash: "0".repeat(64),
+      deadlineAtMs: 1,
+      authorization: {
+        profileId: "p",
+        threadId: "t",
+        sessionGeneration: "s",
+        turnId: "turn",
+        executionGeneration: 1,
+        grantVersion: 1,
+        grants: [],
+      },
+      agent: { provider: "claude", threadTitle: "Thread" },
+    };
+    const element = {
+      ...base,
+      op: "scroll",
+      delivery: "background",
+      appId: "app",
+      snapshotId: "snapshot",
+      elementRef: "element",
+      deltaX: 0,
+      deltaY: 3,
+    };
+    const coordinates = {
+      ...base,
+      op: "scroll",
+      displayId: "display",
+      geometryGeneration: "g",
+      x: 10,
+      y: 10,
+      deltaX: 0,
+      deltaY: 3,
+    };
+    for (const request of [
+      element,
+      coordinates,
+      { ...base, op: "key", appId: "app", chords: ["Down"], repeat: 1 },
+    ])
+      expect(Schema.decodeUnknownSync(ComputerAutomationRequest)(request)).toEqual(request);
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerAutomationRequest)({ ...coordinates, ...element }),
+    ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(ComputerAutomationError)({
+        _tag: "TargetBlocked",
+        kind: "shared-focus",
+      }),
+    ).toEqual({ _tag: "TargetBlocked", kind: "shared-focus" });
+  });
   it.each(["waiting-user", "waiting-agent"])("decodes execution state %s", (state) => {
     expect(Schema.decodeUnknownSync(ComputerExecutionState)(state)).toBe(state);
   });

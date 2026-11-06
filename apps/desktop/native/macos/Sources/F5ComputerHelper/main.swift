@@ -214,7 +214,7 @@ func display(_ id: String) throws -> Display {
 }
 // Background accessibility delivery is always advertised; Electron's preview gate decides
 // whether a session may use it.
-let helperCapabilities: [String] = ["background-ax-v1", "computer-cooperation-v1"]
+let helperCapabilities: [String] = ["background-ax-v1", "computer-cooperation-v1", "background-shared-app-v1", "background-events-v1"]
 /// Per-generation permits. Lock order: never hold `permits`' lock with any other lock.
 let permits = ExecutionPermits()
 /// Guards grants, scopes' target PIDs, the window cache, frontmost PID, input sequence, the
@@ -726,6 +726,9 @@ func focused(_ request: [String: Any], _ host: [String: Any], needed: String) th
 ) {
   guard let app = NSWorkspace.shared.frontmostApplication else {
     throw Failure("TargetBlocked", "kind", "focus-unknown")
+  }
+  if let requested = request["appId"] as? String, requested != app.bundleIdentifier {
+    throw Failure("TargetBlocked", "kind", "other-app")
   }
   _ = try grant(app, request: request, host: host, needed: needed)
   let root = applicationElement(app.processIdentifier)
@@ -1802,7 +1805,7 @@ func openInstalledApp(
   _ = try grant(app, request: request, host: host, needed: "click")
   return app
 }
-/// Background deliveries: accessibility only, no pointer movement, no focus change.
+/// Background accessibility and certified process-directed events; no pointer or focus change.
 func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [String:
   Any]
 {
@@ -1813,6 +1816,7 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
     switch op {
     case "elementAction": verification = try elementAction(request, host)
     case "type": verification = try backgroundType(request, host).2
+    case "key", "scroll": verification = try backgroundEvents(request, host)
     case "openApp":
       let id = string(request, "appId")
       if tier(id) == "blocked" { throw Failure("TargetBlocked", "kind", "protection-unknown") }

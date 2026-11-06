@@ -32,11 +32,13 @@ export class ComputerControlError extends Error {
                   ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
                   : error._tag === "TargetBlocked" && error.kind === "user-active"
                     ? "TargetBlocked user-active: call computer_wait_for_target, then observe again before acting; take a screenshot before coordinates."
-                    : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
-                      ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
-                      : error._tag === "TargetBlocked" && error.kind === "other-app"
-                        ? "TargetBlocked other-app: the foreground was approved for a different app."
-                        : error._tag,
+                    : error._tag === "TargetBlocked" && error.kind === "shared-focus"
+                      ? "TargetBlocked shared-focus: another agent acted in that app; press the field with computer_element_action (or use setValue), then type."
+                      : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
+                        ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
+                        : error._tag === "TargetBlocked" && error.kind === "other-app"
+                          ? "TargetBlocked other-app: the foreground was approved for a different app."
+                          : error._tag,
     );
   }
 }
