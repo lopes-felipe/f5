@@ -150,8 +150,24 @@ unsafe fn cached_bool(element: &IUIAutomationElement, property: UIA_PROPERTY_ID)
 }
 unsafe fn variant_bool(value: &windows::Win32::System::Variant::VARIANT) -> Option<bool> {
     // VariantToBoolean coerces VT_EMPTY to false; unavailable security facts must stay unknown.
-    if value.Anonymous.Anonymous.vt != windows::Win32::System::Variant::VT_BOOL { return None; }
+    if value.Anonymous.Anonymous.vt != windows::Win32::System::Variant::VT_BOOL {
+        return None;
+    }
     bool::try_from(value).ok()
+}
+#[cfg(test)]
+mod security_fact_tests {
+    use super::*;
+    use windows::Win32::System::Variant::VARIANT;
+    #[test]
+    fn only_actual_boolean_security_facts_are_readable() {
+        unsafe {
+            assert_eq!(variant_bool(&VARIANT::default()), None);
+            assert_eq!(variant_bool(&VARIANT::from(0i32)), None);
+            assert_eq!(variant_bool(&VARIANT::from(false)), Some(false));
+            assert_eq!(variant_bool(&VARIANT::from(true)), Some(true));
+        }
+    }
 }
 unsafe fn cached_runtime_id(element: &IUIAutomationElement) -> Result<String, Value> {
     let value = element
