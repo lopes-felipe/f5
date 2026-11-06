@@ -76,6 +76,46 @@ function make(readiness: Array<{ inputSequence: number; lastUserInputAgeMs: numb
 }
 
 describe("foreground takeover coordinator", () => {
+  it("reserves after earlier leases drain and emits no consent-ready event on cancellation", async () => {
+    const h = make([]);
+    h.coordinator.cancel("p", "acquire");
+    h.outcomes.length = 0;
+    const active = h.lease.acquire({ ...holder, threadId: "other", scope: { kind: "foreground" } });
+    const reserved = vi.fn();
+    const respond = vi.fn();
+    try {
+      h.coordinator.request("p", "b", "queued", "next-approval", holder, respond, {
+        waitMs: 20_000,
+        reserved,
+      });
+      await Promise.resolve();
+      expect(h.coordinator.awaitingConsent("p", "next-approval")).toBe(false);
+      expect(reserved).not.toHaveBeenCalled();
+      h.lease.release(active);
+      await vi.waitFor(() => expect(reserved).toHaveBeenCalledTimes(1));
+      expect(h.coordinator.awaitingConsent("p", "next-approval")).toBe(true);
+      expect(respond).not.toHaveBeenCalled();
+      h.coordinator.cancel("p", "queued");
+      const blocking = h.lease.acquire({
+        ...holder,
+        threadId: "other",
+        scope: { kind: "foreground" },
+      });
+      h.coordinator.request("p", "b", "cancelled", "unused", holder, respond, {
+        waitMs: 20_000,
+        reserved,
+      });
+      h.coordinator.cancel("p", "cancelled");
+      h.lease.release(blocking);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(reserved).toHaveBeenCalledTimes(1);
+      expect(h.lease.pendingTakeover()).toBeNull();
+    } finally {
+      h.coordinator.close();
+      h.controller.close();
+    }
+  });
   it("never mints a receipt when the answered dialog names another app or turn", () => {
     for (const mismatch of [
       { takeover: { ...approval.takeover!, appId: "com.apple.Terminal" } },

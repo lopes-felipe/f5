@@ -8,6 +8,7 @@ import {
   COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
   COMPUTER_COOPERATION_CAPABILITY,
+  COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -72,6 +73,7 @@ export class DesktopComputerHost {
         COMPUTER_GRANT_FORGET_CAPABILITY,
         COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
         COMPUTER_COOPERATION_CAPABILITY,
+        COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -96,6 +98,47 @@ export class DesktopComputerHost {
   }
   cooperationCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_COOPERATION_CAPABILITY);
+  }
+  takeoverReservationCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_TAKEOVER_RESERVATION_CAPABILITY);
+  }
+  /** Install before sending the corresponding request, including synchronous IPC transports. */
+  awaitEvent(
+    matches: (message: DesktopComputerHostMessage) => boolean,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!this.connected)
+      return Promise.reject(new ComputerControlError({ _tag: "Unavailable", reason: "no-host" }));
+    return new Promise((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        clearTimeout(timer);
+        off();
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const abort = () =>
+        finish(
+          signal?.reason ?? new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }),
+        );
+      const off = this.onMessage((message) => {
+        if (message.type === "status" && !this.connected) abort();
+        else if (matches(message)) finish();
+      });
+      const timer = setTimeout(
+        () =>
+          finish(
+            new ComputerControlError({
+              _tag: "Execution",
+              message: "Desktop reservation timed out.",
+            }),
+          ),
+        timeoutMs,
+      );
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
   }
   /** Main sends capabilities before status; a legacy host settles readiness with status alone. */
   async handshake(): Promise<void> {

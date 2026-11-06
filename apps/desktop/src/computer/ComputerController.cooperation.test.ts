@@ -115,6 +115,92 @@ function fixture(
     event: (message: Record<string, unknown>) => event(message),
   };
 }
+it.each([
+  ["native", true],
+  ["native", false],
+  ["codex-builtin", false],
+  ["claude-builtin", false],
+] as const)(
+  "idle sweep respects holder lifecycle: backend=%s yielded=%s",
+  async (backend, yielded) => {
+    vi.useFakeTimers();
+    const h = fixture({ kind: "foreground" });
+    try {
+      const held =
+        backend === "native" ? await h.acquire() : h.lease.acquire({ ...h.holder, backend });
+      if (yielded) {
+        h.event({
+          type: "physicalInput",
+          cause: "pointer",
+          executionGeneration: held.executionGeneration,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      await vi.advanceTimersByTimeAsync(10_001);
+      const queued = { ...h.holder, threadId: "waiting" };
+      h.controller.updateGrants(queued);
+      const pending = h.controller.admitWhenFree({
+        kind: "lease",
+        holder: queued,
+        profileId: "p",
+        requestId: "idle-sweep",
+        waitMs: 20_000,
+        admit: () => h.lease.acquire(queued),
+      });
+      const outcome = pending.then(
+        () => "admitted",
+        () => "blocked",
+      );
+      await vi.advanceTimersByTimeAsync(250);
+      if (yielded || backend !== "native") {
+        expect(h.lease.holders()).toEqual([held]);
+        expect(h.controller.cooperation.yielded.size).toBe(yielded ? 1 : 0);
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(await outcome).toBe("blocked");
+        await vi.advanceTimersByTimeAsync(30_000);
+        if (backend === "native") expect(h.lease.holders()).toEqual([]);
+        else {
+          expect(h.lease.holders()).toEqual([held]);
+          h.lease.release(held);
+          expect(h.lease.acquire(queued).threadId).toBe("waiting");
+        }
+        expect(h.paused).not.toHaveBeenCalled();
+      } else {
+        expect(await outcome).toBe("admitted");
+        expect(h.lease.holders()[0]?.threadId).toBe("waiting");
+      }
+    } finally {
+      h.controller.close();
+      vi.useRealTimers();
+    }
+  },
+);
+it("pauses a queued thread without suspending the current holder's placeholder generation", async () => {
+  const h = fixture();
+  try {
+    const active = await h.acquire();
+    const queued = { ...h.holder, threadId: "waiting", executionGeneration: 1 };
+    h.controller.updateGrants(queued);
+    await h.controller.prepareAcquisition(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "queued",
+      waitMs: 20_000,
+      admit: () => h.controller.acquire(queued),
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+    h.controller.setPaused("p", queued.threadId, true);
+    await rejected;
+    expect(h.controller.isPaused("p", queued.threadId)).toBe(true);
+    expect(h.controller.isPaused("p", active.threadId)).toBe(false);
+    expect(h.lease.holders()).toEqual([active]);
+    expect(h.helper.suspend).not.toHaveBeenCalledWith(active.executionGeneration);
+  } finally {
+    h.controller.close();
+  }
+});
 function action(
   holder: ComputerLeaseHolder,
   op: "type" | "inspect" | "screenshot" | "click" = "type",

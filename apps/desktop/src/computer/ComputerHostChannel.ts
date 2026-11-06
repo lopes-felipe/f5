@@ -11,6 +11,7 @@ import {
   COMPUTER_GRANT_FORGET_CAPABILITY,
   COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
   COMPUTER_COOPERATION_CAPABILITY,
+  COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -44,6 +45,7 @@ interface Backend {
   capabilities: ReadonlySet<string>;
   pendingAccess: Map<string, ComputerAccessRequested>;
   acquisitions: Map<string, ComputerLeaseHolder>;
+  acquiring: Map<string, { holder: ComputerLeaseHolder; cancelled: boolean }>;
 }
 function chromeCallsKey(holder: {
   profileId: string;
@@ -248,6 +250,7 @@ export class ComputerHostChannel {
       capabilities: new Set(),
       pendingAccess: new Map(),
       acquisitions: new Map(),
+      acquiring: new Map(),
     };
     this.backends.set(profileId, backend);
     child.on("message", (raw: unknown) => {
@@ -284,6 +287,8 @@ export class ComputerHostChannel {
               (capability === COMPUTER_REMEMBERED_CONSENT_CAPABILITY && !!this.options.consents) ||
               (capability === COMPUTER_COOPERATION_CAPABILITY &&
                 this.controller.cooperationAvailable?.()) ||
+              (capability === COMPUTER_TAKEOVER_RESERVATION_CAPABILITY &&
+                !!this.controller.admitWhenFree) ||
               (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
@@ -392,6 +397,18 @@ export class ComputerHostChannel {
             child.disconnect();
             return;
           }
+          if (
+            backend.acquisitions.size + backend.acquiring.size >= 32 ||
+            backend.acquiring.has(message.requestId)
+          ) {
+            fail(
+              message.requestId,
+              new ComputerControlError({ _tag: "Busy", holder: "same-profile" }),
+            );
+            break;
+          }
+          const acquiring = { holder: message.holder, cancelled: false };
+          backend.acquiring.set(message.requestId, acquiring);
           void (async () => {
             try {
               const { cooperative: _untrustedCooperative, ...legacyHolder } = message.holder;
@@ -401,41 +418,66 @@ export class ComputerHostChannel {
                   ? { cooperative: true }
                   : {}),
               };
-              if (this.backends.get(profileId) !== backend)
-                throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
-              this.chrome.assertNativeAvailable(profileId, message.holder.scope);
-              const status = this.status();
-              if (!status.available)
-                throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
-              if (backend.acquisitions.size >= 32)
-                throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
-              if (
-                !this.execution.revisionAccepted(
-                  profileId,
-                  message.holder.threadId,
-                  message.holder.policyRevision,
+              const check = () => {
+                if (this.backends.get(profileId) !== backend || acquiring.cancelled)
+                  throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+                this.chrome.assertNativeAvailable(profileId, holder.scope);
+                const status = this.status();
+                if (!status.available)
+                  throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
+                if (
+                  !this.execution.revisionAccepted(
+                    profileId,
+                    holder.threadId,
+                    holder.policyRevision,
+                  )
                 )
-              )
-                throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
-              if (
-                message.holder.scope.kind === "app" &&
-                !this.execution.hasSessionApproval(
-                  profileId,
-                  incarnation,
-                  message.holder.threadId,
-                  message.holder.sessionGeneration,
+                  throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+                if (
+                  holder.scope.kind === "app" &&
+                  !this.execution.hasSessionApproval(
+                    profileId,
+                    incarnation,
+                    holder.threadId,
+                    holder.sessionGeneration,
+                  )
                 )
-              )
-                throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+                  throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+              };
+              check();
               if (this.cooperationCapable(profileId))
                 await this.controller.prepareAcquisition(holder);
-              if (this.backends.get(profileId) !== backend)
+              const admit = () => {
+                check();
+                return this.controller.acquire(holder);
+              };
+              const result = this.controller.admitWhenFree
+                ? await this.controller.admitWhenFree({
+                    kind: "lease",
+                    holder,
+                    profileId,
+                    requestId: message.requestId,
+                    ...(this.cooperationCapable(profileId) && message.waitMs !== undefined
+                      ? { waitMs: message.waitMs }
+                      : {}),
+                    admit,
+                  })
+                : admit();
+              if (this.backends.get(profileId) !== backend || acquiring.cancelled) {
+                this.controller.lease.release(result);
+                if (result.scope.kind === "takeover")
+                  this.execution.revokeTakeovers(
+                    (receipt) =>
+                      receipt.profileId === profileId && receipt.threadId === result.threadId,
+                  );
                 throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
-              const result = this.controller.acquire(holder);
+              }
               backend.acquisitions.set(message.requestId, result);
               this.send(profileId, { type: "response", requestId: message.requestId, result });
             } catch (error) {
               fail(message.requestId, error);
+            } finally {
+              backend.acquiring.delete(message.requestId);
             }
           })();
           break;
@@ -449,6 +491,15 @@ export class ComputerHostChannel {
             return;
           }
           const requestId = message.requestId;
+          if (
+            backend.acquisitions.size + backend.acquiring.size >= 32 ||
+            backend.acquiring.has(requestId)
+          ) {
+            fail(requestId, new ComputerControlError({ _tag: "Busy", holder: "same-profile" }));
+            break;
+          }
+          const acquiring = { holder: message.holder, cancelled: false };
+          backend.acquiring.set(requestId, acquiring);
           try {
             this.chrome.assertNativeAvailable(profileId);
             this.takeovers.request(
@@ -461,7 +512,18 @@ export class ComputerHostChannel {
                 cooperative: this.cooperationCapable(profileId) && message.cooperative === true,
               },
               (outcome) => {
-                if (this.backends.get(profileId) !== backend) return;
+                backend.acquiring.delete(requestId);
+                if (this.backends.get(profileId) !== backend || acquiring.cancelled) {
+                  if ("holder" in outcome) {
+                    this.controller.lease.release(outcome.holder);
+                    this.execution.revokeTakeovers(
+                      (receipt) =>
+                        receipt.profileId === profileId &&
+                        receipt.threadId === outcome.holder.threadId,
+                    );
+                  }
+                  return;
+                }
                 if ("error" in outcome) fail(requestId, new ComputerControlError(outcome.error));
                 else {
                   backend.acquisitions.set(requestId, outcome.holder);
@@ -472,8 +534,19 @@ export class ComputerHostChannel {
                   });
                 }
               },
+              backend.capabilities.has(COMPUTER_TAKEOVER_RESERVATION_CAPABILITY)
+                ? {
+                    waitMs: message.waitMs ?? 0,
+                    reserved: () => {
+                      if (this.backends.get(profileId) !== backend || acquiring.cancelled) return;
+                      this.send(profileId, { type: "takeoverReserved", requestId });
+                      this.answerPendingRemembered(profileId);
+                    },
+                  }
+                : undefined,
             );
           } catch (error) {
+            backend.acquiring.delete(requestId);
             fail(requestId, error);
           }
           break;
@@ -854,6 +927,9 @@ export class ComputerHostChannel {
           }
           break;
         case "cancel": {
+          const acquiring = backend.acquiring.get(message.requestId);
+          if (acquiring) acquiring.cancelled = true;
+          backend.acquiring.delete(message.requestId);
           const acquired = backend.acquisitions.get(message.requestId);
           backend.acquisitions.delete(message.requestId);
           if (acquired) this.controller.lease.release(acquired);
@@ -993,14 +1069,19 @@ export class ComputerHostChannel {
       ...(update.pauseCause ? { pauseCause: update.pauseCause } : {}),
     });
   }
-  private cancelSessionAccess(
-    profileId: string,
-    threadId: string,
-    sessionGeneration: string,
-  ): void {
+  cancelSessionAccess(profileId: string, threadId: string, sessionGeneration: string): void {
     this.takeovers.cancelThread(profileId, threadId, sessionGeneration);
     const backend = this.backends.get(profileId);
     if (!backend) return;
+    for (const [requestId, entry] of backend.acquiring)
+      if (
+        entry.holder.threadId === threadId &&
+        entry.holder.sessionGeneration === sessionGeneration
+      ) {
+        entry.cancelled = true;
+        backend.acquiring.delete(requestId);
+        this.controller.cancelAdmission?.(profileId, requestId);
+      }
     for (const [requestId, request] of backend.pendingAccess)
       if (request.threadId === threadId && request.sessionGeneration === sessionGeneration)
         backend.pendingAccess.delete(requestId);
