@@ -48,6 +48,7 @@ import {
   type PrStatusIndicator,
   type TerminalStatusIndicator,
   pinnedThreadSortableId,
+  terminalStatusFromRunningIds,
 } from "./sidebarLists";
 import { useSidebarPeekTrigger } from "./SidebarPeekCard";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
@@ -87,7 +88,6 @@ export interface SidebarThreadRowProps {
   trailingMeta?: ReactNode;
   threadStatus: ThreadStatusPill | null;
   prStatus: PrStatusIndicator | null;
-  terminalStatus: TerminalStatusIndicator | null;
   /** A completed turn the user has not seen yet. */
   isUnread: boolean;
   isRenaming: boolean;
@@ -134,11 +134,15 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     orderedIds,
     threadStatus,
     prStatus,
-    terminalStatus,
     isUnread,
     isRenaming,
     actions,
   } = props;
+  const runningTerminalIds = useTerminalStateStore(
+    (state) =>
+      selectThreadTerminalState(state.terminalStateByThreadId, thread.id).runningTerminalIds,
+  );
+  const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const project = useStore((state) =>
     section === "settled"
       ? state.projects.find((project) => project.id === thread.projectId)
@@ -232,7 +236,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
       threadId: thread.id,
       roleLabel: section === "workflow" ? props.displayTitle : undefined,
       workflowTitle: section === "workflow" ? props.workflowTitle : undefined,
-      indicators: { threadStatus, prStatus, terminalStatus, isUnread },
+      indicators: { threadStatus, prStatus, isUnread },
     },
     // A draft has no server thread to describe yet.
     { disabled: isDraft },

@@ -703,7 +703,6 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                           orderedIds={orderedProjectThreadIds}
                           threadStatus={null}
                           prStatus={null}
-                          terminalStatus={null}
                           isUnread={indicatorsForThread(thread).isUnread}
                           isRenaming={false}
                           actions={threadActions}
@@ -720,7 +719,6 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                           actions={threadActions}
                           {...indicatorsForThread(thread)}
                           threadStatus={null}
-                          terminalStatus={null}
                         />
                       ))}
                       {visibleArchivedItems.map((item) =>
