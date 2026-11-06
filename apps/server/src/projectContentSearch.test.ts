@@ -92,7 +92,7 @@ describe("project content search", () => {
     }
   });
 
-  it("finds matches beyond the native snippet boundary on long lines", async () => {
+  it.each([false, true])("finds long-line matches with useRegex=%s", async (useRegex) => {
     const workspaceRoot = makeTempDir();
     fs.writeFileSync(path.join(workspaceRoot, "minified.js"), `${"x".repeat(2_000)}needle;\n`);
     const manager = makeProjectContentSearchManager();
@@ -100,14 +100,20 @@ describe("project content search", () => {
       const result = await manager.search({
         requestKey: "client:long-line",
         workspaceRoot,
-        request: request("long-line"),
+        request: { ...request("long-line"), useRegex },
       });
       expect(result.matches).toHaveLength(1);
       expect(result.matches[0]).toMatchObject({
         path: "minified.js",
         lineNumber: 1,
-        matchRanges: [{ start: 2_000, end: 2_006 }],
+        matchRanges: useRegex ? [] : [{ start: 2_000, end: 2_006 }],
       });
+      const wholeWordResult = await manager.search({
+        requestKey: "client:long-line-word",
+        workspaceRoot,
+        request: { ...request("long-line-word"), useRegex, wholeWord: true },
+      });
+      expect(wholeWordResult.matches).toEqual([]);
     } finally {
       await manager.dispose();
     }
