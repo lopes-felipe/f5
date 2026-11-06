@@ -54,7 +54,7 @@ const withClient = async <E>(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`PRAGMA journal_mode=WAL`;
-        yield* sql`PRAGMA journal_size_limit=33554432`;
+        yield* sql`PRAGMA journal_size_limit=134217728`;
         yield* sql`CREATE TABLE payload(value BLOB)`;
         yield* run(sql, filename);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename, checkpointWorker: true }))),
@@ -176,7 +176,7 @@ describe("SQLite checkpoint worker", () => {
           expect(
             (yield* sql<{ wal_autocheckpoint: number }>`PRAGMA wal_autocheckpoint`)[0]!
               .wal_autocheckpoint,
-          ).toBe(10000);
+          ).toBe(32768);
           // 100 MiB across small statements gives the worker and server turns between writes.
           for (let index = 0; index < 100; index++) {
             yield* sql`INSERT INTO payload VALUES (zeroblob(1048576))`;
@@ -184,7 +184,7 @@ describe("SQLite checkpoint worker", () => {
           }
           yield* until(checkpointed(filename));
           yield* sql`INSERT INTO payload VALUES (zeroblob(1))`;
-          expect(statSync(`${filename}-wal`).size).toBeLessThanOrEqual(33554432);
+          expect(statSync(`${filename}-wal`).size).toBeLessThanOrEqual(134217728);
           yield* until(
             () => Metric.value(sqliteWalBytes).pipe(Effect.map((state) => state.value > 0)),
             "the worker WAL metric",
@@ -222,7 +222,7 @@ describe("SQLite checkpoint worker", () => {
             // Releasing an external reader alone must let the idle worker catch up.
             yield* until(checkpointed(filename), "the checkpoint after the reader released", 30);
             yield* sql`INSERT INTO payload VALUES (zeroblob(1))`;
-            expect(statSync(`${filename}-wal`).size).toBeLessThanOrEqual(33554432);
+            expect(statSync(`${filename}-wal`).size).toBeLessThanOrEqual(134217728);
           }),
         ),
       );

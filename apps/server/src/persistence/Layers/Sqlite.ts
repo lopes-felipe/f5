@@ -59,7 +59,7 @@ const setup = Layer.effectDiscard(
     yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
-    yield* sql`PRAGMA journal_size_limit = 33554432;`;
+    yield* sql`PRAGMA journal_size_limit = 134217728;`;
     yield* runMigrations;
     yield* sql`PRAGMA optimize = 0x10012;`;
   }),

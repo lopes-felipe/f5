@@ -11,7 +11,7 @@ export const sqliteCheckpointBlocked = Metric.gauge("f5_sqlite_checkpoint_blocke
 });
 
 const CHECKPOINT_FRAMES = 1_000;
-const WRITER_BACKSTOP_FRAMES = 10_000;
+const WRITER_BACKSTOP_FRAMES = 32_768;
 const CHECKPOINT_IDLE_MS = 100;
 
 // A source string works in both the bundled standalone server and source tests.
