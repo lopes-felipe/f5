@@ -725,6 +725,10 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
           F5_CI_SUITE_ID: "server-git-extended"
+          # One file at a time keeps the concurrency each former per-suite runner had
+          # (--maxConcurrency=4); two workers ran 8 Git-heavy tests on 3 vCPUs and
+          # pushed GitCore's live config-lock test past its 15 s timeout.
+          F5_TEST_MAX_WORKERS: "1"
         run: bun run --cwd apps/server test:git:extended
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

@@ -294,6 +294,8 @@ it("runs every macOS real-Git extended suite in the gated integration job", () =
       candidate.run === "bun run --cwd apps/server test:git:extended",
   );
   expect(step?.env?.F5_CI_SUITE_ID).toBe("server-git-extended");
+  // Sharing one 3-vCPU runner, parallel suite files starve live Git timing tests.
+  expect(step?.env?.F5_TEST_MAX_WORKERS).toBe("1");
   const script = JSON.parse(
     readFileSync(new URL("../apps/server/package.json", import.meta.url), "utf8"),
   ).scripts["test:git:extended"] as string;
