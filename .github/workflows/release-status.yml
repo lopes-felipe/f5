@@ -32,6 +32,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+      EVENT_NAME: ${{ github.event_name }}
     steps:
       # No checkout, candidate artifacts, or source-controlled code execution.
       - name: Reconcile release blocked issue
@@ -52,7 +53,9 @@ jobs:
           # Runs finish out of order; only the newest completed, non-cancelled run decides.
           newest="$(gh api "repos/$GH_REPO/actions/workflows/release-publish.yml/runs?status=completed&per_page=30" \
             --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")][0].id')"
-          if [[ "$newest" != "$RUN_ID" && "${{ github.event_name }}" != workflow_dispatch ]]; then
+          # With no decisive run in the window, this run is the newest one known.
+          if [[ -n "$newest" && "$newest" != null && "$newest" != "$RUN_ID" &&
+            "$EVENT_NAME" != workflow_dispatch ]]; then
             echo "Stale result for $RUN_ID; newest is $newest"
             exit 0
           fi
@@ -68,20 +71,27 @@ jobs:
           errors="$(gh run view "$RUN_ID" --log-failed 2>/dev/null \
             | cut -f3- \
             | sed -E 's/\x1b\[[0-9;]*m//g; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' \
-            | grep -E '(^|[^A-Za-z])Error( \[[A-Z_]+\])?: ' \
+            | grep -E '(^|[^A-Za-z])([A-Z][A-Za-z]*)?Error( \[[A-Z_]+\])?: ' \
             | grep -v 'Process completed with exit code' \
+            | tr -d '`' \
             | awk '!seen[$0]++' | tail -n 5 | cut -c1-500 || true)"
-          [[ -n "$errors" ]] || errors="No error line was found; see the run log."
-          digest="$(printf '%s' "$errors" | sha256sum | cut -c1-16)"
+          # An unclassified failure cannot be compared with earlier ones, so each run alerts.
+          fingerprint="$errors"
+          if [[ -z "$errors" ]]; then
+            errors="No error line was found; see the run log."
+            fingerprint="$RUN_ID"
+          fi
+          digest="$(printf '%s' "$fingerprint" | sha256sum | cut -c1-16)"
           marker="<!-- release-blocked:$digest -->"
-          body="$(printf 'The release publisher failed: %s\n\n```\n%s\n```\n\nSee docs/release.md for recovery steps. %s' "$url" "$errors" "$marker")"
+          body="$(printf 'The release publisher failed: %s\n\n~~~text\n%s\n~~~\n\nSee docs/release.md for recovery steps. %s' "$url" "$errors" "$marker")"
           gh label create release-blocked --color B60205 --description 'Release publication is blocked' --force
           if [[ -z "$issue" ]]; then
             gh issue create --title "$title" --label release-blocked --body "$body"
             exit 0
           fi
-          # Comment again only when the failure reason changes.
-          latest="$(gh issue view "$issue" --json body,comments --jq '(.comments | last | .body) // .body')"
-          if [[ "$latest" != *"$marker"* ]]; then
+          # Comment again only when the failure reason changes, whatever people added since.
+          seen="$(gh api --paginate "repos/$GH_REPO/issues/$issue/comments" --jq '.[].body')"
+          original="$(gh issue view "$issue" --json body --jq .body)"
+          if [[ "$seen" != *"$marker"* && "$original" != *"$marker"* ]]; then
             gh issue comment "$issue" --body "$body"
           fi

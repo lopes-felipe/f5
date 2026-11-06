@@ -102,6 +102,10 @@ describe("rerunUnassignedCi", () => {
     ["a successful run", { jobs: [unassigned], run: ciRun({ conclusion: "success" }) }],
     ["an untrusted run", { jobs: [unassigned], run: ciRun({ event: "pull_request" }) }],
     ["a concurrent manual rerun", { jobs: [unassigned], current: ciRun({ run_attempt: 2 }) }],
+    [
+      "a rerun that is already running",
+      { jobs: [unassigned], current: ciRun({ status: "in_progress", conclusion: null }) },
+    ],
   ])("leaves %s alone", async (_label, state) => {
     const { gh, reran } = harness({ run: ciRun(), ...state });
     await rerunUnassignedCi(repository, 7, gh);

@@ -297,6 +297,20 @@ describe("a pending stable source whose CI has not passed", () => {
       });
     },
   );
+  it("fails visibly with the manual command when GitHub refuses the rerun", async () => {
+    Object.assign(state.ci[0]!, { conclusion: "failure", run_attempt: 1 });
+    state.gh.mockImplementationOnce(() => {
+      throw new Error("HTTP 403: This workflow is already running");
+    });
+    await expect(reconcileReleases()).rejects.toThrow(
+      /Stable CI is blocked \(failure, attempt 1\).*gh run rerun 200 --failed \(automatic rerun failed: Error: HTTP 403/,
+    );
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      status: "blocked-stable-ci",
+      ciRun: 200,
+      ciAttempt: 1,
+    });
+  });
   it("waits without rerunning while stable CI is still running", async () => {
     Object.assign(state.ci[0]!, { status: "in_progress", conclusion: null });
     await expect(reconcileReleases()).resolves.toBeUndefined();

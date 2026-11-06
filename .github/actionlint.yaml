@@ -14,8 +14,6 @@ paths:
     ignore:
       # Same concurrency.queue support gap as ci-main-status.yml.
       - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
-      # The issue body's single-quoted printf format holds literal Markdown code fences.
-      - "SC2016:"
   .github/workflows/release.yml:
     ignore:
       # Single-quoted node -e template literals intentionally reach Node unchanged.

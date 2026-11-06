@@ -47,52 +47,41 @@ function recoverStableCi(sha: string, mode: ReturnType<typeof automationMode>): 
   if (decision.action === "wait") return;
   const { run } = decision;
   const url = "https://github.com/" + repository + "/actions/runs/" + run.id;
-  if (decision.action === "rerun") {
-    try {
-      gh([
-        "api",
-        "-X",
-        "POST",
-        "repos/" + repository + "/actions/runs/" + run.id + "/rerun-failed-jobs",
-      ]);
-      const reason =
-        "Re-running failed stable CI jobs (attempt " +
-        (run.run_attempt + 1) +
-        " of " +
-        MAX_CI_ATTEMPTS +
-        ")";
-      releaseFields({
-        status: "retrying-ci",
-        reason,
-        ciRun: run.id,
-        ciAttempt: run.run_attempt + 1,
-      });
-      console.log(reason, url);
-      return;
-    } catch (error) {
-      releaseFields({ status: "blocked-stable-ci" });
-      throw new Error(
-        "Stable CI is blocked (" +
-          run.conclusion +
-          "): " +
-          url +
-          "; automatic rerun failed: " +
-          String(error),
-      );
-    }
+  const blocked = (detail: string) => {
+    releaseFields({ status: "blocked-stable-ci", ciRun: run.id, ciAttempt: run.run_attempt });
+    return new Error(
+      "Stable CI is blocked (" +
+        run.conclusion +
+        ", attempt " +
+        run.run_attempt +
+        "): " +
+        url +
+        ". Rerun failed jobs with: gh run rerun " +
+        run.id +
+        " --failed" +
+        detail,
+    );
+  };
+  if (decision.action === "blocked") throw blocked("");
+  try {
+    gh([
+      "api",
+      "-X",
+      "POST",
+      "repos/" + repository + "/actions/runs/" + run.id + "/rerun-failed-jobs",
+    ]);
+  } catch (error) {
+    // A manual rerun that started first makes GitHub refuse this one; the next run sees it.
+    throw blocked(" (automatic rerun failed: " + String(error) + ")");
   }
-  releaseFields({ status: "blocked-stable-ci", ciRun: run.id, ciAttempt: run.run_attempt });
-  throw new Error(
-    "Stable CI is blocked (" +
-      run.conclusion +
-      ", attempt " +
-      run.run_attempt +
-      "): " +
-      url +
-      ". Rerun failed jobs with: gh run rerun " +
-      run.id +
-      " --failed",
-  );
+  const reason =
+    "Re-running failed stable CI jobs (attempt " +
+    (run.run_attempt + 1) +
+    " of " +
+    MAX_CI_ATTEMPTS +
+    ")";
+  releaseFields({ status: "retrying-ci", reason, ciRun: run.id, ciAttempt: run.run_attempt + 1 });
+  console.log(reason, url);
 }
 
 interface ReconcileOptions {

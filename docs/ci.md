@@ -62,7 +62,9 @@ cancellation, up to three total attempts. A job that ran and failed is never
 retried this way, and neither is an older commit, since a newer run replaces it.
 Commits that may carry release intent are left to the release publisher, which
 retries a pending stable source's CI itself. Reruns made with `GITHUB_TOKEN` may not
-raise another completion event, so the workflow also sweeps every 15 minutes.
+raise another completion event, so the workflow also sweeps every 15 minutes, and
+`ci-main-status.yml` re-reads main HEAD's newest CI result on the same cadence so
+the `ci-main-red` issue closes once a rerun passes.
 
 Superseded PR runs are cancelled through concurrency groups. Main runs retain
 per-SHA groups. The `ci-supersede.yml` queue-cleanup workflow checks changed files
