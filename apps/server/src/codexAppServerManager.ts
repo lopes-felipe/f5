@@ -63,6 +63,7 @@ import {
   type ProviderTurnStartResult,
   RuntimeMode,
   ProviderInteractionMode,
+  SubagentActivityKind,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
@@ -73,9 +74,10 @@ import {
 } from "@t3tools/shared/model";
 import { readCodexModelPages } from "./codex/readCodexModelPages.ts";
 import { readCodexReportedModelCapabilities } from "./provider/codexModelCatalog.ts";
+import { normalizeCodexThreadItemType } from "./provider/codexItemPresentation.ts";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
-import { Effect, ServiceMap } from "effect";
+import { Effect, Schema, ServiceMap } from "effect";
 
 import { formatCodexUnsupportedModelError } from "./provider/codexErrors.ts";
 import {
@@ -3922,16 +3924,36 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const reviewTurnId = asObject(notification.params)?.turnId;
       if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
     }
-    if (item && (item.type === "collabAgentToolCall" || item.type === "collab_agent_tool_call")) {
-      const previousSize = context.childThreadIds?.size ?? 0;
-      const children = item.receiverThreadIds;
+    const itemType = normalizeCodexThreadItemType(item?.type ?? item?.kind);
+    // The adapter may display unscoped activity, but it cannot grant access:
+    // only an explicit primary-thread envelope establishes child ownership.
+    const activityChildId =
+      itemType === "subagent_activity" &&
+      primaryProviderThreadId !== undefined &&
+      notificationProviderThreadId === primaryProviderThreadId &&
+      Schema.is(SubagentActivityKind)(item?.kind) &&
+      asString(item?.agentPath ?? item?.agent_path)?.trim()
+        ? asString(item?.agentThreadId ?? item?.agent_thread_id)?.trim()
+        : undefined;
+    const isCollabCall =
+      item?.type === "collabAgentToolCall" || item?.type === "collab_agent_tool_call";
+    if (item && (isCollabCall || activityChildId)) {
+      let childrenChanged = false;
+      // Newer Codex runtimes publish subAgentActivity without a collab call.
+      // Register only children explicitly reported by this parent, keeping
+      // transcript reads fenced by the same persisted session allowlist.
+      const children = activityChildId ? [activityChildId] : item.receiverThreadIds;
       if (Array.isArray(children))
         for (const child of children)
           if (typeof child === "string") {
             const ids = (context.childThreadIds ??= new Set());
-            if (ids.size < 512) ids.add(child);
+            if (!ids.has(child)) {
+              ids.add(child);
+              if (ids.size > 512) ids.delete(ids.values().next().value!);
+              childrenChanged = true;
+            }
           }
-      if (context.childThreadIds && context.childThreadIds.size !== previousSize)
+      if (context.childThreadIds && childrenChanged)
         this.updateSession(context, {
           resumeCursor: {
             ...asObject(context.session.resumeCursor),

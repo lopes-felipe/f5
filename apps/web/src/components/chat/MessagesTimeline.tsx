@@ -165,6 +165,7 @@ import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
+import { answerDeliveryDisplayText } from "~/lib/answerDelivery";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { cn } from "~/lib/utils";
 import { type AppSettings, type TimestampFormat, useAppSettingsSelector } from "../../appSettings";
@@ -1861,6 +1862,9 @@ function getTimelineItemType(row: TimelineRow): string {
 }
 
 type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
+type TimelineMessageUserInput = NonNullable<
+  Extract<TimelineEntry, { kind: "message" }>["userInput"]
+>;
 type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["proposedPlan"];
 type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
 type TimelineCommandExecution = Extract<TimelineEntry, { kind: "command" }>["commandExecution"];
@@ -1928,6 +1932,8 @@ type TimelineRow =
       id: string;
       createdAt: string;
       message: TimelineMessage;
+      /** A message-mode answer renders as its question's Q&A card. */
+      userInput?: TimelineMessageUserInput;
       durationStart: string;
       showCompletionDivider: boolean;
       completionSummary: string | null;
@@ -4537,7 +4543,10 @@ function UserMessageRowContent(props: {
   const userFiles = (row.message.attachments ?? []).filter(
     (attachment) => attachment.type === "file",
   );
-  const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+  // A message-mode answer is delivered as JSON for the provider; show the chosen answers.
+  const displayedUserMessage = deriveDisplayedUserMessageState(
+    answerDeliveryDisplayText(row.message) ?? row.message.text,
+  );
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = externals.canRevert;
   // Images sent without words show as media, not as a bubble around them.
@@ -4553,147 +4562,156 @@ function UserMessageRowContent(props: {
   const collage = mediaOnly && userImages.length > 1;
   return (
     <div className="group/user-message flex flex-col items-end">
-      <div
-        className={cn(
-          "max-w-full sm:max-w-[85%]",
-          !mediaOnly && "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5",
-        )}
-        data-slot="user-message-bubble"
-        data-media-only={mediaOnly ? "" : undefined}
-      >
-        {userFiles.map((file) => (
-          <AttachmentFileChip key={file.id} file={file} />
-        ))}
-        {userImages.length > 0 && (
-          <div
-            className={cn(
-              "grid",
-              loneImage
-                ? "max-w-full"
-                : collage
-                  ? cn(
-                      USER_MEDIA_EDGE_CLASS_NAME,
-                      "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
-                      userImages.length === 2
-                        ? "auto-rows-[12rem] grid-cols-2"
-                        : userImages.length === 3
-                          ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
-                          : "auto-rows-[6rem] grid-cols-2",
-                    )
-                  : "mb-2 max-w-[420px] grid-cols-2 gap-2",
-            )}
-          >
-            {userImages.map((image: NonNullable<TimelineMessage["attachments"]>[number], index) => {
-              const previewUrl = image.previewUrl;
-              return (
-                <div
-                  key={image.id}
-                  className={cn(
-                    loneImage
-                      ? cn(
-                          USER_MEDIA_EDGE_CLASS_NAME,
-                          "overflow-hidden rounded-2xl bg-background/70",
-                        )
-                      : collage
-                        ? cn(
-                            "overflow-hidden bg-background",
-                            userImages.length === 3 && index === 0 && "row-span-2",
-                            userImages.length > 3 &&
-                              userImages.length % 2 === 1 &&
-                              index === userImages.length - 1 &&
-                              "col-span-2",
-                          )
-                        : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
-                  )}
-                >
-                  {previewUrl ? (
-                    <button
-                      type="button"
-                      className="block h-full w-full cursor-zoom-in"
-                      aria-label={`Preview ${image.name}`}
-                      onContextMenu={(event) => {
-                        if (!usesCustomImageContextMenu || !hasImageActionMenu) return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        actions.onImageActionMenu(
-                          {
-                            src: image.sourceUrl ?? previewUrl,
-                            name: image.name,
-                            mimeType: image.mimeType,
-                            ...(image.sourceBlob ? { sourceBlob: image.sourceBlob } : {}),
-                          },
-                          { x: event.clientX, y: event.clientY },
-                        );
-                      }}
-                      onClick={() => {
-                        const preview = buildExpandedImagePreview(userImages, image.id);
-                        if (!preview) return;
-                        actions.onImageExpand(preview);
-                      }}
-                    >
-                      <img
-                        src={previewUrl}
-                        alt={image.name}
-                        className={cn(
-                          "block object-cover",
-                          // A fixed height keeps the row from growing when the image loads.
-                          loneImage
-                            ? "h-48 w-auto min-w-24 max-w-full"
-                            : collage
-                              ? "size-full"
-                              : "h-full max-h-[220px] w-full",
-                        )}
-                        draggable={false}
-                      />
-                    </button>
-                  ) : (
+      {row.userInput ? (
+        // The answer turn keeps its user row, and with it revert, fork and turn navigation.
+        <div className="w-full" data-slot="user-message-answer">
+          <UserInputCard userInput={row.userInput} timestamp={null} />
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "max-w-full sm:max-w-[85%]",
+            !mediaOnly && "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5",
+          )}
+          data-slot="user-message-bubble"
+          data-media-only={mediaOnly ? "" : undefined}
+        >
+          {userFiles.map((file) => (
+            <AttachmentFileChip key={file.id} file={file} />
+          ))}
+          {userImages.length > 0 && (
+            <div
+              className={cn(
+                "grid",
+                loneImage
+                  ? "max-w-full"
+                  : collage
+                    ? cn(
+                        USER_MEDIA_EDGE_CLASS_NAME,
+                        "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
+                        userImages.length === 2
+                          ? "auto-rows-[12rem] grid-cols-2"
+                          : userImages.length === 3
+                            ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
+                            : "auto-rows-[6rem] grid-cols-2",
+                      )
+                    : "mb-2 max-w-[420px] grid-cols-2 gap-2",
+              )}
+            >
+              {userImages.map(
+                (image: NonNullable<TimelineMessage["attachments"]>[number], index) => {
+                  const previewUrl = image.previewUrl;
+                  return (
                     <div
+                      key={image.id}
                       className={cn(
-                        "flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground",
-                        loneImage && "h-48 w-64 max-w-full",
-                        collage && "h-full",
+                        loneImage
+                          ? cn(
+                              USER_MEDIA_EDGE_CLASS_NAME,
+                              "overflow-hidden rounded-2xl bg-background/70",
+                            )
+                          : collage
+                            ? cn(
+                                "overflow-hidden bg-background",
+                                userImages.length === 3 && index === 0 && "row-span-2",
+                                userImages.length > 3 &&
+                                  userImages.length % 2 === 1 &&
+                                  index === userImages.length - 1 &&
+                                  "col-span-2",
+                              )
+                            : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
                       )}
                     >
-                      {image.name}
+                      {previewUrl ? (
+                        <button
+                          type="button"
+                          className="block h-full w-full cursor-zoom-in"
+                          aria-label={`Preview ${image.name}`}
+                          onContextMenu={(event) => {
+                            if (!usesCustomImageContextMenu || !hasImageActionMenu) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            actions.onImageActionMenu(
+                              {
+                                src: image.sourceUrl ?? previewUrl,
+                                name: image.name,
+                                mimeType: image.mimeType,
+                                ...(image.sourceBlob ? { sourceBlob: image.sourceBlob } : {}),
+                              },
+                              { x: event.clientX, y: event.clientY },
+                            );
+                          }}
+                          onClick={() => {
+                            const preview = buildExpandedImagePreview(userImages, image.id);
+                            if (!preview) return;
+                            actions.onImageExpand(preview);
+                          }}
+                        >
+                          <img
+                            src={previewUrl}
+                            alt={image.name}
+                            className={cn(
+                              "block object-cover",
+                              // A fixed height keeps the row from growing when the image loads.
+                              loneImage
+                                ? "h-48 w-auto min-w-24 max-w-full"
+                                : collage
+                                  ? "size-full"
+                                  : "h-full max-h-[220px] w-full",
+                            )}
+                            draggable={false}
+                          />
+                        </button>
+                      ) : (
+                        <div
+                          className={cn(
+                            "flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground",
+                            loneImage && "h-48 w-64 max-w-full",
+                            collage && "h-full",
+                          )}
+                        >
+                          {image.name}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {displayedUserMessage.attachedFilePaths.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {displayedUserMessage.attachedFilePaths.map((filePath) => {
-              const displayPath = relativePathForDisplay(filePath, workspaceRoot);
-              return (
-                <span
-                  key={filePath}
-                  className={COMPOSER_INLINE_CHIP_CLASS_NAME}
-                  title={displayPath}
-                >
-                  <VscodeEntryIcon pathValue={filePath} kind="file" theme={resolvedTheme} />
-                  <span className="max-w-[320px] truncate">{displayPath}</span>
-                </span>
-              );
-            })}
-          </div>
-        )}
-        {(displayedUserMessage.visibleText.trim().length > 0 || terminalContexts.length > 0) && (
-          <>
-            {/* The copy button below uses copyText, which is derived before
+                  );
+                },
+              )}
+            </div>
+          )}
+          {displayedUserMessage.attachedFilePaths.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {displayedUserMessage.attachedFilePaths.map((filePath) => {
+                const displayPath = relativePathForDisplay(filePath, workspaceRoot);
+                return (
+                  <span
+                    key={filePath}
+                    className={COMPOSER_INLINE_CHIP_CLASS_NAME}
+                    title={displayPath}
+                  >
+                    <VscodeEntryIcon pathValue={filePath} kind="file" theme={resolvedTheme} />
+                    <span className="max-w-[320px] truncate">{displayPath}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {(displayedUserMessage.visibleText.trim().length > 0 || terminalContexts.length > 0) && (
+            <>
+              {/* The copy button below uses copyText, which is derived before
                     visual collapse, so collapsed messages still copy in full. */}
-            <TimelineUserMessageBody
-              key={row.message.id}
-              text={displayedUserMessage.visibleText}
-              skillCall={row.message.skillCall}
-              terminalContexts={terminalContexts}
-              markup={userMessageMarkup}
-              forceExpandedForFind={forceExpandedForFind}
-            />
-          </>
-        )}
-      </div>
+              <TimelineUserMessageBody
+                key={row.message.id}
+                text={displayedUserMessage.visibleText}
+                skillCall={row.message.skillCall}
+                terminalContexts={terminalContexts}
+                markup={userMessageMarkup}
+                forceExpandedForFind={forceExpandedForFind}
+              />
+            </>
+          )}
+        </div>
+      )}
       <div className="mt-1.5 flex min-h-7 items-center gap-1 pr-1">
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/user-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
           {displayedUserMessage.copyText && (
@@ -5315,12 +5333,20 @@ export function buildTimelineRows(input: {
     nextRows.push(
       reuse(
         timelineEntry.id,
-        ["message", timelineEntry.message, durationStart, showCompletionDivider, completionSummary],
+        [
+          "message",
+          timelineEntry.message,
+          timelineEntry.userInput,
+          durationStart,
+          showCompletionDivider,
+          completionSummary,
+        ],
         () => ({
           kind: "message",
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           message: timelineEntry.message,
+          ...(timelineEntry.userInput ? { userInput: timelineEntry.userInput } : {}),
           durationStart,
           showCompletionDivider,
           completionSummary,

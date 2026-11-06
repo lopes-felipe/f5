@@ -216,6 +216,29 @@ describe("Chrome lease preemption", () => {
     );
   });
 
+  it("frees Chrome before a native lease it would block, so main's queue doesn't wait on it", async () => {
+    const { ipc, broker } = await harness();
+    const a = releaser(() => {
+      setTimeout(() => ipc.setChrome(null), 10);
+      return true;
+    });
+    broker.registerChromeReleaser("a", "gen-a", a);
+    // A background lease on an app that isn't a browser coexists with Chrome.
+    await broker.preemptChromeFor("b", { kind: "app", appId: "com.apple.TextEdit" });
+    expect(a.asked()).toBe(0);
+    // The holder's own native work never preempts itself.
+    await broker.preemptChromeFor("a", { kind: "foreground" });
+    expect(a.asked()).toBe(0);
+    // A working holder keeps Chrome; main queues the request behind it.
+    broker.reportChromeCalls("a", "gen-a", true);
+    await broker.preemptChromeFor("b", { kind: "foreground" });
+    expect(a.asked()).toBe(0);
+    broker.reportChromeCalls("a", "gen-a", false);
+    await broker.preemptChromeFor("b", { kind: "foreground" });
+    expect(a.asked()).toBe(1);
+    expect(ipc.chrome).toBeNull();
+  });
+
   it("leaves other profiles' holders anonymous and alone", async () => {
     const { ipc, broker } = await harness();
     ipc.setChrome({ ...holderA, profileId: "other" });

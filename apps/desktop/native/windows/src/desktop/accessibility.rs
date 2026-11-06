@@ -38,6 +38,9 @@ pub(super) unsafe fn focused(
     host: &Value,
 ) -> Result<(IUIAutomationElement, u32, HWND), Value> {
     let hwnd = GetForegroundWindow();
+    if !s(request, "appId").is_empty() && owner(hwnd)?.0 != s(request, "appId") {
+        return Err(blocked("other-app"));
+    }
     authorize(hwnd, request, host, "type")?;
     let uia = automation()?;
     let element = uia
@@ -294,6 +297,7 @@ pub(super) unsafe fn element_action(request: &Value, host: &Value) -> Result<(),
     }
     check(request)?;
     snapshot_validate(&snapshot, request)?;
+    mark_posted();
     let result = match action {
         "press" => element
             .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)

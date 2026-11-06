@@ -1,5 +1,10 @@
 import type { ComputerAgentProvider } from "@t3tools/shared/agentAutomationSupport";
-import { selectComputerApp, appTier, grantAllows } from "@t3tools/shared/computerApps";
+import {
+  selectComputerApp,
+  appTier,
+  grantAllows,
+  computerBackgroundEventAppAllowed,
+} from "@t3tools/shared/computerApps";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { createHash, randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
@@ -8,6 +13,9 @@ import {
   ThreadId,
   type AgentComputerUseChanged,
   ComputerGrant,
+  RememberedComputerGrant,
+  ComputerTargetAvailability,
+  COMPUTER_LEASE_WAIT_MAX_MS,
   ComputerLeaseHolder,
   type ComputerDelivery,
   type ComputerElementAction,
@@ -32,17 +40,19 @@ import {
   isComputerMutation,
 } from "@t3tools/shared/computerControl";
 import {
+  COMPUTER_CHROME_APP_IDS,
   computerBackgroundOpAllowed,
   computerOpRequiresApp,
+  computerBackgroundKeyAllowed,
 } from "@t3tools/shared/computerExecution";
 import { ServerConfig } from "../config";
 
 /**
  * Electron decides every takeover: its worst case is 300 s consent + 30 s idle window + up to
- * 5 s drain and 1 s readiness per arming attempt. This sits well above that and below the
- * tool transport timeout.
+ * 5 s drain and 1 s readiness per arming attempt, plus a 20 s reservation wait and 2 s
+ * transport margin. This sits above that budget and below the tool transport timeout.
  */
-export const COMPUTER_TAKEOVER_HOST_TIMEOUT_MS = 360_000;
+export const COMPUTER_TAKEOVER_HOST_TIMEOUT_MS = 380_000;
 import { ServerSettingsService } from "../serverSettings";
 import { writeFileStringAtomically } from "../atomicWrite";
 import { resolveAgentBrowserPolicy, type AgentBrowserPolicy } from "../mcp/browserAccess";
@@ -78,6 +88,7 @@ interface ComputerBinding {
   /** The policy last applied to this binding, compared on settings changes. */
   appliedPolicy?: string;
   takeover?: { acquireId: string; approvalId: string; appId: string };
+  acquiring?: { requestId: string; turnId: string };
 }
 /** Bounded summary of the merged lease state for the WebSocket banner. */
 export interface ComputerUseSnapshot {
@@ -149,7 +160,13 @@ export type ComputerBrokerEvent =
     }
   | {
       channel: "computer.access.settled";
-      data: { requestId: string; threadId: string; allowed: boolean };
+      data: {
+        requestId: string;
+        threadId: string;
+        allowed: boolean;
+        persistence?: "durable" | "session-only";
+        persistenceReason?: string;
+      };
     }
   | {
       channel: "computer.access.grantsChanged";
@@ -168,6 +185,7 @@ export class ComputerAutomationBroker extends ServiceMap.Service<
 export class ComputerAutomationBrokerRuntime {
   readonly pause: AgentControlPause;
   readonly access: ComputerAccessService;
+  private initialized = false;
   private readonly bindings = new Map<string, ComputerBinding>();
   private readonly chromeDisabledListeners = new Set<
     (threadId: string, generation: string) => void
@@ -209,6 +227,7 @@ export class ComputerAutomationBrokerRuntime {
       generation: string;
       turnId: string;
       epoch: number;
+      mutation: boolean;
       suppressActivity?: boolean;
     }
   >();
@@ -221,6 +240,7 @@ export class ComputerAutomationBrokerRuntime {
     }
   >();
   private readonly observationEpochs = new Map<string, number>();
+  private readonly yieldEpochs = new Map<string, number>();
   private readonly listeners = new Set<(event: ComputerBrokerEvent) => void>();
   private readonly nativePaused = new Set<string>();
   private mainHolders: ReadonlyArray<ComputerLeaseHolder> = [];
@@ -278,9 +298,50 @@ export class ComputerAutomationBrokerRuntime {
     });
     this.access = new ComputerAccessService({
       platform: options.platform,
-      forgotten: (projectId, appId) => this.host.send({ type: "grantForget", projectId, appId }),
+      forgotten: (projectId, appId) =>
+        this.host.grantForgetCapable()
+          ? this.host
+              .correlated(
+                {
+                  type: "grantForget",
+                  requestId: randomUUID(),
+                  projectId,
+                  appId,
+                },
+                10_000,
+                false,
+              )
+              .then(() => undefined)
+          : this.host.send({ type: "grantForget", projectId, appId }),
       backendIncarnation: host.backendIncarnation,
       storage: options.storage,
+      mainOwned: () => host.rememberedConsentCapable(),
+      remembered: {
+        load: async (projectId) =>
+          Schema.decodeUnknownSync(Schema.Array(RememberedComputerGrant))(
+            await host.correlated(
+              {
+                type: "grantsRemembered",
+                requestId: randomUUID(),
+                ...(projectId === undefined ? {} : { projectId }),
+              },
+              5000,
+              false,
+            ),
+          ),
+        forget: async (projectId, appId) => {
+          await host.correlated(
+            {
+              type: "grantForget",
+              requestId: randomUUID(),
+              projectId,
+              appId,
+            },
+            10_000,
+            false,
+          );
+        },
+      },
       request: (request, expiresAtMs) => {
         this.publish({
           channel: "computer.access.requested",
@@ -288,11 +349,19 @@ export class ComputerAutomationBrokerRuntime {
         });
         host.send({ type: "accessRequested", request });
       },
-      settled: (requestId, threadId, allowed) => {
+      settled: (requestId, threadId, allowed, persistence) => {
         host.send({ type: "cancel", requestId });
         this.publish({
           channel: "computer.access.settled",
-          data: { requestId, threadId, allowed },
+          data: {
+            requestId,
+            threadId,
+            allowed,
+            ...(persistence?.persistence ? { persistence: persistence.persistence } : {}),
+            ...(persistence?.persistenceReason
+              ? { persistenceReason: persistence.persistenceReason }
+              : {}),
+          },
         });
       },
       changed: (threadId) => {
@@ -349,6 +418,25 @@ export class ComputerAutomationBrokerRuntime {
           this.publishUse();
         }
       }
+      if (
+        message.type === "targetYielded" &&
+        this.host.cooperationCapable() &&
+        this.bindings.get(message.threadId)?.generation === message.sessionGeneration
+      ) {
+        this.yieldEpochs.set(message.threadId, (this.yieldEpochs.get(message.threadId) ?? 0) + 1);
+        this.invalidateObservations(message.threadId);
+        const contention = new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+        this.queue.flush(message.threadId, contention);
+        for (const [requestId, pending] of this.inFlight)
+          if (pending.threadId === message.threadId && !pending.mutation)
+            this.host.abandon(requestId, contention);
+        this.executionStates.set(message.threadId, {
+          state: "waiting-user",
+          delivery: message.appId ? "background" : "foreground",
+          ...(message.appId ? { appId: message.appId } : {}),
+        });
+        this.publishUse();
+      }
       if (message.type === "chromeLeaseChanged") {
         // A lease that ended takes its call report with it; the session needn't say so.
         const previous = this.chromeHolder;
@@ -371,6 +459,15 @@ export class ComputerAutomationBrokerRuntime {
           const [threadId, generation] = key.split("\u0000") as [string, string];
           this.sendChromeCalls(threadId, generation, running);
         }
+      if (message.type === "hostCapabilities" && this.initialized)
+        void this.access.refreshRemembered().catch(() => undefined);
+      if (message.type === "rememberedChanged") {
+        for (const session of message.revokedSessions ?? [])
+          if (this.bindings.get(session.threadId)?.generation === session.sessionGeneration)
+            if (message.backgroundOnly) this.access.revokeBackgroundApproval(session.threadId);
+            else this.access.revokeSessionApproval(session.threadId);
+        void this.access.refreshRemembered(message.projectId).catch(() => undefined);
+      }
       if (
         message.type === "status" &&
         (this.hostPlatform !== message.status.hostPlatform ||
@@ -442,8 +539,10 @@ export class ComputerAutomationBrokerRuntime {
         this.publish({ channel: "computer.host", data: message });
     });
   }
-  initialize(): Promise<void> {
-    return this.access.initialize();
+  async initialize(): Promise<void> {
+    await this.host.handshake();
+    if (!this.host.awaitingHandshake()) await this.access.initialize();
+    this.initialized = true;
   }
   bindSession(threadId: string, generation: string, provider: ComputerAgentProvider): void {
     if (provider !== "claude" && provider !== "codex" && !this.host.supportsAgentIdentity())
@@ -477,6 +576,8 @@ export class ComputerAutomationBrokerRuntime {
         !this.mainHolders.some((holder) => holder.threadId === threadId) &&
         execution.state !== "paused" &&
         execution.state !== "recovery" &&
+        execution.state !== "waiting-user" &&
+        execution.state !== "waiting-agent" &&
         this.pendingTakeover?.threadId !== threadId
       )
         this.executionStates.delete(threadId);
@@ -512,7 +613,10 @@ export class ComputerAutomationBrokerRuntime {
     for (const [threadId, execution] of this.executionStates)
       if (
         !holders.some((holder) => holder.threadId === threadId) &&
-        (execution.state === "paused" || execution.state === "recovery")
+        (execution.state === "paused" ||
+          execution.state === "recovery" ||
+          execution.state === "waiting-user" ||
+          execution.state === "waiting-agent")
       )
         holders.push({
           threadId,
@@ -904,6 +1008,17 @@ export class ComputerAutomationBrokerRuntime {
       throw await this.attributeBusy(error);
     }
   }
+  /**
+   * Before a native lease that the Chrome lease would block (foreground, takeover, or a
+   * registered browser in background), asks an idle Chrome holder in this profile to
+   * release. A working holder keeps Chrome and main queues the request behind it.
+   */
+  async preemptChromeFor(threadId: string, scope: ComputerLeaseScope): Promise<void> {
+    const holder = this.chromeHolder;
+    if (!holder || holder.threadId === threadId || holder.profileId !== this.host.profileId) return;
+    if (scope.kind === "app" && !COMPUTER_CHROME_APP_IDS.includes(scope.appId)) return;
+    await this.releaseChromeHolderOutcome(holder.threadId);
+  }
   /** A session's Chrome lease, taken from an idle holder in this profile when needed. */
   acquireChromeLease(holder: ChromeLeaseHolder, timeoutMs = 5000): Promise<void> {
     return this.withChromePreemption(() =>
@@ -1040,6 +1155,7 @@ export class ComputerAutomationBrokerRuntime {
       onDispatch?: (delivery: ComputerDelivery) => void;
     },
   ): Promise<unknown> {
+    const yieldEpoch = this.yieldEpochs.get(threadId) ?? 0;
     await this.admitted();
     const ctx = await this.context(threadId, generation);
     if (!ctx.policy.computerUse)
@@ -1065,9 +1181,12 @@ export class ComputerAutomationBrokerRuntime {
     const turnRevision = binding.turnRevision;
     if (ctx.turnId !== "observation") binding.turnId = ctx.turnId;
     const appId = typeof input.appId === "string" ? input.appId : undefined;
-    const delivery = this.selectDelivery(ctx, binding, input.op, appId, {
+    const requestedMode = input.executionMode;
+    let delivery = this.selectDelivery(ctx, binding, input.op, appId, {
       executionMode: input.executionMode,
       action: input.action,
+      chords: input.chords,
+      elementRef: input.elementRef,
     });
     delete input.executionMode;
     if (delivery === "background") {
@@ -1097,9 +1216,11 @@ export class ComputerAutomationBrokerRuntime {
           ctx.turnId,
           [],
           "Allow this agent session to control apps you approve, while you work elsewhere?",
-          "session-actions",
-          false,
-          true,
+          {
+            kind: "session-actions",
+            background: true,
+            fullAccess: ctx.runtimeMode === "full-access",
+          },
         );
         if (!this.access.backgroundApproved(threadId))
           throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
@@ -1109,177 +1230,286 @@ export class ComputerAutomationBrokerRuntime {
           ctx.turnId,
           [],
           "Allow this agent session to control apps you approve?",
-          "session-actions",
+          { kind: "session-actions" },
         );
         if (!this.access.actionsApproved(threadId))
           throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
       }
     }
-    const requestId = randomUUID();
+    let requestId = randomUUID();
+    let dispatched = false;
+    let retrying = false;
+    // Queueing, admission and retries share one budget; contention never renews it.
+    const invokeDeadline = performance.now() + timeoutMs;
+    /** Reject expiry before admitting more work or dispatching any native action. */
+    const remainingBudget = () => {
+      const remaining = Math.floor(invokeDeadline - performance.now());
+      if (remaining <= 0)
+        throw new ComputerControlError({
+          _tag: "Execution",
+          message: "Computer request timed out before dispatch.",
+        });
+      return remaining;
+    };
+    const retryDeadline = Math.min(
+      invokeDeadline - 5000,
+      performance.now() + COMPUTER_LEASE_WAIT_MAX_MS,
+    );
     const controller = new AbortController();
     const slot = mutation
       ? await this.queue.acquire(threadId, controller.signal, Math.min(60_000, timeoutMs))
       : { release: () => undefined };
     try {
-      const live = await this.context(threadId, generation);
-      if (!live.policy.computerUse)
-        throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
-      // Revision checkpoint after context resolution and queue admission.
-      this.assertRevision(binding, revision, turnRevision);
-      if (
-        mutation &&
-        delivery === "background" &&
-        live.policy.computerUseExecutionMode !== "background"
-      )
-        throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
-      if (this.pause.has(threadId) && !["status", "listApps", "resolveApps"].includes(input.op))
-        throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
-      if (
-        mutation &&
-        (this.pause.has(threadId) ||
-          live.turnId !== ctx.turnId ||
-          binding.endedTurnId === ctx.turnId)
-      )
-        throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
-      if (mutation && live.interactionMode === "plan")
-        throw new ComputerControlError({
-          _tag: "Execution",
-          message: "Computer control is unavailable in plan mode.",
-        });
-      if (mutation && live.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId))
-        throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
-      if (typeof input.appId === "string")
-        this.access.require(
-          threadId,
-          input.appId,
-          !mutation
-            ? "view"
-            : input.action === "setValue" || input.op === "type"
-              ? "type"
-              : "click",
-        );
-      if (
-        (input.op === "type" || input.op === "key") &&
-        !this.access
-          .grants(threadId)
-          .some((grant) => grant.tier === "full" || (grant.tier === "click" && grant.allowTyping))
-      )
-        throw new ComputerControlError({ _tag: "NotGranted", needed: "type" });
-      let executionGeneration = binding.holder?.executionGeneration ?? 1;
-      if (mutation && delivery === "foreground" && binding.holder?.scope.kind === "takeover") {
-        // The armed takeover is the lease; every foreground step reuses it.
-        executionGeneration = binding.holder.executionGeneration;
-      } else if (mutation) {
-        const scope: ComputerLeaseScope =
-          delivery === "background" ? { kind: "app", appId: appId! } : { kind: "foreground" };
-        let acquisitionId = randomUUID();
-        const holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(
-          // An idle Chrome holder in this profile gives way; a retry needs a fresh id.
-          await this.withChromePreemption(() =>
-            this.host.correlated(
-              {
-                type: "leaseAcquire",
-                requestId: (acquisitionId = randomUUID()),
-                holder: {
-                  ...this.authorization(live, executionGeneration),
-                  backend: "native",
-                  threadTitle: live.threadTitle,
-                  scope,
-                  policyRevision: revision,
-                },
-              },
-              2000,
-              false,
-            ),
-          ),
-        );
-        this.host.send({ type: "leaseAccepted", requestId: acquisitionId });
-        // Cancellation during acquire must release the exact returned holder.
-        if (
-          this.bindings.get(threadId) !== binding ||
-          this.pause.has(threadId) ||
-          binding.endedTurnId === ctx.turnId ||
-          binding.policyRevision !== revision ||
-          binding.turnRevision !== turnRevision
-        ) {
-          this.host.send({ type: "leaseRelease", requestId: randomUUID(), holder });
-          throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
-        }
-        binding.holder = holder;
-        executionGeneration = holder.executionGeneration;
-      }
-      await options?.beforeDispatch?.();
-      if (options?.signal?.aborted) throw options.signal.reason;
-      // Revision checkpoint immediately before dispatch.
-      this.assertRevision(binding, revision, turnRevision);
-      this.pushGrants(threadId, generation, live.turnId, executionGeneration);
-      const { passwordMasking: _callerMasking, ...payloadInput } = input;
-      const currentStatus = this.host.status();
-      const envelope = {
-        ...payloadInput,
-        // Only resolved user policy can select masking. Legacy peers strip unknown envelope
-        // fields before checking hashes, so send it only to a helper that advertises support.
-        ...(currentStatus.available && currentStatus.passwordMaskingSupported
-          ? { passwordMasking: live.policy.computerUsePasswordMasking ?? "fast" }
-          : {}),
-        requestId,
-        authorization: this.authorization(live, executionGeneration),
-        deadlineAtMs: Date.now() + Math.min(60_000, Math.max(1, Math.floor(timeoutMs))),
-        agent: { provider: live.provider, threadTitle: live.threadTitle.slice(0, 200) },
-      };
-      const payloadHash = createHash("sha256")
-        .update(computerRequestPayload(envelope as Omit<ComputerAutomationRequest, "payloadHash">))
-        .digest("hex");
-      const request = Schema.decodeUnknownSync(
-        (await import("@t3tools/contracts")).ComputerAutomationRequest,
-      )({ ...envelope, payloadHash });
-      if (mutation) this.invalidateObservations(threadId, "action");
-      options?.onDispatch?.(delivery);
-      this.inFlight.set(requestId, {
-        threadId,
-        generation,
-        turnId: live.turnId,
-        epoch: this.observationEpochs.get(threadId) ?? 0,
-        ...(options?.suppressActivity ? { suppressActivity: true } : {}),
-      });
-      const onAbort = () => this.host.abandon(requestId, options!.signal!.reason);
-      options?.signal?.addEventListener("abort", onAbort, { once: true });
-      let result: unknown;
-      try {
-        const pending = this.host.request(request);
-        if (options?.signal?.aborted) onAbort();
-        result = await pending;
-      } finally {
-        options?.signal?.removeEventListener("abort", onAbort);
-      }
-      // A late observation from before a settings/session change must not restore old pixels.
-      // Confirmed actions retain their result even when their optional capture was cancelled.
-      if (!mutation) {
-        if (this.bindings.get(threadId) !== binding)
-          throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
-        this.assertRevision(binding, revision, turnRevision);
-      } else if (
-        (this.bindings.get(threadId) !== binding ||
-          binding.policyRevision !== revision ||
-          binding.turnRevision !== turnRevision) &&
-        result &&
-        typeof result === "object" &&
-        "screenshot" in result
-      ) {
-        // A result can beat the desktop's cancellation receipt. Keep the successful action,
-        // but never deliver its old-policy image after the user changed masking.
-        const { screenshot: _oldCapture, ...action } = result;
-        result = { ...action, screenshotError: "Interrupted" };
-      }
-      if ((input.op === "listApps" || input.op === "resolveApps") && Array.isArray(result))
-        for (const app of result as ReadonlyArray<{ appId?: unknown; name?: unknown }>)
-          if (typeof app.appId === "string" && typeof app.name === "string") {
-            if (this.appNames.size >= 500) this.appNames.clear();
-            this.appNames.set(app.appId, app.name.slice(0, 200));
+      for (;;) {
+        try {
+          const live = await this.context(threadId, generation);
+          if (!live.policy.computerUse)
+            throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
+          // Revision checkpoint after context resolution and queue admission.
+          this.assertRevision(binding, revision, turnRevision);
+          if (options?.signal?.aborted) throw options.signal.reason;
+          if (retrying) {
+            delivery = this.selectDelivery(live, binding, input.op, appId, {
+              executionMode: requestedMode,
+              action: input.action,
+              chords: input.chords,
+              elementRef: input.elementRef,
+            });
+            if (delivery !== "background")
+              throw new ComputerControlError({
+                _tag: "ForegroundRequired",
+                reason: "unsupported-in-background",
+              });
           }
-      return result;
+          if (
+            mutation &&
+            delivery === "background" &&
+            live.policy.computerUseExecutionMode !== "background"
+          )
+            throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+          if (this.pause.has(threadId) && !["status", "listApps", "resolveApps"].includes(input.op))
+            throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+          if (
+            mutation &&
+            (this.pause.has(threadId) ||
+              live.turnId !== ctx.turnId ||
+              binding.endedTurnId === ctx.turnId)
+          )
+            throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+          if (mutation && live.interactionMode === "plan")
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "Computer control is unavailable in plan mode.",
+            });
+          if (
+            mutation &&
+            live.runtimeMode !== "full-access" &&
+            !this.access.actionsApproved(threadId)
+          )
+            throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+          if (typeof input.appId === "string")
+            this.access.require(
+              threadId,
+              input.appId,
+              !mutation
+                ? "view"
+                : input.action === "setValue" || input.op === "type" || input.op === "key"
+                  ? "type"
+                  : "click",
+            );
+          if (
+            (input.op === "type" || input.op === "key") &&
+            !this.access
+              .grants(threadId)
+              .some(
+                (grant) => grant.tier === "full" || (grant.tier === "click" && grant.allowTyping),
+              )
+          )
+            throw new ComputerControlError({ _tag: "NotGranted", needed: "type" });
+          let executionGeneration = binding.holder?.executionGeneration ?? 1;
+          if (
+            mutation &&
+            delivery === "foreground" &&
+            binding.holder?.scope.kind === "takeover" &&
+            this.executionStates.get(threadId)?.state !== "waiting-user"
+          ) {
+            // The armed takeover is the lease; every foreground step reuses it.
+            executionGeneration = binding.holder.executionGeneration;
+          } else if (mutation) {
+            const scope: ComputerLeaseScope =
+              delivery === "background"
+                ? { kind: "app", appId: appId! }
+                : binding.holder?.scope.kind === "takeover"
+                  ? binding.holder.scope
+                  : { kind: "foreground" };
+            const acquisitionId = randomUUID();
+            const remainingMs = remainingBudget();
+            const waitMs = this.host.cooperationCapable()
+              ? Math.min(COMPUTER_LEASE_WAIT_MAX_MS, Math.max(0, remainingMs - 5000))
+              : 0;
+            // Main queues this behind a Chrome holder for up to the wait; an idle one in this
+            // profile gives way first, so the queue admits as soon as the lease is gone.
+            await this.preemptChromeFor(threadId, scope);
+            binding.acquiring = { requestId: acquisitionId, turnId: ctx.turnId };
+            let holder: ComputerLeaseHolder;
+            const abortAcquire = () => this.host.abandon(acquisitionId, options!.signal!.reason);
+            try {
+              const acquisition = this.host.correlated(
+                {
+                  type: "leaseAcquire",
+                  requestId: acquisitionId,
+                  ...(this.host.cooperationCapable() ? { waitMs } : {}),
+                  ...(this.host.cooperationCapable() &&
+                  live.runtimeMode === "full-access" &&
+                  delivery === "foreground"
+                    ? { cooperative: true }
+                    : {}),
+                  holder: {
+                    ...this.authorization(live, executionGeneration),
+                    backend: "native",
+                    threadTitle: live.threadTitle,
+                    scope,
+                    policyRevision: revision,
+                  },
+                },
+                Math.min(waitMs + 2000, remainingMs),
+                false,
+              );
+              options?.signal?.addEventListener("abort", abortAcquire, { once: true });
+              if (options?.signal?.aborted) abortAcquire();
+              holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(
+                // A refusal after the queue's wait names who held control.
+                await acquisition.catch(async (cause: unknown) => {
+                  throw await this.attributeBusy(cause);
+                }),
+              );
+            } finally {
+              options?.signal?.removeEventListener("abort", abortAcquire);
+              if (binding.acquiring?.requestId === acquisitionId) delete binding.acquiring;
+            }
+            this.host.send({ type: "leaseAccepted", requestId: acquisitionId });
+            // Cancellation during acquire must release the exact returned holder.
+            if (
+              this.bindings.get(threadId) !== binding ||
+              this.pause.has(threadId) ||
+              binding.endedTurnId === ctx.turnId ||
+              binding.policyRevision !== revision ||
+              binding.turnRevision !== turnRevision ||
+              options?.signal?.aborted
+            ) {
+              this.host.send({ type: "leaseRelease", requestId: randomUUID(), holder });
+              throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+            }
+            binding.holder = holder;
+            executionGeneration = holder.executionGeneration;
+          }
+          if (!dispatched) await options?.beforeDispatch?.();
+          if (options?.signal?.aborted) throw options.signal.reason;
+          // Revision checkpoint immediately before dispatch.
+          this.assertRevision(binding, revision, turnRevision);
+          this.pushGrants(threadId, generation, live.turnId, executionGeneration);
+          const { passwordMasking: _callerMasking, ...payloadInput } = input;
+          const currentStatus = this.host.status();
+          const envelope = {
+            ...payloadInput,
+            // Only resolved user policy can select masking. Legacy peers strip unknown envelope
+            // fields before checking hashes, so send it only to a helper that advertises support.
+            ...(currentStatus.available && currentStatus.passwordMaskingSupported
+              ? { passwordMasking: live.policy.computerUsePasswordMasking ?? "fast" }
+              : {}),
+            requestId,
+            authorization: this.authorization(live, executionGeneration),
+            deadlineAtMs: Date.now() + Math.min(60_000, remainingBudget()),
+            agent: { provider: live.provider, threadTitle: live.threadTitle.slice(0, 200) },
+          };
+          const payloadHash = createHash("sha256")
+            .update(
+              computerRequestPayload(envelope as Omit<ComputerAutomationRequest, "payloadHash">),
+            )
+            .digest("hex");
+          const request = Schema.decodeUnknownSync(
+            (await import("@t3tools/contracts")).ComputerAutomationRequest,
+          )({ ...envelope, payloadHash });
+          if (mutation && !dispatched) this.invalidateObservations(threadId, "action");
+          if (mutation && (this.yieldEpochs.get(threadId) ?? 0) !== yieldEpoch)
+            throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+          if (!dispatched) options?.onDispatch?.(delivery);
+          dispatched = true;
+          this.inFlight.set(requestId, {
+            threadId,
+            generation,
+            turnId: live.turnId,
+            epoch: this.observationEpochs.get(threadId) ?? 0,
+            mutation,
+            ...(options?.suppressActivity ? { suppressActivity: true } : {}),
+          });
+          const onAbort = () => this.host.abandon(requestId, options!.signal!.reason);
+          options?.signal?.addEventListener("abort", onAbort, { once: true });
+          let result: unknown;
+          try {
+            const pending = this.host.request(request);
+            if (options?.signal?.aborted) onAbort();
+            result = await pending;
+          } finally {
+            options?.signal?.removeEventListener("abort", onAbort);
+          }
+          // A late observation from before a settings/session change must not restore old pixels.
+          // Confirmed actions retain their result even when their optional capture was cancelled.
+          if (!mutation) {
+            if (this.bindings.get(threadId) !== binding)
+              throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+            this.assertRevision(binding, revision, turnRevision);
+          } else if (
+            (this.bindings.get(threadId) !== binding ||
+              binding.policyRevision !== revision ||
+              binding.turnRevision !== turnRevision) &&
+            result &&
+            typeof result === "object" &&
+            "screenshot" in result
+          ) {
+            // A result can beat the desktop's cancellation receipt. Keep the successful action,
+            // but never deliver its old-policy image after the user changed masking.
+            const { screenshot: _oldCapture, ...action } = result;
+            result = { ...action, screenshotError: "Interrupted" };
+          }
+          if ((input.op === "listApps" || input.op === "resolveApps") && Array.isArray(result))
+            for (const app of result as ReadonlyArray<{ appId?: unknown; name?: unknown }>)
+              if (typeof app.appId === "string" && typeof app.name === "string") {
+                if (this.appNames.size >= 500) this.appNames.clear();
+                this.appNames.set(app.appId, app.name.slice(0, 200));
+              }
+          return result;
+        } catch (error) {
+          if (
+            !(error instanceof ComputerControlError) ||
+            error.error._tag !== "TargetBlocked" ||
+            error.error.kind !== "foreground-busy" ||
+            delivery !== "background" ||
+            !["elementAction", "type", "openApp"].includes(input.op) ||
+            performance.now() + 500 >= retryDeadline
+          )
+            throw error;
+          if (options?.signal?.aborted) throw options.signal.reason;
+          // The desktop rejected before any write. Never replay user-contention or unknown outcomes.
+          await new Promise<void>((resolve, reject) => {
+            const abort = () => {
+              clearTimeout(timer);
+              reject(options!.signal!.reason);
+            };
+            const timer = setTimeout(() => {
+              options?.signal?.removeEventListener("abort", abort);
+              resolve();
+            }, 500);
+            options?.signal?.addEventListener("abort", abort, { once: true });
+            if (options?.signal?.aborted) abort();
+          });
+          retrying = true;
+        } finally {
+          this.inFlight.delete(requestId);
+        }
+        requestId = randomUUID();
+      }
     } finally {
-      this.inFlight.delete(requestId);
       slot.release();
     }
   }
@@ -1300,7 +1530,7 @@ export class ComputerAutomationBrokerRuntime {
     binding: ComputerBinding,
     op: ComputerAutomationRequest["op"],
     appId: string | undefined,
-    input: { executionMode?: unknown; action?: unknown },
+    input: { executionMode?: unknown; action?: unknown; chords?: unknown; elementRef?: unknown },
     classifyOnly = false,
   ): ComputerDelivery {
     if (op === "status" || op === "listApps" || op === "resolveApps") return "foreground";
@@ -1312,6 +1542,15 @@ export class ComputerAutomationBrokerRuntime {
         message: `Background computer control is unavailable (${background.reason ?? "unknown"}); set Computer use to foreground mode in Settings.`,
       });
     const takeover = binding.holder?.scope.kind === "takeover" ? binding.holder.scope : undefined;
+    if (
+      (op === "key" || (op === "scroll" && input.elementRef !== undefined)) &&
+      !appId &&
+      !takeover
+    )
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Specify app: the app to act in.",
+      });
     if (input.executionMode === "background") {
       if (takeover && !classifyOnly) this.endTakeover(ctx.threadId, binding);
     } else if (takeover && (appId === undefined || appId === takeover.appId)) return "foreground";
@@ -1327,6 +1566,18 @@ export class ComputerAutomationBrokerRuntime {
       !computerBackgroundOpAllowed(
         op,
         typeof input.action === "string" ? (input.action as ComputerElementAction) : undefined,
+        {
+          events:
+            this.host.backgroundEventsCapable() &&
+            !!appId &&
+            computerBackgroundEventAppAllowed(appId, this.options.platform ?? "darwin") &&
+            (op === "scroll"
+              ? typeof input.elementRef === "string"
+              : op === "key" &&
+                Array.isArray(input.chords) &&
+                input.chords.every((chord) => typeof chord === "string") &&
+                computerBackgroundKeyAllowed(input.chords, this.options.platform ?? "darwin")),
+        },
       )
     )
       throw new ComputerControlError({
@@ -1341,7 +1592,7 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     op: ComputerAutomationRequest["op"],
     appId: string | undefined,
-    input: { executionMode?: unknown; action?: unknown },
+    input: { executionMode?: unknown; action?: unknown; chords?: unknown; elementRef?: unknown },
   ): Promise<ComputerDelivery> {
     await this.admitted();
     const ctx = await this.context(threadId, generation);
@@ -1418,9 +1669,11 @@ export class ComputerAutomationBrokerRuntime {
         ctx.turnId,
         [],
         "Allow this agent session to control apps you approve, while you work elsewhere?",
-        "session-actions",
-        false,
-        true,
+        {
+          kind: "session-actions",
+          background: true,
+          fullAccess: ctx.runtimeMode === "full-access",
+        },
       );
       if (!this.access.backgroundApproved(threadId))
         throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
@@ -1436,16 +1689,26 @@ export class ComputerAutomationBrokerRuntime {
     const approvalId = randomUUID();
     binding.takeover = { acquireId, approvalId, appId: app.appId };
     const live = await this.context(threadId, generation);
-    // A takeover excludes Chrome control; an idle Chrome holder in this profile gives way
-    // first, since the takeover's approval can't be retried.
-    const chromeHolder = this.chromeHolder;
-    if (chromeHolder && chromeHolder.threadId !== threadId)
-      await this.releaseChromeHolder(chromeHolder.threadId);
+    // A takeover excludes Chrome control and main checks Chrome before it reserves: an idle
+    // Chrome holder in this profile gives way first instead of the takeover waiting on it.
+    await this.preemptChromeFor(threadId, { kind: "foreground" });
+    const reservationController = new AbortController();
+    const reserved = this.host.takeoverReservationCapable()
+      ? this.host.awaitEvent(
+          (message) => message.type === "takeoverReserved" && message.requestId === acquireId,
+          COMPUTER_LEASE_WAIT_MAX_MS + 2000,
+          reservationController.signal,
+        )
+      : undefined;
     const acquired = this.host.correlated(
       {
         type: "foregroundTakeoverAcquire",
         requestId: acquireId,
         approvalRequestId: approvalId,
+        ...(reserved ? { waitMs: COMPUTER_LEASE_WAIT_MAX_MS } : {}),
+        ...(this.host.cooperationCapable() && live.runtimeMode === "full-access"
+          ? { cooperative: true }
+          : {}),
         holder: {
           ...this.authorization(live, binding.holder?.executionGeneration ?? 1),
           backend: "native",
@@ -1459,11 +1722,23 @@ export class ComputerAutomationBrokerRuntime {
     );
     let consent: Promise<void>;
     try {
+      // Busy/cancel before reservation must never create an access request or notification.
+      if (reserved)
+        await Promise.race([
+          reserved,
+          acquired.then(() => {
+            throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+          }),
+        ]);
+      this.assertRevision(binding, revision, turnRevision);
+      if (binding.takeover?.acquireId !== acquireId || this.pause.has(threadId))
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
       consent = this.access
         .requestTakeover(
           threadId,
           { requestId: approvalId, appId: app.appId, appName: app.name, turnId: ctx.turnId },
           reason,
+          { fullAccess: ctx.runtimeMode === "full-access" },
         )
         .then((allowed) => {
           if (!allowed)
@@ -1474,8 +1749,11 @@ export class ComputerAutomationBrokerRuntime {
         });
     } catch (error) {
       this.host.abandon(acquireId, error as ComputerControlError);
+      await acquired.catch(() => undefined);
       if (binding.takeover?.acquireId === acquireId) delete binding.takeover;
       throw error;
+    } finally {
+      reservationController.abort();
     }
     try {
       const holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(await acquired);
@@ -1535,7 +1813,10 @@ export class ComputerAutomationBrokerRuntime {
     // User interaction with a consent dialog must not race continuing native input.
     // Keep this turn's denial history, while cancelling queued/in-flight execution.
     this.cancelTurn(threadId, generation, ctx.turnId, "paused", false, false);
-    await this.access.requestAccess(threadId, ctx.turnId, candidates, reason, "apps", typing);
+    await this.access.requestAccess(threadId, ctx.turnId, candidates, reason, {
+      kind: "apps",
+      typing,
+    });
     const grants = this.access.grants(threadId);
     return {
       grants: grants.map((grant) => ({
@@ -1613,6 +1894,11 @@ export class ComputerAutomationBrokerRuntime {
         if (pending.threadId === threadId && pending.generation === generation)
           pending.settle(false);
     this.queue.flush(threadId, new ComputerControlError({ _tag: "Interrupted", cause }));
+    if (binding.acquiring && (!turnId || binding.acquiring.turnId === turnId)) {
+      const requestId = binding.acquiring.requestId;
+      delete binding.acquiring;
+      this.host.abandon(requestId, new ComputerControlError({ _tag: "Interrupted", cause }));
+    }
     // A pending takeover (consent or idle wait) ends with the turn, a pause or a policy change.
     if (binding.takeover) {
       const { acquireId, approvalId } = binding.takeover;
@@ -1661,6 +1947,18 @@ export class ComputerAutomationBrokerRuntime {
     )
       return;
     binding.endedTurnId = turnId;
+    if (this.host.cooperationCapable())
+      this.host.send({
+        type: "computerTurnEnded",
+        threadId,
+        sessionGeneration: binding.generation,
+        turnId,
+      });
+    if (
+      ["waiting-user", "waiting-agent"].includes(this.executionStates.get(threadId)?.state ?? "") &&
+      this.executionStates.delete(threadId)
+    )
+      this.publishUse();
     ++binding.turnRevision;
     // Startup waiters are pinned to the lifecycle turn before resolving context.
     const waiter = this.waits.get(threadId);
@@ -1678,6 +1976,7 @@ export class ComputerAutomationBrokerRuntime {
     // earlier must not expose an active native host to another profile.
     automationEventSanitizer.clear(threadId);
     this.nativePaused.delete(threadId);
+    this.yieldEpochs.delete(threadId);
     for (const key of this.sessionConsents)
       if (key.startsWith(`${threadId}\0${generation}\0`)) this.sessionConsents.delete(key);
     if (this.executionStates.delete(threadId)) this.publishUse();
@@ -1700,6 +1999,8 @@ export class ComputerAutomationBrokerRuntime {
       data: { threadId, grantVersion, grants: [] },
     });
     this.access.clearSession(threadId, generation);
+    if (this.host.sessionLifecycleCapable())
+      this.host.send({ type: "computerSessionClosed", threadId, sessionGeneration: generation });
     this.threadRevisions.delete(threadId);
     this.threadRevisions.set(threadId, binding.policyRevision);
     if (this.threadRevisions.size > 4096)
@@ -1773,11 +2074,35 @@ export class ComputerAutomationBrokerRuntime {
         .catch(() => undefined);
   }
   /** A single monotonic budget covers resolution, IPC and the backoff sleeps. */
+  async waitForTarget(
+    threadId: string,
+    generation: string,
+    input: { app?: string; timeoutMs?: number },
+  ): Promise<ComputerTargetAvailability> {
+    if (!this.host.cooperationCapable())
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Update F5 to wait for a computer target.",
+      });
+    const timeoutMs = input.timeoutMs ?? 10_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000)
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "timeoutMs must be between 100 and 30000.",
+      });
+    return Schema.decodeUnknownSync(ComputerTargetAvailability)(
+      await this.wait(threadId, generation, {
+        deadlineMs: performance.now() + timeoutMs,
+        target: input,
+      }),
+    );
+  }
   async wait(
     threadId: string,
     generation: string,
     input: {
       deadlineMs: number;
+      target?: { app?: string };
       condition?: {
         app: string;
         role?: string;
@@ -1791,6 +2116,9 @@ export class ComputerAutomationBrokerRuntime {
     timedOut?: boolean;
     snapshotId?: string;
     elementRefs?: string[];
+    available?: boolean;
+    reason?: ComputerTargetAvailability["reason"];
+    requiresFreshObservation?: true;
   }> {
     if (this.waits.has(threadId))
       throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
@@ -1872,6 +2200,79 @@ export class ComputerAutomationBrokerRuntime {
         data: { threadId, backend: "native", op: "wait", status: "started" },
       });
       started = true;
+      if (input.target) {
+        let appId: string | undefined;
+        if (input.target.app) {
+          const apps = selectComputerApp(
+            (await race(
+              this.invoke(
+                threadId,
+                generation,
+                {
+                  op: "resolveApps",
+                  queries: [input.target.app],
+                },
+                Math.max(1, input.deadlineMs - performance.now()),
+                {
+                  signal: controller.signal,
+                  beforeDispatch: validate,
+                  suppressActivity: true,
+                },
+              ),
+            )) as ReadonlyArray<ComputerApp>,
+            input.target.app,
+          );
+          if (apps.length !== 1)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "App could not be resolved uniquely; use an appId from computer_list_apps.",
+            });
+          appId = apps[0]!.appId;
+          this.access.require(threadId, appId, "view");
+        }
+        await validate();
+        const requestId = randomUUID();
+        const cancel = () =>
+          this.host.abandon(
+            requestId,
+            new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }),
+          );
+        controller.signal.addEventListener("abort", cancel, { once: true });
+        try {
+          const remaining = Math.max(
+            100,
+            Math.min(30_000, Math.floor(input.deadlineMs - performance.now())),
+          );
+          const outcome = Schema.decodeUnknownSync(ComputerTargetAvailability)(
+            await race(
+              this.host.correlated(
+                {
+                  type: "targetWait",
+                  requestId,
+                  holder: {
+                    ...this.authorization(ctx, binding.holder?.executionGeneration ?? 1),
+                    backend: "native",
+                    threadTitle: ctx.threadTitle,
+                    scope: appId
+                      ? { kind: "app", appId }
+                      : (binding.holder?.scope ?? { kind: "foreground" }),
+                    policyRevision: revision,
+                    ...(ctx.runtimeMode === "full-access" ? { cooperative: true } : {}),
+                  },
+                  ...(appId ? { appId } : {}),
+                  timeoutMs: remaining,
+                },
+                remaining + 1000,
+                false,
+              ),
+            ),
+          );
+          await validate();
+          return { ...result(), ...outcome };
+        } finally {
+          controller.signal.removeEventListener("abort", cancel);
+        }
+      }
       if (!input.condition) {
         await cancelled;
         throw deadline;
@@ -1951,6 +2352,8 @@ export class ComputerAutomationBrokerRuntime {
       }
     } catch (error) {
       if (error === deadline) {
+        if (input.target && started)
+          return { ...result(), available: false, timedOut: true, requiresFreshObservation: true };
         if (!started)
           throw new ComputerControlError({
             _tag: "Execution",

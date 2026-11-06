@@ -1,8 +1,10 @@
 import {
   PullRequestKey,
+  THREAD_PULL_REQUEST_SHELL_LIMIT,
   type ChangeRequest,
   type SourceControlProviderKind,
   type SourceControlPullRequestRef,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 
 const SOURCE_CONTROL_PROVIDER_KINDS = [
@@ -127,6 +129,112 @@ export function sourceControlPullRequestKeysEqual(
     leftRef.number === rightRef.number
   );
 }
+
+const GH_PR_CREATE_PATTERN = /\bgh\s+pr\s+create\b/;
+// A bare PR URL: a path, query or fragment after the number (comments, files) is not one.
+const GITHUB_PR_URL_PATTERN =
+  /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([0-9]+)(?![\w/#?=&-])/g;
+const GH_PR_TITLE_PATTERN = /(?:^|\s)(?:--title|-t)(?:\s+|=)(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/;
+
+/** Whether a shell command (or a provider's command detail) runs `gh pr create`. */
+export function commandCreatesPullRequest(text: string | null | undefined): boolean {
+  return text != null && GH_PR_CREATE_PATTERN.test(text);
+}
+
+function parseGhPullRequestTitle(text: string): string | null {
+  const match = GH_PR_TITLE_PATTERN.exec(text);
+  if (!match) return null;
+  const raw = match[1] !== undefined ? match[1].replace(/\\(.)/g, "$1") : (match[2] ?? "");
+  // Shell expansions are not the title the PR got.
+  if (/\$\(|`/.test(raw)) return null;
+  const title = raw.replace(/\s+/g, " ").trim();
+  return title.length > 0 && title.length <= 1000 ? title : null;
+}
+
+/**
+ * The PR a completed `gh pr create` printed. Providers put the command text in either
+ * `command` (Codex) or `detail` (Claude's `command` is the tool name); `gh` prints the
+ * new PR URL last.
+ */
+export function detectCreatedPullRequest(input: {
+  readonly command: string | null | undefined;
+  readonly detail: string | null | undefined;
+  readonly output: string;
+}): ThreadPullRequestLink | null {
+  const commandText = commandCreatesPullRequest(input.command)
+    ? input.command!
+    : commandCreatesPullRequest(input.detail)
+      ? input.detail!
+      : null;
+  if (commandText === null) return null;
+  const matches = [...input.output.matchAll(GITHUB_PR_URL_PATTERN)];
+  const last = matches.at(-1);
+  if (!last) return null;
+  const number = Number(last[3]);
+  if (!Number.isSafeInteger(number) || number < 1) return null;
+  const repository = `${last[1]}/${last[2]}`;
+  return {
+    provider: "github",
+    host: "github.com",
+    repository,
+    number,
+    title: parseGhPullRequestTitle(commandText) ?? `Pull request #${number}`,
+    url: `https://github.com/${repository}/pull/${number}`,
+  };
+}
+
+/** A link record for a known PR; the title falls back when it is missing or too long. */
+export function toThreadPullRequestLink(
+  reference: SourceControlPullRequestRef,
+  input: { readonly url: string; readonly title?: string | null | undefined },
+): ThreadPullRequestLink | null {
+  const url = input.url.trim();
+  if (!/^https?:\/\//.test(url) || url.length > 2048) return null;
+  const title = input.title?.replace(/\s+/g, " ").trim() ?? "";
+  return {
+    provider: reference.provider,
+    host: reference.host,
+    repository: reference.repository,
+    number: reference.number,
+    title: title.length > 0 ? title.slice(0, 1000) : `Pull request #${reference.number}`,
+    url,
+  };
+}
+
+/** Whether `links` already holds the PR `reference` names. */
+export function hasThreadPullRequestLink(
+  links: ReadonlyArray<ThreadPullRequestLink> | undefined,
+  reference: SourceControlPullRequestRef,
+): boolean {
+  const key = formatSourceControlPullRequestKey(reference);
+  return (links ?? []).some((link) =>
+    sourceControlPullRequestKeysEqual(formatSourceControlPullRequestKey(link), key),
+  );
+}
+
+/**
+ * A thread's PR links after one link or unlink: newest first, deduped by PR, capped at
+ * `THREAD_PULL_REQUEST_SHELL_LIMIT`. Returns the same array when nothing changes.
+ */
+export function updateThreadPullRequestLinks(
+  current: ReadonlyArray<ThreadPullRequestLink> | undefined,
+  change: {
+    readonly link?: ThreadPullRequestLink | undefined;
+    readonly unlink?: SourceControlPullRequestRef | undefined;
+  },
+): ReadonlyArray<ThreadPullRequestLink> {
+  const links = current ?? NO_THREAD_PULL_REQUEST_LINKS;
+  const target = change.link ?? change.unlink;
+  if (!target) return links;
+  const key = formatSourceControlPullRequestKey(target);
+  const rest = links.filter(
+    (link) => !sourceControlPullRequestKeysEqual(formatSourceControlPullRequestKey(link), key),
+  );
+  if (change.link) return [change.link, ...rest].slice(0, THREAD_PULL_REQUEST_SHELL_LIMIT);
+  return rest.length === links.length ? links : rest;
+}
+
+const NO_THREAD_PULL_REQUEST_LINKS: ReadonlyArray<ThreadPullRequestLink> = [];
 
 function parsePathParts(pathname: string): Pick<ParsedSourceControlRemote, "owner" | "repository"> {
   const parts = stripGitSuffix(pathname)

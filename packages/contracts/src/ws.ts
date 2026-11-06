@@ -11,6 +11,7 @@ import {
 } from "./baseSchemas";
 import {
   ComputerAccessRequested,
+  ComputerConsentPersistence,
   ComputerActivity,
   ComputerBackendKind,
   ComputerDelivery,
@@ -349,6 +350,8 @@ export const ComputerAccessSettled = Schema.Struct({
   requestId: Schema.String,
   threadId: Schema.String,
   allowed: Schema.Boolean,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  persistenceReason: Schema.optionalKey(Schema.String),
 });
 export const ComputerGrantsChanged = Schema.Struct({
   threadId: Schema.String,

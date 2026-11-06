@@ -2522,9 +2522,22 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   const applyThreadPullRequestsProjection = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
       if (event.type !== "thread.created" && event.type !== "thread.meta-updated") return;
+      const threadId = event.payload.threadId;
+      const unlinked =
+        event.type === "thread.meta-updated" ? event.payload.pullRequestUnlinked : undefined;
+      if (unlinked) {
+        // The delete trigger removes the link's search document too.
+        yield* sql`DELETE FROM projection_thread_pull_requests
+          WHERE thread_id = ${threadId} AND provider = ${unlinked.provider}
+            AND lower(host) = lower(${unlinked.host})
+            AND lower(repository) = lower(${unlinked.repository})
+            AND number = ${unlinked.number}`.pipe(
+          Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadPullRequests:delete")),
+        );
+        return;
+      }
       const link = event.payload.pullRequest;
       if (!link) return;
-      const threadId = event.payload.threadId;
       // This independent cursor also rebuilds links during startup replay. Search is
       // the first consumer; forge routing and review actions do not use these links.
       const linkId = JSON.stringify([

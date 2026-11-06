@@ -27,8 +27,9 @@ import { Button } from "../ui/button";
 import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 
 // Fixed width so the effort column lines up across slot rows ("High" vs "Extra High").
+// The selected effort is a value, not a hint, so it gets full contrast.
 const REASONING_TRIGGER_CLASS_NAME =
-  "h-7 w-24 shrink-0 justify-between gap-1 px-2 text-ui text-muted-foreground hover:text-foreground";
+  "h-7 w-24 shrink-0 justify-between gap-1 px-2 text-ui text-foreground";
 
 function MenuGroupLabel(props: { children: ReactNode }) {
   return (
@@ -36,29 +37,32 @@ function MenuGroupLabel(props: { children: ReactNode }) {
   );
 }
 
-export function WorkflowReasoningPicker(props: {
-  disabled?: boolean | undefined;
-  provider: ProviderKind;
-  model: string;
-  capabilities?: ModelCapabilities | null | undefined;
-  modelOptions: ProviderModelOptions | undefined;
-  onChange: (modelOptions: ProviderModelOptions | undefined) => void;
-}) {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  if (props.provider !== "codex" && props.provider !== "claudeAgent") return null;
-  const caps = resolveModelCapabilities(props.provider, props.model, props.capabilities);
+type ReasoningControls = NonNullable<ReturnType<typeof buildReasoningControls>>;
+
+/**
+ * The reasoning menu's controls for a slot, or `null` when the picker has nothing
+ * to show. Single source of truth for both the picker and the divider before it.
+ */
+function buildReasoningControls(
+  provider: ProviderKind,
+  model: string,
+  capabilities: ModelCapabilities | null | undefined,
+  modelOptions: ProviderModelOptions | undefined,
+) {
+  if (provider !== "codex" && provider !== "claudeAgent") return null;
+  const caps = resolveModelCapabilities(provider, model, capabilities);
   const efforts = caps.effortOptions.filter((effort) => effort !== "ultrathink");
-  const selections = providerModelOptionsToSelections(props.provider, props.modelOptions) ?? [];
+  const selections = providerModelOptionsToSelections(provider, modelOptions) ?? [];
   const selected = (id: string) => selections.find((selection) => selection.id === id)?.value;
-  const effortId = props.provider === "codex" ? "reasoningEffort" : "effort";
+  const effortId = provider === "codex" ? "reasoningEffort" : "effort";
   const requestedEffort = selected(effortId);
   // Codex shows the effort `turn/start` will run at (an unsupported pick walks down).
   const effort =
-    props.provider === "codex"
+    provider === "codex"
       ? resolveCodexEffectiveReasoningEffort(
-          props.model,
+          model,
           typeof requestedEffort === "string" ? requestedEffort : undefined,
-          props.capabilities,
+          capabilities,
         )
       : typeof requestedEffort === "string" && efforts.some((effort) => effort === requestedEffort)
         ? requestedEffort
@@ -118,6 +122,35 @@ export function WorkflowReasoningPicker(props: {
       : []),
   ];
   if (!controls.length) return null;
+  return { provider, model, capabilities, caps, effortId, selections, controls };
+}
+
+export function WorkflowReasoningPicker(props: {
+  disabled?: boolean | undefined;
+  provider: ProviderKind;
+  model: string;
+  capabilities?: ModelCapabilities | null | undefined;
+  modelOptions: ProviderModelOptions | undefined;
+  onChange: (modelOptions: ProviderModelOptions | undefined) => void;
+}) {
+  const reasoning = buildReasoningControls(
+    props.provider,
+    props.model,
+    props.capabilities,
+    props.modelOptions,
+  );
+  return reasoning ? (
+    <ReasoningMenu disabled={props.disabled} reasoning={reasoning} onChange={props.onChange} />
+  ) : null;
+}
+
+function ReasoningMenu(props: {
+  disabled?: boolean | undefined;
+  reasoning: ReasoningControls;
+  onChange: (modelOptions: ProviderModelOptions | undefined) => void;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const { provider, model, capabilities, caps, effortId, selections, controls } = props.reasoning;
   const first = controls[0]!;
   const label =
     first.id === effortId
@@ -146,7 +179,7 @@ export function WorkflowReasoningPicker(props: {
             <MenuRadioGroup
               value={control.value}
               onValueChange={(value) => {
-                const next = providerSelectionsToModelOptions(props.provider, [
+                const next = providerSelectionsToModelOptions(provider, [
                   ...selections.filter((selection) => selection.id !== control.id),
                   {
                     id: control.id,
@@ -159,14 +192,10 @@ export function WorkflowReasoningPicker(props: {
                 // Codex picks stay explicit: an omitted effort means the default
                 // the session reports, which the client may not have seen.
                 const normalized =
-                  props.provider === "codex"
-                    ? resolveCodexDispatchModelOptions(props.model, next?.codex, props.capabilities)
-                    : normalizeClaudeModelOptions(
-                        props.model,
-                        next?.claudeAgent,
-                        props.capabilities,
-                      );
-                props.onChange(normalized ? { [props.provider]: normalized } : undefined);
+                  provider === "codex"
+                    ? resolveCodexDispatchModelOptions(model, next?.codex, capabilities)
+                    : normalizeClaudeModelOptions(model, next?.claudeAgent, capabilities);
+                props.onChange(normalized ? { [provider]: normalized } : undefined);
                 setIsMenuOpen(false);
               }}
             >
@@ -198,6 +227,16 @@ export function SlotRow(props: {
   onModelOptionsChange: (modelOptions: ProviderModelOptions | undefined) => void;
   className?: string | undefined;
 }) {
+  const reasoning = buildReasoningControls(
+    props.provider,
+    props.model,
+    getWorkflowModelCapabilities(
+      props.providers ?? [],
+      ProviderDriverKind.make(props.provider),
+      props.model,
+    ),
+    props.modelOptions,
+  );
   return (
     <div
       data-slot="workflow-slot-row"
@@ -217,21 +256,24 @@ export function SlotRow(props: {
           lockedProvider={null}
           modelOptionsByProvider={props.modelOptionsByProvider}
           onProviderModelChange={props.onProviderModelChange}
-          // Fill the field so every row's chevron and effort picker line up.
-          triggerClassName="flex-1 max-w-none sm:max-w-none"
+          // Fill the field so every row's chevron and effort picker line up; the
+          // selected model is a value, not a hint, so it gets full contrast.
+          triggerClassName="flex-1 max-w-none sm:max-w-none text-foreground"
         />
-        <WorkflowReasoningPicker
-          disabled={props.disabled}
-          provider={props.provider}
-          model={props.model}
-          modelOptions={props.modelOptions}
-          capabilities={getWorkflowModelCapabilities(
-            props.providers ?? [],
-            ProviderDriverKind.make(props.provider),
-            props.model,
-          )}
-          onChange={props.onModelOptionsChange}
-        />
+        {reasoning ? (
+          <>
+            <span
+              aria-hidden="true"
+              data-slot="workflow-slot-divider"
+              className="h-4 w-px shrink-0 bg-border"
+            />
+            <ReasoningMenu
+              disabled={props.disabled}
+              reasoning={reasoning}
+              onChange={props.onModelOptionsChange}
+            />
+          </>
+        ) : null}
       </div>
     </div>
   );

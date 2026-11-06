@@ -214,7 +214,7 @@ func display(_ id: String) throws -> Display {
 }
 // Background accessibility delivery is always advertised; Electron's preview gate decides
 // whether a session may use it.
-let helperCapabilities: [String] = ["background-ax-v1"]
+let helperCapabilities: [String] = ["background-ax-v1", "computer-cooperation-v1", "background-shared-app-v1", "background-events-v1"]
 /// Per-generation permits. Lock order: never hold `permits`' lock with any other lock.
 let permits = ExecutionPermits()
 /// Guards grants, scopes' target PIDs, the window cache, frontmost PID, input sequence, the
@@ -243,6 +243,7 @@ struct ActionableInput {
   let location: CGPoint
   let windowNumber: Int
   let sequence: Int
+  let frontmostPid: Int?
 }
 struct TrackedAction {
   let generation: Int
@@ -260,6 +261,8 @@ var frontmostPid: Int?
 var frontmostBundleId: String?
 var lastInputUptime: TimeInterval = 0
 var inputSequence = 0
+var targetWatches: [String: ComputerTargetWatch] = [:]
+var postedRequests = Set<String>()
 var pendingInputs: [ActionableInput] = []
 var enqueuedInputSequence = 0
 var resolvedInputSequence = 0
@@ -362,12 +365,12 @@ func suspendAllReporting() {
     interrupt(
       generation,
       scope.isBackground
-        ? ["type": "targetInterrupted", "cause": "monitor"] : ["type": "physicalInput"])
+        ? ["type": "targetInterrupted", "cause": "monitor"] : ["type": "physicalInput", "cause": "monitor"])
   }
 }
 /// Suspend one generation locally, then report it asynchronously.
 func interrupt(_ generation: Int, _ message: [String: Any]) {
-  permits.suspend(generation)
+  permits.suspend(generation, cause: message["cause"] as? String)
   releaseQueue.async { releaseHeldInput(where: { $0.generation == generation }) }
   var payload = message
   payload["executionGeneration"] = generation
@@ -383,11 +386,17 @@ func refreshWindowCache() {
       pid: integer(record, kCGWindowOwnerPID as String), bounds: rect)
   }
   let front = NSWorkspace.shared.frontmostApplication
+  let watched = locked { Array(targetWatches.keys) }
+  let identities = Dictionary(uniqueKeysWithValues: watched.map { ($0, pids(for: $0)) })
   locked {
     windowCache = cache
     windowCacheRefreshedAt = ProcessInfo.processInfo.systemUptime
     frontmostPid = front.map { Int($0.processIdentifier) }
     frontmostBundleId = front?.bundleIdentifier
+    for appId in watched {
+      targetWatches[appId]?.identity(pids: identities[appId] ?? [],
+        frontmost: front?.bundleIdentifier == appId, now: ProcessInfo.processInfo.systemUptime)
+    }
   }
 }
 func backgroundScopesActive() -> [Int: String] {
@@ -403,6 +412,31 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
+func physicalInputHeld() -> Bool {
+  let state = CGEventSourceStateID.combinedSessionState
+  if !CGEventSource.flagsState(state).intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]).isEmpty {
+    return true
+  }
+  return (0..<256).contains { CGEventSource.keyState(state, key: CGKeyCode($0)) }
+    || (0..<32).contains { CGEventSource.buttonState(state, button: CGMouseButton(rawValue: UInt32($0))!) }
+}
+func targetReadiness(_ appId: String?) -> [String: Any] {
+  let healthy = monitorHealthy
+  let held = physicalInputHeld()
+  return locked {
+    let now = ProcessInfo.processInfo.systemUptime
+    let watch = appId.flatMap { targetWatches[$0] }
+    return [
+      "activityEpoch": watch?.activityEpoch ?? inputSequence,
+      "lastActivityAgeMs": watch?.activityAgeMs(now: now) ?? (lastInputUptime > 0 ? Int((now - lastInputUptime) * 1000) : -1),
+      "frontmost": watch?.frontmost ?? false, "monitorHealthy": healthy,
+      "inputSequence": inputSequence,
+      "lastUserInputAgeMs": lastInputUptime > 0 ? Int((now - lastInputUptime) * 1000) : -1,
+      "inputHeld": held,
+    ]
+  }
+}
+func hasTargetWatches() -> Bool { locked { !targetWatches.isEmpty } }
 /// Resolve queued physical input against every active background target.
 func resolveInputs() {
   let (events, cache, fresh, front) = locked {
@@ -416,12 +450,13 @@ func resolveInputs() {
   }
   guard !events.isEmpty else { return }
   let targets = backgroundScopesActive()
-  var targetPids: [Int: Set<Int>] = [:]
-  for (generation, appId) in targets { targetPids[generation] = pids(for: appId) }
+  let appIds = Set(targets.values).union(locked { Set(targetWatches.keys) })
+  var targetPids: [String: Set<Int>] = [:]
+  for appId in appIds { targetPids[appId] = pids(for: appId) }
   let primaryHeight = CGDisplayBounds(CGMainDisplayID()).height
   for event in events {
     var ownerAtPoint: Int?
-    if !targets.isEmpty {
+    if !appIds.isEmpty {
       let point = computerAppKitCoordinates(
         x: event.location.x, y: event.location.y, primaryDisplayHeight: primaryHeight)
       let hit: () -> Int = {
@@ -431,16 +466,25 @@ func resolveInputs() {
       let windowId = Thread.isMainThread ? hit() : DispatchQueue.main.sync(execute: hit)
       ownerAtPoint = cache[windowId]?.pid
     }
-    for (generation, appId) in targets {
-      let owned = targetPids[generation] ?? []
+    for appId in appIds {
+      let owned = targetPids[appId] ?? []
       let bounds = cache.values.filter { owned.contains($0.pid) }.map(\.bounds)
       if computerInputConflicts(
         kind: event.kind, location: event.location,
         eventWindowOwnerPid: event.windowNumber > 0 ? cache[event.windowNumber]?.pid : nil,
-        cachedOwnerAtPoint: ownerAtPoint, frontmostPid: front, targetPids: owned,
+        cachedOwnerAtPoint: ownerAtPoint, frontmostPid: event.frontmostPid, targetPids: owned,
         targetBounds: bounds, cacheFresh: fresh)
       {
-        interrupt(generation, ["type": "targetInterrupted", "appId": appId])
+        locked { targetWatches[appId]?.activity(now: ProcessInfo.processInfo.systemUptime) }
+        let cause: String = switch event.kind {
+          case .keyDown: "key"
+          case .scroll: "scroll"
+          case .dragStart, .drop: "drag"
+          default: "pointer"
+        }
+        for (generation, target) in targets where target == appId {
+          interrupt(generation, ["type": "targetInterrupted", "appId": appId, "cause": cause])
+        }
       }
     }
     locked { resolvedInputSequence = max(resolvedInputSequence, event.sequence) }
@@ -508,11 +552,8 @@ func installMonitor() {
         switch type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: .pointerDown
         case .keyDown: .keyDown
-        case .scrollWheel:
-          // Phase boundaries only: a gesture or momentum begin, or a plain wheel tick.
-          event.getIntegerValueField(.scrollWheelEventScrollPhase) <= 1
-            && event.getIntegerValueField(.scrollWheelEventMomentumPhase) <= 1 ? .scroll : nil
-        case .leftMouseDragged, .rightMouseDragged: dragging ? nil : .dragStart
+        case .scrollWheel: .scroll
+        case .leftMouseDragged, .rightMouseDragged: .dragStart
         case .leftMouseUp, .rightMouseUp: dragging ? .drop : nil
         default: nil
         }
@@ -525,7 +566,7 @@ func installMonitor() {
           inputSequence += 1
         }
         guard let kind else { return false }
-        if kind == .scroll, let last = pendingInputs.last, last.kind == .scroll,
+        if kind == .scroll || kind == .dragStart, let last = pendingInputs.last, last.kind == kind,
           hypot(last.location.x - event.location.x, last.location.y - event.location.y) < 20
         {
           return false
@@ -539,7 +580,7 @@ func installMonitor() {
           ActionableInput(
             kind: kind, location: event.location,
             windowNumber: Int(event.getIntegerValueField(.mouseEventWindowUnderMousePointer)),
-            sequence: inputSequence))
+            sequence: inputSequence, frontmostPid: frontmostPid))
         return true
       }
       if overflow {
@@ -551,9 +592,13 @@ func installMonitor() {
       if queued { conflictQueue.async { resolveInputs() } }
       // Foreground and takeover generations share the pointer and keyboard: any input pauses.
       if significant {
-        let foreground = permits.suspendForeground()
+        let cause = type == .mouseMoved ? "move"
+          : type == .scrollWheel ? "scroll"
+          : type == .keyDown || type == .keyUp || type == .flagsChanged ? "key"
+          : type == .leftMouseDragged || type == .rightMouseDragged ? "drag" : "pointer"
+        let foreground = permits.suspendForeground(cause: cause)
         for generation in foreground {
-          interrupt(generation, ["type": "physicalInput"])
+          interrupt(generation, ["type": "physicalInput", "cause": cause])
         }
         if foreground.isEmpty && now - lastIdleTelemetry >= 0.1 {
           // Coalesced idle telemetry: never pauses background holders.
@@ -583,7 +628,11 @@ func checkPermit(_ request: [String: Any]) throws {
   let auth = authorization(request)
   let generation = integer(auth, "executionGeneration")
   guard permits.authorized(generation, id: string(request, "requestId"))
-  else { throw Failure("Interrupted", "cause", "permit-expired") }
+  else {
+    let cause = permits.interruptionCause(generation) ?? ""
+    throw Failure("Interrupted", "cause",
+      ["pointer", "key", "scroll", "drag", "move", "frontmost"].contains(cause) ? "user-input" : "permit-expired")
+  }
   // The generation's immutable scope decides what this request may do.
   guard let scope = permits.scope(generation) else {
     throw Failure("Interrupted", "cause", "permit-expired")
@@ -609,6 +658,15 @@ func checkPermit(_ request: [String: Any]) throws {
     throw Failure("Unavailable", "reason", "missing-permissions")
   }
   guard monitorHealthy else { throw Failure("Unavailable", "reason", "monitor-unhealthy") }
+  if let expected = request["activityEpoch"] as? Int, let appId {
+    guard locked({ targetWatches[appId]?.activityEpoch == expected }) else {
+      throw Failure("Interrupted", "cause", "user-input")
+    }
+  }
+  if let expected = request["inputSequence"] as? Int,
+    locked({ inputSequence }) != expected {
+    throw Failure("Interrupted", "cause", "user-input")
+  }
   try checkGrants(request)
 }
 func checkGrants(_ request: [String: Any]) throws {
@@ -668,6 +726,9 @@ func focused(_ request: [String: Any], _ host: [String: Any], needed: String) th
 ) {
   guard let app = NSWorkspace.shared.frontmostApplication else {
     throw Failure("TargetBlocked", "kind", "focus-unknown")
+  }
+  if let requested = request["appId"] as? String, requested != app.bundleIdentifier {
+    throw Failure("TargetBlocked", "kind", "other-app")
   }
   _ = try grant(app, request: request, host: host, needed: needed)
   let root = applicationElement(app.processIdentifier)
@@ -747,10 +808,17 @@ func postMouse(
   if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(type) {
     pressedButtons.insert(Int(button.rawValue), owner: inputOwner(request))
   }
-  event.post(tap: .cghidEventTap)
+  postActionEvent(event, request)
   if [.leftMouseUp, .rightMouseUp, .otherMouseUp].contains(type) {
     pressedButtons.remove(Int(button.rawValue))
   }
+}
+func markActionStarted(_ request: [String: Any]) {
+  locked { _ = postedRequests.insert(string(request, "requestId")) }
+}
+func postActionEvent(_ event: CGEvent, _ request: [String: Any]) {
+  markActionStarted(request)
+  event.post(tap: .cghidEventTap)
 }
 func appRecord(_ app: NSRunningApplication) -> [String: Any]? {
   guard let id = app.bundleIdentifier else { return nil }
@@ -1096,6 +1164,7 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     else { throw Failure("UnsupportedAction") }
     try checkPermit(request)
     let dispatch = background ? beginBackgroundAction(request, app: app) : nil
+    markActionStarted(request)
     result = AXUIElementSetAttributeValue(
       element, name as CFString,
       action == "focus" ? kCFBooleanTrue : string(request, "value") as CFString)
@@ -1112,6 +1181,7 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
       guard (names as? [String] ?? []).contains(native) else { throw Failure("UnsupportedAction") }
     }
     let dispatch = background ? beginBackgroundAction(request, app: app) : nil
+    markActionStarted(request)
     result = AXUIElementPerformAction(element, native as CFString)
     if let dispatch { try endBackgroundAction(dispatch, succeeded: result == .success) }
   }
@@ -1248,12 +1318,17 @@ func applicationActivated(_ app: NSRunningApplication) {
     frontmostPid = pid
     frontmostBundleId = app.bundleIdentifier
   }
-  let incident = locked {
-    trackedActions.first { $0.value.targetPid == pid && now <= $0.value.windowEnd }?.key
+  let incidents = locked {
+    trackedActions.filter { $0.value.targetPid == pid && now <= $0.value.windowEnd }.map(\.key)
   }
-  if let incident {
-    activationIncident(incident)
-    return
+  locked {
+    for appId in Array(targetWatches.keys) {
+      let owned = targetWatches[appId]?.pids ?? []
+      targetWatches[appId]?.identity(pids: owned, frontmost: app.bundleIdentifier == appId, now: now)
+    }
+  }
+  if !incidents.isEmpty {
+    for incident in incidents { activationIncident(incident) }
   }
   guard let bundleId = app.bundleIdentifier else { return }
   for (generation, appId) in backgroundScopesActive() where appId == bundleId {
@@ -1318,6 +1393,7 @@ func backgroundType(_ request: [String: Any], _ host: [String: Any]) throws -> (
     else { throw start == 0 ? Failure("TargetBlocked", "kind", "focus-unknown") : Failure("OutcomeUnknown") }
     let end = min(start + 32, characters.count)
     let dispatch = beginBackgroundAction(request, app: app)
+    markActionStarted(request)
     let result = AXUIElementSetAttributeValue(
       element, kAXSelectedTextAttribute as CFString, String(characters[start..<end]) as CFString)
     try endBackgroundAction(dispatch, succeeded: result == .success)
@@ -1720,6 +1796,7 @@ func openInstalledApp(
   try checkPermit(request)
   let configuration = NSWorkspace.OpenConfiguration()
   configuration.activates = activates
+  markActionStarted(request)
   let app = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
   // Background: the launched process must be the granted app, not whatever the URL resolved to.
   guard activates || app.bundleIdentifier == id else {
@@ -1728,7 +1805,7 @@ func openInstalledApp(
   _ = try grant(app, request: request, host: host, needed: "click")
   return app
 }
-/// Background deliveries: accessibility only, no pointer movement, no focus change.
+/// Background accessibility and certified process-directed events; no pointer or focus change.
 func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [String:
   Any]
 {
@@ -1739,6 +1816,7 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
     switch op {
     case "elementAction": verification = try elementAction(request, host)
     case "type": verification = try backgroundType(request, host).2
+    case "key", "scroll": verification = try backgroundEvents(request, host)
     case "openApp":
       let id = string(request, "appId")
       if tier(id) == "blocked" { throw Failure("TargetBlocked", "kind", "protection-unknown") }
@@ -1847,7 +1925,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
           event.location = point
           event.setIntegerValueField(.eventSourceUserData, value: 0xF5C0)
           try checkPermit(request)
-          event.post(tap: .cghidEventTap)
+          postActionEvent(event, request)
         }
       }
     }
@@ -1879,7 +1957,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
             }
             try checkPermit(request)
             if down { pressedKeys.insert(0, owner: owner) }
-            event.post(tap: .cghidEventTap)
+            postActionEvent(event, request)
             if !down { pressedKeys.remove(0) }
           }
         }
@@ -1899,7 +1977,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
               else { throw Failure("UnsupportedAction") }
               try checkPermit(request)
               if down { pressedKeys.insert(code, owner: owner) }
-              event.post(tap: .cghidEventTap)
+              postActionEvent(event, request)
               if !down { pressedKeys.remove(code) }
             }
           }
@@ -1920,6 +1998,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
       let app = try appById(id)
       _ = try grant(app, request: request, host: host, needed: "click")
       try checkPermit(request)
+      markActionStarted(request)
       guard app.activate(options: []) else {
         throw Failure("Execution", "message", "App activation failed.")
       }
@@ -1985,6 +2064,7 @@ func execute(_ message: [String: Any]) {
   let completed = DispatchSemaphore(value: 0)
   Task {
     defer {
+      locked { _ = postedRequests.remove(id) }
       if tracked {
         locked {
           inFlight.removeValue(forKey: id)
@@ -2007,7 +2087,12 @@ func execute(_ message: [String: Any]) {
       }
       emit(["type": "response", "requestId": id, "result": result])
     } catch let failure as Failure {
-      emit(["type": "response", "requestId": id, "error": failure.payload])
+      var error = failure.payload
+      if tracked && error["_tag"] as? String == "Interrupted" {
+        let started = locked { postedRequests.contains(id) }
+        error = started ? ["_tag": "OutcomeUnknown"] : error.merging(["actionStarted": false]) { _, new in new }
+      }
+      emit(["type": "response", "requestId": id, "error": error])
     } catch {
       emit([
         "type": "response", "requestId": id,
@@ -2080,7 +2165,7 @@ heartbeat.setEventHandler {
   // Inputs held by a suspended or retired generation are released.
   releaseQueue.async { releaseHeldInput(where: { active[$0.generation] == nil }) }
   // The window cache stays fresh while any background target exists.
-  if active.values.contains(where: \.isBackground) { conflictQueue.async { refreshWindowCache() } }
+  if active.values.contains(where: \.isBackground) || hasTargetWatches() { conflictQueue.async { refreshWindowCache() } }
   let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
   let (inputAge, sequence) = locked {
     (
@@ -2094,6 +2179,14 @@ heartbeat.setEventHandler {
   ]
   if inputAge >= 0 { beat["lastUserInputAgeMs"] = Int(inputAge) }
   if let front { beat["frontmostAppId"] = front }
+  beat["inputHeld"] = physicalInputHeld()
+  beat["targets"] = locked {
+    targetWatches.map { appId, watch in
+      ["appId": appId, "activityEpoch": watch.activityEpoch,
+        "lastActivityAgeMs": watch.activityAgeMs(now: ProcessInfo.processInfo.systemUptime),
+        "frontmost": watch.frontmost] as [String: Any]
+    }
+  }
   emit(beat)
   emitStatus(permissions())
 }
@@ -2116,6 +2209,45 @@ DispatchQueue.global(qos: .userInteractive).async {
       }
       let generation = integer(message, "executionGeneration")
       switch string(message, "type") {
+      case "watchRegister":
+        let appId = string(message, "appId")
+        let owner = string(message, "owner")
+        let accepted = locked {
+          guard !appId.isEmpty, !owner.isEmpty,
+            targetWatches[appId] != nil || targetWatches.count < 32 else { return false }
+          if targetWatches[appId] == nil { targetWatches[appId] = ComputerTargetWatch() }
+          targetWatches[appId]?.owners.insert(owner)
+          return true
+        }
+        guard accepted else {
+          emit(["type": "response", "requestId": message["requestId"] ?? "",
+            "error": ["_tag": "Execution", "message": "Computer target watch limit reached."]])
+          continue
+        }
+        conflictQueue.async {
+          refreshWindowCache(); resolveInputs()
+        emit(["type": "response", "requestId": message["requestId"] ?? "",
+          "result": targetReadiness(appId)])
+        }
+      case "watchRelease":
+        let appId = string(message, "appId")
+        let owner = string(message, "owner")
+        locked {
+          targetWatches[appId]?.owners.remove(owner)
+          if targetWatches[appId]?.owners.isEmpty == true { targetWatches.removeValue(forKey: appId) }
+        }
+      case "availability":
+        let appId = message["appId"] as? String
+        if let appId, !locked({ targetWatches[appId] != nil }) {
+          emit(["type": "response", "requestId": message["requestId"] ?? "",
+            "error": ["_tag": "Execution", "message": "Computer target is not watched."]])
+          continue
+        }
+        conflictQueue.async {
+          refreshWindowCache(); resolveInputs()
+        emit(["type": "response", "requestId": message["requestId"] ?? "",
+          "result": targetReadiness(appId)])
+        }
       case "permit":
         let duration = Double(integer(message, "expiresInMs")) / 1000
         // The first permit fixes the scope; renewals carry only the generation. A permit with

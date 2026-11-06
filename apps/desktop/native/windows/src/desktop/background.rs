@@ -9,7 +9,9 @@ unsafe fn target(request: &Value, host: &Value, needed: &str) -> Result<HWND, Va
     let hwnd =
         app_window(s(request, "appId")).map_err(|_| foreground_required("window-unavailable"))?;
     authorize(hwnd, request, host, needed)?;
-    if owner(GetForegroundWindow()).is_ok_and(|(id, _)| id == s(request, "appId")) {
+    if owner(GetForegroundWindow())
+        .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
+    {
         return Err(blocked("user-active"));
     }
     if let Some(slot) = control(generation(request)) {
@@ -27,13 +29,14 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
     let hwnd = target(
         request,
         host,
-        if op == "type" || s(request, "action") == "setValue" {
+        if op == "type" || op == "key" || s(request, "action") == "setValue" {
             "type"
         } else {
             "click"
         },
     )?;
     let before = GetForegroundWindow();
+    let mut _activation = None;
     let mut verification = None;
     match op {
         "elementAction" => {
@@ -58,6 +61,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                         .map_err(|_| foreground_required("unsupported-in-background"))?;
                     target(request, host, "click")?;
                     snapshot_validate(&snapshot, request)?;
+                    _activation = Some(cooperation::background_action(request, before));
+                    mark_posted();
                     pattern.Invoke().map_err(|_| fail("OutcomeUnknown"))?;
                 }
                 "setValue" => {
@@ -73,6 +78,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                     }
                     target(request, host, "type")?;
                     snapshot_validate(&snapshot, request)?;
+                    _activation = Some(cooperation::background_action(request, before));
+                    mark_posted();
                     pattern
                         .SetValue(&BSTR::from(s(request, "value")))
                         .map_err(|_| fail("OutcomeUnknown"))?;
@@ -174,10 +181,16 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
             {
                 return Err(foreground_required("typing-unsupported"));
             }
+            _activation = Some(cooperation::background_action(request, before));
+            mark_posted();
             pattern
                 .SetValue(&BSTR::from(text.as_str()))
                 .map_err(|_| fail("OutcomeUnknown"))?;
             verification = Some(read_back(pattern, &text));
+        }
+        "key" | "scroll" => {
+            _activation = Some(cooperation::background_action(request, before));
+            verification = Some(background_events::execute(request, host, hwnd)?);
         }
         "openApp" => {} // Already running: do not activate it. New launches require takeover.
         _ => return Err(foreground_required("unsupported-in-background")),
@@ -186,7 +199,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
         if GetForegroundWindow() != before
-            && owner(GetForegroundWindow()).is_ok_and(|(id, _)| id == s(request, "appId"))
+            && owner(GetForegroundWindow())
+                .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
         {
             suspend_generation(Some(generation(request)));
             emit(
@@ -196,7 +210,6 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    check(request)?;
     let display = displays().into_iter().find(|display| {
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &mut rect).is_ok()

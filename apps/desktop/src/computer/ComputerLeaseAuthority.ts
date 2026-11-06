@@ -38,8 +38,8 @@ interface Entry {
 }
 /**
  * Owned by Electron main, shared across every profile and provider. Holds at most one lease
- * per profile+thread: the legacy machine-wide foreground scope, one background app scope per
- * app, or one takeover (foreground limited to one app) at a time.
+ * per profile+thread: the machine-wide foreground scope, a background app scope, or a takeover
+ * (foreground limited to one app). Capable helpers allow several background leases in one app.
  */
 export class ComputerLeaseAuthority {
   private entries: Entry[] = [];
@@ -47,12 +47,52 @@ export class ComputerLeaseAuthority {
   private reservationId = 0;
   private pending: ComputerTakeoverReservation | null = null;
   private readonly listeners = new Set<(holders: ReadonlyArray<ComputerLeaseHolder>) => void>();
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly options: { shareApps?: () => boolean } = {},
+  ) {}
   holders(): ReadonlyArray<ComputerLeaseHolder> {
     return this.entries.map((entry) => entry.holder);
   }
   pendingTakeover(): ComputerTakeoverReservation | null {
     return this.pending;
+  }
+  conflictsFor(input: ComputerLeaseHolder): boolean {
+    return (
+      this.entries.some(
+        ({ holder }) =>
+          !sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope),
+      ) ||
+      (!!this.pending &&
+        !sameThread(this.pending.holder, input) &&
+        this.scopesConflict(input.scope, this.pending.holder.scope))
+    );
+  }
+  scopesConflict(a: ComputerLeaseScope, b: ComputerLeaseScope): boolean {
+    return computerScopesConflict(a, b, { shareApps: this.options.shareApps?.() ?? false });
+  }
+  renewal(input: ComputerLeaseHolder): boolean {
+    return this.entries.some(
+      ({ holder, lastMutationAt }) =>
+        sameThread(holder, input) &&
+        holder.sessionGeneration === input.sessionGeneration &&
+        holder.turnId === input.turnId &&
+        holder.backend === input.backend &&
+        holder.policyRevision === input.policyRevision &&
+        holder.cooperative === input.cooperative &&
+        sameComputerScope(holder.scope, input.scope) &&
+        this.now() - lastMutationAt < 60_000,
+    );
+  }
+  idleConflicts(scope: ComputerLeaseScope, idleMs: number): ReadonlyArray<ComputerLeaseHolder> {
+    return this.entries
+      .filter(
+        ({ holder, lastMutationAt }) =>
+          holder.scope.kind !== "takeover" &&
+          this.scopesConflict(scope, holder.scope) &&
+          this.now() - lastMutationAt >= idleMs,
+      )
+      .map(({ holder }) => holder);
   }
   /** The armed takeover, which blocks every other thread's background mutations. */
   takeover(): ComputerLeaseHolder | undefined {
@@ -91,15 +131,18 @@ export class ComputerLeaseAuthority {
         holder.backend === input.backend;
       if (
         sameTurn &&
+        holder.cooperative === input.cooperative &&
         holder.policyRevision === input.policyRevision &&
         sameComputerScope(holder.scope, input.scope)
-      )
+      ) {
+        own.lastMutationAt = this.now();
         return holder;
+      }
       // A scope change keeps the thread's single lease: only within the same session/turn.
       if (!sameTurn) throw this.busy(holder, input.profileId);
     }
     for (const { holder } of this.entries)
-      if (!sameThread(holder, input) && computerScopesConflict(input.scope, holder.scope))
+      if (!sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope))
         throw this.busy(holder, input.profileId);
     if (this.pending && !sameThread(this.pending.holder, input)) {
       if (input.scope.kind === "foreground" || input.scope.appId === this.pending.appId)
@@ -119,7 +162,7 @@ export class ComputerLeaseAuthority {
     const appId = input.scope.appId;
     if (this.pending) throw this.busy(this.pending.holder, input.profileId);
     for (const { holder } of this.entries)
-      if (!sameThread(holder, input) && computerScopesConflict(input.scope, holder.scope))
+      if (!sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope))
         throw this.busy(holder, input.profileId);
     this.pending = { id: ++this.reservationId, holder: input, appId };
     this.notify();
@@ -143,7 +186,7 @@ export class ComputerLeaseAuthority {
       approvalReceipt,
     };
     for (const { holder } of this.entries)
-      if (!sameThread(holder, reservation.holder) && computerScopesConflict(scope, holder.scope))
+      if (!sameThread(holder, reservation.holder) && this.scopesConflict(scope, holder.scope))
         throw this.busy(holder, reservation.holder.profileId);
     this.pending = null;
     this.entries = this.entries.filter(({ holder }) => !sameThread(holder, reservation.holder));
@@ -171,6 +214,29 @@ export class ComputerLeaseAuthority {
     const entry = this.entries.find((candidate) => sameComputerHolder(candidate.holder, holder));
     if (entry) entry.lastMutationAt = this.now();
   }
+  /** Retire a yielded native generation without releasing its exclusive foreground scope. */
+  rotate(
+    holder: ComputerLeaseHolder,
+    beforePublish: (next: ComputerLeaseHolder) => void,
+    authorization: ComputerLeaseHolder = holder,
+  ): ComputerLeaseHolder {
+    const entry = this.entries.find((candidate) => sameComputerHolder(candidate.holder, holder));
+    if (!entry) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (
+      !sameThread(entry.holder, authorization) ||
+      entry.holder.sessionGeneration !== authorization.sessionGeneration ||
+      entry.holder.turnId !== authorization.turnId ||
+      entry.holder.policyRevision !== authorization.policyRevision ||
+      !sameComputerScope(entry.holder.scope, authorization.scope)
+    )
+      throw new ComputerControlError({ _tag: "ReplayRejected" });
+    const next = { ...authorization, executionGeneration: ++this.generation };
+    beforePublish(next);
+    entry.holder = next;
+    entry.lastMutationAt = this.now();
+    this.notify();
+    return next;
+  }
   release(holder: ComputerLeaseHolder): void {
     const before = this.entries.length;
     this.entries = this.entries.filter((entry) => !sameComputerHolder(entry.holder, holder));
@@ -189,7 +255,10 @@ export class ComputerLeaseAuthority {
   sweep(): void {
     const now = this.now();
     const before = this.entries.length;
-    this.entries = this.entries.filter((entry) => now - entry.lastMutationAt < 60_000);
+    // Builtin control ends through explicit release or supervised process exit, not native idle.
+    this.entries = this.entries.filter(
+      (entry) => entry.holder.backend !== "native" || now - entry.lastMutationAt < 60_000,
+    );
     if (this.entries.length !== before) this.notify();
   }
   subscribe(listener: (holders: ReadonlyArray<ComputerLeaseHolder>) => void): () => void {

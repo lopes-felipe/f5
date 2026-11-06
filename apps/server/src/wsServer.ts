@@ -63,6 +63,7 @@ import {
   scratchWorkspaceRefusal,
 } from "./project/scratchProject.ts";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { readWorktreeClaims } from "./project/worktreeClaims.ts";
 import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
@@ -321,7 +322,7 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
-import { Open, resolveAvailableEditors } from "./open";
+import { Open, OpenError, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { IMMUTABLE_PRIVATE_CACHE_CONTROL, openContainedFile, serveAsset } from "./assetHttp";
@@ -967,6 +968,12 @@ function formatRouteFailure(
   }
   if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
+  }
+  if (Schema.is(OpenError)(squashed)) {
+    // Generic launch failures ("failed to spawn detached process") keep the
+    // real reason in `cause`; carry its message without the stack.
+    const cause = squashed.cause instanceof Error ? squashed.cause.message.trim() : "";
+    return { message: cause ? `${squashed.message}: ${cause}` : squashed.message };
   }
   if (Schema.is(RouteRequestError)(squashed)) {
     return {
@@ -1997,7 +2004,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           commandId: command.commandId,
           threadId: command.threadId,
           message: {
-            messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+            messageId: MessageId.makeUnsafe(answerMessageIdFor(command.commandId)),
             role: "user",
             text: JSON.stringify(command.answers),
             attachments: command.attachments ?? [],

@@ -7,7 +7,10 @@ import * as path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import serverPackage from "../apps/server/package.json" with { type: "json" };
-import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
+import {
+  pinnedCliDependency,
+  selectCliRuntimeExternalDependencies,
+} from "./lib/cli-external-packages.ts";
 import {
   cliTarget,
   sha256File,
@@ -17,16 +20,7 @@ import {
 } from "@t3tools/shared/cliRelease";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CLI_NODE_VERSION = "26.10.0";
-/** Keep npm aliases intact when pinning a staged runtime to the root lock. */
-export function pinnedCliDependency(
-  packages: Readonly<Record<string, readonly unknown[]>>,
-  name: string,
-): string {
-  const entry = packages[name]?.[0];
-  const resolution = typeof entry === "string" ? /^((?:@[^/]+\/)?[^@]+)@(.+)$/.exec(entry) : null;
-  if (!resolution) throw new Error(`Missing pinned native dependency: ${name}`);
-  return resolution[1] === name ? resolution[2]! : `npm:${entry}`;
-}
+export { pinnedCliDependency };
 
 export async function buildCliArchive(options: {
   target: string;

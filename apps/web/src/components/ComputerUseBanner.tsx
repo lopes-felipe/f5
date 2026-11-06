@@ -96,18 +96,25 @@ export function computerUseBannerText(
   if (reserved) return "Chrome reserved · idle";
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
-  const state = pausedLocally && holder.state === "active" ? "paused" : holder.state;
+  const state =
+    pausedLocally && ["active", "waiting-user", "waiting-agent"].includes(holder.state)
+      ? "paused"
+      : holder.state;
   switch (state) {
     case "paused":
       return `Computer control paused${cause ? ` · ${cause}` : ""}`;
     case "recovery":
-      return `Computer control stopped${app ? ` · check ${app} before resuming` : ""}${cause ? ` · ${cause}` : ""}`;
+      return `Needs recovery${app ? ` · check ${app} before resuming` : ""}${cause ? ` · ${cause}` : ""}`;
     case "waiting-secure-input":
       return `Agent waiting${app ? ` in ${app}` : ""} while secure text entry is active`;
     case "pending-consent":
       return "Agent waiting for computer access approval";
     case "waiting-idle":
       return "Agent waiting for you to stop using the mouse and keyboard";
+    case "waiting-user":
+      return app ? `Waiting for you to finish in ${app}` : "Waiting while you use the computer";
+    case "waiting-agent":
+      return "Waiting for another agent";
     case "active":
       break;
   }
@@ -127,9 +134,9 @@ export function computerUseBannerText(
   const background = leases.holders.filter(
     (entry) => entry.delivery === "background" && entry.state === "active",
   );
-  if (background.length <= 1) return `An agent is working in ${app ?? "an app"} in the background`;
+  if (background.length <= 1) return `Working in background · ${app ?? "an app"}`;
   const apps = [...new Set(background.flatMap((entry) => (entry.appName ? [entry.appName] : [])))];
-  return `${background.length} agents are working in the background${apps.length ? ` in ${apps.join(", ")}` : ""}`;
+  return `${background.length} agents working in background${apps.length ? ` · ${apps.join(", ")}` : ""}`;
 }
 
 /**
@@ -144,7 +151,11 @@ export function computerUseBannerAmbient(
   if (leases.pendingTakeover || leases.otherProfile || pausedLocally) return false;
   // An idle Chrome reservation is ambient too: nothing is happening, it just holds Chrome.
   if (chromeIdleReservation(leases, pausedLocally, chromeLinger)) return true;
-  return holder?.delivery === "background" && holder.state === "active";
+  return (
+    holder?.state === "waiting-user" ||
+    holder?.state === "waiting-agent" ||
+    (holder?.delivery === "background" && holder.state === "active")
+  );
 }
 
 /** Why Release didn't free Chrome, from the server's outcome (older servers send none). */

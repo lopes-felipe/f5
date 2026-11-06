@@ -311,6 +311,99 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     ),
   );
 
+  it.effect("removes an unlinked PR row and its search document", () =>
+    runWithProjectionPipelineLayer(
+      process.cwd(),
+      Effect.gen(function* () {
+        const pipeline = yield* OrchestrationProjectionPipeline;
+        const store = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-09-25T00:00:00.000Z";
+        const projectId = ProjectId.makeUnsafe("unlinked-pr-project");
+        const threadId = ThreadId.makeUnsafe("unlinked-pr-thread");
+        const common = {
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+        };
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("unlinked-pr-project"),
+          type: "project.created",
+          aggregateKind: "project",
+          aggregateId: projectId,
+          payload: {
+            projectId,
+            title: "PR search",
+            workspaceRoot: "/tmp/pr-search",
+            defaultModel: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("unlinked-pr-thread"),
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            projectId,
+            title: "PR search",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+            pullRequest: {
+              provider: "github",
+              host: "github.com",
+              repository: "owner/widget",
+              number: 381,
+              title: "Fix search",
+              url: "https://github.com/owner/widget/pull/381",
+            },
+          },
+        });
+        yield* pipeline.bootstrap;
+        assert.equal(
+          (yield* sql`SELECT * FROM projection_thread_pull_requests WHERE thread_id = ${threadId}`)
+            .length,
+          1,
+        );
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("unlinked-pr-meta"),
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            pullRequestUnlinked: {
+              provider: "github",
+              host: "github.com",
+              repository: "Owner/Widget",
+              number: 381,
+            },
+            updatedAt: now,
+          },
+        });
+        yield* pipeline.bootstrap;
+        const links =
+          yield* sql`SELECT * FROM projection_thread_pull_requests WHERE thread_id = ${threadId}`;
+        assert.equal(links.length, 0);
+        const documents =
+          yield* sql`SELECT * FROM search_documents WHERE thread_id = ${threadId} AND document_key LIKE 'pull-request:%'`;
+        assert.equal(documents.length, 0);
+      }),
+    ),
+  );
+
   it.effect("keeps live projections atomic and advances all cursors with one statement", () =>
     runWithProjectionPipelineLayer(
       process.cwd(),

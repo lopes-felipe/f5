@@ -4,6 +4,13 @@ import {
   SCHEDULED_NOTIFICATIONS_CAPABILITY,
   OPEN_EXTERNAL_URL_CAPABILITY,
   COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+  COMPUTER_GRANT_FORGET_CAPABILITY,
+  COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
+  COMPUTER_COOPERATION_CAPABILITY,
+  COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -39,6 +46,7 @@ export class DesktopComputerHost {
   >();
   private readonly listeners = new Set<(message: DesktopComputerHostMessage) => void>();
   private connected = false;
+  private awaitingHost = false;
   private hostCapabilities = new Set<string>();
   constructor(
     readonly profileId: string,
@@ -48,6 +56,7 @@ export class DesktopComputerHost {
   ) {
     if (!enabled || !ipc.send || ipc.connected === false) return;
     this.connected = true;
+    this.awaitingHost = true;
     this.state = {
       available: false,
       reason: "no-host",
@@ -64,6 +73,13 @@ export class DesktopComputerHost {
         SCHEDULED_NOTIFICATIONS_CAPABILITY,
         OPEN_EXTERNAL_URL_CAPABILITY,
         COMPUTER_BACKGROUND_CAPABILITY,
+        COMPUTER_SESSION_LIFECYCLE_CAPABILITY,
+        COMPUTER_GRANT_FORGET_CAPABILITY,
+        COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
+        COMPUTER_COOPERATION_CAPABILITY,
+        COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
+        COMPUTER_SHARED_APP_CAPABILITY,
+        COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
@@ -76,6 +92,82 @@ export class DesktopComputerHost {
   /** Background delivery needs the desktop to have answered with the same capability. */
   backgroundCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_BACKGROUND_CAPABILITY);
+  }
+  sessionLifecycleCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_SESSION_LIFECYCLE_CAPABILITY);
+  }
+  grantForgetCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_GRANT_FORGET_CAPABILITY);
+  }
+  rememberedConsentCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_REMEMBERED_CONSENT_CAPABILITY);
+  }
+  cooperationCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_COOPERATION_CAPABILITY);
+  }
+  takeoverReservationCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_TAKEOVER_RESERVATION_CAPABILITY);
+  }
+  backgroundEventsCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_BACKGROUND_EVENTS_CAPABILITY);
+  }
+  /** Install before sending the corresponding request, including synchronous IPC transports. */
+  awaitEvent(
+    matches: (message: DesktopComputerHostMessage) => boolean,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!this.connected)
+      return Promise.reject(new ComputerControlError({ _tag: "Unavailable", reason: "no-host" }));
+    return new Promise((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        clearTimeout(timer);
+        off();
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const abort = () =>
+        finish(
+          signal?.reason ?? new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }),
+        );
+      const off = this.onMessage((message) => {
+        if (message.type === "status" && !this.connected) abort();
+        else if (matches(message)) finish();
+      });
+      const timer = setTimeout(
+        () =>
+          finish(
+            new ComputerControlError({
+              _tag: "Execution",
+              message: "Desktop reservation timed out.",
+            }),
+          ),
+        timeoutMs,
+      );
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
+  }
+  /** Main sends capabilities before status; a legacy host settles readiness with status alone. */
+  async handshake(): Promise<void> {
+    if (!this.connected || this.hostCapabilities.size || this.state.available || !this.awaitingHost)
+      return;
+    await new Promise<void>((resolve) => {
+      const off = this.onMessage((message) => {
+        if (message.type !== "hostCapabilities" && message.type !== "status") return;
+        clearTimeout(timer);
+        off();
+        resolve();
+      });
+      const timer = setTimeout(() => {
+        off();
+        resolve();
+      }, 2000);
+    });
+  }
+  awaitingHandshake(): boolean {
+    return this.connected && this.awaitingHost;
   }
   supportsAgentIdentity(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_AGENT_IDENTITY_CAPABILITY);
@@ -133,8 +225,14 @@ export class DesktopComputerHost {
       this.disconnect();
       return;
     }
-    if (message.type === "hostCapabilities") this.hostCapabilities = new Set(message.capabilities);
-    if (message.type === "status") this.state = message.status;
+    if (message.type === "hostCapabilities") {
+      this.hostCapabilities = new Set(message.capabilities);
+      this.awaitingHost = false;
+    }
+    if (message.type === "status") {
+      this.state = message.status;
+      this.awaitingHost = false;
+    }
     if (message.type === "openExternalUrlResult") {
       const pending = this.browserPending.get(message.id);
       if (pending) {

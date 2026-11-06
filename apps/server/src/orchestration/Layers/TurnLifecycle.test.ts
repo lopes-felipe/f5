@@ -478,6 +478,17 @@ suite("durable turn lifecycle", (it) => {
         };
         const receipt = yield* engine.dispatch(command);
         assert.deepEqual(yield* engine.dispatch(command), receipt);
+        const resolvedActivities = (yield* engine.getReadModel()).threads
+          .find((thread) => thread.id === threadId)!
+          .activities.filter((activity) => activity.kind === "user-input.resolved");
+        assert.equal(resolvedActivities.length, 1);
+        assert.equal(resolvedActivities[0]!.turnId, "old-turn");
+        assert.deepEqual(resolvedActivities[0]!.payload, {
+          requestId,
+          resolution: "answered",
+          answers: { "0": { answers: ["A", "typed"] } },
+          answerMessageId: `answer:${commandId}`,
+        });
         const queue = yield* store.listByThread(threadId);
         assert.equal(queue.items.length, 1);
         assert.notEqual(queue.items[0]!.command.commandId, commandId);
@@ -616,6 +627,37 @@ suite("durable turn lifecycle", (it) => {
       });
       const store = yield* NextTurnQueueStore;
       assert.equal((yield* store.listByThread(threadId)).items.length, 0);
+      const resolvedActivities = (yield* engine.getReadModel()).threads
+        .find((thread) => thread.id === threadId)!
+        .activities.filter((activity) => activity.kind === "user-input.resolved");
+      assert.equal(resolvedActivities.length, 1);
+      assert.deepEqual(resolvedActivities[0]!.payload, {
+        requestId,
+        resolution: "dismissed",
+        answers: {},
+      });
+    }),
+  );
+
+  it.effect("answering a blocking question leaves its resolution to the provider", () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed("blocking-answer-activity");
+      const requestId = yield* question(threadId, false);
+      const engine = yield* OrchestrationEngineService;
+      yield* engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.makeUnsafe("resolve:blocking"),
+        threadId,
+        requestId,
+        answers: { "0": { answers: ["A"] } },
+        createdAt: at,
+      });
+      assert.equal(
+        (yield* engine.getReadModel()).threads
+          .find((thread) => thread.id === threadId)!
+          .activities.filter((activity) => activity.kind === "user-input.resolved").length,
+        0,
+      );
     }),
   );
   it.effect("skips corrupt pending questions and rewind drafts while projecting valid rows", () =>

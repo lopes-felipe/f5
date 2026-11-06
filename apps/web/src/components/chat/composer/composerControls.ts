@@ -13,6 +13,7 @@ import type { ExpandedImagePreview } from "~/components/chat/ExpandedImagePrevie
 import type { ImageAttachmentActionItem } from "~/components/chat/imageAttachmentActions";
 import type { ProviderInstanceModelPicker } from "~/components/chat/ProviderInstanceModelPicker";
 import type { ComposerImageAttachment } from "~/composerDraftStore";
+import type { FavoritePreset } from "~/favoritePresets";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { NextTurnQueueThreadState } from "~/nextTurnQueueStore";
 import type {
@@ -26,7 +27,8 @@ import type {
   PendingApproval,
   PendingUserInput,
 } from "~/session-logic";
-import type { SessionPhase } from "~/types";
+import type { Project, SessionPhase } from "~/types";
+import type { ProjectPickerSelection } from "~/components/ProjectPicker";
 
 export type ComposerSendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 export type ComposerRuntimeMode =
@@ -79,6 +81,8 @@ export interface ComposerModelControls {
   onProviderModelSelect: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["onInstanceModelChange"];
+  /** The favorite preset the composer currently shows, marked active in the picker. */
+  activeFavoritePreset?: FavoritePreset | null;
   /** Multi-model fan-out for a new thread's first message (empty draft, git project). */
   fanOutModels?: React.ComponentProps<typeof ProviderInstanceModelPicker>["selectedModels"];
   onToggleFanOutModel?: React.ComponentProps<typeof ProviderInstanceModelPicker>["onToggleModel"];
@@ -149,6 +153,15 @@ export interface ComposerSendControls {
   canImplementMergeFromChat: boolean;
   setWorkflowImplementDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   onImplementPlanInNewThread: () => Promise<void>;
+}
+
+/** Project picker for an unsent draft; absent once the thread exists on the server. */
+export interface ComposerProjectPickerControls {
+  readonly projects: ReadonlyArray<Project>;
+  readonly selection: ProjectPickerSelection;
+  /** True while a switch is running. */
+  readonly disabled?: boolean | undefined;
+  readonly onSelect: (selection: ProjectPickerSelection) => void;
 }
 
 /** Images, file mentions, terminal contexts and drag-and-drop. */

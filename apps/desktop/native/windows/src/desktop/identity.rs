@@ -342,6 +342,7 @@ pub(super) unsafe fn open_app(request: &Value, host: &Value) -> Result<(), Value
     }
     check(request)?;
     let name = wide(&target);
+    mark_posted();
     if target.contains('!') {
         let manager: IApplicationActivationManager =
             CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)

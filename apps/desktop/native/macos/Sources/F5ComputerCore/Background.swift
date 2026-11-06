@@ -35,11 +35,12 @@ public enum ComputerExecutionScope: Equatable {
 
 /// Operations a background generation may execute through accessibility alone.
 /// Mirrors `computerBackgroundOpAllowed` in packages/shared/src/computerExecution.ts.
-public func computerBackgroundOpAllowed(op: String, action: String?) -> Bool {
+public func computerBackgroundOpAllowed(op: String, action: String?, events: Bool = false) -> Bool {
   switch op {
   case "status", "listApps", "resolveApps", "inspect", "screenshot", "zoom", "type", "openApp":
     return true
   case "elementAction": return action == "press" || action == "setValue"
+  case "key", "scroll": return events
   default: return false
   }
 }
@@ -51,7 +52,8 @@ public func computerScopeAllows(
 ) -> Bool {
   if delivery == "background" {
     guard case .app(let scoped) = scope, appId == scoped, op != "activateApp" else { return false }
-    return computerBackgroundOpAllowed(op: op, action: action)
+    return computerBackgroundOpAllowed(op: op, action: action,
+      events: appId.map(computerBackgroundEventAppAllowed) ?? false)
   }
   switch scope {
   case .foreground: return true
@@ -102,6 +104,7 @@ public final class ExecutionPermits {
   private struct Entry {
     var expires: TimeInterval
     var suspended = true
+    var interruptionCause: String?
     var scope: ComputerExecutionScope
     var cancelled = Set<String>()
   }
@@ -157,12 +160,19 @@ public final class ExecutionPermits {
     guard var entry = entries[generation], now < entry.expires else { return }
     if let scope, scope != entry.scope { return }
     entry.suspended = false
+    entry.interruptionCause = nil
     entries[generation] = entry
   }
-  public func suspend(_ generation: Int) {
+  public func suspend(_ generation: Int, cause: String? = nil) {
     lock.lock()
     entries[generation]?.suspended = true
+    if let cause { entries[generation]?.interruptionCause = cause }
     lock.unlock()
+  }
+  public func interruptionCause(_ generation: Int) -> String? {
+    lock.lock()
+    defer { lock.unlock() }
+    return entries[generation]?.interruptionCause
   }
   public func suspendAll() {
     lock.lock()
@@ -181,12 +191,13 @@ public final class ExecutionPermits {
     return suspended
   }
   /// Suspend foreground/takeover generations; returns those that were active.
-  public func suspendForeground() -> [Int] {
+  public func suspendForeground(cause: String? = nil) -> [Int] {
     lock.lock()
     defer { lock.unlock() }
     var suspended: [Int] = []
     for (key, entry) in entries where !entry.scope.isBackground && !entry.suspended {
       entries[key]?.suspended = true
+      entries[key]?.interruptionCause = cause
       suspended.append(key)
     }
     return suspended
@@ -257,5 +268,6 @@ public final class ExecutionPermits {
   private func expire(_ generation: Int, _ entry: inout Entry) {
     if !entry.suspended { expired.append(generation) }
     entry.suspended = true
+    entry.interruptionCause = "permit-expired"
   }
 }

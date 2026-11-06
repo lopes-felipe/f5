@@ -13,6 +13,7 @@ import {
   npmShimExecutable,
   preferGitForWindowsBinary,
   resolveExecutable,
+  resolveExecutables,
   resolveGitExecutable,
   resolveInvocation,
 } from "./resolveCommand.ts";
@@ -114,6 +115,58 @@ describe("resolveExecutable", () => {
     expect(resolveExecutable(executable, {}, { platform: "linux", useCache: false })).toBe(
       executable,
     );
+  });
+});
+
+describe("resolveExecutables", () => {
+  // POSIX PATH splitting on ":" cannot express a Windows temp directory (C:\...).
+  it.skipIf(process.platform === "win32")(
+    "returns every PATH match in order, once per directory",
+    () => {
+      const first = tempDir("f5-resolve-all-");
+      const second = tempDir("f5-resolve-all-");
+      const empty = tempDir("f5-resolve-all-");
+      writeExecutable(path.join(first, "tool"));
+      writeExecutable(path.join(second, "tool"));
+      const env = { PATH: [first, empty, second, first].join(":") };
+      try {
+        expect(resolveExecutables("tool", env, { platform: "linux" })).toEqual([
+          path.join(first, "tool"),
+          path.join(second, "tool"),
+        ]);
+        expect(resolveExecutables("missing", env, { platform: "linux" })).toEqual([]);
+      } finally {
+        for (const directory of [first, second, empty]) rmSync(directory, { recursive: true });
+      }
+    },
+  );
+
+  it("takes the first PATHEXT match in each Windows PATH directory", () => {
+    const first = tempDir("f5-resolve-all-");
+    const second = tempDir("f5-resolve-all-");
+    writeExecutable(path.join(first, "tool.CMD"));
+    writeExecutable(path.join(first, "tool.EXE"));
+    writeExecutable(path.join(second, "tool.CMD"));
+    const env = { Path: `${first};${second}`, PATHEXT: ".EXE;.CMD" };
+    try {
+      expect(resolveExecutables("tool", env, { platform: "win32" })).toEqual([
+        path.join(first, "tool.EXE"),
+        path.join(second, "tool.CMD"),
+      ]);
+    } finally {
+      for (const directory of [first, second]) rmSync(directory, { recursive: true });
+    }
+  });
+
+  it("returns a qualified command only when it is executable", () => {
+    const executable = path.join(tempDir("f5-resolve-all-"), "agent");
+    writeExecutable(executable);
+    try {
+      expect(resolveExecutables(executable, {}, { platform: "linux" })).toEqual([executable]);
+      expect(resolveExecutables(`${executable}-missing`, {}, { platform: "linux" })).toEqual([]);
+    } finally {
+      rmSync(path.dirname(executable), { recursive: true });
+    }
   });
 });
 

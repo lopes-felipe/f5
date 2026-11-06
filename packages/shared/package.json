@@ -320,6 +320,10 @@
       "types": "./src/pendingUserInputs.ts",
       "import": "./src/pendingUserInputs.ts"
     },
+    "./answerDelivery": {
+      "types": "./src/answerDelivery.ts",
+      "import": "./src/answerDelivery.ts"
+    },
     "./elicitationForm": {
       "types": "./src/elicitationForm.ts",
       "import": "./src/elicitationForm.ts"

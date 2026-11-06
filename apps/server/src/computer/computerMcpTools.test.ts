@@ -42,6 +42,12 @@ function setup(displays = [display], delivery: "foreground" | "background" = "fo
     reportToolFailure: vi.fn(),
     reportToolCompleted: vi.fn(),
     wait: vi.fn(async () => ({ waitedMs: 100, timedOut: true })),
+    waitForTarget: vi.fn(async () => ({
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      requiresFreshObservation: true,
+    })),
   };
   return {
     invoke,
@@ -77,6 +83,85 @@ describe("shared computer tool catalog", () => {
       "Busy",
       "holder",
     );
+  });
+  it("routes app keys and element scrolling without display geometry", async () => {
+    const h = setup([], "background");
+    h.context.geometry.rememberApps([
+      { appId: "one", name: "Notes", tier: "full", running: true, frontmost: false },
+    ]);
+    expect(
+      (await callComputerTool(h.context, "computer_key", { app: "Notes", keys: "Down" })).isError,
+    ).not.toBe(true);
+    expect(h.invoke).toHaveBeenLastCalledWith(
+      "t",
+      "s",
+      expect.objectContaining({
+        op: "key",
+        appId: "one",
+        chords: ["Down"],
+      }),
+      undefined,
+      expect.any(Object),
+    );
+    expect(
+      (
+        await callComputerTool(h.context, "computer_scroll", {
+          app: "Notes",
+          snapshotId: "snapshot",
+          elementRef: "element",
+          deltaY: 4,
+        })
+      ).isError,
+    ).not.toBe(true);
+    const request = h.invoke.mock.calls.at(-1)![2];
+    expect(request).toMatchObject({
+      op: "scroll",
+      appId: "one",
+      snapshotId: "snapshot",
+      elementRef: "element",
+    });
+    expect(request).not.toHaveProperty("displayId");
+    expect(request).not.toHaveProperty("geometryGeneration");
+    expect(
+      (
+        await callComputerTool(h.context, "computer_scroll", {
+          app: "Notes",
+          snapshotId: "snapshot",
+          elementRef: "element",
+          x: 1,
+          y: 1,
+        })
+      ).isError,
+    ).toBe(true);
+  });
+  it("waits for availability without observing or opening consent", async () => {
+    const h = setup();
+    const waited = await callComputerTool(h.context, "computer_wait_for_target", {
+      app: "TextEdit",
+      timeoutMs: 30_000,
+    });
+    expect(waited.structuredContent).toMatchObject({
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      requiresFreshObservation: true,
+    });
+    expect(h.broker.waitForTarget).toHaveBeenCalledWith("t", "s", {
+      app: "TextEdit",
+      timeoutMs: 30_000,
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.broker.requestAccess).not.toHaveBeenCalled();
+    const foreground = await callComputerTool(h.context, "computer_wait_for_target", {});
+    expect(foreground.isError).not.toBe(true);
+    expect(h.broker.waitForTarget).toHaveBeenLastCalledWith("t", "s", {});
+    expect(
+      (await callComputerTool(h.context, "computer_wait_for_target", { timeoutMs: 99 })).isError,
+    ).toBe(true);
+    expect(
+      (await callComputerTool(h.context, "computer_wait_for_target", { timeoutMs: 30_001 }))
+        .isError,
+    ).toBe(true);
   });
   it("reports safe pre-dispatch failures without screen contents or invalid argument values", async () => {
     const h = setup();
@@ -147,8 +232,8 @@ describe("shared computer tool catalog", () => {
       COMPUTER_TOOL_DEFINITIONS.find((tool) => tool.name === "computer_scroll")?.description,
     ).toContain("Positive deltaY scrolls down; positive deltaX scrolls right.");
   });
-  it("installs one catalog of seventeen tools, with only discovery tools always loaded", () => {
-    expect(COMPUTER_TOOL_DEFINITIONS).toHaveLength(17);
+  it("installs one catalog of eighteen tools, with only discovery tools always loaded", () => {
+    expect(COMPUTER_TOOL_DEFINITIONS).toHaveLength(18);
     expect(COMPUTER_TOOL_DEFINITIONS.map((tool) => tool.name)).toContain(
       "computer_request_foreground",
     );

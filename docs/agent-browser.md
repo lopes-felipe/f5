@@ -555,13 +555,18 @@ banner always knows; an idle holder shows as a quiet "Chrome reserved · idle" r
   after its last turn or Chrome call, as Codex's runtime does after `CODEX_CHROME_IDLE_MS`.
   The session exits gracefully with "Stopped while idle to free Chrome…"; main releases the
   lease once it sees the CLI exit, and the next message resumes the session with Chrome.
-- **Preemption:** `broker.acquireChromeLease` (Claude and Codex Chrome setup) and native
-  `leaseAcquire` go through `withChromePreemption`: on a same-profile `Busy` naming a Chrome
-  holder, the broker asks that holder's registered releaser to give way. Only an idle holder
-  agrees (Claude stops its session, Codex stops its runtime with `release`); the broker then
-  waits up to `CHROME_PREEMPT_WAIT_MS` (8 s) for main to report the lease gone and retries
-  once. A working, mid-turn, other-profile or slow holder returns the attributed `Busy`.
-  A foreground takeover releases an idle Chrome holder before it asks for approval.
+- **Preemption:** `broker.acquireChromeLease` (Claude and Codex Chrome setup) goes through
+  `withChromePreemption`: on a same-profile `Busy` naming a Chrome holder, the broker asks
+  that holder's registered releaser to give way. Only an idle holder agrees (Claude stops its
+  session, Codex stops its runtime with `release`); the broker then waits up to
+  `CHROME_PREEMPT_WAIT_MS` (8 s) for main to report the lease gone and retries once. A
+  working, mid-turn, other-profile or slow holder returns the attributed `Busy`.
+- Native `leaseAcquire` and foreground takeovers wait in main's admission queue behind a
+  Chrome holder, so the broker calls `preemptChromeFor` first: when this profile's Chrome
+  holder is another thread and the scope conflicts with Chrome (foreground, takeover, or a
+  registered browser in background), an idle holder is released before the request is
+  queued, and the queue admits as soon as main reports the lease gone. A working holder
+  keeps Chrome and the request waits as usual; a refusal after the wait names the holder.
 - **Release** in the banner calls `computer.chrome.release`, the same path. It answers an
   `outcome` (`released`, `not-holder`, `working`, `timeout`) so the banner says why a
   release didn't happen.

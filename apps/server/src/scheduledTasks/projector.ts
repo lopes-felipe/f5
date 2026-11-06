@@ -176,6 +176,15 @@ export const makeScheduledRunProjector =
               status = "needs_attention";
               reason = "user_input";
             }
+            // F5 records a message-mode answer with the delivery it queues; as for
+            // `thread.user-input-resolved`, keep ownership until that delivery is linked.
+            if (
+              activity.kind === "user-input.resolved" &&
+              !bound &&
+              typeof (activity.payload as { answerMessageId?: unknown } | null)?.answerMessageId ===
+                "string"
+            )
+              break;
             if (activity.kind === "approval.resolved" || activity.kind === "user-input.resolved") {
               ({ status, reason } = yield* resolvedAttentionState(current.turnId));
             }

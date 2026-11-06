@@ -60,10 +60,13 @@ export const ClientSettingsSchema = Schema.Struct({
   // default instance for their kind (because `defaultInstanceIdForDriver(kind)`
   // uses the same slug). The field name is kept as `provider` for storage
   // stability; new call sites should treat the value as an instance id.
+  // `effort` optionally pins a reasoning effort, making the favorite a preset;
+  // the same model may then appear more than once with different efforts.
   favorites: Schema.Array(
     Schema.Struct({
       provider: ProviderInstanceId,
       model: TrimmedNonEmptyString,
+      effort: Schema.optional(TrimmedNonEmptyString),
     }),
   ).pipe(Schema.withDecodingDefault(() => [])),
   providerModelPreferences: Schema.Record(

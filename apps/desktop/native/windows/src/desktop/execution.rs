@@ -47,7 +47,7 @@ pub(super) unsafe fn resume_generation(message: &Value) {
         .as_u64()
         .is_some_and(|expected| expected != sequence)
     {
-        emit(json!({"type":"physicalInput","executionGeneration":generation}));
+        emit(json!({"type":"physicalInput","executionGeneration":generation,"cause":"readiness"}));
         return;
     }
     let scope = state.permit.lock().unwrap().scope(generation).cloned();
@@ -70,6 +70,7 @@ pub(super) unsafe fn resume_generation(message: &Value) {
     let process = owner(window).map(|(_, pid)| pid).unwrap_or(0);
     slot.paused.store(true, Ordering::SeqCst);
     slot.input_pending.store(0, Ordering::SeqCst);
+    slot.input_cause.store(0, Ordering::SeqCst);
     slot.generation.store(generation, Ordering::SeqCst);
     slot.window.store(window.0 as u64, Ordering::SeqCst);
     slot.pid.store(process as u64, Ordering::SeqCst);
@@ -88,7 +89,7 @@ pub(super) unsafe fn resume_generation(message: &Value) {
     if state.input_sequence.load(Ordering::SeqCst) != sequence {
         slot.paused.store(true, Ordering::SeqCst);
         state.permit.lock().unwrap().suspend(Some(generation));
-        emit(json!({"type":"physicalInput","executionGeneration":generation}));
+        emit(json!({"type":"physicalInput","executionGeneration":generation,"cause":"readiness"}));
     }
 }
 pub(super) fn suspend_generation(generation: Option<u64>) {
@@ -193,6 +194,24 @@ pub(super) fn check(request: &Value) -> Result<(), Value> {
     }
     if !state.monitors_ready() {
         return Err(json!({"_tag":"Unavailable","reason":"monitor-unhealthy"}));
+    }
+    if request["activityEpoch"]
+        .as_u64()
+        .is_some_and(|expected| !cooperation::epoch_matches(s(request, "appId"), expected))
+        || request["inputSequence"]
+            .as_u64()
+            .is_some_and(|expected| state.input_sequence.load(Ordering::SeqCst) != expected)
+    {
+        return Err(json!({"_tag":"Interrupted","cause":"user-input"}));
+    }
+    let generation = request["authorization"]["executionGeneration"]
+        .as_u64()
+        .unwrap_or(0);
+    if control(generation).is_some_and(|slot| {
+        slot.paused.load(Ordering::SeqCst)
+            && (1..=6).contains(&slot.input_cause.load(Ordering::SeqCst))
+    }) {
+        return Err(json!({"_tag":"Interrupted","cause":"user-input"}));
     }
     if !state.permit.lock().unwrap().valid(
         request["authorization"]["executionGeneration"]

@@ -38,7 +38,9 @@ import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
-  finderRevealArgs,
+  MAC_REVEAL_TIMEOUT_MS,
+  macRevealFailureMessage,
+  macRevealLaunch,
   registerDesktopFileActions,
 } from "./fileActions";
 import { profilePreviewPartition } from "./profileRuntime";
@@ -79,12 +81,18 @@ import {
   chromeControlCertified,
   verifyCodexChromeAdoption,
 } from "./computer/certification";
-import { COMPUTER_BACKGROUND_CAPABILITY, type ComputerBackgroundStatus } from "@t3tools/contracts";
+import {
+  COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  type ComputerBackgroundStatus,
+} from "@t3tools/contracts";
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
 import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
+import { ComputerConsentStore } from "./computer/ComputerConsentStore";
+import { ComputerGrantAuthority } from "./computer/ComputerGrantAuthority";
 import {
   IntegrationConsentStore,
   fileConsentIo,
@@ -438,7 +446,9 @@ function initializeComputerSystem(): void {
     root,
     Path.join(root, process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"),
   );
-  const lease = new ComputerLeaseAuthority();
+  const lease = new ComputerLeaseAuthority(Date.now, {
+    shareApps: () => helper.capabilities().includes(COMPUTER_SHARED_APP_CAPABILITY),
+  });
   const overlay = new ComputerOverlay();
   const nativeStatus = () => {
     const gate = computerCertificationStatus(
@@ -508,6 +518,11 @@ function initializeComputerSystem(): void {
       return Buffer.byteLength(data) <= 40 * 1024 ? data : undefined;
     },
     paused: (holder, cause) => {
+      computerSystem?.channel.cancelSessionAccess(
+        holder.profileId,
+        holder.threadId,
+        holder.sessionGeneration,
+      );
       computerSystem?.channel.send(holder.profileId, {
         type: "pauseChanged",
         threadId: holder.threadId,
@@ -522,6 +537,23 @@ function initializeComputerSystem(): void {
         });
     },
     backgroundAvailable: () => backgroundStatus().available,
+    cooperationEnabled: (profileId) =>
+      computerSystem?.channel.cooperationCapable(profileId) ?? false,
+    targetYielded: (holder, appId) => {
+      if (computerSystem?.channel.cooperationCapable(holder.profileId))
+        computerSystem.channel.send(holder.profileId, {
+          type: "targetYielded",
+          threadId: holder.threadId,
+          sessionGeneration: holder.sessionGeneration,
+          ...(appId ? { appId } : {}),
+        });
+    },
+    foregroundContinued: (previous, next) =>
+      computerSystem?.channel.execution.continueTakeover(
+        previous,
+        next,
+        computerSystem.channel.incarnation(previous.profileId),
+      ),
     executionState: (profileId, update) =>
       computerSystem?.channel.sendExecutionState(profileId, update),
     takeoverValid: (holder) =>
@@ -541,13 +573,25 @@ function initializeComputerSystem(): void {
   let killChordRegistered = false;
   // "Always allow" for a profile's Codex Chrome sessions, owned by main and signed with a
   // key only the keychain releases to F5.
-  const integrationConsents = new IntegrationConsentStore(
-    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
-    keychainConsentKey(Path.join(app.getPath("userData"), "computer", "integration-consent.key"), {
+  const consentKey = keychainConsentKey(
+    Path.join(app.getPath("userData"), "computer", "integration-consent.key"),
+    {
       available: () => safeStorage.isEncryptionAvailable(),
       encrypt: (plain) => safeStorage.encryptString(plain),
       decrypt: (encrypted) => safeStorage.decryptString(encrypted),
-    }),
+    },
+  );
+  const integrationConsents = new IntegrationConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
+    consentKey,
+  );
+  const computerConsents = new ComputerConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "remembered-consent.json")),
+    consentKey,
+  );
+  const computerGrants = new ComputerGrantAuthority(
+    process.platform === "win32" ? "win32" : "darwin",
+    computerConsents,
   );
   // Provider-integration children are registered here so main can stop them and observe
   // their exit without the (possibly frozen) profile server.
@@ -655,8 +699,11 @@ function initializeComputerSystem(): void {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
     },
-    undefined,
+    computerGrants,
     {
+      consents: computerConsents,
+      grantForgetFailed: (_profileId, message) =>
+        dialog.showErrorBox("Could not forget this app", message),
       ...(process.platform === "darwin"
         ? {
             openExternalUrl: (
@@ -726,9 +773,11 @@ function initializeComputerSystem(): void {
       electronWebContents.fromId(id)?.send("desktop-computer:status-changed", rendererStatus());
   });
   const consent = new ComputerConsentAuthority({
+    remembered: true,
+    cooperative: (profileId) => channel.cooperationCapable(profileId),
     platform: process.platform === "win32" ? "win32" : "darwin",
     request: (profileId, answer) => channel.accessRequest(profileId, answer),
-    answer: (profileId, answer) => channel.answerAccess(profileId, answer),
+    answer: (profileId, answer, policies) => channel.answerAccess(profileId, answer, policies),
     show: (profileId, options) => {
       const parent = BrowserWindow.getAllWindows().find(
         (window) =>
@@ -743,6 +792,10 @@ function initializeComputerSystem(): void {
     },
   });
   registerComputerIpc(ipcMain, {
+    computerConsents: {
+      list: (profileId) => channel.rememberedConsents(profileId),
+      revoke: (profileId, record) => channel.revokeRemembered(profileId, record),
+    },
     integrationConsents: {
       list: (profileId) => integrationConsents.list(profileId),
       revoke: (profileId, integration) => integrationConsents.revoke(profileId, integration),
@@ -3552,11 +3605,15 @@ function registerIpcHandlers(): void {
       process.platform !== "darwin"
         ? Promise.resolve(shell.showItemInFolder(filePath))
         : new Promise<void>((resolve, reject) => {
+            const launch = macRevealLaunch(filePath);
             ChildProcess.execFile(
-              "/usr/bin/osascript",
-              finderRevealArgs(filePath),
-              { timeout: 5000 },
-              (error) => (error ? reject(error) : resolve()),
+              launch.file,
+              launch.args,
+              { timeout: MAC_REVEAL_TIMEOUT_MS },
+              (error, _stdout, stderr) =>
+                error
+                  ? reject(new Error(macRevealFailureMessage(Object.assign(error, { stderr }))))
+                  : resolve(),
             );
           }),
   });
@@ -3564,19 +3621,23 @@ function registerIpcHandlers(): void {
     authorize: (event) => authorizeAppMainFrame(event, "Browser open answers"),
     prompt: browserOpenPrompt,
   });
-  registerHtmlPreviewIpc(ipcMain, (event) => {
-    if (
-      !appRendererWebContentsIds.has(event.sender.id) ||
-      event.senderFrame !== event.sender.mainFrame
-    )
-      throw new Error("HTML previews require an F5 app main frame.");
-    const expectedOrigin = isDevelopment
-      ? new URL(mainRendererUrl()).origin
-      : `${DESKTOP_SCHEME}://app`;
-    if (event.senderFrame.origin !== expectedOrigin)
-      throw new Error("Untrusted HTML preview origin.");
-    runtimeForRenderer(event.sender.id);
-  });
+  registerHtmlPreviewIpc(
+    ipcMain,
+    (event) => {
+      if (
+        !appRendererWebContentsIds.has(event.sender.id) ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error("HTML previews require an F5 app main frame.");
+      const expectedOrigin = isDevelopment
+        ? new URL(mainRendererUrl()).origin
+        : `${DESKTOP_SCHEME}://app`;
+      if (event.senderFrame.origin !== expectedOrigin)
+        throw new Error("Untrusted HTML preview origin.");
+      runtimeForRenderer(event.sender.id);
+    },
+    writeDesktopLogHeader,
+  );
   // Startup diagnostics: only the first marker per main window is logged.
   ipcMain.on("desktop:startup-marker", (event, marker: unknown) => {
     const createdAt = windowCreatedAtByWebContentsId.get(event.sender.id);

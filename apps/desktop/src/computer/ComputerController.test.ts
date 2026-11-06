@@ -294,18 +294,31 @@ describe("main computer controller", () => {
   });
   it("recognizes the kill chord after its first physical modifier has already paused input", () => {
     const h = make();
+    const at = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(at);
     try {
       h.event({ type: "physicalInput" });
       expect(h.lease.holders()).toEqual([]);
-      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5000);
-      try {
-        h.event({ type: "killSwitch" });
-      } finally {
-        clock.mockRestore();
-      }
+      clock.mockReturnValue(at + 5000);
+      h.event({ type: "killSwitch" });
       expect(h.paused).toHaveBeenLastCalledWith(h.held, "kill-switch");
       expect(h.paused.mock.calls.map((call) => call[1])).toEqual(["user-input", "kill-switch"]);
     } finally {
+      clock.mockRestore();
+      h.controller.close();
+    }
+  });
+  it("does not attribute the kill chord to a stopped generation older than five seconds", () => {
+    const h = make();
+    const at = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(at);
+    try {
+      h.event({ type: "physicalInput" });
+      clock.mockReturnValue(at + 5001);
+      h.event({ type: "killSwitch" });
+      expect(h.paused.mock.calls.map((call) => call[1])).toEqual(["user-input"]);
+    } finally {
+      clock.mockRestore();
       h.controller.close();
     }
   });

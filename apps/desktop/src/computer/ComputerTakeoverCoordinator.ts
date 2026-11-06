@@ -23,6 +23,12 @@ interface Takeover {
   timers: Array<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>;
   respond: (result: { holder: ComputerLeaseHolder } | { error: ComputerAutomationError }) => void;
 }
+type Preparation = Pick<
+  Takeover,
+  "requestId" | "approvalRequestId" | "profileId" | "backendIncarnation" | "holder" | "respond"
+> & { cancelled: boolean };
+const preparationKey = (profileId: string, requestId: string) =>
+  JSON.stringify([profileId, requestId]);
 /**
  * Electron-owned foreground takeover: reserve → native approval → wait for the user to be
  * idle → drain other background work → arm. It never loops over ordinary `acquire`, and holds
@@ -30,6 +36,7 @@ interface Takeover {
  */
 export class ComputerTakeoverCoordinator {
   private readonly takeovers = new Map<string, Takeover>();
+  private readonly preparing = new Map<string, Preparation>();
   private readonly offLease: () => void;
   constructor(
     private readonly controller: ComputerController,
@@ -61,7 +68,53 @@ export class ComputerTakeoverCoordinator {
     approvalRequestId: string,
     holder: ComputerLeaseHolder,
     respond: Takeover["respond"],
+    wait?: { waitMs: number; reserved: () => void },
   ): void {
+    const input: Preparation = {
+      profileId,
+      backendIncarnation,
+      requestId,
+      approvalRequestId,
+      holder,
+      respond,
+      cancelled: false,
+    };
+    if (!wait) {
+      this.reserveImmediately(input);
+      return;
+    }
+    const key = preparationKey(profileId, requestId);
+    if (this.preparing.has(key))
+      throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+    this.preparing.set(key, input);
+    void this.controller
+      .admitWhenFree({
+        kind: "takeover",
+        holder,
+        profileId,
+        requestId,
+        waitMs: wait.waitMs,
+        admit: () => {
+          if (input.cancelled)
+            throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+          this.controller.assertTakeoverAdmission(holder);
+          this.reserveImmediately(input);
+        },
+      })
+      .then(
+        () => {
+          if (this.preparing.get(key) === input) this.preparing.delete(key);
+          if (!input.cancelled && this.awaitingConsent(profileId, approvalRequestId))
+            wait.reserved();
+        },
+        (error: unknown) => {
+          if (this.preparing.get(key) === input) this.preparing.delete(key);
+          if (!input.cancelled) respond({ error: computerError(error) });
+        },
+      );
+  }
+  private reserveImmediately(input: Preparation): void {
+    const { profileId, backendIncarnation, requestId, approvalRequestId, holder, respond } = input;
     if (holder.scope.kind !== "takeover" || holder.backend !== "native")
       throw new ComputerControlError({ _tag: "Execution", message: "Not a takeover request." });
     if (!this.execution.revisionAccepted(profileId, holder.threadId, holder.policyRevision))
@@ -107,6 +160,14 @@ export class ComputerTakeoverCoordinator {
    * must describe exactly this reservation: same thread, session, turn and app. A mismatched
    * pair never mints a receipt.
    */
+  awaitingConsent(profileId: string, approvalRequestId: string): boolean {
+    return [...this.takeovers.values()].some(
+      (entry) =>
+        entry.profileId === profileId &&
+        entry.approvalRequestId === approvalRequestId &&
+        entry.phase === "consent",
+    );
+  }
   answered(profileId: string, approval: ComputerAccessRequested, allowed: boolean): void {
     const takeover = [...this.takeovers.values()].find(
       (entry) =>
@@ -161,7 +222,7 @@ export class ComputerTakeoverCoordinator {
         throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
       // Native readiness exchange: the helper's current idle age, not cached telemetry. The
       // helper re-checks the input sequence it reported when the armed generation resumes.
-      const { idleMs } = await this.controller.takeoverReadiness();
+      const { idleMs } = await this.controller.takeoverReadiness(takeover.holder);
       if (!this.takeovers.has(takeover.requestId))
         throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
       if (idleMs < TAKEOVER_IDLE_MS) {
@@ -195,6 +256,13 @@ export class ComputerTakeoverCoordinator {
   }
   /** Cancellation, timeout, turn end, disconnect: clears the reservation; late replies are ignored. */
   cancel(profileId: string, requestId: string): void {
+    const key = preparationKey(profileId, requestId);
+    const preparing = this.preparing.get(key);
+    if (preparing) {
+      preparing.cancelled = true;
+      this.preparing.delete(key);
+      this.controller.cancelAdmission(profileId, requestId);
+    }
     const takeover = this.takeovers.get(requestId);
     if (takeover?.profileId === profileId)
       this.fail(
@@ -203,10 +271,21 @@ export class ComputerTakeoverCoordinator {
         false,
       );
   }
-  cancelThread(profileId: string, threadId?: string): void {
+  cancelThread(profileId: string, threadId?: string, sessionGeneration?: string): void {
+    for (const entry of this.preparing.values())
+      if (
+        entry.profileId === profileId &&
+        (!threadId || entry.holder.threadId === threadId) &&
+        (!sessionGeneration || entry.holder.sessionGeneration === sessionGeneration)
+      )
+        this.cancel(profileId, entry.requestId);
     // Snapshot: fail() deletes from the map while we iterate.
     for (const takeover of [...this.takeovers.values()])
-      if (takeover.profileId === profileId && (!threadId || takeover.holder.threadId === threadId))
+      if (
+        takeover.profileId === profileId &&
+        (!threadId || takeover.holder.threadId === threadId) &&
+        (!sessionGeneration || takeover.holder.sessionGeneration === sessionGeneration)
+      )
         this.fail(takeover, new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }));
   }
   pending(profileId: string): ComputerLeaseHolder | undefined {
@@ -214,6 +293,7 @@ export class ComputerTakeoverCoordinator {
   }
   close(): void {
     this.offLease();
+    for (const entry of this.preparing.values()) this.cancel(entry.profileId, entry.requestId);
     for (const takeover of [...this.takeovers.values()])
       this.fail(takeover, new ComputerControlError({ _tag: "Interrupted", cause: "paused" }));
   }

@@ -1,4 +1,5 @@
 import type { UsageQuotaSample } from "@t3tools/contracts";
+import { quotaPace, quotaPaceLabel } from "@t3tools/shared/usageLimit";
 import { useEffect, useState } from "react";
 
 import { formatTimeUntil, formatUsageResumeTime } from "../../../lib/usageLimits";
@@ -80,13 +81,49 @@ function Sparkline(props: {
   );
 }
 
+/** Short reset time: "Nov 6, 6:00 AM". */
+export function formatQuotaResetTime(resetMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(resetMs));
+}
+
+/** Explains the fill and the pace tick once above a stack of meters. */
+export function QuotaMeterLegend() {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex flex-wrap gap-x-4 gap-y-1 text-2xs text-muted-foreground"
+    >
+      <span className="inline-flex items-center gap-1.5">
+        <span className="size-2.5 rounded-sm bg-primary" />
+        Used
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="h-3 w-0.5 rounded-full bg-foreground" />
+        Time elapsed (pace)
+      </span>
+    </div>
+  );
+}
+
+/**
+ * One limit as a row: label and reset on the left, a used bar with a tick at the
+ * elapsed share of the window in the middle, and used percent with pace on the right.
+ * The accessible value stays "N% remaining".
+ */
 export function QuotaMeter(props: {
   label: string;
   utilization: number | null;
   resetsAt: string | null;
   accessibleName: string;
-  /** Snapshot time of `utilization`; enables forecasts. */
+  /** Snapshot time of `utilization`; enables pace and forecasts. */
   observedAt?: string | null;
+  /** Window length; enables the pace tick. */
+  durationMinutes?: number | null;
   history?: ReadonlyArray<UsageQuotaSample>;
 }) {
   const [now, setNow] = useState(Date.now);
@@ -105,12 +142,23 @@ export function QuotaMeter(props: {
     ? "Reset time unavailable"
     : resetPassed
       ? "Reset time passed; awaiting updated usage"
-      : `Resets ${new Intl.DateTimeFormat(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-        }).format(new Date(resetMs))}${countdown ? ` · ${countdown}` : ""}`;
+      : `${countdown ? `${countdown} · ` : ""}${formatQuotaResetTime(resetMs)}`;
   const valueText =
     props.utilization === null ? "Unknown" : `${remainingPercent!.toFixed(0)}% remaining`;
+  const usedText =
+    props.utilization === null
+      ? "Unknown"
+      : props.utilization > 100
+        ? `over limit (${Math.round(props.utilization)}% used)`
+        : `${percent!.toFixed(0)}% used`;
+  const pace = resetPassed
+    ? null
+    : quotaPace({
+        usedPercent: props.utilization,
+        resetsAt: props.resetsAt,
+        durationMinutes: props.durationMinutes ?? null,
+        observedAt: props.observedAt ?? null,
+      });
   const history = props.history ?? [];
   const projection =
     props.observedAt && !resetPassed
@@ -124,31 +172,40 @@ export function QuotaMeter(props: {
   const forecast = forecastText(projection, props.resetsAt, now);
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="font-medium">{props.label}</span>
-        <span className="tabular-nums text-muted-foreground">
-          {valueText}
-          {props.utilization !== null && props.utilization > 100
-            ? ` · over limit (${Math.round(props.utilization)}% used)`
-            : ""}
-        </span>
-      </div>
-      <div
-        role="progressbar"
-        aria-label={props.accessibleName}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={remainingPercent}
-        aria-valuetext={valueText}
-        className="h-1.5 overflow-hidden rounded-full bg-muted"
-      >
+      <div className="grid gap-x-4 gap-y-1.5 text-xs min-[560px]:grid-cols-[minmax(8rem,12rem)_minmax(0,1fr)_minmax(7rem,10rem)] min-[560px]:items-center">
+        <div className="min-w-0">
+          <p className="font-medium">{props.label}</p>
+          <p className="text-2xs text-muted-foreground">{reset}</p>
+        </div>
         <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            (percent ?? 0) >= 90 ? "bg-warning" : "bg-primary",
-          )}
-          style={{ width: `${remainingPercent ?? 0}%` }}
-        />
+          role="progressbar"
+          aria-label={props.accessibleName}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={remainingPercent}
+          aria-valuetext={valueText}
+          className="relative h-2 rounded-full bg-muted"
+        >
+          <div
+            className={cn(
+              "absolute inset-y-0 left-0 rounded-full transition-[width]",
+              (percent ?? 0) >= 90 ? "bg-warning" : "bg-primary",
+            )}
+            style={{ width: `${percent ?? 0}%` }}
+          />
+          {pace ? (
+            <div
+              aria-hidden="true"
+              data-testid="quota-pace-tick"
+              className="absolute -inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+              style={{ left: `${pace.elapsedPercent}%` }}
+            />
+          ) : null}
+        </div>
+        <div className="tabular-nums min-[560px]:text-right">
+          <p>{usedText}</p>
+          {pace ? <p className="text-2xs text-muted-foreground">{quotaPaceLabel(pace)}</p> : null}
+        </div>
       </div>
       {history.length >= 2 && props.resetsAt && resetValid && !resetPassed ? (
         <Sparkline
@@ -162,7 +219,6 @@ export function QuotaMeter(props: {
           }
         />
       ) : null}
-      <p className="text-2xs text-muted-foreground">{reset}</p>
       {forecast ? (
         <p
           className={cn(

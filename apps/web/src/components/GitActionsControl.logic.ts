@@ -23,6 +23,8 @@ export interface GitQuickAction {
   kind: "run_action" | "run_pull" | "open_pr" | "show_hint";
   action?: GitStackedAction;
   hint?: string;
+  /** For `open_pr`: how many PRs View PR offers; more than one opens a menu. */
+  pullRequestCount?: number;
 }
 
 export interface DefaultBranchActionDialogCopy {
@@ -179,6 +181,20 @@ export function buildMenuItems(
           dialogAction: "create_pr",
         },
   ];
+}
+
+/**
+ * Git work the user can do keeps the quick action; otherwise a thread with PRs gets View PR,
+ * whether git would have offered it or only a disabled hint.
+ */
+export function withThreadPullRequests(
+  quickAction: GitQuickAction,
+  pullRequestCount: number,
+): GitQuickAction {
+  if (pullRequestCount === 0) return quickAction;
+  if (quickAction.kind === "open_pr" || (quickAction.kind === "show_hint" && quickAction.disabled))
+    return { label: "View PR", disabled: false, kind: "open_pr", pullRequestCount };
+  return quickAction;
 }
 
 export function resolveQuickAction(

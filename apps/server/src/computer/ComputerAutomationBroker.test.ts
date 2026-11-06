@@ -9,11 +9,14 @@ import {
   type ComputerInvocationContext,
 } from "./ComputerAutomationBroker";
 import { DesktopComputerHost } from "./DesktopComputerHost";
+import * as computerApps from "@t3tools/shared/computerApps";
 
 class Ipc extends EventEmitter {
   connected = true;
   messages: DesktopComputerHostMessage[] = [];
   holdRequests = false;
+  holdAcquires = false;
+  requestErrors: Array<{ _tag: "TargetBlocked"; kind: "foreground-busy" | "user-active" }> = [];
   appResults: unknown[] | undefined;
   inspectResults: unknown[] = [];
   busy = false;
@@ -28,7 +31,7 @@ class Ipc extends EventEmitter {
           status: { available: true, passwordMaskingSupported: true },
         }),
       );
-    if (message.type === "leaseAcquire")
+    if (message.type === "leaseAcquire" && !this.holdAcquires)
       queueMicrotask(() =>
         this.emit("message", {
           type: "response",
@@ -49,6 +52,7 @@ class Ipc extends EventEmitter {
         this.emit("message", {
           type: "response",
           requestId: message.request.requestId,
+          ...(this.requestErrors.length ? { error: this.requestErrors.shift() } : {}),
           result:
             message.request.op === "inspect" && this.inspectResults.length
               ? this.inspectResults.shift()
@@ -111,6 +115,57 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
 }
 describe("computer broker safety boundaries", () => {
+  it("awaits main's correlated forget result and surfaces persistence failure to Settings", async () => {
+    const h = await harness();
+    try {
+      h.ipc.emit("message", {
+        type: "hostCapabilities",
+        capabilities: ["computer-grant-forget-v1"],
+      });
+      const forget = h.broker.access.forgetRemembered("project", "com.apple.TextEdit");
+      const rejected = expect(forget).rejects.toThrow("could not save revocation");
+      await vi.waitFor(() =>
+        expect(
+          h.ipc.messages.some((message) => message.type === "grantForget" && message.requestId),
+        ).toBe(true),
+      );
+      const request = h.ipc.messages.findLast((message) => message.type === "grantForget");
+      if (request?.type !== "grantForget") throw new Error("Missing forget request");
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: request.requestId,
+        error: { _tag: "Execution", message: "could not save revocation" },
+      });
+      await rejected;
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each([false, true])(
+    "notifies capable hosts on actual session release, capable=%s",
+    async (capable) => {
+      const h = await harness();
+      try {
+        if (capable)
+          h.ipc.emit("message", {
+            type: "hostCapabilities",
+            capabilities: ["computer-session-lifecycle-v1"],
+          });
+        h.broker.releaseSession("t", "obsolete");
+        expect(
+          h.ipc.messages.filter((message) => message.type === "computerSessionClosed"),
+        ).toEqual([]);
+        h.broker.releaseSession("t", "s");
+        expect(
+          h.ipc.messages.filter((message) => message.type === "computerSessionClosed"),
+        ).toEqual(
+          capable ? [{ type: "computerSessionClosed", threadId: "t", sessionGeneration: "s" }] : [],
+        );
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
   it("keeps action success but discards a late capture after a masking change", async () => {
     const h = await harness();
     try {
@@ -767,6 +822,266 @@ describe("background delivery", () => {
       },
     });
   }
+  it("selects background events only with certification, capability and an app-local key or element target", async () => {
+    const h = await backgroundHarness();
+    try {
+      await expect(
+        h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+      ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+      const certified = vi
+        .spyOn(computerApps, "computerBackgroundEventAppAllowed")
+        .mockReturnValue(true);
+      try {
+        await expect(
+          h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+        ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+        h.ipc.emit("message", {
+          type: "hostCapabilities",
+          capabilities: ["background-ax-v1", "background-events-v1"],
+        });
+        await expect(
+          h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+        ).resolves.toBe("background");
+        await expect(
+          h.broker.classify("t", "s", "scroll", "com.apple.TextEdit", { elementRef: "element" }),
+        ).resolves.toBe("background");
+        for (const [op, input] of [
+          ["key", { chords: ["Meta+Tab"] }],
+          ["scroll", {}],
+          ["click", {}],
+        ] as const)
+          await expect(
+            h.broker.classify("t", "s", op, "com.apple.TextEdit", input),
+          ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+      } finally {
+        certified.mockRestore();
+      }
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("reselects delivery after pre-dispatch admission contention and stops when it becomes foreground", async () => {
+    const h = await backgroundHarness();
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.ipc.messages.length = 0;
+      const delivery = vi
+        .spyOn(h.broker, "selectDelivery")
+        .mockReturnValueOnce("background")
+        .mockReturnValue("foreground");
+      const acquire = vi
+        .spyOn(h.broker.host, "correlated")
+        .mockRejectedValueOnce(
+          new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" }),
+        );
+      try {
+        await expect(
+          h.broker.invoke("t", "s", { op: "type", appId: "com.apple.TextEdit", text: "x" }),
+        ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+        expect(delivery).toHaveBeenCalledTimes(2);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(h.ipc.messages.filter((message) => message.type === "request")).toEqual([]);
+      } finally {
+        delivery.mockRestore();
+        acquire.mockRestore();
+      }
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("waits for a takeover reservation before showing exactly one consent, and none on Busy", async () => {
+    const h = await backgroundHarness();
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1", "takeover-reservation-v1"],
+    });
+    h.ipc.appResults = [
+      {
+        appId: "com.apple.TextEdit",
+        name: "TextEdit",
+        tier: "full",
+        running: true,
+        frontmost: false,
+      },
+    ];
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.ipc.messages.length = 0;
+      const failed = h.broker.requestForeground("t", "s", "TextEdit", "Drag");
+      const rejected = expect(failed).rejects.toMatchObject({ error: { _tag: "Busy" } });
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((m) => m.type === "foregroundTakeoverAcquire")).toBe(true),
+      );
+      const acquire = h.ipc.messages.findLast((m) => m.type === "foregroundTakeoverAcquire");
+      if (acquire?.type !== "foregroundTakeoverAcquire") throw new Error("no acquire");
+      expect(acquire.waitMs).toBe(20_000);
+      expect(h.ipc.messages.filter((m) => m.type === "accessRequested")).toEqual([]);
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: acquire.requestId,
+        error: { _tag: "Busy", holder: "other-profile" },
+      });
+      await rejected;
+      expect(h.ipc.messages.filter((m) => m.type === "accessRequested")).toEqual([]);
+      h.ipc.messages.length = 0;
+      const approved = h.broker.requestForeground("t", "s", "TextEdit", "Drag");
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((m) => m.type === "foregroundTakeoverAcquire")).toBe(true),
+      );
+      const next = h.ipc.messages.findLast((m) => m.type === "foregroundTakeoverAcquire");
+      if (next?.type !== "foregroundTakeoverAcquire") throw new Error("no acquire");
+      h.ipc.emit("message", { type: "takeoverReserved", requestId: next.requestId });
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.filter((m) => m.type === "accessRequested")).toHaveLength(1),
+      );
+      h.ipc.emit("message", {
+        type: "accessAnswer",
+        answer: {
+          requestId: next.approvalRequestId,
+          backendIncarnation: "backend",
+          decisions: [],
+          allowForegroundTakeover: true,
+        },
+      });
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: next.requestId,
+        result: { ...next.holder, executionGeneration: 9 },
+      });
+      await expect(approved).resolves.toMatchObject({ foreground: true });
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("abandons an acquisition waiting for another agent when the turn ends", async () => {
+    const h = await harness();
+    h.ipc.emit("message", { type: "hostCapabilities", capabilities: ["computer-cooperation-v1"] });
+    h.ipc.holdAcquires = true;
+    try {
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "x" }, 12_000);
+      const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((m) => m.type === "leaseAcquire")).toBe(true),
+      );
+      const acquire = h.ipc.messages.findLast((m) => m.type === "leaseAcquire");
+      if (acquire?.type !== "leaseAcquire") throw new Error("no acquire");
+      expect(acquire.waitMs).toBeGreaterThan(0);
+      expect(acquire.waitMs).toBeLessThanOrEqual(7000);
+      h.broker.endTurn("t", "turn", "s");
+      await rejected;
+      expect(h.ipc.messages).toContainEqual({ type: "cancel", requestId: acquire.requestId });
+      expect(h.ipc.messages.filter((m) => m.type === "request")).toEqual([]);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each([7000, 12_000])(
+    "keeps retry admission and dispatch inside the original invocation budget: admission=%s",
+    async (admissionMs) => {
+      const h = await backgroundHarness();
+      try {
+        const initial = h.broker.invoke("t", "s", {
+          op: "type",
+          appId: "com.apple.TextEdit",
+          text: "x",
+        });
+        await approveBackgroundSession(h);
+        await initial;
+        h.ipc.emit("message", {
+          type: "hostCapabilities",
+          capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+        });
+        h.ipc.messages.length = 0;
+        let elapsed = 0;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        const send = h.ipc.send.bind(h.ipc);
+        let acquisitions = 0;
+        const forwarding = vi.spyOn(h.ipc, "send").mockImplementation((raw, callback) => {
+          const message = raw as DesktopComputerHostMessage;
+          if (message.type === "request") elapsed = 19_000;
+          if (message.type === "leaseAcquire" && ++acquisitions === 2) elapsed += admissionMs;
+          return send(raw, callback);
+        });
+        try {
+          h.ipc.requestErrors.push({ _tag: "TargetBlocked", kind: "foreground-busy" });
+          const pending = h.broker.invoke(
+            "t",
+            "s",
+            { op: "type", appId: "com.apple.TextEdit", text: "x" },
+            30_000,
+          );
+          if (admissionMs === 7000) await expect(pending).resolves.toEqual({ ok: true });
+          else await expect(pending).rejects.toMatchObject({ error: { _tag: "Execution" } });
+          const acquires = h.ipc.messages.filter((m) => m.type === "leaseAcquire");
+          expect(acquires.map((m) => (m.type === "leaseAcquire" ? m.waitMs : undefined))).toEqual([
+            20_000, 6000,
+          ]);
+          const requests = h.ipc.messages.filter((m) => m.type === "request");
+          expect(requests).toHaveLength(admissionMs === 7000 ? 2 : 1);
+          if (admissionMs === 7000)
+            expect(requests[1]!.request.deadlineAtMs - Date.now()).toBeLessThanOrEqual(4000);
+        } finally {
+          forwarding.mockRestore();
+          clock.mockRestore();
+        }
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
+  it.each(["foreground-busy", "user-active"] as const)(
+    "retries only a pre-write background foreground conflict: %s",
+    async (kind) => {
+      const h = await backgroundHarness();
+      const dispatched = vi.fn();
+      try {
+        const initial = h.broker.invoke("t", "s", {
+          op: "type",
+          appId: "com.apple.TextEdit",
+          text: "x",
+        });
+        await approveBackgroundSession(h);
+        await initial;
+        const invalidated = vi.fn();
+        h.broker.subscribe((event) => {
+          if (event.channel === "computer.observations.invalidated") invalidated();
+        });
+        h.ipc.messages.length = 0;
+        h.ipc.requestErrors.push({ _tag: "TargetBlocked", kind });
+        const pending = h.broker.invoke(
+          "t",
+          "s",
+          { op: "type", appId: "com.apple.TextEdit", text: "x" },
+          30_000,
+          { onDispatch: dispatched },
+        );
+        if (kind === "user-active")
+          await expect(pending).rejects.toMatchObject({ error: { kind } });
+        else await expect(pending).resolves.toEqual({ ok: true });
+        const requests = h.ipc.messages.filter((m) => m.type === "request");
+        expect(requests).toHaveLength(kind === "user-active" ? 1 : 2);
+        expect(new Set(requests.map((m) => m.type === "request" && m.request.requestId)).size).toBe(
+          requests.length,
+        );
+        expect(dispatched).toHaveBeenCalledTimes(1);
+        expect(invalidated).toHaveBeenCalledTimes(1);
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
   it("stays foreground until the policy prefers background and every peer negotiated it", async () => {
     const h = await harness();
     try {
@@ -1305,6 +1620,120 @@ it("rejects a lease acquisition that outlives two turn transitions", async () =>
   } finally {
     release();
     spy.mockRestore();
+    h.broker.close();
+  }
+});
+
+it("keeps sent actions and pending consent through yielding, publishes the wait after release, and clears it on turn end", async () => {
+  const h = await harness();
+  try {
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    h.ipc.holdRequests = true;
+    const mutation = h.broker.invoke("t", "s", { op: "type", text: "confirmed once" });
+    await vi.waitFor(() =>
+      expect(
+        h.ipc.messages.some(
+          (message) => message.type === "request" && message.request.op === "type",
+        ),
+      ).toBe(true),
+    );
+    const requested = h.ipc.messages.findLast((message) => message.type === "request");
+    const consent = h.broker.access.requestAccess(
+      "t",
+      "turn",
+      [
+        {
+          appId: "com.apple.Notes",
+          name: "Notes",
+          tier: "full",
+          running: true,
+          frontmost: false,
+        },
+      ],
+      "Access another app",
+    );
+    expect(h.broker.access.pendingRequests()).toHaveLength(1);
+    h.ipc.emit("message", { type: "targetYielded", threadId: "t", sessionGeneration: "s" });
+    h.ipc.emit("message", { type: "leasesChanged", holders: [], otherProfile: false });
+    expect(h.broker.pause.has("t")).toBe(false);
+    expect(h.broker.access.pendingRequests()).toHaveLength(1);
+    expect(h.broker.computerUse().holders).toContainEqual(
+      expect.objectContaining({
+        threadId: "t",
+        state: "waiting-user",
+        leaseHeld: false,
+      }),
+    );
+    expect(
+      h.ipc.messages.some(
+        (message) =>
+          message.type === "cancel" &&
+          requested?.type === "request" &&
+          message.requestId === requested.request.requestId,
+      ),
+    ).toBe(false);
+    h.ipc.finish({ actionCompleted: true, screenshotError: "Interrupted" });
+    await expect(mutation).resolves.toMatchObject({ actionCompleted: true });
+    h.broker.endTurn("t", "turn", "s");
+    expect(h.ipc.messages).toContainEqual({
+      type: "computerTurnEnded",
+      threadId: "t",
+      sessionGeneration: "s",
+      turnId: "turn",
+    });
+    expect(h.broker.computerUse().holders).toEqual([]);
+    expect(h.broker.access.pendingRequests()).toEqual([]);
+    await consent;
+  } finally {
+    h.broker.close();
+  }
+});
+
+it("uses the existing per-thread wait slot for foreground availability and validates app access without prompting", async () => {
+  const h = await harness();
+  try {
+    h.broker.beginTurn("t", "turn");
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    const pending = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() =>
+      expect(h.ipc.messages.some((message) => message.type === "targetWait")).toBe(true),
+    );
+    await expect(h.broker.waitForTarget("t", "s", {})).rejects.toMatchObject({
+      error: { _tag: "Busy" },
+    });
+    const request = h.ipc.messages.findLast((message) => message.type === "targetWait");
+    if (request?.type !== "targetWait") throw new Error("Availability request missing");
+    expect(request).not.toHaveProperty("appId");
+    h.ipc.emit("message", {
+      type: "response",
+      requestId: request.requestId,
+      result: { available: true, timedOut: false, requiresFreshObservation: true },
+    });
+    await expect(pending).resolves.toEqual({
+      available: true,
+      timedOut: false,
+      requiresFreshObservation: true,
+    });
+    h.ipc.appResults = [
+      { appId: "not-granted", name: "Other", tier: "full", running: true, frontmost: false },
+    ];
+    await expect(h.broker.waitForTarget("t", "s", { app: "Other" })).rejects.toMatchObject({
+      error: { _tag: "NotGranted" },
+    });
+    expect(h.ipc.messages.some((message) => message.type === "accessRequested")).toBe(false);
+    expect(
+      h.ipc.messages.some(
+        (message) =>
+          message.type === "request" && ["screenshot", "inspect"].includes(message.request.op),
+      ),
+    ).toBe(false);
+  } finally {
     h.broker.close();
   }
 });

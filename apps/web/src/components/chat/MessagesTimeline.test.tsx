@@ -578,6 +578,86 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Spring</li>");
     expect(markup).toContain("“Only when idle”</li>");
   });
+  it("renders a message-mode answer as its Q&A card on a user row that keeps revert", async () => {
+    const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
+      await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const answerId = MessageId.makeUnsafe("answer:cmd");
+    const timelineEntries: TimelineEntry[] = [
+      {
+        id: "answer:cmd",
+        kind: "message",
+        createdAt,
+        message: {
+          id: answerId,
+          role: "user",
+          text: '{"0":{"answers":["Signed in"]}}',
+          turnId: TurnId.makeUnsafe("answer-turn"),
+          createdAt,
+          streaming: false,
+        },
+        userInput: {
+          state: "answered",
+          questions: [
+            {
+              id: "0",
+              header: "Question",
+              question: "Tell me when you are signed in.",
+              answers: [{ text: "Signed in", custom: true }],
+            },
+          ],
+          answerMessageId: "answer:cmd",
+        },
+      },
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    // Still a user message row, so turn boundaries and navigation see the answer turn.
+    expect(rows.map((row) => row.kind === "message" && row.message.role)).toEqual(["user"]);
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={timelineEntries}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map([[answerId, 1]])}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+    expect(markup).toContain('data-slot="user-input-card"');
+    expect(markup).toContain(">Asked 1 question</span>");
+    expect(markup).toContain("“Signed in”</li>");
+    expect(markup).not.toContain('data-slot="user-message-bubble"');
+    expect(markup).not.toContain("{&quot;0&quot;");
+    expect(markup).toContain('aria-label="Revert to before this message"');
+  });
   it("labels the working row with the live activity, not the last finished tool", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const createdAt = "2026-03-17T19:12:28.000Z";

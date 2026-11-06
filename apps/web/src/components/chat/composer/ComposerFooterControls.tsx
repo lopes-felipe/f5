@@ -22,8 +22,11 @@ import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
 
 import { COMPOSER_CHIP_CLASS_NAME } from "./composerChip";
+import { ProjectPicker } from "~/components/ProjectPicker";
+
 import type {
   ComposerAttachments,
+  ComposerProjectPickerControls,
   ComposerModeControls,
   ComposerModelControls,
   ComposerSendControls,
@@ -51,6 +54,8 @@ export function ComposerFooterControls(props: {
   onAttachFiles: ComposerAttachments["onAttachFiles"];
   onMentionFile: () => void;
   contextSummary: string | null;
+  /** Unsent drafts only; the compact footer leaves it to the header crumb. */
+  projectPicker?: ComposerProjectPickerControls | undefined;
 }) {
   const { threadId, compact, isComposerApprovalState, model, mode, send, onAttachFiles } = props;
   const isPendingTurnDispatchBlocked = send.isPendingTurnDispatchBlocked;
@@ -85,6 +90,16 @@ export function ComposerFooterControls(props: {
           event.currentTarget.value = "";
         }}
       />
+      {props.projectPicker && !compact ? (
+        <ProjectPicker
+          projects={props.projectPicker.projects}
+          selection={props.projectPicker.selection}
+          onSelect={props.projectPicker.onSelect}
+          disabled={props.projectPicker.disabled ?? false}
+          allowNone
+          trigger="chip"
+        />
+      ) : null}
       <Menu>
         <MenuTrigger
           data-composer-control="add"
@@ -165,6 +180,8 @@ export function ComposerFooterControls(props: {
           onOpenChange={model.setIsModelPickerOpen}
           disabled={isPendingTurnDispatchBlocked}
           onInstanceModelChange={model.onProviderModelSelect}
+          favoritePresets
+          activePreset={model.activeFavoritePreset ?? null}
           {...(model.fanOutModels ? { selectedModels: model.fanOutModels } : {})}
           {...(model.onToggleFanOutModel ? { onToggleModel: model.onToggleFanOutModel } : {})}
         />

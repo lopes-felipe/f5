@@ -3,6 +3,8 @@ import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { ChromeProcessSupervisor, type ChromeProcessIo } from "./ChromeProcessSupervisor";
 import { ComputerHostChannel } from "./ComputerHostChannel";
+import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
+import { ComputerConsentStore } from "./ComputerConsentStore";
 import type { ComputerController } from "./ComputerController";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 import { claudeTerminalTargets, type AlwaysAllowableIntegration } from "./IntegrationConsentStore";
@@ -22,6 +24,10 @@ function setup(
     ) => Promise<import("@t3tools/contracts").OpenExternalUrlStatus>;
     cancelBrowserOpen?: (profileId: string) => void;
     alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
+    grants?: ComputerGrantAuthority;
+    consents?: ComputerConsentStore;
+    cooperation?: boolean;
+    grantForgetFailed?: (profileId: string, message: string) => void;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
@@ -29,6 +35,7 @@ function setup(
   const controller = {
     disconnect: vi.fn(),
     setPaused: vi.fn(),
+    updateGrants: vi.fn(),
     lease: new ComputerLeaseAuthority(),
     invoke: vi.fn(),
     cancel: vi.fn(),
@@ -38,6 +45,10 @@ function setup(
     drainBackground: vi.fn(async () => () => {}),
     takeoverReadiness: vi.fn(async () => ({ idleMs: 10_000 })),
     nativeWorkConflicts: vi.fn(() => false),
+    cooperationAvailable: () => options.cooperation === true,
+    cooperation: { yielded: new Map() },
+    prepareAcquisition: vi.fn(async () => {}),
+    turnEnded: vi.fn(),
   };
   const channel = new ComputerHostChannel(
     controller as unknown as ComputerController,
@@ -49,11 +60,13 @@ function setup(
       ...(verifyAdoption ? { verifyAdoption } : {}),
       ...(alwaysAllowed ? { alwaysAllowed } : {}),
     },
-    undefined,
+    options.grants,
     {
       ...(options.openExternalUrl ? { openExternalUrl: options.openExternalUrl } : {}),
       ...(options.cancelBrowserOpen ? { cancelBrowserOpen: options.cancelBrowserOpen } : {}),
       ...(notification ? { notification } : {}),
+      ...(options.grantForgetFailed ? { grantForgetFailed: options.grantForgetFailed } : {}),
+      ...(options.consents ? { consents: options.consents } : {}),
       background: () => ({ available: true }),
       ...(advertiseBackground !== undefined ? { advertiseBackground } : {}),
     },
@@ -76,6 +89,644 @@ function setup(
   return { channel, controller, process, hello, attention };
 }
 describe("private computer host channel", () => {
+  it("publishes new waiting states only to cooperative peers, including foreground-only peers", () => {
+    const update = { threadId: "t", sessionGeneration: "s", state: "waiting-user" as const };
+    const legacy = setup(false, true);
+    const modern = setup(false, false, { cooperation: true });
+    try {
+      legacy.hello(["background-ax-v1"]);
+      modern.hello(["computer-cooperation-v1"]);
+      legacy.channel.sendExecutionState("profile", update);
+      modern.channel.sendExecutionState("profile", update);
+      expect(legacy.process.send).toHaveBeenLastCalledWith(
+        {
+          type: "executionStateChanged",
+          ...update,
+          state: "paused",
+        },
+        expect.any(Function),
+      );
+      expect(modern.process.send).toHaveBeenLastCalledWith(
+        {
+          type: "executionStateChanged",
+          ...update,
+        },
+        expect.any(Function),
+      );
+      legacy.channel.sendExecutionState("profile", { ...update, state: "waiting-agent" });
+      expect(legacy.process.send).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          state: "waiting-idle",
+        }),
+        expect.any(Function),
+      );
+    } finally {
+      legacy.channel.close();
+      modern.channel.close();
+    }
+  });
+  it("cancels during asynchronous watch preparation without acquiring a late lease", async () => {
+    const h = setup(false, false, { cooperation: true });
+    let finish!: () => void;
+    h.controller.prepareAcquisition.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    try {
+      h.hello(["computer-cooperation-v1"]);
+      h.process.emit("message", {
+        type: "leaseAcquire",
+        requestId: "preparing",
+        waitMs: 20_000,
+        holder: {
+          profileId: "profile",
+          threadId: "t",
+          sessionGeneration: "s",
+          turnId: "turn",
+          executionGeneration: 1,
+          grantVersion: 1,
+          grants: [],
+          backend: "native",
+          threadTitle: "Thread",
+          scope: { kind: "foreground" },
+          policyRevision: 0,
+        },
+      });
+      await vi.waitFor(() => expect(h.controller.prepareAcquisition).toHaveBeenCalled());
+      h.process.emit("message", { type: "cancel", requestId: "preparing" });
+      finish();
+      await vi.waitFor(() =>
+        expect(h.process.send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "response",
+            requestId: "preparing",
+            error: expect.objectContaining({ _tag: "Interrupted" }),
+          }),
+          expect.any(Function),
+        ),
+      );
+      expect(h.controller.acquire).not.toHaveBeenCalled();
+    } finally {
+      h.channel.close();
+    }
+  });
+  it("strips cooperative labels from unnegotiated holders and prepares native watches before acquisition", async () => {
+    const holder = {
+      profileId: "profile",
+      threadId: "t",
+      sessionGeneration: "s",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: [],
+      backend: "native" as const,
+      threadTitle: "Thread",
+      scope: { kind: "foreground" as const },
+      policyRevision: 0,
+    };
+    for (const capable of [false, true]) {
+      const h = setup(false, false, { cooperation: capable });
+      try {
+        h.hello(capable ? ["computer-cooperation-v1"] : []);
+        h.controller.acquire.mockReturnValue({
+          ...holder,
+          ...(capable ? { cooperative: true } : {}),
+        });
+        h.process.emit("message", {
+          type: "leaseAcquire",
+          requestId: "acquire",
+          cooperative: true,
+          holder: { ...holder, cooperative: true },
+        });
+        await vi.waitFor(() => expect(h.controller.acquire).toHaveBeenCalled());
+        expect(h.controller.acquire).toHaveBeenCalledWith({
+          ...holder,
+          ...(capable ? { cooperative: true } : {}),
+        });
+        expect(h.controller.prepareAcquisition).toHaveBeenCalledTimes(capable ? 1 : 0);
+        if (capable)
+          expect(h.controller.prepareAcquisition.mock.invocationCallOrder[0]).toBeLessThan(
+            h.controller.acquire.mock.invocationCallOrder[0]!,
+          );
+      } finally {
+        h.channel.close();
+      }
+    }
+  });
+  function rememberedHarness() {
+    let contents: string | undefined;
+    let failing = false;
+    const io = {
+      read: () => contents,
+      write: (value: string) => {
+        if (failing) throw new Error("disk full");
+        contents = value;
+      },
+      remove: () => {
+        if (failing) throw new Error("read-only");
+        contents = undefined;
+      },
+    };
+    const store = new ComputerConsentStore(io, () => Buffer.alloc(32, 7));
+    const grants = new ComputerGrantAuthority("darwin", store);
+    const h = setup(false, true, { grants, consents: store });
+    h.hello([
+      "background-ax-v1",
+      "computer-remembered-consent-v1",
+      "computer-session-lifecycle-v1",
+    ]);
+    const base = {
+      projectId: "project",
+      threadId: "thread",
+      sessionGeneration: "session",
+      reason: "Edit",
+      apps: [],
+    };
+    const receive = (request: import("@t3tools/contracts").ComputerAccessRequested) =>
+      h.process.emit("message", { type: "accessRequested", request });
+    const answers = () =>
+      h.process.send.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type === "accessAnswer")
+        .map((message) => message.answer);
+    return {
+      ...h,
+      store,
+      grants,
+      io,
+      base,
+      receive,
+      answers,
+      fail: () => {
+        failing = true;
+      },
+    };
+  }
+  it("restores native app decisions after restart with fresh receipts and no notification", () => {
+    const h = rememberedHarness();
+    const policy = {
+      version: 1 as const,
+      kind: "app-access" as const,
+      projectId: "project",
+      appId: "com.apple.TextEdit",
+      tier: "full" as const,
+      allowTyping: false,
+      policyVersion: 1 as const,
+    };
+    const request = {
+      ...h.base,
+      requestId: "native",
+      kind: "apps" as const,
+      apps: [{ appId: policy.appId, name: "TextEdit", tier: "full" as const }],
+    };
+    h.receive(request);
+    h.channel.answerAccess(
+      "profile",
+      {
+        requestId: "native",
+        backendIncarnation: "incarnation",
+        decisions: [{ appId: policy.appId, allow: true, allowTyping: false, remember: true }],
+      },
+      [policy],
+    );
+    const first = h.answers()[0]!;
+    expect(first.persistence).toBe("durable");
+    h.channel.close();
+    const store = new ComputerConsentStore(h.io, () => Buffer.alloc(32, 7));
+    const grants = new ComputerGrantAuthority("darwin", store);
+    const restarted = setup(false, true, { grants, consents: store });
+    restarted.hello(["background-ax-v1", "computer-remembered-consent-v1"]);
+    restarted.process.emit("message", {
+      type: "accessRequested",
+      request: {
+        ...request,
+        requestId: "restored",
+        threadId: "sibling",
+        sessionGeneration: "new",
+      },
+    });
+    const restored = restarted.process.send.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "accessAnswer").answer;
+    expect(restored.decisions[0].receipt).toBeTruthy();
+    expect(restored.decisions[0].receipt).not.toBe(first.decisions[0].receipt);
+    expect(restarted.attention).not.toHaveBeenCalled();
+    restarted.process.emit("message", {
+      type: "grantsRemembered",
+      requestId: "load",
+      projectId: "project",
+      profileId: "untrusted-other",
+    });
+    // Unknown extra fields are ignored by the decoder; identity remains the authenticated profile.
+    expect(restarted.process.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "response",
+        requestId: "load",
+        result: [
+          expect.objectContaining({
+            projectId: "project",
+            receipt: restored.decisions[0].receipt,
+          }),
+        ],
+      }),
+      expect.any(Function),
+    );
+    restarted.channel.close();
+  });
+  it("revokes an active app receipt and cancels its open native review before a failed disk removal", () => {
+    const h = rememberedHarness();
+    const policy = {
+      version: 1 as const,
+      kind: "app-access" as const,
+      projectId: "project",
+      appId: "com.apple.Terminal",
+      tier: "click" as const,
+      allowTyping: false,
+      policyVersion: 1 as const,
+    };
+    const request = {
+      ...h.base,
+      requestId: "app",
+      kind: "apps" as const,
+      apps: [{ appId: policy.appId, name: "Terminal", tier: policy.tier }],
+    };
+    h.receive(request);
+    h.channel.answerAccess(
+      "profile",
+      {
+        requestId: "app",
+        backendIncarnation: "incarnation",
+        decisions: [{ appId: policy.appId, allow: true, allowTyping: false, remember: true }],
+      },
+      [policy],
+    );
+    const authorization = {
+      profileId: "profile",
+      projectId: "project",
+      threadId: "thread",
+      sessionGeneration: "session",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: h.grants.listRemembered("profile", "project"),
+    };
+    expect(h.grants.validate(authorization).grants).toHaveLength(1);
+    h.receive({ ...request, requestId: "typing-review", typingRequested: true });
+    const offered = {
+      requestId: "typing-review",
+      backendIncarnation: "incarnation",
+      decisions: [],
+    };
+    expect(h.channel.accessRequest("profile", offered)).toMatchObject({
+      requestId: "typing-review",
+    });
+    h.fail();
+    expect(() => h.channel.revokeRemembered("profile", policy)).toThrow("restart could restore");
+    expect(h.grants.validate(authorization).grants).toEqual([]);
+    expect(h.controller.updateGrants).toHaveBeenCalledWith(expect.objectContaining({ grants: [] }));
+    expect(() => h.channel.accessRequest("profile", offered)).toThrow("expired");
+    expect(
+      h.answers().find((answer) => answer.requestId === "typing-review")?.decisions[0].allow,
+    ).toBe(false);
+    h.channel.close();
+  });
+  it("auto-answers only covered project sessions and mints a separate session receipt", () => {
+    const h = rememberedHarness();
+    h.store.allow("profile", {
+      version: 1,
+      kind: "session-actions",
+      projectId: "project",
+      background: false,
+      policyVersion: 1,
+    });
+    h.receive({ ...h.base, requestId: "foreground", kind: "session-actions" });
+    expect(h.answers()).toHaveLength(1);
+    expect(h.answers()[0].allowSessionActions).toBe(true);
+    h.receive({
+      ...h.base,
+      requestId: "background-denied",
+      kind: "session-actions",
+      background: true,
+    });
+    expect(h.attention).toHaveBeenCalledTimes(1);
+    h.store.allow("profile", {
+      version: 1,
+      kind: "session-actions",
+      projectId: "project",
+      background: true,
+      policyVersion: 1,
+    });
+    h.channel.answerPendingRemembered("profile");
+    expect(h.answers()[1].sessionReceipt).toBeTruthy();
+    expect(
+      h.channel.execution.hasSessionApproval("profile", "incarnation", "thread", "session"),
+    ).toBe(true);
+    h.process.emit("message", {
+      type: "computerSessionClosed",
+      threadId: "thread",
+      sessionGeneration: "session",
+    });
+    expect(
+      h.channel.execution.hasSessionApproval("profile", "incarnation", "thread", "session"),
+    ).toBe(false);
+    h.channel.close();
+  });
+  it("applies profile-wide session policy only to Full access background requests", () => {
+    const h = rememberedHarness();
+    h.store.allow("profile", { version: 1, kind: "full-access-session", policyVersion: 1 });
+    for (const [requestId, fullAccess, background] of [
+      ["normal", false, true],
+      ["foreground", true, false],
+      ["full", true, true],
+    ] as const)
+      h.receive({ ...h.base, requestId, fullAccess, background, kind: "session-actions" });
+    expect(h.answers().map((answer) => answer.requestId)).toEqual(["full"]);
+    expect(h.answers()[0].sessionReceipt).toBeTruthy();
+    expect(h.attention).toHaveBeenCalledTimes(2);
+    h.channel.close();
+  });
+  it("auto-answers Full access takeover policy only after its reservation exists", () => {
+    const h = rememberedHarness();
+    h.store.allow("profile", {
+      version: 1,
+      kind: "takeover",
+      projectId: "project",
+      appId: "com.apple.TextEdit",
+      policyVersion: 1,
+    });
+    const takeover = {
+      appId: "com.apple.TextEdit",
+      threadId: "thread",
+      turnId: "turn",
+      reason: "Drag",
+    };
+    h.receive({
+      ...h.base,
+      requestId: "unreserved",
+      kind: "foreground-takeover",
+      fullAccess: true,
+      takeover,
+    });
+    expect(h.answers()).toEqual([]);
+    h.channel.execution.approveSession({
+      profileId: "profile",
+      backendIncarnation: "incarnation",
+      threadId: "thread",
+      sessionGeneration: "session",
+      policyRevision: 0,
+    });
+    h.process.emit("message", {
+      type: "foregroundTakeoverAcquire",
+      requestId: "takeover",
+      approvalRequestId: "reserved",
+      holder: {
+        profileId: "profile",
+        projectId: "project",
+        threadId: "thread",
+        sessionGeneration: "session",
+        turnId: "turn",
+        executionGeneration: 1,
+        grantVersion: 1,
+        grants: [],
+        backend: "native",
+        threadTitle: "Thread",
+        scope: { kind: "takeover", appId: "com.apple.TextEdit", approvalReceipt: "reserved" },
+        policyRevision: 0,
+      },
+    });
+    expect(h.channel.takeovers.awaitingConsent("profile", "reserved")).toBe(true);
+    h.receive({
+      ...h.base,
+      requestId: "reserved",
+      kind: "foreground-takeover",
+      fullAccess: true,
+      takeover,
+    });
+    expect(h.answers()).toEqual([
+      expect.objectContaining({
+        requestId: "reserved",
+        allowForegroundTakeover: true,
+      }),
+    ]);
+    expect(h.attention).toHaveBeenCalledTimes(1);
+    h.channel.close();
+  });
+  it("keeps a failed write run-only and revokes it immediately even if deletion also fails", () => {
+    const h = rememberedHarness();
+    const policy = {
+      version: 1 as const,
+      kind: "session-actions" as const,
+      projectId: "project",
+      background: true,
+      policyVersion: 1 as const,
+    };
+    h.receive({ ...h.base, requestId: "run-only", kind: "session-actions", background: true });
+    h.fail();
+    h.channel.answerAccess(
+      "profile",
+      {
+        requestId: "run-only",
+        backendIncarnation: "incarnation",
+        decisions: [],
+        allowSessionActions: true,
+      },
+      [policy],
+    );
+    expect(h.answers()[0]).toMatchObject({
+      allowSessionActions: true,
+      persistence: "session-only",
+      persistenceReason: expect.any(String),
+      sessionReceipt: expect.any(String),
+    });
+    expect(h.channel.rememberedConsents("profile")[0]?.persistence).toBe("session-only");
+    h.receive({ ...h.base, requestId: "dialog", threadId: "normal", kind: "session-actions" });
+    expect(() => h.channel.revokeRemembered("profile", policy)).toThrow("restart could restore");
+    expect(
+      h.channel.execution.hasSessionApproval("profile", "incarnation", "thread", "session"),
+    ).toBe(false);
+    expect(h.controller.setPaused).toHaveBeenCalledWith("profile", "thread", true);
+    expect(h.process.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rememberedChanged",
+        revokedSessions: expect.arrayContaining([
+          { threadId: "thread", sessionGeneration: "session" },
+        ]),
+      }),
+      expect.any(Function),
+    );
+    h.receive({ ...h.base, requestId: "after-revoke", kind: "session-actions", background: true });
+    expect(h.answers().some((answer) => answer.requestId === "after-revoke")).toBe(false);
+    h.channel.close();
+  });
+  it("reports a failed revocation without throwing out of the authenticated IPC listener", () => {
+    let contents: string | undefined;
+    let failing = false;
+    const store = new ComputerConsentStore(
+      {
+        read: () => contents,
+        write: (value) => {
+          if (failing) throw new Error("disk full");
+          contents = value;
+        },
+        remove: () => {
+          if (failing) throw new Error("read-only");
+          contents = undefined;
+        },
+      },
+      () => Buffer.alloc(32, 7),
+    );
+    store.allow("profile", {
+      version: 1,
+      kind: "app-access",
+      projectId: "project",
+      appId: "com.apple.TextEdit",
+      tier: "full",
+      allowTyping: false,
+      policyVersion: 1,
+    });
+    const grants = new ComputerGrantAuthority("darwin", store);
+    const grantForgetFailed = vi.fn();
+    const h = setup(false, false, { grants, grantForgetFailed });
+    h.hello(["computer-grant-forget-v1"]);
+    failing = true;
+    const message = { type: "grantForget", projectId: "project", appId: "com.apple.TextEdit" };
+    expect(() => h.process.emit("message", { ...message, requestId: "forget" })).not.toThrow();
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "response",
+        requestId: "forget",
+        error: { _tag: "Execution", message: expect.stringContaining("restart could restore") },
+      },
+      expect.any(Function),
+    );
+    expect(grants.listRemembered("profile")).toEqual([]);
+    expect(() => h.process.emit("message", message)).not.toThrow();
+    expect(grantForgetFailed).toHaveBeenCalledWith(
+      "profile",
+      expect.stringContaining("restart could restore"),
+    );
+    failing = false;
+    h.process.emit("message", { ...message, requestId: "retry" });
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "response",
+        requestId: "retry",
+        result: {},
+      },
+      expect.any(Function),
+    );
+  });
+  it("settles a failed multi-app issuance without retaining partial receipts", () => {
+    const grants = new ComputerGrantAuthority("darwin");
+    const request = {
+      requestId: "limit",
+      threadId: "thread",
+      projectId: "project",
+      sessionGeneration: "session",
+      reason: "Test",
+      kind: "apps" as const,
+      apps: [{ appId: "com.apple.TextEdit", name: "TextEdit", tier: "full" as const }],
+    };
+    const decision = {
+      appId: "com.apple.TextEdit",
+      allow: true,
+      allowTyping: false,
+      remember: true,
+    };
+    const answer = { requestId: "limit", backendIncarnation: "incarnation", decisions: [decision] };
+    for (let index = 0; index < 9999; index++)
+      grants.issue("profile", { ...request, projectId: "project-" + index }, answer);
+    const h = setup(false, false, { grants });
+    h.hello();
+    h.process.emit("message", {
+      type: "accessRequested",
+      request: {
+        ...request,
+        apps: [...request.apps, { appId: "com.apple.Notes", name: "Notes", tier: "full" }],
+      },
+    });
+    expect(() =>
+      h.channel.answerAccess("profile", {
+        ...answer,
+        decisions: [decision, { ...decision, appId: "com.apple.Notes" }],
+      }),
+    ).toThrow("limit");
+    expect(grants.listRemembered("profile")).toHaveLength(9999);
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "accessAnswer",
+        answer: {
+          ...answer,
+          decisions: [
+            { ...decision, allow: false, allowTyping: false, remember: false },
+            {
+              ...decision,
+              appId: "com.apple.Notes",
+              allow: false,
+              allowTyping: false,
+              remember: false,
+            },
+          ],
+        },
+      },
+      expect.any(Function),
+    );
+    expect(() => h.channel.accessRequest("profile", answer)).toThrow("expired");
+  });
+
+  it("reclaims session receipts through negotiated host messages, retaining other sessions", () => {
+    const grants = new ComputerGrantAuthority("darwin");
+    const h = setup(false, false, { grants });
+    h.hello(["computer-session-lifecycle-v1"]);
+    const request = {
+      requestId: "r",
+      threadId: "thread",
+      projectId: "project",
+      sessionGeneration: "session",
+      reason: "Test",
+      kind: "apps" as const,
+      apps: [{ appId: "com.apple.TextEdit", name: "TextEdit", tier: "full" as const }],
+    };
+    const answer = {
+      requestId: "r",
+      backendIncarnation: "incarnation",
+      decisions: [
+        { appId: "com.apple.TextEdit", allow: true, allowTyping: false, remember: false },
+      ],
+    };
+    const issued = grants.issue("profile", request, answer);
+    const grant = {
+      appId: "com.apple.TextEdit",
+      tier: "full" as const,
+      allowTyping: false,
+      receipt: issued.decisions[0]!.receipt!,
+    };
+    const authorization = {
+      profileId: "profile",
+      threadId: "thread",
+      projectId: "project",
+      sessionGeneration: "session",
+      turnId: "turn",
+      executionGeneration: 1,
+      grantVersion: 1,
+      grants: [grant],
+    };
+    expect(grants.validate(authorization).grants).toHaveLength(1);
+    h.process.emit("message", {
+      type: "computerSessionClosed",
+      threadId: "thread",
+      sessionGeneration: "old",
+    });
+    expect(grants.validate(authorization).grants).toHaveLength(1);
+    h.process.emit("message", {
+      type: "computerSessionClosed",
+      threadId: "thread",
+      sessionGeneration: "session",
+    });
+    expect(grants.validate(authorization).grants).toEqual([]);
+  });
   it("negotiates browser opening and routes the correlated result to its owning backend", async () => {
     const openExternalUrl = vi.fn(async () => "opened" as const);
     const cancelBrowserOpen = vi.fn();

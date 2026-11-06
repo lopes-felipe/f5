@@ -27,7 +27,19 @@ anywhere in the app.
 - `mod+shift+n` opens a new workflow.
 - `mod+enter` scrolls to the bottom of the chat; it doesn't send. In a dialog it runs the primary
   action.
-- `chat.newLocal` and `chat.newScratch` have no default binding but can still be bound.
+- Favorite models work as presets: a favorite can pin an effort, so `Opus · high` and
+  `Opus · xhigh` can both be favorites. `mod+alt+right` and `mod+alt+left` cycle through them,
+  `mod+alt+up` and `mod+alt+down` step the effort, and in the desktop app `ctrl+1` to `ctrl+9`
+  pick favorite N directly. Run "Save current model and effort as favorite" from the command
+  palette to add a preset. Some of these defaults can clash with the operating system, which
+  takes the key first: on macOS, `ctrl+1` to `ctrl+9` are Mission Control's "Switch to Desktop
+  N" when that is turned on, and on Windows and Linux `mod+alt+arrow` is `ctrl+alt+arrow`,
+  which GNOME and some other desktops use to switch workspaces and some Intel graphics drivers
+  use to rotate the screen. Rebind the commands if a key doesn't reach F5.
+- With the model picker open, `mod+1` to `mod+9` pick the matching row. In the Favorites view
+  that is the same order as the `ctrl+N` presets.
+- `chat.newLocal`, `chat.newScratch` and `model.favorite.saveCurrent` have no default binding
+  but can still be bound.
 - Invalid rules, and invalid files, are ignored and logged by the server.
 
 ## The keybindings file
@@ -77,6 +89,16 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
     "key": "mod+shift+e",
     "command": "composer.effort",
     "when": "isElectron && !terminalFocus && !dialogFocus"
+  },
+  {
+    "key": "mod+alt+arrowup",
+    "command": "composer.effortUp",
+    "when": "!terminalFocus && !dialogFocus"
+  },
+  {
+    "key": "mod+alt+arrowdown",
+    "command": "composer.effortDown",
+    "when": "!terminalFocus && !dialogFocus"
   },
   {
     "key": "mod+shift+a",
@@ -140,6 +162,22 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
   { "key": "ctrl+tab", "command": "thread.switchRecentNext" },
   { "key": "ctrl+shift+tab", "command": "thread.switchRecentPrevious" },
   { "key": "alt+tab", "command": "model.switchRecent" },
+  {
+    "key": "mod+alt+arrowright",
+    "command": "model.favorite.next",
+    "when": "!terminalFocus && !dialogFocus"
+  },
+  {
+    "key": "mod+alt+arrowleft",
+    "command": "model.favorite.previous",
+    "when": "!terminalFocus && !dialogFocus"
+  },
+  {
+    "key": "ctrl+1",
+    "command": "model.favorite.1",
+    "when": "isElectron && !terminalFocus && !dialogFocus && !modelPickerOpen"
+  },
+  // ...through "ctrl+9" / "model.favorite.9", same "when"
   { "key": "mod+shift+p", "command": "prHub.open", "when": "!terminalFocus" },
   { "key": "mod+p", "command": "palette.files", "when": "!terminalFocus" },
   { "key": "mod+shift+f", "command": "projectContentSearch.toggle", "when": "!terminalFocus" },
@@ -301,6 +339,14 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `thread.switchRecentNext`: cycle to the next recent tab/page (`Ctrl+Tab` by default). This now includes thread tabs, workflow pages, and settings.
 - `thread.switchRecentPrevious`: cycle to the previous recent tab/page (`Ctrl+Shift+Tab` by default)
 - `model.switchRecent`: cycle to the next recent model (`Alt+Tab` by default)
+- `model.favorite.next` / `model.favorite.previous`: switch to the next or previous favorite
+  model preset, applying its pinned effort (`Mod+Alt+Right` / `Mod+Alt+Left` by default)
+- `model.favorite.1` … `model.favorite.9`: switch to favorite preset N (`Ctrl+1` … `Ctrl+9` in the
+  desktop app by default)
+- `model.favorite.saveCurrent`: save the current model and effort as a favorite preset (no
+  default binding)
+- `composer.effortUp` / `composer.effortDown`: step the reasoning effort (`Mod+Alt+Up` /
+  `Mod+Alt+Down` by default)
 - `commandPalette.toggle`: open or close the command palette
 - `workspace.focusNext` / `workspace.focusPrevious`: move focus to the next or previous workspace area (`F6` / `Shift+F6` by default)
 - `help.shortcuts`: open or close the keyboard shortcuts reference (`Mod+/` by default)

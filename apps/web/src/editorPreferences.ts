@@ -22,7 +22,9 @@ export function resolveAndPersistPreferredEditor(
   const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
   if (stored && availableEditorIds.has(stored)) return stored;
   const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
-  if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
+  // An unavailable favorite may only be mid-update or briefly off PATH, so a
+  // one-off fallback must not replace the user's choice.
+  if (editor && !stored) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
   return editor ?? null;
 }
 

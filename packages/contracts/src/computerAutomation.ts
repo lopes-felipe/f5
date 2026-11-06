@@ -48,6 +48,10 @@ export const ComputerDisplay = Schema.Struct({
 export type ComputerDisplay = typeof ComputerDisplay.Type;
 /** Capability token: background accessibility delivery (helper, desktop and backend). */
 export const COMPUTER_BACKGROUND_CAPABILITY = "background-ax-v1";
+/** Session receipt reclamation, independently negotiated from durable policy support. */
+export const COMPUTER_SESSION_LIFECYCLE_CAPABILITY = "computer-session-lifecycle-v1";
+export const COMPUTER_GRANT_FORGET_CAPABILITY = "computer-grant-forget-v1";
+export const COMPUTER_REMEMBERED_CONSENT_CAPABILITY = "computer-remembered-consent-v1";
 export const ComputerBackgroundUnavailableReason = Schema.Literals([
   "unsupported-platform",
   "peer-capability",
@@ -88,6 +92,45 @@ export const ComputerAutomationBackendStatus = Schema.Union([
 export type ComputerAutomationBackendStatus = typeof ComputerAutomationBackendStatus.Type;
 export const ComputerAppTier = Schema.Literals(["blocked", "view", "click", "full"]);
 export type ComputerAppTier = typeof ComputerAppTier.Type;
+/** Policy only. Native main mints fresh execution receipts for each lifetime. */
+export const RememberedComputerConsent = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("app-access"),
+    projectId: Id,
+    appId: Id,
+    tier: Schema.Literals(["view", "click", "full"]),
+    allowTyping: Schema.Boolean,
+    policyVersion: Schema.Literal(1),
+  }).check(Schema.makeFilter((record) => record.tier === "click" || !record.allowTyping)),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("session-actions"),
+    projectId: Id,
+    background: Schema.Boolean,
+    policyVersion: Schema.Literal(1),
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("full-access-session"),
+    policyVersion: Schema.Literal(1),
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("takeover"),
+    projectId: Id,
+    appId: Id,
+    policyVersion: Schema.Literal(1),
+  }),
+]);
+export type RememberedComputerConsent = typeof RememberedComputerConsent.Type;
+export const ComputerConsentPersistence = Schema.Literals(["durable", "session-only"]);
+export const RememberedComputerConsentEntry = Schema.Struct({
+  consent: RememberedComputerConsent,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  reason: Schema.optionalKey(Schema.String),
+});
+export type RememberedComputerConsentEntry = typeof RememberedComputerConsentEntry.Type;
 export const ComputerGrant = Schema.Struct({
   receipt: Schema.optionalKey(Id),
   appId: Id,
@@ -95,6 +138,13 @@ export const ComputerGrant = Schema.Struct({
   allowTyping: Schema.Boolean,
 });
 export type ComputerGrant = typeof ComputerGrant.Type;
+export const RememberedComputerGrant = Schema.Struct({
+  projectId: Id,
+  ...ComputerGrant.fields,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  persistenceReason: Schema.optionalKey(Schema.String),
+});
+export type RememberedComputerGrant = typeof RememberedComputerGrant.Type;
 export const ComputerApp = Schema.Struct({
   appId: Id,
   name: Schema.String.check(Schema.isMaxLength(200)),
@@ -135,6 +185,44 @@ export const COMPUTER_AGENT_IDENTITY_CAPABILITY = "computer-agent-identity-v1";
 export const COMPUTER_ACTIVITY_CORRELATION_CAPABILITY = "computer-activity-correlation-v1";
 /** The backend reports whether its Chrome holder runs a browser call (`chromeCallsChanged`). */
 export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
+export const COMPUTER_COOPERATION_CAPABILITY = "computer-cooperation-v1";
+export const COMPUTER_TAKEOVER_RESERVATION_CAPABILITY = "takeover-reservation-v1";
+export const COMPUTER_LEASE_WAIT_MAX_MS = 20_000;
+export const COMPUTER_SHARED_APP_CAPABILITY = "background-shared-app-v1";
+export const COMPUTER_BACKGROUND_EVENTS_CAPABILITY = "background-events-v1";
+export const ComputerInterruptionCause = Schema.Literals([
+  "pointer",
+  "key",
+  "scroll",
+  "drag",
+  "move",
+  "frontmost",
+  "readiness",
+  "monitor",
+  "input-overflow",
+  "unresolved",
+  "activation",
+  "permit-expired",
+]);
+export type ComputerInterruptionCause = typeof ComputerInterruptionCause.Type;
+/** Helper monotonic epochs, not wall-clock timestamps. Watches grant no execution permit. */
+export const ComputerTargetReadiness = Schema.Struct({
+  activityEpoch: NonNegative,
+  lastActivityAgeMs: Schema.Number,
+  frontmost: Schema.Boolean,
+  monitorHealthy: Schema.Boolean,
+  inputSequence: NonNegative,
+  lastUserInputAgeMs: Schema.Number,
+  inputHeld: Schema.Boolean,
+});
+export type ComputerTargetReadiness = typeof ComputerTargetReadiness.Type;
+export const ComputerTargetAvailability = Schema.Struct({
+  available: Schema.Boolean,
+  timedOut: Schema.Boolean,
+  reason: Schema.optionalKey(Schema.Literals(["user-active", "agent-busy", "foreground-busy"])),
+  requiresFreshObservation: Schema.Literal(true),
+});
+export type ComputerTargetAvailability = typeof ComputerTargetAvailability.Type;
 export const ComputerAgentProviderSchema = Schema.Literals([
   "claude",
   "codex",
@@ -154,6 +242,9 @@ const Envelope = {
   screenshot: Schema.optional(Schema.Boolean),
   /** Missing means foreground, the only delivery legacy peers understand. */
   delivery: Schema.optional(ComputerDelivery),
+  /** Main overwrites these from its native watch immediately before dispatch. */
+  activityEpoch: Schema.optionalKey(NonNegative),
+  inputSequence: Schema.optionalKey(NonNegative),
   /** User policy injected by the broker; absent requests retain the legacy child walk. */
   passwordMasking: Schema.optional(ComputerPasswordMasking),
 };
@@ -210,7 +301,16 @@ export const ComputerAutomationRequest = Schema.Union([
     op: Schema.Literal("scroll"),
     deltaX: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
     deltaY: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
-  }),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...Envelope,
+    op: Schema.Literal("scroll"),
+    appId: Id,
+    snapshotId: Id,
+    elementRef: Id,
+    deltaX: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
+    deltaY: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
   Schema.Struct({
     ...Envelope,
     op: Schema.Literal("type"),
@@ -220,6 +320,7 @@ export const ComputerAutomationRequest = Schema.Union([
   Schema.Struct({
     ...Envelope,
     op: Schema.Literal("key"),
+    appId: Schema.optional(Id),
     chords: Schema.Array(Id).check(Schema.isMinLength(1), Schema.isMaxLength(16)),
     repeat: Positive.check(Schema.isLessThanOrEqualTo(20)),
   }),
@@ -385,6 +486,7 @@ export const ComputerAutomationError = Schema.Union([
   }),
   Schema.Struct({
     _tag: Schema.Literal("Interrupted"),
+    actionStarted: Schema.optionalKey(Schema.Boolean),
     cause: Schema.Literals([
       "paused",
       "user-input",
@@ -418,6 +520,7 @@ export const ComputerAutomationError = Schema.Union([
       "user-active",
       "other-app",
       "foreground-busy",
+      "shared-focus",
     ]),
   }),
   Schema.Struct({ _tag: Schema.Literal("Execution"), message: Schema.String }),
@@ -455,6 +558,7 @@ export const ComputerAccessRequested = Schema.Struct({
   typingRequested: Schema.optionalKey(Schema.Boolean),
   /** Session approval that also covers background control while the user works elsewhere. */
   background: Schema.optionalKey(Schema.Boolean),
+  fullAccess: Schema.optionalKey(Schema.Boolean),
   takeover: Schema.optionalKey(
     Schema.Struct({
       appId: Id,
@@ -505,6 +609,8 @@ export const ComputerAccessAnswer = Schema.Struct({
   allowForegroundTakeover: Schema.optionalKey(Schema.Boolean),
   /** Minted by Electron main only; renderer and model input never supply it. */
   sessionReceipt: Schema.optionalKey(Id),
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
+  persistenceReason: Schema.optionalKey(Schema.String),
 });
 export type ComputerAccessAnswer = typeof ComputerAccessAnswer.Type;
 export const ComputerLeaseScope = Schema.Union([
@@ -522,11 +628,14 @@ export const ComputerLeaseHolder = Schema.Struct({
     Schema.withDecodingDefault((): ComputerLeaseScope => ({ kind: "foreground" })),
   ),
   policyRevision: NonNegative.pipe(Schema.withDecodingDefault(() => 0)),
+  cooperative: Schema.optionalKey(Schema.Boolean),
 });
 export type ComputerLeaseHolder = typeof ComputerLeaseHolder.Type;
 export const ComputerExecutionState = Schema.Literals([
   "pending-consent",
   "waiting-idle",
+  "waiting-user",
+  "waiting-agent",
   "active",
   "waiting-secure-input",
   "paused",
@@ -795,7 +904,36 @@ export const DesktopComputerHostMessage = Schema.Union([
     error: Schema.optional(ComputerAutomationError),
   }),
   Schema.Struct({ type: Schema.Literals(["cancel", "leaseAccepted"]), requestId: Id }),
-  Schema.Struct({ type: Schema.Literal("grantForget"), projectId: Id, appId: Id }),
+  Schema.Struct({
+    type: Schema.Literal("grantForget"),
+    requestId: Schema.optionalKey(Id),
+    projectId: Id,
+    appId: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("computerSessionClosed"),
+    threadId: Id,
+    sessionGeneration: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("computerTurnEnded"),
+    threadId: Id,
+    sessionGeneration: Id,
+    turnId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("targetYielded"),
+    threadId: Id,
+    sessionGeneration: Id,
+    appId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("targetWait"),
+    requestId: Id,
+    holder: ComputerLeaseHolder,
+    appId: Schema.optionalKey(Id),
+    timeoutMs: Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 30_000 })),
+  }),
   Schema.Struct({
     type: Schema.Literal("grantsValidate"),
     requestId: Id,
@@ -803,9 +941,31 @@ export const DesktopComputerHostMessage = Schema.Union([
     grants: Schema.Array(ComputerGrant),
   }),
   Schema.Struct({
+    type: Schema.Literal("grantsRemembered"),
+    requestId: Id,
+    projectId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("rememberedChanged"),
+    backgroundOnly: Schema.optionalKey(Schema.Boolean),
+    projectId: Schema.optionalKey(Id),
+    revokedSessions: Schema.optionalKey(
+      Schema.Array(
+        Schema.Struct({
+          threadId: Id,
+          sessionGeneration: Id,
+        }),
+      ).check(Schema.isMaxLength(10_000)),
+    ),
+  }),
+  Schema.Struct({
     type: Schema.Literals(["leaseAcquire", "leaseRelease"]),
     requestId: Id,
     holder: ComputerLeaseHolder,
+    cooperative: Schema.optionalKey(Schema.Boolean),
+    waitMs: Schema.optionalKey(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: COMPUTER_LEASE_WAIT_MAX_MS })),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("leaseChanged"),
@@ -829,10 +989,18 @@ export const DesktopComputerHostMessage = Schema.Union([
     pauseCause: Schema.optionalKey(ComputerPauseCause),
   }),
   Schema.Struct({
+    type: Schema.Literal("takeoverReserved"),
+    requestId: Id,
+  }),
+  Schema.Struct({
     type: Schema.Literal("foregroundTakeoverAcquire"),
     requestId: Id,
     approvalRequestId: Id,
     holder: ComputerLeaseHolder,
+    cooperative: Schema.optionalKey(Schema.Boolean),
+    waitMs: Schema.optionalKey(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: COMPUTER_LEASE_WAIT_MAX_MS })),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("observationInvalidate"),
@@ -877,4 +1045,8 @@ export interface DesktopComputerAutomationBridge {
   readonly integrationConsents?: () => Promise<ReadonlyArray<AlwaysAllowedIntegration>>;
   /** Rejects when the revocation couldn't be saved. */
   readonly revokeIntegrationConsent?: (integration: AlwaysAllowedIntegration) => Promise<void>;
+  readonly rememberedComputerConsents?: () => Promise<
+    ReadonlyArray<RememberedComputerConsentEntry>
+  >;
+  readonly revokeRememberedComputerConsent?: (consent: RememberedComputerConsent) => Promise<void>;
 }

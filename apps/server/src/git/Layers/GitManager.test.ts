@@ -301,6 +301,51 @@ describe("GitManager unit", () => {
     expect(status.branch).toBe("feature/test");
   });
 
+  it("keeps the last known PR through a deferred lookup and clears it on a found-none read", async () => {
+    const github = makeFakeGitHubCli();
+    const pr = {
+      number: 42,
+      title: "Fast tests",
+      url: "https://github.com/t3tools/f5/pull/42",
+      baseRefName: "main",
+      headRefName: "feature/test",
+      state: "open" as const,
+    };
+    let mode: "found" | "rate-limited" | "none" = "found";
+    const flakyGithub = {
+      ...github.service,
+      listOpenPullRequests: () =>
+        mode === "rate-limited"
+          ? Effect.fail(
+              new GitHubCliError({
+                operation: "schedule",
+                kind: "rate_limited",
+                detail: "GitHub requests are waiting for the retry window.",
+              }),
+            )
+          : Effect.succeed(mode === "found" ? [pr] : []),
+    };
+    const git = makeFakeGitCore({ statusDetails: () => Effect.succeed(cleanStatus) });
+    const layer = Layer.mergeAll(
+      Layer.succeed(GitCore, git.service),
+      Layer.succeed(GitHubCli, flakyGithub),
+      Layer.succeed(TextGeneration, makeFakeTextGeneration()),
+      Layer.succeed(ServerConfig, makeServerConfig()),
+      ServerSettingsService.layerTest(),
+      emptyGitProjectRepositories,
+      NodeServices.layer,
+    );
+    const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));
+
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr?.number).toBe(42);
+    mode = "rate-limited";
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr?.number).toBe(42);
+    mode = "none";
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr).toBeNull();
+    mode = "rate-limited";
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr).toBeNull();
+  });
+
   it("skips commit cleanly when no staged context exists", async () => {
     const { manager, git } = await makeManager({
       gitCore: {

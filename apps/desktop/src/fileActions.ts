@@ -36,7 +36,8 @@ async function resolveLocalTarget(raw: unknown, withPosition: boolean) {
   try {
     absolutePath = await realpath(filePath);
   } catch (error) {
-    if (!withPosition || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!withPosition) throw new Error(`File not found: ${filePath}`);
     const parent = await realpath(Path.dirname(filePath));
     if (!(await stat(parent)).isDirectory()) throw new Error("File parent is not a directory.");
     return {
@@ -104,12 +105,39 @@ export function registerDesktopFileActions(
   };
 }
 
-/** Finder processes reveal and activate in one ordered request; the path is an argv value. */
-export function finderRevealArgs(filePath: string): string[] {
-  return [
-    "-e",
-    'on run argv\n tell application "Finder"\n  reveal POSIX file (item 1 of argv)\n  activate\n end tell\nend run',
-    "--",
-    filePath,
-  ];
+/**
+ * `open -R` asks LaunchServices to select the item in Finder and bring Finder
+ * forward. It sends no Apple Events, so it needs no Automation permission, and
+ * it fails with a readable message when the file is missing. A Finder
+ * `reveal POSIX file (item 1 of argv)` script cannot work: inside a Finder
+ * `tell` block a runtime `POSIX file` becomes a Finder object reference that
+ * Finder cannot resolve (-1728).
+ */
+export function macRevealLaunch(filePath: string): { file: string; args: string[] } {
+  // `open` would read a leading "-" as an option; callers pass canonical absolute paths.
+  if (!Path.isAbsolute(filePath)) throw new Error("Reveal needs an absolute path.");
+  return { file: "/usr/bin/open", args: ["-R", filePath] };
+}
+
+export const MAC_REVEAL_TIMEOUT_MS = 5000;
+
+/**
+ * A one-line reason for a failed `execFile` of `macRevealLaunch`: `open`'s own
+ * first stderr line (e.g. `The file /x does not exist.`), never the
+ * `Command failed: …` dump.
+ */
+export function macRevealFailureMessage(
+  error: Error & { readonly stderr?: unknown; readonly killed?: boolean; readonly code?: unknown },
+): string {
+  if (error.killed) {
+    return `Finder did not respond within ${MAC_REVEAL_TIMEOUT_MS / 1000} seconds.`;
+  }
+  const stderr = typeof error.stderr === "string" ? error.stderr : String(error.stderr ?? "");
+  const firstLine = stderr
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (firstLine) return firstLine;
+  // A numeric code means `open` ran and failed silently; otherwise it is a spawn error.
+  return typeof error.code === "number" ? `open -R exited with code ${error.code}.` : error.message;
 }
