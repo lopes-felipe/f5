@@ -1083,6 +1083,43 @@ describe("Thread sidebar", () => {
     document.body.innerHTML = "";
   });
 
+  it.each(["settled", "snoozed"] as const)(
+    "hides running-terminal indicators on %s rows",
+    async (section) => {
+      const terminal = useTerminalStateStore.getState();
+      terminal.ensureTerminal(THREAD_ID, "default");
+      terminal.setTerminalActivity(THREAD_ID, "default", true);
+      const mounted = await mountApp({
+        width: 1400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (next) => {
+          next.snapshot = createSnapshot([
+            createSnapshotThread({
+              id: THREAD_ID,
+              title: "Parked conversation",
+              ...(section === "settled"
+                ? { settledAt: NOW_ISO, settledBy: "user" as const }
+                : { snoozedUntil: "2099-01-01T00:00:00.000Z", snoozedAt: NOW_ISO }),
+            }),
+          ]);
+        },
+      });
+      try {
+        const row = page.elementLocator(await waitForSidebarThreadRow("Parked conversation"));
+        await expect
+          .element(
+            row.getByRole("button", {
+              name: "Terminal process running. Show terminal",
+            }),
+          )
+          .not.toBeInTheDocument();
+      } finally {
+        terminal.clearTerminalState(THREAD_ID);
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("keeps settled threads in a shelf bucket and reachable by their existing route", async () => {
     const mounted = await mountApp({
       width: 1400,
@@ -3386,6 +3423,16 @@ describe("Thread sidebar", () => {
       expect(older.getAttribute("aria-expanded")).toBe("false");
       expect(querySidebarThreadRowByTitle("Stale thread A")).toBeNull();
       expect(querySidebarThreadRowByTitle("Stale thread B")).toBeNull();
+      const terminal = useTerminalStateStore.getState();
+      const staleId = ThreadId.makeUnsafe("stale-b");
+      terminal.ensureTerminal(staleId, "default");
+      terminal.setTerminalActivity(staleId, "default", true);
+      await waitForSidebarThreadRow("Stale thread B");
+      await expect.poll(() => older.textContent).toBe("1 older than 7 days");
+      terminal.setTerminalActivity(staleId, "default", false);
+      await expect.poll(() => querySidebarThreadRowByTitle("Stale thread B")).toBeNull();
+      await expect.poll(() => older.textContent).toBe("2 older than 7 days");
+      terminal.clearTerminalState(staleId);
       // Pinned and open threads never fold.
       expect(querySidebarThreadRowByTitle("Stale pinned")).not.toBeNull();
       expect(querySidebarThreadRowByTitle("Stale open")).not.toBeNull();

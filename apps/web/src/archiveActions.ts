@@ -232,6 +232,8 @@ export async function deleteThreadsWithCleanup(
     (input.getThreads?.() ?? input.threads).filter((thread) => !deletedIds.has(thread.id));
   if (input.activeThreadId && deletedIds.has(input.activeThreadId)) {
     const now = Date.now();
+    // Match the thread lifecycle checks in getVisibleThreads (lib/threadOrdering).
+    // Keep deletion's existing global fallback scope, including Scheduled-folder threads.
     const fallback = sortThreadsByActivity(
       survivors().filter(
         (thread) => !isArchivedThread(thread) && !thread.settledAt && !isSnoozedThread(thread, now),

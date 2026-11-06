@@ -138,11 +138,13 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     isRenaming,
     actions,
   } = props;
-  const runningTerminalIds = useTerminalStateStore(
-    (state) =>
-      selectThreadTerminalState(state.terminalStateByThreadId, thread.id).runningTerminalIds,
+  const runningTerminalIds = useTerminalStateStore((state) =>
+    section === "snoozed" || section === "settled"
+      ? null
+      : selectThreadTerminalState(state.terminalStateByThreadId, thread.id).runningTerminalIds,
   );
-  const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const terminalStatus =
+    runningTerminalIds === null ? null : terminalStatusFromRunningIds(runningTerminalIds);
   const project = useStore((state) =>
     section === "settled"
       ? state.projects.find((project) => project.id === thread.projectId)
@@ -376,7 +378,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
         <ThreadRowTrailingMeta
           thread={thread}
           lastInteractionAt={thread.lastInteractionAt}
-          terminalStatus={section === "snoozed" ? null : terminalStatus}
+          terminalStatus={terminalStatus}
           isHighlighted={isHighlighted}
           {...(activeLike ? { showDraftIndicator: !isDraft } : {})}
           showQueueCount={activeLike}
