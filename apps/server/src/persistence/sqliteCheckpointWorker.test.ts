@@ -16,6 +16,7 @@ import {
 
 const workers = vi.hoisted(() => [] as NodeWorker[]);
 const failure = vi.hoisted(() => ({ enabled: false }));
+const paused = vi.hoisted(() => ({ enabled: false }));
 vi.mock("node:worker_threads", async (original) => {
   const actual = await original<typeof import("node:worker_threads")>();
   return {
@@ -25,7 +26,12 @@ vi.mock("node:worker_threads", async (original) => {
         super(
           ...((failure.enabled
             ? ["throw new Error('checkpoint startup fixture');", { eval: true }]
-            : args) as ConstructorParameters<typeof actual.Worker>),
+            : paused.enabled
+              ? [
+                  'require("node:worker_threads").parentPort.on("message", () => {});',
+                  { eval: true },
+                ]
+              : args) as ConstructorParameters<typeof actual.Worker>),
         );
         workers.push(this);
       }
@@ -101,6 +107,37 @@ const checkpointed = (filename: string) => () =>
   });
 
 describe("SQLite checkpoint worker", () => {
+  it.skipIf(!supportsNoop)(
+    "leaves a 48 MiB commit for the worker instead of checkpointing on the writer",
+    async () => {
+      // Keep the worker alive without processing requests so it cannot race the
+      // observation or hand checkpoints back to the writer.
+      paused.enabled = true;
+      try {
+        await withClient((sql, filename) =>
+          Effect.gen(function* () {
+            yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
+            yield* sql.withTransaction(
+              sql`INSERT INTO payload VALUES (zeroblob(${48 * 1024 * 1024}))`,
+            );
+            const observer = new DatabaseSync(filename);
+            try {
+              const state = observer.prepare("PRAGMA wal_checkpoint(NOOP)").get()!;
+              expect(state.busy).toBe(0);
+              expect(Number(state.log)).toBeGreaterThan(10_000);
+              expect(Number(state.log)).toBeLessThan(32_768);
+              expect(state.checkpointed).toBe(0);
+            } finally {
+              observer.close();
+            }
+          }),
+        );
+      } finally {
+        paused.enabled = false;
+      }
+    },
+  );
+
   it("does not label an unattempted NOOP backlog as checkpoint contention", () => {
     let receive!: () => void;
     let idle!: () => void;

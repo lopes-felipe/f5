@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -10,7 +10,7 @@ import { makeSqlitePersistenceLive } from "./Sqlite.ts";
 import { ReadSqlClient } from "../ReadSqlClient.ts";
 
 describe("SQLite persistence setup", () => {
-  it("keeps writes moving past a 48 MiB WAL while a reader retains its snapshot", async () => {
+  it("preserves a reader snapshot across a 48 MiB WAL burst", async () => {
     const directory = mkdtempSync(join(tmpdir(), "f5-sqlite-burst-"));
     const filename = join(directory, "state.sqlite");
     try {
@@ -26,15 +26,16 @@ describe("SQLite persistence setup", () => {
           );
           reader.exec("BEGIN");
           expect(reader.prepare("SELECT COUNT(*) AS count FROM burst_probe").get()?.count).toBe(1);
-          // The writer backstop must leave room for a burst behind an old snapshot.
-          expect(
-            (yield* sql<{ wal_autocheckpoint: number }>`PRAGMA wal_autocheckpoint`)[0]
-              ?.wal_autocheckpoint,
-          ).toBe(32768);
           yield* sql.withTransaction(
             sql`INSERT INTO burst_probe VALUES (2, zeroblob(${48 * 1024 * 1024}))`,
           );
-          expect(statSync(`${filename}-wal`).size).toBeGreaterThan(48 * 1024 * 1024);
+          // Windows can report stale sizes by path while SQLite holds the WAL open.
+          const wal = openSync(`${filename}-wal`, "r");
+          try {
+            expect(fstatSync(wal).size).toBeGreaterThan(48 * 1024 * 1024);
+          } finally {
+            closeSync(wal);
+          }
           yield* sql.withTransaction(sql`INSERT INTO burst_probe VALUES (3, NULL)`);
           expect(reader.prepare("SELECT COUNT(*) AS count FROM burst_probe").get()?.count).toBe(1);
           reader.exec("COMMIT");
