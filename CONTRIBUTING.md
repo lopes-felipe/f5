@@ -46,6 +46,21 @@ If the change depends on motion, timing, transitions, or interaction details, in
 
 If we have to guess what changed, we are much less likely to review it.
 
+## Changelog entries
+
+The required `Changelog` check fails a PR that changes shipped code without adding a
+bullet under `## [Unreleased]` in `CHANGELOG.md`. Describe the change the way a user
+would notice it. Releases publish these notes, so a missing entry means a separate
+notes PR at release time.
+
+The check passes without an entry when:
+
+- the PR has the `no-changelog` label (use it for refactors, CI, and tooling users never see);
+- every changed file is documentation, a test, or under `.github/` or `upstream/`; or
+- the branch starts with `dependabot/`, `release/prepare-`, or `f5/upstream-ledger-`.
+
+Adding or removing the label reruns the check without a new push.
+
 ## Issues First
 
 If you are thinking about a non-trivial change, open an issue first.
