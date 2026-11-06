@@ -1,6 +1,7 @@
 import type { ComputerStepSummary } from "@t3tools/contracts";
 
 export const COMPUTER_ACTION_VERB: Record<string, readonly [ongoing: string, done: string]> = {
+  batch: ["Running steps", "Ran steps"],
   wait: ["Waiting", "Waited"],
   requestForeground: ["Requesting foreground", "Requested foreground"],
   screenshot: ["Taking a screenshot", "Took a screenshot"],

@@ -115,6 +115,177 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
 }
 describe("computer broker safety boundaries", () => {
+  it("does not dispatch a mutation when context consumes its absolute batch deadline", async () => {
+    const h = await harness();
+    try {
+      const handle = await h.broker.beginBatch("t", "s", "foreground");
+      const original = h.broker.context.bind(h.broker);
+      vi.spyOn(h.broker, "context").mockImplementation(async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return original(...args);
+      });
+      const start = performance.now();
+      await expect(
+        h.broker.invoke("t", "s", { op: "type", text: "x" }, 30_000, {
+          batch: handle,
+          deadlineMs: start + 30,
+        }),
+      ).rejects.toMatchObject({ error: { _tag: "Execution" } });
+      expect(performance.now() - start).toBeLessThan(90);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+      handle.release();
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("bounds slow resolution before any native dispatch", async () => {
+    const h = await harness();
+    try {
+      const original = h.broker.context.bind(h.broker);
+      vi.spyOn(h.broker, "context").mockImplementation(async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return original(...args);
+      });
+      const start = performance.now();
+      await expect(
+        h.broker.invoke("t", "s", { op: "resolveApps", queries: ["TextEdit"] }, 50),
+      ).rejects.toMatchObject({ error: { _tag: "Execution" } });
+      expect(performance.now() - start).toBeLessThan(120);
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("waits for the desktop outcome when an already dispatched batch mutation is aborted", async () => {
+    const h = await harness();
+    try {
+      const handle = await h.broker.beginBatch("t", "s", "foreground");
+      h.ipc.holdRequests = true;
+      let finished = false;
+      const pending = h.broker
+        .invoke("t", "s", { op: "type", text: "x" }, 1000, {
+          batch: handle,
+          signal: handle.controller.signal,
+        })
+        .finally(() => {
+          finished = true;
+        });
+      const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "OutcomeUnknown" } });
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((message) => message.type === "request")).toBe(true),
+      );
+      h.broker.setPaused("t", true);
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      expect(handle.controller.signal.reason).toMatchObject({
+        error: { _tag: "Interrupted", cause: "paused" },
+      });
+      const request = h.ipc.messages.findLast((message) => message.type === "request");
+      if (request?.type !== "request") throw new Error("Missing request");
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: request.request.requestId,
+        error: { _tag: "OutcomeUnknown" },
+      });
+      await rejected;
+      handle.release();
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each(["end", "pause", "policy", "release"] as const)(
+    "revokes a batch across %s transitions",
+    async (transition) => {
+      const h = await harness();
+      try {
+        const handle = await h.broker.beginBatch("t", "s", "foreground");
+        if (transition === "end") h.broker.endTurn("t", "turn", "s");
+        if (transition === "pause") {
+          h.broker.setPaused("t", true);
+          h.broker.setPaused("t", false);
+        }
+        if (transition === "policy") await h.broker.policyTransition(async () => {});
+        if (transition === "release") h.broker.releaseSession("t", "s");
+        expect(handle.controller.signal.aborted).toBe(true);
+        expect(() => h.broker.assertBatchLive(handle)).toThrow();
+        await expect(
+          h.broker.invoke("t", "s", { op: "type", text: "x" }, 1000, { batch: handle }),
+        ).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+        expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+        handle.release();
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
+  it("settles only after a complete tree remains stable and returns the latest snapshot", async () => {
+    const h = await harness();
+    const tree = (snapshotId: string, name: string, truncated = false) => ({
+      accessible: true,
+      appId: "com.apple.TextEdit",
+      snapshotId,
+      truncated,
+      nodes: [
+        { elementRef: "one", role: "AXButton", name, actions: [], enabled: true, focused: false },
+      ],
+    });
+    h.ipc.inspectResults = [tree("a", "A"), tree("b", "B"), tree("c", "B"), tree("d", "B")];
+    try {
+      const start = performance.now();
+      const result = await h.broker.wait("t", "s", {
+        deadlineMs: start + 2000,
+        settle: { appId: "com.apple.TextEdit", maxNodes: 400, onPartial: "return" },
+      });
+      expect(result).toMatchObject({ settled: true, tree: { snapshotId: "d" } });
+      expect(performance.now() - start).toBeGreaterThanOrEqual(750);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each(["wait", "return"] as const)(
+    "never settles a truncated prefix (%s)",
+    async (onPartial) => {
+      const h = await harness();
+      h.ipc.inspectResults = [
+        {
+          accessible: true,
+          snapshotId: "partial",
+          truncated: true,
+          nodes: [{ elementRef: "one", role: "AXButton", name: "A" }],
+        },
+      ];
+      try {
+        const start = performance.now();
+        const result = await h.broker.wait("t", "s", {
+          deadlineMs: start + 150,
+          settle: { appId: "com.apple.TextEdit", maxNodes: 400, onPartial },
+        });
+        expect(result).toMatchObject({ settled: false, reason: "partial-tree" });
+        if (onPartial === "wait") expect(performance.now() - start).toBeGreaterThanOrEqual(140);
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
+  it("holds the mutation queue until the batch releases and rejects forged handles", async () => {
+    const h = await harness();
+    h.set({ runtimeMode: "full-access" });
+    try {
+      const handle = await h.broker.beginBatch("t", "s", "foreground");
+      expect(() => h.broker.assertBatchLive({ ...handle })).toThrow();
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "x" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+      handle.release();
+      handle.release();
+      await pending;
+      expect(() => h.broker.assertBatchLive(handle)).toThrow();
+    } finally {
+      h.broker.close();
+    }
+  });
   it("awaits main's correlated forget result and surfaces persistence failure to Settings", async () => {
     const h = await harness();
     try {
@@ -1444,7 +1615,7 @@ describe("computer_wait", () => {
       ];
       const result = await h.broker.wait("t", "s", {
         deadlineMs: performance.now() + 500,
-        condition: { app: "TextEdit", role: "AXButton", name: "Ready" },
+        condition: { appId: "com.apple.TextEdit", role: "AXButton", name: "Ready" },
       });
       expect(result).toMatchObject({ matched: true, snapshotId: "snapshot", elementRefs: ["one"] });
       const inspections = h.ipc.messages.filter(
@@ -1462,7 +1633,7 @@ describe("computer_wait", () => {
     try {
       const result = await h.broker.wait("t", "s", {
         deadlineMs: performance.now() + 100,
-        condition: { app: "TextEdit", name: "Ready" },
+        condition: { appId: "com.apple.TextEdit", name: "Ready" },
       });
       expect(result).toMatchObject({ timedOut: true, matched: false });
       expect(result.waitedMs).toBeLessThan(200);

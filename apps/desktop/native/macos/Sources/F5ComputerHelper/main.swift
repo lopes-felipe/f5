@@ -263,6 +263,7 @@ var lastInputUptime: TimeInterval = 0
 var inputSequence = 0
 var targetWatches: [String: ComputerTargetWatch] = [:]
 var postedRequests = Set<String>()
+var pendingSettleDeadline: TimeInterval = 0
 var pendingInputs: [ActionableInput] = []
 var enqueuedInputSequence = 0
 var resolvedInputSequence = 0
@@ -928,13 +929,20 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
   var byteBudget = ComputerInspectByteBudget()
   func visit(_ element: AXUIElement) throws -> (children: [AXUIElement], emitted: Bool) {
     try checkGrants(request)
-    let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
-    let rect = axRect(element)
+    let attributes = computerInspectReadAttributes(
+      batch: {
+        var values: CFArray?
+        let status = AXUIElementCopyMultipleAttributeValues(
+          element, computerInspectAttributes, [], &values)
+        return (status, values as? [AnyObject])
+      }, single: { attribute(element, $0) })
+    let children = attributes.children
+    let rect = attributes.frame
     if let rect, let windowFrame, !rect.intersects(windowFrame) { return (children, false) }
-    let role = attribute(element, kAXRoleAttribute) as? String ?? "unknown"
+    let role = attributes.role ?? "unknown"
     let secure =
       role == "AXSecureTextField"
-      || (attribute(element, kAXSubroleAttribute) as? String) == "AXSecureTextField"
+      || attributes.subrole == "AXSecureTextField"
     var actionNames: CFArray?
     _ = AXUIElementCopyActionNames(element, &actionNames)
     let axActions = actionNames as? [String] ?? []
@@ -957,10 +965,9 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
       actions.append("setValue")
     }
     let name = String(
-      ((attribute(element, kAXTitleAttribute) as? String)
-        ?? (attribute(element, kAXDescriptionAttribute) as? String) ?? "").prefix(200))
+      (attributes.title ?? attributes.description ?? "").prefix(200))
     let value = secure ? nil : attribute(element, kAXValueAttribute) as? String
-    let focused = attribute(element, kAXFocusedAttribute) as? Bool ?? false
+    let focused = attributes.focused ?? false
     if computerInspectIsWrapper(
       role: role, name: name, value: value, focused: focused, actions: actions)
     {
@@ -971,7 +978,7 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
       "elementRef": ref, "role": String(role.prefix(200)),
       "name": name,
       "focused": focused,
-      "enabled": attribute(element, kAXEnabledAttribute) as? Bool ?? true,
+      "enabled": attributes.enabled ?? true,
       // In background, list only actions that execute without the foreground.
       "actions": secure || foregroundOnly
         ? [] : background ? actions.filter { ["press", "setValue"].contains($0) } : actions,
@@ -1193,6 +1200,18 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     }
     throw Failure("StaleElement", "reason", "element-gone")
   }
+  if action == "focus" {
+    let verified = computerPollUntil(
+      timeout: 0.5, cancelled: { requestCancelled(string(request, "requestId")) },
+      predicate: {
+        if attribute(element, kAXFocusedAttribute) as? Bool == true { return true }
+        // Web content may expose focus on the application's focused element only.
+        guard let focused = axElement(attribute(
+          applicationElement(app.processIdentifier), kAXFocusedUIElementAttribute)) else { return false }
+        return CFEqual(focused, element)
+      })
+    return ["verified": verified]
+  }
   guard background else { return nil }
   // Bounded read-back. A read-back failure after confirmed success stays success.
   if action == "setValue" {
@@ -1344,11 +1363,9 @@ func computerAXWriteRejected(_ error: AXError) -> Bool {
 /// The OS action is done; an optional screenshot follows. Lets Electron keep a known success
 /// even if a stop or activation incident arrives during capture.
 func confirmAction(_ request: [String: Any]) {
-  let payload: [String: Any] = [
-    "type": "actionConfirmed", "requestId": string(request, "requestId"),
-    "executionGeneration": integer(authorization(request), "executionGeneration"),
-  ]
-  telemetryQueue.async { emit(payload) }
+  computerConfirmAction(
+    requestId: string(request, "requestId"),
+    executionGeneration: integer(authorization(request), "executionGeneration"), emit: emit)
 }
 func backgroundType(_ request: [String: Any], _ host: [String: Any]) throws -> (
   NSRunningApplication, CGRect, [String: Any]
@@ -1864,12 +1881,13 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
   }
   return result
 }
-func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [String: Any] {
+func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: inout Bool) async throws -> [String: Any] {
   let op = string(request, "op")
   try checkPermit(request)
   let owner = inputOwner(request)
   defer { releaseHeldInput(where: { $0 == owner }) }
   if isBackground(request) { return try await backgroundMutate(request, host) }
+  var verification: [String: Any]?
   if ["click", "move", "drag", "scroll"].contains(op) {
     let target = try display(string(request, "displayId"))
     guard target.generation == string(request, "geometryGeneration") else {
@@ -1985,7 +2003,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
       }
     }
   } else if op == "elementAction" {
-    try elementAction(request, host)
+    verification = try elementAction(request, host)
   } else if op == "activateApp" || op == "openApp" {
     let id = string(request, "appId")
     if tier(id) == "blocked" { throw Failure("TargetBlocked", "kind", "protection-unknown") }
@@ -2009,11 +2027,17 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
     throw Failure("UnsupportedAction")
   }
   confirmAction(request)
-  try await Task.sleep(nanoseconds: 300_000_000)
+  // See execute's pending deadline: defer only when metadata cannot select a later target.
+  let settle = computerPostActionSettleMs(
+    op: op, screenshot: request["screenshot"] as? Bool == true,
+    appTargeted: !string(request, "appId").isEmpty, displayCount: displays().count)
+  deferredSettle = settle == 0
+  if settle > 0 { try await Task.sleep(nanoseconds: UInt64(settle) * 1_000_000) }
   var result: [String: Any] = [
     "frontmostApp": NSWorkspace.shared.frontmostApplication.flatMap(appRecord) ?? NSNull(),
     "cursor": NSNull(), "actionCompleted": true,
   ]
+  if let verification { result["verification"] = verification }
   let allDisplays = displays()
   let windowFrame = NSWorkspace.shared.frontmostApplication.flatMap { app in
     axElement(attribute(applicationElement(app.processIdentifier), kAXFocusedWindowAttribute))
@@ -2075,7 +2099,20 @@ func execute(_ message: [String: Any]) {
       completed.signal()
     }
     do {
+      // Deferred foreground settle applies across queues, before any authorization checks.
+      // See mutate's metadata-dependent inline settle rule.
+      if !["status", "listApps", "resolveApps"].contains(op) {
+        while true {
+          if requestCancelled(id) {
+            throw Failure("Interrupted", "cause", "paused")
+          }
+          let remaining = locked { pendingSettleDeadline } - ProcessInfo.processInfo.systemUptime
+          if remaining <= 0 { break }
+          try await Task.sleep(nanoseconds: UInt64(min(0.025, remaining) * 1_000_000_000))
+        }
+      }
       let result: Any
+      var deferredSettle = false
       switch op {
       case "status": result = permissions()
       case "listApps": result = protectAppRecords(listApps(), host)
@@ -2083,20 +2120,28 @@ func execute(_ message: [String: Any]) {
         result = protectAppRecords(resolveApps(request["queries"] as? [String] ?? []), host)
       case "inspect": result = try inspect(request, host)
       case "screenshot", "zoom": result = try await screenshot(request, host)
-      default: result = try await mutate(request, host)
+      default: result = try await mutate(request, host, deferredSettle: &deferredSettle)
+      }
+      if deferredSettle {
+        locked { pendingSettleDeadline = ProcessInfo.processInfo.systemUptime + 0.3 }
       }
       emit(["type": "response", "requestId": id, "result": result])
     } catch let failure as Failure {
-      var error = failure.payload
-      if tracked && error["_tag"] as? String == "Interrupted" {
-        let started = locked { postedRequests.contains(id) }
-        error = started ? ["_tag": "OutcomeUnknown"] : error.merging(["actionStarted": false]) { _, new in new }
+      let started = locked { postedRequests.contains(id) }
+      if tracked && !isBackground(request) && started {
+        locked { pendingSettleDeadline = ProcessInfo.processInfo.systemUptime + 0.3 }
       }
+      let error = computerActionFailure(
+        failure.payload, tracked: tracked, background: isBackground(request), posted: started)
       emit(["type": "response", "requestId": id, "error": error])
     } catch {
+      let started = tracked && locked { postedRequests.contains(id) }
+      if started && !isBackground(request) {
+        locked { pendingSettleDeadline = ProcessInfo.processInfo.systemUptime + 0.3 }
+      }
       emit([
         "type": "response", "requestId": id,
-        "error": ["_tag": "Execution", "message": "Native action failed."],
+        "error": started ? ["_tag": "OutcomeUnknown"] : ["_tag": "Execution", "message": "Native action failed."],
       ])
     }
   }

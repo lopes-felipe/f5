@@ -37,6 +37,7 @@ import type { ComputerHelper } from "./ComputerHelperClient";
 import { ComputerCooperation } from "./ComputerCooperation";
 import { ComputerAdmissionQueue, type ComputerAdmission } from "./ComputerAdmissionQueue";
 import { ComputerSharedAppState } from "./ComputerSharedAppState";
+import { COMPUTER_OVERLAY_ACTION_MAX_MS } from "./computerOverlayTiming";
 
 interface Admission {
   owner: string;
@@ -50,6 +51,7 @@ interface Admission {
   error?: unknown;
 }
 interface Job {
+  queuedAt?: number;
   request: ComputerAutomationRequest;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
@@ -168,6 +170,7 @@ export class ComputerController {
       platform: "darwin" | "win32";
       activity: (profileId: string, activity: ComputerActivity) => void;
       thumbnail?: (screenshot: ComputerScreenshot) => string | undefined;
+      performanceStageProbe?: (stage: string, durationMs: number) => void;
       paused: (holder: ComputerLeaseHolder, cause: ComputerPauseCause) => void;
       /** Whether background delivery is negotiated and healthy end to end. */
       backgroundAvailable?: () => boolean;
@@ -533,9 +536,17 @@ export class ComputerController {
     const tagged = generation !== undefined ? this.permitted.get(generation) : undefined;
     if (message.type === "killSwitch") this.stop("kill-switch");
     else if (message.type === "actionConfirmed") {
-      if (typeof message.requestId === "string") {
+      if (
+        typeof message.requestId === "string" &&
+        [...this.activeMutations.values()].some(
+          (job) =>
+            job.phase === "sent" &&
+            job.request.requestId === message.requestId &&
+            (generation === undefined ||
+              job.request.authorization.executionGeneration === generation),
+        )
+      ) {
         this.confirmed.add(message.requestId);
-        if (this.confirmed.size > 256) this.confirmed.delete(this.confirmed.values().next().value!);
       }
     } else if (message.type === "physicalInput") {
       this.physicalInputAt = this.now();
@@ -997,6 +1008,7 @@ export class ComputerController {
         cancel = resolve;
       });
       const job: Job = {
+        ...(this.options.performanceStageProbe ? { queuedAt: performance.now() } : {}),
         request,
         resolve,
         reject,
@@ -1234,6 +1246,7 @@ export class ComputerController {
     }
   }
   private async run(job: Job): Promise<void> {
+    if (job.queuedAt !== undefined) this.recordStage("controller.queue", job.queuedAt);
     const { request } = job;
     const mutation = isComputerMutation(request.op);
     const background = request.delivery === "background";
@@ -1273,10 +1286,16 @@ export class ComputerController {
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
             await Promise.race([
-              this.overlay.action(request, status.available ? (status.displays ?? []) : [], target),
+              this.measureStage("controller.overlay", () =>
+                this.overlay.action(
+                  request,
+                  status.available ? (status.displays ?? []) : [],
+                  target,
+                ),
+              ),
               job.cancellation,
               new Promise<void>((resolve) => {
-                timer = setTimeout(resolve, 280);
+                timer = setTimeout(resolve, COMPUTER_OVERLAY_ACTION_MAX_MS);
               }),
             ]);
           } finally {
@@ -1299,9 +1318,11 @@ export class ComputerController {
       const observing = ["inspect", "screenshot", "zoom"].includes(request.op);
       let observationEpoch: number | undefined;
       if (holder && this.cooperates(holder) && (mutation || observing)) {
-        const ready = await this.cooperation.refresh(
-          holder,
-          background && "appId" in request ? request.appId : undefined,
+        const ready = await this.measureStage("controller.cooperation-refresh", () =>
+          this.cooperation.refresh(
+            holder,
+            background && "appId" in request ? request.appId : undefined,
+          ),
         );
         if (mutation) {
           this.validate(request);
@@ -1327,7 +1348,10 @@ export class ComputerController {
         overlayWindowIds: this.overlay.windowIds(),
       });
       this.trackNative(request, native);
-      const result = await Promise.race([native, job.cancellation]);
+      const result = await this.measureStage("controller.native-round-trip", () =>
+        Promise.race([native, job.cancellation]),
+      );
+      const preparationStarted = this.options.performanceStageProbe ? performance.now() : undefined;
       if (job.cancelled) return;
       if (
         appEpoch !== undefined &&
@@ -1435,6 +1459,8 @@ export class ComputerController {
             : {}),
         });
       }
+      if (preparationStarted !== undefined)
+        this.recordStage("controller.result-preparation", preparationStarted);
       job.resolve(result);
     } catch (cause) {
       let error = cause;
@@ -1504,6 +1530,22 @@ export class ComputerController {
     // OutcomeUnknown is recorded by run() for every delivery.
     if (holder && error._tag === "ForegroundRequired" && error.reason === "activation-side-effect")
       this.stopThread(holder, "activation");
+  }
+  private recordStage(stage: string, started: number): void {
+    try {
+      this.options.performanceStageProbe?.(stage, performance.now() - started);
+    } catch {
+      /* Harness callbacks cannot affect native outcomes. */
+    }
+  }
+  private async measureStage<A>(stage: string, operation: () => Promise<A>): Promise<A> {
+    if (!this.options.performanceStageProbe) return operation();
+    const started = performance.now();
+    try {
+      return await operation();
+    } finally {
+      this.recordStage(stage, started);
+    }
   }
   private cancelWhere(predicate: (job: Job) => boolean, error: ComputerControlError): void {
     const unknown: ComputerAutomationRequest[] = [];

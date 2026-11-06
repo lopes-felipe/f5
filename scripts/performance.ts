@@ -8,7 +8,15 @@ import { validateCoverage } from "./lib/performance/coverage.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const args = process.argv.slice(2);
-if (args[0] === "coverage") {
+if (args[0] === "computer") {
+  const run = spawnSync(
+    "bun",
+    ["apps/desktop/src/computer/rehearseInspectMacos.ts", ...args.slice(1), "--performance"],
+    { cwd: root, stdio: "inherit" },
+  );
+  if (run.error) throw run.error;
+  process.exitCode = run.status ?? 1;
+} else if (args[0] === "coverage") {
   if (args.length !== 3)
     throw new Error("Usage: bun scripts/performance.ts coverage <server.json> <interactive.json>");
   const reports = args

@@ -117,6 +117,31 @@ describe("performance gates", () => {
     expect(compareReports(base, invalidCpu)).toContain("Incomplete samples: replay");
     expect(compareReports(base, report(), ["typo"])).toContain("Unknown CPU target: typo");
   });
+  it("compares computer reports only with matching configuration and equivalent output", () => {
+    const base = report();
+    base.scope = "computer";
+    base.computer = {
+      fixtureDigest: "fixture",
+      harnessDigest: "harness",
+      platform: "darwin",
+      displays: [{ id: "1" }],
+      masking: "fast",
+      build: "debug",
+      helperIdentity: "old",
+      executionMode: "foreground",
+      nodesDigests: { inspect: "nodes" },
+    };
+    const next = structuredClone(base);
+    next.computer!.helperIdentity = "new";
+    expect(compareReports(base, next)).toEqual([]);
+    next.computer!.masking = "conservative";
+    expect(compareReports(base, next)).not.toEqual([]);
+    next.computer!.masking = "fast";
+    next.computer!.nodesDigests.inspect = "different";
+    expect(compareReports(base, next)).not.toEqual([]);
+    delete next.computer;
+    expect(compareReports(base, next)).toContain("Missing computer configuration");
+  });
   it("rejects resource-bound failures even when timings improved", () => {
     const next = report();
     next.observations = [maximumObservation("buffer", 4097, 4096)];

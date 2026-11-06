@@ -16,10 +16,18 @@ vi.mock("electron", () => ({
   BrowserWindow: class {
     options: unknown;
     setAlwaysOnTop = vi.fn();
+    once = vi.fn();
     setIgnoreMouseEvents = vi.fn();
     setContentProtection = vi.fn();
     setVisibleOnAllWorkspaces = vi.fn();
-    webContents = { setWindowOpenHandler: vi.fn(), on: vi.fn() };
+    webContents = {
+      setWindowOpenHandler: vi.fn(),
+      on: vi.fn(),
+      executeJavaScript: vi.fn(async () => {}),
+    };
+    getBounds() {
+      return (this.options as any).bounds ?? this.options;
+    }
     destroyed = false;
     constructor(options: unknown) {
       this.options = options;
@@ -41,6 +49,61 @@ beforeEach(() => {
   mocks.listeners.clear();
 });
 afterEach(() => vi.unstubAllGlobals());
+it("does not await renderer acknowledgements and coalesces to the latest action", async () => {
+  const overlay = new ComputerOverlay();
+  overlay.show({ executionGeneration: 1 } as ComputerLeaseHolder);
+  let finish!: () => void;
+  const render = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  for (const window of mocks.windows)
+    window.webContents.executeJavaScript.mockReturnValueOnce(render);
+  const request = (text: string) => ({ op: "type", text, agent: { provider: "codex" } }) as any;
+  try {
+    await overlay.action(request("a"), []);
+    await overlay.action(request("bb"), []);
+    await overlay.action(request("ccc"), []);
+    for (const window of mocks.windows)
+      expect(window.webContents.executeJavaScript).toHaveBeenCalledTimes(1);
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const window of mocks.windows) {
+      expect(window.webContents.executeJavaScript).toHaveBeenCalledTimes(2);
+      expect(window.webContents.executeJavaScript.mock.calls[1][0]).toContain(
+        "Typing 3 characters",
+      );
+    }
+  } finally {
+    overlay.close();
+  }
+});
+it("waits only 90 ms for a moved pointer, and does not wait at the same point", async () => {
+  vi.useFakeTimers();
+  const overlay = new ComputerOverlay();
+  overlay.show({ executionGeneration: 1 } as ComputerLeaseHolder);
+  const request = { op: "move", displayId: "1", x: 20, y: 20, agent: { provider: "codex" } } as any;
+  const display = {
+    displayId: "1",
+    nativeBounds: { x: 0, y: 0, width: 100, height: 100 },
+    modelSize: { width: 100, height: 100 },
+  } as any;
+  try {
+    let finished = false;
+    const action = overlay.action(request, [display]).then(() => {
+      finished = true;
+    });
+    await vi.advanceTimersByTimeAsync(89);
+    expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await action;
+    expect(finished).toBe(true);
+    await overlay.action(request, [display]);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    overlay.close();
+    vi.useRealTimers();
+  }
+});
 it.each(["darwin", "win32"])(
   "creates protected, non-interactive overlays on %s and clears them on release",
   async (platform) => {
