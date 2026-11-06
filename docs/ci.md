@@ -24,6 +24,7 @@ matrices finish every shard, and all jobs have timeouts.
 | macos-desktop       | Main, nightly, dispatch | Desktop build, smoke and profile lifecycle                                                               | 30 min  |
 | CI result           | Every run               | Aggregate verdict                                                                                        | 5 min   |
 | main-status         | Current main only       | Reconcile the `ci-main-red` issue                                                                        | 5 min   |
+| runner retry        | Current main only       | Rerun jobs GitHub never assigned to a runner (`ci-runner-retry.yml`)                                     | 5 min   |
 
 A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static checks
 and workspace/Git/integration tests still run, including environment documentation
@@ -53,6 +54,17 @@ skipping setup and checks. `CI result` waits for these lightweight executions,
 which can queue for macOS/Windows capacity and delay other PRs. Docs-only end-to-end
 latency has not been measured; compare queue and execution time against the prior
 topology before claiming a scheduling gain. The docs exclusions are unchanged.
+
+GitHub cancels a job it cannot assign to a hosted runner before any step runs,
+most often on scarce macOS arm64 capacity. `ci-runner-retry.yml` reruns the failed
+jobs of the current main HEAD's CI run when every failure is such an unassigned
+cancellation, up to three total attempts. A job that ran and failed is never
+retried this way, and neither is an older commit, since a newer run replaces it.
+Commits that may carry release intent are left to the release publisher, which
+retries a pending stable source's CI itself. Reruns made with `GITHUB_TOKEN` may not
+raise another completion event, so the workflow also sweeps every 15 minutes, and
+`ci-main-status.yml` re-reads main HEAD's newest CI result on the same cadence so
+the `ci-main-red` issue closes once a rerun passes.
 
 Superseded PR runs are cancelled through concurrency groups. Main runs retain
 per-SHA groups. The `ci-supersede.yml` queue-cleanup workflow checks changed files

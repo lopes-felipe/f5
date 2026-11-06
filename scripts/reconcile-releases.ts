@@ -20,7 +20,7 @@ import {
 import { loadCandidate, runArtifacts } from "./release/candidate-store.ts";
 import { pendingStableRequests, type ReleaseCandidate } from "./release/release-candidate.ts";
 import { automationMode } from "./release/release-publication.ts";
-import { latestRuns, qualifiedSource } from "./release/release-selection.ts";
+import { latestRuns, qualifiedSource, stableCiAction } from "./release/release-selection.ts";
 import { observeRelease, releaseFields, releasePhase } from "./release/release-observability.ts";
 import { workflowTiming } from "./release/release-timing.ts";
 import {
@@ -36,6 +36,53 @@ import { publicationGate } from "./release/release-publication-gate.ts";
 import { parsePublicationLease, type PublicationLease } from "./release/release-lease.ts";
 
 const MAX_CANDIDATE_ATTEMPTS = 3;
+const MAX_CI_ATTEMPTS = 3;
+
+/** A stable source's failed CI is retried like its build, then fails the publisher visibly. */
+function recoverStableCi(sha: string, mode: ReturnType<typeof automationMode>): void {
+  const records = api<{ workflow_runs: WorkflowRun[] }>(
+    "actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=" + sha + "&per_page=100",
+  ).workflow_runs;
+  const decision = stableCiAction(records, sha, mode, MAX_CI_ATTEMPTS);
+  if (decision.action === "wait") return;
+  const { run } = decision;
+  const url = "https://github.com/" + repository + "/actions/runs/" + run.id;
+  const blocked = (detail: string) => {
+    releaseFields({ status: "blocked-stable-ci", ciRun: run.id, ciAttempt: run.run_attempt });
+    return new Error(
+      "Stable CI is blocked (" +
+        run.conclusion +
+        ", attempt " +
+        run.run_attempt +
+        "): " +
+        url +
+        ". Rerun failed jobs with: gh run rerun " +
+        run.id +
+        " --failed" +
+        detail,
+    );
+  };
+  if (decision.action === "blocked") throw blocked("");
+  try {
+    gh([
+      "api",
+      "-X",
+      "POST",
+      "repos/" + repository + "/actions/runs/" + run.id + "/rerun-failed-jobs",
+    ]);
+  } catch (error) {
+    // A manual rerun that started first makes GitHub refuse this one; the next run sees it.
+    throw blocked(" (automatic rerun failed: " + String(error) + ")");
+  }
+  const reason =
+    "Re-running failed stable CI jobs (attempt " +
+    (run.run_attempt + 1) +
+    " of " +
+    MAX_CI_ATTEMPTS +
+    ")";
+  releaseFields({ status: "retrying-ci", reason, ciRun: run.id, ciAttempt: run.run_attempt + 1 });
+  console.log(reason, url);
+}
 
 interface ReconcileOptions {
   leaseOnly?: boolean;
@@ -100,6 +147,7 @@ async function reconcile(options: ReconcileOptions): Promise<PublicationLease | 
   const latestCi = latestRuns(ciRuns);
   const selected = qualifiedSource(history, ciRuns, pending, boundary);
   if (!selected) {
+    if (pending.length) recoverStableCi(pending[0]!.sourceSha, mode);
     console.log("No publishable candidate; stable requests remain barriers until qualified.");
     return;
   }
