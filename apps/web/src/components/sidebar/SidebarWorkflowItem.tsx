@@ -42,7 +42,6 @@ import {
   type SidebarWorkflowEntry,
   type SidebarWorkflowId,
   type SidebarWorkflowType,
-  type TerminalStatusIndicator,
   isWorkflowRouteActive,
   workflowPrLabel,
   workflowRouteForType,
@@ -56,7 +55,6 @@ import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeR
 export interface SidebarThreadRowIndicators {
   threadStatus: ThreadStatusPill | null;
   prStatus: PrStatusIndicator | null;
-  terminalStatus: TerminalStatusIndicator | null;
   isUnread: boolean;
   /** The thread's git status is being polled but hasn't loaded, so "no PR" isn't known yet. */
   prPending: boolean;

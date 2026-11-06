@@ -40,6 +40,7 @@ import { getRouter } from "../router";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { useStore } from "../store";
+import { useTerminalStateStore } from "../terminalStateStore";
 import { hasUnseenCompletion } from "../threadStatus";
 import { useProfileState } from "../profileState";
 import { createTestServerProvider } from "../testServerProvider";
@@ -1081,6 +1082,43 @@ describe("Thread sidebar", () => {
     Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
   });
+
+  it.each(["settled", "snoozed"] as const)(
+    "hides running-terminal indicators on %s rows",
+    async (section) => {
+      const terminal = useTerminalStateStore.getState();
+      terminal.ensureTerminal(THREAD_ID, "default");
+      terminal.setTerminalActivity(THREAD_ID, "default", true);
+      const mounted = await mountApp({
+        width: 1400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (next) => {
+          next.snapshot = createSnapshot([
+            createSnapshotThread({
+              id: THREAD_ID,
+              title: "Parked conversation",
+              ...(section === "settled"
+                ? { settledAt: NOW_ISO, settledBy: "user" as const }
+                : { snoozedUntil: "2099-01-01T00:00:00.000Z", snoozedAt: NOW_ISO }),
+            }),
+          ]);
+        },
+      });
+      try {
+        const row = page.elementLocator(await waitForSidebarThreadRow("Parked conversation"));
+        await expect
+          .element(
+            row.getByRole("button", {
+              name: "Terminal process running. Show terminal",
+            }),
+          )
+          .not.toBeInTheDocument();
+      } finally {
+        terminal.clearTerminalState(THREAD_ID);
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("keeps settled threads in a shelf bucket and reachable by their existing route", async () => {
     const mounted = await mountApp({
@@ -3385,6 +3423,16 @@ describe("Thread sidebar", () => {
       expect(older.getAttribute("aria-expanded")).toBe("false");
       expect(querySidebarThreadRowByTitle("Stale thread A")).toBeNull();
       expect(querySidebarThreadRowByTitle("Stale thread B")).toBeNull();
+      const terminal = useTerminalStateStore.getState();
+      const staleId = ThreadId.makeUnsafe("stale-b");
+      terminal.ensureTerminal(staleId, "default");
+      terminal.setTerminalActivity(staleId, "default", true);
+      await waitForSidebarThreadRow("Stale thread B");
+      await expect.poll(() => older.textContent).toBe("1 older than 7 days");
+      terminal.setTerminalActivity(staleId, "default", false);
+      await expect.poll(() => querySidebarThreadRowByTitle("Stale thread B")).toBeNull();
+      await expect.poll(() => older.textContent).toBe("2 older than 7 days");
+      terminal.clearTerminalState(staleId);
       // Pinned and open threads never fold.
       expect(querySidebarThreadRowByTitle("Stale pinned")).not.toBeNull();
       expect(querySidebarThreadRowByTitle("Stale open")).not.toBeNull();
@@ -5510,6 +5558,63 @@ describe("Thread sidebar", () => {
       await mounted.cleanup();
     }
   });
+  it("isolates terminal updates from the sidebar and another thread's chat", async () => {
+    const otherId = ThreadId.makeUnsafe("background-terminal");
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Visible thread" }),
+          createSnapshotThread({ id: otherId, title: "Background terminal" }),
+        ]);
+      },
+    });
+    try {
+      const row = page.elementLocator(await waitForSidebarThreadRow("Background terminal"));
+      const terminal = useTerminalStateStore.getState();
+      terminal.ensureTerminal(otherId, "default");
+      terminal.setTerminalActivity(otherId, "default", true);
+      await expect
+        .element(
+          row.getByRole("button", {
+            name: "Terminal process running. Show terminal",
+          }),
+        )
+        .toBeVisible();
+      const sidebar = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-sidebar-root][data-render-count]"),
+        "Sidebar render probe should render.",
+      );
+      const chat = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            `[data-chat-view-thread-id="${THREAD_ID}"][data-render-count]`,
+          ),
+        "Chat render probe should render.",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const before = [sidebar.dataset.renderCount, chat.dataset.renderCount];
+      for (let update = 0; update < 10; update++) {
+        terminal.setTerminalHeight(otherId, 300 + update);
+        terminal.setTerminalOpen(otherId, update % 2 === 0);
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      }
+      expect([sidebar.dataset.renderCount, chat.dataset.renderCount]).toEqual(before);
+      terminal.setTerminalActivity(otherId, "default", false);
+      await expect
+        .element(
+          row.getByRole("button", {
+            name: "Terminal process running. Show terminal",
+          }),
+        )
+        .not.toBeInTheDocument();
+    } finally {
+      useTerminalStateStore.getState().clearTerminalState(otherId);
+      await mounted.cleanup();
+    }
+  });
+
   it("does not re-render the sidebar or an inactive chat view while another thread streams", async () => {
     const streamingThreadId = "thread-sidebar-streaming" as ThreadId;
     const streamingTitle = "Background streaming thread";

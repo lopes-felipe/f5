@@ -2,6 +2,7 @@ import { ArrowLeftIcon, FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } f
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
   DndContext,
@@ -112,7 +113,6 @@ import {
   type ThreadPr,
   buildProjectSidebarLists,
   prStatusIndicator,
-  terminalStatusFromRunningIds,
   threadIdFromPinnedSortableId,
   workflowEntryKey,
 } from "./sidebar/sidebarLists";
@@ -181,7 +181,13 @@ export default function Sidebar() {
   const projectDraftThreadIdByProjectId = useComposerDraftStore(
     (store) => store.projectDraftThreadIdByProjectId,
   );
-  const terminalStateByThreadId = useTerminalStateStore((state) => state.terminalStateByThreadId);
+  const runningTerminalThreadIds = useTerminalStateStore(
+    useShallow((state) =>
+      Object.entries(state.terminalStateByThreadId)
+        .filter(([, terminal]) => terminal.runningTerminalIds.length > 0)
+        .map(([id]) => ThreadId.makeUnsafe(id)),
+    ),
+  );
   const clearProjectDraftThreadId = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadId,
   );
@@ -399,9 +405,6 @@ export default function Sidebar() {
     isUnread: unreadThreadIds.has(thread.id),
     prStatus: prStatusByThreadId.get(thread.id) ?? null,
     prPending: prPendingThreadIds.has(thread.id),
-    terminalStatus: terminalStatusFromRunningIds(
-      selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,
-    ),
   });
   const projectSidebarListsById = useMemo(
     () =>
@@ -448,14 +451,13 @@ export default function Sidebar() {
     if (routeThreadId) ids.add(routeThreadId);
     for (const [threadId, status] of threadStatusById)
       if (isWorkingStatus(status) || isAttentionStatus(status)) ids.add(threadId);
-    for (const [threadId, terminalState] of Object.entries(terminalStateByThreadId))
-      if (terminalState.runningTerminalIds.length > 0) ids.add(ThreadId.makeUnsafe(threadId));
+    for (const threadId of runningTerminalThreadIds) ids.add(threadId);
     for (const threadId of pausedQueueThreadIds) ids.add(threadId);
     return ids;
   }, [
     pausedQueueThreadIds,
     routeThreadId,
-    terminalStateByThreadId,
+    runningTerminalThreadIds,
     threadStatusById,
     unreadThreadIds,
   ]);
@@ -930,7 +932,10 @@ export default function Sidebar() {
         context: {
           terminalFocus: isTerminalFocused(),
           terminalOpen: routeThreadId
-            ? selectThreadTerminalState(terminalStateByThreadId, routeThreadId).terminalOpen
+            ? selectThreadTerminalState(
+                useTerminalStateStore.getState().terminalStateByThreadId,
+                routeThreadId,
+              ).terminalOpen
             : false,
         },
       });
@@ -1015,7 +1020,6 @@ export default function Sidebar() {
     routeThreadId,
     scratchDisabled,
     startScratchThread,
-    terminalStateByThreadId,
     wsInteractionBlocked,
   ]);
 
