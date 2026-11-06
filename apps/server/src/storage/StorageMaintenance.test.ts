@@ -3631,7 +3631,7 @@ it.layer(
           assert.lengthOf(projects, 0);
         }),
       ),
-    // About 17 s on an idle Windows runner; parallel shards pushed it past the 30 s default.
+    // About 17 s on idle Windows runners; load pushed it past the 30 s Windows default.
     process.platform === "win32" ? 90_000 : 30_000,
   );
   it.effect(
@@ -3723,7 +3723,7 @@ it.layer(
           );
         }),
       ),
-    // About 14 s on an idle Windows runner; parallel shards pushed it past the 30 s default.
+    // About 14 s on idle Windows runners; load pushed it past the 30 s Windows default.
     process.platform === "win32" ? 90_000 : 30_000,
   );
   it.effect("keeps dependency folders of a checkout a thread used recently", () =>

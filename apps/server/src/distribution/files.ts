@@ -58,6 +58,8 @@ export interface RenameRetryOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly attempts?: number;
   readonly delayMs?: number;
+  /** Called once, before the first wait, so a caller can say why it is paused. */
+  readonly onRetry?: (error: NodeJS.ErrnoException) => void;
 }
 
 /**
@@ -82,6 +84,7 @@ export async function renameWithRetry(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (attempt >= attempts || code === undefined || !RENAME_LOCK_CODES.has(code)) throw error;
+      if (attempt === 1) options.onRetry?.(error as NodeJS.ErrnoException);
       await sleep(options.delayMs ?? 200);
     }
   }

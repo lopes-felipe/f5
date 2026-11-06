@@ -39,6 +39,21 @@ describe("renameWithRetry", () => {
     expect(sleep).toHaveBeenCalledTimes(3);
   });
 
+  it("waits about 10 s by default and announces the wait once", async () => {
+    const rename = failingRename(Array.from({ length: 60 }, () => "EBUSY"));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const onRetry = vi.fn();
+
+    await expect(
+      renameWithRetry("a", "b", { platform: "win32", rename, sleep, onRetry }),
+    ).rejects.toMatchObject({ code: "EBUSY" });
+    expect(rename).toHaveBeenCalledTimes(50);
+    expect(sleep).toHaveBeenCalledTimes(49);
+    expect(sleep.mock.calls.every(([ms]) => ms === 200)).toBe(true);
+    expect(onRetry).toHaveBeenCalledOnce();
+    expect(onRetry.mock.calls[0]![0]).toMatchObject({ code: "EBUSY" });
+  });
+
   it("does not retry other errors on Windows", async () => {
     const rename = failingRename(["ENOENT"]);
     const sleep = vi.fn(async (_ms: number) => {});
