@@ -1,4 +1,8 @@
 import { TerminalRecovery, terminalSnapshotReader } from "../lib/terminalRecovery";
+import {
+  createTerminalOutputWriter,
+  currentTerminalContextSelection,
+} from "../lib/terminalSelection";
 import { getWsConnectionState, subscribeWsConnectionState } from "../wsConnectionState";
 import { terminalClipboardAction, terminalRightClickPastes } from "../terminalClipboard";
 import { useProfileState } from "../profileState";
@@ -98,7 +102,7 @@ export function clampDrawerHeight(height: number, maxHeight = maxDrawerHeight())
   return Math.min(normalizeDrawerHeight(height), maxHeight);
 }
 
-function writeSystemMessage(terminal: Terminal, message: string): void {
+function writeSystemMessage(terminal: { write(data: string): void }, message: string): void {
   terminal.write(`\r\n[terminal] ${message}\r\n`);
 }
 
@@ -311,6 +315,7 @@ function TerminalViewport({
   const selectionActionRequestIdRef = useRef(0);
   const selectionActionOpenRef = useRef(false);
   const selectionActionTimerRef = useRef<number | null>(null);
+  const outputWriterRef = useRef<ReturnType<typeof createTerminalOutputWriter> | null>(null);
   const terminalFontFamily = fontFamilyStack(monoFontFamily, DEFAULT_MONO_FONT_STACK);
   const terminalFontAppearanceRef = useRef({
     fontFamily: terminalFontFamily,
@@ -322,9 +327,9 @@ function TerminalViewport({
   };
   const { copyToClipboard } = useCopyToClipboard({
     onError: (error) => {
-      const activeTerminal = terminalRef.current;
-      if (activeTerminal) {
-        writeSystemMessage(activeTerminal, error.message);
+      const writer = outputWriterRef.current;
+      if (writer) {
+        writeSystemMessage(writer, error.message);
       }
     },
   });
@@ -370,6 +375,8 @@ function TerminalViewport({
 
     const api = readNativeApi();
     if (!api) return;
+    const outputWriter = createTerminalOutputWriter(terminal);
+    outputWriterRef.current = outputWriter;
 
     const clearSelectionAction = () => {
       selectionActionRequestIdRef.current += 1;
@@ -443,7 +450,13 @@ function TerminalViewport({
           copyToClipboard(nextAction.selection.text, undefined);
         }
         if (action.addToChat) {
-          onAddTerminalContextRef.current(nextAction.selection);
+          // Output may have scrolled while the native menu was open.
+          const current = currentTerminalContextSelection(
+            nextAction.selection,
+            readSelectionAction()?.selection ?? null,
+          );
+          if (!current) return;
+          onAddTerminalContextRef.current(current);
         }
         terminalRef.current?.clearSelection();
         terminalRef.current?.focus();
@@ -458,7 +471,7 @@ function TerminalViewport({
       try {
         await api.terminal.write({ threadId, terminalId, data });
       } catch (error) {
-        writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallbackError);
+        writeSystemMessage(outputWriter, error instanceof Error ? error.message : fallbackError);
       }
     };
 
@@ -473,7 +486,7 @@ function TerminalViewport({
       } catch (error) {
         if (!disposed)
           writeSystemMessage(
-            terminal,
+            outputWriter,
             error instanceof Error ? error.message : "Unable to read clipboard",
           );
       }
@@ -569,7 +582,7 @@ function TerminalViewport({
               if (match.kind === "url") {
                 void api.shell.openExternal(match.text).catch((error) => {
                   writeSystemMessage(
-                    latestTerminal,
+                    outputWriter,
                     error instanceof Error ? error.message : "Unable to open link",
                   );
                 });
@@ -582,7 +595,7 @@ function TerminalViewport({
               }
               void openInPreferredEditor(api, target).catch((error) => {
                 writeSystemMessage(
-                  latestTerminal,
+                  outputWriter,
                   error instanceof Error ? error.message : "Unable to open path",
                 );
               });
@@ -597,7 +610,7 @@ function TerminalViewport({
         .write({ threadId, terminalId, data })
         .catch((err) =>
           writeSystemMessage(
-            terminal,
+            outputWriter,
             err instanceof Error ? err.message : "Terminal write failed",
           ),
         );
@@ -682,13 +695,12 @@ function TerminalViewport({
         if (!activeTerminal || disposed) return;
         lastRecoveryError = undefined;
         hasHandledExitRef.current = snapshot.status === "exited";
-        activeTerminal.write("\u001bc");
-        if (snapshot.history) activeTerminal.write(snapshot.history);
+        outputWriter.write(snapshot.history, true);
       },
       (event) => applyTerminalEvent(event),
       (error) => {
         const message = error instanceof Error ? error.message : "Unable to open terminal";
-        if (!disposed && message !== lastRecoveryError) writeSystemMessage(terminal, message);
+        if (!disposed && message !== lastRecoveryError) writeSystemMessage(outputWriter, message);
         lastRecoveryError = message;
       },
     );
@@ -705,30 +717,26 @@ function TerminalViewport({
       if (!activeTerminal) return;
 
       if (event.type === "output") {
-        activeTerminal.write(event.data);
-        clearSelectionAction();
+        outputWriter.write(event.data);
         return;
       }
 
       if (event.type === "started" || event.type === "restarted") {
         hasHandledExitRef.current = false;
         clearSelectionAction();
-        activeTerminal.write("\u001bc");
-        if (event.snapshot.history.length > 0) {
-          activeTerminal.write(event.snapshot.history);
-        }
+        outputWriter.write(event.snapshot.history, true);
         return;
       }
 
       if (event.type === "cleared") {
         clearSelectionAction();
         activeTerminal.clear();
-        activeTerminal.write("\u001bc");
+        outputWriter.write("", true);
         return;
       }
 
       if (event.type === "error") {
-        writeSystemMessage(activeTerminal, event.message);
+        writeSystemMessage(outputWriter, event.message);
         return;
       }
 
@@ -740,7 +748,7 @@ function TerminalViewport({
           .filter((value): value is string => value !== null)
           .join(", ");
         writeSystemMessage(
-          activeTerminal,
+          outputWriter,
           details.length > 0 ? `Process exited (${details})` : "Process exited",
         );
         if (hasHandledExitRef.current) {
@@ -786,6 +794,8 @@ function TerminalViewport({
       unsubscribe();
       unsubscribeConnection();
       recovery.dispose();
+      outputWriter.dispose();
+      outputWriterRef.current = null;
       inputDisposable.dispose();
       selectionDisposable.dispose();
       terminalLinksDisposable.dispose();
