@@ -35890,9 +35890,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21805",
-      "status": "inbox",
+      "reason": "Revisit after 2026-12-06",
+      "revisitAfter": "2026-12-06",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers",
@@ -42854,9 +42858,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23037",
-      "status": "inbox",
+      "reason": "Revisit after 2026-12-06",
+      "revisitAfter": "2026-12-06",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "settings",
@@ -56737,12 +56745,16 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25401",
+      "reason": "Revisit after 2026-12-06",
       "relatedTopics": [
         "pr-10128"
       ],
-      "status": "inbox",
+      "revisitAfter": "2026-12-06",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "composer",
@@ -70322,12 +70334,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-06T08:53:23.062Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5646",
+      "reason": "Revisit after 2026-12-06",
       "relatedTopics": [
         "pr-14678"
       ],
-      "status": "inbox",
+      "revisitAfter": "2026-12-06",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers"
