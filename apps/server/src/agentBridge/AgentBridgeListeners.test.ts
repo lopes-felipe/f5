@@ -295,6 +295,52 @@ describe("agent-bridge-stdio", () => {
       .map((line) => JSON.parse(line) as { id?: number; result?: any; error?: any });
   }
 
+  it("preserves Unicode separators and chunked UTF-8 in newline-delimited requests", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-agent-bridge-unicode-"));
+    const credentialsPath = path.join(dir, "local.json");
+    fs.writeFileSync(
+      credentialsPath,
+      JSON.stringify({ port: 9, token: "t", startedAt: new Date().toISOString() }),
+    );
+    // Object mode prevents the stream from coalescing the split UTF-8 writes.
+    const input = new PassThrough({ objectMode: true });
+    const output = new PassThrough();
+    const replies: string[] = [];
+    const requests: string[] = [];
+    output.on("data", (chunk: Buffer) => replies.push(chunk.toString("utf8")));
+    const done = runAgentBridgeStdio({
+      credentialsPath,
+      input,
+      output,
+      env: {},
+      fetch: (async (_url, init) => {
+        const body = String(init?.body);
+        requests.push(body);
+        return Response.json({ jsonrpc: "2.0", id: JSON.parse(body).id, result: { ok: true } });
+      }) as typeof fetch,
+    });
+    const message = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "echo", arguments: { text: "a\u2028b\u2029c\u{1f30d}" } },
+    });
+    const next = JSON.stringify({ jsonrpc: "2.0", id: 5, method: "ping" });
+    const bytes = Buffer.from(message);
+    const split = bytes.indexOf(Buffer.from("\u{1f30d}")) + 2;
+    input.write(bytes.subarray(0, split));
+    input.write(Buffer.concat([bytes.subarray(split), Buffer.from("\r")]));
+    input.end(Buffer.from("\n\n" + next));
+    await done;
+    expect(requests).toHaveLength(2);
+    expect(requests).toContain(message);
+    expect(requests).toContain(next);
+    expect(replies.map((reply) => JSON.parse(reply)).sort((a, b) => a.id - b.id)).toEqual([
+      { jsonrpc: "2.0", id: 4, result: { ok: true } },
+      { jsonrpc: "2.0", id: 5, result: { ok: true } },
+    ]);
+  });
+
   it("serves no tools to F5's own agent processes", async () => {
     const replies = await runShim(
       [
