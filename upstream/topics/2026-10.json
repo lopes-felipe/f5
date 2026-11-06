@@ -35301,11 +35301,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:56.985Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-21537",
-      "status": "port",
+      "reason": "F5 has no HTML composer-context clipboard decoder.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -51449,11 +51451,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:56.985Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24697",
-      "status": "port",
+      "reason": "F5 resumes through its server queue without the affected composer-ref hook.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",

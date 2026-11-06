@@ -14597,11 +14597,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-06T09:22:56.985Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29828",
-      "status": "port",
+      "reason": "F5 uses version 1 drafts without upstream’s v3–v5 selection maps.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
