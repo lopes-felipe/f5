@@ -146,7 +146,12 @@ unsafe fn cached_bool(element: &IUIAutomationElement, property: UIA_PROPERTY_ID)
     element
         .GetCachedPropertyValueEx(property, true)
         .ok()
-        .and_then(|value| bool::try_from(&value).ok())
+        .and_then(|value| variant_bool(&value))
+}
+unsafe fn variant_bool(value: &windows::Win32::System::Variant::VARIANT) -> Option<bool> {
+    // VariantToBoolean coerces VT_EMPTY to false; unavailable security facts must stay unknown.
+    if value.Anonymous.Anonymous.vt != windows::Win32::System::Variant::VT_BOOL { return None; }
+    bool::try_from(value).ok()
 }
 unsafe fn cached_runtime_id(element: &IUIAutomationElement) -> Result<String, Value> {
     let value = element
@@ -304,7 +309,7 @@ pub(super) unsafe fn inspect(request: &Value, host: &Value) -> Result<Value, Val
             element
                 .GetCurrentPropertyValueEx(UIA_IsPasswordPropertyId, true)
                 .ok()
-                .and_then(|value| bool::try_from(&value).ok())
+                .and_then(|value| variant_bool(&value))
         };
         let name = crate::inspection::read_text(
             cached_bool(&element, UIA_IsPasswordPropertyId),
