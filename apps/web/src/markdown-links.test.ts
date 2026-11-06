@@ -64,6 +64,28 @@ describe("collectMarkdownLinkHrefs", () => {
 
 describe("resolveMarkdownFileLinkTarget", () => {
   it.each([
+    ["app/routes/posts.$postId.tsx", "app/routes/posts.$postId.tsx"],
+    ["(group)/[id]/+page.svelte:12", "(group)/[id]/+page.svelte:12"],
+    ["pages/posts/%5Bid%5D.tsx", "pages/posts/[id].tsx"],
+    ["@scope/pkg", "@scope/pkg"],
+    ["@scope/", "@scope/"],
+    ["+page.svelte", "+page.svelte"],
+    ["[id].tsx", "[id].tsx"],
+    ["$postId.tsx", "$postId.tsx"],
+    ["docs/My%20File%20(draft).md", "docs/My File (draft).md"],
+    ["線性代數/考試.pdf", "線性代數/考試.pdf"],
+  ])("resolves routing punctuation in %s", (href, path) => {
+    expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + path);
+  });
+
+  it.each(["me@example.com", "foo(bar)", "$HOME", "patches", "TODO:12"])(
+    "does not treat %s as a file",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBeNull();
+    },
+  );
+
+  it.each([
     "//attacker/share/a.png",
     String.raw`\\attacker\share\a.png`,
     String.raw`/\attacker/share/a.png`,
