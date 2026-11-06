@@ -29,6 +29,13 @@ matrices finish every shard, and all jobs have timeouts.
 A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static checks
 and workspace/Git/integration tests still run, including environment documentation
 drift tests. Main pushes, nightly runs and dispatches always run heavy jobs.
+
+`changelog.yml` reports a separate `Changelog` check on every PR. It requires a new
+bullet under `## [Unreleased]` in `CHANGELOG.md` unless the PR has the `no-changelog`
+label, changes only the changelog, docs, tests or `.github/`/`upstream/` files, or
+comes from this repository's dependabot, release-prepare or upstream-ledger
+automation. See CONTRIBUTING.md.
+
 The complete macOS coverage runs in parallel jobs after merges, nightly and on
 dispatch. Native Swift/helper, descriptor and Keep Awake checks run in
 `macos-profiles`. GitHub limits concurrent macOS jobs per account and its macOS
