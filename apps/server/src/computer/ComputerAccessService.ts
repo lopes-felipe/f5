@@ -107,6 +107,7 @@ export class ComputerAccessService {
       try {
         loaded = await this.options.remembered.load(projectId);
       } catch {
+        console.warn("Remembered computer consent refresh failed; retaining current grants.");
         return;
       }
       loaded = this.normalize(loaded);
@@ -128,7 +129,15 @@ export class ComputerAccessService {
         // Main is authoritative after a remembered-policy change, including a replacement
         // receipt or an approval added by a sibling session.
         for (const grant of loaded)
-          if (grant.projectId === binding.projectId) binding.overrides.delete(grant.appId);
+          if (
+            grant.projectId === binding.projectId &&
+            binding.overrides.get(grant.appId) !== null
+          ) {
+            const prior = previous.find(
+              (old) => old.projectId === grant.projectId && old.appId === grant.appId,
+            );
+            if (!prior || prior.receipt !== grant.receipt) binding.overrides.delete(grant.appId);
+          }
         ++binding.version;
         this.options.changed(threadId);
       }

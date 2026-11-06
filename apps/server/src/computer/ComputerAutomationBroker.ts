@@ -48,8 +48,8 @@ import { ServerConfig } from "../config";
 
 /**
  * Electron decides every takeover: its worst case is 300 s consent + 30 s idle window + up to
- * 5 s drain and 1 s readiness per arming attempt. This sits well above that and below the
- * tool transport timeout.
+ * 5 s drain and 1 s readiness per arming attempt, plus a 20 s reservation wait and 2 s
+ * transport margin. This sits above that budget and below the tool transport timeout.
  */
 export const COMPUTER_TAKEOVER_HOST_TIMEOUT_MS = 380_000;
 import { ServerSettingsService } from "../serverSettings";
@@ -442,7 +442,8 @@ export class ComputerAutomationBrokerRuntime {
       if (message.type === "rememberedChanged") {
         for (const session of message.revokedSessions ?? [])
           if (this.bindings.get(session.threadId)?.generation === session.sessionGeneration)
-            this.access.revokeSessionApproval(session.threadId);
+            if (message.backgroundOnly) this.access.revokeBackgroundApproval(session.threadId);
+            else this.access.revokeSessionApproval(session.threadId);
         void this.access.refreshRemembered(message.projectId).catch(() => undefined);
       }
       if (
@@ -517,7 +518,7 @@ export class ComputerAutomationBrokerRuntime {
   }
   async initialize(): Promise<void> {
     await this.host.handshake();
-    await this.access.initialize();
+    if (!this.host.awaitingHandshake()) await this.access.initialize();
     this.initialized = true;
   }
   bindSession(threadId: string, generation: string, provider: ComputerAgentProvider): void {
@@ -1048,6 +1049,7 @@ export class ComputerAutomationBrokerRuntime {
     }
     let requestId = randomUUID();
     let dispatched = false;
+    let retrying = false;
     // Queueing, admission and retries share one budget; contention never renews it.
     const invokeDeadline = performance.now() + timeoutMs;
     /** Reject expiry before admitting more work or dispatching any native action. */
@@ -1077,7 +1079,7 @@ export class ComputerAutomationBrokerRuntime {
           // Revision checkpoint after context resolution and queue admission.
           this.assertRevision(binding, revision, turnRevision);
           if (options?.signal?.aborted) throw options.signal.reason;
-          if (dispatched) {
+          if (retrying) {
             delivery = this.selectDelivery(live, binding, input.op, appId, {
               executionMode: requestedMode,
               action: input.action,
@@ -1304,6 +1306,7 @@ export class ComputerAutomationBrokerRuntime {
             options?.signal?.addEventListener("abort", abort, { once: true });
             if (options?.signal?.aborted) abort();
           });
+          retrying = true;
         } finally {
           this.inFlight.delete(requestId);
         }
@@ -1342,6 +1345,15 @@ export class ComputerAutomationBrokerRuntime {
         message: `Background computer control is unavailable (${background.reason ?? "unknown"}); set Computer use to foreground mode in Settings.`,
       });
     const takeover = binding.holder?.scope.kind === "takeover" ? binding.holder.scope : undefined;
+    if (
+      (op === "key" || (op === "scroll" && input.elementRef !== undefined)) &&
+      !appId &&
+      !takeover
+    )
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Specify app: the app to act in.",
+      });
     if (input.executionMode === "background") {
       if (takeover && !classifyOnly) this.endTakeover(ctx.threadId, binding);
     } else if (takeover && (appId === undefined || appId === takeover.appId)) return "foreground";
@@ -1742,7 +1754,11 @@ export class ComputerAutomationBrokerRuntime {
         sessionGeneration: binding.generation,
         turnId,
       });
-    if (this.executionStates.delete(threadId)) this.publishUse();
+    if (
+      ["waiting-user", "waiting-agent"].includes(this.executionStates.get(threadId)?.state ?? "") &&
+      this.executionStates.delete(threadId)
+    )
+      this.publishUse();
     ++binding.turnRevision;
     // Startup waiters are pinned to the lifecycle turn before resolving context.
     const waiter = this.waits.get(threadId);

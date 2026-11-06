@@ -56,7 +56,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
   );
   const actions = useAgentComputerActivityStore((state) => state.history[threadId]);
   const stopUnconfirmed = useAgentComputerActivityStore((state) => state.stopUnconfirmed[threadId]);
-  const paused = useAgentComputerActivityStore((state) => state.paused[threadId]);
+  const pausedLocally = useAgentComputerActivityStore((state) => state.paused[threadId]);
   const held = useAgentComputerActivityStore(
     (state) =>
       state.leases.holders.some((holder) => holder.threadId === threadId) ||
@@ -69,13 +69,16 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
     computerHolderFor(state.leases, threadId),
   );
   const waiting =
-    execution?.state === "waiting-agent"
-      ? "Waiting for another agent"
-      : execution?.state === "waiting-user"
-        ? execution.appName
-          ? "Waiting for you to finish in " + execution.appName
-          : "Waiting while you use the computer"
-        : undefined;
+    execution?.state === "paused" || execution?.state === "recovery"
+      ? undefined
+      : execution?.state === "waiting-agent"
+        ? "Waiting for another agent"
+        : execution?.state === "waiting-user"
+          ? execution.appName
+            ? "Waiting for you to finish in " + execution.appName
+            : "Waiting while you use the computer"
+          : undefined;
+  const paused = pausedLocally || execution?.state === "paused" || execution?.state === "recovery";
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState("");
@@ -130,7 +133,20 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
   const shown = cardActivity(activity, chrome);
   const native = shown?.backend === "native";
   const backendLabel = computerBackendLabel(shown?.backend);
-  const tone = waiting ? "pending" : computerStatusTone(shown, { paused, held, chrome });
+  const tone = paused
+    ? "warning"
+    : waiting
+      ? "pending"
+      : computerStatusTone(shown, { paused, held, chrome });
+  const summary =
+    execution?.state === "recovery"
+      ? "Needs recovery"
+      : paused
+        ? "Paused"
+        : (waiting ??
+          (execution?.delivery === "background" && execution.state === "active"
+            ? "Working in background"
+            : describeComputerAction(shown, { paused, held, chrome })));
   return (
     <div
       className={cn(
@@ -156,11 +172,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
           <span
             className={cn("size-1.5 shrink-0 rounded-full", COMPUTER_STATUS_TONE_CLASS[tone])}
           />
-          <span className="truncate">
-            {stopUnconfirmed
-              ? "Stop unconfirmed"
-              : (waiting ?? describeComputerAction(shown, { paused, held, chrome }))}
-          </span>
+          <span className="truncate">{stopUnconfirmed ? "Stop unconfirmed" : summary}</span>
           {shown?.appName && !paused && !waiting ? (
             <span className="truncate font-normal text-muted-foreground">· {shown.appName}</span>
           ) : null}

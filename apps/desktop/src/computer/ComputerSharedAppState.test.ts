@@ -1,6 +1,14 @@
 import { expect, it } from "vitest";
 import { ComputerSharedAppState } from "./ComputerSharedAppState";
 
+it("bounds history without forgetting that an evicted app may have another writer's focus", () => {
+  const state = new ComputerSharedAppState();
+  state.mutated("old", "a", true);
+  for (let index = 0; index < 2048; index++) state.mutated(String(index), "b", false);
+  expect(() => state.assertTyping("old", "c", false)).toThrow("shared-focus");
+  state.mutated("old", "c", true);
+  state.assertTyping("old", "c", false);
+});
 it("leaves a lone writer unaffected and rejects sharing without a field press", () => {
   const state = new ComputerSharedAppState();
   state.assertTyping("app", "a", false);

@@ -9,7 +9,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import { Effect, FileSystem, Metric, Path } from "effect";
-import { afterEach, beforeEach, describe, expect, it as vitestIt } from "vitest";
+import { afterEach, beforeEach, describe, expect, it as vitestIt, vi } from "vitest";
+import * as commandResolution from "./spawn/resolveCommand.ts";
 
 import {
   Open,
@@ -490,6 +491,14 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
       writeCliCommand(fileManagerCommand, "process.exit(1)");
 
       const originalPath = process.env.PATH ?? "";
+      const isAvailable = commandResolution.isCommandAvailable;
+      // An installed /Applications/Cursor.app is a valid fallback even with PATH empty.
+      // Model an unavailable editor without launching an application on the test host.
+      const availability = vi
+        .spyOn(commandResolution, "isCommandAvailable")
+        .mockImplementation((command, options) =>
+          process.env.PATH === "" ? false : isAvailable(command, options),
+        );
       try {
         process.env.PATH = `${tempDir}${path.delimiter}${originalPath}`;
         const open = yield* Open;
@@ -501,27 +510,8 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
         yield* open.openInEditor({ cwd: "/tmp/workspace", editor: "file-manager" });
         yield* open.revealInFileManager("/tmp/workspace/report.json");
 
-        // macOS also searches the hard-coded /Applications, so the "unavailable"
-        // case needs an editor whose app is not installed on this host; a Mac
-        // with all of these installed skips that assertion. These editors'
-        // bundles are named after their labels.
-        const missingEditor = (
-          [
-            ["kiro", "Kiro"],
-            ["vscodium", "VSCodium"],
-            ["trae", "Trae"],
-            ["zed", "Zed"],
-          ] as const
-        ).find(
-          ([, label]) =>
-            !["/Applications", path.join(os.homedir(), "Applications")].some((root) =>
-              fs.existsSync(path.join(root, `${label}.app`)),
-            ),
-        )?.[0];
         process.env.PATH = "";
-        if (missingEditor) {
-          yield* Effect.exit(open.openInEditor({ cwd: "/tmp/workspace", editor: missingEditor }));
-        }
+        yield* Effect.exit(open.openInEditor({ cwd: "/tmp/workspace", editor: "cursor" }));
 
         const snapshots = yield* Metric.snapshot;
         assert.equal(
@@ -542,18 +532,17 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
           ),
           true,
         );
-        if (missingEditor) {
-          assert.equal(
-            snapshots.some(
-              (snapshot) =>
-                snapshot.id === "t3_editor_launch_total" &&
-                snapshot.attributes?.editorId === missingEditor &&
-                snapshot.attributes?.outcome === "unavailable-command",
-            ),
-            true,
-          );
-        }
+        assert.equal(
+          snapshots.some(
+            (snapshot) =>
+              snapshot.id === "t3_editor_launch_total" &&
+              snapshot.attributes?.editorId === "cursor" &&
+              snapshot.attributes?.outcome === "unavailable-command",
+          ),
+          true,
+        );
       } finally {
+        availability.mockRestore();
         process.env.PATH = originalPath;
         fs.rmSync(tempDir, { recursive: true, force: true });
       }

@@ -134,8 +134,10 @@ export class ComputerLeaseAuthority {
         holder.cooperative === input.cooperative &&
         holder.policyRevision === input.policyRevision &&
         sameComputerScope(holder.scope, input.scope)
-      )
+      ) {
+        own.lastMutationAt = this.now();
         return holder;
+      }
       // A scope change keeps the thread's single lease: only within the same session/turn.
       if (!sameTurn) throw this.busy(holder, input.profileId);
     }

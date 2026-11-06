@@ -9,7 +9,9 @@ unsafe fn target(request: &Value, host: &Value, needed: &str) -> Result<HWND, Va
     let hwnd =
         app_window(s(request, "appId")).map_err(|_| foreground_required("window-unavailable"))?;
     authorize(hwnd, request, host, needed)?;
-    if owner(GetForegroundWindow()).is_ok_and(|(id, _)| id == s(request, "appId")) {
+    if owner(GetForegroundWindow())
+        .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
+    {
         return Err(blocked("user-active"));
     }
     if let Some(slot) = control(generation(request)) {
@@ -197,7 +199,8 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
         if GetForegroundWindow() != before
-            && owner(GetForegroundWindow()).is_ok_and(|(id, _)| id == s(request, "appId"))
+            && owner(GetForegroundWindow())
+                .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
         {
             suspend_generation(Some(generation(request)));
             emit(

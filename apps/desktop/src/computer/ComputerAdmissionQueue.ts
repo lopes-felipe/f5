@@ -85,12 +85,12 @@ export class ComputerAdmissionQueue {
       return Promise.reject(lastError);
     return new Promise<T>((resolve, reject) => {
       let done = false;
-      const finish = () => {
+      const finish = (clearState = true) => {
         if (done) return false;
         done = true;
         const index = this.waiting.indexOf(entry);
         if (index >= 0) this.waiting.splice(index, 1);
-        this.options.state(input.holder, false);
+        if (clearState) this.options.state(input.holder, false);
         return true;
       };
       const entry: Waiting = {
@@ -103,7 +103,7 @@ export class ComputerAdmissionQueue {
           if (done) return;
           try {
             const result = input.admit();
-            if (finish()) resolve(result);
+            if (finish(false)) resolve(result);
           } catch (error) {
             if (!waitable(error)) entry.reject(error);
             else entry.lastError = error;

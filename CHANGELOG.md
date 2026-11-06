@@ -8,9 +8,13 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Fair waiting for conflicting computer leases and takeover reservations across agents and profiles. Takeover consent appears after control is reserved.
+- Shared background apps with serialized writes, fresh inspection after another agent's changes, and press-before-type focus checks.
+- App-targeted key and element-scroll interfaces, native process/window delivery, and a real-app rehearsal runner. Background-event app support remains gated: no apps are enabled until their rehearsals pass.
+
 - Cooperative computer use waits for ordinary user contention without a Resume dialog, including foreground control in Full access threads. A wait tool, fresh-observation checks, and a foreground countdown support continuation after you go idle.
 
-- Native computer approvals can persist per project, including app access and session actions, with profile-wide Full access session opt-in. Settings lists and immediately revokes saved permissions; failed saves are shown as lasting until F5 closes.
+- Native computer approvals can persist per project, including app access, session actions, and optional foreground takeovers per app in Full access threads, with profile-wide Full access session opt-in. Settings lists and immediately revokes saved permissions; failed saves are shown as lasting until F5 closes.
 
 - Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
 - A profile can always allow Claude in Chrome taking the browser connection back from your terminal Claude, revocable in Settings → Browser & Computer. Replacing another F5 profile's setup always asks.
@@ -25,6 +29,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Changed
 
 - Interacting with an agent's background app makes it wait until you leave. Explicit Pause, Stop, the stop shortcut, and uncertain outcomes still require confirmed Resume.
+- In Full access threads, mouse or keyboard input during foreground control makes the agent wait and shows an idle countdown. Other foreground threads keep the pause-and-Resume flow.
 
 - Computer access requests appear in a non-modal panel that leaves F5 interactive and keeps composer focus.
 - Closed computer sessions release their permission receipts without requiring a backend disconnect.

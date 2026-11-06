@@ -188,6 +188,13 @@ export class ComputerGrantAuthority {
     });
     return { ...answer, decisions };
   }
+  sessionRevoked(profileId: string, request: ComputerAccessRequested, receipt: string): boolean {
+    return (
+      this.revoked
+        .get(profileId + "\0" + request.threadId + "\0" + request.sessionGeneration)
+        ?.has(receipt) ?? false
+    );
+  }
   private reusable(
     profileId: string,
     request: ComputerAccessRequested,

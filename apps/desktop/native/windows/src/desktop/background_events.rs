@@ -58,6 +58,26 @@ unsafe fn post(hwnd: HWND, message: u32, value: usize, flags: isize) -> Result<(
     mark_posted();
     Ok(())
 }
+unsafe fn focused_element(
+    root: &IUIAutomationElement,
+    process: u32,
+) -> Result<IUIAutomationElement, Value> {
+    let (nodes, complete) = walk_checked(root, 4000);
+    if !complete {
+        return Err(blocked("focus-unknown"));
+    }
+    let mut focused = nodes.into_iter().filter(|element| {
+        element.CurrentProcessId().ok().map(|pid| pid as u32) == Some(process)
+            && element
+                .CurrentHasKeyboardFocus()
+                .is_ok_and(|value| value.as_bool())
+    });
+    let element = focused.next().ok_or(blocked("focus-unknown"))?;
+    if focused.next().is_some() {
+        return Err(blocked("focus-unknown"));
+    }
+    Ok(element)
+}
 unsafe fn focused_window(hwnd: HWND, process: u32) -> Result<(HWND, u32), Value> {
     let thread = GetWindowThreadProcessId(hwnd, None);
     let mut gui = GUITHREADINFO {
@@ -84,9 +104,7 @@ pub(super) unsafe fn execute(request: &Value, host: &Value, hwnd: HWND) -> Resul
     let key = s(request, "op") == "key";
     let (element, destination, thread) = if key {
         let (focus, thread) = focused_window(hwnd, process)?;
-        let element = automation
-            .ElementFromHandle(focus)
-            .map_err(|_| foreground_required())?;
+        let element = focused_element(&root, process)?;
         (element, focus, thread)
     } else {
         if !request["x"].is_null() || !request["y"].is_null() {
@@ -130,18 +148,22 @@ pub(super) unsafe fn execute(request: &Value, host: &Value, hwnd: HWND) -> Resul
                 .iter()
                 .map(|raw| chord(raw.as_str().unwrap_or("")))
                 .collect::<Result<Vec<_>, _>>()?;
+            if codes
+                .iter()
+                .any(|keys| !crate::safety::background_chord_supported(keys))
+            {
+                return Err(foreground_required());
+            }
             for _ in 0..n(request, "repeat").clamp(1, 20) {
                 for chord in &codes {
                     check(request)?;
                     if focused_window(hwnd, process)?.0 != destination
                         || owner(GetForegroundWindow())
-                            .is_ok_and(|(id, _)| id == s(request, "appId"))
+                            .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
                     {
                         return Err(blocked("user-active"));
                     }
-                    let focused = automation
-                        .ElementFromHandle(destination)
-                        .map_err(|_| blocked("focus-unknown"))?;
+                    let focused = focused_element(&root, process)?;
                     if focused
                         .CurrentIsPassword()
                         .map_err(|_| blocked("focus-unknown"))?
@@ -186,6 +208,11 @@ pub(super) unsafe fn execute(request: &Value, host: &Value, hwnd: HWND) -> Resul
                             posted = true;
                         }
                         continue;
+                    }
+                    // Dead keys/layouts may not translate a nominally printable chord.
+                    // Never fall back to key messages that discard Shift state.
+                    if chord.contains(&VK_SHIFT.0) {
+                        return Err(foreground_required());
                     }
                     for code in chord {
                         check(request)?;

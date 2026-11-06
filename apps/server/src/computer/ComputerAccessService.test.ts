@@ -30,6 +30,34 @@ async function harness(
   return { service, requests, save, changed, settled };
 }
 describe("server-owned computer grants", () => {
+  it("preserves an explicit session revoke through unrelated remembered refreshes", async () => {
+    const grant = {
+      projectId: "p",
+      appId: app.appId,
+      tier: "click" as const,
+      allowTyping: false,
+      receipt: "receipt",
+    };
+    const service = new ComputerAccessService({
+      platform: "darwin",
+      backendIncarnation: "backend",
+      storage: { load: async () => [], save: async () => {} },
+      mainOwned: () => true,
+      remembered: { load: async () => [grant], forget: async () => {} },
+      request: vi.fn(),
+      changed: vi.fn(),
+      settled: vi.fn(),
+    });
+    try {
+      await service.initialize();
+      service.bind("t", "p", "s");
+      service.revoke("t", app.appId);
+      await service.refreshRemembered("p");
+      expect(service.grants("t")).toEqual([]);
+    } finally {
+      service.close();
+    }
+  });
   it("uses main-owned receipts without reading or writing the legacy file", async () => {
     const legacy = { load: vi.fn(async () => []), save: vi.fn(async () => {}) };
     const source = {

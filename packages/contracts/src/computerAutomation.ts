@@ -127,7 +127,7 @@ export type RememberedComputerConsent = typeof RememberedComputerConsent.Type;
 export const ComputerConsentPersistence = Schema.Literals(["durable", "session-only"]);
 export const RememberedComputerConsentEntry = Schema.Struct({
   consent: RememberedComputerConsent,
-  persistence: ComputerConsentPersistence,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
   reason: Schema.optionalKey(Schema.String),
 });
 export type RememberedComputerConsentEntry = typeof RememberedComputerConsentEntry.Type;
@@ -939,6 +939,7 @@ export const DesktopComputerHostMessage = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("rememberedChanged"),
+    backgroundOnly: Schema.optionalKey(Schema.Boolean),
     projectId: Schema.optionalKey(Id),
     revokedSessions: Schema.optionalKey(
       Schema.Array(

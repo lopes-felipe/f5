@@ -182,16 +182,15 @@ export class ComputerController {
       now?: () => number;
     },
   ) {
-    this.cooperation = new ComputerCooperation(helper, () => this.now());
+    this.cooperation = new ComputerCooperation(helper, () => this.cooperationNow());
     this.admission = new ComputerAdmissionQueue({
       conflicts: (a, b) => lease.scopesConflict(a, b),
       renewal: (holder) => lease.renewal(holder),
       sweep: (head) => {
         for (const holder of lease.idleConflicts(head.scope, 10_000)) {
-          // Builtin processes can still act without a native job to track or drain.
-          if (holder.backend !== "native") continue;
+          if (holder.backend !== "native" || this.cooperation.yielded.has(this.key(holder)))
+            continue;
           if (this.key(holder) === this.key(head)) continue;
-          if (this.cooperation.yielded.has(this.key(holder))) continue;
           const key = this.key(holder);
           const jobs = [
             ...this.activeMutations.values(),
@@ -235,14 +234,20 @@ export class ComputerController {
             ? Math.max(0, Math.ceil((entry.dwell - age) / 1000))
             : undefined,
         );
-        if (this.now() - entry.at >= 60_000 && this.lease.find(entry.holder)) {
+        if (this.cooperationNow() - entry.at >= 60_000 && this.lease.find(entry.holder)) {
           this.lease.release(entry.holder);
           this.options.holderStopped?.(entry.holder);
+          this.cooperation.continued(entry.holder);
+          this.publishState(entry.holder, null);
           this.overlay.clear();
         }
       }
     }, 250);
     this.permitTimer.unref();
+  }
+  /** Native activity ages and yield dwell must not advance when the system clock changes. */
+  private cooperationNow(): number {
+    return this.options.now?.() ?? performance.now();
   }
   private now(): number {
     return this.options.now?.() ?? Date.now();
@@ -368,6 +373,8 @@ export class ComputerController {
         throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
       return;
     }
+    if (this.lease.conflictsFor(holder))
+      throw new ComputerControlError({ _tag: "Busy", holder: "other-profile" });
     if (
       phase !== "reservation" &&
       this.cooperates(holder) &&
@@ -456,6 +463,13 @@ export class ComputerController {
             }
             return { available: true, timedOut: false, requiresFreshObservation: true };
           }
+          if (
+            appId &&
+            [...this.nativeWork].some(
+              (entry) => entry.scope.kind === "app" && entry.scope.appId === appId,
+            )
+          )
+            throw new ComputerControlError({ _tag: "Busy", holder: "other-profile" });
           this.assertAdmission(holder);
           return { available: true, timedOut: false, requiresFreshObservation: true };
         } catch (cause) {
@@ -610,7 +624,20 @@ export class ComputerController {
         );
         this.forgetAdmissions((entry) => entry.generation === generation);
       }
+    // Foreground yields can expire in lease.sweep(), before the permit timer runs.
+    // App yields deliberately outlive release so their watched target can be waited on.
+    for (const entry of this.cooperation.yielded.values())
+      if (
+        !entry.appId &&
+        !holders.some((current) => this.key(current) === this.key(entry.holder))
+      ) {
+        this.cooperation.continued(entry.holder);
+        this.publishState(entry.holder, null);
+      }
     for (const holder of holders) {
+      const yielded = this.cooperation.yielded.get(this.key(holder));
+      if (yielded && yielded.holder.executionGeneration !== holder.executionGeneration)
+        this.cooperation.continued(holder);
       if (this.cooperation.yielded.has(this.key(holder))) continue;
       if (this.permitted.has(holder.executionGeneration)) continue;
       this.permitted.set(holder.executionGeneration, holder);
@@ -716,6 +743,9 @@ export class ComputerController {
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
+      // An inspection made during an unknown action's drain must not become fresh evidence
+      // after the helper finishes its remaining writes.
+      if (this.nativeWork.has(entry)) this.recordSharedMutation(request, {}, false);
       settle();
     };
     native.then(
@@ -1126,6 +1156,12 @@ export class ComputerController {
       if (delivery === "background") {
         if (holder.scope.kind !== "app" || appId !== holder.scope.appId)
           throw new ComputerControlError({ _tag: "ReplayRejected" });
+        if (
+          (request.op === "key" || request.op === "scroll") &&
+          (!this.backgroundEventsAvailable() ||
+            !computerBackgroundEventAppAllowed(appId, this.options.platform))
+        )
+          throw new ComputerControlError({ _tag: "ForegroundRequired", reason: "unsupported-app" });
         if (this.sharedAppsAvailable()) {
           if (
             request.op === "elementAction" ||
@@ -1181,7 +1217,7 @@ export class ComputerController {
           if (!computerScopeAllows(holder.scope, delivery, request.op, appId))
             throw new ComputerControlError({ _tag: "TargetBlocked", kind: "other-app" });
         }
-        if (!holder.cooperative && this.now() - this.physicalInputAt < 1500) {
+        if (!holder.cooperative && this.inputIdleMs() < 1500) {
           this.stopThread(holder, "user-input");
           throw new ComputerControlError({ _tag: "Interrupted", cause: "user-input" });
         }
@@ -1205,6 +1241,10 @@ export class ComputerController {
       this.lease.find(request.authorization) ??
       this.controlled.get(this.key(request.authorization));
     const observedApp = background && "appId" in request ? request.appId : undefined;
+    const appEpoch =
+      !mutation && observedApp && this.sharedAppsAvailable()
+        ? this.sharedApps.epoch(observedApp)
+        : undefined;
     const observationSequence = holder
       ? this.cooperation.observationSequence(holder, observedApp)
       : 0;
@@ -1289,6 +1329,22 @@ export class ComputerController {
       this.trackNative(request, native);
       const result = await Promise.race([native, job.cancellation]);
       if (job.cancelled) return;
+      if (
+        appEpoch !== undefined &&
+        observedApp &&
+        request.op === "inspect" &&
+        [...this.nativeWork].some(
+          (entry) => entry.scope.kind === "app" && entry.scope.appId === observedApp,
+        )
+      )
+        throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
+      if (
+        appEpoch !== undefined &&
+        observedApp &&
+        request.op === "inspect" &&
+        this.sharedApps.epoch(observedApp) !== appEpoch
+      )
+        throw new ComputerControlError({ _tag: "StaleElement", reason: "snapshot-expired" });
       if (
         observing &&
         holder &&
@@ -1688,7 +1744,10 @@ export class ComputerController {
       active.push(pending);
     for (const holder of this.admission.holders())
       if (!active.some((entry) => this.key(entry) === this.key(holder))) active.push(holder);
-    this.admission.cancel(() => true);
+    this.admission.cancel(
+      () => true,
+      new ComputerControlError({ _tag: "Interrupted", cause: STOP_CAUSE[cause] }),
+    );
     for (const { holder } of this.cooperation.yielded.values())
       if (!active.some((entry) => this.key(entry) === this.key(holder))) active.push(holder);
     for (const { holder } of this.availabilityWaiters.values())
