@@ -144,6 +144,11 @@ describe("performance gates", () => {
     next.computer!.masking = "conservative";
     expect(compareReports(base, next)).not.toEqual([]);
     next.computer!.masking = "fast";
+    next.metadata.dependencyLockDigest = "different-lock";
+    expect(compareReports(base, next)).toContain(
+      "Incompatible computer dependencies or Electron version",
+    );
+    next.metadata.dependencyLockDigest = base.metadata.dependencyLockDigest;
     next.computer!.nodesDigests.inspect = "different";
     expect(compareReports(base, next)).not.toEqual([]);
     delete next.computer;

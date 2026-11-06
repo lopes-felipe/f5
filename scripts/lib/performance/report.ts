@@ -235,6 +235,11 @@ export function compareReports(
   }
   failures.push(...compareReportMetadata(base, next));
   if (base.scope === "computer") {
+    if (
+      base.metadata.dependencyLockDigest !== next.metadata.dependencyLockDigest ||
+      base.metadata.runtime.versions.electron !== next.metadata.runtime.versions.electron
+    )
+      failures.push("Incompatible computer dependencies or Electron version");
     if (!base.computer || !next.computer) failures.push("Missing computer configuration");
     else {
       if (

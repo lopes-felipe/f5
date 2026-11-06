@@ -439,6 +439,8 @@ if (!process.versions.electron) {
           "scripts/performance-computer.mjs",
           "scripts/lib/performance/computerTasks.ts",
           "apps/desktop/src/computer/rehearsalFixture.ts",
+          "apps/desktop/src/computer/computerPerformanceTransport.ts",
+          "apps/desktop/src/computer/computerInspectionRehearsal.ts",
         ]),
         helperIdentity: createHash("sha256")
           .update(await readFile(resolve(helperPath)))
@@ -452,10 +454,12 @@ if (!process.versions.electron) {
         ]),
         platform: process.platform,
         coverage: "tasks",
-        displays: displays.map(({ displayId, nativeBounds, modelSize }) => ({
+        displays: displays.map(({ displayId, nativeBounds, modelSize, pixelSize, rotation }) => ({
           displayId,
           nativeBounds,
           modelSize,
+          pixelSize,
+          rotation,
         })),
         masking: "fast",
         build: "debug-unsigned-in-process-transport",
