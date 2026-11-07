@@ -78,7 +78,8 @@ export interface ClaudeChromeIdentity {
   /** The real home Chrome reads registrations from; journal and restore act there. */
   readonly chromeHome: string;
   /**
-   * Isolated profiles only: the CLI writes its registration under this HOME, and F5
+   * Isolated profiles whose CLI runs with the profile's own HOME only (never on macOS,
+   * where the real HOME is kept): the CLI writes its registration under this HOME, and F5
    * copies it into `chromeHome` (`projectClaudeRegistrations`).
    */
   readonly projection?: { readonly sourceHome: string };
@@ -90,11 +91,26 @@ export function isolatedClaudeHome(stateDir: string): string {
 }
 
 /**
+ * The home inputs of `claudeChromeAvailability`, read from the Claude CLI's environment.
+ * Readiness and launch both build them here so the two can't disagree.
+ */
+export function claudeChromeAvailabilityInput(
+  environment: NodeJS.ProcessEnv,
+  stateDir: string,
+): { readonly userHome: string; readonly isolatedProfile: boolean; readonly stateDir: string } {
+  return {
+    userHome: environment.HOME ?? process.env.HOME ?? "",
+    isolatedProfile: environment.F5_PROFILE_ISOLATED === "1",
+    stateDir,
+  };
+}
+
+/**
  * Executable identity without hashing: the resolved executable must be F5's bundled
  * Claude by realpath, and its platform package version must be covered by a certified
- * record floor (`claudeChromeRecordFor`). The provider runs with the real macOS home, or,
- * in an isolated profile, with that profile's own home when the record certifies the
- * isolated-profile copy.
+ * record floor (`claudeChromeRecordFor`). The provider runs with the real macOS home
+ * (isolated profiles included on macOS), or, in an isolated profile, with that profile's
+ * own home when the record certifies the isolated-profile copy.
  */
 export async function claudeChromeAvailability(input: {
   readonly platform?: string;
@@ -127,28 +143,39 @@ export async function claudeChromeAvailability(input: {
     };
   const records = input.records ?? PROVIDER_INTEGRATION_RECORDS["claude-chrome"];
   const chromeHome = input.systemHome ?? userInfo().homedir;
-  // The CLI registers its browser connection under HOME, and Chrome reads only the real
-  // home. An isolated profile keeps its own HOME, so F5 copies the registration across;
-  // only a record whose run exercised that copy may open it.
+  // The CLI registers its browser connection under its HOME, and Chrome reads only the
+  // real home, so the CLI's effective HOME picks the path, not the isolation flag. On
+  // macOS an isolated profile keeps the real HOME for the login keychain (only
+  // CLAUDE_CONFIG_DIR is the profile's), which is the shape the base record certified.
+  // Only an isolated HOME needs the registration copied across, and only a record whose
+  // run exercised that copy may open it.
   const isolatedUnavailable = {
     unavailable: {
       reason: "isolated-profile",
       detail: CLAUDE_IN_CHROME_ISOLATED_PROFILE,
     } satisfies ChromeUnavailableReason,
   };
-  if (input.isolatedProfile) {
+  const projected =
+    input.userHome !== chromeHome &&
+    input.isolatedProfile === true &&
+    input.stateDir !== undefined &&
+    input.userHome === isolatedClaudeHome(input.stateDir);
+  if (projected) {
     if (
       !records.some(
         (entry) => recordCertifies(entry) && claudeChromeSupportsIsolatedProfiles(entry),
       )
     )
       return isolatedUnavailable;
-    if (input.stateDir === undefined || input.userHome !== isolatedClaudeHome(input.stateDir))
-      return {
-        unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH },
-      };
-  } else if (chromeHome !== input.userHome)
-    return { unavailable: { reason: "home-mismatch", detail: CLAUDE_IN_CHROME_HOME_MISMATCH } };
+  } else if (input.userHome !== chromeHome)
+    return {
+      unavailable: {
+        reason: "home-mismatch",
+        detail: input.isolatedProfile
+          ? CLAUDE_IN_CHROME_ISOLATED_HOME_MISMATCH
+          : CLAUDE_IN_CHROME_HOME_MISMATCH,
+      },
+    };
   try {
     const bundled = await realpath(input.resolveDefaultExecutable());
     const resolved = await realpath(input.executablePath ?? bundled);
@@ -171,8 +198,7 @@ export async function claudeChromeAvailability(input: {
       return {
         unavailable: { reason: "not-certified", detail: CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED },
       };
-    if (input.isolatedProfile && !claudeChromeSupportsIsolatedProfiles(covering))
-      return isolatedUnavailable;
+    if (projected && !claudeChromeSupportsIsolatedProfiles(covering)) return isolatedUnavailable;
     const info = await stat(bundled);
     return {
       record: covering,
@@ -180,7 +206,7 @@ export async function claudeChromeAvailability(input: {
       executableRealpath: bundled,
       fingerprint: `${bundled}\0${info.ino}\0${info.size}\0${info.mtimeMs}`,
       chromeHome,
-      ...(input.isolatedProfile ? { projection: { sourceHome: input.userHome } } : {}),
+      ...(projected ? { projection: { sourceHome: input.userHome } } : {}),
     };
   } catch {
     return {

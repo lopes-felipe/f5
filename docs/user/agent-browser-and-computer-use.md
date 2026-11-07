@@ -91,8 +91,9 @@ Claude Code creates its browser connection in seven browser folders (Chrome, Bra
 Chromium, Vivaldi and Opera). **Settings → Browser & Computer** lists each setup and can restore the
 earlier files, even after F5 restarts. Running `claude --chrome` in a terminal takes the connection
 back; reconnect in F5 afterwards. In Full access, Claude skips the extension's per-site permission
-prompts. Claude in Chrome works only in profiles that use your real home folder; isolated F5
-profiles keep their own and show it as unavailable.
+prompts. Claude in Chrome works in every F5 profile on macOS, isolated profiles included: they keep
+your real home folder and only Claude's settings folder is separate. Replacing another profile's
+setup always asks.
 
 **Codex Chrome**
 

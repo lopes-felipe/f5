@@ -45,6 +45,7 @@ import {
 } from "../claudeChromeActivity";
 import {
   claudeChromeAvailability,
+  claudeChromeAvailabilityInput,
   makeChromeSessionRuntime,
   registerChromeSession,
   releaseChromeSession,
@@ -3248,9 +3249,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           claudeChromeAvailability({
             executablePath,
             resolveDefaultExecutable: resolveBundledClaudeExecutable,
-            userHome: environment.HOME ?? process.env.HOME ?? "",
-            isolatedProfile: environment.F5_PROFILE_ISOLATED === "1",
-            stateDir: serverConfig.stateDir,
+            ...claudeChromeAvailabilityInput(environment, serverConfig.stateDir),
           }),
         );
         return "unavailable" in availability
@@ -8679,10 +8678,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           const chromeResult = options?.chromeRuntime
             ? { runtime: options.chromeRuntime }
             : yield* makeChromeSessionRuntime({
-                stateDir: serverConfig.stateDir,
+                ...claudeChromeAvailabilityInput(queryEnvironment, serverConfig.stateDir),
                 providerHome,
-                userHome: queryEnvironment.HOME ?? process.env.HOME ?? "",
-                isolatedProfile: queryEnvironment.F5_PROFILE_ISOLATED === "1",
                 executablePath: sdkExecutableOptions.pathToClaudeCodeExecutable,
                 resolveDefaultExecutable: resolveBundledClaudeExecutable,
                 broker: computerBroker,

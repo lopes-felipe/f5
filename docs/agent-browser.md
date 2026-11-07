@@ -757,9 +757,14 @@ certification."; any other provenance failure keeps its own message. Disabled in
 do no Chrome I/O, and warm admission reuses manifests and wrappers cached by metadata
 fingerprint. Claude launches with `--chrome`
 only when the record certifies, the toggle is on and setup is approved; otherwise with
-`--no-chrome`, and user overrides of either flag are stripped. Isolated F5 profiles set
-`HOME` to the profile's provider home (`<stateDir>/provider-homes/claude`), so the CLI
-writes its manifests where Chrome never looks. When the covering record carries the
+`--no-chrome`, and user overrides of either flag are stripped. The CLI's effective `HOME`
+picks the path, not the isolation flag. On macOS, isolated F5 profiles keep the real `HOME`
+for the login keychain and point only `CLAUDE_CONFIG_DIR` at the profile's provider home.
+That is the shape the base record's live run used, so they take the base path: the CLI
+writes its manifests straight into the real home's folders and nothing is copied. Only an
+isolated profile whose CLI runs with `HOME` set to the profile's provider home
+(`<stateDir>/provider-homes/claude`) writes its manifests where Chrome never looks; that
+doesn't happen on macOS today. For that case, when the covering record carries the
 `isolated-profiles` capability, F5 copies them: after `connected`, it waits for the CLI's
 manifests under that home and verifies each one (parsed, certified origins only, aimed at
 the profile's wrapper, wrapper verified against the bundled realpath). Then it writes them
@@ -769,7 +774,9 @@ the journal snapshotted before launch, so consent, conflict detection and restor
 unchanged. The session keeps its isolated `HOME`. The native host and the session meet at
 `/tmp/claude-mcp-browser-bridge-<username>/`, which doesn't depend on `HOME`, and Claude
 must be signed in to the same claude.ai account as the extension. Without the capability,
-or with any other `HOME`, isolated profiles report unavailable with their reason.
+an isolated provider-home `HOME` reports unavailable; any other `HOME` that isn't the real
+home reports a home mismatch. Settings readiness and session launch read these inputs
+through one helper (`claudeChromeAvailabilityInput`), so they can't disagree.
 
 Guards on the copy:
 

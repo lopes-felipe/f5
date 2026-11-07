@@ -20,6 +20,7 @@ import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import {
   claudeChromeAvailability,
+  claudeChromeAvailabilityInput,
   claudeChromeRuntimeLocations,
   isolatedClaudeHome,
   listChromeSessionSetups,
@@ -130,7 +131,15 @@ describe("Claude in Chrome executable identity", () => {
   it.each([
     ["a custom binary", async () => ({ executablePath: await copy("other") }), "custom-binary"],
     ["a different home", async () => ({ userHome: "/Users/isolated" }), "home-mismatch"],
-    ["an isolated F5 profile", async () => ({ isolatedProfile: true }), "isolated-profile"],
+    [
+      "an isolated F5 profile's own HOME without the copy capability",
+      async () => ({
+        isolatedProfile: true,
+        stateDir: "/state",
+        userHome: isolatedClaudeHome("/state"),
+      }),
+      "isolated-profile",
+    ],
     [
       "a missing executable",
       async () => ({ executablePath: join(root, "missing") }),
@@ -156,6 +165,33 @@ describe("Claude in Chrome executable identity", () => {
       userHome: isolatedClaudeHome("/state"),
       records: [capable],
     };
+
+    it("admits an isolated profile that keeps the real HOME on the base record, without a copy", async () => {
+      // macOS isolated profiles keep the real HOME for the login keychain; only
+      // CLAUDE_CONFIG_DIR is the profile's, the shape the base record's run used.
+      const result = await check({ isolatedProfile: true, stateDir: "/state" });
+      expect(result).toMatchObject({ record: { id: certified.id }, chromeHome: "/Users/me" });
+      expect(result).not.toHaveProperty("projection");
+      expect(await check({ isolatedProfile: true })).not.toHaveProperty("unavailable");
+    });
+
+    it("builds readiness and launch inputs from the CLI environment", () => {
+      expect(
+        claudeChromeAvailabilityInput(
+          {
+            HOME: "/Users/me",
+            F5_PROFILE_ISOLATED: "1",
+            CLAUDE_CONFIG_DIR: join(isolatedClaudeHome("/state"), ".claude"),
+          },
+          "/state",
+        ),
+      ).toEqual({ userHome: "/Users/me", isolatedProfile: true, stateDir: "/state" });
+      expect(claudeChromeAvailabilityInput({ HOME: "/Users/me" }, "/state")).toEqual({
+        userHome: "/Users/me",
+        isolatedProfile: false,
+        stateDir: "/state",
+      });
+    });
 
     it("admits a certified copy, with Chrome's home and the CLI's as source", async () => {
       expect(await check(isolated)).toMatchObject({
