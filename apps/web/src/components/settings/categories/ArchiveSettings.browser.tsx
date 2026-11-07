@@ -4,6 +4,7 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import type { ThreadListItem } from "../../../types";
 import { ArchiveSettings } from "./ArchiveSettings";
+import { TooltipProvider } from "../../ui/tooltip";
 
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
@@ -79,14 +80,19 @@ describe("archived thread actions", () => {
         name: "Delete Archived release notes",
         exact: true,
       });
+      await page
+        .getByRole("checkbox", { name: "Select Archived release notes", exact: true })
+        .click();
       await remove.click();
       expect(mocks.confirm).toHaveBeenCalledWith(
-        expect.stringContaining('Delete thread "Archived release notes"?'),
+        'Delete thread "Archived release notes"?\nThis permanently clears conversation history for this thread.',
       );
       await expect.element(remove).toBeDisabled();
       await expect
         .element(page.getByRole("button", { name: "Unarchive Archived release notes" }))
         .toBeDisabled();
+      await expect.element(page.getByRole("button", { name: "Delete selected" })).toBeDisabled();
+      await expect.element(page.getByRole("button", { name: "Restore selected" })).toBeDisabled();
       confirm(false);
       await expect.element(remove).toBeEnabled();
       expect(mocks.deleteThreads).not.toHaveBeenCalled();
@@ -133,7 +139,11 @@ describe("archived thread actions", () => {
   });
 
   it("shows action tooltips and unarchives the thread", async () => {
-    const view = await render(<ArchiveSettings />);
+    const view = await render(
+      <TooltipProvider delay={0}>
+        <ArchiveSettings />
+      </TooltipProvider>,
+    );
     try {
       await page
         .getByRole("button", { name: "Delete Archived release notes", exact: true })
@@ -147,6 +157,65 @@ describe("archived thread actions", () => {
         threadId: "archived-thread",
         archived: false,
       });
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it.each(["confirmation", "deletion", "restore"] as const)(
+    "reports bulk %s failures and releases busy state",
+    async (failure) => {
+      mocks.confirm.mockResolvedValue(true);
+      const error = new Error("Bulk operation failed");
+      if (failure === "confirmation") mocks.confirm.mockRejectedValue(error);
+      if (failure === "deletion") mocks.deleteThreads.mockRejectedValue(error);
+      if (failure === "restore") mocks.unarchive.mockRejectedValue(error);
+      const view = await render(<ArchiveSettings />);
+      try {
+        await page
+          .getByRole("checkbox", { name: "Select Archived release notes", exact: true })
+          .click();
+        const action = page.getByRole("button", {
+          name: failure === "restore" ? "Restore selected" : "Delete selected",
+        });
+        await action.click();
+        await vi.waitFor(() =>
+          expect(mocks.toast).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "error", description: error.message }),
+          ),
+        );
+        await expect.element(action).toBeEnabled();
+        await expect
+          .element(page.getByRole("button", { name: "Unarchive Archived release notes" }))
+          .toBeEnabled();
+      } finally {
+        await view.unmount();
+      }
+    },
+  );
+
+  it("holds bulk busy state through confirmation and releases it on cancel", async () => {
+    let confirm!: (value: boolean) => void;
+    mocks.confirm.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          confirm = resolve;
+        }),
+    );
+    const view = await render(<ArchiveSettings />);
+    try {
+      await page
+        .getByRole("checkbox", { name: "Select Archived release notes", exact: true })
+        .click();
+      const action = page.getByRole("button", { name: "Delete selected" });
+      await action.click();
+      await expect.element(action).toBeDisabled();
+      await expect
+        .element(page.getByRole("button", { name: "Unarchive Archived release notes" }))
+        .toBeDisabled();
+      confirm(false);
+      await expect.element(action).toBeEnabled();
+      expect(mocks.deleteThreads).not.toHaveBeenCalled();
     } finally {
       await view.unmount();
     }
