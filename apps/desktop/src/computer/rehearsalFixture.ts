@@ -46,7 +46,7 @@ export async function createRehearsalFixture(options: {
       throw new Error("Windows fixture must be inside its isolated rehearsal directory.");
     await mkdir(dirname(executable), { recursive: true });
     await copyFile(join(options.preparedDirectory, "ComputerControlFixture.exe"), executable);
-    return observeRehearsalFixture(
+    const fixture = await observeRehearsalFixture(
       spawn(
         executable,
         options.observeChord
@@ -56,6 +56,11 @@ export async function createRehearsalFixture(options: {
       ),
       executable,
     );
+    if (options.treeNodes)
+      await fixture.command("performance-tree " + options.treeNodes, "FIXTURE_TREE_READY");
+    if (options.delayedFocus)
+      await fixture.command("performance-delayed-input", "FIXTURE_DELAYED_INPUT_READY");
+    return fixture;
   }
   if (options.displayId !== undefined && !/^\d{1,10}$/.test(options.displayId))
     throw new Error("Invalid fixture display id.");
@@ -98,6 +103,16 @@ export async function observeRehearsalFixture(
   let acknowledged = false;
   let entered = false;
   let resets = 0;
+  let factsVersion = 0;
+  let facts = { presses: 0, expectedText: false, entered: false };
+  const receipts = new Map<string, number>();
+  const wait = async (condition: () => boolean) => {
+    const deadline = performance.now() + 3000;
+    while (!condition()) {
+      if (performance.now() >= deadline) throw new Error("Synthetic fixture command timed out.");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
   let buffer = "";
   const ready = new Promise<void>((done, reject) => {
     const timer = setTimeout(() => reject(new Error("Synthetic fixture startup timed out.")), 5000);
@@ -122,6 +137,28 @@ export async function observeRehearsalFixture(
       while ((end = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
+        receipts.set(line, (receipts.get(line) ?? 0) + 1);
+        if (receipts.size > 100) receipts.delete(receipts.keys().next().value!);
+        if (line.startsWith("{")) {
+          try {
+            const value = JSON.parse(line);
+            const state = value.kind === "status" ? value.state : value;
+            if (
+              typeof state?.presses === "number" &&
+              (typeof state.expectedText === "boolean" ||
+                typeof state.expectedSyntheticTextReceived === "boolean")
+            ) {
+              facts = {
+                presses: state.presses,
+                expectedText: state.expectedText ?? state.expectedSyntheticTextReceived,
+                entered,
+              };
+              factsVersion++;
+            }
+          } catch {
+            /* Only bounded synthetic receipts are meaningful. */
+          }
+        }
         if (line === "FIXTURE_READY") {
           clearTimeout(timer);
           done();
@@ -151,9 +188,20 @@ export async function observeRehearsalFixture(
     typed: () => typed,
     acknowledged: () => acknowledged,
     entered: () => entered,
+    command: async (command: string, receipt: string) => {
+      const before = receipts.get(receipt) ?? 0;
+      child.stdin.write(command + "\n");
+      await wait(() => (receipts.get(receipt) ?? 0) > before);
+    },
+    verify: async () => {
+      const before = factsVersion;
+      child.stdin.write(process.platform === "win32" ? "status\n" : "PERF_VERIFY\n");
+      await wait(() => factsVersion > before);
+      return { ...facts, entered };
+    },
     reset: async () => {
       const before = resets;
-      child.stdin.write("PERF_RESET\n");
+      child.stdin.write(process.platform === "win32" ? "performance-reset\n" : "PERF_RESET\n");
       const deadline = performance.now() + 2000;
       while (resets === before) {
         if (performance.now() >= deadline) throw new Error("Fixture reset timed out.");

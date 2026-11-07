@@ -121,6 +121,7 @@ describe("performance gates", () => {
     const base = report();
     base.scope = "computer";
     base.computer = {
+      coverage: "inspection",
       fixtureDigest: "fixture",
       harnessDigest: "harness",
       platform: "darwin",
@@ -132,15 +133,87 @@ describe("performance gates", () => {
       nodesDigests: { inspect: "nodes" },
     };
     const next = structuredClone(base);
+    base.measurements = {
+      "inspect.large.400": { wallMs: Array(30).fill(100), cpuMs: Array(30).fill(50) },
+    };
+    next.measurements = {
+      "inspect.large.400": { wallMs: Array(30).fill(70), cpuMs: Array(30).fill(50) },
+    };
     next.computer!.helperIdentity = "new";
     expect(compareReports(base, next)).toEqual([]);
     next.computer!.masking = "conservative";
     expect(compareReports(base, next)).not.toEqual([]);
     next.computer!.masking = "fast";
+    next.metadata.dependencyLockDigest = "different-lock";
+    expect(compareReports(base, next)).toContain(
+      "Incompatible computer dependencies or Electron version",
+    );
+    next.metadata.dependencyLockDigest = base.metadata.dependencyLockDigest;
     next.computer!.nodesDigests.inspect = "different";
     expect(compareReports(base, next)).not.toEqual([]);
     delete next.computer;
     expect(compareReports(base, next)).toContain("Missing computer configuration");
+  });
+  it("enforces task improvement and absolute computer latency gates", () => {
+    const base = report();
+    base.scope = "computer";
+    base.computer = {
+      coverage: "tasks",
+      fixtureDigest: "f",
+      harnessDigest: "h",
+      platform: "darwin",
+      displays: [],
+      masking: "fast",
+      build: "debug",
+      helperIdentity: "old",
+      desktopIdentity: "old",
+      executionMode: "foreground",
+      nodesDigests: { large: "same" },
+    };
+    const before: Record<string, number> = {
+      "inspect.large": 1000,
+      "task.foreground-no-capture": 1000,
+      "overlay.animated": 180,
+      "overlay.non-animated": 100,
+      "wait.static": 2000,
+      "task.accessibility": 1000,
+      "task.coordinates": 1000,
+      "task.conditional-wait": 1000,
+      "task.batch": 1000,
+    };
+    const after = {
+      ...before,
+      "inspect.large": 700,
+      "task.foreground-no-capture": 750,
+      "overlay.animated": 100,
+      "overlay.non-animated": 4,
+      "wait.static": 1000,
+      "task.accessibility": 850,
+      "task.coordinates": 850,
+      "task.conditional-wait": 850,
+      "task.batch": 850,
+    };
+    const samples = (values: Record<string, number>) =>
+      Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [
+          key,
+          { wallMs: Array(30).fill(value), cpuMs: Array(30).fill(50) },
+        ]),
+      );
+    base.measurements = samples(before);
+    base.diagnostics = Object.fromEntries(
+      Array.from({ length: 5 }, (_, i) => ["cold." + i + ".wallMs", 100]),
+    );
+    const next = structuredClone(base);
+    next.computer!.desktopIdentity = "new";
+    next.measurements = samples(after);
+    expect(compareReports(base, next)).toEqual([]);
+    next.measurements["task.batch"]!.wallMs.fill(900);
+    expect(compareReports(base, next)).toContain(
+      "Computer median improvement target missed: task.batch",
+    );
+    next.measurements["inspect.large"]!.wallMs[0] = NaN;
+    expect(() => compareReports(base, next)).not.toThrow();
   });
   it("rejects resource-bound failures even when timings improved", () => {
     const next = report();

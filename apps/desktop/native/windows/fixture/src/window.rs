@@ -8,7 +8,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Controls::EM_SETPASSWORDCHAR;
 use windows::Win32::UI::HiDpi::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus, VK_PACKET};
 use windows::Win32::UI::Input::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -22,6 +22,9 @@ const SECURE_ID: usize = 102;
 const FINISH_ID: usize = 103;
 const INSTRUCTION_ID: usize = 104;
 struct State {
+    instruction: HWND,
+    delayed_button: Option<HWND>,
+    changing_tick: u32,
     delayed_input: bool,
     tree: Vec<HWND>,
     mode: Mode,
@@ -111,7 +114,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
     match message {
         WM_TIMER if w.0 == 2 => {
             let _ = KillTimer(Some(hwnd), 2);
-            let _ = CreateWindowExW(
+            let created = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("BUTTON"),
                 w!("Delayed ready"),
@@ -125,7 +128,29 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                 None,
                 None,
             );
+            STATE.with(|slot| {
+                if let Some(state) = slot.borrow_mut().as_mut() {
+                    state.delayed_button = created.ok();
+                }
+            });
             println!("FIXTURE_DELAYED_READY");
+            LRESULT(0)
+        }
+        WM_TIMER if w.0 == 3 => {
+            let (instruction, tick) = STATE.with(|slot| {
+                let mut state = slot.borrow_mut();
+                let state = state.as_mut().unwrap();
+                state.changing_tick += 1;
+                (state.instruction, state.changing_tick)
+            });
+            let label = format!("Fixture change {tick}")
+                .encode_utf16()
+                .chain([0])
+                .collect::<Vec<_>>();
+            let _ = SetWindowTextW(instruction, PCWSTR(label.as_ptr()));
+            if tick >= 10 {
+                let _ = KillTimer(Some(hwnd), 3);
+            }
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -230,7 +255,8 @@ unsafe extern "system" fn delayed_input(
             .as_ref()
             .is_some_and(|state| state.delayed_input)
     });
-    if delayed && matches!(message, WM_SETFOCUS | WM_CHAR) {
+    if delayed && (message == WM_SETFOCUS || (message == WM_KEYDOWN && w.0 != VK_PACKET.0 as usize))
+    {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     if message == WM_KEYDOWN && w.0 == 13 {
@@ -359,6 +385,9 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
         if !SetWindowSubclass(finish, Some(finish_button), 1, 0).as_bool() {
             return Err(windows::core::Error::from_thread());
         }
+        if !SetWindowSubclass(input, Some(delayed_input), 1, 0).as_bool() {
+            return Err(windows::core::Error::from_thread());
+        }
         let instruction = control(
             w!("STATIC"),
             w!("Ready: keep input idle"),
@@ -372,6 +401,9 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                 input,
                 secure,
                 receipt: Receipt::default(),
+                instruction,
+                delayed_button: None,
+                changing_tick: 0,
                 delayed_input: false,
                 tree: Vec::new(),
             })
@@ -453,8 +485,29 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     break;
                                 }
                                 WindowCommand::Status => {}
+                                WindowCommand::Blur => {
+                                    let _ = SetFocus(Some(hwnd));
+                                    println!("FIXTURE_BLURRED");
+                                }
                                 WindowCommand::Reset => {
                                     SetWindowTextW(input, w!(""))?;
+                                    SendMessageW(
+                                        input,
+                                        EM_SETPASSWORDCHAR,
+                                        Some(WPARAM(0)),
+                                        Some(LPARAM(0)),
+                                    );
+                                    let _ = KillTimer(Some(hwnd), 2);
+                                    let _ = KillTimer(Some(hwnd), 3);
+                                    let old = STATE.with(|slot| {
+                                        slot.borrow_mut()
+                                            .as_mut()
+                                            .and_then(|state| state.delayed_button.take())
+                                    });
+                                    if let Some(old) = old {
+                                        DestroyWindow(old)?;
+                                    }
+                                    SetWindowTextW(instruction, w!("Ready: keep input idle"))?;
                                     STATE.with(|slot| {
                                         if let Some(state) = slot.borrow_mut().as_mut() {
                                             state.receipt = Receipt::default();
@@ -517,6 +570,7 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     {
                                         return Err(windows::core::Error::from_thread());
                                     }
+                                    println!("FIXTURE_DELAYED_INPUT_READY");
                                 }
                                 WindowCommand::PasswordTransition => {
                                     // The driver sends this between cache construction and materialization.
@@ -530,6 +584,16 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                 }
                                 WindowCommand::DelayButton => {
                                     SetTimer(Some(hwnd), 2, 1000, None);
+                                    println!("FIXTURE_DELAY_SCHEDULED");
+                                }
+                                WindowCommand::Changing => {
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow_mut().as_mut() {
+                                            state.changing_tick = 0;
+                                        }
+                                    });
+                                    SetTimer(Some(hwnd), 3, 100, None);
+                                    println!("FIXTURE_CHANGING_READY");
                                 }
                                 WindowCommand::Cue(text) => {
                                     let text = text.encode_utf16().chain([0]).collect::<Vec<_>>();

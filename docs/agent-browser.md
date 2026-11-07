@@ -335,7 +335,34 @@ with five warmups and thirty repetitions per fixture. The large case must retain
 least 350 nodes and be complete. Reference and timed inspections both use background
 delivery. Fixture reset runs outside the timed region; five helper/fixture cold starts
 are diagnostics only. CPU samples cover the driving process only.
-This is inspection coverage, not the full task/overlay/wait/batch acceptance suite.
+This command measures inspection coverage. The separate computer-tasks scope
+measures the task, overlay, wait and batch scenarios through the real tool layer,
+broker, desktop controller, overlay and native helper:
+
+    F5_COMPUTER_PERFORMANCE=1 bun scripts/performance.ts computer-tasks --helper <debug-helper> --output <new-task-report.json>
+
+Run this only on an attended, idle, unlocked desktop. It grants only newly created
+synthetic fixture apps, rejects other app targets and takeovers, and stops after
+the first failure or physical interruption without replaying input. Windows also
+requires --fixture-bin-dir with the prepared synthetic fixture executable.
+
+The task scope runs five warmups and thirty measured repetitions with fixture reset
+and preparation outside timing. It also records five cold helper/fixture starts.
+Effects are checked using counters and booleans, including exact synthetic text and
+Enter ordering; the batch task must use two MCP calls and the unbatched task four.
+Preparatory inspections and screenshots are excluded from element-lookup and
+coordinate timings. Failed or truncated inspections cannot establish an improvement.
+
+Its backend-to-main transport is in-process; external MCP transport, provider/model
+turns and helper/renderer CPU are not measured. Optional stage probes record only
+durations or bounded counters, never typed text, screenshots, names or arguments.
+Computer reports distinguish inspection and task coverage and reject mismatched
+fixtures, harnesses, configuration or normalized inspection digests. The comparison
+command applies the median improvement targets and the existing p95 regression rule:
+
+    bun scripts/performance.ts compare <baseline-task-report.json> <candidate-task-report.json>
+
+Matched native measurements and attended Windows 11 validation are still merge gates.
 Matched old/new-helper reports and live native/Electron validation remain required.
 The helper's other-instance status means an existing F5 helper owns the device;
 the harness never stops that process to obtain benchmark access.
