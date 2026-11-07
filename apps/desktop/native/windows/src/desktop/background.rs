@@ -195,7 +195,7 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
         "openApp" => {} // Already running: do not activate it. New launches require takeover.
         _ => return Err(foreground_required("unsupported-in-background")),
     }
-    emit(json!({"type":"actionConfirmed","requestId":request["requestId"]}));
+    confirm_action(request);
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
         if GetForegroundWindow() != before

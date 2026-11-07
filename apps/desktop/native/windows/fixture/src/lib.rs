@@ -41,6 +41,11 @@ pub fn command(args: &[String]) -> Result<Command, &'static str> {
 /// Commands can affect this synthetic window only, never a supplied HWND or app.
 #[derive(Debug, PartialEq)]
 pub enum WindowCommand {
+    Reset,
+    PerformanceTree { nodes: usize },
+    DelayButton,
+    DelayedInput,
+    PasswordTransition,
     Status,
     Close,
     Place { x: i32, y: i32 },
@@ -52,6 +57,15 @@ pub enum WindowCommand {
 impl WindowCommand {
     pub fn parse(line: &str) -> Option<Self> {
         match line.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["performance-reset"] => Some(Self::Reset),
+            ["performance-tree", nodes] => nodes
+                .parse::<usize>()
+                .ok()
+                .filter(|nodes| (1..=800).contains(nodes))
+                .map(|nodes| Self::PerformanceTree { nodes }),
+            ["performance-delayed-button"] => Some(Self::DelayButton),
+            ["performance-delayed-input"] => Some(Self::DelayedInput),
+            ["performance-password-transition"] => Some(Self::PasswordTransition),
             ["status"] => Some(Self::Status),
             ["close"] => Some(Self::Close),
             ["fullscreen"] => Some(Self::Fullscreen),
@@ -117,6 +131,22 @@ mod tests {
     use super::*;
     #[test]
     fn window_commands_accept_only_bounded_fixture_operations() {
+        assert_eq!(
+            WindowCommand::parse("performance-tree 380"),
+            Some(WindowCommand::PerformanceTree { nodes: 380 })
+        );
+        for command in [
+            "performance-tree 0",
+            "performance-tree 801",
+            "performance-tree 3.5",
+            "performance-tree 380 extra",
+        ] {
+            assert_eq!(WindowCommand::parse(command), None);
+        }
+        assert_eq!(
+            WindowCommand::parse("performance-password-transition"),
+            Some(WindowCommand::PasswordTransition)
+        );
         assert_eq!(
             WindowCommand::parse("place -1920 40"),
             Some(WindowCommand::Place { x: -1920, y: 40 })

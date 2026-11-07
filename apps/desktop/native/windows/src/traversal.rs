@@ -20,23 +20,40 @@ pub fn walk<T: Clone>(
     root: T,
     max: usize,
     budget: Duration,
+    child: impl FnMut(&T) -> Result<Option<T>, i32>,
+    next: impl FnMut(&T) -> Result<Option<T>, i32>,
+) -> (Vec<T>, Report) {
+    walk_until(root, max, budget, child, next, |_| false)
+}
+/// An early-stop visitor avoids touching any provider after a matching node is found.
+pub fn walk_until<T: Clone>(
+    root: T,
+    max: usize,
+    budget: Duration,
     mut child: impl FnMut(&T) -> Result<Option<T>, i32>,
     mut next: impl FnMut(&T) -> Result<Option<T>, i32>,
+    mut stop: impl FnMut(&T) -> bool,
 ) -> (Vec<T>, Report) {
-    struct Walk<'a, T, C, N> {
+    struct Walk<'a, T, C, N, S> {
         out: Vec<T>,
         report: Report,
         max: usize,
         end: Instant,
         child: &'a mut C,
         next: &'a mut N,
+        stop: &'a mut S,
+        stopped: bool,
     }
-    impl<T: Clone, C, N> Walk<'_, T, C, N>
+    impl<T: Clone, C, N, S> Walk<'_, T, C, N, S>
     where
         C: FnMut(&T) -> Result<Option<T>, i32>,
         N: FnMut(&T) -> Result<Option<T>, i32>,
+        S: FnMut(&T) -> bool,
     {
         fn limited(&mut self) -> bool {
+            if self.stopped {
+                return true;
+            }
             if self.out.len() >= self.max || Instant::now() >= self.end {
                 self.report.complete = false;
                 true
@@ -59,6 +76,10 @@ pub fn walk<T: Clone>(
                 return;
             }
             self.out.push(node.clone());
+            if (self.stop)(&node) {
+                self.stopped = true;
+                return;
+            }
             if self.limited() {
                 return;
             }
@@ -91,6 +112,8 @@ pub fn walk<T: Clone>(
         end: Instant::now() + budget,
         child: &mut child,
         next: &mut next,
+        stop: &mut stop,
+        stopped: false,
     };
     walk.visit(root, 0);
     (walk.out, walk.report)
@@ -98,6 +121,33 @@ pub fn walk<T: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stops_before_querying_children_or_siblings_of_a_match() {
+        let (nodes, _) = walk_until(
+            0,
+            4000,
+            Duration::from_secs(1),
+            |node| {
+                if *node == 0 {
+                    Ok(Some(1))
+                } else {
+                    panic!("matched child")
+                }
+            },
+            |_| panic!("matched sibling"),
+            |node| *node == 1,
+        );
+        assert_eq!(nodes, vec![0, 1]);
+        let (nodes, _) = walk_until(
+            0,
+            4000,
+            Duration::from_secs(1),
+            |_| panic!("root matched"),
+            |_| panic!("root matched"),
+            |_| true,
+        );
+        assert_eq!(nodes, vec![0]);
+    }
     #[test]
     fn successful_null_edges_are_complete_and_real_pointer_errors_are_not_empty() {
         assert_eq!(optional::<u32>(Err(0)), Ok(None));
