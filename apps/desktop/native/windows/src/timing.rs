@@ -1,5 +1,11 @@
 use std::time::{Duration, Instant};
 
+/// Epoch-millisecond deadlines must retain all 64 bits; invalid input expires closed.
+pub fn request_deadline_expired(request: &serde_json::Value, now_ms: u128) -> bool {
+    request["deadlineAtMs"].as_u64().unwrap_or(0) as u128 <= now_ms
+}
+
+/// Keep inline settling when subsequent target/display selection depends on its metadata.
 pub fn post_action_settle_ms(
     op: &str,
     screenshot: bool,
@@ -14,6 +20,7 @@ pub fn post_action_settle_ms(
     }
 }
 
+/// Poll at most every 25 ms, stopping on cancellation or a monotonic timeout.
 pub fn poll_until(
     timeout: Duration,
     mut cancelled: impl FnMut() -> bool,
@@ -38,6 +45,31 @@ pub fn poll_until(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn epoch_deadlines_preserve_high_bits_and_fail_closed() {
+        // Both positive and negative i32 truncations must retain their epoch value.
+        for now in [1_790_000_000_000u64, 1_792_000_000_000] {
+            assert!(!request_deadline_expired(
+                &serde_json::json!({"deadlineAtMs": now + 300}),
+                now as u128
+            ));
+            for deadline in [now - 1, now] {
+                assert!(request_deadline_expired(
+                    &serde_json::json!({"deadlineAtMs": deadline}),
+                    now as u128
+                ));
+            }
+        }
+        for request in [
+            serde_json::json!({}),
+            serde_json::json!({"deadlineAtMs": -1}),
+            serde_json::json!({"deadlineAtMs": 1.5}),
+            serde_json::json!({"deadlineAtMs": "9999999999999"}),
+            serde_json::json!({"deadlineAtMs": null}),
+        ] {
+            assert!(request_deadline_expired(&request, 1_790_000_000_000));
+        }
+    }
     #[test]
     fn metadata_dependent_settle_table() {
         for op in ["type", "key", "elementAction", "openApp", "activateApp"] {
