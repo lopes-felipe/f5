@@ -4,6 +4,7 @@ import {
   SOURCE_CONTROL_PULL_REQUEST_ACTIONS,
   type ForgeAction,
   type ForgeCapabilities,
+  type PrHubCheck,
   type SourceControlPullRequestAction,
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import { quoteGitPatchPath, unquoteGitPatchPath } from "@t3tools/shared/gitPatch
 import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
 import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
+import { gitLabHeadPipelineChecks, gitLabTriggerJobChecks } from "./gitLabPipelineChecks.ts";
 import {
   SourceControlProviderError,
   type SourceControlProvider,
@@ -38,6 +40,7 @@ export interface ForgeFile {
 export interface ForgeDetail extends SourceControlPullRequestSummary {
   readonly body: string;
   readonly raw: Readonly<Record<string, unknown>>;
+  readonly checks?: ReadonlyArray<PrHubCheck>;
 }
 export interface ForgeCommentInput {
   readonly ref: SourceControlPullRequestRef;
@@ -449,6 +452,7 @@ export function makeForgeSourceControlProvider(options: {
         text(object(source.repository).full_name ?? object(head.repo).full_name) || null,
       headRepositoryOwnerLogin: text(object(object(head.repo).owner).login) || null,
       raw: v,
+      ...(kind === "gitlab" ? { checks: gitLabHeadPipelineChecks(v.head_pipeline) } : {}),
     };
   };
   const refFrom = (value: string, cwd: string) =>
@@ -465,7 +469,30 @@ export function makeForgeSourceControlProvider(options: {
     request(ref, undefined, pull(ref)).pipe(
       Effect.flatMap((value) =>
         Effect.gen(function* () {
-          const detail = summary(value, ref);
+          let detail = summary(value, ref);
+          const pipeline = object(detail.raw.head_pipeline);
+          if (
+            kind === "gitlab" &&
+            Number.isSafeInteger(pipeline.id) &&
+            Number(pipeline.id) > 0 &&
+            Number.isSafeInteger(pipeline.project_id) &&
+            Number(pipeline.project_id) > 0
+          ) {
+            // Fork pipelines belong to their source project. Keep the selected host/account.
+            const downstream = yield* request(
+              ref,
+              undefined,
+              "/pipelines/" + pipeline.id + "/bridges?per_page=100",
+              "GET",
+              undefined,
+              false,
+              String(pipeline.project_id),
+            ).pipe(
+              Effect.map(gitLabTriggerJobChecks),
+              Effect.catch(() => Effect.succeed([])),
+            );
+            detail = { ...detail, checks: [...(detail.checks ?? []), ...downstream] };
+          }
           if (kind === "gitlab" && detail.isCrossRepository) {
             const source = object(value).source_project_id;
             const project = object(

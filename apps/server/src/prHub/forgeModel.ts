@@ -28,18 +28,16 @@ export function forgeTracked(
   const author = login(raw.author ?? raw.user ?? raw.createdBy);
   const draft = raw.draft === true || raw.work_in_progress === true || raw.isDraft === true;
   const state = detail.state ?? "open";
-  const pipeline = record(raw.head_pipeline);
-  const pipelineStatus = text(pipeline.status)?.toLowerCase();
-  const checkRollup: TrackedPullRequest["checkRollup"] =
-    pipelineStatus === "success"
-      ? "success"
-      : pipelineStatus === "failed"
-        ? "failure"
-        : ["pending", "running", "created", "preparing", "waiting_for_resource"].includes(
-              pipelineStatus ?? "",
-            )
-          ? "pending"
-          : "none";
+  const checks = detail.checks ?? [];
+  const checkRollup: TrackedPullRequest["checkRollup"] = checks.some(
+    (check) => check.status === "failure" || check.status === "cancelled",
+  )
+    ? "failure"
+    : checks.some((check) => check.status === "pending")
+      ? "pending"
+      : checks.length
+        ? "success"
+        : "none";
   const reviewers = Array.isArray(raw.reviewers)
     ? raw.reviewers.map(login).filter((name): name is string => name !== null)
     : [];
@@ -172,7 +170,7 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
       author: pr.author ? { login: pr.author, name: null, avatarUrl: null } : null,
       labels: pr.labels.map((name) => ({ name, color: null, description: null })),
       reviewers: [],
-      checks: [],
+      checks: detail.checks ?? [],
       reactions: [],
     },
     stale: false,

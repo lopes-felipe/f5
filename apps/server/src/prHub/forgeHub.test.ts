@@ -71,6 +71,17 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               calls++;
               if (fail) return new Response(null, { status: 503 });
               const path = new URL(String(url)).pathname;
+              if (path.endsWith("/bridges"))
+                return Response.json([
+                  {
+                    name: "deploy",
+                    status: "success",
+                    downstream_pipeline: {
+                      status: "failed",
+                      web_url: "https://gitlab.example.com/fork/-/pipelines/32",
+                    },
+                  },
+                ]);
               if (path.endsWith("/diffs"))
                 return Response.json([
                   { old_path: "a.ts", new_path: "a.ts", diff: "@@ -1 +1 @@\n-old\n+new\n+added" },
@@ -92,7 +103,10 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
                     ],
                   },
                 ]);
-              return Response.json(detail);
+              return Response.json({
+                ...detail,
+                head_pipeline: { id: 31, project_id: 12, status: "success" },
+              });
             }) as typeof fetch,
           });
           const hub = yield* makeForgePrHubService(account, provider).pipe(
@@ -106,7 +120,16 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
           assert.equal(pr.reviewFactsComplete, false);
           assert.equal(pr.mergePermission, "unknown");
           Schema.decodeUnknownSync(PrHubSnapshot)(yield* hub.getSnapshot);
-          Schema.decodeUnknownSync(PrHubDetailResult)(yield* hub.getDetail({ key: pr.key }));
+          const result = Schema.decodeUnknownSync(PrHubDetailResult)(
+            yield* hub.getDetail({ key: pr.key }),
+          );
+          assert.deepEqual(
+            result.detail.checks.map((check) => [check.name, check.status]),
+            [
+              ["Pipeline", "success"],
+              ["deploy", "failure"],
+            ],
+          );
           const files = yield* hub.getFiles({ key: pr.key });
           assert.equal(files.files.length, 1);
           assert.equal(files.comparison?.headOid, "head");

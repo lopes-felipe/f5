@@ -36,6 +36,62 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("reads fork child pipelines on the selected GitLab host", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      {
+        iid: 7,
+        title: "Change",
+        head_pipeline: {
+          id: 31,
+          project_id: 12,
+          status: "success",
+          web_url: "https://gitlab.com/fork/-/pipelines/31",
+        },
+      },
+      [
+        {
+          name: "deploy",
+          status: "success",
+          downstream_pipeline: {
+            status: "failed",
+            web_url: "https://gitlab.com/fork/-/pipelines/32",
+          },
+        },
+        { name: "optional", allow_failure: true, downstream_pipeline: { status: "failed" } },
+        { name: "running", downstream_pipeline: { status: "running" } },
+        { name: "not started", downstream_pipeline: null },
+        { name: 7, downstream_pipeline: { status: "failed" } },
+      ],
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref));
+    expect(detail.checks?.map(({ name, status }) => [name, status])).toEqual([
+      ["Pipeline", "success"],
+      ["deploy", "failure"],
+      ["optional", "neutral"],
+      ["running", "pending"],
+    ]);
+    expect(detail.checks?.[1]?.url).toBe("https://gitlab.com/fork/-/pipelines/32");
+    expect(calls[1]?.url).toBe(
+      "https://gitlab.com/api/v4/projects/12/pipelines/31/bridges?per_page=100",
+    );
+  });
+
+  it.each([
+    new Response(null, { status: 403 }),
+    Array.from({ length: 100 }, () => ({
+      name: "child",
+      downstream_pipeline: { status: "failed" },
+    })),
+    { invalid: "page" },
+  ])("preserves the head check when trigger jobs cannot be read completely", async (response) => {
+    const { provider, ref } = fixture("gitlab", [
+      { iid: 7, head_pipeline: { id: 31, project_id: 12, status: "success" } },
+      response,
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref));
+    expect(detail.checks?.map((check) => check.status)).toEqual(["success"]);
+  });
+
   it.each([
     ["gitlab", { sha: "abc1234", diff_refs: null, merge_commit_sha: "wrong" }, "abc1234"],
     ["gitlab", { sha: "  " }, null],
