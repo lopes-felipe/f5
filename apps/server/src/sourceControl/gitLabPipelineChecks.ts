@@ -30,16 +30,18 @@ export function gitLabHeadPipelineChecks(value: unknown): ReadonlyArray<PrHubChe
   return [
     {
       name: "Pipeline",
-      status: pipelineStatus(pipeline.status),
-      description: null,
+      status: ["manual", "skipped"].includes(text(pipeline.status)?.toLowerCase() ?? "")
+        ? "pending"
+        : pipelineStatus(pipeline.status),
+      description: text(pipeline.source),
       url: text(pipeline.web_url),
     },
   ];
 }
 
 /** A full page may omit a failed child; accept only complete, bounded reads. */
-export function gitLabTriggerJobChecks(value: unknown): ReadonlyArray<PrHubCheck> {
-  if (!Array.isArray(value) || value.length >= 100) return [];
+export function gitLabTriggerJobChecks(value: unknown): ReadonlyArray<PrHubCheck> | null {
+  if (!Array.isArray(value) || value.length >= 100) return null;
   return value.flatMap((entry): PrHubCheck[] => {
     const job = record(entry);
     const name = text(job.name);
@@ -54,7 +56,7 @@ export function gitLabTriggerJobChecks(value: unknown): ReadonlyArray<PrHubCheck
     const status = pipelineStatus(pipeline.status);
     return [
       {
-        name,
+        name: "Downstream: " + name,
         status: status === "failure" && job.allow_failure === true ? "neutral" : status,
         description: "Downstream pipeline",
         url: text(pipeline.web_url),

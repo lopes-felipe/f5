@@ -12,6 +12,7 @@ import Migration102 from "../persistence/Migrations/102_ForgeAccounts.ts";
 import { makeForgeSourceControlProvider } from "../sourceControl/ForgeSourceControlProvider.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../serverSettings.ts";
 import { makeForgePrHubService } from "./forgeHub.ts";
+import { ForgeAccounts, type ForgeAccountsShape } from "../sourceControl/accountRouting.ts";
 import { Schema } from "effect";
 
 const settings: ServerSettingsShape = {
@@ -49,6 +50,91 @@ const detail = {
 };
 
 it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
+  it.effect("refreshes discovered pipeline checks on every poll and marks partial reads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Migration102;
+        let partial = false;
+        const provider = makeForgeSourceControlProvider({
+          kind: "gitlab",
+          resolveAccount: () =>
+            Effect.succeed({
+              kind: "gitlab",
+              host: account.host,
+              login: account.login,
+              token: "secret",
+              repository: "group/repo",
+            }),
+          fetch: (async (url) => {
+            const path = new URL(String(url)).pathname;
+            if (path.endsWith("/bridges"))
+              return partial
+                ? new Response(null, { status: 403 })
+                : Response.json([{ name: "Pipeline", downstream_pipeline: { status: "failed" } }]);
+            // GitLab list responses omit head_pipeline.
+            if (path.endsWith("/merge_requests"))
+              return Response.json([{ ...detail, head_pipeline: undefined }]);
+            return Response.json({
+              ...detail,
+              head_pipeline: { id: 31, project_id: 12, status: "success" },
+            });
+          }) as typeof fetch,
+        });
+        const unused = () => Effect.die("unused account operation");
+        const accounts: ForgeAccountsShape = {
+          listAccounts: () => Effect.succeed([account]),
+          listRouting: () =>
+            Effect.succeed([
+              {
+                provider: "gitlab",
+                host: account.host,
+                repository: "group/repo",
+                accountId: account.id,
+              },
+            ]),
+          route: () => Effect.succeed(account),
+          removeAccount: unused,
+          saveAccount: unused,
+          getToken: unused,
+          removeRouting: unused,
+          setRouting: unused,
+          resolveAccount: unused,
+        };
+        const hub = yield* makeForgePrHubService({ ...account, id: "discovery" }, provider).pipe(
+          Effect.provideService(ServerSettingsService, settings),
+          Effect.provideService(ForgeAccounts, {
+            ...accounts,
+            listAccounts: () => Effect.succeed([{ ...account, id: "discovery" }]),
+            listRouting: () =>
+              Effect.succeed([
+                {
+                  provider: "gitlab",
+                  host: account.host,
+                  repository: "group/repo",
+                  accountId: "discovery",
+                },
+              ]),
+            route: () => Effect.succeed({ ...account, id: "discovery" }),
+          }),
+        );
+        const first = yield* hub.refreshNow({ mode: "force" });
+        const pr = first.pullRequests[0]!;
+        assert.equal(pr.checkRollup, "failure");
+        yield* hub.getDetail({ key: pr.key, mode: "force" });
+        const polled = yield* hub.refreshNow({ mode: "force" });
+        assert.equal(polled.pullRequests[0]?.checkRollup, "failure");
+        const read = yield* hub.getDetail({ key: pr.key });
+        assert.deepEqual(
+          read.detail.checks.map((check) => check.name),
+          ["Pipeline", "Downstream: Pipeline"],
+        );
+        partial = true;
+        const incomplete = yield* hub.getDetail({ key: pr.key, mode: "force" });
+        assert.deepEqual(incomplete.detail.truncatedSections, ["checks"]);
+        assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "pending");
+      }),
+    ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
   it.effect(
     "persists snapshots and native files, isolates generations and rejects foreign hosts",
     () =>
@@ -127,10 +213,11 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
             result.detail.checks.map((check) => [check.name, check.status]),
             [
               ["Pipeline", "success"],
-              ["deploy", "failure"],
+              ["Downstream: deploy", "failure"],
             ],
           );
           const files = yield* hub.getFiles({ key: pr.key });
+          assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "failure");
           assert.equal(files.files.length, 1);
           assert.equal(files.comparison?.headOid, "head");
           assert.equal(files.comparison?.baseOid, "base-head");

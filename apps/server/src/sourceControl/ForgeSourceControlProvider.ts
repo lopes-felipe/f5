@@ -41,6 +41,7 @@ export interface ForgeDetail extends SourceControlPullRequestSummary {
   readonly body: string;
   readonly raw: Readonly<Record<string, unknown>>;
   readonly checks?: ReadonlyArray<PrHubCheck>;
+  readonly checksComplete?: boolean;
 }
 export interface ForgeCommentInput {
   readonly ref: SourceControlPullRequestRef;
@@ -63,6 +64,7 @@ export interface ForgeProvider extends SourceControlProvider {
   ) => Effect.Effect<ReadonlyArray<ForgeDetail>, SourceControlProviderError>;
   readonly getDetail: (
     ref: SourceControlPullRequestRef,
+    options?: { readonly checks?: boolean },
   ) => Effect.Effect<ForgeDetail, SourceControlProviderError>;
   readonly getFiles: (
     ref: SourceControlPullRequestRef,
@@ -452,7 +454,6 @@ export function makeForgeSourceControlProvider(options: {
         text(object(source.repository).full_name ?? object(head.repo).full_name) || null,
       headRepositoryOwnerLogin: text(object(object(head.repo).owner).login) || null,
       raw: v,
-      ...(kind === "gitlab" ? { checks: gitLabHeadPipelineChecks(v.head_pipeline) } : {}),
     };
   };
   const refFrom = (value: string, cwd: string) =>
@@ -465,11 +466,27 @@ export function makeForgeSourceControlProvider(options: {
         return yield* error("reference", "Invalid pull request reference.", "invalid_response");
       return ref;
     });
-  const getDetail = (ref: SourceControlPullRequestRef) =>
+  const getDetail = (ref: SourceControlPullRequestRef, options?: { readonly checks?: boolean }) =>
     request(ref, undefined, pull(ref)).pipe(
       Effect.flatMap((value) =>
         Effect.gen(function* () {
           let detail = summary(value, ref);
+          if (kind === "gitlab" && detail.isCrossRepository) {
+            const source = object(value).source_project_id;
+            const project = object(
+              yield* request(ref, undefined, "", "GET", undefined, false, String(source)),
+            );
+            detail = {
+              ...detail,
+              headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
+            };
+          }
+          if (kind !== "gitlab" || !options?.checks) return detail;
+          detail = {
+            ...detail,
+            checks: gitLabHeadPipelineChecks(detail.raw.head_pipeline),
+            checksComplete: detail.raw.head_pipeline == null,
+          };
           const pipeline = object(detail.raw.head_pipeline);
           if (
             kind === "gitlab" &&
@@ -489,18 +506,12 @@ export function makeForgeSourceControlProvider(options: {
               String(pipeline.project_id),
             ).pipe(
               Effect.map(gitLabTriggerJobChecks),
-              Effect.catch(() => Effect.succeed([])),
+              Effect.catch(() => Effect.succeed(null)),
             );
-            detail = { ...detail, checks: [...(detail.checks ?? []), ...downstream] };
-          }
-          if (kind === "gitlab" && detail.isCrossRepository) {
-            const source = object(value).source_project_id;
-            const project = object(
-              yield* request(ref, undefined, "", "GET", undefined, false, String(source)),
-            );
-            return {
+            detail = {
               ...detail,
-              headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
+              checks: [...(detail.checks ?? []), ...(downstream ?? [])],
+              checksComplete: downstream !== null,
             };
           }
           return detail;
@@ -1239,8 +1250,11 @@ export function makeForgeSourceControlProvider(options: {
         getDetail(ref).pipe(
           Effect.flatMap((detail) => {
             const reviewers = rows(detail.raw.reviewers ?? detail.raw.requested_reviewers)
-              .map((v) => text(v.login ?? v.uuid ?? v.id))
-              .filter((id) => !input.remove.includes(id));
+              .map(
+                (v) =>
+                  text(v.login ?? v.uuid) || (typeof v.id === "number" ? String(v.id) : text(v.id)),
+              )
+              .filter((id) => id.length > 0 && !input.remove.includes(id));
             return setReviewers({ ref, reviewers: [...new Set([...reviewers, ...input.add])] });
           }),
         ),

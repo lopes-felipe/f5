@@ -41,13 +41,17 @@ describe("forge adapters", () => {
       {
         iid: 7,
         title: "Change",
+        source_project_id: 12,
+        target_project_id: 99,
         head_pipeline: {
           id: 31,
           project_id: 12,
           status: "success",
+          source: "merge_request_event",
           web_url: "https://gitlab.com/fork/-/pipelines/31",
         },
       },
+      { path_with_namespace: "fork/repo" },
       [
         {
           name: "deploy",
@@ -63,21 +67,26 @@ describe("forge adapters", () => {
         { name: 7, downstream_pipeline: { status: "failed" } },
       ],
     ]);
-    const detail = await Effect.runPromise(provider.getDetail(ref));
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.headRepositoryNameWithOwner).toBe("fork/repo");
+    expect(detail.checksComplete).toBe(true);
+    expect(detail.checks?.[0]?.description).toBe("merge_request_event");
     expect(detail.checks?.map(({ name, status }) => [name, status])).toEqual([
       ["Pipeline", "success"],
-      ["deploy", "failure"],
-      ["optional", "neutral"],
-      ["running", "pending"],
+      ["Downstream: deploy", "failure"],
+      ["Downstream: optional", "neutral"],
+      ["Downstream: running", "pending"],
     ]);
     expect(detail.checks?.[1]?.url).toBe("https://gitlab.com/fork/-/pipelines/32");
-    expect(calls[1]?.url).toBe(
+    expect(calls[1]?.url).toBe("https://gitlab.com/api/v4/projects/12");
+    expect(calls[2]?.url).toBe(
       "https://gitlab.com/api/v4/projects/12/pipelines/31/bridges?per_page=100",
     );
   });
 
   it.each([
     new Response(null, { status: 403 }),
+    new Response(null, { status: 429, headers: { "retry-after": "60" } }),
     Array.from({ length: 100 }, () => ({
       name: "child",
       downstream_pipeline: { status: "failed" },
@@ -88,8 +97,48 @@ describe("forge adapters", () => {
       { iid: 7, head_pipeline: { id: 31, project_id: 12, status: "success" } },
       response,
     ]);
-    const detail = await Effect.runPromise(provider.getDetail(ref));
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
     expect(detail.checks?.map((check) => check.status)).toEqual(["success"]);
+    expect(detail.checksComplete).toBe(false);
+  });
+
+  it.each(["ready", "draft"] as const)(
+    "does not read optional checks before %s writes",
+    async (action) => {
+      const { provider, ref, calls } = fixture("gitlab", [
+        {
+          iid: 7,
+          title: "Draft: Change",
+          head_pipeline: { id: 31, project_id: 12, status: "success" },
+        },
+        {},
+      ]);
+      await Effect.runPromise(provider.performAction({ ref, action }));
+      expect(calls.map((call) => call.init.method)).toEqual(["GET", "PUT"]);
+      expect(calls.some((call) => call.url.includes("/bridges"))).toBe(false);
+    },
+  );
+
+  it("edits GitLab reviewers without an optional pipeline read", async () => {
+    const { provider, calls } = fixture("gitlab", [
+      {
+        iid: 7,
+        title: "Change",
+        reviewers: [{ id: 4 }],
+        head_pipeline: { id: 31, project_id: 12, status: "success" },
+      },
+      {},
+    ]);
+    await Effect.runPromise(
+      provider.changePullRequestReviewers({
+        cwd: "/repo",
+        url: "https://gitlab.com/team/repo/-/merge_requests/7",
+        add: ["5"],
+        remove: ["4"],
+      }),
+    );
+    expect(calls.map((call) => call.init.method)).toEqual(["GET", "PUT"]);
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ reviewer_ids: [5] });
   });
 
   it.each([

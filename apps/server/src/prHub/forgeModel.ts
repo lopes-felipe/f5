@@ -29,15 +29,21 @@ export function forgeTracked(
   const draft = raw.draft === true || raw.work_in_progress === true || raw.isDraft === true;
   const state = detail.state ?? "open";
   const checks = detail.checks ?? [];
+  const headStatus = text(record(raw.head_pipeline).status)?.toLowerCase();
+  const checksIncomplete =
+    ref.provider === "gitlab" &&
+    (detail.checksComplete !== true || headStatus === "manual" || headStatus === "skipped");
   const checkRollup: TrackedPullRequest["checkRollup"] = checks.some(
     (check) => check.status === "failure" || check.status === "cancelled",
   )
     ? "failure"
     : checks.some((check) => check.status === "pending")
       ? "pending"
-      : checks.length
-        ? "success"
-        : "none";
+      : checksIncomplete
+        ? "pending"
+        : checks.length
+          ? "success"
+          : "none";
   const reviewers = Array.isArray(raw.reviewers)
     ? raw.reviewers.map(login).filter((name): name is string => name !== null)
     : [];
@@ -171,6 +177,9 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
       labels: pr.labels.map((name) => ({ name, color: null, description: null })),
       reviewers: [],
       checks: detail.checks ?? [],
+      ...(pr.provider === "gitlab" && detail.checksComplete !== true
+        ? { truncatedSections: ["checks" as const] }
+        : {}),
       reactions: [],
     },
     stale: false,
