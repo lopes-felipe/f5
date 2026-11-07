@@ -76,6 +76,8 @@ describe("LocalFileTracer", () => {
           Effect.provide(Logger.layer([Logger.tracerLogger], { mergeWithExisting: false })),
           Effect.exit,
         );
+        // Wait for the worker's write rather than relying on the bounded shutdown deadline.
+        yield* sink.flush;
         yield* sink.close();
         const written = yield* fs.readFileString(tracePath);
         const exported = delegates.map((span) =>
