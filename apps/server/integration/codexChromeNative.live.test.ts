@@ -183,6 +183,8 @@ nodeRepl.write("finished");`;
         correlated: async () => ({ ok: true }),
         send: () => undefined,
       } as never,
+      acquireChromeLease: async () => undefined,
+      registerChromeReleaser: () => () => undefined,
       pause,
       generation: () => GENERATION,
       chromeRecoveryRequired: () => false,

@@ -1,14 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci-main-status.yml", import.meta.url), "utf8"),
 ) as {
-  jobs: Record<string, { steps: { run: string }[] }>;
+  jobs: Record<string, { steps: { name: string; run: string }[] }>;
 };
-const reconcile = workflow.jobs.report!.steps[0]!.run;
+const step = (name: string) => workflow.jobs.report!.steps.find((s) => s.name === name)!.run;
+const reconcile = step("Reconcile main status issue");
+const findLatest = step("Find the newest main CI result");
 // Substitute only gh, so these cases exercise the exact inline workflow script.
 const mockGh = `
 gh() {
@@ -73,4 +77,53 @@ describe.skipIf(process.platform === "win32")("main status reconciliation", () =
       expect(runStatus({ [key]: "<!-- ci-main:42:2 -->" })).not.toContain("mutation: comment");
     expect(runStatus({ COMMENTS: "<!-- ci-main:42:1 -->" })).toContain("mutation: comment");
   });
+});
+
+// Scheduled passes catch reruns started with GITHUB_TOKEN, which raise no workflow_run event.
+describe.skipIf(process.platform === "win32")("scheduled main status lookup", () => {
+  const mockLookupGh = `
+gh() {
+  case "$1 $2" in
+    'api repos/example/f5/commits/main') printf '%s\\n' current ;;
+    api\\ repos/example/f5/actions/workflows/ci.yml/runs*) printf '%s\\n' "$RUNS" | jq -r "\${@: -1}" ;;
+    *) echo "Unexpected gh call: $*" >&2; return 1 ;;
+  esac
+}
+`;
+  function lookup(runs: unknown[]) {
+    const dir = mkdtempSync(join(tmpdir(), "ci-main-status-"));
+    const output = join(dir, "output");
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-c", mockLookupGh + findLatest], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GH_REPO: "example/f5",
+        GITHUB_OUTPUT: output,
+        RUNS: JSON.stringify({ workflow_runs: runs }),
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const text = readFileSync(output, "utf8");
+    rmSync(dir, { recursive: true, force: true });
+    return text;
+  }
+  const run = (overrides: Record<string, unknown>) => ({
+    id: 42,
+    path: ".github/workflows/ci.yml",
+    head_sha: "current",
+    head_repository: { full_name: "example/f5" },
+    run_attempt: 2,
+    conclusion: "success",
+    html_url: "https://example.test/run/42",
+    ...overrides,
+  });
+
+  it("reports the newest trusted run for main HEAD", () =>
+    expect(lookup([run({ head_repository: { full_name: "fork/f5" }, id: 7 }), run({})])).toBe(
+      "result=success\nsha=current\nrun=42\nattempt=2\nurl=https://example.test/run/42\n",
+    ));
+  it("leaves the result empty while that run is still going", () =>
+    expect(lookup([run({ conclusion: null })])).toContain("result=\n"));
+  it("writes nothing when main HEAD has no CI run", () => expect(lookup([])).toBe(""));
 });

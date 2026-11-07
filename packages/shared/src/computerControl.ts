@@ -15,30 +15,48 @@ const OBSERVATIONS: ReadonlySet<ComputerAutomationOperation> = new Set([
 export function isComputerMutation(op: ComputerAutomationOperation | "batch"): boolean {
   return op === "batch" || !OBSERVATIONS.has(op);
 }
+type BusyError = Extract<ComputerAutomationError, { _tag: "Busy" }>;
+/** Names the holder whenever main or the broker attributed it. */
+export function describeComputerBusy(error: BusyError): string {
+  if (error.reason === "observation-backlog")
+    return "Observation backlog is full; wait before requesting another screenshot or inspection.";
+  if (error.holder === "other-profile")
+    return "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.";
+  const what =
+    error.resource === "chrome"
+      ? "Chrome"
+      : error.resource === "computer"
+        ? "Computer control"
+        : "Computer or Chrome control";
+  if (!error.holderThreadId && !error.threadTitle)
+    return `Busy: ${what} is in use in this F5 profile; wait and retry.`;
+  const who = error.threadTitle ? `thread "${error.threadTitle}"` : "another thread";
+  const state =
+    error.holderIdle === true ? " (idle)" : error.holderIdle === false ? " (working)" : "";
+  return `Busy: ${what} is held by ${who}${state}. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.`;
+}
 export class ComputerControlError extends Error {
   constructor(readonly error: ComputerAutomationError) {
     super(
       error._tag === "OutcomeUnknown"
         ? "The action may or may not have run; take a screenshot before retrying."
-        : error._tag === "Busy" && error.reason === "observation-backlog"
-          ? "Observation backlog is full; wait before requesting another screenshot or inspection."
-          : error._tag === "Busy" && error.holder === "other-profile"
-            ? "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user."
-            : error._tag === "StaleElement"
-              ? `StaleElement${error.reason ? ` (${error.reason})` : ""}: call computer_inspect again.`
-              : error._tag === "Execution"
-                ? error.message
-                : error._tag === "ForegroundRequired"
-                  ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
-                  : error._tag === "TargetBlocked" && error.kind === "user-active"
-                    ? "TargetBlocked user-active: call computer_wait_for_target, then observe again before acting; take a screenshot before coordinates."
-                    : error._tag === "TargetBlocked" && error.kind === "shared-focus"
-                      ? "TargetBlocked shared-focus: another agent acted in that app; press the field with computer_element_action (or use setValue), then type."
-                      : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
-                        ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
-                        : error._tag === "TargetBlocked" && error.kind === "other-app"
-                          ? "TargetBlocked other-app: the foreground was approved for a different app."
-                          : error._tag,
+        : error._tag === "Busy"
+          ? describeComputerBusy(error)
+          : error._tag === "StaleElement"
+            ? `StaleElement${error.reason ? ` (${error.reason})` : ""}: call computer_inspect again.`
+            : error._tag === "Execution"
+              ? error.message
+              : error._tag === "ForegroundRequired"
+                ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
+                : error._tag === "TargetBlocked" && error.kind === "user-active"
+                  ? "TargetBlocked user-active: call computer_wait_for_target, then observe again before acting; take a screenshot before coordinates."
+                  : error._tag === "TargetBlocked" && error.kind === "shared-focus"
+                    ? "TargetBlocked shared-focus: another agent acted in that app; press the field with computer_element_action (or use setValue), then type."
+                    : error._tag === "TargetBlocked" && error.kind === "foreground-busy"
+                      ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
+                      : error._tag === "TargetBlocked" && error.kind === "other-app"
+                        ? "TargetBlocked other-app: the foreground was approved for a different app."
+                        : error._tag,
     );
   }
 }

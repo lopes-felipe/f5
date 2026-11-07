@@ -3637,6 +3637,7 @@ it.effect(
       requestChromeSession: vi.fn(async () => true),
       pause: { subscribe: () => () => undefined, has: () => false },
       onChromeDisabled: () => () => undefined,
+      registerChromeReleaser: () => () => undefined,
       chromeRecoveryRequired: () => false,
     };
     const spies = [
@@ -3849,6 +3850,7 @@ it.effect(
       requestChromeSession: vi.fn(async () => true),
       pause: { subscribe: () => () => undefined, has: () => false },
       onChromeDisabled: () => () => undefined,
+      registerChromeReleaser: () => () => undefined,
       chromeRecoveryRequired: () => false,
     };
     const installation = {

@@ -637,13 +637,8 @@ export function chromeRuntimeHost(input: {
     ...(input.log ? { log: input.log } : {}),
     profileId: broker.host.profileId,
     currentGeneration: (threadId) => broker.generation(threadId),
-    acquire: async (holder) => {
-      await broker.host.correlated(
-        { type: "chromeLeaseAcquire", requestId: randomUUID(), holder },
-        5000,
-        false,
-      );
-    },
+    // An idle Chrome holder in this profile gives way; a working one is named in the refusal.
+    acquire: (holder) => broker.acquireChromeLease(holder, 5000),
     release: (holder) =>
       broker.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder }),
     validate: async (holder) => {

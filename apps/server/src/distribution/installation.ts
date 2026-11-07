@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { exists, atomicJson, readJson } from "./files";
+import { exists, atomicJson, readJson, renameWithRetry } from "./files";
 import {
   cliTarget,
   parseRelease,
@@ -203,17 +203,31 @@ export async function stageRelease(
       target: artifact.target,
     });
     await fs.mkdir(path.dirname(paths.directory), { recursive: true });
-    await fs.rename(content, paths.directory);
+    const onRetry = (error: NodeJS.ErrnoException) =>
+      progress(`Waiting for another program to release the runtime folder (${error.code})...`);
+    await renameWithRetry(content, paths.directory, { onRetry });
     try {
       await preflightRuntime(root, release.version);
     } catch (error) {
-      await fs.rename(paths.directory, path.join(root, `.rejected-${randomUUID()}`));
+      // Lead with why the runtime was rejected, not a cleanup failure that followed it.
+      try {
+        await renameWithRetry(paths.directory, path.join(root, `.rejected-${randomUUID()}`), {
+          onRetry,
+        });
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          `${error instanceof Error ? error.message : String(error)} (the rejected runtime ` +
+            `could not be moved aside: ${cleanup instanceof Error ? cleanup.message : String(cleanup)})`,
+        );
+      }
       throw error;
     }
     progress("Verified and prepared immutable runtime.");
     return release.version;
   } finally {
-    await fs.rm(staging, { recursive: true, force: true });
+    // Antivirus can briefly hold extracted files on Windows; retry so the real error surfaces.
+    await fs.rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 /** Prefer the bundled Node, then validate an explicitly supplied/PATH runtime. */

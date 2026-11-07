@@ -65,7 +65,14 @@ export class ChromeLeaseAuthority {
     if (native)
       throw new ComputerControlError({
         _tag: "Busy",
-        holder: native.profileId === holder.profileId ? "same-profile" : "other-profile",
+        resource: "computer",
+        ...(native.profileId === holder.profileId
+          ? {
+              holder: "same-profile" as const,
+              holderThreadId: native.threadId,
+              threadTitle: native.threadTitle,
+            }
+          : { holder: "other-profile" as const }),
       });
     if (this.holder) {
       if (sameChromeHolder(this.holder, holder) && !this.draining && !this.invalidated) return;
@@ -139,10 +146,15 @@ export class ChromeLeaseAuthority {
     this.invalidated = true;
     this.release(this.holder, reason);
   }
+  /** Same-profile holders are named so the server can attribute (and preempt) them. */
   private busy(profileId: string): never {
+    const holder = this.holder;
     throw new ComputerControlError({
       _tag: "Busy",
-      holder: this.holder?.profileId === profileId ? "same-profile" : "other-profile",
+      resource: "chrome",
+      ...(holder?.profileId === profileId
+        ? { holder: "same-profile" as const, holderThreadId: holder.threadId }
+        : { holder: "other-profile" as const }),
     });
   }
 }

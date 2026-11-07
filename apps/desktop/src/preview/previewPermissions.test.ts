@@ -1,8 +1,19 @@
 import { expect, it, vi } from "vitest";
+import { createRequire } from "node:module";
 
 import { installPreviewPermissionPolicy } from "./previewPermissions";
 
-it("lets preview pages copy and go fullscreen, and denies everything else", () => {
+it("requires reassessing the loopback permission check when upgrading Electron", () => {
+  // A granted check can itself authorize some APIs without a later permission request.
+  // This compatibility grant is safe only while Electron disables LNA enforcement.
+  const electron = createRequire(import.meta.url)("electron/package.json") as { version: string };
+  expect(
+    electron.version,
+    "Reassess LocalNetworkAccessChecks and the loopback grant on Electron upgrade",
+  ).toBe("44.9.3");
+});
+
+it("allows clipboard writes and fullscreen, but only reports loopback access without granting requests", () => {
   let request:
     | ((contents: unknown, permission: string, done: (ok: boolean) => void) => void)
     | null = null;
@@ -26,8 +37,12 @@ it("lets preview pages copy and go fullscreen, and denies everything else", () =
     });
     return result;
   };
-  expect(granted("clipboard-sanitized-write")).toBe(true);
-  expect(granted("fullscreen")).toBe(true);
+  for (const permission of ["clipboard-sanitized-write", "fullscreen"]) {
+    expect(granted(permission)).toBe(true);
+    expect(check!({}, permission)).toBe(true);
+  }
+  expect(granted("loopback-network")).toBe(false);
+  expect(check!({}, "loopback-network")).toBe(true);
   for (const permission of [
     "openExternal",
     "clipboard-read",
@@ -35,8 +50,11 @@ it("lets preview pages copy and go fullscreen, and denies everything else", () =
     "geolocation",
     "media",
     "local-fonts",
+    "local-network",
+    "local-network-access",
   ]) {
     expect(granted(permission)).toBe(false);
+    expect(check!({}, permission)).toBe(false);
   }
   expect(check!({}, "clipboard-sanitized-write")).toBe(true);
   expect(check!({}, "media")).toBe(false);

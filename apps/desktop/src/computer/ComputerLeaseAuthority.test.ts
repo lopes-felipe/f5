@@ -40,6 +40,25 @@ describe("machine computer lease", () => {
     } catch (error) {
       expect(error).toMatchObject({ error: { _tag: "Busy", holder: "other-profile" } });
       expect(JSON.stringify(error)).not.toContain("Private title");
+      expect((error as { error: object }).error).not.toHaveProperty("holderThreadId");
+    }
+  });
+  it("names the holding thread to another thread in the same profile", () => {
+    const lease = new ComputerLeaseAuthority();
+    lease.acquire(holder);
+    try {
+      lease.acquire({ ...holder, threadId: "other-thread" });
+      throw new Error("expected Busy");
+    } catch (error) {
+      expect(error).toMatchObject({
+        error: {
+          _tag: "Busy",
+          holder: "same-profile",
+          resource: "computer",
+          holderThreadId: holder.threadId,
+          threadTitle: holder.threadTitle,
+        },
+      });
     }
   });
   it("ignores late releases from older turns", () => {

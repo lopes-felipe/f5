@@ -462,32 +462,39 @@ const makeGitCore = Effect.gen(function* () {
 
   // Writes that cannot be repeated, such as a rename, still take a turn but never retry.
   const sharedConfigLocks = new Map<string, Semaphore.Semaphore>();
-  const withSharedConfigLock = <A>(cwd: string, effect: Effect.Effect<A, GitCommandError>) =>
+  const sharedConfigTurn = (cwd: string) =>
     resolveCommonDir(cwd).pipe(
       Effect.orElseSucceed(() => ""),
-      Effect.flatMap((commonDir) => {
-        if (commonDir === "") return effect;
+      Effect.map((commonDir) => {
+        if (commonDir === "") return <A, E>(effect: Effect.Effect<A, E>) => effect;
         let lock = sharedConfigLocks.get(commonDir);
         if (lock === undefined) {
           lock = Semaphore.makeUnsafe(1);
           sharedConfigLocks.set(commonDir, lock);
         }
-        return lock.withPermits(1)(effect);
+        return lock.withPermits(1);
       }),
     );
+  const withSharedConfigLock = <A>(cwd: string, effect: Effect.Effect<A, GitCommandError>) =>
+    sharedConfigTurn(cwd).pipe(Effect.flatMap((takeTurn) => takeTurn(effect)));
 
   // Git run outside F5, such as an agent's, can hold the lock too. Only writes that are safe to
   // repeat go through this. The lock is recognized by its message, so Git must not translate it.
+  // The repository is resolved once: each retry only takes a turn and runs the write again, so a
+  // held lock costs one Git process per attempt, not two.
   const writeSharedConfig = (operation: string, cwd: string, args: readonly string[]) =>
-    withSharedConfigLock(
-      cwd,
-      executeGit(operation, cwd, args, { env: { LC_ALL: "C" } }).pipe(Effect.asVoid),
-    ).pipe(
-      Effect.retry({
-        while: isGitConfigLockedError,
-        times: 10,
-        schedule: Schedule.spaced("50 millis"),
-      }),
+    sharedConfigTurn(cwd).pipe(
+      Effect.flatMap((takeTurn) =>
+        takeTurn(
+          executeGit(operation, cwd, args, { env: { LC_ALL: "C" } }).pipe(Effect.asVoid),
+        ).pipe(
+          Effect.retry({
+            while: isGitConfigLockedError,
+            times: 10,
+            schedule: Schedule.spaced("50 millis"),
+          }),
+        ),
+      ),
     );
 
   const writeConfigValue = (operation: string, cwd: string, key: string, value: string) =>

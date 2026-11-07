@@ -770,7 +770,31 @@ describe("computer broker safety boundaries", () => {
     expect(new ComputerControlError({ _tag: "Busy", holder: "other-profile" }).message).toBe(
       "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.",
     );
-    expect(new ComputerControlError({ _tag: "Busy", holder: "same-profile" }).message).toBe("Busy");
+    expect(new ComputerControlError({ _tag: "Busy", holder: "same-profile" }).message).toBe(
+      "Busy: Computer or Chrome control is in use in this F5 profile; wait and retry.",
+    );
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "same-profile",
+        resource: "chrome",
+        holderThreadId: "t1",
+        threadTitle: "Fix login",
+        holderIdle: false,
+      }).message,
+    ).toBe(
+      'Busy: Chrome is held by thread "Fix login" (working). F5 releases idle holders automatically; if it\'s working, wait or ask the user to stop it.',
+    );
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "same-profile",
+        resource: "computer",
+        holderThreadId: "t1",
+      }).message,
+    ).toBe(
+      "Busy: Computer control is held by another thread. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.",
+    );
   });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();

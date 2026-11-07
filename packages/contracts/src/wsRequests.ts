@@ -588,6 +588,7 @@ const WebSocketRequestBody = Schema.Union([
     Schema.Struct({ threadId: ThreadId, appId: Schema.String }),
   ),
   tagRequestBody(WS_METHODS.computerAccessList, Schema.Struct({ threadId: ThreadId })),
+  tagRequestBody(WS_METHODS.computerChromeRelease, Schema.Struct({ threadId: ThreadId })),
   tagRequestBody(
     WS_METHODS.claudeChromeRestoreNativeHost,
     Schema.Struct({ transactionId: Schema.String }),

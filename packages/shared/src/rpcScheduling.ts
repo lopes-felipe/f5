@@ -93,6 +93,7 @@ export const RPC_METHOD_POLICY = {
   "computer.access.list": READ,
   "computer.access.listRemembered": READ,
   "computer.access.revoke": STOP,
+  "computer.chrome.release": STOP,
 
   "elicitation.submit": ANSWER_RT,
 

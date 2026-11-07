@@ -3567,36 +3567,40 @@ it.layer(TestLayer)("git integration", (it) => {
     );
 
     // Live clock: the config-lock retries wait between attempts.
-    liveIt("pushes but reports no upstream while another writer holds the config lock", () =>
-      Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        const remote = yield* makeTmpDir();
-        yield* git(tmp, ["init", "--initial-branch=trunk"]);
-        yield* git(tmp, ["config", "user.email", "test@test.com"]);
-        yield* git(tmp, ["config", "user.name", "Test"]);
-        yield* writeTextFile(path.join(tmp, "README.md"), "hello\n");
-        yield* git(tmp, ["add", "README.md"]);
-        yield* git(tmp, ["commit", "-m", "initial"]);
-        yield* git(remote, ["init", "--bare"]);
-        yield* git(tmp, ["remote", "add", "origin", remote]);
-        yield* git(tmp, ["checkout", "-b", "feature/locked-push"]);
-        const lockPath = path.join(tmp, ".git", "config.lock");
-        yield* writeTextFile(lockPath, "");
+    liveIt(
+      "pushes but reports no upstream while another writer holds the config lock",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const remote = yield* makeTmpDir();
+          yield* git(tmp, ["init", "--initial-branch=trunk"]);
+          yield* git(tmp, ["config", "user.email", "test@test.com"]);
+          yield* git(tmp, ["config", "user.name", "Test"]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "hello\n");
+          yield* git(tmp, ["add", "README.md"]);
+          yield* git(tmp, ["commit", "-m", "initial"]);
+          yield* git(remote, ["init", "--bare"]);
+          yield* git(tmp, ["remote", "add", "origin", remote]);
+          yield* git(tmp, ["checkout", "-b", "feature/locked-push"]);
+          const lockPath = path.join(tmp, ".git", "config.lock");
+          yield* writeTextFile(lockPath, "");
 
-        const core = yield* GitCore;
-        const pushed = yield* core.pushCurrentBranch(tmp, null);
-        expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
-        expect(
-          yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature/locked-push"]),
-        ).toBe(yield* git(tmp, ["rev-parse", "HEAD"]));
+          const core = yield* GitCore;
+          const pushed = yield* core.pushCurrentBranch(tmp, null);
+          expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
+          expect(
+            yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature/locked-push"]),
+          ).toBe(yield* git(tmp, ["rev-parse", "HEAD"]));
 
-        expect(
-          yield* git(tmp, ["config", "--get", "branch.feature/locked-push.merge"]).pipe(
-            Effect.orElseSucceed(() => ""),
-          ),
-        ).toBe("");
-        yield* (yield* FileSystem.FileSystem).remove(lockPath);
-      }).pipe(Effect.provide(TestLayer)),
+          expect(
+            yield* git(tmp, ["config", "--get", "branch.feature/locked-push.merge"]).pipe(
+              Effect.orElseSucceed(() => ""),
+            ),
+          ).toBe("");
+          yield* (yield* FileSystem.FileSystem).remove(lockPath);
+        }).pipe(Effect.provide(TestLayer)),
+      // Eleven real Git attempts plus a push; loaded macOS runners exceeded the default.
+      { timeout: 60_000 },
     );
 
     liveIt("keeps the prior upstream whole when only its remote cannot be rewritten", () =>
@@ -3614,22 +3618,32 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* git(tmp, ["add", "."]);
         yield* git(tmp, ["commit", "-m", "half"]);
         const gitService = yield* GitService;
+        const calls: ("locked" | "commonDir")[] = [];
         // Another writer keeps winning the lock whenever the remote is rewritten.
         const core = yield* makeIsolatedGitCore({
           ...gitService,
+          // Suspended so a retry, which reruns the same effect, counts as another attempt.
           execute: (input) =>
-            input.args[0] === "config" && input.args.includes("branch.feature/half.remote")
-              ? Effect.succeed({
+            Effect.suspend(() => {
+              if (input.args.includes("--git-common-dir")) calls.push("commonDir");
+              if (input.args[0] === "config" && input.args.includes("branch.feature/half.remote")) {
+                calls.push("locked");
+                return Effect.succeed({
                   code: 255,
                   stdout: "",
                   stderr: "error: could not lock config file .git/config: File exists",
-                })
-              : gitService.execute(input),
+                });
+              }
+              return gitService.execute(input);
+            }),
         });
 
         const pushed = yield* core.pushCurrentBranch(tmp, null);
 
         expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
+        // One write plus ten retries, without resolving the repository again between them.
+        const attempts = calls.slice(calls.indexOf("locked"), calls.lastIndexOf("locked") + 1);
+        expect(attempts).toEqual(Array.from({ length: 11 }, () => "locked"));
         expect(yield* git(tmp, ["config", "--get", "branch.feature/half.merge"])).toBe(
           `refs/heads/${initialBranch}`,
         );

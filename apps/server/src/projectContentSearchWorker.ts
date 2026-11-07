@@ -66,15 +66,19 @@ function projectContentSearchWorkerMain(loadModule: NodeJS.Require): void {
     return result.value;
   }
 
-  async function waitForIndexReady(): Promise<void> {
+  async function waitForIndexReady(refresh = false): Promise<void> {
     if (!finder) throw new Error("Content index is not initialized.");
     const deadline = Date.now() + SCAN_TIMEOUT_MS;
     while (true) {
       const progress = unwrap(finder.getScanProgress());
-      indexedPathCount = progress.scannedFilesCount;
-      indexTruncated ||= indexedPathCount > MAX_INDEXED_PATHS;
-      if (!progress.isScanning && progress.isWarmupComplete) return;
+      if (!progress.isScanning && progress.isWarmupComplete) {
+        indexedPathCount = progress.scannedFilesCount;
+        indexTruncated ||= indexedPathCount > MAX_INDEXED_PATHS;
+        return;
+      }
       if (Date.now() >= deadline) {
+        // Rescans continue in the background and keep the previous index usable.
+        if (refresh) return;
         throw new Error("Project content index scan timed out after 15 seconds.");
       }
       await delay(25);
@@ -119,7 +123,7 @@ function projectContentSearchWorkerMain(loadModule: NodeJS.Require): void {
   async function refresh(): Promise<void> {
     if (!finder) throw new Error("Content index is not initialized.");
     unwrap(finder.scanFiles());
-    await waitForIndexReady();
+    await waitForIndexReady(true);
   }
 
   function byteOffsetToCodePointOffset(bytes: Buffer, byteOffset: number): number {
@@ -310,12 +314,19 @@ function projectContentSearchWorkerMain(loadModule: NodeJS.Require): void {
             bounded = boundedLineMatch(lineContent, rawRanges);
           }
         }
-        if (!bounded) continue;
+        // Native hits beyond the snippet cap can have no ranges. Keep those
+        // hits unless word boundaries must be verified; literal recovery above
+        // still provides a useful snippet and highlights whenever possible.
+        bounded ??= {
+          lineContent,
+          matchRanges: [],
+          truncated: true,
+        };
         processingTruncated ||= bounded.truncated;
         const matchRanges = bounded.matchRanges.filter(
           (range) => !input.wholeWord || isWholeWordRange(bounded.lineContent, range),
         );
-        if (matchRanges.length === 0) continue;
+        if (input.wholeWord && matchRanges.length === 0) continue;
         matches.push({
           path: normalizedPath,
           lineNumber: match.lineNumber,
