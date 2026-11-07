@@ -2,8 +2,14 @@ import { expect, it } from "vitest";
 import {
   measureComputerTasks,
   normalizedComputerTreeDigest,
+  verifyComputerResolutionCount,
   type ComputerPerformanceDriver,
 } from "./computerTasks.ts";
+it("requires one cold conditional-wait resolution", () => {
+  expect(() => verifyComputerResolutionCount(1)).not.toThrow();
+  for (const count of [0, 2, NaN])
+    expect(() => verifyComputerResolutionCount(count)).toThrow("exactly once");
+});
 
 function fixtureDriver() {
   let calls = 0,

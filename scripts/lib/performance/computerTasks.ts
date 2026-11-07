@@ -24,6 +24,11 @@ type Tree = {
 };
 /** Fixed harness assertions are safe to report; provider errors are excluded. */
 export class ComputerPerformanceError extends Error {}
+/** A cold conditional wait resolves its fixture once; polling must reuse the result. */
+export function verifyComputerResolutionCount(count: number): void {
+  if (count !== 1)
+    throw new ComputerPerformanceError("Conditional wait must resolve its app exactly once.");
+}
 function tree(value: Record<string, any>): Tree {
   if (!value.accessible || value.truncated || !value.nodes?.length)
     throw new ComputerPerformanceError("Inspection must be complete, accessible and nonempty.");

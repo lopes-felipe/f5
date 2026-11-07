@@ -133,6 +133,8 @@ mod tests {
                 let state = state.as_ref().unwrap();
                 assert!(!state.delayed_input);
                 assert!(!state.delayed_button_pending);
+                assert!(!state.changing);
+                assert_eq!(state.changing_tick, 0);
                 assert!(state.delayed_button.is_none());
                 assert!(state.tree.is_empty());
                 assert_eq!(state.receipt.summary(), Receipt::default().summary());

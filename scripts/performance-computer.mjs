@@ -26,6 +26,7 @@ import {
   measureComputerTasks,
   normalizedComputerTreeDigest,
   ComputerPerformanceError,
+  verifyComputerResolutionCount,
 } from "./lib/performance/computerTasks.ts";
 import {
   cleanupComputerRehearsal,
@@ -421,14 +422,14 @@ if (!process.versions.electron) {
           );
       },
       verify: () => {
-        diagnostics.resolutions = ipc.resolutions;
-        if (preparationMode === "delayed" && ipc.resolutions !== 1)
-          throw new ComputerPerformanceError("Conditional wait must resolve its app exactly once.");
+        if (preparationMode === "delayed") {
+          diagnostics["conditional-wait.resolutions"] = ipc.resolutions;
+          verifyComputerResolutionCount(ipc.resolutions);
+        }
         return [...fixtures.values()].find((fixture) => fixture.appId === driver.app).verify();
       },
       resetCalls: () => {
         calls = 0;
-        diagnostics.resolutions = 0;
         ipc.resolutions = 0;
       },
       calls: () => calls,
