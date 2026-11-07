@@ -55494,11 +55494,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:50:25.078Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25131",
-      "status": "port",
+      "reason": "F5 Settings is a full-page route without Esc-to-close behavior.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -74136,14 +74138,16 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:50:25.078Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-7579",
+      "reason": "F5 uses protocol compatibility checks rather than client/server app-version skew.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-8124"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
