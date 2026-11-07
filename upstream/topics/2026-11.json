@@ -20690,11 +20690,21 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:50:03.711Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/prHub/discoveryModel.ts:468",
+          "apps/server/src/prHub/discoveryModel.ts:851"
+        ],
+        "f5Refs": [
+          "f3e45cf448feb009a8652802184d31512a531480"
+        ]
+      },
       "id": "pr-32395",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",

@@ -45478,11 +45478,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:50:03.711Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23638",
-      "status": "port",
+      "reason": "F5’s PR diff viewer renders patches without fetching omitted context lines.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -45784,11 +45786,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:50:03.712Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:170",
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:189"
+        ],
+        "f5Refs": [
+          "f3e45cf448feb009a8652802184d31512a531480"
+        ]
+      },
       "id": "pr-23695",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",
