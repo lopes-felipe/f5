@@ -7,6 +7,8 @@ import {
   ComputerToolGeometry,
 } from "./computerMcpTools";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
+import { Effect, Metric } from "effect";
+import { computerToolDuration, metricAttributes } from "../observability/Metrics";
 import type { ComputerInspectResult } from "@t3tools/contracts";
 import type { ComputerAutomationBrokerRuntime } from "./ComputerAutomationBroker";
 const display = {
@@ -42,6 +44,12 @@ function setup(displays = [display], delivery: "foreground" | "background" = "fo
     reportToolFailure: vi.fn(),
     reportToolCompleted: vi.fn(),
     wait: vi.fn(async () => ({ waitedMs: 100, timedOut: true })),
+    beginBatch: vi.fn(async () => ({
+      deadline: performance.now() + 60_000,
+      controller: new AbortController(),
+      release: vi.fn(),
+    })),
+    assertBatchLive: vi.fn(),
     waitForTarget: vi.fn(async () => ({
       available: false,
       timedOut: true,
@@ -60,6 +68,264 @@ function setup(displays = [display], delivery: "foreground" | "background" = "fo
     },
   };
 }
+describe("computer batches", () => {
+  it("records one duration per deduplicated execution with operation and outcome labels", async () => {
+    const h = setup();
+    const metric = (outcome: string) =>
+      Metric.withAttributes(computerToolDuration, metricAttributes({ op: "status", outcome }));
+    const count = (outcome: string) => Effect.runSync(Metric.value(metric(outcome))).count;
+    const before = count("success");
+    const context = { ...h.context, invocationId: "duration-once" };
+    await callComputerTool(context, "computer_status", {});
+    await callComputerTool(context, "computer_status", {});
+    expect(count("success") - before).toBe(1);
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    const failedBefore = count("invalid-arguments");
+    await callComputerTool(h.context, "computer_status", { unexpected: true });
+    expect(count("invalid-arguments") - failedBefore).toBe(1);
+  });
+  it("returns settled inspections and rejects inspect without an app", async () => {
+    const h = setup();
+    h.context.geometry.rememberApps([{ appId: "one", name: "Fixture" } as any]);
+    h.broker.wait.mockResolvedValue({
+      waitedMs: 500,
+      settled: true,
+      tree: {
+        snapshotId: "settled",
+        appId: "one",
+        accessible: true,
+        nodes: [],
+      },
+    } as any);
+    const response = await callComputerTool(h.context, "computer_wait", {
+      app: "one",
+      inspect: true,
+    });
+    expect(response.structuredContent).toMatchObject({
+      settled: true,
+      inspect: { snapshotId: "settled" },
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect((await callComputerTool(h.context, "computer_wait", { inspect: true })).isError).toBe(
+      true,
+    );
+  });
+  it.each([undefined, "none"])(
+    "omits secure audit diagnostics from clean captures (%s)",
+    async (masked) => {
+      const h = setup();
+      h.invoke.mockResolvedValue({
+        data: "aGVsbG8=",
+        mimeType: "image/jpeg",
+        masked,
+        maskReasons: [],
+        secureAudit: { windows: [{ elapsedMs: 3 }] },
+      });
+      const response = await callComputerTool(h.context, "computer_screenshot", {});
+      expect(response.structuredContent).not.toHaveProperty("secureAudit");
+    },
+  );
+  const focus = { op: "element_action", snapshotId: "s", elementRef: "e", action: "focus" };
+  function batchSetup() {
+    const h = setup();
+    h.context.geometry.rememberApps([{ appId: "one", name: "Fixture" } as any]);
+    h.invoke.mockImplementation(async (_t, _s, input) => ({
+      actionCompleted: true,
+      verification: { verified: input.op === "elementAction" },
+    }));
+    return h;
+  }
+  it.each([
+    ["resolution", "cancel"],
+    ["resolution", "deadline"],
+    ["classification", "cancel"],
+    ["classification", "deadline"],
+  ] as const)("bounds step %s on %s after completing input", async (phase, cause) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const h = batchSetup();
+      const handle = {
+        deadline: performance.now() + 1100,
+        controller: new AbortController(),
+        release: vi.fn(),
+      };
+      h.broker.beginBatch.mockResolvedValue(handle);
+      let completedFirstStep = false;
+      let entered!: () => void;
+      let finish!: (value: any) => void;
+      const blocked = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const delayed = () => {
+        entered();
+        return new Promise<any>((resolve) => {
+          finish = resolve;
+        });
+      };
+      h.invoke.mockImplementation(async (_t, _s, request) => {
+        if (request.op === "resolveApps") return delayed();
+        completedFirstStep = true;
+        if (phase === "resolution") h.context.geometry.clear();
+        return { actionCompleted: true };
+      });
+      h.broker.classify.mockImplementation(async () => {
+        if (phase === "classification" && completedFirstStep) return delayed();
+        return "foreground";
+      });
+      const responsePromise = callComputerTool(h.context, "computer_batch", {
+        app: "one",
+        steps: [
+          { op: "type", text: "once" },
+          { op: "key", keys: "Enter" },
+        ],
+      });
+      await blocked;
+      if (phase === "resolution") {
+        const calls = h.invoke.mock.calls as any[];
+        expect(calls.at(-1)[4]).toMatchObject({
+          deadlineMs: handle.deadline,
+          signal: handle.controller.signal,
+        });
+      }
+      if (cause === "cancel")
+        handle.controller.abort(new ComputerControlError({ _tag: "Interrupted", cause: "paused" }));
+      else await vi.advanceTimersByTimeAsync(1200);
+      const response = await responsePromise;
+      expect(response.isError).toBe(true);
+      expect(response.structuredContent).toMatchObject({
+        error: { _tag: cause === "cancel" ? "Interrupted" : "Execution" },
+        failedStep: 1,
+        stepsCompleted: 1,
+        steps: [
+          { op: "type", ok: true },
+          { op: "key", ok: false },
+        ],
+      });
+      expect(handle.release).toHaveBeenCalledOnce();
+      finish(phase === "resolution" ? [{ appId: "one", name: "Fixture" }] : "foreground");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.invoke.mock.calls.some((call) => call[2].op === "key")).toBe(false);
+      expect(h.broker.reportToolFailure).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(["settle", "before-inspect", "during-inspect", "during-wait"] as const)(
+    "preserves completed effects when cancelled %s",
+    async (phase) => {
+      const h = batchSetup();
+      let cancelled = false;
+      const interrupted = new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+      h.broker.assertBatchLive.mockImplementation(() => {
+        if (cancelled) throw interrupted;
+      });
+      if (phase === "settle")
+        h.broker.wait.mockImplementation(async () => {
+          cancelled = true;
+          throw interrupted;
+        });
+      h.invoke.mockImplementation(async (_t, _s, request) => {
+        if (phase === "during-inspect" && request.op === "inspect") {
+          cancelled = true;
+          throw interrupted;
+        }
+        if (phase === "before-inspect") cancelled = true;
+        if (phase === "during-wait") {
+          const handle = await h.broker.beginBatch.mock.results[0]!.value;
+          setTimeout(() => {
+            cancelled = true;
+            handle.controller.abort(interrupted);
+          }, 10);
+        }
+        return { actionCompleted: true };
+      });
+      const response = await callComputerTool(h.context, "computer_batch", {
+        app: "one",
+        steps: [
+          { op: "type", text: "once" },
+          ...(phase === "during-wait" ? [{ op: "wait", ms: 1000 }] : []),
+        ],
+        inspect: true,
+        settle: phase === "settle",
+      });
+      expect(response.isError).toBe(true);
+      expect(response.structuredContent).toMatchObject({
+        error: { _tag: "Interrupted", cause: "paused" },
+        stepsCompleted: 1,
+        steps: [
+          expect.objectContaining({ op: "type", ok: true }),
+          ...(phase === "during-wait" ? [expect.objectContaining({ op: "wait", ok: false })] : []),
+        ],
+      });
+      expect(h.broker.reportToolFailure).toHaveBeenCalledTimes(1);
+      const handle = await h.broker.beginBatch.mock.results[0]!.value;
+      expect(handle.release).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each([
+    [
+      { op: "element_action", snapshotId: "s", elementRef: "e", action: "press" },
+      { op: "type", text: "x" },
+    ],
+    [{ op: "wait", ms: 100 }],
+    [{ op: "type", text: "x", x: 1 }],
+    Array.from({ length: 21 }, () => ({ op: "type", text: "x" })),
+    [
+      { op: "type", text: "x".repeat(6000) },
+      { op: "type", text: "x".repeat(6000) },
+    ],
+    [{ op: "type", text: "x" }, ...Array.from({ length: 3 }, () => ({ op: "wait", ms: 5000 }))],
+  ])("validates every step before starting", async (...steps) => {
+    const h = batchSetup();
+    const response = await callComputerTool(h.context, "computer_batch", { app: "one", steps });
+    expect(response.isError).toBe(true);
+    expect(h.broker.beginBatch).not.toHaveBeenCalled();
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
+  it("holds one handle and dispatches all steps without screenshots", async () => {
+    const h = batchSetup();
+    const response = await callComputerTool(h.context, "computer_batch", {
+      app: "one",
+      steps: [focus, { op: "type", text: "x" }, { op: "key", keys: "Enter" }],
+    });
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent).toMatchObject({ stepsCompleted: 3 });
+    expect(h.broker.beginBatch).toHaveBeenCalledTimes(1);
+    const handle = await h.broker.beginBatch.mock.results[0]!.value;
+    expect(handle.release).toHaveBeenCalledTimes(1);
+    expect(h.invoke).toHaveBeenCalledTimes(3);
+    for (const call of h.invoke.mock.calls as any[]) {
+      expect(call[2]).toMatchObject({ screenshot: false });
+      expect(call[4]).toMatchObject({ batch: handle });
+    }
+  });
+  it("stops before typing after an unconfirmed focus", async () => {
+    const h = batchSetup();
+    h.invoke.mockResolvedValue({ actionCompleted: true, verification: { verified: false } });
+    const response = await callComputerTool(h.context, "computer_batch", {
+      app: "one",
+      steps: [focus, { op: "type", text: "x" }],
+    });
+    expect(response.structuredContent).toMatchObject({
+      stepsCompleted: 1,
+      stopped: "focus-unconfirmed",
+    });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+  });
+  it("counts a completed action with a lost capture and never runs later steps", async () => {
+    const h = batchSetup();
+    h.invoke.mockResolvedValue({ actionCompleted: true, screenshotError: "Execution" });
+    const response = await callComputerTool(h.context, "computer_batch", {
+      app: "one",
+      steps: [
+        { op: "type", text: "x" },
+        { op: "key", keys: "Enter" },
+      ],
+    });
+    expect(response.structuredContent).toMatchObject({ stepsCompleted: 1, stopped: "reply-lost" });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+  });
+});
 describe("shared computer tool catalog", () => {
   it("names a same-profile holder to the model and to the card", async () => {
     const h = setup();
@@ -233,7 +499,7 @@ describe("shared computer tool catalog", () => {
     ).toContain("Positive deltaY scrolls down; positive deltaX scrolls right.");
   });
   it("installs one catalog of eighteen tools, with only discovery tools always loaded", () => {
-    expect(COMPUTER_TOOL_DEFINITIONS).toHaveLength(18);
+    expect(COMPUTER_TOOL_DEFINITIONS).toHaveLength(19);
     expect(COMPUTER_TOOL_DEFINITIONS.map((tool) => tool.name)).toContain(
       "computer_request_foreground",
     );
@@ -408,7 +674,7 @@ it("keeps guidance on discovery, safety on actions, and the serialized catalog b
     ),
   ).toEqual(["computer_status"]);
   const length = JSON.stringify(COMPUTER_TOOL_DEFINITIONS.map((tool) => tool.description)).length;
-  expect(length).toBeLessThanOrEqual(6000);
+  expect(length).toBeLessThanOrEqual(7000);
   expect(length).toBeLessThan(baselineDescriptionCharacters / 2);
   for (const tool of COMPUTER_TOOL_DEFINITIONS) {
     if (

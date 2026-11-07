@@ -174,12 +174,47 @@ describe("main computer controller", () => {
     h.overlay.action.mockReturnValueOnce(new Promise(() => {}));
     try {
       const pending = h.controller.invoke(envelope("bounded"));
-      await vi.advanceTimersByTimeAsync(280);
+      await vi.advanceTimersByTimeAsync(100);
       await expect(pending).resolves.toEqual({ ok: true });
       expect(h.request).toHaveBeenCalledTimes(1);
     } finally {
       h.controller.close();
       vi.useRealTimers();
+    }
+  });
+  it("accepts confirmations only for a matching live sent mutation", async () => {
+    const h = make();
+    const confirmed = (h.controller as unknown as { confirmed: Set<string> }).confirmed;
+    let finish!: (value: unknown) => void;
+    h.request.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    try {
+      h.event({ type: "actionConfirmed", requestId: "unknown" });
+      expect(confirmed.size).toBe(0);
+      const pending = h.controller.invoke(envelope("confirmation"));
+      await vi.waitFor(() => expect(h.request).toHaveBeenCalledTimes(1));
+      h.event({
+        type: "actionConfirmed",
+        requestId: "confirmation",
+        executionGeneration: h.held.executionGeneration + 1,
+      });
+      expect(confirmed.size).toBe(0);
+      h.event({
+        type: "actionConfirmed",
+        requestId: "confirmation",
+        executionGeneration: h.held.executionGeneration,
+      });
+      expect(confirmed.has("confirmation")).toBe(true);
+      finish({ actionCompleted: true });
+      await pending;
+      expect(confirmed.size).toBe(0);
+      h.event({ type: "actionConfirmed", requestId: "confirmation" });
+      expect(confirmed.size).toBe(0);
+    } finally {
+      h.controller.close();
     }
   });
   it("rejects acquisition when the shortcut observer immediately revokes the lease", () => {

@@ -1,5 +1,16 @@
 import AppKit
 
+final class DelayedInputField: NSTextField {
+  override func becomeFirstResponder() -> Bool {
+    if CommandLine.arguments.contains("--delayed-focus") { Thread.sleep(forTimeInterval: 0.2) }
+    return super.becomeFirstResponder()
+  }
+  override func keyDown(with event: NSEvent) {
+    if CommandLine.arguments.contains("--delayed-focus") { Thread.sleep(forTimeInterval: 0.2) }
+    super.keyDown(with: event)
+  }
+}
+
 // Synthetic content only. The rehearsal launches this temporary app and grants
 // no existing user app. Its editable and secure fields exercise real AX behavior.
 final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
@@ -9,6 +20,8 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
   var presses = 0
   let instruction = NSTextField(labelWithString: "Follow the F5 test instructions.")
   var finishButton: NSButton!
+  var inputField: NSTextField!
+  var delayedButton: NSButton?
   func applicationDidFinishLaunching(_ notification: Notification) {
     window = NSWindow(
       contentRect: NSRect(x: 120, y: 120, width: 500, height: 300),
@@ -42,7 +55,8 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     if ungranted, let screen = requestedScreen ?? NSScreen.main {
       window.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 20, y: window.frame.minY))
     }
-    let field = NSTextField(frame: NSRect(x: 30, y: 205, width: 400, height: 28))
+    let field = DelayedInputField(frame: NSRect(x: 30, y: 205, width: 400, height: 28))
+    inputField = field
     field.setAccessibilityLabel("Rehearsal input")
     field.delegate = self
     content.addSubview(field)
@@ -65,9 +79,49 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     finishButton.frame = NSRect(x: 350, y: 4, width: 120, height: 28)
     finishButton.isEnabled = false
     content.addSubview(finishButton)
+    if let index = CommandLine.arguments.firstIndex(of: "--tree-nodes"),
+      index + 1 < CommandLine.arguments.count,
+      let count = Int(CommandLine.arguments[index + 1]), (1...800).contains(count)
+    {
+      for item in 0..<count {
+        let label = NSTextField(labelWithString: "Fixture node \(item)")
+        label.setAccessibilityLabel("Fixture node \(item)")
+        label.frame = NSRect(x: 5 + (item % 20) * 24, y: 35 + (item / 20) * 5, width: 22, height: 5)
+        content.addSubview(label)
+      }
+    }
     DispatchQueue.global(qos: .utility).async { [weak self] in
       while let line = readLine() {
         guard line.count <= 128 else { return }
+        if ["PERF_RESET", "PERF_VERIFY", "PERF_DELAY_BUTTON"].contains(line) {
+          DispatchQueue.main.async {
+            guard let self else { return }
+            if line == "PERF_RESET" {
+              self.presses = 0
+              self.counter.stringValue = "presses: 0"
+              self.inputField.stringValue = ""
+              self.delayedButton?.removeFromSuperview()
+              self.delayedButton = nil
+              FileHandle.standardOutput.write(Data("FIXTURE_RESET\n".utf8))
+            } else if line == "PERF_VERIFY" {
+              let facts: [String: Any] = [
+                "presses": self.presses, "hasInput": !self.inputField.stringValue.isEmpty,
+                "delayedButton": self.delayedButton != nil,
+              ]
+              if let data = try? JSONSerialization.data(withJSONObject: facts, options: [.sortedKeys]) {
+                FileHandle.standardOutput.write(data + Data("\n".utf8))
+              }
+            } else {
+              DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let button = NSButton(title: "Delayed ready", target: self, action: #selector(self.press))
+                button.frame = NSRect(x: 30, y: 240, width: 180, height: 22)
+                self.window.contentView?.addSubview(button)
+                self.delayedButton = button
+              }
+            }
+          }
+          continue
+        }
         let instructions = [
           "WINDOWLESS_READY": "Ready. Keep input idle.",
           "WINDOWLESS_COUNTDOWN_3": "Starting in 3. Keep input idle.",
@@ -110,6 +164,15 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     FileHandle.standardOutput.write(Data("FIXTURE_TYPED\n".utf8))
   }
   @objc func focusSecureField() { window.makeFirstResponder(secure) }
+  func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+    guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+      let index = CommandLine.arguments.firstIndex(of: "--expected-text"),
+      index + 1 < CommandLine.arguments.count else { return false }
+    if inputField.stringValue == CommandLine.arguments[index + 1] {
+      FileHandle.standardOutput.write(Data("FIXTURE_ENTERED\n".utf8))
+    }
+    return true
+  }
   @objc func acknowledge() {
     guard finishButton.isEnabled, let event = NSApplication.shared.currentEvent,
       event.type == .leftMouseUp, let cgEvent = event.cgEvent,

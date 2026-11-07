@@ -3,6 +3,7 @@ import type { Readable, Writable } from "node:stream";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve, basename, dirname, relative, isAbsolute } from "node:path";
 import { promisify } from "node:util";
+import { computerFixturePerformanceArgs } from "./computerInspectionRehearsal";
 
 export async function prepareRehearsalExecutable(
   source: string,
@@ -31,6 +32,8 @@ export async function createRehearsalFixture(options: {
   diagnoseChord?: boolean;
   passiveChord?: boolean;
   preparedDirectory?: string;
+  treeNodes?: number;
+  delayedFocus?: boolean;
 }) {
   if (process.platform === "win32") {
     if (!options.preparedDirectory || options.passiveChord || options.displayId)
@@ -72,6 +75,7 @@ export async function createRehearsalFixture(options: {
       options.preparedDirectory,
     );
   const args = [
+    ...computerFixturePerformanceArgs(options),
     ...(options.background ? ["--background"] : []),
     ...(options.displayId ? ["--display-id", options.displayId] : []),
     ...(options.ungranted ? ["--ungranted"] : []),
@@ -92,6 +96,8 @@ export async function observeRehearsalFixture(
   let presses = 0;
   let typed = false;
   let acknowledged = false;
+  let entered = false;
+  let resets = 0;
   let buffer = "";
   const ready = new Promise<void>((done, reject) => {
     const timer = setTimeout(() => reject(new Error("Synthetic fixture startup timed out.")), 5000);
@@ -122,6 +128,13 @@ export async function observeRehearsalFixture(
         } else if (line === "FIXTURE_PRESSED") presses++;
         else if (line === "FIXTURE_TYPED") typed = true;
         else if (line === "FIXTURE_ACKNOWLEDGED") acknowledged = true;
+        else if (line === "FIXTURE_ENTERED") entered = true;
+        else if (line === "FIXTURE_RESET") {
+          resets++;
+          presses = 0;
+          typed = false;
+          entered = false;
+        }
       }
     });
   });
@@ -137,5 +150,15 @@ export async function observeRehearsalFixture(
     presses: () => presses,
     typed: () => typed,
     acknowledged: () => acknowledged,
+    entered: () => entered,
+    reset: async () => {
+      const before = resets;
+      child.stdin.write("PERF_RESET\n");
+      const deadline = performance.now() + 2000;
+      while (resets === before) {
+        if (performance.now() >= deadline) throw new Error("Fixture reset timed out.");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    },
   };
 }

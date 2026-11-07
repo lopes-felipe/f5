@@ -17,7 +17,7 @@ export interface Observation {
 }
 export interface PerformanceReport {
   schemaVersion: 1;
-  scope: "server-component" | "interactive";
+  scope: "server-component" | "interactive" | "computer";
   mode: "smoke" | "measurement";
   metadata: ReturnType<typeof metadata>;
   method: { warmups: number; repetitions: number };
@@ -26,6 +26,17 @@ export interface PerformanceReport {
   notMeasured: string[];
   /** Report-only counters/timings until a controlled baseline establishes numeric gates. */
   diagnostics?: Record<string, number>;
+  computer?: {
+    fixtureDigest: string;
+    harnessDigest: string;
+    platform: string;
+    displays: unknown;
+    masking: string;
+    build: string;
+    helperIdentity: string;
+    executionMode: string;
+    nodesDigests: Record<string, string>;
+  };
   memory?: MemorySample[];
 }
 
@@ -206,7 +217,7 @@ export function compareReports(
   for (const report of [base, next]) {
     if (
       report.schemaVersion !== 1 ||
-      !["server-component", "interactive"].includes(report.scope) ||
+      !["server-component", "interactive", "computer"].includes(report.scope) ||
       report.scope !== base.scope ||
       report.mode !== "measurement" ||
       report.method.warmups !== 5 ||
@@ -215,6 +226,15 @@ export function compareReports(
       failures.push("Comparison requires full server measurements (5 warmups, 30 repetitions)");
   }
   failures.push(...compareReportMetadata(base, next));
+  if (base.scope === "computer") {
+    if (!base.computer || !next.computer) failures.push("Missing computer configuration");
+    else {
+      const { helperIdentity: _baseHelper, ...previous } = base.computer;
+      const { helperIdentity: _nextHelper, ...candidate } = next.computer;
+      if (JSON.stringify(previous) !== JSON.stringify(candidate))
+        failures.push("Incompatible computer fixture, harness, configuration or inspection output");
+    }
+  }
   const names = Object.keys(base.measurements);
   if (
     names.length === 0 ||

@@ -555,6 +555,9 @@ export const scheduledRunTransitionsTotal = Metric.counter("f5_scheduled_run_tra
 export const snapshotReadDuration = Metric.timer("f5_snapshot_read_duration", {
   description: "Consistent snapshot transaction duration, including admission.",
 });
+export const computerToolDuration = Metric.timer("f5_computer_tool_duration", {
+  description: "Computer tool execution duration, grouped by operation and outcome.",
+});
 export const snapshotReadOverruns = Metric.counter("f5_snapshot_read_overruns_total", {
   description: "Snapshot reads exceeding their cooperative deadline.",
 });
@@ -573,7 +576,15 @@ export const measurePerformanceStage = <A, E, R>(
     : Effect.suspend(() => {
         const started = performance.now();
         return effect.pipe(
-          Effect.ensuring(Effect.sync(() => probe(stage, performance.now() - started))),
+          Effect.ensuring(
+            Effect.sync(() => {
+              try {
+                probe(stage, performance.now() - started);
+              } catch {
+                // Diagnostics must never alter execution or its finalization.
+              }
+            }),
+          ),
         );
       });
 

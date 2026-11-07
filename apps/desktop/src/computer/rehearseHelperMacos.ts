@@ -25,6 +25,8 @@ const helperPath = argument("--helper");
 const output = argument("--output");
 const fixtureBinDirectory = argument("--fixture-bin-dir");
 const privacyOnly = args.includes("--privacy-only");
+const sequencing = args.includes("--sequencing");
+const sequenceText = "SYNTHETIC Ω🙂 input ".repeat(3);
 if (process.platform !== "darwin" || !helperPath || !output) {
   process.stderr.write(
     "Usage on macOS: bun apps/desktop/src/computer/rehearseHelperMacos.ts --helper <development helper> --output <new report.json>\n",
@@ -42,6 +44,8 @@ const checks: Array<{
   blockKind?: string;
 }> = [];
 let physicalInterruption = false;
+const confirmations = new Map<string, number>();
+const sequenceTimings: Array<{ op: string; completedAt: number; confirmedAt?: number }> = [];
 let fixture: ReturnType<typeof spawn> | undefined;
 let ungrantedFixture: ReturnType<typeof spawn> | undefined;
 let renewal: ReturnType<typeof setInterval> | undefined;
@@ -56,6 +60,8 @@ const authorization = {
   grants: [{ appId: fixtureId, tier: "full" as const, allowTyping: false }],
 };
 helper.onEvent((message) => {
+  if (message.type === "actionConfirmed" && typeof message.requestId === "string")
+    confirmations.set(message.requestId, performance.now());
   if (message.type === "physicalInput" || message.type === "killSwitch")
     physicalInterruption = true;
 });
@@ -78,10 +84,11 @@ const request = async <T = unknown>(
 ): Promise<T> => {
   if (physicalInterruption)
     throw new Error("Physical input interrupted the rehearsal; it will not resume automatically.");
-  return (await helper.request(
+  const requestId = randomUUID();
+  const result = await helper.request(
     {
       ...payload,
-      requestId: randomUUID(),
+      requestId,
       payloadHash: "rehearsal",
       authorization: { ...authorization, grants },
       deadlineAtMs: Date.now() + 10000,
@@ -92,7 +99,16 @@ const request = async <T = unknown>(
       f5BundlePath: join(tmpdir(), "f5-rehearsal-protected-host"),
       overlayWindowIds: [],
     },
-  )) as T;
+  );
+  const confirmedAt = confirmations.get(requestId);
+  confirmations.delete(requestId);
+  if (sequencing)
+    sequenceTimings.push({
+      op: payload.op,
+      completedAt: performance.now(),
+      ...(confirmedAt === undefined ? {} : { confirmedAt }),
+    });
+  return result as T;
 };
 async function check(name: string, run: () => Promise<void>): Promise<void> {
   process.stdout.write(`Checking: ${name}\n`);
@@ -217,6 +233,7 @@ try {
   const granted = await createRehearsalFixture({
     root,
     appId: fixtureId,
+    ...(sequencing ? { delayedFocus: true, expectedText: sequenceText } : {}),
     ...(fixtureBinDirectory ? { preparedDirectory: fixtureBinDirectory } : {}),
   });
   fixture = granted.child;
@@ -384,15 +401,29 @@ try {
       });
       const field = current.nodes.find((node) => node.name === "Rehearsal input");
       if (!field) throw new Error("Editable field is missing.");
-      await request({
+      const focused = await request<{ verification?: { verified: boolean } }>({
         op: "elementAction",
         appId: fixtureId,
         snapshotId: current.snapshotId,
         elementRef: field.elementRef,
         action: "focus",
       });
-      const text = "SYNTHETIC Ω🙂 input ".repeat(3);
-      await request({ op: "type", text });
+      if (sequencing) assert(focused.verification?.verified === true, "Focus was not confirmed.");
+      const text = sequenceText;
+      await request({ op: "type", text, ...(sequencing ? { appId: fixtureId } : {}) });
+      if (sequencing) {
+        await request({ op: "key", appId: fixtureId, chords: ["Enter"], repeat: 1 });
+        await waitFor(granted.entered);
+        const recent = sequenceTimings.slice(-3);
+        const status = helper.status();
+        if (status.available && status.displays?.length === 1) {
+          for (let i = 1; i < recent.length; i++)
+            assert(
+              (recent[i]!.confirmedAt ?? -Infinity) - recent[i - 1]!.completedAt >= 275,
+              "Helper input was posted before the deferred settling gap.",
+            );
+        }
+      }
       const after = await request<ComputerInspectResult>({
         op: "inspect",
         appId: fixtureId,

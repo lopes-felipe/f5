@@ -12,8 +12,8 @@ const OBSERVATIONS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "zoom",
   "inspect",
 ]);
-export function isComputerMutation(op: ComputerAutomationOperation): boolean {
-  return !OBSERVATIONS.has(op);
+export function isComputerMutation(op: ComputerAutomationOperation | "batch"): boolean {
+  return op === "batch" || !OBSERVATIONS.has(op);
 }
 type BusyError = Extract<ComputerAutomationError, { _tag: "Busy" }>;
 /** Names the holder whenever main or the broker attributed it. */

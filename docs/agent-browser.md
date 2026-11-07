@@ -305,18 +305,51 @@ the availability probe can return true. That runtime wiring is still pending.
 
 ### Observation, controls and history
 
-`computer_wait` replaces repeated screenshot polling. With no condition it settles
+`computer_wait` replaces repeated screenshot polling. Without an app it sleeps
 for 2 seconds by default; with `app` and an exact `role` and/or `name`, it waits up to
 5 seconds for presence. `timeoutMs` is 100–10,000 ms. Presence attempts inspect at
-most 100 nodes and back off 250 ms, 500 ms, then 1 second. Partial trees can prove
+most 100 nodes and back off 250 ms, then 500 ms. Partial trees can prove
 presence, never absence. One monotonic deadline covers resolution, IPC and sleep;
 pause, turn end, session replacement, policy and grant changes interrupt the wait.
 Only one wait runs per session. `screenshot: true` captures afterwards; a failed
 capture still returns the wait metadata. Status carries the full guidance; actions
-carry a short safety clause. The 17 descriptions total 4,368 characters (4,424 when
-serialized as a JSON array), below 6,000 and over 50% below the old repeated guidance.
+carry a short safety clause. The 19 descriptions total 6,993 characters when
+serialized as a JSON array, below 7,000 and over 50% below the old repeated guidance.
 MCP initialization and Claude SDK registration additionally carry server instructions.
-The macOS 300 ms settling delay is unchanged; no new native timing certification is claimed.
+With app and no condition, wait polls every 250 ms and returns after a complete,
+nonempty tree remains unchanged for 500 ms. Truncated trees wait the full timeout.
+`inspect: true` returns the last tree; waits replace earlier snapshots.
+
+On macOS, app-targeted foreground actions without captures on a single display defer
+the 300 ms settling gap until the next helper request. Captures, open/activate,
+untargeted actions and multiple displays retain inline settling before sampling metadata.
+Focus actions poll keyboard focus for up to 500 ms and return `verification.verified`.
+No new native timing certification is claimed.
+
+The inspection performance harness runs with:
+
+    bun scripts/performance.ts computer --helper <debug-helper> --output <new-report.json>
+
+It measures separate small and large deterministic fixtures at a 400-node limit,
+with five warmups and thirty repetitions per fixture. The large case must retain at
+least 350 nodes and be complete. Reference and timed inspections both use background
+delivery. Fixture reset runs outside the timed region; five helper/fixture cold starts
+are diagnostics only. CPU samples cover the driving process only.
+This is inspection coverage, not the full task/overlay/wait/batch acceptance suite.
+Matched old/new-helper reports and live native/Electron validation remain required.
+The helper's other-instance status means an existing F5 helper owns the device;
+the harness never stops that process to obtain benchmark access.
+
+The --sequencing flag on rehearseHelperMacos.ts enables the delayed-focus fixture
+and checks verified focus, Unicode input, Enter after input and spacing between
+successive app-targeted writes. This rehearsal uses real input in the synthetic
+fixture and must run on an idle, unlocked Mac.
+
+`computer_batch` runs 1–20 known element, type, key or wait steps in one app under
+one queue slot and delivery mode. It stops at the first failure or unconfirmed effect;
+completed steps must never be repeated. Focus must verify before subsequent type/key.
+Background type/setValue must verify. Optional settle, inspect and screenshot run at
+the end within the shared 60-second execution budget.
 
 Captures are invalidated at mutation admission and on pause, grant/policy changes,
 session replacement and reconnect. The broker admits images only for the current
@@ -490,7 +523,7 @@ a mutation after reconnect. This boundary is covered by the mutation re-initiali
 Preview-only pause/resume remains available with missing or unhealthy computer helpers;
 remote resume is refused for a held native/Chrome lease or a main-authoritative computer pause.
 
-Overlay rendering is bounded to 280 ms and cancellation releases its queue slot without
+Overlay rendering is bounded to 100 ms (typically a 90 ms pointer cue) and cancellation releases its queue slot without
 allowing late dispatch. If an observation worker blocks in another app (including Windows
 `PrintWindow`), the 10 s supervisor timeout suspends and retires the helper; replacements
 start suspended and no action is retried. Three such failures in 60 s require explicit Retry.

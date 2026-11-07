@@ -4,6 +4,7 @@ Let Claude and Codex open, read and click through pages in F5's preview browser.
 On macOS and Windows they can also request control of apps you approve.
 Browser access and computer use are enabled by default, with background computer
 execution. You can change these settings or take control back at any time.
+Computer batches stop at the first failure or unconfirmed effect; completed steps must not be repeated.
 
 ![Settings → Browser & Computer with agent browser access and computer use toggles](../images/settings-browser.webp)
 

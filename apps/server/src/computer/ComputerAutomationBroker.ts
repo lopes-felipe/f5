@@ -36,6 +36,7 @@ import {
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
+  computerError,
   computerRequestPayload,
   isComputerMutation,
 } from "@t3tools/shared/computerControl";
@@ -46,6 +47,26 @@ import {
   computerBackgroundKeyAllowed,
 } from "@t3tools/shared/computerExecution";
 import { ServerConfig } from "../config";
+import { computerRemainingBudget, computerWithinDeadline } from "./computerDeadline";
+import { PerformanceStageProbe } from "../observability/Metrics";
+
+export const COMPUTER_WAIT_POLL_MS = 250;
+export const COMPUTER_WAIT_POLL_MAX_MS = 500;
+export const COMPUTER_SETTLE_STABLE_MS = 500;
+
+export function computerInspectFingerprint(nodes: ComputerInspectResult["nodes"]): string {
+  return JSON.stringify(
+    nodes.map((node) => [
+      node.role,
+      node.name ?? "",
+      node.value ?? null,
+      node.focused ?? false,
+      node.enabled ?? true,
+      node.bounds,
+      node.displayId ?? null,
+    ]),
+  );
+}
 
 /**
  * Electron decides every takeover: its worst case is 300 s consent + 30 s idle window + up to
@@ -89,6 +110,20 @@ interface ComputerBinding {
   appliedPolicy?: string;
   takeover?: { acquireId: string; approvalId: string; appId: string };
   acquiring?: { requestId: string; turnId: string };
+}
+export interface ComputerBatchHandle {
+  readonly threadId: string;
+  readonly binding: ComputerBinding;
+  readonly generation: string;
+  readonly turnId: string;
+  readonly turnRevision: number;
+  readonly policyRevision: number;
+  readonly grantVersion: number;
+  readonly yieldEpoch: number;
+  readonly delivery: ComputerDelivery;
+  readonly deadline: number;
+  readonly controller: AbortController;
+  readonly release: () => void;
 }
 /** Bounded summary of the merged lease state for the WebSocket banner. */
 export interface ComputerUseSnapshot {
@@ -241,6 +276,16 @@ export class ComputerAutomationBrokerRuntime {
   >();
   private readonly observationEpochs = new Map<string, number>();
   private readonly yieldEpochs = new Map<string, number>();
+  private readonly batches = new Map<string, ComputerBatchHandle>();
+  private abortBatch(
+    threadId: string,
+    error = new ComputerControlError({
+      _tag: "Interrupted",
+      cause: "access-changed",
+    }),
+  ): void {
+    this.batches.get(threadId)?.controller.abort(error);
+  }
   private readonly listeners = new Set<(event: ComputerBrokerEvent) => void>();
   private readonly nativePaused = new Set<string>();
   private mainHolders: ReadonlyArray<ComputerLeaseHolder> = [];
@@ -283,6 +328,7 @@ export class ComputerAutomationBrokerRuntime {
       storage: ConstructorParameters<typeof ComputerAccessService>[0]["storage"];
       platform: "darwin" | "win32";
       pause?: AgentControlPause;
+      performanceStageProbe?: ((stage: string, durationMs: number) => void) | null;
       /** Thread titles for attributing a same-profile `Busy`. */
       threadTitle?: (threadId: string) => Promise<string | undefined>;
     },
@@ -365,6 +411,7 @@ export class ComputerAutomationBrokerRuntime {
         });
       },
       changed: (threadId) => {
+        this.abortBatch(threadId);
         this.waits.get(threadId)?.cancel("policy-changed");
         this.invalidateObservations(threadId);
         const binding = this.bindings.get(threadId);
@@ -424,6 +471,10 @@ export class ComputerAutomationBrokerRuntime {
         this.bindings.get(message.threadId)?.generation === message.sessionGeneration
       ) {
         this.yieldEpochs.set(message.threadId, (this.yieldEpochs.get(message.threadId) ?? 0) + 1);
+        this.abortBatch(
+          message.threadId,
+          new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" }),
+        );
         this.invalidateObservations(message.threadId);
         const contention = new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
         this.queue.flush(message.threadId, contention);
@@ -538,6 +589,20 @@ export class ComputerAutomationBrokerRuntime {
       } else if (message.type !== "response" && message.type !== "accessAnswer")
         this.publish({ channel: "computer.host", data: message });
     });
+  }
+  private async measureStage<A>(stage: string, operation: () => Promise<A>): Promise<A> {
+    const probe = this.options.performanceStageProbe;
+    if (!probe) return operation();
+    const started = performance.now();
+    try {
+      return await operation();
+    } finally {
+      try {
+        probe(stage, performance.now() - started);
+      } catch {
+        /* Diagnostics only. */
+      }
+    }
   }
   async initialize(): Promise<void> {
     await this.host.handshake();
@@ -1097,7 +1162,9 @@ export class ComputerAutomationBrokerRuntime {
     if (!binding || binding.generation !== sessionGeneration)
       throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
     const turnRevision = binding.turnRevision;
-    const ctx = await this.options.resolve(threadId, sessionGeneration, binding.provider);
+    const ctx = await this.measureStage("broker.context", () =>
+      this.options.resolve(threadId, sessionGeneration, binding.provider),
+    );
     if (this.bindings.get(threadId) !== binding || binding.turnRevision !== turnRevision)
       throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
     this.access.bind(threadId, ctx.projectId, sessionGeneration);
@@ -1143,6 +1210,150 @@ export class ComputerAutomationBrokerRuntime {
       },
     });
   }
+  async beginBatch(
+    threadId: string,
+    generation: string,
+    delivery: ComputerDelivery,
+    budgetMs = 15_000,
+  ): Promise<ComputerBatchHandle> {
+    const yieldEpoch = this.yieldEpochs.get(threadId) ?? 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new ComputerControlError({
+              _tag: "Execution",
+              message: "Batch admission timed out.",
+            }),
+          ),
+        budgetMs,
+      );
+    });
+    let ctx: ComputerInvocationContext;
+    try {
+      ctx = await Promise.race([
+        (async () => {
+          await this.admitted();
+          return this.context(threadId, generation);
+        })(),
+        expired,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const binding = this.bindings.get(threadId);
+    if (
+      !binding ||
+      binding.generation !== generation ||
+      ctx.turnId === "observation" ||
+      binding.endedTurnId === ctx.turnId
+    )
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (!ctx.policy.computerUse)
+      throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
+    const status = this.host.status();
+    if (!status.available)
+      throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
+    if (this.pause.has(threadId))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+    if (ctx.interactionMode === "plan")
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Computer control is unavailable in plan mode.",
+      });
+    binding.turnId = ctx.turnId;
+    const revision = binding.policyRevision;
+    const turnRevision = binding.turnRevision;
+    await this.ensureSessionApproval(threadId, ctx, delivery);
+    if (this.batches.has(threadId))
+      throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+    let slot: { release: () => void } | undefined;
+    let released = false;
+    const handle: ComputerBatchHandle = {
+      threadId,
+      generation,
+      binding,
+      delivery,
+      turnId: ctx.turnId,
+      turnRevision,
+      policyRevision: revision,
+      grantVersion: this.access.version(threadId),
+      yieldEpoch,
+      controller: new AbortController(),
+      deadline: performance.now() + 60_000,
+      release: () => {
+        if (released) return;
+        released = true;
+        if (this.batches.get(threadId) === handle) this.batches.delete(threadId);
+        slot?.release();
+      },
+    };
+    this.batches.set(threadId, handle);
+    try {
+      this.assertBatchLive(handle);
+      slot = await this.queue.acquire(threadId, handle.controller.signal, 30_000);
+      this.assertBatchLive(handle);
+      return handle;
+    } catch (cause) {
+      handle.release();
+      throw cause;
+    }
+  }
+  assertBatchLive(handle: ComputerBatchHandle): void {
+    const { threadId, binding } = handle;
+    if ((this.yieldEpochs.get(threadId) ?? 0) !== handle.yieldEpoch)
+      throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+    if (this.pause.has(threadId))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+    if (
+      this.batches.get(threadId) !== handle ||
+      this.bindings.get(threadId) !== binding ||
+      binding.generation !== handle.generation ||
+      binding.turnId !== handle.turnId ||
+      binding.turnRevision !== handle.turnRevision ||
+      binding.endedTurnId === handle.turnId
+    )
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (handle.controller.signal.aborted) throw handle.controller.signal.reason;
+    if (
+      binding.policyRevision !== handle.policyRevision ||
+      this.access.version(threadId) !== handle.grantVersion
+    )
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+  }
+  private async ensureSessionApproval(
+    threadId: string,
+    ctx: ComputerInvocationContext,
+    delivery: ComputerDelivery,
+  ): Promise<void> {
+    // Background control needs one native session approval, including full-access sessions.
+    if (delivery === "background" && !this.access.backgroundApproved(threadId)) {
+      await this.access.requestAccess(
+        threadId,
+        ctx.turnId,
+        [],
+        "Allow this agent session to control apps you approve, while you work elsewhere?",
+        {
+          kind: "session-actions",
+          background: true,
+          fullAccess: ctx.runtimeMode === "full-access",
+        },
+      );
+      if (!this.access.backgroundApproved(threadId))
+        throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    } else if (ctx.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId)) {
+      await this.access.requestAccess(
+        threadId,
+        ctx.turnId,
+        [],
+        "Allow this agent session to control apps you approve?",
+        { kind: "session-actions" },
+      );
+      if (!this.access.actionsApproved(threadId))
+        throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    }
+  }
   async invoke(
     threadId: string,
     generation: string,
@@ -1153,11 +1364,39 @@ export class ComputerAutomationBrokerRuntime {
       beforeDispatch?: () => Promise<void>;
       suppressActivity?: boolean;
       onDispatch?: (delivery: ComputerDelivery) => void;
+      batch?: ComputerBatchHandle;
+      deadlineMs?: number;
     },
   ): Promise<unknown> {
-    const yieldEpoch = this.yieldEpochs.get(threadId) ?? 0;
-    await this.admitted();
-    const ctx = await this.context(threadId, generation);
+    const batch = options?.batch;
+    let invokeDeadline = Math.min(
+      performance.now() + timeoutMs,
+      options?.deadlineMs ?? Infinity,
+      batch?.deadline ?? Infinity,
+    );
+    const remainingBudget = () => computerRemainingBudget(invokeDeadline);
+    const bounded = <A>(operation: () => Promise<A>) =>
+      computerWithinDeadline(invokeDeadline, operation, options?.signal);
+    if (
+      batch &&
+      this.batches.get(threadId) === batch &&
+      batch.delivery === "background" &&
+      !this.access.backgroundApproved(threadId)
+    )
+      throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    if (batch) this.assertBatchLive(batch);
+    const yieldEpoch = batch?.yieldEpoch ?? this.yieldEpochs.get(threadId) ?? 0;
+    await bounded(() => this.measureStage("broker.admission", () => this.admitted()));
+    const ctx = await bounded(() => this.context(threadId, generation));
+    if (batch) {
+      this.assertBatchLive(batch);
+      if (
+        batch.threadId !== threadId ||
+        batch.generation !== generation ||
+        batch.turnId !== ctx.turnId
+      )
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+    }
     if (!ctx.policy.computerUse)
       throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
     const status = this.host.status();
@@ -1189,6 +1428,8 @@ export class ComputerAutomationBrokerRuntime {
       elementRef: input.elementRef,
     });
     delete input.executionMode;
+    if (batch && delivery !== batch.delivery)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
     if (delivery === "background") {
       input.delivery = "background";
       if (computerOpRequiresApp(input.op) && !appId)
@@ -1209,64 +1450,41 @@ export class ComputerAutomationBrokerRuntime {
           _tag: "Execution",
           message: "Computer control is unavailable in plan mode.",
         });
-      // Background control needs one native session approval, including full-access sessions.
-      if (delivery === "background" && !this.access.backgroundApproved(threadId)) {
-        await this.access.requestAccess(
-          threadId,
-          ctx.turnId,
-          [],
-          "Allow this agent session to control apps you approve, while you work elsewhere?",
-          {
-            kind: "session-actions",
-            background: true,
-            fullAccess: ctx.runtimeMode === "full-access",
-          },
-        );
-        if (!this.access.backgroundApproved(threadId))
+      if (batch) {
+        if (
+          (delivery === "background" && !this.access.backgroundApproved(threadId)) ||
+          (ctx.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId))
+        )
           throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
-      } else if (ctx.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId)) {
-        await this.access.requestAccess(
-          threadId,
-          ctx.turnId,
-          [],
-          "Allow this agent session to control apps you approve?",
-          { kind: "session-actions" },
-        );
-        if (!this.access.actionsApproved(threadId))
-          throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+      } else {
+        const consentStarted = performance.now();
+        await this.ensureSessionApproval(threadId, ctx, delivery);
+        // Ordinary interactive consent has its own budget. Explicit wait/batch deadlines never move.
+        if (options?.deadlineMs === undefined) invokeDeadline += performance.now() - consentStarted;
       }
     }
     let requestId = randomUUID();
     let dispatched = false;
     let retrying = false;
     // Queueing, admission and retries share one budget; contention never renews it.
-    const invokeDeadline = performance.now() + timeoutMs;
-    /** Reject expiry before admitting more work or dispatching any native action. */
-    const remainingBudget = () => {
-      const remaining = Math.floor(invokeDeadline - performance.now());
-      if (remaining <= 0)
-        throw new ComputerControlError({
-          _tag: "Execution",
-          message: "Computer request timed out before dispatch.",
-        });
-      return remaining;
-    };
     const retryDeadline = Math.min(
       invokeDeadline - 5000,
       performance.now() + COMPUTER_LEASE_WAIT_MAX_MS,
     );
     const controller = new AbortController();
-    const slot = mutation
-      ? await this.queue.acquire(threadId, controller.signal, Math.min(60_000, timeoutMs))
-      : { release: () => undefined };
+    const slot =
+      mutation && !batch
+        ? await this.queue.acquire(threadId, controller.signal, Math.min(60_000, remainingBudget()))
+        : { release: () => undefined };
     try {
       for (;;) {
         try {
-          const live = await this.context(threadId, generation);
+          const live = await bounded(() => this.context(threadId, generation));
           if (!live.policy.computerUse)
             throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
           // Revision checkpoint after context resolution and queue admission.
           this.assertRevision(binding, revision, turnRevision);
+          if (batch) this.assertBatchLive(batch);
           if (options?.signal?.aborted) throw options.signal.reason;
           if (retrying) {
             delivery = this.selectDelivery(live, binding, input.op, appId, {
@@ -1379,9 +1597,11 @@ export class ComputerAutomationBrokerRuntime {
               if (options?.signal?.aborted) abortAcquire();
               holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(
                 // A refusal after the queue's wait names who held control.
-                await acquisition.catch(async (cause: unknown) => {
-                  throw await this.attributeBusy(cause);
-                }),
+                await this.measureStage("broker.lease-acquisition", () =>
+                  acquisition.catch(async (cause: unknown) => {
+                    throw await this.attributeBusy(cause);
+                  }),
+                ),
               );
             } finally {
               options?.signal?.removeEventListener("abort", abortAcquire);
@@ -1403,9 +1623,10 @@ export class ComputerAutomationBrokerRuntime {
             binding.holder = holder;
             executionGeneration = holder.executionGeneration;
           }
-          if (!dispatched) await options?.beforeDispatch?.();
+          if (!dispatched && options?.beforeDispatch) await bounded(options.beforeDispatch);
           if (options?.signal?.aborted) throw options.signal.reason;
           // Revision checkpoint immediately before dispatch.
+          if (batch) this.assertBatchLive(batch);
           this.assertRevision(binding, revision, turnRevision);
           this.pushGrants(threadId, generation, live.turnId, executionGeneration);
           const { passwordMasking: _callerMasking, ...payloadInput } = input;
@@ -1430,10 +1651,15 @@ export class ComputerAutomationBrokerRuntime {
           const request = Schema.decodeUnknownSync(
             (await import("@t3tools/contracts")).ComputerAutomationRequest,
           )({ ...envelope, payloadHash });
+          remainingBudget();
+          if (batch) this.assertBatchLive(batch);
+          if (options?.signal?.aborted) throw options.signal.reason;
           if (mutation && !dispatched) this.invalidateObservations(threadId, "action");
           if (mutation && (this.yieldEpochs.get(threadId) ?? 0) !== yieldEpoch)
             throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
           if (!dispatched) options?.onDispatch?.(delivery);
+          remainingBudget();
+          if (batch) this.assertBatchLive(batch);
           dispatched = true;
           this.inFlight.set(requestId, {
             threadId,
@@ -1444,12 +1670,24 @@ export class ComputerAutomationBrokerRuntime {
             ...(options?.suppressActivity ? { suppressActivity: true } : {}),
           });
           const onAbort = () => this.host.abandon(requestId, options!.signal!.reason);
-          options?.signal?.addEventListener("abort", onAbort, { once: true });
+          if (!mutation) options?.signal?.addEventListener("abort", onAbort, { once: true });
           let result: unknown;
           try {
             const pending = this.host.request(request);
-            if (options?.signal?.aborted) onAbort();
-            result = await pending;
+            if (!mutation && options?.signal?.aborted) onAbort();
+            result = await this.measureStage("broker.desktop-round-trip", () =>
+              mutation
+                ? pending
+                : bounded(() => pending).catch((cause) => {
+                    this.host.abandon(
+                      requestId,
+                      cause instanceof ComputerControlError
+                        ? cause
+                        : new ComputerControlError(computerError(cause)),
+                    );
+                    throw cause;
+                  }),
+            );
           } finally {
             options?.signal?.removeEventListener("abort", onAbort);
           }
@@ -1888,6 +2126,7 @@ export class ComputerAutomationBrokerRuntime {
     const binding = this.bindings.get(threadId);
     if (!binding || binding.generation !== generation || (turnId && binding.turnId !== turnId))
       return;
+    this.abortBatch(threadId, new ComputerControlError({ _tag: "Interrupted", cause }));
     this.waits.get(threadId)?.cancel(cause);
     if (cancelSetup)
       for (const pending of this.setupConsents.values())
@@ -2102,9 +2341,16 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     input: {
       deadlineMs: number;
+      batch?: ComputerBatchHandle;
       target?: { app?: string };
+      settle?: {
+        appId: string;
+        executionMode?: "foreground" | "background";
+        maxNodes: number;
+        onPartial: "wait" | "return";
+      };
       condition?: {
-        app: string;
+        appId: string;
         role?: string;
         name?: string;
         executionMode?: "foreground" | "background";
@@ -2117,7 +2363,9 @@ export class ComputerAutomationBrokerRuntime {
     snapshotId?: string;
     elementRefs?: string[];
     available?: boolean;
-    reason?: ComputerTargetAvailability["reason"];
+    reason?: ComputerTargetAvailability["reason"] | "partial-tree";
+    settled?: boolean;
+    tree?: ComputerInspectResult;
     requiresFreshObservation?: true;
   }> {
     if (this.waits.has(threadId))
@@ -2134,6 +2382,8 @@ export class ComputerAutomationBrokerRuntime {
       controller.abort(reason);
       rejectCancellation(reason);
     };
+    const abortBatch = () => abort(input.batch!.controller.signal.reason);
+    input.batch?.controller.signal.addEventListener("abort", abortBatch, { once: true });
     const waiter: {
       generation: string;
       turnId?: string;
@@ -2154,6 +2404,7 @@ export class ComputerAutomationBrokerRuntime {
     const race = <A>(work: Promise<A>) => Promise.race([work, cancelled]);
     const result = () => ({ waitedMs: Math.max(0, Math.round(performance.now() - startedAt)) });
     let started = false;
+    let lastTree: ComputerInspectResult | undefined;
     try {
       const ctx = await race(this.context(threadId, generation));
       const binding = this.bindings.get(threadId);
@@ -2169,6 +2420,7 @@ export class ComputerAutomationBrokerRuntime {
       const revision = binding.policyRevision;
       const grants = this.access.version(threadId);
       const validate = async () => {
+        if (input.batch) this.assertBatchLive(input.batch);
         if (this.pause.has(threadId))
           throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
         if (
@@ -2273,7 +2525,7 @@ export class ComputerAutomationBrokerRuntime {
           controller.signal.removeEventListener("abort", cancel);
         }
       }
-      if (!input.condition) {
+      if (!input.condition && !input.settle) {
         await cancelled;
         throw deadline;
       }
@@ -2285,58 +2537,104 @@ export class ComputerAutomationBrokerRuntime {
             generation,
             request,
             Math.max(1, input.deadlineMs - performance.now()),
-            { signal: controller.signal, beforeDispatch: validate, suppressActivity: true },
+            {
+              signal: controller.signal,
+              beforeDispatch: validate,
+              suppressActivity: true,
+              ...(input.batch ? { batch: input.batch } : {}),
+            },
           ),
         );
-      const apps = selectComputerApp(
-        (await invoke({
-          op: "resolveApps",
-          queries: [condition.app],
-        })) as ReadonlyArray<ComputerApp>,
-        condition.app,
-      );
-      if (apps.length !== 1)
-        throw new ComputerControlError({
-          _tag: "Execution",
-          message: "App could not be resolved uniquely; use an appId from computer_list_apps.",
-        });
+      let fingerprint: string | undefined;
+      let stableSince = 0;
       let attempt = 0;
       while (true) {
         await validate();
-        const inspected = (await invoke({
-          op: "inspect",
-          appId: apps[0]!.appId,
-          maxNodes: 100,
-          ...(condition.executionMode ? { executionMode: condition.executionMode } : {}),
-        })) as ComputerInspectResult;
-        await validate();
-        if (!inspected.accessible)
-          throw new ComputerControlError({
-            _tag: "Execution",
-            message: "The app's accessibility tree is unavailable.",
-          });
-        const matches = inspected.nodes
-          .filter(
-            (node) =>
-              (condition.role === undefined || node.role === condition.role) &&
-              (condition.name === undefined || node.name === condition.name),
+        let inspected: ComputerInspectResult | undefined;
+        try {
+          inspected = (await invoke({
+            op: "inspect",
+            appId: (input.settle ?? condition)!.appId,
+            maxNodes: input.settle?.maxNodes ?? 100,
+            ...((input.settle ?? condition)?.executionMode
+              ? { executionMode: (input.settle ?? condition)!.executionMode }
+              : {}),
+          })) as ComputerInspectResult;
+        } catch (cause) {
+          if (!input.settle) throw cause;
+          const error = computerError(cause);
+          if (
+            !["Execution", "Busy", "StaleElement", "ResultTooLarge"].includes(error._tag) &&
+            !(error._tag === "TargetBlocked" && error.kind === "foreground-busy")
           )
-          .slice(0, 10);
-        if (matches.length) {
-          await validate();
-          this.publish({
-            channel: "computer.activity",
-            data: { threadId, backend: "native", op: "wait", status: "completed" },
-          });
-          return {
-            ...result(),
-            matched: true,
-            snapshotId: inspected.snapshotId,
-            elementRefs: matches.map((node) => node.elementRef),
-          };
+            throw cause;
+        }
+        await validate();
+        if (input.settle) {
+          if (inspected) lastTree = inspected;
+          if (inspected?.truncated) {
+            if (input.settle.onPartial === "wait") {
+              await cancelled;
+              throw deadline;
+            }
+            this.publish({
+              channel: "computer.activity",
+              data: { threadId, backend: "native", op: "wait", status: "completed" },
+            });
+            return { ...result(), settled: false, reason: "partial-tree" };
+          }
+          if (inspected?.accessible && inspected.nodes.length) {
+            const next = computerInspectFingerprint(inspected.nodes);
+            if (fingerprint !== next) {
+              fingerprint = next;
+              stableSince = performance.now();
+            } else if (performance.now() - stableSince >= COMPUTER_SETTLE_STABLE_MS) {
+              this.publish({
+                channel: "computer.activity",
+                data: { threadId, backend: "native", op: "wait", status: "completed" },
+              });
+              return { ...result(), settled: true, tree: inspected };
+            }
+          } else {
+            fingerprint = undefined;
+          }
+        } else {
+          if (!inspected)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "Inspection unavailable.",
+            });
+          if (!inspected.accessible)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "The app's accessibility tree is unavailable.",
+            });
+          const matches = inspected.nodes
+            .filter(
+              (node) =>
+                (condition!.role === undefined || node.role === condition!.role) &&
+                (condition!.name === undefined || node.name === condition!.name),
+            )
+            .slice(0, 10);
+          if (matches.length) {
+            await validate();
+            this.publish({
+              channel: "computer.activity",
+              data: { threadId, backend: "native", op: "wait", status: "completed" },
+            });
+            return {
+              ...result(),
+              matched: true,
+              tree: inspected,
+              snapshotId: inspected.snapshotId,
+              elementRefs: matches.map((node) => node.elementRef),
+            };
+          }
         }
         const delay = Math.min(
-          [250, 500, 1000][Math.min(attempt++, 2)]!,
+          input.settle
+            ? COMPUTER_WAIT_POLL_MS
+            : Math.min(COMPUTER_WAIT_POLL_MS * ++attempt, COMPUTER_WAIT_POLL_MAX_MS),
           Math.max(0, input.deadlineMs - performance.now()),
         );
         let sleep: ReturnType<typeof setTimeout> | undefined;
@@ -2364,7 +2662,15 @@ export class ComputerAutomationBrokerRuntime {
             channel: "computer.activity",
             data: { threadId, backend: "native", op: "wait", status: "completed" },
           });
-        return { ...result(), ...(input.condition ? { matched: false, timedOut: true } : {}) };
+        return {
+          ...result(),
+          ...(input.condition ? { matched: false, timedOut: true } : {}),
+          ...(input.settle
+            ? lastTree?.truncated
+              ? { settled: false, reason: "partial-tree" as const }
+              : { settled: false, timedOut: true, ...(lastTree ? { tree: lastTree } : {}) }
+            : {}),
+        };
       }
       if (started)
         this.publish({
@@ -2374,6 +2680,7 @@ export class ComputerAutomationBrokerRuntime {
       throw error;
     } finally {
       clearTimeout(timer);
+      input.batch?.controller.signal.removeEventListener("abort", abortBatch);
       if (this.waits.get(threadId) === waiter) this.waits.delete(threadId);
     }
   }
@@ -2478,6 +2785,7 @@ export const ComputerAutomationBrokerLive = Layer.effect(
     );
     yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
     const pause = yield* Effect.serviceOption(AgentControlPauseService);
+    const performanceStageProbe = yield* PerformanceStageProbe;
     const storage = computerAccessStorage({
       exists: () => run(fs.exists(file)),
       read: () => run(fs.readFileString(file)),
@@ -2487,6 +2795,7 @@ export const ComputerAutomationBrokerLive = Layer.effect(
       write: (contents) => run(writeFileStringAtomically({ filePath: file, contents })),
     });
     const broker = new ComputerAutomationBrokerRuntime(host, {
+      performanceStageProbe,
       ...(Option.isSome(pause) ? { pause: pause.value } : {}),
       platform: process.platform === "win32" ? "win32" : "darwin",
       storage: {
