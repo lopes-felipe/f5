@@ -5,8 +5,9 @@ import type { DesktopKeepAwakeMode } from "@t3tools/contracts";
 export interface Preferences {
   mode: DesktopKeepAwakeMode;
   closedLid: boolean;
+  keepDisplayOn: boolean;
 }
-export const defaults: Preferences = { mode: "off", closedLid: false };
+export const defaults: Preferences = { mode: "off", closedLid: false, keepDisplayOn: false };
 export async function atomicWrite(path: string, value: unknown) {
   const temp = path + "." + randomUUID() + ".tmp";
   await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
@@ -16,7 +17,12 @@ export async function readPreferences(path: string): Promise<Preferences> {
   try {
     const value = JSON.parse(await readFile(path, "utf8"));
     if (["off", "agents", "always"].includes(value.mode) && typeof value.closedLid === "boolean")
-      return { mode: value.mode, closedLid: value.closedLid };
+      return {
+        mode: value.mode,
+        closedLid: value.closedLid,
+        // Files written before this preference existed default to opt-out.
+        keepDisplayOn: value.keepDisplayOn === true,
+      };
   } catch {
     /* Missing or invalid preferences default to opt-out. */
   }

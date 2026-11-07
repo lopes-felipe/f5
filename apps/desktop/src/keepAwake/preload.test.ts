@@ -54,4 +54,9 @@ it("gates escalating preload calls with a consumed, expiring, trusted grant incl
   emit("click", { detail: 0 });
   await bridge.installLidPermission();
   expect(trusted()).toBe(true);
+  emit("click", { detail: 0 });
+  await bridge.setPreferences({ keepDisplayOn: false });
+  expect(trusted()).toBe(false);
+  await bridge.setPreferences({ keepDisplayOn: true });
+  expect(trusted()).toBe(true);
 });

@@ -7,6 +7,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Added
 
 - Computer batches run known steps in one app and stop at the first failure or unconfirmed effect; app-targeted waits can return when the accessibility tree settles.
+- Keep Awake has an opt-in "Keep display on" switch that also stops idle display sleep and the idle screen lock while keep-awake is active. It falls back to system-only keep-awake when the lid is closed on the built-in display, the battery is below 20% or unknown, or the Mac runs hot. Outside macOS, where the battery level can't be read, it falls back on battery power.
 
 ### Changed
 
