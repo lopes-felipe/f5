@@ -8,7 +8,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Controls::EM_SETPASSWORDCHAR;
 use windows::Win32::UI::HiDpi::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus, VK_PACKET};
 use windows::Win32::UI::Input::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -22,9 +22,12 @@ const SECURE_ID: usize = 102;
 const FINISH_ID: usize = 103;
 const INSTRUCTION_ID: usize = 104;
 struct State {
-    delayed_input: bool,
+    instruction: HWND,
     delayed_button: Option<HWND>,
+    changing_tick: u32,
+    changing: bool,
     delayed_button_pending: bool,
+    delayed_input: bool,
     tree: Vec<HWND>,
     mode: Mode,
     input: HWND,
@@ -88,6 +91,9 @@ mod tests {
             receipt.press();
             STATE.with(|slot| {
                 *slot.borrow_mut() = Some(State {
+                    instruction: parent,
+                    changing_tick: 0,
+                    changing: true,
                     delayed_input: true,
                     delayed_button: Some(button),
                     delayed_button_pending: true,
@@ -106,6 +112,37 @@ mod tests {
             );
             SetWindowTextW(input, w!("fixture input")).unwrap();
             reset_performance(parent, input).unwrap();
+            assert!(SetWindowSubclass(input, Some(delayed_input), 1, 0).as_bool());
+            SetWindowTextW(input, w!("F5_PERFORMANCE_INPUT")).unwrap();
+            procedure(
+                parent,
+                WM_COMMAND,
+                WPARAM(INPUT_ID | ((EN_CHANGE as usize) << 16)),
+                LPARAM(0),
+            );
+            STATE.with(|slot| {
+                assert!(
+                    slot.borrow()
+                        .as_ref()
+                        .unwrap()
+                        .receipt
+                        .expected_text_received
+                )
+            });
+            SetWindowTextW(input, w!("F5_PERFORMANCE_INPUT_extra")).unwrap();
+            procedure(
+                parent,
+                WM_COMMAND,
+                WPARAM(INPUT_ID | ((EN_CHANGE as usize) << 16)),
+                LPARAM(0),
+            );
+            STATE.with(|slot| {
+                let state = slot.borrow_mut();
+                assert!(!state.as_ref().unwrap().receipt.expected_text_received);
+                // Reentrant read while some other callback owns STATE must not panic.
+                assert_eq!(SendMessageW(input, WM_GETTEXTLENGTH, None, None).0, 26);
+            });
+            reset_performance(parent, input).unwrap();
             assert_eq!(
                 SendMessageW(
                     input,
@@ -121,11 +158,14 @@ mod tests {
             assert!(!IsWindow(Some(button)).as_bool());
             // A timer message already queued before reset must not recreate the button.
             procedure(parent, WM_TIMER, WPARAM(2), LPARAM(0));
+            procedure(parent, WM_TIMER, WPARAM(3), LPARAM(0));
             STATE.with(|slot| {
                 let state = slot.borrow();
                 let state = state.as_ref().unwrap();
                 assert!(!state.delayed_input);
                 assert!(!state.delayed_button_pending);
+                assert!(!state.changing);
+                assert_eq!(state.changing_tick, 0);
                 assert!(state.delayed_button.is_none());
                 assert!(state.tree.is_empty());
                 assert_eq!(state.receipt.summary(), Receipt::default().summary());
@@ -166,6 +206,7 @@ unsafe fn clear_delayed_button(hwnd: HWND) -> windows::core::Result<()> {
 
 /// Restore the same plain input and empty performance state before every repetition.
 unsafe fn reset_performance(hwnd: HWND, input: HWND) -> windows::core::Result<()> {
+    let _ = KillTimer(Some(hwnd), 3);
     clear_delayed_button(hwnd)?;
     clear_performance_tree();
     SendMessageW(input, EM_SETPASSWORDCHAR, Some(WPARAM(0)), Some(LPARAM(0)));
@@ -173,7 +214,11 @@ unsafe fn reset_performance(hwnd: HWND, input: HWND) -> windows::core::Result<()
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
             state.receipt = Receipt::default();
+            state.receipt.performance = true;
             state.delayed_input = false;
+            state.changing = false;
+            state.changing_tick = 0;
+            SetWindowTextW(state.instruction, w!("Ready: keep input idle")).ok();
         }
     });
     Ok(())
@@ -267,7 +312,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
             if !pending {
                 return LRESULT(0);
             }
-            let child = CreateWindowExW(
+            let created = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("BUTTON"),
                 w!("Delayed ready"),
@@ -281,46 +326,77 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                 None,
                 None,
             );
-            if let Ok(child) = child {
-                STATE.with(|slot| {
-                    if let Some(state) = slot.borrow_mut().as_mut() {
-                        state.delayed_button = Some(child);
-                    }
-                });
-            }
+            STATE.with(|slot| {
+                if let Some(state) = slot.borrow_mut().as_mut() {
+                    state.delayed_button = created.ok();
+                }
+            });
             println!("FIXTURE_DELAYED_READY");
+            LRESULT(0)
+        }
+        WM_TIMER if w.0 == 3 => {
+            if !STATE.with(|slot| slot.borrow().as_ref().is_some_and(|state| state.changing)) {
+                return LRESULT(0);
+            }
+            let (instruction, tick) = STATE.with(|slot| {
+                let mut state = slot.borrow_mut();
+                let state = state.as_mut().unwrap();
+                state.changing_tick += 1;
+                (state.instruction, state.changing_tick)
+            });
+            let label = format!("Fixture change {tick}")
+                .encode_utf16()
+                .chain([0])
+                .collect::<Vec<_>>();
+            let _ = SetWindowTextW(instruction, PCWSTR(label.as_ptr()));
+            if tick >= 10 {
+                let _ = KillTimer(Some(hwnd), 3);
+            }
             LRESULT(0)
         }
         WM_COMMAND => {
             let id = w.0 & 0xffff;
             let notification = (w.0 >> 16) & 0xffff;
+            // Same-process text reads synchronously reenter the edit subclass.
+            // Retain only copied handles across Win32 calls, never a RefCell borrow.
+            let mut input_text =
+                if [INPUT_ID, SECURE_ID].contains(&id) && notification == EN_CHANGE as usize {
+                    let control = STATE.with(|slot| {
+                        slot.borrow().as_ref().map(|state| {
+                            if id == SECURE_ID {
+                                state.secure
+                            } else {
+                                state.input
+                            }
+                        })
+                    });
+                    control.map(|control| read_input_text(control))
+                } else {
+                    None
+                };
             STATE.with(|slot| {
                 if let Some(state) = slot.borrow_mut().as_mut() {
                     if id == PRESS_ID && notification == BN_CLICKED as usize {
                         state.receipt.press();
                         println!("FIXTURE_PRESSED");
                         emit("press", Some(state.receipt.summary()));
-                    } else if [INPUT_ID, SECURE_ID].contains(&id)
-                        && notification == EN_CHANGE as usize
-                    {
+                    } else if let Some((buffer, overflow)) = input_text.as_ref() {
                         let secure = id == SECURE_ID;
-                        let control = if secure { state.secure } else { state.input };
-                        let length = GetWindowTextLengthW(control).max(0) as usize;
-                        if length > 10_000 {
+                        if *overflow {
                             state.receipt.overflow = true;
                         } else {
-                            let mut buffer = vec![0u16; length + 1];
-                            let read = GetWindowTextW(control, &mut buffer).max(0) as usize;
-                            state.receipt.input(&buffer[..read.min(length)], secure);
+                            state.receipt.input(buffer, secure);
                             if !secure && state.receipt.expected_text_received {
                                 println!("FIXTURE_TYPED");
                             }
-                            buffer.fill(0);
                         }
                         emit("input", Some(state.receipt.summary()));
                     }
                 }
             });
+            if let Some((buffer, _)) = input_text.as_mut() {
+                buffer.fill(0);
+            }
             LRESULT(0)
         }
         WM_PAINT => {
@@ -380,6 +456,25 @@ unsafe extern "system" fn finish_button(
     }
     DefSubclassProc(hwnd, message, w, l)
 }
+/// Read bounded fixture text without holding STATE across reentrant Win32 calls.
+unsafe fn read_input_text(input: HWND) -> (Vec<u16>, bool) {
+    let length = GetWindowTextLengthW(input).max(0) as usize;
+    let mut text = vec![0u16; length.min(10_000) + 1];
+    let read = GetWindowTextW(input, &mut text).max(0) as usize;
+    text.truncate(read.min(length.min(10_000)));
+    (text, length > 10_000)
+}
+
+/// Verify current contents without retaining or emitting text.
+unsafe fn refresh_input(input: HWND) {
+    let (mut text, overflow) = read_input_text(input);
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            state.receipt.expected_text_received = !overflow && state.receipt.matches_text(&text);
+        }
+    });
+    text.fill(0);
+}
 unsafe extern "system" fn delayed_input(
     hwnd: HWND,
     message: u32,
@@ -389,14 +484,16 @@ unsafe extern "system" fn delayed_input(
     _: usize,
 ) -> LRESULT {
     let delayed = STATE.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .is_some_and(|state| state.delayed_input)
+        slot.try_borrow()
+            .ok()
+            .is_some_and(|state| state.as_ref().is_some_and(|state| state.delayed_input))
     });
-    if delayed && matches!(message, WM_SETFOCUS | WM_CHAR) {
+    if delayed && (message == WM_SETFOCUS || (message == WM_KEYDOWN && w.0 != VK_PACKET.0 as usize))
+    {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     if message == WM_KEYDOWN && w.0 == 13 {
+        refresh_input(hwnd);
         let verified = STATE.with(|slot| {
             slot.borrow()
                 .as_ref()
@@ -522,6 +619,9 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
         if !SetWindowSubclass(finish, Some(finish_button), 1, 0).as_bool() {
             return Err(windows::core::Error::from_thread());
         }
+        if !SetWindowSubclass(input, Some(delayed_input), 1, 0).as_bool() {
+            return Err(windows::core::Error::from_thread());
+        }
         let instruction = control(
             w!("STATIC"),
             w!("Ready: keep input idle"),
@@ -535,9 +635,12 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                 input,
                 secure,
                 receipt: Receipt::default(),
-                delayed_input: false,
+                instruction,
                 delayed_button: None,
+                changing_tick: 0,
+                changing: false,
                 delayed_button_pending: false,
+                delayed_input: false,
                 tree: Vec::new(),
             })
         });
@@ -617,7 +720,18 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     DestroyWindow(hwnd)?;
                                     break;
                                 }
-                                WindowCommand::Status => {}
+                                WindowCommand::Status => {
+                                    refresh_input(input);
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow().as_ref() {
+                                            emit("status", Some(state.receipt.summary()));
+                                        }
+                                    });
+                                }
+                                WindowCommand::Blur => {
+                                    let _ = SetFocus(Some(hwnd));
+                                    println!("FIXTURE_BLURRED");
+                                }
                                 WindowCommand::Reset => {
                                     reset_performance(hwnd, input)?;
                                     println!("FIXTURE_RESET");
@@ -669,6 +783,7 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     {
                                         return Err(windows::core::Error::from_thread());
                                     }
+                                    println!("FIXTURE_DELAYED_INPUT_READY");
                                 }
                                 WindowCommand::PasswordTransition => {
                                     // The driver sends this between cache construction and materialization.
@@ -688,6 +803,17 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                         }
                                     });
                                     SetTimer(Some(hwnd), 2, 1000, None);
+                                    println!("FIXTURE_DELAY_SCHEDULED");
+                                }
+                                WindowCommand::Changing => {
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow_mut().as_mut() {
+                                            state.changing_tick = 0;
+                                            state.changing = true;
+                                        }
+                                    });
+                                    SetTimer(Some(hwnd), 3, 100, None);
+                                    println!("FIXTURE_CHANGING_READY");
                                 }
                                 WindowCommand::Cue(text) => {
                                     let text = text.encode_utf16().chain([0]).collect::<Vec<_>>();

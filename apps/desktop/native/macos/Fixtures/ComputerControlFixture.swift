@@ -22,6 +22,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
   var finishButton: NSButton!
   var inputField: NSTextField!
   var delayedButton: NSButton?
+  var performanceRevision = 0
   func applicationDidFinishLaunching(_ notification: Notification) {
     window = NSWindow(
       contentRect: NSRect(x: 120, y: 120, width: 500, height: 300),
@@ -84,6 +85,12 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
       let count = Int(CommandLine.arguments[index + 1]), (1...800).contains(count)
     {
       for item in 0..<count {
+        if item == 0 || item == count - 1 {
+          let button = NSButton(title: "Fixture node \(item)", target: self, action: #selector(press))
+          button.frame = NSRect(x: 5 + (item % 20) * 24, y: 35 + (item / 20) * 5, width: 22, height: 5)
+          content.addSubview(button)
+          continue
+        }
         let label = NSTextField(labelWithString: "Fixture node \(item)")
         label.setAccessibilityLabel("Fixture node \(item)")
         label.frame = NSRect(x: 5 + (item % 20) * 24, y: 35 + (item / 20) * 5, width: 22, height: 5)
@@ -93,31 +100,50 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     DispatchQueue.global(qos: .utility).async { [weak self] in
       while let line = readLine() {
         guard line.count <= 128 else { return }
-        if ["PERF_RESET", "PERF_VERIFY", "PERF_DELAY_BUTTON"].contains(line) {
+        if ["PERF_RESET", "PERF_VERIFY", "PERF_DELAY_BUTTON", "PERF_CHANGING", "PERF_BLUR"].contains(line) {
           DispatchQueue.main.async {
             guard let self else { return }
             if line == "PERF_RESET" {
+              self.performanceRevision += 1
               self.presses = 0
               self.counter.stringValue = "presses: 0"
               self.inputField.stringValue = ""
               self.delayedButton?.removeFromSuperview()
               self.delayedButton = nil
+              self.instruction.stringValue = "Follow the F5 test instructions."
               FileHandle.standardOutput.write(Data("FIXTURE_RESET\n".utf8))
+            } else if line == "PERF_BLUR" {
+              self.window.makeFirstResponder(nil)
+              FileHandle.standardOutput.write(Data("FIXTURE_BLURRED\n".utf8))
             } else if line == "PERF_VERIFY" {
               let facts: [String: Any] = [
                 "presses": self.presses, "hasInput": !self.inputField.stringValue.isEmpty,
                 "delayedButton": self.delayedButton != nil,
+                "expectedText": self.inputField.stringValue == "F5_PERFORMANCE_INPUT",
               ]
               if let data = try? JSONSerialization.data(withJSONObject: facts, options: [.sortedKeys]) {
                 FileHandle.standardOutput.write(data + Data("\n".utf8))
               }
+            } else if line == "PERF_CHANGING" {
+              let revision = self.performanceRevision
+              for tick in 0...10 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(tick) * 0.1) {
+                  if self.performanceRevision == revision {
+                    self.instruction.stringValue = "Fixture change \(tick)"
+                  }
+                }
+              }
+              FileHandle.standardOutput.write(Data("FIXTURE_CHANGING_READY\n".utf8))
             } else {
+              let revision = self.performanceRevision
               DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                guard self.performanceRevision == revision else { return }
                 let button = NSButton(title: "Delayed ready", target: self, action: #selector(self.press))
                 button.frame = NSRect(x: 30, y: 240, width: 180, height: 22)
                 self.window.contentView?.addSubview(button)
                 self.delayedButton = button
               }
+              FileHandle.standardOutput.write(Data("FIXTURE_DELAY_SCHEDULED\n".utf8))
             }
           }
           continue
@@ -168,6 +194,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     guard commandSelector == #selector(NSResponder.insertNewline(_:)),
       let index = CommandLine.arguments.firstIndex(of: "--expected-text"),
       index + 1 < CommandLine.arguments.count else { return false }
+    if CommandLine.arguments.contains("--delayed-focus") { Thread.sleep(forTimeInterval: 0.2) }
     if inputField.stringValue == CommandLine.arguments[index + 1] {
       FileHandle.standardOutput.write(Data("FIXTURE_ENTERED\n".utf8))
     }

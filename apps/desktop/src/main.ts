@@ -90,6 +90,7 @@ import {
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
 import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
+import { computerScreenshotThumbnail } from "./computer/computerThumbnail";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
 import { ComputerConsentStore } from "./computer/ComputerConsentStore";
@@ -510,15 +511,7 @@ function initializeComputerSystem(): void {
     platform: process.platform === "win32" ? "win32" : "darwin",
     activity: (profileId, activity) =>
       computerSystem?.channel.send(profileId, { type: "activity", activity }),
-    thumbnail: (screenshot) => {
-      const image = nativeImage.createFromDataURL(
-        `data:${screenshot.mimeType};base64,${screenshot.data}`,
-      );
-      if (image.isEmpty()) return undefined;
-      const bytes = image.resize({ width: 320 }).toJPEG(50);
-      const data = `data:image/jpeg;base64,${bytes.toString("base64")}`;
-      return Buffer.byteLength(data) <= 40 * 1024 ? data : undefined;
-    },
+    thumbnail: computerScreenshotThumbnail,
     paused: (holder, cause) => {
       computerSystem?.channel.cancelSessionAccess(
         holder.profileId,

@@ -46,6 +46,8 @@ pub enum WindowCommand {
     DelayButton,
     DelayedInput,
     PasswordTransition,
+    Changing,
+    Blur,
     Status,
     Close,
     Place { x: i32, y: i32 },
@@ -66,6 +68,8 @@ impl WindowCommand {
             ["performance-delayed-button"] => Some(Self::DelayButton),
             ["performance-delayed-input"] => Some(Self::DelayedInput),
             ["performance-password-transition"] => Some(Self::PasswordTransition),
+            ["performance-changing"] => Some(Self::Changing),
+            ["performance-blur"] => Some(Self::Blur),
             ["status"] => Some(Self::Status),
             ["close"] => Some(Self::Close),
             ["fullscreen"] => Some(Self::Fullscreen),
@@ -93,6 +97,7 @@ impl WindowCommand {
 
 #[derive(Default)]
 pub struct Receipt {
+    pub performance: bool,
     pub presses: u32,
     pub input_events: u32,
     pub secure_events: u32,
@@ -109,11 +114,21 @@ impl Receipt {
             self.secure_events = self.secure_events.saturating_add(1);
         } else {
             self.input_events = self.input_events.saturating_add(1);
-            self.expected_text_received |= text.iter().copied().eq(EXPECTED_TEXT.encode_utf16())
-                || text.iter().copied().eq(ELECTRON_TEXT.encode_utf16());
+            self.expected_text_received = self.matches_text(text);
         }
         self.overflow |=
             text.len() > 10_000 || self.input_events > 10_000 || self.secure_events > 10_000;
+    }
+    /// Compare current contents rather than a history of previously correct input.
+    pub fn matches_text(&self, text: &[u16]) -> bool {
+        let expected: &[&str] = if self.performance {
+            &["F5_PERFORMANCE_INPUT"]
+        } else {
+            &[EXPECTED_TEXT, ELECTRON_TEXT]
+        };
+        expected
+            .iter()
+            .any(|expected| text.iter().copied().eq(expected.encode_utf16()))
     }
     pub fn summary(&self) -> serde_json::Value {
         serde_json::json!({
@@ -129,6 +144,27 @@ impl Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exact_text_rejects_a_suffix_after_previously_matching() {
+        let mut receipt = Receipt {
+            performance: true,
+            ..Receipt::default()
+        };
+        receipt.input(
+            &"F5_PERFORMANCE_INPUT".encode_utf16().collect::<Vec<_>>(),
+            false,
+        );
+        assert!(receipt.expected_text_received);
+        receipt.input(
+            &"F5_PERFORMANCE_INPUT_extra"
+                .encode_utf16()
+                .collect::<Vec<_>>(),
+            false,
+        );
+        assert!(!receipt.expected_text_received);
+        receipt.input(&EXPECTED_TEXT.encode_utf16().collect::<Vec<_>>(), false);
+        assert!(!receipt.expected_text_received);
+    }
     #[test]
     fn window_commands_accept_only_bounded_fixture_operations() {
         assert_eq!(
