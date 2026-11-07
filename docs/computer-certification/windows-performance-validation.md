@@ -20,7 +20,7 @@ Before merge, run on an attended, unlocked Windows 11 desktop:
 
 Host-side Rust tests and Windows cross-compilation do not satisfy this gate.
 
-### Matched baseline construction
+## Matched baseline construction
 
 Use separate clean baseline and candidate worktrees on the same attended machine.
 Build both helpers in the same debug configuration. Run the **same candidate harness**

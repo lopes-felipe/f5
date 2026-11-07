@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  COMPUTER_PERFORMANCE_TEXT,
   measureComputerTasks,
   normalizedComputerTreeDigest,
   verifyComputerResolutionCount,
@@ -48,7 +49,7 @@ function fixtureDriver() {
   });
   const driver: ComputerPerformanceDriver = {
     app: "fixture",
-    text: "synthetic",
+    text: COMPUTER_PERFORMANCE_TEXT,
     prepare: async (next) => {
       size = next;
       presses = 0;

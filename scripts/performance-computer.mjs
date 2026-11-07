@@ -200,8 +200,7 @@ if (!process.versions.electron) {
         diagnostics["native.traversal.reported"] = packet.reported;
     }
   });
-  const text =
-    process.platform === "win32" ? "F5_WINDOWS_REHEARSAL Ω🙂" : COMPUTER_PERFORMANCE_TEXT;
+  const text = COMPUTER_PERFORMANCE_TEXT;
   try {
     let compiledFixture;
     if (process.platform === "darwin") {

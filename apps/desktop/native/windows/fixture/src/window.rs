@@ -112,6 +112,37 @@ mod tests {
             );
             SetWindowTextW(input, w!("fixture input")).unwrap();
             reset_performance(parent, input).unwrap();
+            assert!(SetWindowSubclass(input, Some(delayed_input), 1, 0).as_bool());
+            SetWindowTextW(input, w!("F5_PERFORMANCE_INPUT")).unwrap();
+            procedure(
+                parent,
+                WM_COMMAND,
+                WPARAM(INPUT_ID | ((EN_CHANGE as usize) << 16)),
+                LPARAM(0),
+            );
+            STATE.with(|slot| {
+                assert!(
+                    slot.borrow()
+                        .as_ref()
+                        .unwrap()
+                        .receipt
+                        .expected_text_received
+                )
+            });
+            SetWindowTextW(input, w!("F5_PERFORMANCE_INPUT_extra")).unwrap();
+            procedure(
+                parent,
+                WM_COMMAND,
+                WPARAM(INPUT_ID | ((EN_CHANGE as usize) << 16)),
+                LPARAM(0),
+            );
+            STATE.with(|slot| {
+                let state = slot.borrow_mut();
+                assert!(!state.as_ref().unwrap().receipt.expected_text_received);
+                // Reentrant read while some other callback owns STATE must not panic.
+                assert_eq!(SendMessageW(input, WM_GETTEXTLENGTH, None, None).0, 26);
+            });
+            reset_performance(parent, input).unwrap();
             assert_eq!(
                 SendMessageW(
                     input,
@@ -326,33 +357,46 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
         WM_COMMAND => {
             let id = w.0 & 0xffff;
             let notification = (w.0 >> 16) & 0xffff;
+            // Same-process text reads synchronously reenter the edit subclass.
+            // Retain only copied handles across Win32 calls, never a RefCell borrow.
+            let mut input_text =
+                if [INPUT_ID, SECURE_ID].contains(&id) && notification == EN_CHANGE as usize {
+                    let control = STATE.with(|slot| {
+                        slot.borrow().as_ref().map(|state| {
+                            if id == SECURE_ID {
+                                state.secure
+                            } else {
+                                state.input
+                            }
+                        })
+                    });
+                    control.map(|control| read_input_text(control))
+                } else {
+                    None
+                };
             STATE.with(|slot| {
                 if let Some(state) = slot.borrow_mut().as_mut() {
                     if id == PRESS_ID && notification == BN_CLICKED as usize {
                         state.receipt.press();
                         println!("FIXTURE_PRESSED");
                         emit("press", Some(state.receipt.summary()));
-                    } else if [INPUT_ID, SECURE_ID].contains(&id)
-                        && notification == EN_CHANGE as usize
-                    {
+                    } else if let Some((buffer, overflow)) = input_text.as_ref() {
                         let secure = id == SECURE_ID;
-                        let control = if secure { state.secure } else { state.input };
-                        let length = GetWindowTextLengthW(control).max(0) as usize;
-                        if length > 10_000 {
+                        if *overflow {
                             state.receipt.overflow = true;
                         } else {
-                            let mut buffer = vec![0u16; length + 1];
-                            let read = GetWindowTextW(control, &mut buffer).max(0) as usize;
-                            state.receipt.input(&buffer[..read.min(length)], secure);
+                            state.receipt.input(buffer, secure);
                             if !secure && state.receipt.expected_text_received {
                                 println!("FIXTURE_TYPED");
                             }
-                            buffer.fill(0);
                         }
                         emit("input", Some(state.receipt.summary()));
                     }
                 }
             });
+            if let Some((buffer, _)) = input_text.as_mut() {
+                buffer.fill(0);
+            }
             LRESULT(0)
         }
         WM_PAINT => {
@@ -412,17 +456,21 @@ unsafe extern "system" fn finish_button(
     }
     DefSubclassProc(hwnd, message, w, l)
 }
-/// Verify current contents without retaining or emitting text.
-unsafe fn refresh_input(input: HWND) {
+/// Read bounded fixture text without holding STATE across reentrant Win32 calls.
+unsafe fn read_input_text(input: HWND) -> (Vec<u16>, bool) {
     let length = GetWindowTextLengthW(input).max(0) as usize;
     let mut text = vec![0u16; length.min(10_000) + 1];
     let read = GetWindowTextW(input, &mut text).max(0) as usize;
+    text.truncate(read.min(length.min(10_000)));
+    (text, length > 10_000)
+}
+
+/// Verify current contents without retaining or emitting text.
+unsafe fn refresh_input(input: HWND) {
+    let (mut text, overflow) = read_input_text(input);
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
-            state.receipt.expected_text_received = length <= 10_000
-                && state
-                    .receipt
-                    .matches_text(&text[..read.min(length.min(10_000))]);
+            state.receipt.expected_text_received = !overflow && state.receipt.matches_text(&text);
         }
     });
     text.fill(0);
@@ -436,9 +484,9 @@ unsafe extern "system" fn delayed_input(
     _: usize,
 ) -> LRESULT {
     let delayed = STATE.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .is_some_and(|state| state.delayed_input)
+        slot.try_borrow()
+            .ok()
+            .is_some_and(|state| state.as_ref().is_some_and(|state| state.delayed_input))
     });
     if delayed && (message == WM_SETFOCUS || (message == WM_KEYDOWN && w.0 != VK_PACKET.0 as usize))
     {
