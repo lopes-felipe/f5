@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Logger } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { makeRotatingServerFileLogger } from "./serverLogger.ts";
@@ -16,6 +16,28 @@ afterEach(() => {
 });
 
 describe("server logger", () => {
+  it("redacts connection credentials from logged request failures", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-server-log-"));
+    tempRoots.push(dir);
+    const logPath = path.join(dir, "server.log");
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const logger = yield* makeRotatingServerFileLogger(logPath);
+          yield* Effect.logError(
+            Cause.die(
+              new Error("RequestParseError (GET /ws?wsTicket=ticket-secret&dpop=proof-secret)"),
+            ),
+          ).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+        }),
+      ),
+    );
+    const written = fs.readFileSync(logPath, "utf8");
+    expect(written).toContain("wsTicket=<redacted>&dpop=<redacted>");
+    expect(written).not.toContain("ticket-secret");
+    expect(written).not.toContain("proof-secret");
+  });
+
   it("bounds the active log and retained rotations", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-server-log-"));
     tempRoots.push(dir);

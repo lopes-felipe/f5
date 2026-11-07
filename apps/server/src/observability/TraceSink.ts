@@ -1,6 +1,7 @@
 import { Effect, Metric } from "effect";
 import { makeTraceFileWriter, type TraceBatchWriter } from "./TraceFileWriter.ts";
 import type { TraceRecord } from "./TraceRecord.ts";
+import { redactUrlCredentials } from "./CredentialRedaction.ts";
 
 export const TRACE_BUFFER_MAX_RECORDS = 4_096;
 export const TRACE_BUFFER_MAX_BYTES = 4 * 1024 * 1024;
@@ -174,7 +175,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
       }
       let encoded: Uint8Array;
       try {
-        const text = `${JSON.stringify(record)}\n`;
+        const text = `${redactUrlCredentials(JSON.stringify(record))}\n`;
         if (Buffer.byteLength(text, "utf8") > TRACE_BUFFER_MAX_BYTES) {
           drop(1);
           return;

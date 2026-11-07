@@ -78,7 +78,21 @@ describe("bounded OTLP traces", () => {
               { OTEL_EXPORTER_OTLP_PROTOCOL: protocol },
             ).traces;
             const sink = yield* makeOtlpTraceSink(config, otlpResource("test", "profile", {}));
-            sink.push(record);
+            sink.push({
+              ...record,
+              attributes: {
+                "url.full": "/ws?wsTicket=ticket-secret&dpop=proof-secret&clientSurface=web",
+              },
+              events: [
+                {
+                  name: "request failure",
+                  timeUnixNano: "2",
+                  attributes: {
+                    "effect.cause": "GET /ws?wsTicket=ticket-secret&dpop=proof-secret",
+                  },
+                },
+              ],
+            });
             yield* sink.flush;
             expect(sink.statistics().writeFailures).toBe(0);
             yield* Metric.update(Metric.counter("f5_collector_fixture"), 1);
@@ -106,6 +120,9 @@ describe("bounded OTLP traces", () => {
           protocol === "http/json" ? "application/json" : "application/x-protobuf",
         );
         expect(received[0]!.authorization).toBe("Bearer private");
+        expect(received[0]!.body.includes("ticket-secret")).toBe(false);
+        expect(received[0]!.body.includes("proof-secret")).toBe(false);
+        expect(received[0]!.body.includes("wsTicket=<redacted>&dpop=<redacted>")).toBe(true);
         for (const text of ["bounded-trace", "f5-server", "f5.profile.id", "profile"])
           expect(received[0]!.body.includes(text)).toBe(true);
       } finally {
