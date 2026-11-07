@@ -6,6 +6,7 @@ import { ProjectId } from "@t3tools/contracts";
 
 import {
   type WorkspaceAssetAuthorizer,
+  type WorkspaceAssetReader,
   WorkspaceAssetAuthorizationError,
   WORKSPACE_FAVICON_MAX_BYTES,
   WORKSPACE_ICNS_FAVICON_MAX_BYTES,
@@ -193,6 +194,51 @@ export async function findFaviconRelativePath(
   projectId: string,
 ): Promise<string | null> {
   const reader = await authorizer.forProject(projectId);
+  let cache = faviconCaches.get(authorizer);
+  if (!cache) {
+    cache = new Map();
+    faviconCaches.set(authorizer, cache);
+  }
+  const cached = cache.get(projectId);
+  if (cached && cached.expiresAt > Date.now()) {
+    const relativePath = await cached.result;
+    if (relativePath === null) return null;
+    try {
+      // Reauthorize and validate the image, so removal, root changes, and
+      // symlink replacements never serve a stale or unauthorized icon.
+      await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
+      return relativePath;
+    } catch {
+      if (cache.get(projectId) === cached) cache.delete(projectId);
+    }
+  }
+  const entry: FaviconCacheEntry = {
+    expiresAt: Infinity,
+    result: findFaviconWithReader(reader),
+  };
+  cache.delete(projectId);
+  cache.set(projectId, entry);
+  if (cache.size > 512) cache.delete(cache.keys().next().value!);
+  try {
+    const result = await entry.result;
+    entry.expiresAt = Date.now() + (result === null ? 60_000 : 600_000);
+    return result;
+  } catch (error) {
+    if (cache.get(projectId) === entry) cache.delete(projectId);
+    throw error;
+  }
+}
+
+interface FaviconCacheEntry {
+  readonly result: Promise<string | null>;
+  expiresAt: number;
+}
+
+// Scope cached discovery to the server's authorizer, never cache asset handles
+// or bytes. Pending lookups share the same bounded cache as settled results.
+const faviconCaches = new WeakMap<WorkspaceAssetAuthorizer, Map<string, FaviconCacheEntry>>();
+
+async function findFaviconWithReader(reader: WorkspaceAssetReader): Promise<string | null> {
   const known = await firstFaviconInOrder(FAVICON_CANDIDATES, async (relativePath) => {
     try {
       await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
