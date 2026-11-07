@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -33,7 +33,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}
       - if: steps.lease.outputs.selection_ready == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-lease-${{ steps.lease.outputs.lease_key }}-publisher-${{ github.run_attempt }}
           path: release-publication-lease.json
@@ -46,7 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - if: steps.lease.outputs.candidate_run != '' && (vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all')
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app
         with:
           app-id: ${{ vars.F5_RELEASE_APP_ID }}
@@ -60,14 +60,14 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-summary-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-summary.json
           if-no-files-found: ignore
           retention-days: 90
       - if: steps.reconcile.outputs.cache_key != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shadow-verified-${{ steps.reconcile.outputs.cache_key }}
           path: release-summary.json
