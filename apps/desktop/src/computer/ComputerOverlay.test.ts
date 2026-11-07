@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("electron", () => ({
   screen: {
+    screenToDipPoint: (point: { x: number; y: number }) => point,
     on: (name: string, callback: () => void) => mocks.listeners.set(name, callback),
     off: (name: string) => mocks.listeners.delete(name),
     getAllDisplays: () => [
@@ -77,33 +78,43 @@ it("does not await renderer acknowledgements and coalesces to the latest action"
     overlay.close();
   }
 });
-it("waits only 90 ms for a moved pointer, and does not wait at the same point", async () => {
-  vi.useFakeTimers();
-  const overlay = new ComputerOverlay();
-  overlay.show({ executionGeneration: 1 } as ComputerLeaseHolder);
-  const request = { op: "move", displayId: "1", x: 20, y: 20, agent: { provider: "codex" } } as any;
-  const display = {
-    displayId: "1",
-    nativeBounds: { x: 0, y: 0, width: 100, height: 100 },
-    modelSize: { width: 100, height: 100 },
-  } as any;
-  try {
-    let finished = false;
-    const action = overlay.action(request, [display]).then(() => {
-      finished = true;
-    });
-    await vi.advanceTimersByTimeAsync(89);
-    expect(finished).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    await action;
-    expect(finished).toBe(true);
-    await overlay.action(request, [display]);
-    expect(vi.getTimerCount()).toBe(0);
-  } finally {
-    overlay.close();
-    vi.useRealTimers();
-  }
-});
+it.each(["darwin", "win32"])(
+  "waits only 90 ms for a moved pointer on %s, and does not wait at the same point",
+  async (platform) => {
+    vi.stubGlobal("process", { ...process, platform });
+    vi.useFakeTimers();
+    const overlay = new ComputerOverlay();
+    overlay.show({ executionGeneration: 1 } as ComputerLeaseHolder);
+    const request = {
+      op: "move",
+      displayId: "1",
+      x: 20,
+      y: 20,
+      agent: { provider: "codex" },
+    } as any;
+    const display = {
+      displayId: "1",
+      nativeBounds: { x: 0, y: 0, width: 100, height: 100 },
+      modelSize: { width: 100, height: 100 },
+    } as any;
+    try {
+      let finished = false;
+      const action = overlay.action(request, [display]).then(() => {
+        finished = true;
+      });
+      await vi.advanceTimersByTimeAsync(89);
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await action;
+      expect(finished).toBe(true);
+      await overlay.action(request, [display]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      overlay.close();
+      vi.useRealTimers();
+    }
+  },
+);
 it.each(["darwin", "win32"])(
   "creates protected, non-interactive overlays on %s and clears them on release",
   async (platform) => {
