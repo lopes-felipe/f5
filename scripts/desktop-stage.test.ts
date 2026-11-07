@@ -74,5 +74,11 @@ describe.each([
     }
     for (const name of Object.keys(manifest.dependencies))
       expect(resolved[name]?.[0], name).toBe(root[name]?.[0]);
+    // Native install scripts (node-pty) run whichever node-gyp the staged install
+    // hoists into .bin. An outdated transitive copy, such as usocket's node-gyp 7,
+    // crashes under the release Node, so every copy must be the root's pinned one.
+    for (const [key, [spec]] of Object.entries(resolved))
+      if (/(^|\/)node-gyp$/.test(key))
+        expect(spec, key).toBe(`node-gyp@${rootPackageJson.devDependencies["node-gyp"]}`);
   });
 });
