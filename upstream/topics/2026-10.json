@@ -3253,11 +3253,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:50:52.457Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-11500",
-      "status": "port",
+      "reason": "F5’s Files tree lists directories on demand without an initial finder scan timeout, and its optional finder search already returns lexical results while scanning.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "files",
