@@ -50574,11 +50574,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-07T23:27:52.472Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24596",
-      "status": "port",
+      "reason": "F5 advertises ACP terminal support as disabled and registers no terminal execution handlers, so it has no ACP terminal/kill process lifecycle to fix.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
