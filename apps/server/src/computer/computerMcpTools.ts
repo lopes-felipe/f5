@@ -570,7 +570,7 @@ async function resolveToolApp(
         context.sessionGeneration,
         { op: "resolveApps", queries: [query] },
         deadlineMs === undefined ? undefined : computerRemainingBudget(deadlineMs),
-        deadlineMs === undefined ? undefined : { deadlineMs, signal },
+        deadlineMs === undefined ? undefined : { deadlineMs, ...(signal ? { signal } : {}) },
       );
     const resolved = (await (deadlineMs === undefined
       ? resolve()
