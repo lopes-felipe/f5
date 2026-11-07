@@ -18,6 +18,72 @@ function reference(text: string, maxLines: number, maxBytes: number): string {
 }
 
 describe("BoundedTerminalHistory", () => {
+  it("strips capability traffic at every chunk boundary while preserving visual controls", () => {
+    const queries = [
+      "\x1b[?2026$p",
+      "\x1b[?2026;2$y",
+      "\x1b[>q",
+      "\x1b[?u",
+      "\x1b[?31u",
+      "\x1bP$q m\x1b\\",
+      "\x1bP1$r0m\x1b\\",
+      "\x1bP+q544e\x1b\\",
+      "\x1bP1+r544e=1b\x1b\\",
+      "\x90$q m\x9c",
+      "\x901$r0m\x9c",
+      "\x90+q544e\x9c",
+      "\x901+r544e=1b\x9c",
+      "\x9b?31u",
+      "\x9b?2026$p",
+      "\x1b[6n",
+      "\x1b[1;2R",
+      "\x1b[>0c",
+      "\x1b]11;?\x07",
+      "\x1b]11;rgb:ffff/ffff/ffff\x1b\\",
+    ].join("");
+    const visual =
+      '\x1b[!p\x1b["p\x1b[4 q\x1b[u\x1b[31mred\x1b[0m\x1b[2J' +
+      "\x1b[>1u\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\" +
+      "\x1bPvisual data\x1b\\";
+    const input = "before " + queries + visual + "after\n";
+    for (let split = 0; split <= input.length; split++) {
+      const history = new BoundedTerminalHistory();
+      history.append(input.slice(0, split));
+      history.append(input.slice(split));
+      expect(history.value()).toBe("before " + visual + "after\n");
+    }
+    const history = new BoundedTerminalHistory();
+    for (const ch of input) history.append(ch);
+    expect(history.value()).toBe("before " + visual + "after\n");
+  });
+
+  it("discards unfinished controls on stream end and clear without joining new output", () => {
+    const history = new BoundedTerminalHistory();
+    history.append("before\x1bP$q");
+    history.finish();
+    history.append("after");
+    expect(history.value()).toBe("beforeafter");
+    history.append("\x1b[?");
+    history.clear();
+    history.append("new");
+    expect(history.value()).toBe("new");
+  });
+
+  it("bounds malformed CSI state and handles long string controls across chunks", () => {
+    const history = new BoundedTerminalHistory();
+    history.append("before\x1b[?" + "1;".repeat(10_000));
+    history.append("pafter");
+    history.append("\x1bP+q" + "544e".repeat(10_000));
+    history.append("\x1b");
+    history.append("\\end");
+    expect(history.value()).toBe("beforeafterend");
+    const visual = "\x1b]8;;https://example.com/" + "path/".repeat(20);
+    history.append(visual);
+    history.append("\x1b");
+    history.append("\\link");
+    expect(history.value()).toBe("beforeafterend" + visual + "\x1b\\link");
+  });
+
   it("keeps the last 5000 lines, including empty lines and trailing newlines", () => {
     const history = new BoundedTerminalHistory();
     history.append(Array.from({ length: 6000 }, (_, i) => `${i}\n`).join(""));
