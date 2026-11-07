@@ -7,12 +7,21 @@ it("defaults invalid data to opt-out and persists preferences atomically", async
   const dir = await mkdtemp(join(tmpdir(), "f5-keep-awake-prefs-"));
   try {
     const path = join(dir, "preferences.json");
-    expect(await readPreferences(path)).toEqual({ mode: "off", closedLid: false });
+    const off = { mode: "off", closedLid: false, keepDisplayOn: false };
+    expect(await readPreferences(path)).toEqual(off);
     await writeFile(path, '{"mode":"invalid","closedLid":true}');
-    expect(await readPreferences(path)).toEqual({ mode: "off", closedLid: false });
-    await atomicWrite(path, { mode: "agents", closedLid: true });
-    expect(await readPreferences(path)).toEqual({ mode: "agents", closedLid: true });
-    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ mode: "agents", closedLid: true });
+    expect(await readPreferences(path)).toEqual(off);
+    // Files written before keepDisplayOn existed stay valid and default to opt-out.
+    await writeFile(path, '{"mode":"always","closedLid":true}');
+    expect(await readPreferences(path)).toEqual({
+      mode: "always",
+      closedLid: true,
+      keepDisplayOn: false,
+    });
+    const saved = { mode: "agents", closedLid: true, keepDisplayOn: true };
+    await atomicWrite(path, saved);
+    expect(await readPreferences(path)).toEqual(saved);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(saved);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

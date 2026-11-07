@@ -725,7 +725,11 @@ export interface DesktopKeepAwakeState {
   readonly revision: number;
   readonly mode: DesktopKeepAwakeMode;
   readonly closedLid: boolean;
+  /** Also prevent idle display sleep (and so the idle screen lock) while active. */
+  readonly keepDisplayOn: boolean;
   readonly active: boolean;
+  /** True while the running blocker also keeps the display on. */
+  readonly displayActive: boolean;
   readonly busyThreadCount: number;
   readonly cooldownUntil: number | null;
   readonly lid: {
@@ -743,6 +747,7 @@ export interface DesktopKeepAwakeBridge {
   setPreferences(input: {
     mode?: DesktopKeepAwakeMode;
     closedLid?: boolean;
+    keepDisplayOn?: boolean;
   }): Promise<DesktopKeepAwakeState>;
   installLidPermission(): Promise<DesktopKeepAwakeState>;
   removeLidPermission(): Promise<DesktopKeepAwakeState>;

@@ -6,11 +6,12 @@ import type { LidMarker, LidOwnership } from "./lidOwnership";
 export const AGENT_POLL_MS = 10_000;
 export const COOLDOWN_MS = 300_000;
 export const MAINTENANCE_MS = 30_000;
+export type BlockerType = "prevent-app-suspension" | "prevent-display-sleep";
 export interface KeepAwakeDependencies {
   platform: string;
   now(): number;
   blocker: {
-    start(type: "prevent-app-suspension"): number;
+    start(type: BlockerType): number;
     stop(id: number): void;
     isStarted(id: number): boolean;
   };
@@ -26,6 +27,7 @@ export class KeepAwakeController {
   private epoch = 0;
   private disposed = false;
   private blockerId: number | null = null;
+  private blockerType: BlockerType | null = null;
   private busy = 0;
   private cooldown: number | null = null;
   private marker: LidMarker | null = null;
@@ -68,6 +70,20 @@ export class KeepAwakeController {
           (this.busy > 0 || (this.cooldown !== null && this.d.now() < this.cooldown))))
     );
   }
+  private displayRequested() {
+    return this.activeDemand() && this.prefs.keepDisplayOn;
+  }
+  private wantedBlocker(): BlockerType | null {
+    if (!this.activeDemand()) return null;
+    // A closed internal-only panel, low battery, or heat falls back to system-only.
+    return this.prefs.keepDisplayOn &&
+      !this.displayDone &&
+      !this.batteryHold &&
+      !this.batteryUnknown &&
+      !this.thermalHold
+      ? "prevent-display-sleep"
+      : "prevent-app-suspension";
+  }
   private lidDemand() {
     return (
       this.activeDemand() && this.prefs.closedLid && this.d.platform === "darwin" && this.hardware
@@ -105,10 +121,12 @@ export class KeepAwakeController {
           : this.blockerFailed
             ? "blocker-failed"
             : null;
+    const active = this.blockerId !== null && this.d.blocker.isStarted(this.blockerId);
     return {
       revision: this.revision,
       ...this.prefs,
-      active: this.blockerId !== null && this.d.blocker.isStarted(this.blockerId),
+      active,
+      displayActive: active && this.blockerType === "prevent-display-sleep",
       busyThreadCount: this.prefs.mode === "agents" ? this.busy : 0,
       cooldownUntil: this.prefs.mode === "agents" ? this.cooldown : null,
       lid: {
@@ -134,18 +152,29 @@ export class KeepAwakeController {
     this.d.broadcast(this.snapshot);
   }
   private idle() {
-    const wanted = this.activeDemand();
-    if (wanted && (this.blockerId === null || !this.d.blocker.isStarted(this.blockerId))) {
+    const wanted = this.wantedBlocker();
+    const running = this.blockerId !== null && this.d.blocker.isStarted(this.blockerId);
+    if (wanted && (!running || this.blockerType !== wanted)) {
+      // Start the replacement before stopping the old blocker so a type switch
+      // never leaves a window without any assertion.
+      const previous = running ? this.blockerId : null;
+      let id: number;
       try {
-        this.blockerId = this.d.blocker.start("prevent-app-suspension");
-        this.blockerFailed = !this.d.blocker.isStarted(this.blockerId);
+        id = this.d.blocker.start(wanted);
       } catch (error) {
         this.blockerFailed = true;
         this.d.log(error);
+        return;
       }
+      this.blockerId = id;
+      this.blockerType = wanted;
+      this.blockerFailed = !this.d.blocker.isStarted(id);
+      if (previous !== null && previous !== id && this.d.blocker.isStarted(previous))
+        this.d.blocker.stop(previous);
     } else if (!wanted && this.blockerId !== null) {
       if (this.d.blocker.isStarted(this.blockerId)) this.d.blocker.stop(this.blockerId);
       this.blockerId = null;
+      this.blockerType = null;
     }
   }
   private enqueue(operation: () => Promise<void>) {
@@ -274,14 +303,21 @@ export class KeepAwakeController {
     if (this.d.platform !== "darwin") return;
     if (!(await this.recoverStartup())) return;
     if (!this.lidDemand() && !this.marker) {
-      this.thermalHold = false;
-      this.batteryHold = false;
-      this.batteryUnknown = false;
       this.external = false;
       this.readFailed = false;
+      if (this.displayRequested()) {
+        // Display-only demand needs the battery and thermal guards, never pmset writes.
+        await this.guards();
+      } else {
+        this.thermalHold = false;
+        this.batteryHold = false;
+        this.batteryUnknown = false;
+      }
+      this.idle();
       return;
     }
     await this.guards();
+    this.idle();
     this.sleepDisabled = await this.d.power.readSleepDisabled();
     this.readFailed = this.sleepDisabled === null;
     if (this.marker && this.sleepDisabled === 0) {
@@ -366,6 +402,9 @@ export class KeepAwakeController {
             return;
           if (closed) {
             this.displayDone = true;
+            // Drop any display assertion first so it cannot contest the forced sleep.
+            this.idle();
+            this.publish();
             await this.d.power.displaySleepNow();
           } else this.scheduleDisplay();
         })
@@ -374,6 +413,10 @@ export class KeepAwakeController {
   }
   userActive() {
     this.displayDone = false;
+    if (!this.disposed) {
+      this.idle();
+      this.publish();
+    }
     this.scheduleDisplay();
   }
   powerChanged() {
@@ -396,7 +439,10 @@ export class KeepAwakeController {
     const released = this.previousLidDemand && !lidDemand;
     this.previousLidDemand = lidDemand;
     if (
-      (lidDemand || this.marker || this.startupRecovery) &&
+      (lidDemand ||
+        this.marker ||
+        this.startupRecovery ||
+        (this.displayRequested() && this.d.platform === "darwin")) &&
       (released || this.d.now() - this.lastMaintenance >= MAINTENANCE_MS) &&
       !this.maintenanceQueued
     ) {

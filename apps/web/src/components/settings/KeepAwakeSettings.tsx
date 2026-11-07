@@ -48,6 +48,12 @@ export function KeepAwakeSettings() {
       !state.lid.pending &&
       (state.lid.sleepDisabled === null ||
         (state.lid.sleepDisabled !== 0 && state.lid.blockedReason === "reset-failed")));
+  const display =
+    state.active && state.displayActive
+      ? " · display on"
+      : state.active && state.keepDisplayOn
+        ? " · display may sleep"
+        : "";
   const status = recovery
     ? "Recovery required: sleep may still be disabled"
     : state.lid.engaged && state.lid.sleepDisabled === 0 && !state.lid.pending
@@ -55,13 +61,13 @@ export function KeepAwakeSettings() {
       : state.lid.engaged && !state.active
         ? "Releasing closed-lid keep awake…"
         : state.active
-          ? state.busyThreadCount > 0
-            ? "Awake: " +
-              state.busyThreadCount +
-              (state.busyThreadCount === 1 ? " agent working" : " agents working")
-            : state.mode === "agents"
-              ? "Awake until a few minutes after agents finish"
-              : "Awake"
+          ? (state.busyThreadCount > 0
+              ? "Awake: " +
+                state.busyThreadCount +
+                (state.busyThreadCount === 1 ? " agent working" : " agents working")
+              : state.mode === "agents"
+                ? "Awake until a few minutes after agents finish"
+                : "Awake") + display
           : state.mode === "agents"
             ? "Waiting for agents"
             : "Off";
@@ -71,7 +77,8 @@ export function KeepAwakeSettings() {
         title="Keep computer awake"
         description={
           <>
-            Prevents idle sleep. The display can still turn off. <span role="status">{status}</span>
+            Prevents idle sleep.{state.keepDisplayOn ? " " : " The display can still turn off. "}
+            <span role="status">{status}</span>
           </>
         }
         control={
@@ -93,6 +100,20 @@ export function KeepAwakeSettings() {
               ))}
             </SelectPopup>
           </Select>
+        }
+      />
+      <SettingsRow
+        title="Keep display on"
+        description="Also stops the display from sleeping and the screen from locking on idle. Uses more power."
+        control={
+          <Switch
+            aria-label="Keep display on"
+            checked={state.keepDisplayOn}
+            disabled={state.mode === "off"}
+            onCheckedChange={(keepDisplayOn) =>
+              mutate(bridge.setPreferences({ keepDisplayOn: Boolean(keepDisplayOn) }))
+            }
+          />
         }
       />
       {state.lid.supported && (

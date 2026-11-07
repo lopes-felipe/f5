@@ -86,7 +86,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(
         "desktop:keep-awake-set",
         input,
-        (input.mode !== undefined && input.mode !== "off") || input.closedLid === true
+        (input.mode !== undefined && input.mode !== "off") ||
+          input.closedLid === true ||
+          input.keepDisplayOn === true
           ? takeKeepAwakeGesture()
           : false,
       ),

@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KeepAwakeController, type KeepAwakeDependencies } from "./controller";
+import { KeepAwakeController, type BlockerType, type KeepAwakeDependencies } from "./controller";
 import type { Preferences } from "./preferences";
 import type { LidMarker } from "./lidOwnership";
 
-function harness(prefs: Preferences = { mode: "always", closedLid: true }) {
+function harness(
+  input: Omit<Preferences, "keepDisplayOn"> & { keepDisplayOn?: boolean } = {
+    mode: "always",
+    closedLid: true,
+  },
+) {
+  const prefs: Preferences = { keepDisplayOn: false, ...input };
   let flag: 0 | 1 | null = 0;
   let battery: number | null = 100;
   let onBattery = false;
@@ -19,16 +25,21 @@ function harness(prefs: Preferences = { mode: "always", closedLid: true }) {
     engagedAt: 0,
     protocol: 2,
   };
-  const started = new Set<number>();
+  const started = new Map<number, BlockerType>();
+  const blockerLog: string[] = [];
+  let nextBlocker = 1;
   const d: KeepAwakeDependencies = {
     platform: "darwin",
     now: Date.now,
     blocker: {
-      start: vi.fn(() => {
-        started.add(1);
-        return 1;
+      start: vi.fn((type: BlockerType) => {
+        const id = nextBlocker++;
+        started.set(id, type);
+        blockerLog.push("start:" + type);
+        return id;
       }),
       stop: vi.fn((id) => {
+        blockerLog.push("stop:" + started.get(id));
         started.delete(id);
       }),
       isStarted: (id) => started.has(id),
@@ -85,6 +96,11 @@ function harness(prefs: Preferences = { mode: "always", closedLid: true }) {
     d,
     order,
     identity,
+    blockerLog,
+    blockers: () => [...started.values()],
+    plugIn: () => {
+      onBattery = false;
+    },
     flag: (value: typeof flag) => {
       flag = value;
     },
@@ -525,6 +541,118 @@ describe("KeepAwakeController", () => {
     expect(h.controller.getState()).toMatchObject({ active: true, lid: { blockedReason: null } });
     await h.controller.setPreferences({ mode: "off" });
     expect(h.controller.getState().lid.blockedReason).toBeNull();
+    await h.controller.dispose();
+  });
+  it("keeps the display on when requested and switches blocker type without a gap", async () => {
+    const h = harness({ mode: "always", closedLid: false, keepDisplayOn: true });
+    await h.controller.start();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    expect(h.controller.getState()).toMatchObject({
+      keepDisplayOn: true,
+      active: true,
+      displayActive: true,
+    });
+    await h.controller.setPreferences({ keepDisplayOn: false });
+    expect(h.blockerLog).toEqual([
+      "start:prevent-display-sleep",
+      "start:prevent-app-suspension",
+      "stop:prevent-display-sleep",
+    ]);
+    expect(h.controller.getState()).toMatchObject({ active: true, displayActive: false });
+    await h.controller.setPreferences({ keepDisplayOn: true });
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await h.controller.setPreferences({ mode: "off" });
+    expect(h.blockers()).toEqual([]);
+    expect(h.controller.getState()).toMatchObject({ active: false, displayActive: false });
+    await h.controller.dispose();
+  });
+  it("keeps the display on in agents mode only while busy and during cooldown", async () => {
+    const h = harness({ mode: "agents", closedLid: false, keepDisplayOn: true });
+    await h.controller.start();
+    expect(h.blockers()).toEqual([]);
+    vi.mocked(h.d.pollDemand).mockResolvedValueOnce(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await vi.advanceTimersByTimeAsync(290_000);
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.blockers()).toEqual([]);
+    await h.controller.dispose();
+  });
+  it("falls back to idle-only prevention on low or unknown battery and heat", async () => {
+    const h = harness({ mode: "always", closedLid: false, keepDisplayOn: true });
+    h.battery(19);
+    await h.controller.start();
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    expect(h.controller.getState()).toMatchObject({
+      active: true,
+      displayActive: false,
+      lid: { blockedReason: null },
+    });
+    h.battery(24);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    h.battery(25);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    h.thermal("serious");
+    h.controller.powerChanged();
+    await flush();
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    h.thermal("fair");
+    h.controller.powerChanged();
+    await flush();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    h.battery(null);
+    h.controller.powerChanged();
+    await flush();
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    h.plugIn();
+    h.controller.powerChanged();
+    await flush();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    expect(h.d.power.setSleepDisabled).not.toHaveBeenCalled();
+    await h.controller.dispose();
+  });
+  it("drops the display assertion before darkening a closed internal panel", async () => {
+    const h = harness({ mode: "always", closedLid: true, keepDisplayOn: true });
+    vi.mocked(h.d.power.readLidClosed).mockResolvedValue(true);
+    let atSleep: string[] = [];
+    vi.mocked(h.d.power.displaySleepNow).mockImplementation(async () => {
+      atSleep = h.blockers();
+    });
+    await h.controller.start();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(h.d.power.displaySleepNow).toHaveBeenCalledTimes(1);
+    expect(atSleep).toEqual(["prevent-app-suspension"]);
+    expect(h.controller.getState()).toMatchObject({ displayActive: false, lid: { engaged: true } });
+    h.controller.userActive();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await h.controller.dispose();
+  });
+  it("keeps the previous blocker when the display blocker cannot start", async () => {
+    const h = harness({ mode: "always", closedLid: false });
+    await h.controller.start();
+    const original = vi.mocked(h.d.blocker.start).getMockImplementation()!;
+    vi.mocked(h.d.blocker.start).mockImplementation((type) => {
+      if (type === "prevent-display-sleep") throw new Error("denied");
+      return original(type);
+    });
+    await h.controller.setPreferences({ keepDisplayOn: true });
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    expect(h.controller.getState()).toMatchObject({
+      active: true,
+      displayActive: false,
+      lid: { blockedReason: "blocker-failed" },
+    });
+    vi.mocked(h.d.blocker.start).mockImplementation(original);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    expect(h.controller.getState()).toMatchObject({
+      displayActive: true,
+      lid: { blockedReason: null },
+    });
     await h.controller.dispose();
   });
 });

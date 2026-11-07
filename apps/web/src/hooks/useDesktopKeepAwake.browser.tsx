@@ -8,7 +8,9 @@ const state = (revision: number): DesktopKeepAwakeState => ({
   revision,
   mode: "off",
   closedLid: false,
+  keepDisplayOn: false,
   active: false,
+  displayActive: false,
   busyThreadCount: 0,
   cooldownUntil: null,
   lid: {
