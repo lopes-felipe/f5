@@ -181,6 +181,7 @@ unsafe fn reset_performance(hwnd: HWND, input: HWND) -> windows::core::Result<()
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
             state.receipt = Receipt::default();
+            state.receipt.performance = true;
             state.delayed_input = false;
             state.changing = false;
             state.changing_tick = 0;
@@ -414,13 +415,15 @@ unsafe fn refresh_input(input: HWND) {
     let length = GetWindowTextLengthW(input).max(0) as usize;
     let mut text = vec![0u16; length.min(10_000) + 1];
     let read = GetWindowTextW(input, &mut text).max(0) as usize;
-    let verified = length <= 10_000 && Receipt::matches_text(&text[..read.min(length.min(10_000))]);
-    text.fill(0);
     STATE.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
-            state.receipt.expected_text_received = verified;
+            state.receipt.expected_text_received = length <= 10_000
+                && state
+                    .receipt
+                    .matches_text(&text[..read.min(length.min(10_000))]);
         }
     });
+    text.fill(0);
 }
 unsafe extern "system" fn delayed_input(
     hwnd: HWND,
