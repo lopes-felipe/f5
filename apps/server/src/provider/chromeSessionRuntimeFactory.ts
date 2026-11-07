@@ -120,7 +120,11 @@ export async function claudeChromeAvailability(input: {
   /** The HOME the Claude CLI runs with. */
   readonly userHome: string;
   readonly systemHome?: string;
-  /** The provider runs with the profile's own HOME (`F5_PROFILE_ISOLATED=1`). */
+  /**
+   * The profile is isolated (`F5_PROFILE_ISOLATED=1`). It doesn't pick the path (`userHome`
+   * does): it allows the projection path when `userHome` is the profile's provider home,
+   * and picks the home-mismatch detail.
+   */
   readonly isolatedProfile?: boolean;
   /** The profile's state dir; isolated profiles need it to know their provider HOME. */
   readonly stateDir?: string;

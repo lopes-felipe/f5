@@ -761,7 +761,13 @@ only when the record certifies, the toggle is on and setup is approved; otherwis
 picks the path, not the isolation flag. On macOS, isolated F5 profiles keep the real `HOME`
 for the login keychain and point only `CLAUDE_CONFIG_DIR` at the profile's provider home.
 That is the shape the base record's live run used, so they take the base path: the CLI
-writes its manifests straight into the real home's folders and nothing is copied. Only an
+writes its manifests straight into the real home's folders and nothing is copied. This
+holds for every Claude instance of an isolated profile (each instance's `homePath` sits under
+`provider-homes/`), while a default-profile instance with a custom `homePath` runs with that
+`HOME` and reports a home mismatch. Every profile and instance writes the same real-home
+manifest files but aims them at its own wrapper under its `CLAUDE_CONFIG_DIR`, so replacing
+another one's setup is foreign: it asks for consent, is journaled, and Settings restores the
+earlier bytes. Only an
 isolated profile whose CLI runs with `HOME` set to the profile's provider home
 (`<stateDir>/provider-homes/claude`) writes its manifests where Chrome never looks; that
 doesn't happen on macOS today. For that case, when the covering record carries the
