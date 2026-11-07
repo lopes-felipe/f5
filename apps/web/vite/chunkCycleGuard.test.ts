@@ -1,3 +1,6 @@
+import { fileURLToPath } from "node:url";
+
+import { resolveConfig } from "vite";
 import { describe, expect, it } from "vitest";
 
 import { chunkCycleGuardPlugin } from "./chunkCycleGuard";
@@ -29,6 +32,18 @@ function checkGraph(graph: Graph, plugin = chunkCycleGuardPlugin()) {
 }
 
 describe("chunkCycleGuardPlugin", () => {
+  it("is registered in the real production build config", async () => {
+    const config = await resolveConfig(
+      { configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)) },
+      "build",
+    );
+    expect(config.plugins).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "f5:chunk-cycle-guard", apply: "build" }),
+      ]),
+    );
+  });
+
   it("rejects a static cycle with its chunk path", () => {
     expect(() =>
       checkGraph({
