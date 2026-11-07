@@ -546,18 +546,22 @@ describe("KeepAwakeController", () => {
   it("keeps the display on when requested and switches blocker type without a gap", async () => {
     const h = harness({ mode: "always", closedLid: false, keepDisplayOn: true });
     await h.controller.start();
+    // Idle prevention starts at once; display-on follows the first guard pass.
+    expect(h.blockerLog).toEqual([
+      "start:prevent-app-suspension",
+      "start:prevent-display-sleep",
+      "stop:prevent-app-suspension",
+    ]);
     expect(h.blockers()).toEqual(["prevent-display-sleep"]);
     expect(h.controller.getState()).toMatchObject({
       keepDisplayOn: true,
       active: true,
       displayActive: true,
+      displayPausedReason: null,
     });
+    h.blockerLog.length = 0;
     await h.controller.setPreferences({ keepDisplayOn: false });
-    expect(h.blockerLog).toEqual([
-      "start:prevent-display-sleep",
-      "start:prevent-app-suspension",
-      "stop:prevent-display-sleep",
-    ]);
+    expect(h.blockerLog).toEqual(["start:prevent-app-suspension", "stop:prevent-display-sleep"]);
     expect(h.controller.getState()).toMatchObject({ active: true, displayActive: false });
     await h.controller.setPreferences({ keepDisplayOn: true });
     expect(h.blockers()).toEqual(["prevent-display-sleep"]);
@@ -587,11 +591,15 @@ describe("KeepAwakeController", () => {
     expect(h.controller.getState()).toMatchObject({
       active: true,
       displayActive: false,
+      displayPausedReason: "battery-low",
       lid: { blockedReason: null },
     });
     h.battery(24);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    // The display blocker is never started, even briefly, while a hold applies.
+    expect(h.blockerLog).not.toContain("start:prevent-display-sleep");
+    expect(vi.mocked(h.d.broadcast).mock.calls.some(([state]) => state.displayActive)).toBe(false);
     h.battery(25);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(h.blockers()).toEqual(["prevent-display-sleep"]);
@@ -626,9 +634,87 @@ describe("KeepAwakeController", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(h.d.power.displaySleepNow).toHaveBeenCalledTimes(1);
     expect(atSleep).toEqual(["prevent-app-suspension"]);
-    expect(h.controller.getState()).toMatchObject({ displayActive: false, lid: { engaged: true } });
+    expect(h.controller.getState()).toMatchObject({
+      displayActive: false,
+      displayPausedReason: "panel-off",
+      lid: { engaged: true },
+    });
+    // A session switch while the lid is still closed restores display-on only
+    // until the panel is darkened again.
     h.controller.userActive();
     expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.d.power.displaySleepNow).toHaveBeenCalledTimes(2);
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    await h.controller.dispose();
+  });
+  it("restores display-on when the lid reopens without a session event", async () => {
+    const h = harness({ mode: "always", closedLid: true, keepDisplayOn: true });
+    vi.mocked(h.d.power.readLidClosed).mockResolvedValue(true);
+    await h.controller.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    vi.mocked(h.d.power.readLidClosed).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    expect(h.controller.getState()).toMatchObject({ displayActive: true, lid: { engaged: true } });
+    // Closing it again darkens the panel and falls back once more.
+    vi.mocked(h.d.power.readLidClosed).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.d.power.displaySleepNow).toHaveBeenCalledTimes(2);
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    await h.controller.dispose();
+  });
+  it("restores display-on when an external display is attached to a closed lid", async () => {
+    const h = harness({ mode: "always", closedLid: true, keepDisplayOn: true });
+    vi.mocked(h.d.power.readLidClosed).mockResolvedValue(true);
+    await h.controller.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    h.d.environment.hasExternalDisplay = () => true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    await h.controller.dispose();
+  });
+  it("treats battery power as an unknown level outside macOS", async () => {
+    const h = harness({ mode: "always", closedLid: false, keepDisplayOn: true });
+    h.d.platform = "win32";
+    await h.controller.start();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    h.battery(50);
+    h.controller.powerChanged();
+    await flush();
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    expect(h.controller.getState()).toMatchObject({
+      displayActive: false,
+      displayPausedReason: "battery-unknown",
+      lid: { supported: false, blockedReason: null },
+    });
+    expect(h.d.power.readBatteryPercent).not.toHaveBeenCalled();
+    h.plugIn();
+    h.controller.powerChanged();
+    await flush();
+    expect(h.blockers()).toEqual(["prevent-display-sleep"]);
+    expect(h.d.power.setSleepDisabled).not.toHaveBeenCalled();
+    await h.controller.dispose();
+  });
+  it("keeps the previous blocker when a display start does not take", async () => {
+    const h = harness({ mode: "always", closedLid: false });
+    await h.controller.start();
+    const original = vi.mocked(h.d.blocker.start).getMockImplementation()!;
+    vi.mocked(h.d.blocker.start).mockImplementation((type) =>
+      type === "prevent-display-sleep" ? 999 : original(type),
+    );
+    await h.controller.setPreferences({ keepDisplayOn: true });
+    expect(h.blockers()).toEqual(["prevent-app-suspension"]);
+    expect(h.d.blocker.stop).not.toHaveBeenCalled();
+    expect(h.controller.getState()).toMatchObject({
+      active: true,
+      displayActive: false,
+      lid: { blockedReason: "blocker-failed" },
+    });
     await h.controller.dispose();
   });
   it("keeps the previous blocker when the display blocker cannot start", async () => {

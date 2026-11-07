@@ -1,5 +1,8 @@
 import { useState } from "react";
-import type { DesktopKeepAwakeBlockedReason } from "@t3tools/contracts";
+import type {
+  DesktopKeepAwakeBlockedReason,
+  DesktopKeepAwakeDisplayPausedReason,
+} from "@t3tools/contracts";
 import { useDesktopKeepAwake } from "../../hooks/useDesktopKeepAwake";
 import { SettingsRow } from "./SettingsCard";
 import { Button } from "../ui/button";
@@ -18,6 +21,12 @@ const REASONS: Record<DesktopKeepAwakeBlockedReason, string> = {
   "permission-missing": "Set up is required.",
   "command-failed": "Could not change the sleep setting.",
   "blocker-failed": "Could not prevent idle sleep.",
+};
+const DISPLAY_PAUSED: Record<DesktopKeepAwakeDisplayPausedReason, string> = {
+  "panel-off": "lid closed",
+  thermal: "running hot",
+  "battery-low": "battery below 20%",
+  "battery-unknown": "battery level unavailable",
 };
 const MODES = {
   off: "Off",
@@ -52,7 +61,8 @@ export function KeepAwakeSettings() {
     state.active && state.displayActive
       ? " · display on"
       : state.active && state.keepDisplayOn
-        ? " · display may sleep"
+        ? " · display may sleep" +
+          (state.displayPausedReason ? " (" + DISPLAY_PAUSED[state.displayPausedReason] + ")" : "")
         : "";
   const status = recovery
     ? "Recovery required: sleep may still be disabled"
@@ -104,7 +114,7 @@ export function KeepAwakeSettings() {
       />
       <SettingsRow
         title="Keep display on"
-        description="Also stops the display from sleeping and the screen from locking on idle. Uses more power."
+        description="Also stops the display from sleeping and the screen from locking on idle, so your computer stays unlocked while unattended. Uses more power."
         control={
           <Switch
             aria-label="Keep display on"

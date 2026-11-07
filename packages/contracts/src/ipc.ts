@@ -721,6 +721,11 @@ export type DesktopKeepAwakeBlockedReason =
   | "permission-missing"
   | "command-failed"
   | "blocker-failed";
+export type DesktopKeepAwakeDisplayPausedReason =
+  | "panel-off"
+  | "thermal"
+  | "battery-low"
+  | "battery-unknown";
 export interface DesktopKeepAwakeState {
   readonly revision: number;
   readonly mode: DesktopKeepAwakeMode;
@@ -730,6 +735,8 @@ export interface DesktopKeepAwakeState {
   readonly active: boolean;
   /** True while the running blocker also keeps the display on. */
   readonly displayActive: boolean;
+  /** Why requested display-on currently falls back to system-only keep-awake. */
+  readonly displayPausedReason: DesktopKeepAwakeDisplayPausedReason | null;
   readonly busyThreadCount: number;
   readonly cooldownUntil: number | null;
   readonly lid: {

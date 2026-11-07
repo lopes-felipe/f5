@@ -17,6 +17,7 @@ it.each([null, 1] as const)(
       keepDisplayOn: false,
       active: false,
       displayActive: false,
+      displayPausedReason: null,
       busyThreadCount: 0,
       cooldownUntil: null,
       lid: {
@@ -42,6 +43,7 @@ it("uses progress and cleanup status instead of false recovery warnings", () => 
     keepDisplayOn: false,
     active: true,
     displayActive: false,
+    displayPausedReason: null,
     busyThreadCount: 1,
     cooldownUntil: null,
     lid: {
@@ -74,6 +76,7 @@ it("reports whether the display is kept on", () => {
     keepDisplayOn: false,
     active: true,
     displayActive: false,
+    displayPausedReason: null,
     busyThreadCount: 0,
     cooldownUntil: null,
     lid: {
@@ -98,4 +101,8 @@ it("reports whether the display is kept on", () => {
   fixture.state = { ...base, keepDisplayOn: true };
   html = renderToStaticMarkup(createElement(KeepAwakeSettings));
   expect(html).toContain("Awake · display may sleep");
+  expect(html).not.toContain("display may sleep (");
+  fixture.state = { ...base, keepDisplayOn: true, displayPausedReason: "battery-low" };
+  html = renderToStaticMarkup(createElement(KeepAwakeSettings));
+  expect(html).toContain("Awake · display may sleep (battery below 20%)");
 });

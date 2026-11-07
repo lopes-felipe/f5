@@ -7,9 +7,13 @@ preference. No HTTP or agent tool can change keep-awake preferences.
 Idle sleep uses Electron's prevent-app-suspension assertion. The opt-in Keep
 display on preference swaps it for prevent-display-sleep, which also blocks idle
 display sleep and the idle screen lock. The controller holds exactly one blocker
-and starts a replacement before stopping the old one. Display-on falls back to
-prevent-app-suspension while a closed internal-only panel is darkened, and under
-the battery (<20% or unknown) and thermal holds. macOS closed-lid
+and starts a replacement before stopping the old one; a start that does not take
+keeps the old blocker. Display-on falls back to prevent-app-suspension while a
+closed internal-only panel is darkened, and under the battery (<20% or unknown)
+and thermal holds. It never upgrades before a guard pass has run for the current
+demand. Outside macOS the battery level is unreadable, so battery power counts
+as unknown. Electron reports no event when the lid reopens, so maintenance
+re-reads the lid and external displays to lift the panel fallback. macOS closed-lid
 support uses the global pmset disablesleep flag. The controller only resets
 flags associated with its recovery marker. Other utilities can race the
 read-then-write operation because pmset has no atomic compare-and-swap.
@@ -65,8 +69,10 @@ Run from a normal Terminal with a desktop build:
    F5 PreventUserIdleDisplaySleep assertion.
    Stay idle past the displaysleep timeout and verify the screen stays on and
    unlocked. With the lid switch engaged and only the internal display, close
-   the lid: the panel goes dark and the assertion drops back to NoIdleSleep;
-   reopening restores PreventUserIdleDisplaySleep.
+   the lid: the panel goes dark and the assertion drops back to NoIdleSleep.
+   Reopen it without switching sessions: PreventUserIdleDisplaySleep returns
+   within about 30 seconds. On Windows, unplug power and verify the display
+   assertion is released; plug in and verify it returns.
 
 Real closed-lid, administrator prompt, crash, and update checks require a
 normal desktop session; they cannot be certified by mocked unit tests.
