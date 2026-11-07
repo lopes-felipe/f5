@@ -310,12 +310,13 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
             {
                 return Err(json!({"_tag":"Interrupted","cause":"paused","actionStarted":false}));
             }
-            if n(request, "deadlineAtMs") as u128
-                <= SystemTime::now()
+            if crate::timing::request_deadline_expired(
+                request,
+                SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_millis()
-            {
+                    .as_millis(),
+            ) {
                 return Err(
                     json!({"_tag":"Interrupted","cause":"permit-expired","actionStarted":false}),
                 );

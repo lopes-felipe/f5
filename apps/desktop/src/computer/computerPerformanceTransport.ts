@@ -1,3 +1,4 @@
+// Rehearsal-only adapter for scripts/performance-computer.mjs, never a production transport.
 import { EventEmitter } from "node:events";
 import type {
   ComputerAutomationBackendStatus,

@@ -97,14 +97,37 @@ it("keeps warmups outside reported samples", async () => {
   const result = await measureComputerTasks(driver, { warmups: 2, repetitions: 3 });
   expect(Object.values(result.measurements).every((value) => value.wallMs.length === 3)).toBe(true);
 });
+it("does not expose arbitrary provider errors in scenario diagnostics", async () => {
+  const { driver } = fixtureDriver();
+  driver.call = async () => {
+    throw new Error("PRIVATE_PROVIDER_SENTINEL");
+  };
+  const result = await measureComputerTasks(driver, { warmups: 0, repetitions: 1 });
+  expect(JSON.stringify(result)).not.toContain("PRIVATE_PROVIDER_SENTINEL");
+  expect(result.observations.at(-1)?.name).toContain("native-or-driver-error");
+});
+it("supports legacy unbatched focus replies while verifying final effects", async () => {
+  const { driver } = fixtureDriver();
+  const call = driver.call;
+  driver.call = async (tool, args) => {
+    const reply = await call(tool, args);
+    delete reply.verification;
+    return reply;
+  };
+  const result = await measureComputerTasks(driver, { warmups: 0, repetitions: 1 });
+  expect(result.observations.every((value) => value.passed)).toBe(true);
+});
 it("records a verified-effect failure and stops before sending any later input", async () => {
   const { driver, commands } = fixtureDriver();
   driver.verify = async () => ({ presses: 99, expectedText: false, entered: false });
   const result = await measureComputerTasks(driver, { warmups: 0, repetitions: 1 });
-  expect(result.observations.at(-1)).toMatchObject({
+  expect(
+    result.observations.find((value) => value.name === "resolution.early.failures"),
+  ).toMatchObject({
     name: "resolution.early.failures",
     passed: false,
   });
+  expect(result.observations.at(-1)?.name).toContain("Synthetic press counter exceeded");
   expect(result.measurements["resolution.early"]).toBeUndefined();
   expect(commands.some((entry) => entry.op === "computer_type")).toBe(false);
 });

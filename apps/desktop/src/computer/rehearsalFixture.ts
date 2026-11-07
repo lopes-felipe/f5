@@ -34,6 +34,7 @@ export async function createRehearsalFixture(options: {
   preparedDirectory?: string;
   treeNodes?: number;
   delayedFocus?: boolean;
+  onChild?: (child: ChildProcessByStdio<Writable, Readable, Readable | null>) => void;
 }) {
   if (process.platform === "win32") {
     if (!options.preparedDirectory || options.passiveChord || options.displayId)
@@ -46,21 +47,16 @@ export async function createRehearsalFixture(options: {
       throw new Error("Windows fixture must be inside its isolated rehearsal directory.");
     await mkdir(dirname(executable), { recursive: true });
     await copyFile(join(options.preparedDirectory, "ComputerControlFixture.exe"), executable);
-    const fixture = await observeRehearsalFixture(
-      spawn(
-        executable,
-        options.observeChord
-          ? ["--run-stop"]
-          : ["--run", ...(options.ungranted ? ["--ungranted"] : [])],
-        { stdio: ["pipe", "pipe", "ignore"] },
-      ),
+    const child = spawn(
       executable,
+      options.observeChord
+        ? ["--run-stop"]
+        : ["--run", ...(options.ungranted ? ["--ungranted"] : [])],
+      { stdio: ["pipe", "pipe", "ignore"] },
     );
-    if (options.treeNodes)
-      await fixture.command("performance-tree " + options.treeNodes, "FIXTURE_TREE_READY");
-    if (options.delayedFocus)
-      await fixture.command("performance-delayed-input", "FIXTURE_DELAYED_INPUT_READY");
-    return fixture;
+    options.onChild?.(child);
+    const fixture = await observeRehearsalFixture(child, executable);
+    return configureWindowsPerformanceFixture(fixture, options);
   }
   if (options.displayId !== undefined && !/^\d{1,10}$/.test(options.displayId))
     throw new Error("Invalid fixture display id.");
@@ -90,7 +86,31 @@ export async function createRehearsalFixture(options: {
     ...(options.passiveChord ? ["--passive-chord"] : []),
   ];
   const child = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"] });
+  options.onChild?.(child);
   return observeRehearsalFixture(child, executable);
+}
+
+/** Full Windows reset removes performance controls; rebuild them outside every timed sample. */
+export async function configureWindowsPerformanceFixture<
+  T extends {
+    reset(): Promise<void>;
+    command(command: string, receipt: string): Promise<void>;
+  },
+>(fixture: T, options: { treeNodes?: number; delayedFocus?: boolean }) {
+  const configure = async () => {
+    if (options.treeNodes)
+      await fixture.command("performance-tree " + options.treeNodes, "FIXTURE_TREE_READY");
+    if (options.delayedFocus)
+      await fixture.command("performance-delayed-input", "FIXTURE_DELAYED_INPUT_READY");
+  };
+  await configure();
+  return {
+    ...fixture,
+    reset: async () => {
+      await fixture.reset();
+      await configure();
+    },
+  };
 }
 
 /** Bounded synthetic receipts shared by AppKit and Chromium fixtures. */
@@ -142,7 +162,12 @@ export async function observeRehearsalFixture(
         if (line.startsWith("{")) {
           try {
             const value = JSON.parse(line);
-            const state = value.kind === "status" ? value.state : value;
+            const state =
+              value.kind === "status"
+                ? value.state
+                : value.kind === "observation"
+                  ? value.state?.receipt
+                  : value;
             if (
               typeof state?.presses === "number" &&
               (typeof state.expectedText === "boolean" ||

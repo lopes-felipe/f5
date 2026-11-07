@@ -25,7 +25,12 @@ import {
   COMPUTER_PERFORMANCE_TEXT,
   measureComputerTasks,
   normalizedComputerTreeDigest,
+  ComputerPerformanceError,
 } from "./lib/performance/computerTasks.ts";
+import {
+  cleanupComputerRehearsal,
+  interruptComputerRehearsal,
+} from "./lib/performance/computerLifecycle.ts";
 import { metadata, percentile95 } from "./lib/performance/report.ts";
 import { ComputerPerformanceTransport } from "../apps/desktop/src/computer/computerPerformanceTransport.ts";
 
@@ -44,7 +49,7 @@ if (
   process.env.F5_COMPUTER_PERFORMANCE !== "1" ||
   !["darwin", "win32"].includes(process.platform)
 ) {
-  throw new Error(
+  throw new ComputerPerformanceError(
     "Attended synthetic input only: F5_COMPUTER_PERFORMANCE=1 bun scripts/performance.ts computer-tasks --helper <debug-helper> --output <new-report.json> [--fixture-bin-dir <directory>]",
   );
 }
@@ -111,6 +116,12 @@ if (!process.versions.electron) {
   const scratch = await mkdtemp(join(tmpdir(), "f5-computer-perf-"));
   const helper = new ComputerHelperClient(dirname(resolve(helperPath)), resolve(helperPath));
   const fixtures = new Map();
+  const children = new Set();
+  const helpers = new Set([helper]);
+  const ownChild = (child) => {
+    children.add(child);
+    if (interrupted) child.kill("SIGKILL");
+  };
   const profileId = "computer-performance",
     threadId = randomUUID(),
     generation = randomUUID();
@@ -118,6 +129,7 @@ if (!process.versions.electron) {
   let interrupted = false,
     calls = 0;
   let preparationMode;
+  let overlayPoint = 20;
   const stages = new Map(),
     digests = {},
     diagnostics = {};
@@ -133,13 +145,41 @@ if (!process.versions.electron) {
     observations = [],
     startupError;
   let displays = [];
+  let cleanup;
+  const clean = () =>
+    (cleanup ??= cleanupComputerRehearsal([
+      { name: "broker", run: () => broker?.close() },
+      { name: "host", run: () => host?.close() },
+      { name: "controller", run: () => controller?.close() },
+      { name: "overlay", run: () => overlay?.close() },
+      ...[...helpers].flatMap((owned, index) => [
+        { name: "helper-suspend-" + index, run: () => owned.suspend() },
+        { name: "helper-close-" + index, run: () => owned.close() },
+      ]),
+      ...[...children].map((child, index) => ({
+        name: "fixture-exit-" + index,
+        run: async () => {
+          if (!(await closeRehearsalChild(child, 1000))) {
+            child.kill("SIGKILL");
+            if (!(await closeRehearsalChild(child, 1000)))
+              throw new Error("Fixture exit unconfirmed.");
+          }
+        },
+      })),
+    ]));
+  let stopping;
   const stop = () => {
+    if (stopping) return;
     interrupted = true;
-    controller?.stop();
-    void helper.suspend().finally(() => {
-      helper.close();
-      app.exit(1);
-    });
+    try {
+      controller?.stop();
+    } catch {
+      /* Cleanup below remains mandatory. */
+    }
+    stopping = interruptComputerRehearsal(clean, scratch, resolve(output), (code) =>
+      app.exit(code),
+    );
+    void stopping.catch(() => app.exit(1));
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
@@ -171,10 +211,12 @@ if (!process.versions.electron) {
       );
     }
     for (let index = 0; index < 5; index++) {
+      if (interrupted) throw new ComputerPerformanceError("Interrupted before cold launch.");
       const coldHelper = new ComputerHelperClient(
         dirname(resolve(helperPath)),
         resolve(helperPath),
       );
+      helpers.add(coldHelper);
       let coldFixture;
       try {
         const started = performance.now();
@@ -183,12 +225,14 @@ if (!process.versions.electron) {
         while (!coldHelper.status().available && performance.now() < until)
           await new Promise((done) => setTimeout(done, 25));
         const status = coldHelper.status();
-        if (!status.available) throw new Error("Helper unavailable: " + status.reason);
+        if (!status.available)
+          throw new ComputerPerformanceError("Helper unavailable: " + status.reason);
         const appId =
           process.platform === "win32"
             ? join(scratch, "cold-" + index, "ComputerControlFixture.exe").toLowerCase()
             : "org.example.performance-cold." + randomUUID();
         coldFixture = await createRehearsalFixture({
+          onChild: ownChild,
           root: scratch,
           appId,
           background: true,
@@ -200,7 +244,9 @@ if (!process.versions.electron) {
         diagnostics["cold." + index + ".wallMs"] = performance.now() - started;
       } finally {
         coldHelper.close();
-        await closeRehearsalChild(coldFixture?.child);
+        helpers.delete(coldHelper);
+        if (!(await closeRehearsalChild(coldFixture?.child)))
+          throw new ComputerPerformanceError("Cold fixture exit unconfirmed.");
       }
     }
     helper.start();
@@ -208,10 +254,11 @@ if (!process.versions.electron) {
     while (!helper.status().available && performance.now() < until)
       await new Promise((done) => setTimeout(done, 25));
     const status = helper.status();
-    if (!status.available) throw new Error("Helper unavailable: " + status.reason);
+    if (!status.available)
+      throw new ComputerPerformanceError("Helper unavailable: " + status.reason);
     displays = status.displays ?? [];
     if (displays.length !== 1)
-      throw new Error("Matched foreground acceptance requires one display.");
+      throw new ComputerPerformanceError("Matched foreground acceptance requires one display.");
     for (const [size, treeNodes] of [
       ["small", undefined],
       ["large", 380],
@@ -224,6 +271,7 @@ if (!process.versions.electron) {
       fixtures.set(size, {
         appId,
         ...(await createRehearsalFixture({
+          onChild: ownChild,
           root: scratch,
           appId,
           expectedText: text,
@@ -316,13 +364,17 @@ if (!process.versions.electron) {
       text,
       call: async (name, input) => {
         if (interrupted)
-          throw new Error("Physical interruption: rehearsal will not resume automatically.");
+          throw new ComputerPerformanceError(
+            "Physical interruption: rehearsal will not resume automatically.",
+          );
         calls++;
         const started = performance.now();
         const value = await callComputerTool(context, name, input);
         probe("tool.execution", performance.now() - started);
         if (value.isError)
-          throw new Error("Computer tool failed: " + value.structuredContent?.error?._tag);
+          throw new ComputerPerformanceError(
+            "Computer tool failed: " + value.structuredContent?.error?._tag,
+          );
         return value.structuredContent;
       },
       prepare: async (size, mode) => {
@@ -333,7 +385,7 @@ if (!process.versions.electron) {
         await driver.call("computer_activate_app", { app: driver.app, screenshot: false });
         const snapshot = await driver.call("computer_inspect", { app: driver.app });
         const input = snapshot.nodes.find((node) => node.name === "Rehearsal input");
-        if (!input) throw new Error("Synthetic input is missing.");
+        if (!input) throw new ComputerPerformanceError("Synthetic input is missing.");
         const focus = await driver.call("computer_element_action", {
           app: driver.app,
           snapshotId: snapshot.snapshotId,
@@ -341,10 +393,15 @@ if (!process.versions.electron) {
           action: "focus",
           screenshot: false,
         });
-        if (focus.verification?.verified !== true)
-          throw new Error("Preparation focus did not verify.");
+        if (focus.verification?.verified === false)
+          throw new ComputerPerformanceError("Preparation focus did not verify.");
         // Observation also waits out any deferred settle, outside the timed sample.
-        await driver.call("computer_inspect", { app: driver.app });
+        const focused = await driver.call("computer_inspect", { app: driver.app });
+        if (
+          focus.verification === undefined &&
+          !focused.nodes.some((node) => node.name === "Rehearsal input" && node.focused)
+        )
+          throw new ComputerPerformanceError("Legacy preparation focus did not verify.");
         if (mode === "delayed-focus")
           await fixture.command(
             process.platform === "win32" ? "performance-blur" : "PERF_BLUR",
@@ -364,8 +421,9 @@ if (!process.versions.electron) {
           );
       },
       verify: () => {
+        diagnostics.resolutions = ipc.resolutions;
         if (preparationMode === "delayed" && ipc.resolutions !== 1)
-          throw new Error("Conditional wait must resolve its app exactly once.");
+          throw new ComputerPerformanceError("Conditional wait must resolve its app exactly once.");
         return [...fixtures.values()].find((fixture) => fixture.appId === driver.app).verify();
       },
       resetCalls: () => {
@@ -377,17 +435,17 @@ if (!process.versions.electron) {
       inspection: (name, value) => {
         const digest = normalizedComputerTreeDigest(value);
         if (digests[name] && digests[name] !== digest)
-          throw new Error("Complete inspection output changed between samples.");
+          throw new ComputerPerformanceError("Complete inspection output changed between samples.");
         digests[name] = digest;
       },
       overlay: async (animated) => {
         const display = displays[0];
-        diagnostics.overlayPoint = diagnostics.overlayPoint === 20 ? 80 : 20;
+        overlayPoint = overlayPoint === 20 ? 80 : 20;
         const request = animated
           ? {
               op: "move",
               displayId: display.displayId,
-              x: diagnostics.overlayPoint,
+              x: overlayPoint,
               y: 20,
               agent: { provider: "codex" },
             }
@@ -398,81 +456,123 @@ if (!process.versions.electron) {
     ({ measurements, observations } = await measureComputerTasks(driver));
     for (const [name, values] of stages) diagnostics[name + ".p95Ms"] = percentile95(values);
   } catch (cause) {
-    startupError = cause.message.startsWith("Helper unavailable:")
-      ? cause.message
-      : "Harness startup or native execution failed.";
+    startupError =
+      cause instanceof ComputerPerformanceError
+        ? cause.message
+        : "Harness startup or native execution failed.";
     process.stderr.write(startupError + "\n");
     observations.push({ name: "native-startup.failures", actual: 1, maximum: 0, passed: false });
   } finally {
-    broker?.close();
-    host?.close();
-    controller?.close();
-    overlay?.close();
-    await helper.suspend();
-    helper.close();
-    for (const fixture of fixtures.values()) await closeRehearsalChild(fixture.child);
-    const hashFiles = async (files) =>
-      createHash("sha256")
-        .update(Buffer.concat(await Promise.all(files.map((file) => readFile(join(root, file))))))
-        .digest("hex");
-    const report = {
-      schemaVersion: 1,
-      scope: "computer",
-      mode: "measurement",
-      metadata: metadata(root),
-      method: { warmups: 5, repetitions: 30 },
-      measurements,
-      observations,
-      diagnostics,
-      notMeasured: [
-        "CPU is driving Electron main only; helper and renderer CPU are not measured.",
-        "Backend-to-main transport is in-process; production IPC serialization and external MCP transport are not measured.",
-        "Provider/model turns and attended Windows 11 validation are not measured.",
-      ],
-      computer: {
-        fixtureDigest: await hashFiles([
-          "apps/desktop/native/macos/Fixtures/ComputerControlFixture.swift",
-          "apps/desktop/native/windows/fixture/src/window.rs",
-          "apps/desktop/native/windows/fixture/src/lib.rs",
-        ]),
-        harnessDigest: await hashFiles([
-          "scripts/performance-computer.mjs",
-          "scripts/lib/performance/computerTasks.ts",
-          "apps/desktop/src/computer/rehearsalFixture.ts",
-          "apps/desktop/src/computer/computerPerformanceTransport.ts",
-          "apps/desktop/src/computer/computerInspectionRehearsal.ts",
-        ]),
-        helperIdentity: createHash("sha256")
-          .update(await readFile(resolve(helperPath)))
-          .digest("hex"),
-        desktopIdentity: await hashFiles([
-          "apps/desktop/src/computer/ComputerController.ts",
-          "apps/desktop/src/computer/ComputerOverlay.ts",
-          "apps/desktop/src/computer/computerThumbnail.ts",
-          "apps/server/src/computer/computerMcpTools.ts",
-          "apps/server/src/computer/ComputerAutomationBroker.ts",
-        ]),
-        platform: process.platform,
-        coverage: "tasks",
-        displays: displays.map(({ displayId, nativeBounds, modelSize, pixelSize, rotation }) => ({
-          displayId,
-          nativeBounds,
-          modelSize,
-          pixelSize,
-          rotation,
+    let exitCode = 1;
+    try {
+      const cleanupFailures = await clean();
+      observations.push(
+        ...cleanupFailures.map((name) => ({
+          name: "cleanup." + name,
+          actual: 1,
+          maximum: 0,
+          passed: false,
         })),
-        masking: "fast",
-        build: "debug-unsigned-in-process-transport",
-        executionMode: "foreground",
-        nodesDigests: digests,
-      },
-    };
-    await writeFile(resolve(output), JSON.stringify(report, null, 2) + "\n");
-    await rm(scratch, { recursive: true, force: true });
-    const failed =
-      startupError ||
-      observations.some((value) => !value.passed) ||
-      Object.keys(measurements).length !== 14;
-    app.exit(failed ? 1 : 0);
+      );
+      if (interrupted) {
+        await rm(resolve(output), { force: true });
+      } else {
+        const hashFiles = async (files) =>
+          createHash("sha256")
+            .update(
+              Buffer.concat(await Promise.all(files.map((file) => readFile(join(root, file))))),
+            )
+            .digest("hex");
+        const report = {
+          schemaVersion: 1,
+          scope: "computer",
+          mode: "measurement",
+          metadata: metadata(root),
+          method: { warmups: 5, repetitions: 30 },
+          measurements,
+          observations,
+          diagnostics,
+          notMeasured: [
+            "CPU is driving Electron main only; helper and renderer CPU are not measured.",
+            "Backend-to-main transport is in-process; production IPC serialization and external MCP transport are not measured.",
+            "Provider/model turns and attended Windows 11 validation are not measured.",
+          ],
+          computer: {
+            fixtureDigest: createHash("sha256")
+              .update(
+                await hashFiles([
+                  "apps/desktop/native/macos/Fixtures/ComputerControlFixture.swift",
+                  "apps/desktop/native/windows/fixture/src/window.rs",
+                  "apps/desktop/native/windows/fixture/src/lib.rs",
+                ]),
+              )
+              .update(
+                process.platform === "win32"
+                  ? await readFile(
+                      join(argument("--fixture-bin-dir"), "ComputerControlFixture.exe"),
+                    )
+                  : "",
+              )
+              .digest("hex"),
+            harnessDigest: await hashFiles([
+              "scripts/performance-computer.mjs",
+              "scripts/lib/performance/computerTasks.ts",
+              "scripts/lib/performance/computerLifecycle.ts",
+              "apps/desktop/src/computer/rehearsalFixture.ts",
+              "apps/desktop/src/computer/computerPerformanceTransport.ts",
+              "apps/desktop/src/computer/computerInspectionRehearsal.ts",
+            ]),
+            helperIdentity: createHash("sha256")
+              .update(await readFile(resolve(helperPath)))
+              .digest("hex"),
+            desktopIdentity: await hashFiles([
+              "apps/desktop/src/computer/ComputerController.ts",
+              "apps/desktop/src/computer/ComputerOverlay.ts",
+              "apps/desktop/src/computer/computerThumbnail.ts",
+              "apps/server/src/computer/computerMcpTools.ts",
+              "apps/server/src/computer/ComputerAutomationBroker.ts",
+            ]),
+            platform: process.platform,
+            coverage: "tasks",
+            displays: displays.map(
+              ({ displayId, nativeBounds, modelSize, pixelSize, rotation }) => ({
+                displayId,
+                nativeBounds,
+                modelSize,
+                pixelSize,
+                rotation,
+              }),
+            ),
+            masking: "fast",
+            build: "debug-unsigned-in-process-transport",
+            executionMode: "foreground",
+            nodesDigests: digests,
+          },
+        };
+        if (interrupted) await rm(resolve(output), { force: true });
+        else await writeFile(resolve(output), JSON.stringify(report, null, 2) + "\n");
+        const failed =
+          interrupted ||
+          startupError ||
+          observations.some((value) => !value.passed) ||
+          Object.keys(measurements).length !== 14;
+        exitCode = failed ? 1 : 0;
+      }
+    } catch {
+      process.stderr.write("Performance report preparation failed.\n");
+      if (interrupted) await rm(resolve(output), { force: true }).catch(() => {});
+      else
+        await writeFile(
+          resolve(output),
+          JSON.stringify({
+            failed: true,
+            reason: "report-preparation",
+            observations,
+          }) + "\n",
+        ).catch(() => {});
+    } finally {
+      await rm(scratch, { recursive: true, force: true }).catch(() => {});
+      app.exit(exitCode);
+    }
   }
 }

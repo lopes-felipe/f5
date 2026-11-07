@@ -22,14 +22,16 @@ type Tree = {
   accessible: boolean;
   nodes: Array<Record<string, any>>;
 };
+/** Fixed harness assertions are safe to report; provider errors are excluded. */
+export class ComputerPerformanceError extends Error {}
 function tree(value: Record<string, any>): Tree {
   if (!value.accessible || value.truncated || !value.nodes?.length)
-    throw new Error("Inspection must be complete, accessible and nonempty.");
+    throw new ComputerPerformanceError("Inspection must be complete, accessible and nonempty.");
   return value as Tree;
 }
 function node(value: Tree, name: string) {
   const found = value.nodes.find((entry) => entry.name === name);
-  if (!found) throw new Error("Required synthetic fixture node is missing.");
+  if (!found) throw new ComputerPerformanceError("Required synthetic fixture node is missing.");
   return found;
 }
 async function press(
@@ -48,7 +50,7 @@ async function press(
   });
 }
 function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
+  if (!condition) throw new ComputerPerformanceError(message);
 }
 export function computerPerformanceScenarios(driver: ComputerPerformanceDriver) {
   const inspect = async () =>
@@ -64,7 +66,8 @@ export function computerPerformanceScenarios(driver: ComputerPerformanceDriver) 
       )
         return;
       assert(actual.presses <= presses, "Synthetic press counter exceeded the expected effect.");
-      if (performance.now() >= deadline) throw new Error("Synthetic effects did not verify.");
+      if (performance.now() >= deadline)
+        throw new ComputerPerformanceError("Synthetic effects did not verify.");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   };
@@ -224,7 +227,8 @@ export function computerPerformanceScenarios(driver: ComputerPerformanceDriver) 
             ...focus,
             screenshot: false,
           });
-          assert(value.verification?.verified === true, "Focus did not verify.");
+          // Legacy helpers lack read-back; independent text and Enter receipts still verify effects.
+          assert(value.verification?.verified !== false, "Focus did not verify.");
           await driver.call("computer_type", {
             app: driver.app,
             text: driver.text,
@@ -274,9 +278,17 @@ export async function measureComputerTasks(
         },
       );
       observations.push({ name: scenario.name + ".failures", actual: 0, maximum: 0, passed: true });
-    } catch {
+    } catch (cause) {
       observations.push({
         name: scenario.name + ".failures",
+        actual: 1,
+        maximum: 0,
+        passed: false,
+      });
+      const reason =
+        cause instanceof ComputerPerformanceError ? cause.message : "native-or-driver-error";
+      observations.push({
+        name: scenario.name + ".reason." + reason,
         actual: 1,
         maximum: 0,
         passed: false,

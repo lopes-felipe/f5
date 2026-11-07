@@ -25,6 +25,8 @@ struct State {
     instruction: HWND,
     delayed_button: Option<HWND>,
     changing_tick: u32,
+    changing: bool,
+    delayed_button_pending: bool,
     delayed_input: bool,
     tree: Vec<HWND>,
     mode: Mode,
@@ -33,6 +35,160 @@ struct State {
     receipt: Receipt,
 }
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_restores_plain_input_and_removes_performance_controls() {
+        unsafe {
+            let parent = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("fixture"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                200,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            struct Cleanup(HWND);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = DestroyWindow(self.0);
+                    }
+                }
+            }
+            let _cleanup = Cleanup(parent);
+            let child = |class| {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    class,
+                    w!(""),
+                    WS_CHILD,
+                    0,
+                    0,
+                    30,
+                    20,
+                    Some(parent),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            };
+            let input = child(w!("EDIT"));
+            let tree = child(w!("STATIC"));
+            let button = child(w!("BUTTON"));
+            let mut receipt = Receipt::default();
+            receipt.press();
+            STATE.with(|slot| {
+                *slot.borrow_mut() = Some(State {
+                    instruction: parent,
+                    changing_tick: 0,
+                    changing: true,
+                    delayed_input: true,
+                    delayed_button: Some(button),
+                    delayed_button_pending: true,
+                    tree: vec![tree],
+                    mode: Mode::Granted,
+                    input,
+                    secure: input,
+                    receipt,
+                })
+            });
+            SendMessageW(
+                input,
+                EM_SETPASSWORDCHAR,
+                Some(WPARAM(0x2022)),
+                Some(LPARAM(0)),
+            );
+            SetWindowTextW(input, w!("fixture input")).unwrap();
+            reset_performance(parent, input).unwrap();
+            assert_eq!(
+                SendMessageW(
+                    input,
+                    windows::Win32::UI::Controls::EM_GETPASSWORDCHAR,
+                    None,
+                    None
+                )
+                .0,
+                0
+            );
+            assert_eq!(GetWindowTextLengthW(input), 0);
+            assert!(!IsWindow(Some(tree)).as_bool());
+            assert!(!IsWindow(Some(button)).as_bool());
+            // A timer message already queued before reset must not recreate the button.
+            procedure(parent, WM_TIMER, WPARAM(2), LPARAM(0));
+            procedure(parent, WM_TIMER, WPARAM(3), LPARAM(0));
+            STATE.with(|slot| {
+                let state = slot.borrow();
+                let state = state.as_ref().unwrap();
+                assert!(!state.delayed_input);
+                assert!(!state.delayed_button_pending);
+                assert!(state.delayed_button.is_none());
+                assert!(state.tree.is_empty());
+                assert_eq!(state.receipt.summary(), Receipt::default().summary());
+            });
+            reset_performance(parent, input).unwrap();
+            STATE.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+}
+
+/// Remove the fixture-owned tree before resetting or installing a replacement.
+unsafe fn clear_performance_tree() {
+    let old = STATE.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .map(|state| std::mem::take(&mut state.tree))
+            .unwrap_or_default()
+    });
+    for child in old {
+        let _ = DestroyWindow(child);
+    }
+}
+
+/// Cancel pending creation as well as removing an already-created delayed button.
+unsafe fn clear_delayed_button(hwnd: HWND) -> windows::core::Result<()> {
+    let _ = KillTimer(Some(hwnd), 2);
+    let old = STATE.with(|slot| {
+        slot.borrow_mut().as_mut().and_then(|state| {
+            state.delayed_button_pending = false;
+            state.delayed_button.take()
+        })
+    });
+    if let Some(child) = old {
+        DestroyWindow(child)?;
+    }
+    Ok(())
+}
+
+/// Restore the same plain input and empty performance state before every repetition.
+unsafe fn reset_performance(hwnd: HWND, input: HWND) -> windows::core::Result<()> {
+    let _ = KillTimer(Some(hwnd), 3);
+    clear_delayed_button(hwnd)?;
+    clear_performance_tree();
+    SendMessageW(input, EM_SETPASSWORDCHAR, Some(WPARAM(0)), Some(LPARAM(0)));
+    SetWindowTextW(input, w!(""))?;
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            state.receipt = Receipt::default();
+            state.delayed_input = false;
+            state.changing = false;
+            state.changing_tick = 0;
+            SetWindowTextW(state.instruction, w!("Ready: keep input idle")).ok();
+        }
+    });
+    Ok(())
+}
 
 fn emit(kind: &str, state: Option<serde_json::Value>) {
     let mut output = std::io::stdout().lock();
@@ -114,6 +270,14 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
     match message {
         WM_TIMER if w.0 == 2 => {
             let _ = KillTimer(Some(hwnd), 2);
+            let pending = STATE.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .is_some_and(|state| std::mem::take(&mut state.delayed_button_pending))
+            });
+            if !pending {
+                return LRESULT(0);
+            }
             let created = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("BUTTON"),
@@ -137,6 +301,9 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
             LRESULT(0)
         }
         WM_TIMER if w.0 == 3 => {
+            if !STATE.with(|slot| slot.borrow().as_ref().is_some_and(|state| state.changing)) {
+                return LRESULT(0);
+            }
             let (instruction, tick) = STATE.with(|slot| {
                 let mut state = slot.borrow_mut();
                 let state = state.as_mut().unwrap();
@@ -242,6 +409,19 @@ unsafe extern "system" fn finish_button(
     }
     DefSubclassProc(hwnd, message, w, l)
 }
+/// Verify current contents without retaining or emitting text.
+unsafe fn refresh_input(input: HWND) {
+    let length = GetWindowTextLengthW(input).max(0) as usize;
+    let mut text = vec![0u16; length.min(10_000) + 1];
+    let read = GetWindowTextW(input, &mut text).max(0) as usize;
+    let verified = length <= 10_000 && Receipt::matches_text(&text[..read.min(length.min(10_000))]);
+    text.fill(0);
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            state.receipt.expected_text_received = verified;
+        }
+    });
+}
 unsafe extern "system" fn delayed_input(
     hwnd: HWND,
     message: u32,
@@ -260,6 +440,7 @@ unsafe extern "system" fn delayed_input(
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     if message == WM_KEYDOWN && w.0 == 13 {
+        refresh_input(hwnd);
         let verified = STATE.with(|slot| {
             slot.borrow()
                 .as_ref()
@@ -404,6 +585,8 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                 instruction,
                 delayed_button: None,
                 changing_tick: 0,
+                changing: false,
+                delayed_button_pending: false,
                 delayed_input: false,
                 tree: Vec::new(),
             })
@@ -484,47 +667,24 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     DestroyWindow(hwnd)?;
                                     break;
                                 }
-                                WindowCommand::Status => {}
+                                WindowCommand::Status => {
+                                    refresh_input(input);
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow().as_ref() {
+                                            emit("status", Some(state.receipt.summary()));
+                                        }
+                                    });
+                                }
                                 WindowCommand::Blur => {
                                     let _ = SetFocus(Some(hwnd));
                                     println!("FIXTURE_BLURRED");
                                 }
                                 WindowCommand::Reset => {
-                                    SetWindowTextW(input, w!(""))?;
-                                    SendMessageW(
-                                        input,
-                                        EM_SETPASSWORDCHAR,
-                                        Some(WPARAM(0)),
-                                        Some(LPARAM(0)),
-                                    );
-                                    let _ = KillTimer(Some(hwnd), 2);
-                                    let _ = KillTimer(Some(hwnd), 3);
-                                    let old = STATE.with(|slot| {
-                                        slot.borrow_mut()
-                                            .as_mut()
-                                            .and_then(|state| state.delayed_button.take())
-                                    });
-                                    if let Some(old) = old {
-                                        DestroyWindow(old)?;
-                                    }
-                                    SetWindowTextW(instruction, w!("Ready: keep input idle"))?;
-                                    STATE.with(|slot| {
-                                        if let Some(state) = slot.borrow_mut().as_mut() {
-                                            state.receipt = Receipt::default();
-                                        }
-                                    });
+                                    reset_performance(hwnd, input)?;
                                     println!("FIXTURE_RESET");
                                 }
                                 WindowCommand::PerformanceTree { nodes } => {
-                                    let old = STATE.with(|slot| {
-                                        slot.borrow_mut()
-                                            .as_mut()
-                                            .map(|state| std::mem::take(&mut state.tree))
-                                            .unwrap_or_default()
-                                    });
-                                    for child in old {
-                                        let _ = DestroyWindow(child);
-                                    }
+                                    clear_performance_tree();
                                     let mut tree = Vec::new();
                                     for index in 0..nodes {
                                         let label = format!("Fixture node {index}")
@@ -583,6 +743,12 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     println!("FIXTURE_PASSWORD_CHANGED");
                                 }
                                 WindowCommand::DelayButton => {
+                                    clear_delayed_button(hwnd)?;
+                                    STATE.with(|slot| {
+                                        if let Some(state) = slot.borrow_mut().as_mut() {
+                                            state.delayed_button_pending = true;
+                                        }
+                                    });
                                     SetTimer(Some(hwnd), 2, 1000, None);
                                     println!("FIXTURE_DELAY_SCHEDULED");
                                 }
@@ -590,6 +756,7 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                                     STATE.with(|slot| {
                                         if let Some(state) = slot.borrow_mut().as_mut() {
                                             state.changing_tick = 0;
+                                            state.changing = true;
                                         }
                                     });
                                     SetTimer(Some(hwnd), 3, 100, None);
