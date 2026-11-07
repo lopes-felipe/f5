@@ -94,6 +94,7 @@
     "vitest": "catalog:"
   },
   "overrides": {
+    "node-gyp": "12.4.0",
     "vite": "^8.0.0"
   },
   "engines": {
