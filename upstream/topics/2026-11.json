@@ -503,6 +503,53 @@
       ]
     },
     {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-19659",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "antigravity",
+          "acp",
+          "timeline"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes broken or missing agent questions for Antigravity and other ACP agents in f5. Upstream tests live in orchestration-v2, so the fix needs to be redone in f5's ACP adapter and pending-input state.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Antigravity chat now receives the adapter's form-elicitation capability. ACP forms become questions, including titled and items.enum multi-selects, and keep exact option values. Answers come back as declared arrays, booleans or numbers. Invalid required answers cancel, and unsupported forms are dec…",
+      "title": "ACP form questions keep multi-select choices and return typed answers; Antigravity forms enabled",
+      "upstreamPrs": [
+        19659
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-19660",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "antigravity",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Gives a clearer error for a real Antigravity failure mode in f5's provider settings. It is small and self-contained in AntigravityDriver, which exists in the fork.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When Antigravity model discovery fails with the 'python-socks is required to use a SOCKS proxy' signature, the refresh error shows fixed explanatory text instead of a generic failure. Unknown diagnostics stay generic, and the catalog is preserved.",
+      "title": "Antigravity model refresh explains a missing python-socks dependency",
+      "upstreamPrs": [
+        19660
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:17.708Z",
       "decidedBy": "user",
@@ -4523,6 +4570,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-26324",
+      "relatedTopics": [
+        "pr-26464"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "settings",
+          "themes"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "A theme bug on desktop. It matters only if f5 supports running desktop with the local environment off against a same-machine service. Most touched web files are missing in the fork, so this would be a reimplementation.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "With the desktop local environment off and the app connected to a background service that shares the T3 home, published themes and t3 theme set had no effect. Desktop now reads the host environment ID and takes themes from the matching connected environment when there is no primary environment.",
+      "title": "Published themes apply when desktop uses this machine's background service",
+      "upstreamPrs": [
+        26324
+      ]
+    },
+    {
       "createdAt": "2026-11-04T11:12:56.883Z",
       "decidedAt": "2026-11-04T11:12:56.883Z",
       "decidedBy": "rule",
@@ -5925,6 +5998,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-27397",
+      "relatedTopics": [
+        "pr-32389"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "providers",
+          "pi"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A visible composer bug in the Pi provider, which f5 ships. A small display fallback that can be redone in f5's composer trait display.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "For Pi models that list thinking levels without a default, the composer trait trigger showed an empty label. It now shows the descriptor name ('Thinking') until a value resolves, then the selected level. No selection is created and defaults are unchanged.",
+      "title": "Pi thinking picker shows 'Thinking' instead of blank before a level is chosen",
+      "upstreamPrs": [
+        27397
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "epoch": 1,
       "id": "pr-27399",
@@ -6079,6 +6178,21 @@
       "title": "Image-heavy threads no longer flood a remote with URL requests",
       "upstreamPrs": [
         27440
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "decidedAt": "2026-11-07T23:27:07.774Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27450",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): center the Choose project empty-state buttons (#27450)",
+      "upstreamPrs": [
+        27450
       ]
     },
     {
@@ -7579,6 +7693,32 @@
       "title": "Startup no longer hangs on a shell stuck in the kernel",
       "upstreamPrs": [
         27938
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "decidedAt": "2026-11-07T23:27:07.774Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-27941",
+      "reason": "The visible change is mobile-only. The server flag only serves the mobile chooser.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "pr-hub"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "The visible change is mobile-only. The server flag only serves the mobile chooser.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The mobile PR continue chooser puts settled threads in a 'Settled threads' submenu and no longer auto-selects a lone settled thread. The server adds an optional settlement flag to linked threads, which only mobile uses.",
+      "title": "Mobile PR 'Continue thread' groups settled threads in a submenu",
+      "upstreamPrs": [
+        27941
       ]
     },
     {
@@ -20308,6 +20448,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "decidedAt": "2026-11-07T23:27:07.774Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-32186",
+      "reason": "Outside-agent OAuth sign-in falls under relay-cloud in f5's policy.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "auth"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Outside-agent OAuth sign-in falls under relay-cloud in f5's policy.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The MCP agent OAuth sign-in page preselects Auto instead of Read only, capped by any managed policy ceiling.",
+      "title": "Outside-agent MCP sign-in defaults to Auto access",
+      "upstreamPrs": [
+        32186
+      ]
+    },
+    {
       "createdAt": "2026-11-07T11:05:23.639Z",
       "decidedAt": "2026-11-07T11:05:23.639Z",
       "decidedBy": "rule",
@@ -20342,6 +20508,21 @@
       "title": "Pi's T3 MCP extension file is written atomically",
       "upstreamPrs": [
         32231
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "decidedAt": "2026-11-07T23:27:07.774Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-32239",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): center Android header confirmation buttons (#32239)",
+      "upstreamPrs": [
+        32239
       ]
     },
     {
@@ -20394,6 +20575,32 @@
       "title": "docs(updates): say when Update all leaves a provider out (#32269)",
       "upstreamPrs": [
         32269
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-32315",
+      "relatedTopics": [
+        "pr-31114"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "threads",
+          "side-chat"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A user-visible side-chat fix that builds on pr-31114 (ready). The web part is small, in useSideChat and ChatView.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "/side and /btw chats now use the parent composer's current permission mode, model and effort, including changes that haven't been sent yet. Before, they used the server-stored values, so a side chat could run Supervised + medium while the parent showed Auto + xhigh.",
+      "title": "Side chats start with the parent composer's permission mode, model and reasoning level",
+      "upstreamPrs": [
+        32315
       ]
     },
     {
@@ -20503,6 +20710,31 @@
       "title": "Global scrollbar styles no longer apply to iframes",
       "upstreamPrs": [
         32398
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-32400",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "forges",
+          "gitlab",
+          "forgejo"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Small forge fixes for PR hub settlement in f5. They need to be redone in f5's forge definitions because upstream's source-control-* packages don't exist here.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The GitLab close-command pattern now matches `glab mr accept`, and the Forgejo pattern matches tea's `pull` and `m` aliases. Agent shell merges done with those spellings refresh the thread's linked PR right away instead of waiting for the next sync sweep.",
+      "title": "Shell merges via `glab mr accept` and tea `pull`/`m` aliases refresh the linked PR",
+      "upstreamPrs": [
+        32400,
+        32401
       ]
     },
     {
@@ -20619,6 +20851,84 @@
       "title": "ACP subagent tools keep their streamed output",
       "upstreamPrs": [
         32411
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-32446",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "antigravity",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes stale account status after installing Antigravity, a provider f5 has. It is also a reliability gain because installs survive client disconnects.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "After a successful managed Antigravity install, the server runs the bounded model refresh once to verify account access and publish provider status. Provider installation becomes a server-scoped service shared across WebSocket connections, so it survives disconnects and dedupes concurrent installs.",
+      "title": "Antigravity checks account access once after a managed install",
+      "upstreamPrs": [
+        32446
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "epoch": 1,
+      "id": "pr-32448",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage",
+          "providers",
+          "cursor",
+          "settings"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 drop the Cursor CLI-account usage fallback and its setting, losing usage for CLI-only users, to avoid macOS Keychain prompts?",
+        "reason": "Removes surprise Keychain prompts on the Usage page for Cursor, which f5 has. It also removes usage reporting for users who are signed in only through the CLI, which is a product choice.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Cursor usage no longer falls back to a separate Cursor CLI account, which triggered macOS Keychain prompts. The setting, its search entry and the web and mobile prompts are removed. History and limits use the SDK sign-in API key or CURSOR_API_KEY; CURSOR_AUTH_TOKEN still covers limits.",
+      "title": "Cursor usage uses only the SDK sign-in; CLI-account fallback and its setting removed",
+      "upstreamPrs": [
+        32448
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "decidedAt": "2026-11-07T23:27:07.774Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-32551",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): shorten the model picker save action (#32551)",
+      "upstreamPrs": [
+        32551
+      ]
+    },
+    {
+      "createdAt": "2026-11-07T23:27:07.774Z",
+      "decidedAt": "2026-11-07T23:27:07.774Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-32666",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Android terminal sends hardware-keyboard arrows, Tab, and Escape to the PTY (#32666)",
+      "upstreamPrs": [
+        32666
       ]
     },
     {
