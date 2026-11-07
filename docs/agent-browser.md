@@ -313,7 +313,7 @@ presence, never absence. One monotonic deadline covers resolution, IPC and sleep
 pause, turn end, session replacement, policy and grant changes interrupt the wait.
 Only one wait runs per session. `screenshot: true` captures afterwards; a failed
 capture still returns the wait metadata. Status carries the full guidance; actions
-carry a short safety clause. The 19 descriptions total 6,956 characters when
+carry a short safety clause. The 19 descriptions total 6,993 characters when
 serialized as a JSON array, below 7,000 and over 50% below the old repeated guidance.
 MCP initialization and Claude SDK registration additionally carry server instructions.
 With app and no condition, wait polls every 250 ms and returns after a complete,

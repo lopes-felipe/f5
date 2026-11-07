@@ -4,6 +4,14 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Computer batches run known steps in one app and stop at the first failure or unconfirmed effect; app-targeted waits can return when the accessibility tree settles.
+
+### Changed
+
+- Faster computer actions and macOS inspection, with shorter cursor cues, deferred foreground settling, and smaller clean screenshot responses.
+
 ### Fixed
 
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.

@@ -2,8 +2,51 @@ import { expect, it } from "vitest";
 import {
   computerFixturePerformanceArgs,
   computerInspectionRehearsalRequest,
+  computerInspectionDigest,
+  computerInspectionSampleObservation,
 } from "./computerInspectionRehearsal";
-import type { ComputerAuthorization } from "@t3tools/contracts";
+import type { ComputerAuthorization, ComputerInspectResult } from "@t3tools/contracts";
+
+it("reports the scenario and completeness failure instead of accepting a faster invalid sample", () => {
+  const reference: ComputerInspectResult = {
+    appId: "fixture",
+    snapshotId: "snapshot",
+    accessible: true,
+    nodes: [
+      {
+        elementRef: "button",
+        role: "button",
+        name: "fixture",
+        focused: false,
+        enabled: true,
+        actions: ["press"],
+      },
+    ],
+  };
+  const digest = computerInspectionDigest(reference);
+  expect(computerInspectionSampleObservation("inspect.large.400", reference, digest)).toMatchObject(
+    {
+      passed: true,
+      actual: 0,
+    },
+  );
+  for (const [tree, reason] of [
+    [{ ...reference, truncated: true }, "truncated"],
+    [{ ...reference, accessible: false }, "inaccessible"],
+    [{ ...reference, nodes: [] }, "empty"],
+    [{ ...reference, nodes: [{ ...reference.nodes[0]!, name: "changed" }] }, "content-changed"],
+  ] as const) {
+    const observation = computerInspectionSampleObservation("inspect.large.400", tree, digest);
+    expect(observation).toEqual({
+      name: "inspect.large.400." + reason,
+      actual: 1,
+      maximum: 0,
+      passed: false,
+    });
+    expect(JSON.stringify(observation)).not.toContain("fixture");
+    expect(JSON.stringify(observation)).not.toContain('"name":"changed"');
+  }
+});
 
 it("uses the same background delivery and inspection shape for reference and measured samples", () => {
   const authorization = {} as ComputerAuthorization;

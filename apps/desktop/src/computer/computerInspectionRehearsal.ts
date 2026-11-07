@@ -25,6 +25,7 @@ export function computerInspectionRehearsalRequest(
   };
 }
 
+/** Compare complete inspection content while ignoring ephemeral element references. */
 export function computerInspectionDigest(tree: ComputerInspectResult): string {
   return createHash("sha256")
     .update(
@@ -37,6 +38,30 @@ export function computerInspectionDigest(tree: ComputerInspectResult): string {
     .digest("hex");
 }
 
+/** Bounded report fields identify invalid samples without exposing UI content. */
+export function computerInspectionSampleObservation(
+  scenario: string,
+  tree: ComputerInspectResult,
+  expectedDigest: string,
+) {
+  const reason = tree.truncated
+    ? "truncated"
+    : !tree.accessible
+      ? "inaccessible"
+      : tree.nodes.length === 0
+        ? "empty"
+        : computerInspectionDigest(tree) !== expectedDigest
+          ? "content-changed"
+          : undefined;
+  return {
+    name: scenario + "." + (reason ?? "equivalent-complete"),
+    actual: reason ? 1 : 0,
+    maximum: 0,
+    passed: !reason,
+  };
+}
+
+/** Validate and forward deterministic fixture modes to the native launcher. */
 export function computerFixturePerformanceArgs(options: {
   treeNodes?: number;
   delayedFocus?: boolean;

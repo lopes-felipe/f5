@@ -8,6 +8,7 @@ public let computerInspectAttributes = [
   kAXEnabledAttribute,
 ] as CFArray
 
+/// Non-value AX attributes used by inspection, with unavailable fields omitted.
 public struct ComputerInspectNodeAttributes {
   public let children: [AXUIElement]
   public let frame: CGRect?
@@ -19,6 +20,8 @@ public struct ComputerInspectNodeAttributes {
   public let enabled: Bool?
 }
 
+/// Fall back to individual reads only when the whole batch fails or has the wrong size.
+/// Embedded per-attribute errors stay absent rather than causing more IPC calls.
 public func computerInspectReadAttributes(
   batch: () -> (AXError, [AnyObject]?), single: (String) -> AnyObject?
 ) -> ComputerInspectNodeAttributes {

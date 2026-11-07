@@ -10,11 +10,12 @@ import { ComputerInspectResult } from "@t3tools/contracts";
 import {
   computerInspectionDigest,
   computerInspectionRehearsalRequest,
+  computerInspectionSampleObservation,
 } from "./computerInspectionRehearsal";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { ComputerHelperClient } from "./ComputerHelperClient";
 import { createRehearsalFixture, prepareRehearsalExecutable } from "./rehearsalFixture";
-import { closeRehearsalChild } from "./rehearsalCleanup";
+import { requireRehearsalChildExit } from "./rehearsalCleanup";
 import { rehearsalExecutionCode } from "./rehearsalResponses";
 import {
   measure,
@@ -33,6 +34,7 @@ const helperPath = argument("--helper");
 const output = argument("--output");
 const performanceMode = args.includes("--performance");
 const measurements: PerformanceReport["measurements"] = {};
+const observations: PerformanceReport["observations"] = [];
 const nodesDigests: Record<string, string> = {};
 let displayConfiguration: unknown;
 if (process.platform !== "darwin" || !helperPath || !output) {
@@ -99,14 +101,15 @@ try {
         process.stderr.write("Cold helper unavailable: " + coldStatus.reason + "\n");
         throw new Error("Cold helper unavailable.");
       }
-      const cold = await createRehearsalFixture({
+      fixture = await createRehearsalFixture({
         root,
         appId: "org.example.cold-inspection." + randomUUID(),
         background: true,
         executableSource: preparedFixture,
       });
       coldSamples["cold." + index + ".wallMs"] = performance.now() - start;
-      await closeRehearsalChild(cold.child);
+      await requireRehearsalChildExit(fixture.child);
+      fixture = undefined;
       helper.close();
       helper = new ComputerHelperClient(dirname(resolve(helperPath)), resolve(helperPath));
     }
@@ -171,6 +174,7 @@ try {
       try {
         const result = await read();
         const digest = computerInspectionDigest(result);
+        const name = "inspect." + scenario.name + "." + maxNodes;
         checks.push({
           scenario: scenario.name,
           maxNodes,
@@ -188,15 +192,25 @@ try {
             (result.truncated || (scenario.name === "large" && result.nodes.length < 350)))
         ) {
           failure = true;
+          if (performanceMode) {
+            const observation = computerInspectionSampleObservation(name, result, digest);
+            observations.push(
+              observation.passed
+                ? { name: name + ".undersized", actual: 1, maximum: 0, passed: false }
+                : observation,
+            );
+          }
           break;
         }
         if (performanceMode) {
-          const name = "inspect." + scenario.name + "." + maxNodes;
           nodesDigests[name] = digest;
           measurements[name] = await measure(
             async () => {
-              if (computerInspectionDigest(await read()) !== digest)
-                throw new Error("Inspection content or completeness changed between samples.");
+              const observation = computerInspectionSampleObservation(name, await read(), digest);
+              if (!observation.passed) {
+                observations.push(observation);
+                throw new Error("Inspection sample failed: " + observation.name);
+              }
             },
             undefined,
             () => fixture!.reset(),
@@ -219,7 +233,7 @@ try {
         break;
       }
     }
-    await closeRehearsalChild(fixture.child);
+    await requireRehearsalChildExit(fixture.child);
     fixture = undefined;
     if (failure) break;
   }
@@ -227,8 +241,17 @@ try {
   failure = true;
 } finally {
   helper.close();
-  fixture?.child.kill();
-  await rm(root, { recursive: true, force: true });
+  if (fixture) {
+    try {
+      await requireRehearsalChildExit(fixture.child);
+      fixture = undefined;
+    } catch {
+      failure = true;
+      observations.push({ name: "fixture-exit-unconfirmed", actual: 1, maximum: 0, passed: false });
+      process.stderr.write("Fixture exit unconfirmed; retaining its temporary files.\n");
+    }
+  }
+  if (!fixture) await rm(root, { recursive: true, force: true });
   const passed =
     !failure && suspended && heartbeats > 0 && checks.length === (performanceMode ? 2 : 3);
   const performanceReport: PerformanceReport | undefined = performanceMode
@@ -241,6 +264,7 @@ try {
         measurements,
         diagnostics: coldSamples,
         observations: [
+          ...observations,
           {
             name: "native-inspection-failures",
             actual: failure ? 1 : 0,

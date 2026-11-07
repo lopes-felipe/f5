@@ -135,6 +135,81 @@ describe("computer batches", () => {
     }));
     return h;
   }
+  it.each([
+    ["resolution", "cancel"],
+    ["resolution", "deadline"],
+    ["classification", "cancel"],
+    ["classification", "deadline"],
+  ] as const)("bounds step %s on %s after completing input", async (phase, cause) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const h = batchSetup();
+      const handle = {
+        deadline: performance.now() + 1100,
+        controller: new AbortController(),
+        release: vi.fn(),
+      };
+      h.broker.beginBatch.mockResolvedValue(handle);
+      let completedFirstStep = false;
+      let entered!: () => void;
+      let finish!: (value: any) => void;
+      const blocked = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const delayed = () => {
+        entered();
+        return new Promise<any>((resolve) => {
+          finish = resolve;
+        });
+      };
+      h.invoke.mockImplementation(async (_t, _s, request) => {
+        if (request.op === "resolveApps") return delayed();
+        completedFirstStep = true;
+        if (phase === "resolution") h.context.geometry.clear();
+        return { actionCompleted: true };
+      });
+      h.broker.classify.mockImplementation(async () => {
+        if (phase === "classification" && completedFirstStep) return delayed();
+        return "foreground";
+      });
+      const responsePromise = callComputerTool(h.context, "computer_batch", {
+        app: "one",
+        steps: [
+          { op: "type", text: "once" },
+          { op: "key", keys: "Enter" },
+        ],
+      });
+      await blocked;
+      if (phase === "resolution") {
+        const calls = h.invoke.mock.calls as any[];
+        expect(calls.at(-1)[4]).toMatchObject({
+          deadlineMs: handle.deadline,
+          signal: handle.controller.signal,
+        });
+      }
+      if (cause === "cancel")
+        handle.controller.abort(new ComputerControlError({ _tag: "Interrupted", cause: "paused" }));
+      else await vi.advanceTimersByTimeAsync(1200);
+      const response = await responsePromise;
+      expect(response.isError).toBe(true);
+      expect(response.structuredContent).toMatchObject({
+        error: { _tag: cause === "cancel" ? "Interrupted" : "Execution" },
+        failedStep: 1,
+        stepsCompleted: 1,
+        steps: [
+          { op: "type", ok: true },
+          { op: "key", ok: false },
+        ],
+      });
+      expect(handle.release).toHaveBeenCalledOnce();
+      finish(phase === "resolution" ? [{ appId: "one", name: "Fixture" }] : "foreground");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.invoke.mock.calls.some((call) => call[2].op === "key")).toBe(false);
+      expect(h.broker.reportToolFailure).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each(["settle", "before-inspect", "during-inspect", "during-wait"] as const)(
     "preserves completed effects when cancelled %s",
     async (phase) => {

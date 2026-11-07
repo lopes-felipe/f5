@@ -2,13 +2,7 @@ import XCTest
 @testable import F5ComputerCore
 
 final class ActionOutcomeTests: XCTestCase {
-  func testConfirmationPrecedesResponseWhileTelemetryIsBlocked() {
-    let telemetry = DispatchQueue(label: "blocked-telemetry")
-    let entered = DispatchSemaphore(value: 0)
-    let unblock = DispatchSemaphore(value: 0)
-    telemetry.async { entered.signal(); unblock.wait() }
-    entered.wait()
-    defer { unblock.signal(); telemetry.sync {} }
+  func testConfirmationCallbackRunsSynchronouslyBeforeResponse() {
     var output: [String] = []
     computerConfirmAction(requestId: "action", executionGeneration: 7) {
       output.append($0["type"] as! String)
