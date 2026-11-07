@@ -348,6 +348,36 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     expect(h.runtime.status("t", "g1")).toBeUndefined();
   });
 
+  it("asks before replacing another profile's setup in the shared real home, and restores it", async () => {
+    // macOS isolated profiles keep the real HOME, so every profile's CLI writes the same
+    // manifest files; only the wrapper under each profile's CLAUDE_CONFIG_DIR differs.
+    const defaultWrapper = join(root, ".claude", "chrome", "chrome-native-host");
+    const defaultSetup = manifest(defaultWrapper);
+    await writeFile(manifestPath, defaultSetup);
+    const h = await setup();
+    expect(await h.runtime.prepare(session())).toEqual({ kind: "launch", targetPath: wrapperPath });
+    expect(h.deps.consent).toHaveBeenCalledWith(
+      session(),
+      expect.objectContaining({ previousTargets: [defaultWrapper] }),
+    );
+    await cliLaunch();
+    expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(true);
+    expect(await readChromeArtifact(manifestPath)).toMatchObject({
+      bytes: manifest(wrapperPath),
+    });
+    await h.runtime.finalize("t", "g1");
+    const [transaction] = await h.storage.listTransactions("claude");
+    expect(transaction?.slots.find((slot) => slot.location === manifestPath)).toMatchObject({
+      originalBytes: defaultSetup,
+    });
+    await new ChromeNativeHostTransactions(h.storage).restore(transaction!, {
+      stopSessions: async () => {},
+      validateSlot: async () => true,
+    });
+    expect(await readChromeArtifact(manifestPath)).toMatchObject({ bytes: defaultSetup });
+    expect(await readChromeArtifact(wrapperPath)).toEqual({ bytes: null });
+  });
+
   describe("isolated profile", () => {
     // The CLI runs with the profile's own HOME; Chrome reads `root`.
     const sourcePath = () => {
