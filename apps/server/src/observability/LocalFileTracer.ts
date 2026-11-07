@@ -3,7 +3,6 @@ import { Effect, Tracer } from "effect";
 
 import { type EffectTraceRecord, spanToTraceRecord } from "./TraceRecord.ts";
 import { makeTraceSink, type TraceSink } from "./TraceSink.ts";
-import { redactExitCredentials, redactUrlCredentials } from "./CredentialRedaction.ts";
 
 export interface LocalFileTracerOptions {
   readonly filePath: string;
@@ -51,14 +50,13 @@ class LocalFileSpan implements Tracer.Span {
   }
 
   end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
-    const recorded = redactExitCredentials(exit);
     this.status = {
       _tag: "Ended",
       startTime: this.status.startTime,
       endTime,
-      exit: recorded,
+      exit,
     };
-    this.delegate.end(endTime, recorded);
+    this.delegate.end(endTime, exit);
 
     if (this.sampled) {
       this.push(spanToTraceRecord(this));
@@ -66,20 +64,12 @@ class LocalFileSpan implements Tracer.Span {
   }
 
   attribute(key: string, value: unknown): void {
-    const recorded =
-      (key === "url.full" || key === "url.query") && typeof value === "string"
-        ? redactUrlCredentials(value)
-        : value;
-    this.attributes.set(key, recorded);
-    this.delegate.attribute(key, recorded);
+    this.attributes.set(key, value);
+    this.delegate.attribute(key, value);
   }
 
   event(name: string, startTime: bigint, attributes?: Record<string, unknown>): void {
-    const cause = attributes?.["effect.cause"];
-    const nextAttributes =
-      typeof cause === "string"
-        ? { ...attributes, "effect.cause": redactUrlCredentials(cause) }
-        : (attributes ?? {});
+    const nextAttributes = attributes ?? {};
     this.events.push([name, startTime, nextAttributes]);
     this.delegate.event(name, startTime, nextAttributes);
   }

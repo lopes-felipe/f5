@@ -3,7 +3,6 @@ import { Effect, Logger, Schema } from "effect";
 import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "./config";
-import { redactingCredentials } from "./observability/CredentialRedaction.ts";
 
 export const SERVER_LOG_MAX_BYTES = 10 * 1024 * 1024;
 export const SERVER_LOG_MAX_FILES = 10;
@@ -75,7 +74,7 @@ export function makeRotatingServerFileLogger(
       catch: (cause) => new ServerLoggerInitializationError({ filePath, cause }),
     });
 
-    return yield* Logger.batched(redactingCredentials(Logger.formatSimple), {
+    return yield* Logger.batched(Logger.formatSimple, {
       window: options.batchWindowMs ?? SERVER_LOG_BATCH_WINDOW_MS,
       flush: (lines) =>
         Effect.sync(() => {
@@ -97,7 +96,7 @@ export const ServerLoggerLive = Effect.gen(function* () {
 
   const fileLogger = makeRotatingServerFileLogger(config.serverLogPath);
 
-  return Logger.layer([redactingCredentials(Logger.defaultLogger), fileLogger], {
+  return Logger.layer([Logger.defaultLogger, fileLogger], {
     mergeWithExisting: false,
   });
 }).pipe(Layer.unwrap);
