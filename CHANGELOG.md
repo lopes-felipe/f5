@@ -10,6 +10,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Windows computer use batches accessibility reads, stops element lookup after a match, verifies focus, and defers eligible foreground settling while preserving request deadlines.
+
 - Faster computer actions and macOS inspection, with shorter cursor cues, deferred foreground settling, and smaller clean screenshot responses.
 
 ### Fixed

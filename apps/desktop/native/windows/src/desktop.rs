@@ -50,6 +50,8 @@ static STATE: OnceLock<Arc<State>> = OnceLock::new();
 static OUTPUT: Mutex<()> = Mutex::new(());
 static OUTPUT_QUEUE: OnceLock<std::sync::mpsc::SyncSender<Vec<u8>>> = OnceLock::new();
 struct State {
+    pending_settle: Mutex<Option<Instant>>,
+    cancelled_requests: Mutex<std::collections::VecDeque<String>>,
     input_gate: Mutex<()>,
     permit: Mutex<Permits>,
     grants: Mutex<HashMap<String, Value>>,
@@ -285,6 +287,43 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
     let request = &message["request"];
     let host = &message["hostAuthorization"];
     let op = s(request, "op");
+    // Same metadata rule as foreground completion below. Applies across all helper queues.
+    if !matches!(op, "status" | "listApps" | "resolveApps") {
+        loop {
+            let state = STATE.get().unwrap();
+            let remaining = state
+                .pending_settle
+                .lock()
+                .unwrap()
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_default();
+            if remaining.is_zero() {
+                break;
+            }
+            if state.emergency.load(Ordering::SeqCst)
+                || state
+                    .cancelled_requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id == s(request, "requestId"))
+            {
+                return Err(json!({"_tag":"Interrupted","cause":"paused","actionStarted":false}));
+            }
+            if crate::timing::request_deadline_expired(
+                request,
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            ) {
+                return Err(
+                    json!({"_tag":"Interrupted","cause":"permit-expired","actionStarted":false}),
+                );
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(25)));
+        }
+    }
     match op {
         "status" => return Ok(status()),
         "listApps" => {
@@ -328,6 +367,7 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
     if s(request, "delivery") == "background" {
         return background::background_execute(request, host);
     }
+    let mut verification = None;
     let outcome = (|| -> Result<(), Value> {
         if ["click", "move", "drag", "scroll"].contains(&op) {
             let display = select_display(request)?;
@@ -544,7 +584,7 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
                 }
             }
         } else if op == "elementAction" {
-            element_action(request, host)?;
+            verification = element_action(request, host)?;
         } else if op == "activateApp" {
             let hwnd = app_window(s(request, "appId"))?;
             authorize(hwnd, request, host, "click")?;
@@ -562,7 +602,16 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
     })();
     release();
     outcome?;
-    std::thread::sleep(Duration::from_millis(300));
+    confirm_action(request);
+    let settle = crate::timing::post_action_settle_ms(
+        op,
+        request["screenshot"] == true,
+        !s(request, "appId").is_empty(),
+        displays().len(),
+    );
+    if settle > 0 {
+        std::thread::sleep(Duration::from_millis(settle));
+    }
     let list = displays();
     let mut pointer = POINT::default();
     let cursor_known = GetCursorPos(&mut pointer).is_ok();
@@ -599,8 +648,11 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
         &display_bounds,
     )
     .and_then(|index| list.get(index));
-    let mut result = json!({"displayId":result_display.map(|d|d.id.as_str()).unwrap_or("unknown"),"geometryGeneration":result_display.map(|d|d.generation.as_str()).unwrap_or("unknown"),"frontmostApp":apps().into_iter().find(|app|app["frontmost"]==true),"cursor":cursor_display.map(|d| json!({"displayId":d.id,"x":(pointer.x-d.bounds.left) as f64*d.width as f64/(d.bounds.right-d.bounds.left) as f64,"y":(pointer.y-d.bounds.top) as f64*d.height as f64/(d.bounds.bottom-d.bounds.top) as f64}))});
+    let mut result = json!({"displayId":result_display.map(|d|d.id.as_str()).unwrap_or("unknown"),"geometryGeneration":result_display.map(|d|d.generation.as_str()).unwrap_or("unknown"),"frontmostApp":app_record(GetForegroundWindow()).ok(),"cursor":cursor_display.map(|d| json!({"displayId":d.id,"x":(pointer.x-d.bounds.left) as f64*d.width as f64/(d.bounds.right-d.bounds.left) as f64,"y":(pointer.y-d.bounds.top) as f64*d.height as f64/(d.bounds.bottom-d.bounds.top) as f64}))});
     result["actionCompleted"] = json!(true);
+    if let Some(verification) = verification {
+        result["verification"] = verification;
+    }
     if request["screenshot"] == true {
         let mut capture_request = request.clone();
         capture_request["op"] = json!("screenshot");
@@ -613,6 +665,10 @@ unsafe fn execute(message: &Value) -> Result<Value, Value> {
             Ok(image) => result["screenshot"] = image,
             Err(error) => result["screenshotError"] = error["_tag"].clone(),
         }
+    }
+    if settle == 0 {
+        *STATE.get().unwrap().pending_settle.lock().unwrap() =
+            Some(Instant::now() + Duration::from_millis(300));
     }
     Ok(result)
 }
@@ -663,6 +719,8 @@ pub fn run() {
         }
     }
     let state = Arc::new(State {
+        pending_settle: Mutex::new(None),
+        cancelled_requests: Mutex::new(std::collections::VecDeque::new()),
         input_gate: Mutex::new(()),
         permit: Mutex::new(Permits::new()),
         grants: Mutex::new(HashMap::new()),
@@ -972,6 +1030,12 @@ pub fn run() {
                 }
             }
             "cancel" => {
+                let mut cancelled = state.cancelled_requests.lock().unwrap();
+                cancelled.push_back(s(&message, "requestId").to_owned());
+                if cancelled.len() > 4096 {
+                    cancelled.pop_front();
+                }
+                drop(cancelled);
                 state
                     .permit
                     .lock()
@@ -1107,8 +1171,14 @@ pub fn run() {
 fn respond(message: Value) {
     let id = message["request"]["requestId"].clone();
     reset_posted();
-    let result = unsafe { execute(&message) }
-        .map_err(|error| crate::protocol::interrupted_response(error, action_posted()));
+    let result = unsafe { execute(&message) }.map_err(|error| {
+        let background = s(&message["request"], "delivery") == "background";
+        if action_posted() && !background {
+            *STATE.get().unwrap().pending_settle.lock().unwrap() =
+                Some(Instant::now() + Duration::from_millis(300));
+        }
+        crate::protocol::action_response(error, action_posted(), background)
+    });
     STATE
         .get()
         .unwrap()
