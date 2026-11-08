@@ -43,6 +43,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
 - Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
 - Popovers overlapping the desktop window header respond to hover and clicks.
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
