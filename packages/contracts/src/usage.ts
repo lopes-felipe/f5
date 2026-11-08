@@ -71,6 +71,8 @@ export const UsageGetSummaryInput = Schema.Struct({
   hiddenProviders: Schema.optional(Schema.Array(ProviderKind).check(Schema.isMaxLength(32))),
   projectId: Schema.optional(ProjectId),
   timeZone: TrimmedNonEmptyString,
+  /** Also return the previous period's buckets, aligned by index, for comparison. */
+  includePreviousBuckets: Schema.optional(Schema.Boolean),
 });
 export type UsageGetSummaryInput = typeof UsageGetSummaryInput.Type;
 
@@ -127,6 +129,13 @@ export const UsageBucket = Schema.Struct({
   ),
 });
 export type UsageBucket = typeof UsageBucket.Type;
+
+export const UsagePreviousBucket = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  startAt: IsoDateTime,
+  metrics: UsageMetrics,
+});
+export type UsagePreviousBucket = typeof UsagePreviousBucket.Type;
 
 export const UsageProviderBreakdown = Schema.Struct({
   provider: ProviderKind,
@@ -247,6 +256,10 @@ export const UsageSummary = Schema.Struct({
   previousMetrics: Schema.optional(Schema.NullOr(UsageMetrics)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  /** The previous period's buckets, index-aligned with `buckets`; only when requested. */
+  previousBuckets: Schema.optional(Schema.NullOr(Schema.Array(UsagePreviousBucket))).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
 });
 export type UsageSummary = typeof UsageSummary.Type;
 
@@ -312,6 +325,13 @@ export const UsagePriceOverride = Schema.Struct({
   cacheWriteUsdPerMillion: Schema.NullOr(NonNegativeNumber),
 });
 export type UsagePriceOverride = typeof UsagePriceOverride.Type;
+
+/** Monthly budget shown on the Usage page; it covers all providers and projects. */
+export const UsageMonthlyBudget = Schema.Struct({
+  costUsd: Schema.NullOr(NonNegativeNumber),
+  tokens: Schema.NullOr(NonNegativeInt),
+});
+export type UsageMonthlyBudget = typeof UsageMonthlyBudget.Type;
 
 export const AccountUsageSection = Schema.Union([
   Schema.Struct({

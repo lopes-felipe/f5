@@ -368,7 +368,7 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(null)),
     Schema.withDecodingDefault(() => null),
   ),
-  usageTab: Schema.Literals(["activity", "limits"]).pipe(
+  usageTab: Schema.Literals(["activity", "limits", "pricing"]).pipe(
     Schema.withConstructorDefault(() => Option.some("activity" as const)),
     Schema.withDecodingDefault(() => "activity" as const),
   ),

@@ -189,4 +189,151 @@ it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
       }).pipe(Effect.provide(serviceLayer));
     }).pipe(Effect.provide(UsageFactRepositoryLive)),
   );
+
+  it.effect("returns index-aligned previous buckets only when requested", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0116;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE projection_usage_metadata
+        SET coverage_started_at = '2026-01-01T00:00:00.000Z',
+            fact_cutover_at = '2026-01-01T00:00:00.000Z'
+      `;
+      const facts = yield* UsageFactRepository;
+      // Turn IDs are unique across this layer's shared database.
+      yield* facts.record(fact("buckets-a", "2026-08-07T03:00:00.000Z", { totalTokens: 40 }));
+      yield* facts.record(fact("buckets-b", "2026-08-13T22:00:00.000Z", { totalTokens: 60 }));
+      yield* facts.record(
+        fact("buckets-claude", "2026-08-11T00:00:00.000Z", {
+          totalTokens: 500,
+          provider: "claudeAgent",
+        }),
+      );
+      // Late in the day, so the equal-duration previous window spans whole days too.
+      yield* TestClock.setTime(Date.parse("2026-08-20T23:59:00.000Z"));
+
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const plain = yield* usage.getSummary({ range: "7d", timeZone: "UTC" });
+        assert.isNull(plain.previousBuckets);
+
+        const compared = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          includePreviousBuckets: true,
+        });
+        const previous = compared.previousBuckets!;
+        assert.equal(previous.length, compared.buckets.length);
+        // Each previous bucket is the same local day one period earlier.
+        compared.buckets.forEach((bucket, index) => {
+          assert.equal(
+            Date.parse(bucket.startAt) - Date.parse(previous[index]!.startAt),
+            7 * 86_400_000,
+          );
+        });
+        assert.equal(previous[0]!.key, "2026-08-07");
+        assert.equal(previous[0]!.metrics.totalTokens, 40);
+        assert.equal(previous.at(-1)!.metrics.totalTokens, 60);
+        // Complete windows add up to the previous-period totals.
+        assert.equal(
+          previous.reduce((sum, bucket) => sum + bucket.metrics.totalTokens, 0),
+          compared.previousMetrics?.totalTokens,
+        );
+
+        const filtered = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          provider: "codex",
+          includePreviousBuckets: true,
+        });
+        // Filters apply to the previous buckets as they do to the previous totals.
+        const allProviders = previous.reduce((sum, bucket) => sum + bucket.metrics.totalTokens, 0);
+        const codexOnly = filtered.previousBuckets!.reduce(
+          (sum, bucket) => sum + bucket.metrics.totalTokens,
+          0,
+        );
+        assert.equal(codexOnly, filtered.previousMetrics?.totalTokens);
+        assert.isBelow(codexOnly, allProviders);
+        assert.equal(filtered.previousBuckets![4]!.metrics.totalTokens, 0);
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+
+  it.effect("omits previous buckets before complete coverage", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0116;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE projection_usage_metadata
+        SET coverage_started_at = '2026-08-15T00:00:00.000Z',
+            fact_cutover_at = '2026-08-15T00:00:00.000Z'
+      `;
+      yield* TestClock.setTime(Date.parse("2026-08-20T00:00:00.000Z"));
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const summary = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          includePreviousBuckets: true,
+        });
+        assert.isNull(summary.previousBuckets);
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+
+  it.effect("gates previous buckets on their own first day, not the equal-length window", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0116;
+      const sql = yield* SqlClient.SqlClient;
+      // Mid-day: the equal-length previous window starts around Aug 7 12:00,
+      // after coverage, but the first previous bucket starts at Aug 7 00:00.
+      yield* sql`
+        UPDATE projection_usage_metadata
+        SET coverage_started_at = '2026-08-07T06:00:00.000Z',
+            fact_cutover_at = '2026-08-07T06:00:00.000Z'
+      `;
+      yield* TestClock.setTime(Date.parse("2026-08-20T12:00:00.000Z"));
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const partial = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          includePreviousBuckets: true,
+        });
+        assert.isNotNull(partial.previousMetrics);
+        assert.isNull(partial.previousBuckets);
+      }).pipe(Effect.provide(serviceLayer));
+
+      yield* sql`
+        UPDATE projection_usage_metadata
+        SET coverage_started_at = '2026-08-07T00:00:00.000Z',
+            fact_cutover_at = '2026-08-07T00:00:00.000Z'
+      `;
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const complete = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          includePreviousBuckets: true,
+        });
+        assert.equal(complete.previousBuckets?.[0]?.startAt, "2026-08-07T00:00:00.000Z");
+        assert.equal(complete.previousBuckets?.length, complete.buckets.length);
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
 });

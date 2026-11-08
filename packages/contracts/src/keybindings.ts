@@ -136,6 +136,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "usage.cost",
   "usage.turns",
   "usage.limits",
+  "usage.pricing",
   "usage.period.day",
   "usage.period.week",
   "usage.period.month",

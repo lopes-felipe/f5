@@ -4,6 +4,16 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- The Usage page has a Pricing tab for model prices, model mappings and a monthly budget. Activity shows budget meters with a month-end forecast and warns when you're on pace to exceed it.
+- Usage tables sort by any column, Projects and threads can be filtered by name, and Activity breakdowns export as CSV.
+- Activity can compare usage with the previous period: stat tiles show the change, and the chart marks each bar's previous value.
+
+### Changed
+
+- The Usage page uses one consistent design across its Limits, Activity and Pricing tabs. Limits at a glance is the first block on Activity, and `p` opens Pricing.
+
 ### Fixed
 
 - Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.

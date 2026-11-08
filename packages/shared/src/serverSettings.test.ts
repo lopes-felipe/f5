@@ -62,6 +62,21 @@ describe("serverSettings helpers", () => {
       applyServerSettingsPatch(reset, { worktreesDirectory: "/a" }).previousWorktreesDirectories,
     ).toEqual([]);
   });
+
+  it("replaces usage model aliases so removed mappings stay removed", () => {
+    const both = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      usageModelAliases: { "gpt-a": "gpt-5", "gpt-b": "gpt-5" },
+    });
+    const removed = applyServerSettingsPatch(both, { usageModelAliases: { "gpt-a": "gpt-5" } });
+    expect(removed.usageModelAliases).toEqual({ "gpt-a": "gpt-5" });
+    expect(applyServerSettingsPatch(removed, { usageModelAliases: {} }).usageModelAliases).toEqual(
+      {},
+    );
+    expect(
+      applyServerSettingsPatch(removed, { worktreesDirectory: "/a" }).usageModelAliases,
+    ).toEqual({ "gpt-a": "gpt-5" });
+  });
+
   it("defaults summaries to Luna low independently of Git generation", () => {
     expect(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection).toEqual({
       instanceId: "codex",
