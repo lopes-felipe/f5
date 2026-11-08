@@ -11,6 +11,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
 - Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
 - Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
+- Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
+- Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
+- Popovers overlapping the desktop window header respond to hover and clicks.
 
 ## [0.1.6] - 2026-11-08
 
@@ -43,9 +46,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
-- Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
-- Popovers overlapping the desktop window header respond to hover and clicks.
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
 - Writes to a repository's shared Git config start a single Git process per attempt while another writer holds the lock, instead of two.
 - Claude in Chrome works in isolated (non-default) F5 profiles on macOS. Their sessions were refused with "Claude in Chrome isn't certified for isolated F5 profiles yet."
