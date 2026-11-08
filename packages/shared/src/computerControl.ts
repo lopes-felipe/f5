@@ -50,6 +50,7 @@ const INTERRUPTED_GUIDANCE: Record<InterruptedError["cause"], string> = {
 function describeComputerInterrupted(error: InterruptedError): string {
   return `Interrupted (${error.cause}): ${INTERRUPTED_GUIDANCE[error.cause]}`;
 }
+/** A typed computer-control failure whose message is the guidance agents see as tool text. */
 export class ComputerControlError extends Error {
   constructor(readonly error: ComputerAutomationError) {
     super(

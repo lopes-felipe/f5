@@ -1132,6 +1132,7 @@ func resolveSnapshotElement(_ request: [String: Any], app: NSRunningApplication)
   return (snapshot, element, role)
 }
 /// Returns read-back verification facts for background deliveries; never document text.
+/// A foreground dispatch whose AX result cannot confirm its effect returns `verified: false`.
 @discardableResult
 func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [String: Any]? {
   let id = string(request, "appId")
@@ -1880,6 +1881,9 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
   }
   return result
 }
+/// Performs one input action. Once input is posted, a thrown failure means the outcome is
+/// unknown, so outcomes the action caused itself (focus moved by a shortcut, an element
+/// removed by its own press) are returned as unverified success instead of thrown.
 func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: inout Bool) async throws -> [String: Any] {
   let op = string(request, "op")
   try checkPermit(request)

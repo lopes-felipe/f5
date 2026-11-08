@@ -25,6 +25,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
   var performanceRevision = 0
   var secondWindow: NSWindow?
   var keyMonitor: Any?
+  /// Builds the synthetic window from command-line flags and reports FIXTURE_READY on stdout.
   func applicationDidFinishLaunching(_ notification: Notification) {
     window = NSWindow(
       contentRect: NSRect(x: 120, y: 120, width: 500, height: 300),
@@ -223,10 +224,12 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     FileHandle.standardOutput.write(Data("FIXTURE_TYPED\n".utf8))
   }
   @objc func focusSecureField() { window.makeFirstResponder(secure) }
+  /// Removes the pressed button during its own action, so AX may report the element gone.
   @objc func dismissingPress(_ sender: NSButton) {
     sender.removeFromSuperview()
     FileHandle.standardOutput.write(Data("FIXTURE_DISMISSED\n".utf8))
   }
+  /// Opens and focuses a second window on Cmd+N keydown, before the keyup is delivered.
   func openSecondWindow() {
     let second = NSWindow(
       contentRect: NSRect(x: 160, y: 160, width: 320, height: 160),
