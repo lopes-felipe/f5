@@ -262,6 +262,8 @@ var frontmostBundleId: String?
 var lastInputUptime: TimeInterval = 0
 var inputSequence = 0
 var targetWatches: [String: ComputerTargetWatch] = [:]
+var heldInputTracker = HeldInputTracker()
+var reportedHeldInputs: [HeldInput] = []
 var postedRequests = Set<String>()
 var pendingSettleDeadline: TimeInterval = 0
 var pendingInputs: [ActionableInput] = []
@@ -413,23 +415,57 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
-/// Keys, modifiers and buttons the hardware currently holds. The HID system state excludes
-/// posted events, so a synthetic keydown whose keyup never arrived (ours or another process's)
-/// cannot block a foreground takeover while nobody touches the keyboard or mouse. Agent events
-/// come from a private-state source. Side effect: input that arrives as software events (Screen
-/// Sharing, Universal Control, accessibility drivers) no longer counts as held, so a remote user
-/// holding a drag still for longer than the idle dwell does not block a takeover.
-func physicalInputHeld() -> Bool {
-  let state = CGEventSourceStateID.hidSystemState
-  if !CGEventSource.flagsState(state).intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]).isEmpty {
-    return true
+/// The flag a modifier key code sets while down. Caps Lock is a toggle and is never a hold.
+func modifierFlag(_ keyCode: Int) -> CGEventFlags? {
+  switch keyCode {
+  case 54, 55: .maskCommand
+  case 56, 60: .maskShift
+  case 58, 61: .maskAlternate
+  case 59, 62: .maskControl
+  case 63: .maskSecondaryFn
+  default: nil
   }
-  return (0..<256).contains { CGEventSource.keyState(state, key: CGKeyCode($0)) }
-    || (0..<32).contains { CGEventSource.buttonState(state, button: CGMouseButton(rawValue: UInt32($0))!) }
+}
+/// Keys, modifiers and buttons the user is holding, oldest first (diagnostic codes only).
+/// A hold counts only when the session tap saw it go down from a hardware source and the HID
+/// system still reports it, and only while physical input of any kind arrived within
+/// `HeldInputTracker.staleAfter`. HID state alone cannot tell who pressed a key or when: a
+/// lost key-up, a virtual device, another tool's posts or Caps Lock's key code would otherwise
+/// block a foreground takeover forever while nobody touches the keyboard or mouse. Input that
+/// arrives as software events (Screen Sharing, Universal Control, accessibility drivers) does
+/// not count as held, so a remote user holding a drag still does not block a takeover.
+func heldPhysicalInputs() -> [HeldInput] {
+  let candidates = locked { Set(heldInputTracker.downs.keys) }
+  let state = CGEventSourceStateID.hidSystemState
+  let flags = CGEventSource.flagsState(state)
+  // HID queries stay outside the state lock; entries tapped meanwhile are kept until next time.
+  let system = candidates.filter { input in
+    switch input.kind {
+    case .key: CGEventSource.keyState(state, key: CGKeyCode(input.code))
+    case .button:
+      CGMouseButton(rawValue: UInt32(input.code)).map {
+        CGEventSource.buttonState(state, button: $0)
+      } ?? false
+    case .modifier: modifierFlag(input.code).map { flags.contains($0) } ?? false
+    }
+  }
+  let now = ProcessInfo.processInfo.systemUptime
+  let (held, changed) = locked {
+    () -> ([HeldInput], Bool) in
+    let held = heldInputTracker.held(now: now) { !candidates.contains($0) || system.contains($0) }
+    defer { reportedHeldInputs = held }
+    return (held, held != reportedHeldInputs)
+  }
+  // One diagnostic per transition, so a stuck input can be named without per-beat noise.
+  if changed {
+    telemetryQueue.async { emit(["type": "heldInput", "heldInputs": held.map(\.diagnostic)]) }
+  }
+  return held
 }
 func targetReadiness(_ appId: String?) -> [String: Any] {
   let healthy = monitorHealthy
-  let held = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  let held = !heldInputs.isEmpty
   return locked {
     let now = ProcessInfo.processInfo.systemUptime
     let watch = appId.flatMap { targetWatches[$0] }
@@ -440,6 +476,7 @@ func targetReadiness(_ appId: String?) -> [String: Any] {
       "inputSequence": inputSequence,
       "lastUserInputAgeMs": lastInputUptime > 0 ? Int((now - lastInputUptime) * 1000) : -1,
       "inputHeld": held,
+      "heldInputs": heldInputs.map(\.diagnostic),
     ]
   }
 }
@@ -521,6 +558,7 @@ func installMonitor() {
     .scrollWheel,
   ]
   let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+  locked { heldInputTracker.reset() }
   eventTap = CGEvent.tapCreate(
     tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
     eventsOfInterest: mask,
@@ -530,11 +568,34 @@ func installMonitor() {
         // Never auto-resume: everything stays suspended until Electron re-arms it.
         suspendAllReporting()
         monitorHealthy = false
+        // Edges were missed while the tap was off; tracked holds restart from the next press.
+        locked { heldInputTracker.reset() }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
       }
       if event.getIntegerValueField(.eventSourceUserData) == 0xF5C0 {
         return Unmanaged.passUnretained(event)
+      }
+      if HeldInputTracker.physical(
+        userData: event.getIntegerValueField(.eventSourceUserData),
+        sourceStateID: event.getIntegerValueField(.eventSourceStateID))
+      {
+        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let held: HeldInputEvent =
+          switch type {
+          case .keyDown: .keyDown(keyCode)
+          case .keyUp: .keyUp(keyCode)
+          case .flagsChanged: .modifierChanged(keyCode)
+          case .leftMouseDown: .buttonDown(0)
+          case .rightMouseDown: .buttonDown(1)
+          case .otherMouseDown: .buttonDown(Int(event.getIntegerValueField(.mouseEventButtonNumber)))
+          case .leftMouseUp: .buttonUp(0)
+          case .rightMouseUp: .buttonUp(1)
+          case .otherMouseUp: .buttonUp(Int(event.getIntegerValueField(.mouseEventButtonNumber)))
+          default: .activity
+          }
+        let now = ProcessInfo.processInfo.systemUptime
+        locked { heldInputTracker.observe(held, now: now) }
       }
       let flags = event.flags
       if type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 53
@@ -2278,7 +2339,9 @@ heartbeat.setEventHandler {
   ]
   if inputAge >= 0 { beat["lastUserInputAgeMs"] = Int(inputAge) }
   if let front { beat["frontmostAppId"] = front }
-  beat["inputHeld"] = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  beat["inputHeld"] = !heldInputs.isEmpty
+  beat["heldInputs"] = heldInputs.map(\.diagnostic)
   beat["targets"] = locked {
     targetWatches.map { appId, watch in
       ["appId": appId, "activityEpoch": watch.activityEpoch,

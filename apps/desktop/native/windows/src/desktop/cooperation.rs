@@ -126,8 +126,38 @@ pub(super) fn release_watch(app: &str, owner: &str) {
         }
     }
 }
-pub(super) fn held() -> bool {
-    (1..256).any(|key| unsafe { GetAsyncKeyState(key) < 0 })
+/// Hook-safe: one short uncontended lock per physical (non-injected, non-F5) event.
+pub(super) fn observe_physical(event: crate::held::HeldEvent) {
+    let state = STATE.get().unwrap();
+    state.physical_held.lock().unwrap().observe(event, now_ms());
+}
+/// Virtual-key codes the user is holding, oldest first; see `crate::held`. A hold counts only
+/// when the hook saw it go down and `GetAsyncKeyState` still reports it, and only while
+/// physical input arrived within `STALE_AFTER_MS`.
+pub(super) fn held_inputs() -> Vec<u16> {
+    let state = STATE.get().unwrap();
+    let candidates = state.physical_held.lock().unwrap().candidates();
+    // Async key queries stay outside the lock; entries hooked meanwhile are kept until next time.
+    let system: HashSet<u16> = candidates
+        .iter()
+        .copied()
+        .filter(|code| unsafe { GetAsyncKeyState(i32::from(*code)) } < 0)
+        .collect();
+    let held = state.physical_held.lock().unwrap().held(now_ms(), |code| {
+        !candidates.contains(&code) || system.contains(&code)
+    });
+    let mut reported = state.reported_held.lock().unwrap();
+    if *reported != held {
+        // One diagnostic per transition, so a stuck input can be named without per-beat noise.
+        emit(json!({"type":"heldInput","heldInputs":held_diagnostics(&held)}));
+        reported.clone_from(&held);
+    }
+    held
+}
+pub(super) fn held_diagnostics(held: &[u16]) -> Vec<Value> {
+    held.iter()
+        .map(|code| crate::held::diagnostic(*code))
+        .collect()
 }
 pub(super) fn readiness(app: Option<&str>) -> Result<Value, Value> {
     let state = STATE.get().unwrap();
@@ -167,10 +197,12 @@ pub(super) fn readiness(app: Option<&str>) -> Result<Value, Value> {
     } else {
         (sequence, age, false)
     };
+    let held = held_inputs();
     Ok(
         json!({"activityEpoch":epoch,"lastActivityAgeMs":activity_age,"frontmost":frontmost,
         "monitorHealthy":state.monitors_ready(),"inputSequence":sequence,
-        "lastUserInputAgeMs":age,"inputHeld":held()}),
+        "lastUserInputAgeMs":age,"inputHeld":!held.is_empty(),
+        "heldInputs":held_diagnostics(&held)}),
     )
 }
 pub(super) fn epoch_matches(app: &str, expected: u64) -> bool {

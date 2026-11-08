@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ComputerLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
 import {
   CHROME_OTHER_PROFILE_LINGER_MS,
+  COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS,
   ComputerAutomationBrokerRuntime,
   type ComputerInvocationContext,
 } from "./ComputerAutomationBroker";
@@ -1963,6 +1964,60 @@ it("uses the existing per-thread wait slot for foreground availability and valid
           message.type === "request" && ["screenshot", "inspect"].includes(message.request.op),
       ),
     ).toBe(false);
+  } finally {
+    h.broker.close();
+  }
+});
+
+it("ends target waits at the deadline as timeouts, letting the desktop answer first with its reason", async () => {
+  const h = await harness();
+  try {
+    h.broker.beginTurn("t", "turn");
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    const targetWaits = () =>
+      h.ipc.messages.flatMap((message) => (message.type === "targetWait" ? [message] : []));
+
+    // The desktop gets less than the broker's budget and its timeout passes through intact.
+    const answered = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(1));
+    const first = targetWaits()[0]!;
+    expect(first.timeoutMs).toBeLessThanOrEqual(5000 - COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS);
+    expect(first.timeoutMs).toBeGreaterThan(4000);
+    h.ipc.emit("message", {
+      type: "response",
+      requestId: first.requestId,
+      result: {
+        available: false,
+        timedOut: true,
+        reason: "user-active",
+        detail: "input-held",
+        requiresFreshObservation: true,
+      },
+    });
+    await expect(answered).resolves.toMatchObject({
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      detail: "input-held",
+    });
+
+    // A desktop that never answers still ends in a timeout, not an interruption.
+    const silent = h.broker.waitForTarget("t", "s", { timeoutMs: 700 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(2));
+    const second = targetWaits()[1]!;
+    await expect(silent).resolves.toMatchObject({ available: false, timedOut: true });
+    expect(h.ipc.messages).toContainEqual({ type: "cancel", requestId: second.requestId });
+
+    // A turn that really ends still interrupts the wait.
+    const ended = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(3));
+    h.broker.endTurn("t", "turn", "s");
+    await expect(ended).rejects.toMatchObject({
+      error: { _tag: "Interrupted", cause: "turn-ended" },
+    });
   } finally {
     h.broker.close();
   }
