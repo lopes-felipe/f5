@@ -16,7 +16,7 @@
     },
     "apps/desktop": {
       "name": "@t3tools/desktop",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "dbus-next": "0.10.2",
         "effect": "catalog:",
@@ -47,7 +47,7 @@
     },
     "apps/server": {
       "name": "t3",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "bin": {
         "f5": "./dist/index.mjs",
         "t3": "./dist/index.mjs",
@@ -94,7 +94,7 @@
     },
     "apps/web": {
       "name": "@t3tools/web",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "@base-ui/react": "^1.2.0",
         "@dnd-kit/core": "^6.3.1",
@@ -153,7 +153,7 @@
     },
     "packages/contracts": {
       "name": "@t3tools/contracts",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "effect": "catalog:",
       },

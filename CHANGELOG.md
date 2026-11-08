@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-08
+
 ### Added
 
 - Computer batches run known steps in one app and stop at the first failure or unconfirmed effect; app-targeted waits can return when the accessibility tree settles.
