@@ -45120,11 +45120,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-08T00:11:12.410Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23542",
-      "status": "port",
+      "reason": "F5 delegates subagents through provider runtimes and has no app-owned child-thread follow-up or parent completion-delivery subsystem to apply this fix to.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "delegation",
