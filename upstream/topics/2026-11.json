@@ -2612,6 +2612,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-23821",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Upstream's provider-core handoff budget, part of the context-handoff subsystem, which f5 does not have.",
+        "reasonKey": "upstream-only:context-handoff",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "selectHistory skips messages longer than the remaining handoff budget early, which avoids wasted work.",
+      "title": "Handoff history selection skips messages larger than the remaining budget",
+      "upstreamPrs": [
+        23821
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-23856",
@@ -3512,6 +3534,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-08T11:05:32.990Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25198",
+      "reason": "Only affects T3 Connect, relay and Clerk.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Only affects T3 Connect, relay and Clerk.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "When the T3 Connect unlink is not confirmed by the relay, the UI shows the reason instead of only logging a warning.",
+      "title": "T3 Connect shows why relay unlink failed",
+      "upstreamPrs": [
+        25198
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "decidedAt": "2026-11-02T10:32:38.196Z",
       "decidedBy": "llm",
@@ -4126,6 +4174,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-25694",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A small visual fix to the timeline's Markdown. f5 has the same file.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": ".chat-markdown strong goes from font-weight 600 to 700, so bold text stands out in chat messages.",
+      "title": "Bold text in rendered Markdown uses weight 700 again",
+      "upstreamPrs": [
+        25694
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "decidedAt": "2026-11-02T10:32:38.196Z",
       "decidedBy": "rule",
@@ -4259,6 +4328,29 @@
       "title": "Mobile keyboard state follows Android's nonanimated IME show",
       "upstreamPrs": [
         25847
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-25883",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "worktrees",
+          "settings"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has storage cleanup (storageCleanup.enabled). Worktrees missing from the report is a bug its equivalent can show.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The storage report asks the project's git for linked worktrees nested inside non-git folders, such as <repo>/replay/<n>, and lists them. Before, they were left out.",
+      "title": "Storage report lists project worktrees nested inside plain folders",
+      "upstreamPrs": [
+        25883
       ]
     },
     {
@@ -5009,6 +5101,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-08T11:05:32.990Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-26737",
+      "reason": "Linked environments are multi-environment only, and the code is in orchestration-v2.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Linked environments are multi-environment only, and the code is in orchestration-v2.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The orchestration-v2 session manager tracks the linkedEnvironmentsEnabled setting and refreshes MCP linking tools in sessions that are already running.",
+      "title": "Existing agent sessions refresh linking tools when linked environments change",
+      "upstreamPrs": [
+        26737
+      ]
+    },
+    {
       "createdAt": "2026-11-04T11:12:56.883Z",
       "decidedAt": "2026-11-04T11:12:56.883Z",
       "decidedBy": "llm",
@@ -5190,6 +5308,32 @@
       "title": "perf(mobile): reuse chat lists across navigation renders (#27026)",
       "upstreamPrs": [
         27026
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-08T11:05:32.990Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-27030",
+      "reason": "Device integrations settings exist only upstream.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Device integrations settings exist only upstream.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The device integration update button now says just 'Update', so it fits inside its popover.",
+      "title": "Device tool update buttons fit their popovers",
+      "upstreamPrs": [
+        27030
       ]
     },
     {
@@ -6620,6 +6764,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-27541",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A one-line web layout fix in sidebar.tsx, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Fixes the CSS calc for SIDEBAR_WIDTH_MOBILE, so the off-canvas sidebar in narrow web viewports keeps its width when sections expand.",
+      "title": "Narrow-viewport web sidebar keeps its width when shelves expand",
+      "upstreamPrs": [
+        27541
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:00.915Z",
       "decidedBy": "rule",
@@ -6666,6 +6831,28 @@
       "title": "Forked Claude threads keep their compaction chain",
       "upstreamPrs": [
         27577
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-27582",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "agents panel"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "The fix is for upstream's lineage details card. The component does not exist in f5, and f5 keeps its own Agents panel.",
+        "reasonKey": "upstream-only:lineage-delegation",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Collapsible section header labels truncate in the lineage details card instead of overflowing it.",
+      "title": "Lineage phase headers truncate instead of overflowing the details card",
+      "upstreamPrs": [
+        27582
       ]
     },
     {
@@ -8653,6 +8840,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-28255",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "The change depends on upstream's server ServerBrowser preview. Policy says f5 keeps its desktop-hosted preview and that the server preview topics don't apply.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Upstream's server headless-browser snapshot returns a full-resolution screenshot alongside the downscaled one, and save=true writes the full one.",
+      "title": "Saved preview screenshots keep full resolution (server browser)",
+      "upstreamPrs": [
+        28255
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-03T23:41:19.414Z",
       "decidedBy": "user",
@@ -9846,6 +10055,32 @@
       "title": "Background command details open above their button and show the script cleanly",
       "upstreamPrs": [
         28446
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-28454",
+      "relatedTopics": [
+        "pr-32154"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "muse",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Muse is an f5 provider, and a wedged thread is a bug users would see. Reimplement it in f5's Muse adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When Muse declines a /compact, the adapter reports why and finishes the turn. A held wake stays held for its continuation, so the thread no longer gets stuck in running.",
+      "title": "Muse: a declined /compact reports its reason and no longer wedges the thread",
+      "upstreamPrs": [
+        28454
       ]
     },
     {
@@ -19542,6 +19777,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-31379",
+      "relatedTopics": [
+        "pr-31764"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "scheduled tasks",
+          "settings"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has its own scheduler and Scheduled tasks settings. Choosing a task's destination thread is a user-visible capability. Port the web and server parts and skip mobile.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "In Settings → Scheduled tasks, a task's destination can be changed to another thread. The server validates and applies the move. Upstream ships the same picker on mobile.",
+      "title": "Move a scheduled task to another thread",
+      "upstreamPrs": [
+        31379
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "epoch": 1,
       "id": "pr-31403",
@@ -20540,6 +20800,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-32242",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "search",
+          "threads"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Improves thread search ranking in the command palette, if f5's palette search shares this scorer. Reimplement in f5's search.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Command palette search adds a whole-word tier. Titles where every token of three or more characters matches a whole word rank above titles that only match many prefixes.",
+      "title": "Palette search keeps whole-word title matches above busy prefix matches",
+      "upstreamPrs": [
+        32242
+      ]
+    },
+    {
       "createdAt": "2026-11-07T11:05:23.639Z",
       "decidedAt": "2026-11-07T23:28:08.434Z",
       "decidedBy": "user",
@@ -20576,6 +20858,21 @@
       "title": "test(server): three more tests stop assuming a POSIX host (#32263)",
       "upstreamPrs": [
         32263
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-08T11:05:32.990Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-32266",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): share PDFs from the Android attachment viewer (#32266)",
+      "upstreamPrs": [
+        32266
       ]
     },
     {
@@ -20938,6 +21235,46 @@
       ]
     },
     {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-08T11:05:32.990Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-32498",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): keep scheduled task prompts clear of microphone (#32498)",
+      "upstreamPrs": [
+        32498
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-32503",
+      "relatedTopics": [
+        "pr-31158"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "antigravity"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Antigravity is an f5 provider and f5 has AntigravityInstallation.ts. Users with the newer CLI can then point binaryPath at it.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "An agy or antigravity binary set as binaryPath is detected as Antigravity CLI 1.5.0+ and run as `agy acp` without a localharness sibling. Auth support detects it too.",
+      "title": "Antigravity accepts the agy CLI as a custom binaryPath",
+      "upstreamPrs": [
+        32503
+      ]
+    },
+    {
       "createdAt": "2026-11-07T23:27:07.774Z",
       "decidedAt": "2026-11-07T23:27:07.774Z",
       "decidedBy": "rule",
@@ -20965,6 +21302,55 @@
       "title": "fix(mobile): Android terminal sends hardware-keyboard arrows, Tab, and Escape to the PTY (#32666)",
       "upstreamPrs": [
         32666
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-08T11:05:32.990Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-32777",
+      "reason": "Developer tooling only. Users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "tooling"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Developer tooling only. Users see no change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "A developer script fix for Windows.",
+      "title": "report:renders script starts on Windows without a vp shim",
+      "upstreamPrs": [
+        32777
+      ]
+    },
+    {
+      "createdAt": "2026-11-08T11:05:32.990Z",
+      "epoch": 1,
+      "id": "pr-32833",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "providers",
+          "mcp"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Agents use f5's desktop html_preview for proactive charts. Passing a file path saves tokens and avoids pages broken by retyping. Reimplement on html_preview, not upstream's HtmlRender.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The HTML render and preview MCP tools accept a file path as well as inline HTML. The file is read on the server, with network and internal paths refused, so agents don't paste whole pages into tool arguments. Tool instructions and evals are updated.",
+      "title": "HTML tools take a file path so agents stop retyping pages",
+      "upstreamPrs": [
+        32833
       ]
     },
     {
