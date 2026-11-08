@@ -397,6 +397,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           history = new BoundedTerminalHistory(this.historyLineLimit);
           history.append(neutralized);
         }
+        // Restored bytes belong to a dead process, never to the new shell's parser state.
+        history.finish();
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         const session: TerminalSessionState = {
