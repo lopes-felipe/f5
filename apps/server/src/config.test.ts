@@ -2,13 +2,33 @@ import * as PathNode from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, FileSystem } from "effect";
 import { defaultF5BaseDir } from "@t3tools/shared/appStatePaths";
 
-import { deriveServerPaths } from "./config";
+import { deriveServerPaths, ensureStateDirectories } from "./config";
 import { resolveBaseDir, resolveStateDir } from "./os-jank";
 
 it.layer(NodeServices.layer)("server config paths", (it) => {
+  it.effect("restricts new and existing state directories to their owner", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "f5-state-mode-" });
+        const paths = yield* deriveServerPaths({
+          baseDir,
+          defaultStateDir: PathNode.join(baseDir, "state"),
+        });
+        yield* ensureStateDirectories(paths);
+        if (process.platform !== "win32")
+          assert.equal((yield* fs.stat(paths.stateDir)).mode & 0o777, 0o700);
+        yield* fs.chmod(paths.stateDir, 0o755);
+        yield* ensureStateDirectories(paths);
+        if (process.platform !== "win32")
+          assert.equal((yield* fs.stat(paths.stateDir)).mode & 0o777, 0o700);
+      }),
+    ),
+  );
+
   it.effect("defaults base and explicit state resolution to F5-owned paths", () =>
     Effect.gen(function* () {
       assert.equal(yield* resolveBaseDir(undefined), defaultF5BaseDir());

@@ -9783,6 +9783,77 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+  it("quotes a real assistant row across tool and metadata boundaries", async () => {
+    const snapshot = createSnapshotWithRichAssistantTarget();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                checkpoints: [],
+                messages: [
+                  createAssistantMessage({
+                    id: "quote-first" as MessageId,
+                    text: "Selected response.\n\nSecond paragraph.",
+                    offsetSeconds: 123,
+                  }),
+                  createAssistantMessage({
+                    id: "quote-next" as MessageId,
+                    text: "Next response.",
+                    offsetSeconds: 126,
+                  }),
+                ],
+                activities: [
+                  createThreadActivity({
+                    id: "quote-tool",
+                    createdAt: isoAt(124),
+                    kind: "tool.completed",
+                    summary: "Tool call",
+                    payload: {
+                      itemType: "command_execution",
+                      command: "echo ok",
+                      status: "completed",
+                    },
+                    sequence: 1,
+                  }),
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      await waitForTimelineScrollToSettle();
+      const first = document.querySelector('[data-message-id="quote-first"] .chat-markdown p')!;
+      const next = document.querySelector('[data-message-id="quote-next"] .chat-markdown p')!;
+      expect(first).not.toBeNull();
+      expect(next).not.toBeNull();
+      expect(document.querySelector('[data-timeline-row-kind="work"]')).not.toBeNull();
+      expect(document.querySelector('[data-message-id="quote-next"] h2.sr-only')).not.toBeNull();
+      first.scrollIntoView({ block: "center" });
+      // Paragraph selection can end at the following tool row's empty start,
+      // outside the assistant wrapper. Include the real timestamp but no tool text.
+      const tool = document.querySelector('[data-timeline-row-kind="work"]')!;
+      window.getSelection()!.setBaseAndExtent(first.firstChild!, 0, tool, 0);
+      first.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+      await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
+      await vi.waitFor(() => {
+        const prompt = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
+        expect(prompt).toContain("> Selected response.\n> \n> Second paragraph.");
+        expect(prompt).not.toContain("Next response.");
+        expect(prompt).not.toContain("echo ok");
+        expect(prompt).not.toContain("> Assistant");
+      });
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      await mounted.cleanup();
+    }
+  });
+
   it("does not submit a selected pending answer when sending a quote", async () => {
     const snapshot = createSnapshotWithRichAssistantTarget();
     const question = createThreadActivity({

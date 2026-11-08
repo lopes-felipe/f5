@@ -816,6 +816,45 @@ describe("TerminalManager", () => {
     }
   });
 
+  it("filters capability traffic only from retained and persisted output", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager();
+    const events: TerminalEvent[] = [];
+    manager.on("event", (event) => events.push(event));
+    try {
+      await manager.open(openInput());
+      const data = "prompt \x1b[?2026$p\x1bP+q544e\x1b\\\x1b[?31uvisible\n";
+      for (const ch of data) ptyAdapter.processes[0]!.emitData(ch);
+      expect(
+        events
+          .filter((event) => event.type === "output")
+          .map((event) => event.data)
+          .join(""),
+      ).toBe(data);
+      expect((await manager.open(openInput())).history).toBe("prompt visible\n");
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).toBe("prompt visible\n");
+      expect((await manager.open(openInput())).history).toBe("prompt visible\n");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("does not carry an unfinished restored string into new shell output", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager();
+    fs.writeFileSync(historyLogPath(logsDir), "old\x1b]8;;https://example.com/unfinished");
+    try {
+      await manager.open(openInput());
+      ptyAdapter.processes[0]!.emitData("\x1b[?2026$pnew output\n");
+      const snapshot = await manager.open(openInput());
+      expect(snapshot.history).toContain("new output\n");
+      expect(snapshot.history).not.toContain("\x1b[?2026$p");
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).not.toContain("\x1b[?2026$p");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it("bounds retained and persisted output while delivering every live byte", async () => {
     const { manager, ptyAdapter, logsDir } = makeManager(5000);
     const events: TerminalEvent[] = [];
