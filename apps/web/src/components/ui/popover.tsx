@@ -66,6 +66,8 @@ function PopoverPopup({
           finalFocus={finalFocus}
           className={cn(
             popupSurfaceClassName,
+            // Electron drag hit-testing ignores z-index, including portaled popups.
+            "[-webkit-app-region:no-drag]",
             tooltipStyle && "w-fit text-balance rounded-md text-xs shadow-md/5",
             className,
           )}

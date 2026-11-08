@@ -11,6 +11,8 @@ import {
   ComputerExecutionState,
   ComputerInterruptionCause,
   ComputerTargetReadiness,
+  ComputerTargetAvailability,
+  isComputerUserActiveDetail,
 } from "./computerAutomation";
 
 describe("computer observation and error metadata", () => {
@@ -65,6 +67,35 @@ describe("computer observation and error metadata", () => {
         kind: "shared-focus",
       }),
     ).toEqual({ _tag: "TargetBlocked", kind: "shared-focus" });
+  });
+  it("round-trips the optional user-active detail on errors and target availability", () => {
+    for (const error of [
+      { _tag: "TargetBlocked", kind: "user-active" },
+      { _tag: "TargetBlocked", kind: "user-active", detail: "input-held" },
+    ])
+      expect(Schema.decodeUnknownSync(ComputerAutomationError)(error)).toEqual(error);
+    // A value a newer peer adds must not break the transport; it is only diagnostic.
+    const future = { _tag: "TargetBlocked", kind: "user-active", detail: "remote-session" };
+    expect(Schema.decodeUnknownSync(ComputerAutomationError)(future)).toEqual(future);
+    expect(isComputerUserActiveDetail("remote-session")).toBe(false);
+    expect(isComputerUserActiveDetail("input-held")).toBe(true);
+    const availability = {
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      detail: "recent-input",
+      requiresFreshObservation: true,
+    };
+    expect(Schema.decodeUnknownSync(ComputerTargetAvailability)(availability)).toEqual(
+      availability,
+    );
+    const { detail: _detail, ...withoutDetail } = availability;
+    expect(Schema.decodeUnknownSync(ComputerTargetAvailability)(withoutDetail)).toEqual(
+      withoutDetail,
+    );
+    expect(
+      Schema.decodeUnknownSync(ComputerTargetAvailability)({ ...availability, detail: "new" }),
+    ).toEqual({ ...availability, detail: "new" });
   });
   it.each(["waiting-user", "waiting-agent"])("decodes execution state %s", (state) => {
     expect(Schema.decodeUnknownSync(ComputerExecutionState)(state)).toBe(state);

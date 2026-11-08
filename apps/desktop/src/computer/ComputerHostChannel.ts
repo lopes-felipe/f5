@@ -933,7 +933,14 @@ export class ComputerHostChannel {
                   )?.holder.scope ?? { kind: "foreground" as const }),
             };
             void this.controller
-              .waitForTarget(message.requestId, holder, message.appId, message.timeoutMs)
+              .waitForTarget(
+                message.requestId,
+                holder,
+                message.appId,
+                message.timeoutMs,
+                // The takeover this wait precedes is cooperative when the broker asked for it.
+                message.holder.cooperative === true,
+              )
               .then(
                 (result) =>
                   this.send(profileId, { type: "response", requestId: message.requestId, result }),

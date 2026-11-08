@@ -6,7 +6,8 @@ import {
   callComputerTool,
   ComputerToolGeometry,
 } from "./computerMcpTools";
-import { ComputerControlError } from "@t3tools/shared/computerControl";
+import { COMPUTER_INTERRUPTED_STOP, ComputerControlError } from "@t3tools/shared/computerControl";
+import { buildSharedAssistantContractText } from "../provider/sharedAssistantContract";
 import { Effect, Metric } from "effect";
 import { computerToolDuration, metricAttributes } from "../observability/Metrics";
 import type { ComputerInspectResult } from "@t3tools/contracts";
@@ -129,12 +130,38 @@ describe("computer batches", () => {
   function batchSetup() {
     const h = setup();
     h.context.geometry.rememberApps([{ appId: "one", name: "Fixture" } as any]);
+    // Like the helper: a key action reports verification only when focus moved.
     h.invoke.mockImplementation(async (_t, _s, input) => ({
       actionCompleted: true,
-      verification: { verified: input.op === "elementAction" },
+      ...(input.op === "key" ? {} : { verification: { verified: input.op === "elementAction" } }),
     }));
     return h;
   }
+  it.each([
+    ["a shortcut that moved focus", { op: "key", keys: "Meta+N" }, { verified: false }],
+    [
+      "a shortcut sequence cut short",
+      { op: "key", keys: ["Meta+N", "Meta+W"] },
+      { verified: false, chordsDelivered: 1, chordsRequested: 2 },
+    ],
+  ] as const)("stops a batch after %s", async (_label, keyStep, verification) => {
+    const h = batchSetup();
+    h.invoke.mockImplementation(async (_t, _s, input) =>
+      input.op === "key"
+        ? { actionCompleted: true, verification }
+        : { actionCompleted: true, verification: { verified: true } },
+    );
+    const response = await callComputerTool(h.context, "computer_batch", {
+      app: "one",
+      steps: [keyStep, { op: "type", text: "into the old window" }],
+    });
+    expect(response.structuredContent).toMatchObject({
+      stepsCompleted: 1,
+      stopped: "unverified",
+      steps: [{ op: "key", ok: true, verification }],
+    });
+    expect(h.invoke.mock.calls.some((call) => call[2].op === "type")).toBe(false);
+  });
   it.each([
     ["resolution", "cancel"],
     ["resolution", "deadline"],
@@ -1072,6 +1099,18 @@ describe("compact computer observations", () => {
       expect(COMPUTER_GUIDANCE).toContain("complete audit does not guarantee");
     },
   );
+  it("tells the agent why it was interrupted, consistently with its instructions", async () => {
+    const h = setup();
+    h.invoke.mockRejectedValue(new ComputerControlError({ _tag: "Interrupted", cause: "paused" }));
+    const response = await callComputerTool(h.context, "computer_key", { keys: "Down" });
+    const text = (response.content[0] as { text: string }).text;
+    expect(text.startsWith("Interrupted (paused): ")).toBe(true);
+    expect(text).toContain("press Resume in F5");
+    expect(text.endsWith(COMPUTER_INTERRUPTED_STOP)).toBe(true);
+    expect(buildSharedAssistantContractText()).toContain(
+      "On explicit Interrupted, stop and ask the user",
+    );
+  });
   it("explains why an element reference is stale", async () => {
     const h = setup();
     h.invoke.mockRejectedValue(
