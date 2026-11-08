@@ -1077,6 +1077,10 @@ export class ComputerAutomationBrokerRuntime {
    * Before a native lease that the Chrome lease would block (foreground, takeover, or a
    * registered browser in background), asks an idle Chrome holder in this profile to
    * release. A working holder keeps Chrome and main queues the request behind it.
+   *
+   * The requesting thread's own lease is never released here: a Claude holder could only
+   * stop its CLI, which it refuses mid-turn. Main lets the same thread hold both leases while
+   * its Chrome calls are idle (`ChromeLeaseAuthority.assertNativeAvailable`).
    */
   async preemptChromeFor(threadId: string, scope: ComputerLeaseScope): Promise<void> {
     const holder = this.chromeHolder;
@@ -1989,7 +1993,8 @@ export class ComputerAutomationBrokerRuntime {
       this.host.abandon(acquireId, error as ComputerControlError);
       await acquired.catch(() => undefined);
       if (binding.takeover?.acquireId === acquireId) delete binding.takeover;
-      throw error;
+      // Main's Busy names only the holder's thread id; say which thread and whether it works.
+      throw await this.attributeBusy(error);
     } finally {
       reservationController.abort();
     }
@@ -2021,6 +2026,8 @@ export class ComputerAutomationBrokerRuntime {
         name: app.name,
         note: "Take a fresh computer_screenshot before coordinate actions.",
       };
+    } catch (error) {
+      throw await this.attributeBusy(error);
     } finally {
       if (binding.takeover?.acquireId === acquireId) delete binding.takeover;
       this.access.cancelRequest(approvalId);

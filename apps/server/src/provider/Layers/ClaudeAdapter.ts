@@ -2496,6 +2496,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.agentBrowser?.chrome?.verified !== true
           )
             return context?.agentBrowser?.chrome?.detail ?? claudeInChromeUnavailableDetail();
+          // Reported running before admission: the report and main's lease validation share
+          // one ordered channel, so main sees this call before it validates it and refuses a
+          // native request from this thread that would otherwise slip in between. The cost: a
+          // refused call sends a running/idle pair, which briefly re-announces the lease to
+          // other profiles' banners.
+          if (call.toolUseId) context.chromeActivity?.callStarted(call.toolUseId);
           const denial = yield* Effect.promise(() =>
             context.chromeRuntime!.admit(
               {
@@ -2509,10 +2515,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
               threadId,
             ),
+          ).pipe(
+            // Admitted: Chrome is in use until the call's result (or the turn's end). A denial,
+            // failure or interruption means it never runs.
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (call.toolUseId && (Exit.isFailure(exit) || exit.value !== undefined))
+                  context.chromeActivity?.callEnded(call.toolUseId);
+              }),
+            ),
           );
-          // Admitted: Chrome is in use until the call's result (or the turn's end).
-          if (denial === undefined && call.toolUseId)
-            context.chromeActivity?.callStarted(call.toolUseId);
           return denial;
         }
         if (isClaudeComputerUseTool(toolName)) {

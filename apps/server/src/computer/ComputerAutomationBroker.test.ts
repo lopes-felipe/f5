@@ -95,6 +95,7 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
   const broker = new ComputerAutomationBrokerRuntime(host, {
     resolve: async (_thread, generation) => ({ ...context, sessionGeneration: generation }),
+    threadTitle: async (threadId) => (threadId === "chrome-thread" ? "Chrome work" : undefined),
     platform,
     storage: {
       load: async () => [
@@ -1132,6 +1133,64 @@ describe("background delivery", () => {
         result: { ...next.holder, executionGeneration: 9 },
       });
       await expect(approved).resolves.toMatchObject({ foreground: true });
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("names the thread holding Chrome when main refuses a takeover over it", async () => {
+    const h = await backgroundHarness();
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1", "takeover-reservation-v1"],
+    });
+    h.ipc.appResults = [
+      {
+        appId: "com.apple.TextEdit",
+        name: "TextEdit",
+        tier: "full",
+        running: true,
+        frontmost: false,
+      },
+    ];
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.ipc.emit("message", {
+        type: "chromeLeaseChanged",
+        holder: {
+          profileId: "p",
+          threadId: "chrome-thread",
+          sessionGeneration: "chrome-gen",
+          provider: "claude",
+        },
+      });
+      h.broker.reportChromeCalls("chrome-thread", "chrome-gen", true);
+      h.ipc.messages.length = 0;
+      const failed = h.broker.requestForeground("t", "s", "TextEdit", "Drag");
+      const rejected = expect(failed).rejects.toThrow(
+        'Busy: Chrome is held by thread "Chrome work" (working).',
+      );
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((m) => m.type === "foregroundTakeoverAcquire")).toBe(true),
+      );
+      const acquire = h.ipc.messages.findLast((m) => m.type === "foregroundTakeoverAcquire");
+      if (acquire?.type !== "foregroundTakeoverAcquire") throw new Error("no acquire");
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: acquire.requestId,
+        error: {
+          _tag: "Busy",
+          holder: "same-profile",
+          resource: "chrome",
+          holderThreadId: "chrome-thread",
+        },
+      });
+      await rejected;
     } finally {
       h.broker.close();
     }

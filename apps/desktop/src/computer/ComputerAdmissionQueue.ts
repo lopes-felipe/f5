@@ -4,6 +4,7 @@ import {
   type ComputerLeaseScope,
 } from "@t3tools/contracts";
 import { ComputerControlError, computerError } from "@t3tools/shared/computerControl";
+import { isChromeSelfWait } from "./ChromeLeaseAuthority";
 
 export interface ComputerAdmission<T> {
   kind: "lease" | "takeover";
@@ -28,7 +29,8 @@ function waitable(cause: unknown): boolean {
   const error = computerError(cause);
   return (
     (error._tag === "Busy" && error.reason === undefined) ||
-    (error._tag === "TargetBlocked" && error.kind === "foreground-busy")
+    (error._tag === "TargetBlocked" && error.kind === "foreground-busy") ||
+    isChromeSelfWait(cause)
   );
 }
 

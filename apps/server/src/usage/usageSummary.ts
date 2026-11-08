@@ -5,6 +5,7 @@ import {
   type ProviderKind,
   type UsageGetSummaryInput,
   type UsageMetrics,
+  type UsagePreviousBucket,
   type UsagePriceOverride,
   type UsageProjectBreakdown,
   type UsageProjectScope,
@@ -246,6 +247,7 @@ export function buildUsageSummary(input: {
   readonly priceOverrides?: ReadonlyArray<UsagePriceOverride>;
   readonly projectScope?: UsageProjectScope | null;
   readonly previousMetrics?: UsageMetrics | null;
+  readonly previousBuckets?: ReadonlyArray<UsagePreviousBucket> | null;
 }): UsageSummary {
   const bucketMetrics = new Map(input.plan.buckets.map((bucket) => [bucket.key, emptyMetrics()]));
   const compositions = new Map(
@@ -325,7 +327,50 @@ export function buildUsageSummary(input: {
     nextBucketAt: input.plan.nextBucketAt,
     projectScope: input.projectScope ?? null,
     previousMetrics: input.previousMetrics ?? null,
+    previousBuckets: input.previousBuckets ?? null,
   };
+}
+
+/**
+ * The previous period's buckets, index-aligned with the current plan: the same
+ * planner run with `now` just before the current start. Rows already carry aliases.
+ */
+/**
+ * The previous period's buckets, index-aligned with the current plan, or null
+ * when the earliest of them starts before complete coverage. Calendar buckets
+ * can start up to a day (an hour for 24h) before the equal-length window that
+ * `previousUsageWindow` validates, so the gate checks the buckets themselves.
+ */
+export function previousBucketWindows(input: {
+  readonly currentPlan: UsageBucketPlan;
+  readonly previousPlan: UsageBucketPlan;
+  readonly coverageStartedAt: IsoDateTime;
+  readonly factCutoverAt: IsoDateTime;
+}): UsageBucketPlan["buckets"] | null {
+  const buckets = input.previousPlan.buckets.slice(-input.currentPlan.buckets.length);
+  const first = buckets[0];
+  if (!first || buckets.length !== input.currentPlan.buckets.length) return null;
+  const completeFrom =
+    input.factCutoverAt > input.coverageStartedAt ? input.factCutoverAt : input.coverageStartedAt;
+  return first.startAt >= completeFrom ? buckets : null;
+}
+
+export function buildPreviousBuckets(input: {
+  readonly buckets: UsageBucketPlan["buckets"];
+  readonly rows: ReadonlyArray<BucketUsageSummaryRow>;
+  readonly priceOverrides?: ReadonlyArray<UsagePriceOverride>;
+}): Array<UsagePreviousBucket> {
+  const rowsByBucket = new Map<string, Array<BucketUsageSummaryRow>>();
+  for (const row of input.rows) {
+    const rows = rowsByBucket.get(row.bucketKey) ?? [];
+    rows.push(row);
+    rowsByBucket.set(row.bucketKey, rows);
+  }
+  return input.buckets.map((bucket) => ({
+    key: bucket.key,
+    startAt: bucket.startAt,
+    metrics: aggregateUsageMetrics(rowsByBucket.get(bucket.key) ?? [], input.priceOverrides),
+  }));
 }
 
 function compareBreakdown(

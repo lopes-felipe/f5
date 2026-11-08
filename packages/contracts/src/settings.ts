@@ -1,4 +1,4 @@
-import { UsageModelAliases, UsagePriceOverride } from "./usage";
+import { UsageModelAliases, UsageMonthlyBudget, UsagePriceOverride } from "./usage";
 import { AgentBridgeSettings, AgentBridgeSettingsPatch } from "./agentBridge";
 import { Effect } from "effect";
 import * as Combiner from "effect/Combiner";
@@ -492,6 +492,9 @@ export const ServerSettings = Schema.Struct({
   autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
   usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
+  usageMonthlyBudget: Schema.NullOr(UsageMonthlyBudget).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   /** Background account-limit sampling for quota history and forecasts. */
   usageBackgroundSampling: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoResumeUsageLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -720,6 +723,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
   /** Replaces every mapping. */
   usageModelAliases: Schema.optionalKey(UsageModelAliases),
+  usageMonthlyBudget: Schema.optionalKey(Schema.NullOr(UsageMonthlyBudget)),
   usageBackgroundSampling: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),

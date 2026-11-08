@@ -248,10 +248,14 @@ export function applyServerSettingsPatch(
         }
       : next;
   // A cleanup policy is a tagged union: switching modes must not merge fields.
-  const nextWithReplacements =
-    patch.worktreeCleanup !== undefined
-      ? { ...nextWithInstances, worktreeCleanup: patch.worktreeCleanup }
-      : nextWithInstances;
+  // Model aliases are a whole map: merging would keep removed mappings.
+  const nextWithReplacements = {
+    ...nextWithInstances,
+    ...(patch.worktreeCleanup !== undefined ? { worktreeCleanup: patch.worktreeCleanup } : {}),
+    ...(patch.usageModelAliases !== undefined
+      ? { usageModelAliases: patch.usageModelAliases }
+      : {}),
+  };
   // Upstream schedule fields merge; nullable model selections replace, not merge.
   const upstreamPatch = patch.upstreamPorts;
   const nextWithUpstream =
