@@ -8,6 +8,7 @@ const USAGE_SHORTCUT_PATCHES: Readonly<Record<string, UsageSearchPatch>> = {
   "usage.cost": { tab: "activity", metric: "cost" },
   "usage.turns": { tab: "activity", metric: "turns" },
   "usage.limits": { tab: "limits" },
+  "usage.pricing": { tab: "pricing" },
   "usage.period.day": { range: "24h" },
   "usage.period.week": { range: "7d" },
   "usage.period.month": { range: "30d" },

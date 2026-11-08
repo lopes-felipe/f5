@@ -4,6 +4,16 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- The Usage page has a Pricing tab for model prices, model mappings and a monthly budget. Activity shows budget meters with a month-end forecast and warns when you're on pace to exceed it.
+- Usage tables sort by any column, Projects and threads can be filtered by name, and Activity breakdowns export as CSV.
+- Activity can compare usage with the previous period: stat tiles show the change, and the chart marks each bar's previous value.
+
+### Changed
+
+- The Usage page uses one consistent design across its Limits, Activity and Pricing tabs. Limits at a glance is the first block on Activity, and `p` opens Pricing.
+
 ### Fixed
 
 - Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.
@@ -14,6 +24,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
 - Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
 - Popovers overlapping the desktop window header respond to hover and clicks.
+- A Claude thread with Claude in Chrome on can take foreground control of other apps while none of its Chrome calls is running, instead of failing with "Chrome is held by another thread". Once it does, its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it). Foreground takeover refusals name the thread holding control, and the desktop log records Chrome lease events.
+- Queued upstream ports no longer wait indefinitely on files held by an equivalent topic once the port PR that included it has merged. Outcome recovery stops re-reading merged port PRs from GitHub.
 - Codex turns that stream bursts of small output chunks are no longer interrupted by notification overflow. Interrupted Codex history with commands, MCP calls or empty reasoning can now be recovered automatically, and the recovery warning stays visible until it is. Planning workflows no longer fail a branch while a plan-format repair turn is starting.
 
 ## [0.1.6] - 2026-11-08

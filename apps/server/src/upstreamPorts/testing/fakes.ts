@@ -285,7 +285,7 @@ export class FakeGitHub {
         const pr = this.prs.find(
           (entry) => entry.repo === repo.owner + "/" + repo.name && entry.number === number,
         );
-        return pr ? { texts: [pr.body], complete: true } : null;
+        return pr ? { texts: [pr.body], complete: true, final: pr.state === "merged" } : null;
       }),
     available: () => Effect.succeed(this.available),
     findPullRequest: ({ repo, number }) =>

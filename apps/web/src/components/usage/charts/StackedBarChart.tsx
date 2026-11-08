@@ -1,4 +1,4 @@
-import type { UsageBucket } from "@t3tools/contracts";
+import type { UsageBucket, UsageMetrics, UsagePreviousBucket } from "@t3tools/contracts";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
@@ -14,6 +14,7 @@ import {
   recordCountDisplay,
   tokenFieldDisplay,
 } from "../format";
+import { usageTableClasses } from "../kit";
 import { ChartLegend, COST_SEGMENTS, TOKEN_SEGMENTS } from "./ChartLegend";
 
 export type UsageChartMetric = "tokens" | "cost" | "turns";
@@ -30,6 +31,15 @@ interface Column {
   readonly segments: ReadonlyArray<Segment>;
   readonly total: number;
   readonly interval: string;
+  /** The aligned previous-period value, when comparing. */
+  readonly previous: number | null;
+}
+
+function previousValue(metrics: UsageMetrics, metric: UsageChartMetric): number {
+  if (metric === "cost")
+    return (metrics.providerReportedCostUsd ?? 0) + (metrics.estimatedCostUsd ?? 0);
+  if (metric === "turns") return metrics.reporting?.recordedTurnCount ?? metrics.turnCount;
+  return metrics.totalTokens;
 }
 
 function tokenSegments(bucket: UsageBucket): ReadonlyArray<Segment> {
@@ -102,8 +112,11 @@ export function StackedBarChart({
   metric = "tokens",
   generatedAt,
   hourly,
+  previous,
 }: {
   buckets: ReadonlyArray<UsageBucket>;
+  /** Previous-period buckets, index-aligned with `buckets`; draws a tick per column. */
+  previous?: ReadonlyArray<UsagePreviousBucket> | null;
   label: string;
   timeZone: string;
   metric?: UsageChartMetric;
@@ -122,8 +135,11 @@ export function StackedBarChart({
         timeZone,
         hourly,
       })} (${timeZone})`,
+      previous: previous?.[index] ? previousValue(previous[index].metrics, metric) : null,
     };
   });
+  const previousLabel = (column: Column) =>
+    column.previous === null ? null : `Previous period: ${formatValue(column.previous, metric)}`;
   const lastIndex = Math.max(0, columns.length - 1);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [pinnedKey, setPinnedKey] = useState<string | null>(null);
@@ -143,7 +159,10 @@ export function StackedBarChart({
       setPinnedKey(buckets.at(-1)?.key ?? null);
   }, [buckets, pinnedKey]);
 
-  const realMax = Math.max(0, ...columns.map((column) => column.total));
+  const realMax = Math.max(
+    0,
+    ...columns.map((column) => Math.max(column.total, column.previous ?? 0)),
+  );
   const pricedTurns = buckets.reduce((sum, bucket) => sum + bucket.metrics.pricedTurnCount, 0);
   const turnsReported = buckets.some((bucket) => bucket.metrics.reporting != null);
   const empty =
@@ -262,10 +281,12 @@ export function StackedBarChart({
                   tabIndex={index === activeIndex ? 0 : -1}
                   aria-label={`${column.interval}: ${column.segments
                     .map((segment) => `${segment.label} ${formatValue(segment.value, metric)}`)
-                    .join(", ")}. ${bucketDetails(column.bucket).join(". ")}`}
+                    .join(", ")}. ${[...bucketDetails(column.bucket), previousLabel(column)]
+                    .filter(Boolean)
+                    .join(". ")}`}
                   aria-pressed={pinnedIndex === index}
                   className={cn(
-                    "flex h-full min-w-0 flex-1 items-end px-[min(1px,15%)] outline-none focus-visible:bg-primary/10",
+                    "relative flex h-full min-w-0 flex-1 items-end px-[min(1px,15%)] outline-none focus-visible:bg-primary/10",
                     index === activeIndex && tooltipOpen && "bg-primary/5",
                   )}
                   onFocus={() => {
@@ -297,6 +318,14 @@ export function StackedBarChart({
                       />
                     ))}
                   </span>
+                  {column.previous !== null ? (
+                    <span
+                      aria-hidden="true"
+                      data-testid="usage-chart-previous"
+                      className="pointer-events-none absolute inset-x-[8%] h-0.5 translate-y-1/2 rounded-full bg-foreground/60"
+                      style={{ bottom: `${Math.min(100, (column.previous / drawMax) * 100)}%` }}
+                    />
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -314,6 +343,7 @@ export function StackedBarChart({
                   {bucketDetails(active.bucket).map((line) => (
                     <p key={line}>{line}</p>
                   ))}
+                  {previousLabel(active) ? <p>{previousLabel(active)}</p> : null}
                 </div>
               </div>
             </TooltipPopup>
@@ -339,6 +369,12 @@ export function StackedBarChart({
         </div>
       </div>
       {legend}
+      {previous ? (
+        <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span aria-hidden="true" className="h-0.5 w-3 rounded-full bg-foreground/60" />
+          Previous period
+        </p>
+      ) : null}
       {pinned ? (
         <section
           aria-label="Selected interval details"
@@ -364,6 +400,9 @@ export function StackedBarChart({
                 {line}
               </p>
             ))}
+            {previousLabel(pinned) ? (
+              <p className="text-muted-foreground">{previousLabel(pinned)}</p>
+            ) : null}
           </div>
           <Button
             variant="ghost"
@@ -386,14 +425,16 @@ export function StackedBarChart({
         </CollapsibleTrigger>
         <CollapsiblePanel>
           <div className="mt-2 max-h-72 overflow-auto">
-            <table className="w-full text-left text-xs">
+            <table className={usageTableClasses.table}>
               <caption className="sr-only">{label} data</caption>
               <thead className="text-muted-foreground">
                 <tr>
-                  <th className="py-1 pr-3 font-medium">Interval</th>
-                  <th className="py-1 pr-3 text-right font-medium">Tokens</th>
-                  <th className="py-1 pr-3 text-right font-medium">Cost</th>
-                  <th className="py-1 text-right font-medium">Recorded turns</th>
+                  <th className={usageTableClasses.compactHeadCell}>Interval</th>
+                  <th className={cn(usageTableClasses.compactHeadCell, "text-right")}>Tokens</th>
+                  <th className={cn(usageTableClasses.compactHeadCell, "text-right")}>Cost</th>
+                  <th className={cn(usageTableClasses.compactHeadCell, "text-right")}>
+                    Recorded turns
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -403,13 +444,13 @@ export function StackedBarChart({
                   const priced =
                     metrics.providerReportedCostUsd !== null || metrics.pricedTurnCount > 0;
                   return (
-                    <tr key={column.bucket.key} className="border-t border-border/50">
-                      <td className="py-1 pr-3">{column.interval}</td>
-                      <td className="py-1 pr-3 text-right tabular-nums">
+                    <tr key={column.bucket.key} className={usageTableClasses.compactRow}>
+                      <td className={usageTableClasses.compactCell}>{column.interval}</td>
+                      <td className={cn(usageTableClasses.compactCell, usageTableClasses.numeric)}>
                         {tokens.value}
                         {tokens.detail ? ` (${tokens.detail})` : ""}
                       </td>
-                      <td className="py-1 pr-3 text-right tabular-nums">
+                      <td className={cn(usageTableClasses.compactCell, usageTableClasses.numeric)}>
                         {priced
                           ? formatUsd(
                               (metrics.providerReportedCostUsd ?? 0) +
@@ -417,7 +458,7 @@ export function StackedBarChart({
                             )
                           : "Unpriced"}
                       </td>
-                      <td className="py-1 text-right tabular-nums">
+                      <td className={cn(usageTableClasses.compactCell, usageTableClasses.numeric)}>
                         {metrics.reporting ? metrics.reporting.recordedTurnCount : "—"}
                       </td>
                     </tr>

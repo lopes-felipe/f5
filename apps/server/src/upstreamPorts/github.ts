@@ -22,6 +22,12 @@ export interface LedgerPullRequest {
   readonly baseRef?: string;
 }
 
+export interface PullRequestTopicEvidence {
+  readonly texts: ReadonlyArray<string>;
+  readonly complete: boolean;
+  readonly final: boolean;
+}
+
 export interface GitHubRepoRef {
   readonly owner: string;
   readonly name: string;
@@ -39,15 +45,17 @@ export class UpstreamGitHubError extends Data.TaggedError("UpstreamGitHubError")
 }
 
 export interface UpstreamGitHub {
-  /** A single GitHub snapshot of the body and commit trailers. Incomplete data cannot prove exclusion. */
+  /**
+   * A single GitHub snapshot of the body and commit trailers. Incomplete data cannot prove exclusion.
+   * `final` marks complete evidence from a merged PR, whose commits can no longer change. Callers
+   * may stop re-reading it, so a later edit to the merged PR's body is not seen. A closed PR is not
+   * final: it can be reopened and gain commits.
+   */
   readonly readPullRequestTopicEvidence: (input: {
     readonly cwd: string;
     readonly repo: GitHubRepoRef;
     readonly number: number;
-  }) => Effect.Effect<
-    { readonly texts: ReadonlyArray<string>; readonly complete: boolean } | null,
-    UpstreamGitHubError
-  >;
+  }) => Effect.Effect<PullRequestTopicEvidence | null, UpstreamGitHubError>;
   /**
    * Whether the profile has a usable GitHub credential. Fails only with
    * transient errors; a missing or rejected credential is `false`.
@@ -279,7 +287,7 @@ export function makeUpstreamGitHub(cli: GitHubCliShape): UpstreamGitHub {
           .runGraphql({
             cwd: input.cwd,
             query:
-              "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { body commits(first: 100) { nodes { commit { message } } pageInfo { hasNextPage } } } } }",
+              "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state body commits(first: 100) { nodes { commit { message } } pageInfo { hasNextPage } } } } }",
             variables: { owner: input.repo.owner, name: input.repo.name, number: input.number },
           })
           .pipe(Effect.mapError((error) => cliFailure("pull request topic evidence", error)));
@@ -288,6 +296,7 @@ export function makeUpstreamGitHub(cli: GitHubCliShape): UpstreamGitHub {
             data?: {
               repository?: {
                 pullRequest?: {
+                  state?: unknown;
                   body?: unknown;
                   commits?: {
                     nodes?: Array<{ commit?: { message?: unknown } } | null>;
@@ -300,15 +309,17 @@ export function makeUpstreamGitHub(cli: GitHubCliShape): UpstreamGitHub {
         )?.data?.repository?.pullRequest;
         if (!pr || typeof pr.body !== "string") return null;
         const messages = pr.commits?.nodes?.map((node) => node?.commit?.message) ?? [];
+        const complete =
+          Array.isArray(pr.commits?.nodes) &&
+          pr.commits?.pageInfo?.hasNextPage === false &&
+          messages.every((message) => typeof message === "string");
         return {
           texts: [
             pr.body,
             ...messages.filter((message): message is string => typeof message === "string"),
           ],
-          complete:
-            Array.isArray(pr.commits?.nodes) &&
-            pr.commits?.pageInfo?.hasNextPage === false &&
-            messages.every((message) => typeof message === "string"),
+          complete,
+          final: complete && pr.state === "MERGED",
         };
       }),
     available,

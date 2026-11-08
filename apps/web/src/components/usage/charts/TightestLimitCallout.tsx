@@ -32,6 +32,23 @@ export function tightestQuotaWindow<W extends CalloutWindow>(
   );
 }
 
+/**
+ * The window a compact summary leads with: the tightest of two or more live
+ * windows, or the only live one.
+ */
+export function glanceQuotaWindow<W extends CalloutWindow>(
+  windows: ReadonlyArray<W>,
+  nowMs: number,
+): W | null {
+  const live = windows.filter((window) => {
+    if (window.usedPercent === null) return false;
+    const reset = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
+    return !(Number.isFinite(reset) && reset <= nowMs);
+  });
+  if (live.length === 1) return live[0]!;
+  return tightestQuotaWindow(live, nowMs);
+}
+
 /** Names the limit that runs out first, with its reset; warning-colored at 90% used. */
 export function TightestLimitCallout(props: {
   readonly windows: ReadonlyArray<CalloutWindow>;
@@ -57,8 +74,8 @@ export function TightestLimitCallout(props: {
       className={cn(
         "flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs",
         warn
-          ? "border-warning/40 bg-warning/10 text-warning-foreground"
-          : "border-border/60 text-muted-foreground",
+          ? "border-warning/32 bg-warning/4 text-warning-foreground"
+          : "border-border bg-transparent text-muted-foreground",
       )}
     >
       <p>
