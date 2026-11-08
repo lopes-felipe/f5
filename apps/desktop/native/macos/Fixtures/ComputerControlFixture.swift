@@ -23,6 +23,9 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
   var inputField: NSTextField!
   var delayedButton: NSButton?
   var performanceRevision = 0
+  var secondWindow: NSWindow?
+  var keyMonitor: Any?
+  /// Builds the synthetic window from command-line flags and reports FIXTURE_READY on stdout.
   func applicationDidFinishLaunching(_ notification: Notification) {
     window = NSWindow(
       contentRect: NSRect(x: 120, y: 120, width: 500, height: 300),
@@ -80,6 +83,26 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     finishButton.frame = NSRect(x: 350, y: 4, width: 120, height: 28)
     finishButton.isEnabled = false
     content.addSubview(finishButton)
+    if CommandLine.arguments.contains("--recovery-checks") {
+      // A press that removes its own element, like a swatch that closes its popover.
+      let dismissing = NSButton(
+        title: "Dismissing press", target: self, action: #selector(dismissingPress(_:)))
+      dismissing.frame = NSRect(x: 230, y: 240, width: 180, height: 18)
+      content.addSubview(dismissing)
+      // Cmd+N opens a second window on keydown, so focus moves before the keyup arrives.
+      keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) {
+        [weak self] event in
+        guard let self, event.keyCode == 45 else { return event }
+        if event.type == .keyDown && event.modifierFlags.contains(.command) {
+          if self.secondWindow == nil { self.openSecondWindow() }
+          return nil
+        }
+        if event.type == .keyUp {
+          FileHandle.standardOutput.write(Data("FIXTURE_N_UP\n".utf8))
+        }
+        return event
+      }
+    }
     if let index = CommandLine.arguments.firstIndex(of: "--tree-nodes"),
       index + 1 < CommandLine.arguments.count,
       let count = Int(CommandLine.arguments[index + 1]), (1...800).contains(count)
@@ -100,6 +123,17 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     DispatchQueue.global(qos: .utility).async { [weak self] in
       while let line = readLine() {
         guard line.count <= 128 else { return }
+        if line == "SECOND_WINDOW_CLOSE" {
+          DispatchQueue.main.async {
+            guard let self else { return }
+            self.secondWindow?.close()
+            self.secondWindow = nil
+            self.window.makeKeyAndOrderFront(nil)
+            self.window.makeFirstResponder(self.inputField)
+            FileHandle.standardOutput.write(Data("FIXTURE_SECOND_CLOSED\n".utf8))
+          }
+          continue
+        }
         if ["PERF_RESET", "PERF_VERIFY", "PERF_DELAY_BUTTON", "PERF_CHANGING", "PERF_BLUR"].contains(line) {
           DispatchQueue.main.async {
             guard let self else { return }
@@ -190,6 +224,26 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     FileHandle.standardOutput.write(Data("FIXTURE_TYPED\n".utf8))
   }
   @objc func focusSecureField() { window.makeFirstResponder(secure) }
+  /// Removes the pressed button during its own action, so AX may report the element gone.
+  @objc func dismissingPress(_ sender: NSButton) {
+    sender.removeFromSuperview()
+    FileHandle.standardOutput.write(Data("FIXTURE_DISMISSED\n".utf8))
+  }
+  /// Opens and focuses a second window on Cmd+N keydown, before the keyup is delivered.
+  func openSecondWindow() {
+    let second = NSWindow(
+      contentRect: NSRect(x: 160, y: 160, width: 320, height: 160),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    second.title = "Fixture Second Window"
+    second.isReleasedWhenClosed = false
+    let input = NSTextField(frame: NSRect(x: 20, y: 60, width: 280, height: 28))
+    input.setAccessibilityLabel("Second window input")
+    second.contentView?.addSubview(input)
+    second.makeKeyAndOrderFront(nil)
+    second.makeFirstResponder(input)
+    secondWindow = second
+    FileHandle.standardOutput.write(Data("FIXTURE_WINDOW_OPENED\n".utf8))
+  }
   func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
     guard commandSelector == #selector(NSResponder.insertNewline(_:)),
       let index = CommandLine.arguments.firstIndex(of: "--expected-text"),
