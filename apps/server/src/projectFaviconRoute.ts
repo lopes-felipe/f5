@@ -199,32 +199,47 @@ export async function findFaviconRelativePath(
     cache = new Map();
     faviconCaches.set(authorizer, cache);
   }
-  const cached = cache.get(projectId);
+  const key = JSON.stringify([projectId, reader.rootRealPath]);
+  const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     const relativePath = await cached.result;
-    if (relativePath === null) return null;
+    if (relativePath === null) {
+      if (cache.get(key) === cached) {
+        cache.delete(key);
+        cache.set(key, cached);
+      }
+      return null;
+    }
     try {
       // Reauthorize and validate the image, so removal, root changes, and
       // symlink replacements never serve a stale or unauthorized icon.
-      await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
+      await withFaviconProbe(() =>
+        reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) }),
+      );
+      if (cache.get(key) === cached) {
+        cache.delete(key);
+        cache.set(key, cached);
+      }
       return relativePath;
     } catch {
-      if (cache.get(projectId) === cached) cache.delete(projectId);
+      if (cache.get(key) === cached) cache.delete(key);
     }
   }
   const entry: FaviconCacheEntry = {
-    expiresAt: Infinity,
+    // Let later requests retry a stalled filesystem lookup without letting its
+    // eventual completion replace a newer cache entry.
+    expiresAt: Date.now() + 30_000,
     result: findFaviconWithReader(reader),
   };
-  cache.delete(projectId);
-  cache.set(projectId, entry);
+  cache.delete(key);
+  cache.set(key, entry);
   if (cache.size > 512) cache.delete(cache.keys().next().value!);
   try {
     const result = await entry.result;
     entry.expiresAt = Date.now() + (result === null ? 60_000 : 600_000);
     return result;
   } catch (error) {
-    if (cache.get(projectId) === entry) cache.delete(projectId);
+    if (cache.get(key) === entry) cache.delete(key);
     throw error;
   }
 }
