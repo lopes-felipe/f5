@@ -18,7 +18,7 @@ import {
   Trash2Icon,
   WorkflowIcon,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import {
   deleteThreadsWithCleanup,
@@ -42,8 +42,14 @@ import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
 import { Input } from "../../ui/input";
 import { toastManager } from "../../ui/toast";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../../ui/tooltip";
 
 export { ARCHIVE_SETTINGS_DESCRIPTORS } from "./ArchiveSettings.descriptors";
+
+const ARCHIVE_ACTIONS = [
+  ["unarchive", "Unarchive", ArchiveRestoreIcon],
+  ["delete", "Delete", Trash2Icon],
+] as const;
 
 type ArchiveItem =
   | {
@@ -156,6 +162,7 @@ export function ArchiveSettings() {
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const pendingActions = useRef(new Set<string>());
   const projectById = useMemo(
     () => new Map(projects.map((project) => [project.id, project])),
     [projects],
@@ -275,25 +282,20 @@ export function ArchiveSettings() {
   const restoreItems = useCallback(
     async (items: ReadonlyArray<ArchiveItem>) => {
       const keys = items.map((item) => item.key);
-      setItemBusy(keys, true);
-      try {
-        for (const item of items) {
-          if (item.kind === "thread") {
-            await setThreadArchived({ threadId: item.thread.id, archived: false });
-          } else {
-            await setWorkflowArchived({
-              workflowId: item.workflowId,
-              workflowType: item.workflowType,
-              archived: false,
-            });
-          }
+      for (const item of items) {
+        if (item.kind === "thread") {
+          await setThreadArchived({ threadId: item.thread.id, archived: false });
+        } else {
+          await setWorkflowArchived({
+            workflowId: item.workflowId,
+            workflowType: item.workflowType,
+            archived: false,
+          });
         }
-        removeSelectedKeys(keys);
-      } finally {
-        setItemBusy(keys, false);
       }
+      removeSelectedKeys(keys);
     },
-    [removeSelectedKeys, setItemBusy],
+    [removeSelectedKeys],
   );
 
   const deleteItems = useCallback(
@@ -309,12 +311,18 @@ export function ArchiveSettings() {
         const workflowCount = items.length - threadCount;
         const confirmed = await api.dialogs.confirm(
           [
-            `Delete ${items.length} archived item${items.length === 1 ? "" : "s"}?`,
+            items.length === 1
+              ? `Delete ${items[0]!.kind} "${items[0]!.title}"?`
+              : `Delete ${items.length} archived items?`,
             threadCount > 0
-              ? `${threadCount} thread${threadCount === 1 ? "" : "s"} will permanently lose conversation history.`
+              ? items.length === 1
+                ? "This permanently clears conversation history for this thread."
+                : `${threadCount} thread${threadCount === 1 ? "" : "s"} will permanently lose conversation history.`
               : null,
             workflowCount > 0
-              ? `${workflowCount} workflow record${workflowCount === 1 ? "" : "s"} will be removed; associated threads are kept.`
+              ? items.length === 1
+                ? "This removes the workflow record; associated threads are kept."
+                : `${workflowCount} workflow record${workflowCount === 1 ? "" : "s"} will be removed; associated threads are kept.`
               : null,
           ]
             .filter(Boolean)
@@ -326,38 +334,33 @@ export function ArchiveSettings() {
       }
 
       const threadIds = items.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : []));
-      setItemBusy(keys, true);
-      try {
-        const result = await deleteThreads(threadIds);
-        for (const item of items) {
-          if (item.kind !== "thread") {
-            await deleteWorkflow({
-              workflowId: item.workflowId,
-              workflowType: item.workflowType,
-              workflowTitle: item.title,
-              confirm: false,
-            });
-          }
-        }
-        const failed = new Set(result.failures.map((failure) => failure.threadId));
-        removeSelectedKeys(
-          items
-            .filter((item) => item.kind !== "thread" || !failed.has(item.thread.id))
-            .map((item) => item.key),
-        );
-        if (result.failures.length)
-          toastManager.add({
-            type: "error",
-            title: `${result.failures.length} thread deletions failed`,
-            description: result.failures
-              .map(({ error }) => (error instanceof Error ? error.message : String(error)))
-              .join("; "),
+      const result = await deleteThreads(threadIds);
+      for (const item of items) {
+        if (item.kind !== "thread") {
+          await deleteWorkflow({
+            workflowId: item.workflowId,
+            workflowType: item.workflowType,
+            workflowTitle: item.title,
+            confirm: false,
           });
-      } finally {
-        setItemBusy(keys, false);
+        }
       }
+      const failed = new Set(result.failures.map((failure) => failure.threadId));
+      removeSelectedKeys(
+        items
+          .filter((item) => item.kind !== "thread" || !failed.has(item.thread.id))
+          .map((item) => item.key),
+      );
+      if (result.failures.length)
+        toastManager.add({
+          type: "error",
+          title: `${result.failures.length} thread deletions failed`,
+          description: result.failures
+            .map(({ error }) => (error instanceof Error ? error.message : String(error)))
+            .join("; "),
+        });
     },
-    [deleteThreads, removeSelectedKeys, setItemBusy],
+    [deleteThreads, removeSelectedKeys],
   );
 
   const openItem = useCallback(
@@ -382,6 +385,43 @@ export function ArchiveSettings() {
     },
     [navigate],
   );
+
+  const runArchiveAction = async (
+    items: ReadonlyArray<ArchiveItem>,
+    action: "unarchive" | "delete",
+    bulk = false,
+  ) => {
+    const keys = items.map((item) => item.key);
+    if (keys.length === 0 || keys.some((key) => pendingActions.current.has(key))) return;
+    for (const key of keys) pendingActions.current.add(key);
+    setItemBusy(keys, true);
+    if (bulk) setBulkBusy(true);
+    try {
+      if (action === "unarchive") {
+        await restoreItems(items);
+      } else if (bulk || items[0]!.kind === "thread") {
+        await deleteItems(items, settings.confirmThreadDelete);
+      } else {
+        const item = items[0]!;
+        if (item.kind !== "workflow") return;
+        await deleteWorkflow({
+          workflowId: item.workflowId,
+          workflowType: item.workflowType,
+          workflowTitle: item.title,
+        });
+      }
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Failed to ${action} ${bulk ? "archived items" : items[0]!.kind}`,
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    } finally {
+      for (const key of keys) pendingActions.current.delete(key);
+      setItemBusy(keys, false);
+      if (bulk) setBulkBusy(false);
+    }
+  };
 
   const toggleSelectAllFiltered = useCallback(
     (selected: boolean) => {
@@ -417,10 +457,13 @@ export function ArchiveSettings() {
           <Button
             size="xs"
             variant="outline"
-            disabled={selectedFilteredItems.length === 0 || bulkBusy}
+            disabled={
+              selectedFilteredItems.length === 0 ||
+              bulkBusy ||
+              selectedFilteredItems.some((item) => busyKeys.has(item.key))
+            }
             onClick={() => {
-              setBulkBusy(true);
-              void restoreItems(selectedFilteredItems).finally(() => setBulkBusy(false));
+              void runArchiveAction(selectedFilteredItems, "unarchive", true);
             }}
           >
             <ArchiveRestoreIcon />
@@ -429,12 +472,13 @@ export function ArchiveSettings() {
           <Button
             size="xs"
             variant="outline"
-            disabled={selectedFilteredItems.length === 0 || bulkBusy}
+            disabled={
+              selectedFilteredItems.length === 0 ||
+              bulkBusy ||
+              selectedFilteredItems.some((item) => busyKeys.has(item.key))
+            }
             onClick={() => {
-              setBulkBusy(true);
-              void deleteItems(selectedFilteredItems, settings.confirmThreadDelete).finally(() =>
-                setBulkBusy(false),
-              );
+              void runArchiveAction(selectedFilteredItems, "delete", true);
             }}
           >
             <Trash2Icon />
@@ -546,34 +590,24 @@ export function ArchiveSettings() {
                         >
                           <ExternalLinkIcon className="size-3.5" />
                         </Button>
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => void restoreItems([item])}
-                          aria-label={`Unarchive ${item.title}`}
-                        >
-                          <ArchiveRestoreIcon className="size-3.5" />
-                        </Button>
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => {
-                            if (item.kind === "thread") {
-                              void deleteItems([item], settings.confirmThreadDelete);
-                            } else {
-                              void deleteWorkflow({
-                                workflowId: item.workflowId,
-                                workflowType: item.workflowType,
-                                workflowTitle: item.title,
-                              });
-                            }
-                          }}
-                          aria-label={`Delete ${item.title}`}
-                        >
-                          <Trash2Icon className="size-3.5" />
-                        </Button>
+                        {ARCHIVE_ACTIONS.map(([action, label, Icon]) => (
+                          <Tooltip key={action}>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  size="icon-xs"
+                                  variant="ghost"
+                                  disabled={busy}
+                                  onClick={() => void runArchiveAction([item], action)}
+                                  aria-label={`${label} ${item.title}`}
+                                />
+                              }
+                            >
+                              <Icon className="size-3.5" />
+                            </TooltipTrigger>
+                            <TooltipPopup>{label}</TooltipPopup>
+                          </Tooltip>
+                        ))}
                       </div>
                     </div>
                   );

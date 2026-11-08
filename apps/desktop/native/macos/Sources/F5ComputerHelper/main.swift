@@ -413,8 +413,14 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
+/// Keys, modifiers and buttons the hardware currently holds. The HID system state excludes
+/// posted events, so a synthetic keydown whose keyup never arrived (ours or another process's)
+/// cannot block a foreground takeover while nobody touches the keyboard or mouse. Agent events
+/// come from a private-state source. Side effect: input that arrives as software events (Screen
+/// Sharing, Universal Control, accessibility drivers) no longer counts as held, so a remote user
+/// holding a drag still for longer than the idle dwell does not block a takeover.
 func physicalInputHeld() -> Bool {
-  let state = CGEventSourceStateID.combinedSessionState
+  let state = CGEventSourceStateID.hidSystemState
   if !CGEventSource.flagsState(state).intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]).isEmpty {
     return true
   }

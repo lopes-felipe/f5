@@ -43,6 +43,9 @@ export const makeRuntimeSqliteLayer = (
         // This pragma is connection-local: Bun readers need it too, before any
         // snapshot or crash-recovery read can contend with the writer.
         yield* client`PRAGMA busy_timeout = 5000`.pipe(Effect.orDie);
+        // Keep statement journals and sort spills off the main thread's disk
+        // path, including reader sorts. Large queries can use more peak memory.
+        yield* client`PRAGMA temp_store = MEMORY`.pipe(Effect.orDie);
         // Reporting here covers the Bun driver too, not just NodeSqliteClient.
         return yield* makeLeasedSqlClient(client, config.readonly === true, config.filename);
       }),

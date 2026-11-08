@@ -12,6 +12,7 @@ import type {
   ComputerScreenshot,
   ComputerInspectResult,
   ComputerTargetAvailability,
+  ComputerUserActiveDetail,
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
@@ -31,13 +32,19 @@ import {
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_SHARED_APP_CAPABILITY,
   COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
+  isComputerUserActiveDetail,
 } from "@t3tools/contracts";
 import { ComputerLeaseAuthority, sameComputerHolder } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
-import { ComputerCooperation } from "./ComputerCooperation";
+import { COMPUTER_TAKEOVER_IDLE_MS, ComputerCooperation } from "./ComputerCooperation";
 import { ComputerAdmissionQueue, type ComputerAdmission } from "./ComputerAdmissionQueue";
 import { ComputerSharedAppState } from "./ComputerSharedAppState";
 import { COMPUTER_OVERLAY_ACTION_MAX_MS } from "./computerOverlayTiming";
+
+/** Whether a foreground takeover could arm now, and if not, which condition blocks it. */
+export type ComputerTakeoverIdle =
+  | { idle: true }
+  | { idle: false; detail: ComputerUserActiveDetail };
 
 interface Admission {
   owner: string;
@@ -408,6 +415,8 @@ export class ComputerController {
     holder: ComputerLeaseHolder,
     appId: string | undefined,
     timeoutMs: number,
+    /** Whether a takeover this wait precedes would be cooperative (defaults to the holder's). */
+    takeoverCooperative = holder.cooperative === true,
   ): Promise<ComputerTargetAvailability> {
     const waitKey = holder.profileId + "\0" + requestId;
     if (this.availabilityWaiters.size >= 32 || this.availabilityWaiters.has(waitKey))
@@ -428,6 +437,7 @@ export class ComputerController {
     });
     const deadline = performance.now() + timeoutMs;
     let reason: ComputerTargetAvailability["reason"] = "user-active";
+    let detail: ComputerUserActiveDetail | undefined;
     try {
       if (appId) await race(this.cooperation.prepare(holder, appId));
       do {
@@ -445,7 +455,8 @@ export class ComputerController {
         await race(this.cooperation.refresh(holder, appId));
         if (cancelled) throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
         try {
-          // Without an app and without a yielded foreground, only foreground ownership is relevant.
+          // Without an app and without a yielded foreground, the wait precedes a takeover: it
+          // needs foreground ownership and the same idle condition the takeover arms on.
           const yielded = this.cooperation.yielded.get(this.key(holder));
           if (!appId && (!yielded || yielded.appId || !this.lease.find(yielded.holder))) {
             try {
@@ -464,6 +475,13 @@ export class ComputerController {
                 requiresFreshObservation: true,
               };
             }
+            const idle = this.takeoverIdle({ ...holder, cooperative: takeoverCooperative });
+            if (!idle.idle)
+              throw new ComputerControlError({
+                _tag: "TargetBlocked",
+                kind: "user-active",
+                detail: idle.detail,
+              });
             return { available: true, timedOut: false, requiresFreshObservation: true };
           }
           if (
@@ -481,9 +499,13 @@ export class ComputerController {
           else if (
             error._tag === "TargetBlocked" &&
             (error.kind === "foreground-busy" || error.kind === "user-active")
-          )
+          ) {
             reason = error.kind;
-          else throw cause;
+            detail =
+              error.kind === "user-active" && isComputerUserActiveDetail(error.detail)
+                ? error.detail
+                : undefined;
+          } else throw cause;
         }
         if (performance.now() >= deadline) break;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -501,7 +523,13 @@ export class ComputerController {
           this.availabilityListeners.delete(changed);
         }
       } while (performance.now() < deadline);
-      return { available: false, timedOut: true, reason, requiresFreshObservation: true };
+      return {
+        available: false,
+        timedOut: true,
+        reason,
+        ...(reason === "user-active" && detail ? { detail } : {}),
+        requiresFreshObservation: true,
+      };
     } finally {
       this.availabilityWaiters.delete(waitKey);
     }
@@ -693,21 +721,36 @@ export class ComputerController {
     return this.frontmostAppId;
   }
   /**
+   * One idle predicate for foreground takeovers, read from cached telemetry (no native call).
+   * Cooperative holders use the same rule and dwell as foreground action admission (healthy
+   * monitor, nothing held, no input within the dwell), so an armed takeover's first action is
+   * admitted. Without a cooperative sample yet, only the physical input age applies and arming
+   * re-checks natively.
+   */
+  takeoverIdle(holder: ComputerLeaseHolder): ComputerTakeoverIdle {
+    if (holder.cooperative && this.cooperates(holder) && this.cooperation.sample()) {
+      const detail = this.cooperation.blockedDetail(holder, undefined);
+      return detail ? { idle: false, detail } : { idle: true };
+    }
+    return this.inputIdleMs() >= COMPUTER_TAKEOVER_IDLE_MS
+      ? { idle: true }
+      : { idle: false, detail: "recent-input" };
+  }
+  /**
    * Native readiness for a takeover: the helper's own idle age and input sequence, read now
    * rather than from the last heartbeat. The sequence is re-checked by the helper on resume.
    */
-  async takeoverReadiness(holder?: ComputerLeaseHolder): Promise<{ idleMs: number }> {
+  async takeoverReadiness(
+    holder?: ComputerLeaseHolder,
+  ): Promise<{ idleMs: number; detail?: ComputerUserActiveDetail }> {
     if (holder?.cooperative && this.cooperates(holder)) {
       await this.cooperation.prepare(holder);
       const ready = this.cooperation.readiness(holder)!;
       this.takeoverInputSequence = ready.inputSequence;
-      return {
-        idleMs: this.cooperation.blocked(holder)
-          ? 0
-          : ready.lastUserInputAgeMs < 0
-            ? Infinity
-            : ready.lastUserInputAgeMs,
-      };
+      // Same rule and threshold the idle wait polls, so a pass here is not sent back to wait.
+      const idle = this.takeoverIdle(holder);
+      if (!idle.idle) return { idleMs: 0, detail: idle.detail };
+      return { idleMs: ready.lastUserInputAgeMs < 0 ? Infinity : ready.lastUserInputAgeMs };
     }
     if (!this.helper.readiness) return { idleMs: this.inputIdleMs() };
     const ready = await this.helper.readiness();

@@ -4,6 +4,23 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.
+- GitLab merge requests show failed child pipelines in PR Hub checks and watches, retain them across discovery polls, and avoid reporting incomplete check reads as passed.
+- Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
+- Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
+- Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
+- Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
+- Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
+- Popovers overlapping the desktop window header respond to hover and clicks.
+
+## [0.1.6] - 2026-11-08
+
+### Fixed
+
+- On macOS, a stuck synthetic key no longer blocks foreground takeovers in Full access threads while nobody is using the computer. Waiting for the foreground now reports ready only when a takeover can start, and a takeover that times out says why: recent input, held input, or an unhealthy input monitor.
+
 ## [0.1.5] - 2026-11-08
 
 ### Added

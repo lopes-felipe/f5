@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { forgeReviewThreads } from "./forgeModel.ts";
+import { forgeReviewThreads, forgeTracked, forgeDetail } from "./forgeModel.ts";
+import {
+  gitLabHeadPipelineChecks,
+  gitLabTriggerJobChecks,
+} from "../sourceControl/gitLabPipelineChecks.ts";
 import {
   FORGE_CAPABILITIES,
   type ForgeProvider,
@@ -11,6 +15,55 @@ const provider = (resolve = true) =>
       review: { ...FORGE_CAPABILITIES.gitlab.review, resolve },
     },
   }) as ForgeProvider;
+
+it.each([
+  ["canceled", false, "failure"],
+  ["cancelling", false, "failure"],
+  ["manual", false, "pending"],
+  ["skipped", false, "pending"],
+  ["success", true, "success"],
+] as const)(
+  "rolls up a %s head with allowed child failure=%s as %s",
+  (status, allowed, expected) => {
+    const raw = { head_pipeline: { status } };
+    const detail = {
+      number: 7,
+      title: "Change",
+      body: "",
+      url: "",
+      baseRefName: "main",
+      headRefName: "topic",
+      headRefOid: "head",
+      raw,
+      checksComplete: true,
+      checks: [
+        ...gitLabHeadPipelineChecks(raw.head_pipeline),
+        ...(allowed
+          ? (gitLabTriggerJobChecks([
+              { name: "test", allow_failure: true, downstream_pipeline: { status: "failed" } },
+            ]) ?? [])
+          : []),
+      ],
+    };
+    const pr = forgeTracked(
+      {
+        id: "a",
+        provider: "gitlab",
+        host: "gitlab.com",
+        login: "alice",
+        viewerId: "1",
+        generation: "1",
+      },
+      { provider: "gitlab", host: "gitlab.com", repository: "team/repo", number: 7 },
+      detail,
+      provider(),
+    );
+    expect(pr.checkRollup).toBe(expected);
+    expect(forgeDetail(pr, { ...detail, checksComplete: false }).detail.truncatedSections).toEqual([
+      "checks",
+    ]);
+  },
+);
 describe("native per-item permissions", () => {
   it("retains host edit and resolution denials instead of repository defaults", () => {
     const [thread] = forgeReviewThreads(

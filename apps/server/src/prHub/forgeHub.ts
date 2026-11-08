@@ -13,6 +13,7 @@ import {
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
 import {
+  formatSourceControlPullRequestKey,
   parseSourceControlPullRequestKey,
   parseSourceControlPullRequestUrl,
 } from "@t3tools/shared/sourceControl";
@@ -185,6 +186,20 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             "The forge returned an invalid pull request identity.",
             "invalid_response",
           );
+        const previous = state.get(formatSourceControlPullRequestKey(ref));
+        // Comparison-only reads must not erase checks verified for the same head.
+        if (
+          detail.checks === undefined &&
+          previous &&
+          detail.headRefOid &&
+          previous.pr.headRefOid === detail.headRefOid
+        ) {
+          detail = {
+            ...detail,
+            checks: previous.detail.detail.checks,
+            checksComplete: !previous.detail.detail.truncatedSections?.includes("checks"),
+          };
+        }
         const normalized = forgeTracked(account, ref, detail, provider),
           old = state.get(normalized.key)?.pr;
         const pr = {
@@ -224,7 +239,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       });
     const refreshOne = (ref: SourceControlPullRequestRef) =>
       Effect.gen(function* () {
-        const detail = yield* provider.getDetail(ref);
+        const detail = yield* provider.getDetail(ref, { checks: true });
         return yield* saveDetail(ref, detail);
       });
     const refreshNow: PrHubServiceShape["refreshNow"] = (input) =>
@@ -274,9 +289,12 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             }
             for (const detail of discovered.success.slice(0, 100)) {
               if (!Number.isInteger(detail.number) || detail.number < 1) continue;
-              const saved = yield* saveDetail({ ...ref, number: detail.number }, detail).pipe(
-                Effect.result,
-              );
+              const discoveredRef = { ...ref, number: detail.number };
+              const saved = yield* (
+                account.provider === "gitlab"
+                  ? refreshOne(discoveredRef)
+                  : saveDetail(discoveredRef, detail)
+              ).pipe(Effect.result);
               if (saved._tag === "Failure") failures++;
               else discoveredKeys.add(saved.success.key);
             }

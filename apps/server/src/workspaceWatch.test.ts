@@ -202,10 +202,12 @@ describe("WorkspaceWatchRegistry", () => {
   it("reports external edits with advancing revisions", async () => {
     await registry.setWatchedPaths(client, { cwd: root, files: ["src/app.ts"], directories: [] });
 
-    await fsp.writeFile(path.join(root, "src", "app.ts"), "export const a = 2;\n");
+    // Change size as well as content: rapid same-size writes can retain the
+    // same mtime on Windows, leaving the stat signature unchanged.
+    await fsp.writeFile(path.join(root, "src", "app.ts"), "export const a = 22;\n");
     await waitForChange("client", { relativePath: "src/app.ts", change: "changed" });
 
-    await fsp.writeFile(path.join(root, "src", "app.ts"), "export const a = 33;\n");
+    await fsp.writeFile(path.join(root, "src", "app.ts"), "export const a = 333;\n");
     await vi.waitFor(() => expect(changesFor("client").length).toBeGreaterThanOrEqual(2), {
       timeout: 5_000,
     });

@@ -227,7 +227,8 @@ export function SidebarNav(props: {
   const searchVisible = searchOpen || props.searchQuery.length > 0;
 
   return (
-    // Top padding keeps the count badges, which rise above their buttons, inside the scroll area.
+    // Pinned above the scroll area. Top padding keeps the count badges, which rise above their
+    // buttons, clear of the New thread row.
     <nav aria-label="Primary" className="shrink-0 p-2">
       <div className="flex items-center justify-between gap-0.5 border-b border-sidebar-border pb-2">
         <NavIconButton
