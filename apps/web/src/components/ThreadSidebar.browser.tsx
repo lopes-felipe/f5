@@ -2317,7 +2317,7 @@ describe("Thread sidebar", () => {
       );
       // The strip is pinned above the scroll area, like the New thread row.
       expect(navigation.closest('[data-sidebar="content"]')).toBeNull();
-      const navLabels =[...navigation.querySelectorAll("button[aria-label]")].map((button) =>
+      const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
         button.getAttribute("aria-label"),
       );
       expect(navLabels).toEqual([
