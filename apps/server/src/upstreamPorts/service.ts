@@ -156,7 +156,7 @@ import {
 } from "./admission.ts";
 import { decisionFields, DecisionError, suggestionDecision } from "./decisions.ts";
 import type { CommitNumstat, UpstreamGit } from "./git.ts";
-import { parseGitHubRepo, type UpstreamGitHub } from "./github.ts";
+import { parseGitHubRepo, type PullRequestTopicEvidence, type UpstreamGitHub } from "./github.ts";
 import {
   BASE_FETCH_MIN_INTERVAL_MS,
   PUBLISH_DEBOUNCE_MS,
@@ -446,10 +446,7 @@ export function makeUpstreamPortsService(
     const recoveredOutcomeThreads = new Map<string, { key: string; retryAt: number | null }>();
     const prTopicEvidence = new Map<
       string,
-      {
-        value: { readonly texts: ReadonlyArray<string>; readonly complete: boolean } | null;
-        expiresAt: number;
-      }
+      { value: PullRequestTopicEvidence | null; expiresAt: number }
     >();
     const portLocks = new Map<string, Semaphore.Semaphore>();
     const withPortLock = <A, E>(projectId: string, effect: Effect.Effect<A, E>) =>
@@ -2738,6 +2735,10 @@ export function makeUpstreamPortsService(
         return { revision: (yield* currentView(context)).revision };
       }).pipe(Effect.mapError(internal));
 
+    /** A merged port's trailer is final: nothing that thread does later can unland it. */
+    const landedOnDefaultBranch = (snapshot: CurrentView, topicId: string, epoch: number) =>
+      snapshot.base.trailers.epochs.get(topicId)?.has(epoch) === true;
+
     /** Ledger decisions outlive the turn that recorded them. An idle resolved topic
      * must not regain its reservation when a later turn reports a different result. */
     const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
@@ -2747,7 +2748,9 @@ export function makeUpstreamPortsService(
           return (
             link.state === "active" &&
             row?.topic.epoch === link.epoch &&
-            (row.state !== "done" || row.topic.status === "equivalent")
+            (row.state !== "done" ||
+              (row.topic.status === "equivalent" &&
+                !landedOnDefaultBranch(snapshot, link.topicId, link.epoch)))
           );
         });
         const resolvedTopics = new Set(
@@ -2905,7 +2908,8 @@ export function makeUpstreamPortsService(
                 row.topic.id === link.topicId &&
                 row.topic.epoch === link.epoch &&
                 (row.state === "in-progress" ||
-                  row.topic.status === "equivalent" ||
+                  (row.topic.status === "equivalent" &&
+                    !landedOnDefaultBranch(snapshot, link.topicId, link.epoch)) ||
                   (row.state === "skipped" &&
                     row.topic.decidedBy === "llm" &&
                     row.topic.reasonKey === "not-applicable")),
@@ -2996,7 +3000,8 @@ export function makeUpstreamPortsService(
                 typeof value === "string" && Number.isFinite(Date.parse(value)),
             );
             let needsRetry = false;
-            let hasBatchPr = false;
+            // A merged or closed PR's trailers are final; only a live batch PR needs re-reading.
+            let hasLiveBatchPr = false;
             if (admittedAt) {
               const replies = yield* readSettledPortReplies(deps.sql, threadId, admittedAt);
               const [latest] = yield* readTurnAssistantMessages(deps.sql, [
@@ -3011,10 +3016,7 @@ export function makeUpstreamPortsService(
               const forkRepo = yield* forkRepoFor(context);
               for (const reply of replies) {
                 const parsed = parseUpstreamOutcomes(reply.text, { forkRepo });
-                let evidence: {
-                  readonly texts: ReadonlyArray<string>;
-                  readonly complete: boolean;
-                } | null = null;
+                let evidence: PullRequestTopicEvidence | null = null;
                 if (
                   parsed.thread?.kind === "pr" &&
                   (group?.topicIds.length ?? threadLinks.length) > 1 &&
@@ -3022,7 +3024,6 @@ export function makeUpstreamPortsService(
                     (link) => !parsed.byTopic.has(link.topicId) && !parsed.errors.has(link.topicId),
                   )
                 ) {
-                  hasBatchPr = true;
                   // Parsing already validated this PR against origin, including credentialed remotes.
                   const repo = parseGitHubRepo(parsed.thread.detail.split("/pull/")[0]!);
                   const cacheKey = canonicalJson([context.projectId, parsed.thread.detail]);
@@ -3048,11 +3049,14 @@ export function makeUpstreamPortsService(
                     prTopicEvidence.delete(cacheKey);
                     prTopicEvidence.set(cacheKey, {
                       value: evidence,
-                      expiresAt: now().getTime() + (evidence?.complete ? 120_000 : 15_000),
+                      expiresAt: evidence?.final
+                        ? Number.POSITIVE_INFINITY
+                        : now().getTime() + (evidence?.complete ? 120_000 : 15_000),
                     });
                     if (prTopicEvidence.size > 1000)
                       prTopicEvidence.delete(prTopicEvidence.keys().next().value!);
                   }
+                  if (!evidence?.final) hasLiveBatchPr = true;
                 }
                 const trailers = evidence?.texts.flatMap(parseUpstreamTopicTrailers) ?? [];
                 for (const link of threadLinks) {
@@ -3127,7 +3131,7 @@ export function makeUpstreamPortsService(
               key: recoveryKey,
               retryAt: needsRetry
                 ? now().getTime() + 15_000
-                : hasBatchPr
+                : hasLiveBatchPr
                   ? now().getTime() + 120_000
                   : null,
             });

@@ -377,6 +377,100 @@ layer("upstream port queue", (it) => {
       }),
     );
 
+  it.effect("releases an equivalent topic's PR reservation once its trailer lands on main", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+      yield* service.enqueuePort({
+        ...queueInput(ids.slice(0, 2), "landed"),
+        grouping: "together",
+      });
+      yield* service.testing.awaitIdle;
+      const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+        .threadId!;
+      const sql = yield* SqlClient.SqlClient;
+      const decisions = [
+        "UPSTREAM-OUTCOME " + ids[0] + ": equivalent src/already.ts:1",
+        "UPSTREAM-OUTCOME " + ids[1] + ": not-applicable No subsystem.",
+      ].join("\n");
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'decided','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('decided-message',${threadId},'decided','assistant',${decisions},0,'2026-10-22T12:00:00.000Z','now')`;
+      fixture.host.threads = [completedThread(threadId, "decided", "decided-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const equivalent = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row;
+      assert.equal(equivalent.topic.status, "equivalent");
+      assert.equal(equivalent.state, "done");
+
+      // A later turn ports the equivalent topic in a batch PR after all.
+      const pr = {
+        repo: "o/f5",
+        number: 42,
+        url: "https://github.com/o/f5/pull/42",
+        state: "open" as "open" | "merged",
+        head: "landed",
+        title: "Port first topic",
+        body: "Upstream-Topic: " + ids[0],
+      };
+      fixture.gh.prs.push(pr);
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('pr-message',${threadId},'pr-turn','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','now')`;
+      fixture.host.threads = [
+        {
+          ...completedThread(threadId, "pr-turn", "pr-message"),
+          latestTurn: {
+            ...completedThread(threadId, "pr-turn", "pr-message").latestTurn!,
+            requestedAt: "2026-10-22T12:02:00.000Z",
+          },
+        },
+      ];
+      yield* service.enqueuePort(queueInput(ids.slice(2), "waits-for-landing"));
+      yield* service.testing.awaitIdle;
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const evidenceReads = () =>
+        fixture.gh.calls.filter((call) => call === "topic evidence 42").length;
+      const queued = () =>
+        service
+          .getPortQueue({ projectId: PROJECT_ID })
+          .pipe(Effect.map((queue) => queue.entries.find((entry) => entry.status === "queued")));
+
+      // While the PR is open the equivalent topic keeps its files, and its evidence is re-read.
+      assert.deepStrictEqual(
+        (yield* queued())!.waitingOn.map((blocker) => blocker.topicId),
+        [ids[0]],
+      );
+      const openReads = evidenceReads();
+      assert.isAbove(openReads, 0);
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.isAbove(evidenceReads(), openReads);
+      assert.isDefined(yield* queued());
+
+      // Merging lands the trailer: the reservation ends and the merged PR is not polled again.
+      pr.state = "merged";
+      fixture.repo.remoteTips.set(
+        "origin/main",
+        fixture.repo.commit({
+          parent: fixture.repo.refs.get("refs/remotes/origin/main")!,
+          subject: "Port first topic (#42)",
+          body: "Upstream-Topic: " + ids[0],
+        }),
+      );
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.isUndefined(yield* queued());
+      assert.equal(fixture.host.submissions.length, 2);
+      const finalReads = evidenceReads();
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 121_000);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(evidenceReads(), finalReads);
+    }),
+  );
+
   it.effect("keeps a scoped PR out of unrelated topics after a status turn", () =>
     Effect.gen(function* () {
       const { fixture, service, ids } = yield* prepareQueue(2, 1);
