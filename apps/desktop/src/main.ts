@@ -693,6 +693,7 @@ function initializeComputerSystem(): void {
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
+      log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
     },
     computerGrants,
     {
