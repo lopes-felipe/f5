@@ -34,6 +34,8 @@ export async function createRehearsalFixture(options: {
   preparedDirectory?: string;
   treeNodes?: number;
   delayedFocus?: boolean;
+  /** macOS only: adds a self-dismissing button and a Cmd+N second window. */
+  recoveryChecks?: boolean;
   onChild?: (child: ChildProcessByStdio<Writable, Readable, Readable | null>) => void;
 }) {
   if (process.platform === "win32") {
@@ -84,6 +86,7 @@ export async function createRehearsalFixture(options: {
     ...(options.observeChord ? ["--observe-chord"] : []),
     ...(options.diagnoseChord ? ["--diagnose-chord"] : []),
     ...(options.passiveChord ? ["--passive-chord"] : []),
+    ...(options.recoveryChecks ? ["--recovery-checks"] : []),
   ];
   const child = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"] });
   options.onChild?.(child);
@@ -213,6 +216,8 @@ export async function observeRehearsalFixture(
     typed: () => typed,
     acknowledged: () => acknowledged,
     entered: () => entered,
+    /** How many times a bounded synthetic receipt line has been seen. */
+    receipt: (line: string) => receipts.get(line) ?? 0,
     command: async (command: string, receipt: string) => {
       const before = receipts.get(receipt) ?? 0;
       child.stdin.write(command + "\n");

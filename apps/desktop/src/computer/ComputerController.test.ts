@@ -101,6 +101,33 @@ function envelope(id: string, authorization = auth, extras: Record<string, unkno
   } as ComputerAutomationRequest;
 }
 describe("main computer controller", () => {
+  it("keeps control active when a foreground action succeeds unverified", async () => {
+    const h = make();
+    // A shortcut that opens a window, or a press that closes its own popover, comes back
+    // as success with verified:false; only a real OutcomeUnknown enters recovery.
+    h.request.mockResolvedValueOnce({
+      displayId: "d",
+      geometryGeneration: "g",
+      frontmostApp: null,
+      cursor: null,
+      actionCompleted: true,
+      verification: { verified: false },
+    });
+    try {
+      await expect(
+        h.controller.invoke(envelope("unverified", auth, { op: "key", chords: ["Meta+N"] })),
+      ).resolves.toMatchObject({ actionCompleted: true, verification: { verified: false } });
+      expect(h.paused).not.toHaveBeenCalled();
+      expect(h.controller.resumeTarget("p", "t")).toMatchObject({
+        pauseCause: undefined,
+        recovery: false,
+      });
+      await h.controller.invoke(envelope("next"));
+      expect(h.request).toHaveBeenCalledTimes(2);
+    } finally {
+      h.controller.close();
+    }
+  });
   it("releases a cancelled helper wait and ignores its late result", async () => {
     const h = make();
     let finish: (value: unknown) => void = () => {};
