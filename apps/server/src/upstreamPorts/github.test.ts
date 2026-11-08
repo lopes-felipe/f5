@@ -79,6 +79,39 @@ it.effect(
     }),
 );
 
+it.effect("marks only complete evidence from a merged PR as final", () =>
+  Effect.gen(function* () {
+    const complete = {
+      nodes: [{ commit: { message: "Port\n\nUpstream-Topic: pr-2" } }],
+      pageInfo: { hasNextPage: false },
+    };
+    const partial = { nodes: [{ commit: { message: "Port" } }], pageInfo: { hasNextPage: true } };
+    for (const [state, commits, final] of [
+      ["MERGED", complete, true],
+      ["CLOSED", complete, false],
+      ["OPEN", complete, false],
+      [undefined, complete, false],
+      ["MERGED", partial, false],
+    ] as const) {
+      const github = makeUpstreamGitHub({
+        ...makeFakeGitHubCli().service,
+        runGraphql: (input) => {
+          assert.include(input.query, "pullRequest(number: $number) { state body");
+          return Effect.succeed({
+            data: { repository: { pullRequest: { state, body: "", commits } } },
+          });
+        },
+      });
+      const evidence = yield* github.readPullRequestTopicEvidence({
+        cwd: "/repo",
+        repo: fork,
+        number: 7,
+      });
+      assert.equal(evidence!.final, final, `${state ?? "missing"} state`);
+    }
+  }),
+);
+
 it.effect("maps the PR head repository, branch and SHA and the base ref", () =>
   Effect.gen(function* () {
     const { github } = harness(() => ({
