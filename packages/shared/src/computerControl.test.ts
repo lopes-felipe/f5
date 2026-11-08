@@ -33,6 +33,11 @@ describe("ComputerControlError Interrupted messages", () => {
     expect(
       new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" }).message,
     ).toMatch(/^TargetBlocked user-active: call computer_wait_for_target/);
+    // Unknown values from a newer peer never reach agent-visible text.
+    expect(
+      new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active", detail: "x\ny" })
+        .message,
+    ).toMatch(/^TargetBlocked user-active: call computer_wait_for_target/);
   });
 
   it("keeps the structured error unchanged", () => {

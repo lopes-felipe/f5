@@ -473,6 +473,30 @@ describe("cooperative computer control", () => {
       h.controller.close();
     }
   });
+  it("reports a takeover ready only when admission would accept its first action", async () => {
+    const h = fixture({ kind: "foreground" });
+    const takeover = {
+      ...h.holder,
+      scope: { kind: "takeover" as const, appId: "app", approvalReceipt: "approval" },
+    };
+    try {
+      // Past a 1.5 s idle rule but inside the 3 s foreground admission dwell.
+      h.ready.lastUserInputAgeMs = 2000;
+      await expect(
+        h.controller.waitForTarget("early", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: false, reason: "user-active", detail: "recent-input" });
+      expect(h.controller.takeoverIdle(takeover)).toEqual({ idle: false, detail: "recent-input" });
+      expect(h.controller.cooperation.blocked(takeover)).toBe(true);
+      h.ready.lastUserInputAgeMs = 3500;
+      await expect(
+        h.controller.waitForTarget("ready", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: true });
+      const armed = h.lease.armTakeover(h.lease.reserveTakeover(takeover), "receipt");
+      await expect(h.controller.invoke(action(armed))).resolves.toEqual({ ok: true });
+    } finally {
+      h.controller.close();
+    }
+  });
   it("still reports foreground-busy ahead of user activity for a takeover wait", async () => {
     const h = fixture({ kind: "foreground" });
     try {

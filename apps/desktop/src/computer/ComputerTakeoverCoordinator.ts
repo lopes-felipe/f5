@@ -245,6 +245,13 @@ export class ComputerTakeoverCoordinator {
         takeover.detail = detail ?? "recent-input";
         release();
         release = undefined;
+        // The cached poll and this native check can disagree; the give-up deadline still holds.
+        if (this.now() - started >= TAKEOVER_IDLE_TIMEOUT_MS)
+          throw new ComputerControlError({
+            _tag: "TargetBlocked",
+            kind: "user-active",
+            detail: takeover.detail,
+          });
         this.waitIdle(takeover, started);
         return;
       }

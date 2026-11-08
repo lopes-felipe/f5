@@ -32,18 +32,19 @@ import {
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_SHARED_APP_CAPABILITY,
   COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
+  isComputerUserActiveDetail,
 } from "@t3tools/contracts";
 import { ComputerLeaseAuthority, sameComputerHolder } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
 import { COMPUTER_TAKEOVER_IDLE_MS, ComputerCooperation } from "./ComputerCooperation";
+import { ComputerAdmissionQueue, type ComputerAdmission } from "./ComputerAdmissionQueue";
+import { ComputerSharedAppState } from "./ComputerSharedAppState";
+import { COMPUTER_OVERLAY_ACTION_MAX_MS } from "./computerOverlayTiming";
 
 /** Whether a foreground takeover could arm now, and if not, which condition blocks it. */
 export type ComputerTakeoverIdle =
   | { idle: true }
   | { idle: false; detail: ComputerUserActiveDetail };
-import { ComputerAdmissionQueue, type ComputerAdmission } from "./ComputerAdmissionQueue";
-import { ComputerSharedAppState } from "./ComputerSharedAppState";
-import { COMPUTER_OVERLAY_ACTION_MAX_MS } from "./computerOverlayTiming";
 
 interface Admission {
   owner: string;
@@ -500,7 +501,10 @@ export class ComputerController {
             (error.kind === "foreground-busy" || error.kind === "user-active")
           ) {
             reason = error.kind;
-            detail = error.kind === "user-active" ? error.detail : undefined;
+            detail =
+              error.kind === "user-active" && isComputerUserActiveDetail(error.detail)
+                ? error.detail
+                : undefined;
           } else throw cause;
         }
         if (performance.now() >= deadline) break;
@@ -718,19 +722,15 @@ export class ComputerController {
   }
   /**
    * One idle predicate for foreground takeovers, read from cached telemetry (no native call).
-   * Cooperative holders also require a healthy monitor and no held key or button; without a
-   * cooperative sample yet, only the physical input age applies and arming re-checks natively.
+   * Cooperative holders use the same rule and dwell as foreground action admission (healthy
+   * monitor, nothing held, no input within the dwell), so an armed takeover's first action is
+   * admitted. Without a cooperative sample yet, only the physical input age applies and arming
+   * re-checks natively.
    */
   takeoverIdle(holder: ComputerLeaseHolder): ComputerTakeoverIdle {
-    const sample =
-      holder.cooperative && this.cooperates(holder) ? this.cooperation.sample() : undefined;
-    if (sample) {
-      if (!sample.ready.monitorHealthy) return { idle: false, detail: "monitor-unhealthy" };
-      if (sample.ready.inputHeld) return { idle: false, detail: "input-held" };
-      const age = sample.ready.lastUserInputAgeMs;
-      if (age >= 0 && age + this.cooperationNow() - sample.at < COMPUTER_TAKEOVER_IDLE_MS)
-        return { idle: false, detail: "recent-input" };
-      return { idle: true };
+    if (holder.cooperative && this.cooperates(holder) && this.cooperation.sample()) {
+      const detail = this.cooperation.blockedDetail(holder, undefined);
+      return detail ? { idle: false, detail } : { idle: true };
     }
     return this.inputIdleMs() >= COMPUTER_TAKEOVER_IDLE_MS
       ? { idle: true }

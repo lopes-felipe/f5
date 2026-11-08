@@ -217,17 +217,23 @@ export const ComputerTargetReadiness = Schema.Struct({
 });
 export type ComputerTargetReadiness = typeof ComputerTargetReadiness.Type;
 /** Which idle condition kept a "user-active" foreground takeover from arming. */
-export const ComputerUserActiveDetail = Schema.Literals([
+export const COMPUTER_USER_ACTIVE_DETAILS = [
   "recent-input",
   "input-held",
   "monitor-unhealthy",
-]);
-export type ComputerUserActiveDetail = typeof ComputerUserActiveDetail.Type;
+] as const;
+/** The values producers send. Decoders accept any string so a newer peer's value never fails. */
+export type ComputerUserActiveDetail = (typeof COMPUTER_USER_ACTIVE_DETAILS)[number];
+export function isComputerUserActiveDetail(value: unknown): value is ComputerUserActiveDetail {
+  return (COMPUTER_USER_ACTIVE_DETAILS as ReadonlyArray<unknown>).includes(value);
+}
+/** Diagnostic only: decoded leniently, and unknown values are never shown to agents. */
+const ComputerUserActiveDetailWire = Schema.String;
 export const ComputerTargetAvailability = Schema.Struct({
   available: Schema.Boolean,
   timedOut: Schema.Boolean,
   reason: Schema.optionalKey(Schema.Literals(["user-active", "agent-busy", "foreground-busy"])),
-  detail: Schema.optionalKey(ComputerUserActiveDetail),
+  detail: Schema.optionalKey(ComputerUserActiveDetailWire),
   requiresFreshObservation: Schema.Literal(true),
 });
 export type ComputerTargetAvailability = typeof ComputerTargetAvailability.Type;
@@ -533,7 +539,7 @@ export const ComputerAutomationError = Schema.Union([
       "foreground-busy",
       "shared-focus",
     ]),
-    detail: Schema.optionalKey(ComputerUserActiveDetail),
+    detail: Schema.optionalKey(ComputerUserActiveDetailWire),
   }),
   Schema.Struct({ _tag: Schema.Literal("Execution"), message: Schema.String }),
   Schema.Struct({

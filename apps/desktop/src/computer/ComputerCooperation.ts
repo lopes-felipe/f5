@@ -3,11 +3,15 @@ import {
   type ComputerAutomationRequest,
   type ComputerLeaseHolder,
   type ComputerTargetReadiness,
+  type ComputerUserActiveDetail,
 } from "@t3tools/contracts";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
 import type { ComputerHelper } from "./ComputerHelperClient";
 
-/** A foreground takeover arms only after this long without physical input. */
+/**
+ * A non-cooperative foreground takeover arms only after this long without physical input.
+ * Cooperative takeovers use the foreground admission dwell from `blockedDetail` instead.
+ */
 export const COMPUTER_TAKEOVER_IDLE_MS = 1500;
 export const computerThreadKey = (holder: Pick<ComputerLeaseHolder, "profileId" | "threadId">) =>
   holder.profileId + "\0" + holder.threadId;
@@ -133,16 +137,24 @@ export class ComputerCooperation {
     return task;
   }
   blocked(holder: ComputerLeaseHolder, appId = this.app(holder)): boolean {
+    return this.blockedDetail(holder, appId) !== undefined;
+  }
+  /**
+   * Why `blocked` holds, or undefined when the target is free. Admission and foreground
+   * takeovers share this, so a takeover never arms into an action admission still refuses.
+   */
+  blockedDetail(
+    holder: ComputerLeaseHolder,
+    appId = this.app(holder),
+  ): ComputerUserActiveDetail | undefined {
     const sample = this.samples.get(sampleKey(appId));
-    if (!sample || !sample.ready.monitorHealthy) return true;
+    if (!sample || !sample.ready.monitorHealthy) return "monitor-unhealthy";
+    if (!appId && sample.ready.inputHeld) return "input-held";
+    if (appId && sample.ready.frontmost) return "recent-input";
     const yielded = this.yielded.get(computerThreadKey(holder));
     const dwell = yielded && yielded.appId === appId ? yielded.dwell : appId ? 1500 : 3000;
     const age = appId ? sample.ready.lastActivityAgeMs : sample.ready.lastUserInputAgeMs;
-    return (
-      (!!appId && sample.ready.frontmost) ||
-      (!appId && sample.ready.inputHeld) ||
-      (age >= 0 && age + this.now() - sample.at < dwell)
-    );
+    return age >= 0 && age + this.now() - sample.at < dwell ? "recent-input" : undefined;
   }
   readiness(
     holder: ComputerLeaseHolder,

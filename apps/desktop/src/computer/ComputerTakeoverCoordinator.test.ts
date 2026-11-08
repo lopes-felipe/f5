@@ -244,6 +244,52 @@ describe("foreground takeover coordinator", () => {
       vi.useRealTimers();
     }
   });
+  it("arms a cooperative takeover only after the foreground admission dwell", async () => {
+    vi.useFakeTimers();
+    const h = make([], true);
+    try {
+      // Idle for 2 s, then the helper's input age keeps growing with each heartbeat.
+      h.ready.lastUserInputAgeMs = 2000;
+      h.heartbeat();
+      const beats = setInterval(() => {
+        h.ready.lastUserInputAgeMs += 250;
+        h.heartbeat();
+      }, 250);
+      h.coordinator.answered("p", approval, true);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.outcomes).toEqual([]);
+      await vi.advanceTimersByTimeAsync(900);
+      clearInterval(beats);
+      expect(h.outcomes).toHaveLength(1);
+      expect((h.outcomes[0] as { holder: ComputerLeaseHolder }).holder.scope.kind).toBe("takeover");
+    } finally {
+      h.coordinator.close();
+      h.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("gives up with the native re-check's detail when it keeps disagreeing with the poll", async () => {
+    vi.useFakeTimers();
+    const h = make([], true);
+    try {
+      h.heartbeat();
+      // Cached telemetry stays healthy; every fresh native sample says the monitor is down.
+      vi.mocked(h.helper.availability!).mockImplementation(async () => {
+        setTimeout(() => h.heartbeat(), 0);
+        return { ...h.ready, monitorHealthy: false };
+      });
+      h.coordinator.answered("p", approval, true);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(h.outcomes).toEqual([
+        { error: { _tag: "TargetBlocked", kind: "user-active", detail: "monitor-unhealthy" } },
+      ]);
+      expect(h.lease.pendingTakeover()).toBeNull();
+    } finally {
+      h.coordinator.close();
+      h.controller.close();
+      vi.useRealTimers();
+    }
+  });
   it("times out with recent-input while the user keeps using the computer", async () => {
     vi.useFakeTimers();
     const h = make([], true);

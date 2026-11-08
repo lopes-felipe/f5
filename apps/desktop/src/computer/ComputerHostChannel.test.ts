@@ -49,6 +49,11 @@ function setup(
     cooperationAvailable: () => options.cooperation === true,
     cooperation: { yielded: new Map() },
     prepareAcquisition: vi.fn(async () => {}),
+    waitForTarget: vi.fn(async () => ({
+      available: true,
+      timedOut: false,
+      requiresFreshObservation: true,
+    })),
     turnEnded: vi.fn(),
   };
   const channel = new ComputerHostChannel(
@@ -173,6 +178,46 @@ describe("private computer host channel", () => {
       h.channel.close();
     }
   });
+  it.each([true, false])(
+    "checks a takeover wait against the cooperative flag the broker sent (%s)",
+    async (cooperative) => {
+      const h = setup(false, false, { cooperation: true });
+      try {
+        h.hello(["computer-cooperation-v1"]);
+        h.process.emit("message", {
+          type: "targetWait",
+          requestId: "wait",
+          timeoutMs: 1000,
+          holder: {
+            profileId: "profile",
+            threadId: "t",
+            sessionGeneration: "s",
+            turnId: "turn",
+            executionGeneration: 1,
+            grantVersion: 1,
+            grants: [],
+            backend: "native",
+            threadTitle: "Thread",
+            scope: { kind: "foreground" },
+            policyRevision: 0,
+            ...(cooperative ? { cooperative: true } : {}),
+          },
+        });
+        await vi.waitFor(() => expect(h.controller.waitForTarget).toHaveBeenCalled());
+        // Without a yield the holder's own flag is re-derived as false; the takeover this wait
+        // precedes is still checked as cooperative when the broker asked for it.
+        expect(h.controller.waitForTarget).toHaveBeenCalledWith(
+          "wait",
+          expect.objectContaining({ cooperative: false, scope: { kind: "foreground" } }),
+          undefined,
+          1000,
+          cooperative,
+        );
+      } finally {
+        h.channel.close();
+      }
+    },
+  );
   it("strips cooperative labels from unnegotiated holders and prepares native watches before acquisition", async () => {
     const holder = {
       profileId: "profile",
