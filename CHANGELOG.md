@@ -40,6 +40,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Composer model picks for a specific provider instance keep their exact model name, including custom names such as `gpt-5.3` that look like built-in aliases.
 - Relative file links with routing punctuation, such as `posts.$postId.tsx`, `(group)/[id]/+page.svelte` and `@scope/pkg`, open as workspace files.
 - CLIProxy usage works for hubs hosted under a path prefix, and panel URLs such as `https://hub.example/cliproxy/management.html` can be pasted directly.
+- macOS foreground computer control no longer pauses in "Needs recovery" after a shortcut that opens a window (such as ⌘N) or a press that closes its own popover. Those actions now report success with `verified: false`, a batch stops after them so the agent observes first, and a shortcut's key-up is always sent. A press that times out still counts as unknown. When control is interrupted, agents see why instead of a bare "Interrupted".
 
 ## [0.1.4] - 2026-11-05
 
