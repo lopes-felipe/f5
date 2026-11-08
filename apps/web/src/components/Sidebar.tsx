@@ -1241,18 +1241,18 @@ export default function Sidebar() {
           }}
           onAddProject={addProject.handleStartAddProject}
         />
+        <SidebarNav
+          searchQuery={sidebarSearchQuery}
+          onSearchQueryChange={setSidebarSearchQuery}
+          onOpenCommandPalette={handleOpenCommandPalette}
+          commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+          pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+          view={sidebarView}
+          onViewChange={setSidebarView}
+        />
 
         <SidebarPeekScrollDismissArea className="contents">
           <SidebarContent className="gap-0">
-            <SidebarNav
-              searchQuery={sidebarSearchQuery}
-              onSearchQueryChange={setSidebarSearchQuery}
-              onOpenCommandPalette={handleOpenCommandPalette}
-              commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-              pullRequestsShortcutLabel={pullRequestsShortcutLabel}
-              view={sidebarView}
-              onViewChange={setSidebarView}
-            />
             <SidebarArm64Warning update={desktopUpdate} />
             {sidebarSearchQuery.trim().length > 0 ? (
               <SidebarThreadSearchResults
