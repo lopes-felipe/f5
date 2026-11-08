@@ -1,6 +1,34 @@
 import { expect, it } from "vitest";
 import { captureAssistantQuoteSelection } from "./assistantQuoteSelection";
 
+it.each([
+  ["<p>First paragraph.</p><p>Second paragraph.</p>", "First paragraph.\n\nSecond paragraph."],
+  ["<ul><li>item one</li><li>item two</li></ul>", "item one\nitem two"],
+  ["<p>First<br>Second</p>", "First\nSecond"],
+  ['<pre style="white-space: pre"><code>one\n  two</code></pre>', "one\n  two"],
+  [
+    '<p>Visible<span hidden>hidden</span><span style="display:none">hidden</span><span class="sr-only">hidden</span><span aria-hidden="true">hidden</span> text</p>',
+    "Visible text",
+  ],
+])("preserves rendered quote text for %s", (html, expected) => {
+  const root = document.createElement("div");
+  root.dataset.messageRole = "assistant";
+  root.dataset.messageId = "answer";
+  root.innerHTML = html;
+  document.body.append(root);
+  const selection = window.getSelection()!;
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(captureAssistantQuoteSelection(selection)?.text).toBe(expected);
+  } finally {
+    selection.removeAllRanges();
+    root.remove();
+  }
+});
+
 it.each(["next-paragraph", "timestamp", "heading", "parent", "backwards"])(
   "clamps paragraph selections ending at %s to the response",
   (endpoint) => {
@@ -40,6 +68,22 @@ it.each(["next-paragraph", "timestamp", "heading", "parent", "backwards"])(
     }
   },
 );
+
+it("skips real row headings and timestamp metadata at a next-paragraph boundary", () => {
+  const root = document.createElement("main");
+  root.innerHTML =
+    '<div data-message-role="assistant" data-message-id="answer"><h2 class="sr-only">Assistant</h2><p>Selected answer.</p><div data-assistant-quote-exclude><p>12:00</p></div></div><div data-message-role="assistant" data-message-id="next"><h2 class="sr-only">Assistant</h2><p>Next answer.</p></div>';
+  document.body.append(root);
+  const selection = window.getSelection()!;
+  try {
+    const paragraphs = root.querySelectorAll("p");
+    selection.setBaseAndExtent(paragraphs[0]!.firstChild!, 0, paragraphs[2]!, 0);
+    expect(captureAssistantQuoteSelection(selection)?.text).toBe("Selected answer.");
+  } finally {
+    selection.removeAllRanges();
+    root.remove();
+  }
+});
 
 it.each(["response", "user", "selectable-tool", "empty", "unselectable"])(
   "rejects selections spanning %s",
