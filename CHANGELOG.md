@@ -35,6 +35,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
 - Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
 - Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.

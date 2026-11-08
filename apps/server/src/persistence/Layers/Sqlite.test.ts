@@ -1,5 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
-import { closeSync, fstatSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -8,8 +16,54 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it } from "vitest";
 import { makeSqlitePersistenceLive } from "./Sqlite.ts";
 import { ReadSqlClient } from "../ReadSqlClient.ts";
+import { SnapshotReadClients } from "../snapshotReadExecutor.ts";
 
 describe("SQLite persistence setup", () => {
+  it.skipIf(process.platform !== "linux")(
+    "keeps statement journals out of temporary files",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "f5-sqlite-temp-"));
+      // SQLite unlinks its etilqs_* files immediately after opening them.
+      const openTempFiles = () =>
+        readdirSync("/proc/self/fd").flatMap((fd) => {
+          try {
+            const target = readlinkSync("/proc/self/fd/" + fd);
+            return target.includes("/etilqs_") && target.endsWith(" (deleted)") ? [target] : [];
+          } catch {
+            return [];
+          }
+        });
+      try {
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`CREATE TABLE journal_probe(id INTEGER PRIMARY KEY, payload TEXT NOT NULL)`;
+            for (let id = 0; id < 64; id++) {
+              yield* sql`INSERT INTO journal_probe VALUES (${id}, ${"x".repeat(4096)})`;
+            }
+            const before = new Set(openTempFiles());
+            const opened = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                // Exceed SQLite's default 64 KiB in-memory statement journal.
+                yield* sql`UPDATE journal_probe SET payload = payload || 'y'`;
+                return openTempFiles().filter((target) => !before.has(target));
+              }),
+            );
+            expect(opened).toEqual([]);
+          }).pipe(
+            Effect.provide(
+              makeSqlitePersistenceLive(join(directory, "state.sqlite")).pipe(
+                Layer.provide(NodeServices.layer),
+              ),
+            ),
+          ),
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("preserves a reader snapshot across a 48 MiB WAL burst", async () => {
     const directory = mkdtempSync(join(tmpdir(), "f5-sqlite-burst-"));
     const filename = join(directory, "state.sqlite");
@@ -115,6 +169,13 @@ describe("SQLite persistence setup", () => {
         await Effect.runPromise(
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
+            const searchReader = yield* ReadSqlClient;
+            const readers = yield* SnapshotReadClients;
+            for (const client of [sql, searchReader, readers.foreground, readers.background]) {
+              expect(
+                (yield* client<{ temp_store: number }>`PRAGMA temp_store`)[0]?.temp_store,
+              ).toBe(2);
+            }
             expect((yield* sql<{ timeout: number }>`PRAGMA busy_timeout`)[0]?.timeout).toBe(5000);
             expect(
               (yield* sql<{ checkpoint_fullfsync: number }>`PRAGMA checkpoint_fullfsync`)[0]
