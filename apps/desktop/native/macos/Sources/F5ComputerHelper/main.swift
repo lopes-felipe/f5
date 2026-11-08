@@ -1132,6 +1132,7 @@ func resolveSnapshotElement(_ request: [String: Any], app: NSRunningApplication)
   return (snapshot, element, role)
 }
 /// Returns read-back verification facts for background deliveries; never document text.
+/// A foreground dispatch whose AX result cannot confirm its effect returns `verified: false`.
 @discardableResult
 func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [String: Any]? {
   let id = string(request, "appId")
@@ -1192,13 +1193,17 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     result = AXUIElementPerformAction(element, native as CFString)
     if let dispatch { try endBackgroundAction(dispatch, succeeded: result == .success) }
   }
-  guard result == .success else {
-    // After an AX dispatch that did not confirm, the action may or may not have happened.
-    if background && result == .cannotComplete { throw Failure("OutcomeUnknown") }
-    if result == .actionUnsupported || result == .attributeUnsupported {
-      throw Failure("UnsupportedAction")
-    }
-    throw Failure("StaleElement", "reason", "element-gone")
+  switch computerElementDispatchOutcome(action: action, error: result, background: background) {
+  case .success: break
+  case .unverified:
+    // A foreground press that removed its own element (a swatch closing its popover) worked
+    // as far as AX can tell; the agent observes before acting, as for a background AXPress.
+    return ["verified": false]
+  case .failed(let tag, let reason, let started):
+    // Errors proving nothing happened stay typed instead of escalating to OutcomeUnknown.
+    if !started { locked { _ = postedRequests.remove(string(request, "requestId")) } }
+    if let reason { throw Failure(tag, "reason", reason) }
+    throw Failure(tag)
   }
   if action == "focus" {
     let verified = computerPollUntil(
@@ -1354,12 +1359,6 @@ func applicationActivated(_ app: NSRunningApplication) {
     interrupt(generation, ["type": "targetInterrupted", "appId": appId, "cause": "frontmost"])
   }
 }
-/// Background typing: accessibility text insertion into the target's focused element only.
-/// AX errors returned before the target accepted the write; anything else is ambiguous.
-func computerAXWriteRejected(_ error: AXError) -> Bool {
-  [.attributeUnsupported, .illegalArgument, .notImplemented, .apiDisabled, .invalidUIElement]
-    .contains(error)
-}
 /// The OS action is done; an optional screenshot follows. Lets Electron keep a known success
 /// even if a stop or activation incident arrives during capture.
 func confirmAction(_ request: [String: Any]) {
@@ -1367,6 +1366,7 @@ func confirmAction(_ request: [String: Any]) {
     requestId: string(request, "requestId"),
     executionGeneration: integer(authorization(request), "executionGeneration"), emit: emit)
 }
+/// Background typing: accessibility text insertion into the target's focused element only.
 func backgroundType(_ request: [String: Any], _ host: [String: Any]) throws -> (
   NSRunningApplication, CGRect, [String: Any]
 ) {
@@ -1881,6 +1881,9 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
   }
   return result
 }
+/// Performs one input action. Once input is posted, a thrown failure means the outcome is
+/// unknown, so outcomes the action caused itself (focus moved by a shortcut, an element
+/// removed by its own press) are returned as unverified success instead of thrown.
 func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: inout Bool) async throws -> [String: Any] {
   let op = string(request, "op")
   try checkPermit(request)
@@ -1888,6 +1891,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   defer { releaseHeldInput(where: { $0 == owner }) }
   if isBackground(request) { return try await backgroundMutate(request, host) }
   var verification: [String: Any]?
+  var keyFocusUnchanged: (() -> Bool)?
   if ["click", "move", "drag", "scroll"].contains(op) {
     let target = try display(string(request, "displayId"))
     guard target.generation == string(request, "geometryGeneration") else {
@@ -1985,22 +1989,53 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
     } else {
       let chords = request["chords"] as? [String] ?? []
       guard !chords.isEmpty && chords.count <= 16 else { throw Failure("UnsupportedAction") }
-      for _ in 0..<max(1, min(20, integer(request, "repeat"))) {
+      let repeats = max(1, min(20, integer(request, "repeat")))
+      var delivered = 0
+      func focusUnchanged() -> Bool {
+        guard let current = try? focused(request, host, needed: "type") else { return false }
+        return computerFocusUnchanged(
+          initialPid: Int(initial.0.processIdentifier),
+          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
+          sameElement: CFEqual(current.1, initial.1), typing: false)
+      }
+      chordLoop: for _ in 0..<repeats {
         for raw in chords {
           let (code, flags) = try keyChord(raw)
-          for down in [true, false] {
-            try validateFocus()
-            try inputLock.withLock {
-              guard let event = computerKeyboardEvent(keyCode: code, keyDown: down, modifiers: flags)
-              else { throw Failure("UnsupportedAction") }
-              try checkPermit(request)
-              if down { pressedKeys.insert(code, owner: owner) }
-              postActionEvent(event, request)
-              if !down { pressedKeys.remove(code) }
-            }
+          // Focus is checked before each keydown only. A shortcut such as Cmd+N moves focus
+          // as its own effect, so checking between keydown and keyup would misreport it.
+          try checkPermit(request)
+          // Before any chord, nothing happened yet: the original failure stays exact.
+          if delivered == 0 { _ = try focused(request, host, needed: "type") }
+          switch computerChordStep(chordsDelivered: delivered, focusUnchanged: focusUnchanged()) {
+          case .send: break
+          case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
+          case .stop:
+            // The remaining chords were never sent; say how many were.
+            verification = [
+              "verified": false, "chordsDelivered": delivered,
+              "chordsRequested": chords.count * repeats,
+            ]
+            break chordLoop
           }
+          guard let down = computerKeyboardEvent(keyCode: code, keyDown: true, modifiers: flags),
+            let up = computerKeyboardEvent(keyCode: code, keyDown: false, modifiers: flags)
+          else { throw Failure("UnsupportedAction") }
+          try inputLock.withLock {
+            try checkPermit(request)
+            pressedKeys.insert(code, owner: owner)
+            postActionEvent(down, request)
+          }
+          // A posted keydown always gets its keyup, even after a stop or focus change.
+          inputLock.withLock {
+            postActionEvent(up, request)
+            pressedKeys.remove(code)
+          }
+          delivered += 1
         }
       }
+      // A last chord that moves focus (a single Cmd+N) must still tell the agent to observe;
+      // the app may open its window after the keyup, so the check runs during settling.
+      if verification == nil { keyFocusUnchanged = focusUnchanged }
     }
   } else if op == "elementAction" {
     verification = try elementAction(request, host)
@@ -2032,7 +2067,20 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
     op: op, screenshot: request["screenshot"] as? Bool == true,
     appTargeted: !string(request, "appId").isEmpty, displayCount: displays().count)
   deferredSettle = settle == 0
-  if settle > 0 { try await Task.sleep(nanoseconds: UInt64(settle) * 1_000_000) }
+  if let keyFocusUnchanged {
+    // Spend the settle window watching for the shortcut's own focus change. Waiting it out
+    // inline replaces the deferred settle; an early exit keeps the gap for the next action.
+    let started = ProcessInfo.processInfo.systemUptime
+    let moved = computerPollUntil(
+      timeout: 0.3, cancelled: { requestCancelled(string(request, "requestId")) },
+      predicate: { !keyFocusUnchanged() })
+    if moved { verification = ["verified": false] }
+    let remaining = Double(settle) / 1000 - (ProcessInfo.processInfo.systemUptime - started)
+    if remaining > 0 { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
+    deferredSettle = moved && settle == 0
+  } else if settle > 0 {
+    try await Task.sleep(nanoseconds: UInt64(settle) * 1_000_000)
+  }
   var result: [String: Any] = [
     "frontmostApp": NSWorkspace.shared.frontmostApplication.flatMap(appRecord) ?? NSNull(),
     "cursor": NSNull(), "actionCompleted": true,

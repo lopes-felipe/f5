@@ -35,6 +35,28 @@ export function describeComputerBusy(error: BusyError): string {
     error.holderIdle === true ? " (idle)" : error.holderIdle === false ? " (working)" : "";
   return `Busy: ${what} is held by ${who}${state}. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.`;
 }
+type InterruptedError = Extract<ComputerAutomationError, { _tag: "Interrupted" }>;
+/** Matches the agent contract: "On explicit Interrupted, stop and ask the user". */
+export const COMPUTER_INTERRUPTED_STOP = "Stop and ask the user before continuing.";
+const INTERRUPTED_REASON: Record<InterruptedError["cause"], string> = {
+  paused:
+    "computer control for this thread is paused; the user must press Resume in F5 (check the app first if it says Needs recovery).",
+  "user-input": "the user took the mouse or keyboard.",
+  "kill-switch": "the user stopped computer control.",
+  "access-changed": "app access changed.",
+  "policy-changed": "computer-use settings changed.",
+  // Helper interruptions it cannot attribute, including some user stops, arrive as this.
+  "permit-expired": "control was withdrawn before the action ran.",
+  "turn-ended": "this turn ended; no further computer actions run in it.",
+};
+/** Names the cause: a bare "Interrupted" reads as a user stop even when F5 paused the thread. */
+function describeComputerInterrupted(error: InterruptedError): string {
+  const reason = INTERRUPTED_REASON[error.cause];
+  return error.cause === "turn-ended"
+    ? `Interrupted (${error.cause}): ${reason}`
+    : `Interrupted (${error.cause}): ${reason} ${COMPUTER_INTERRUPTED_STOP}`;
+}
+/** A typed computer-control failure whose message is the guidance agents see as tool text. */
 export class ComputerControlError extends Error {
   constructor(readonly error: ComputerAutomationError) {
     super(
@@ -56,7 +78,9 @@ export class ComputerControlError extends Error {
                       ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
                       : error._tag === "TargetBlocked" && error.kind === "other-app"
                         ? "TargetBlocked other-app: the foreground was approved for a different app."
-                        : error._tag,
+                        : error._tag === "Interrupted"
+                          ? describeComputerInterrupted(error)
+                          : error._tag,
     );
   }
 }

@@ -425,6 +425,9 @@ export const ComputerActionResult = Schema.Struct({
       verified: Schema.Boolean,
       matchesRequestedValue: Schema.optional(Schema.Boolean),
       valueLength: Schema.optional(NonNegative),
+      /** Set when a key action stopped early after focus moved; later chords were not sent. */
+      chordsDelivered: Schema.optional(NonNegative),
+      chordsRequested: Schema.optional(NonNegative),
     }),
   ),
   /** Set when a background mutation waited for a secure field and did not run. */
