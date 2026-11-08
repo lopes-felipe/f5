@@ -17,9 +17,11 @@ public enum ComputerElementDispatchOutcome: Equatable {
 
 /// Classifies an AX element action's result after dispatch.
 ///
-/// Foreground presses often remove their own element (a swatch closing its popover), which
-/// AX reports as an error even though the press worked. That is dispatched-but-unverified,
-/// like a background AXPress, never a stale element the agent would retry.
+/// A foreground press that removes its own element (a swatch closing its popover) gets
+/// `invalidUIElement` although it worked: that is dispatched-but-unverified, like a background
+/// AXPress, never a stale element the agent would retry. A messaging timeout
+/// (`cannotComplete`) may still apply later, so it stays an unknown outcome: retrying it could
+/// repeat an irreversible action.
 public func computerElementDispatchOutcome(
   action: String, error: AXError, background: Bool
 ) -> ComputerElementDispatchOutcome {
@@ -27,7 +29,9 @@ public func computerElementDispatchOutcome(
   if error == .actionUnsupported || error == .attributeUnsupported {
     return .failed(tag: "UnsupportedAction", reason: nil, started: false)
   }
-  if (action == "setValue" || action == "focus") && computerAXWriteRejected(error) {
+  let write = action == "setValue" || action == "focus"
+  if computerAXWriteRejected(error) && (write || error != .invalidUIElement) {
+    // The call was refused before reaching the element (for example AX was disabled).
     return .failed(tag: "StaleElement", reason: "element-gone", started: false)
   }
   if background {
@@ -35,7 +39,8 @@ public func computerElementDispatchOutcome(
       ? .failed(tag: "OutcomeUnknown", reason: nil, started: true)
       : .failed(tag: "StaleElement", reason: "element-gone", started: true)
   }
-  return .unverified
+  if error == .invalidUIElement { return .unverified }
+  return .failed(tag: "OutcomeUnknown", reason: nil, started: true)
 }
 
 public enum ComputerChordStep: Equatable {

@@ -534,14 +534,27 @@ try {
       });
       const opened = granted.receipt("FIXTURE_WINDOW_OPENED");
       const released = granted.receipt("FIXTURE_N_UP");
-      // Focus moves on keydown; this must not become TargetBlocked or OutcomeUnknown.
-      await request({ op: "key", chords: ["cmd+n"], repeat: 1 });
-      await waitFor(
-        () =>
-          granted.receipt("FIXTURE_WINDOW_OPENED") > opened &&
-          granted.receipt("FIXTURE_N_UP") > released,
-      );
-      await granted.command("SECOND_WINDOW_CLOSE", "FIXTURE_SECOND_CLOSED");
+      try {
+        // Focus moves on keydown; this must not become TargetBlocked or OutcomeUnknown, and
+        // the agent must be told to observe before acting in the new window.
+        const result = await request<{ verification?: { verified: boolean } }>({
+          op: "key",
+          chords: ["cmd+n"],
+          repeat: 1,
+        });
+        await waitFor(
+          () =>
+            granted.receipt("FIXTURE_WINDOW_OPENED") > opened &&
+            granted.receipt("FIXTURE_N_UP") > released,
+        );
+        assert(
+          result.verification?.verified === false,
+          "A shortcut that moved focus did not report verified: false.",
+        );
+      } finally {
+        // A failed check must not leave the second window holding focus for later checks.
+        await granted.command("SECOND_WINDOW_CLOSE", "FIXTURE_SECOND_CLOSED");
+      }
     });
     await check("A press that removes its own element is not an unknown outcome", async () => {
       const current = await request<ComputerInspectResult>({
@@ -554,7 +567,9 @@ try {
       );
       if (!button) throw new Error("Self-dismissing fixture button is missing.");
       const dismissed = granted.receipt("FIXTURE_DISMISSED");
-      await request({
+      // AppKit may still answer AXPress with success here; either way it must not throw
+      // OutcomeUnknown, and an AX error must come back as verified: false.
+      const result = await request<{ verification?: { verified: boolean } }>({
         op: "elementAction",
         appId: fixtureId,
         snapshotId: current.snapshotId,
@@ -562,6 +577,10 @@ try {
         action: "press",
       });
       await waitFor(() => granted.receipt("FIXTURE_DISMISSED") > dismissed);
+      assert(
+        result.verification === undefined || result.verification.verified === false,
+        "A press that removed its element claimed a verified effect.",
+      );
     });
   }
   await check("Permit expiry blocks the next real action", async () => {

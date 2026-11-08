@@ -75,7 +75,8 @@ host; **Ctrl+Alt+Shift+F12** stops the Windows host. Pause all always pauses eve
 unconfirmed stop. Resume on the computer running F5. If an action's outcome is unknown,
 check the app before resuming and observe before retrying. A shortcut that opens a window
 or a press that closes its own popover is not unknown: it reports success with
-`verified: false`, control stays active, and the agent observes before its next action.
+`verified: false`, control stays active, a batch stops there, and the agent observes before
+its next action. A press that times out is still unknown, since it may apply later.
 
 Agents can use `computer_wait` to settle or wait for an element, optionally capturing
 afterwards. The live card's Actions popover shows up to 30 recent tool outcomes;

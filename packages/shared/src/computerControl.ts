@@ -36,19 +36,25 @@ export function describeComputerBusy(error: BusyError): string {
   return `Busy: ${what} is held by ${who}${state}. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.`;
 }
 type InterruptedError = Extract<ComputerAutomationError, { _tag: "Interrupted" }>;
-const INTERRUPTED_GUIDANCE: Record<InterruptedError["cause"], string> = {
+/** Matches the agent contract: "On explicit Interrupted, stop and ask the user". */
+export const COMPUTER_INTERRUPTED_STOP = "Stop and ask the user before continuing.";
+const INTERRUPTED_REASON: Record<InterruptedError["cause"], string> = {
   paused:
-    "computer control for this thread is paused; the user must press Resume in F5 (check the app first if it says Needs recovery). Do not retry until then.",
-  "user-input": "the user used the mouse or keyboard; observe again before acting.",
-  "kill-switch": "the user stopped computer control; stop and ask before continuing.",
-  "access-changed": "app access changed; check computer_status before continuing.",
-  "policy-changed": "computer-use settings changed; check computer_status before continuing.",
+    "computer control for this thread is paused; the user must press Resume in F5 (check the app first if it says Needs recovery).",
+  "user-input": "the user took the mouse or keyboard.",
+  "kill-switch": "the user stopped computer control.",
+  "access-changed": "app access changed.",
+  "policy-changed": "computer-use settings changed.",
+  // Helper interruptions it cannot attribute, including some user stops, arrive as this.
+  "permit-expired": "control was withdrawn before the action ran.",
   "turn-ended": "this turn ended; no further computer actions run in it.",
-  "permit-expired": "the action's permit expired before it ran; observe again before acting.",
 };
 /** Names the cause: a bare "Interrupted" reads as a user stop even when F5 paused the thread. */
 function describeComputerInterrupted(error: InterruptedError): string {
-  return `Interrupted (${error.cause}): ${INTERRUPTED_GUIDANCE[error.cause]}`;
+  const reason = INTERRUPTED_REASON[error.cause];
+  return error.cause === "turn-ended"
+    ? `Interrupted (${error.cause}): ${reason}`
+    : `Interrupted (${error.cause}): ${reason} ${COMPUTER_INTERRUPTED_STOP}`;
 }
 /** A typed computer-control failure whose message is the guidance agents see as tool text. */
 export class ComputerControlError extends Error {

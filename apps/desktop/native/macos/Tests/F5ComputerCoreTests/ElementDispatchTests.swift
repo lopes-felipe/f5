@@ -4,10 +4,29 @@ import XCTest
 
 final class ElementDispatchTests: XCTestCase {
   func testForegroundPressThatRemovesItsElementIsUnverified() {
-    for error in [AXError.invalidUIElement, .cannotComplete, .failure] {
+    for action in ["press", "increment", "showMenu"] {
       XCTAssertEqual(
-        computerElementDispatchOutcome(action: "press", error: error, background: false),
+        computerElementDispatchOutcome(action: action, error: .invalidUIElement, background: false),
         .unverified)
+    }
+  }
+  func testForegroundTimeoutOrFailureStaysUnknown() {
+    // A timed-out press may still apply; reporting success would invite a duplicate.
+    for action in ["press", "setValue", "focus"] {
+      for error in [AXError.cannotComplete, .failure] {
+        XCTAssertEqual(
+          computerElementDispatchOutcome(action: action, error: error, background: false),
+          .failed(tag: "OutcomeUnknown", reason: nil, started: true))
+      }
+    }
+  }
+  func testRefusedPressProvesNoEffect() {
+    for error in [AXError.apiDisabled, .notImplemented, .illegalArgument] {
+      for background in [false, true] {
+        XCTAssertEqual(
+          computerElementDispatchOutcome(action: "press", error: error, background: background),
+          .failed(tag: "StaleElement", reason: "element-gone", started: false))
+      }
     }
   }
   func testSuccessIsSuccess() {
@@ -28,10 +47,10 @@ final class ElementDispatchTests: XCTestCase {
       XCTAssertEqual(
         computerElementDispatchOutcome(action: action, error: .illegalArgument, background: false),
         .failed(tag: "StaleElement", reason: "element-gone", started: false))
+      XCTAssertEqual(
+        computerElementDispatchOutcome(action: action, error: .invalidUIElement, background: false),
+        .failed(tag: "StaleElement", reason: "element-gone", started: false))
     }
-    XCTAssertEqual(
-      computerElementDispatchOutcome(action: "setValue", error: .cannotComplete, background: false),
-      .unverified)
   }
   func testBackgroundKeepsItsEscalation() {
     XCTAssertEqual(

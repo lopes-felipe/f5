@@ -1891,6 +1891,7 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   defer { releaseHeldInput(where: { $0 == owner }) }
   if isBackground(request) { return try await backgroundMutate(request, host) }
   var verification: [String: Any]?
+  var keyFocusUnchanged: (() -> Bool)?
   if ["click", "move", "drag", "scroll"].contains(op) {
     let target = try display(string(request, "displayId"))
     guard target.generation == string(request, "geometryGeneration") else {
@@ -1988,30 +1989,32 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
     } else {
       let chords = request["chords"] as? [String] ?? []
       guard !chords.isEmpty && chords.count <= 16 else { throw Failure("UnsupportedAction") }
+      let repeats = max(1, min(20, integer(request, "repeat")))
       var delivered = 0
-      chordLoop: for _ in 0..<max(1, min(20, integer(request, "repeat"))) {
+      func focusUnchanged() -> Bool {
+        guard let current = try? focused(request, host, needed: "type") else { return false }
+        return computerFocusUnchanged(
+          initialPid: Int(initial.0.processIdentifier),
+          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
+          sameElement: CFEqual(current.1, initial.1), typing: false)
+      }
+      chordLoop: for _ in 0..<repeats {
         for raw in chords {
           let (code, flags) = try keyChord(raw)
           // Focus is checked before each keydown only. A shortcut such as Cmd+N moves focus
           // as its own effect, so checking between keydown and keyup would misreport it.
           try checkPermit(request)
-          let unchanged: Bool
-          do {
-            let current = try focused(request, host, needed: "type")
-            unchanged = computerFocusUnchanged(
-              initialPid: Int(initial.0.processIdentifier),
-              currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
-              sameElement: CFEqual(current.1, initial.1), typing: false)
-          } catch {
-            // Before any chord, nothing happened yet: the original failure stays exact.
-            if delivered == 0 { throw error }
-            unchanged = false
-          }
-          switch computerChordStep(chordsDelivered: delivered, focusUnchanged: unchanged) {
+          // Before any chord, nothing happened yet: the original failure stays exact.
+          if delivered == 0 { _ = try focused(request, host, needed: "type") }
+          switch computerChordStep(chordsDelivered: delivered, focusUnchanged: focusUnchanged()) {
           case .send: break
           case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
           case .stop:
-            verification = ["verified": false]
+            // The remaining chords were never sent; say how many were.
+            verification = [
+              "verified": false, "chordsDelivered": delivered,
+              "chordsRequested": chords.count * repeats,
+            ]
             break chordLoop
           }
           guard let down = computerKeyboardEvent(keyCode: code, keyDown: true, modifiers: flags),
@@ -2030,6 +2033,9 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
           delivered += 1
         }
       }
+      // A last chord that moves focus (a single Cmd+N) must still tell the agent to observe;
+      // the app may open its window after the keyup, so the check runs during settling.
+      if verification == nil { keyFocusUnchanged = focusUnchanged }
     }
   } else if op == "elementAction" {
     verification = try elementAction(request, host)
@@ -2061,7 +2067,20 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
     op: op, screenshot: request["screenshot"] as? Bool == true,
     appTargeted: !string(request, "appId").isEmpty, displayCount: displays().count)
   deferredSettle = settle == 0
-  if settle > 0 { try await Task.sleep(nanoseconds: UInt64(settle) * 1_000_000) }
+  if let keyFocusUnchanged {
+    // Spend the settle window watching for the shortcut's own focus change. Waiting it out
+    // inline replaces the deferred settle; an early exit keeps the gap for the next action.
+    let started = ProcessInfo.processInfo.systemUptime
+    let moved = computerPollUntil(
+      timeout: 0.3, cancelled: { requestCancelled(string(request, "requestId")) },
+      predicate: { !keyFocusUnchanged() })
+    if moved { verification = ["verified": false] }
+    let remaining = Double(settle) / 1000 - (ProcessInfo.processInfo.systemUptime - started)
+    if remaining > 0 { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
+    deferredSettle = moved && settle == 0
+  } else if settle > 0 {
+    try await Task.sleep(nanoseconds: UInt64(settle) * 1_000_000)
+  }
   var result: [String: Any] = [
     "frontmostApp": NSWorkspace.shared.frontmostApplication.flatMap(appRecord) ?? NSNull(),
     "cursor": NSNull(), "actionCompleted": true,
