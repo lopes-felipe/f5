@@ -18,6 +18,40 @@ function reference(text: string, maxLines: number, maxBytes: number): string {
 }
 
 describe("BoundedTerminalHistory", () => {
+  it.each([
+    ["before\x1bP$q\x18after\n", "beforeafter\n"],
+    ["before\x1bP$q\x1aafter\n", "beforeafter\n"],
+    ["\x90+q544e\x18after\n", "after\n"],
+    ["\x1bP$q m\x1b[31mred text\n more\n", "\x1b[31mred text\n more\n"],
+    ["\x1bP$q\x1b[?2026$pvisible\n", "visible\n"],
+    [
+      "\x1b]8;;https://example.com/aaaa\x1b[?2026$pvisible\n",
+      "\x1b]8;;https://example.com/aaaavisible\n",
+    ],
+    ["\x1b]8;;url\x18after\x1b[?u", "\x1b]8;;url\x18after"],
+    ["\x1b\x1b[?2026$pvisible", "\x1bvisible"],
+    ["\x1b(\x1b[?2026$pvisible", "\x1b(visible"],
+  ])("recovers from interrupted controls across every chunk boundary: %j", (input, expected) => {
+    for (let split = 0; split <= input.length; split++) {
+      const history = new BoundedTerminalHistory();
+      history.append(input.slice(0, split));
+      history.append(input.slice(split));
+      expect(history.value()).toBe(expected);
+    }
+    const history = new BoundedTerminalHistory();
+    for (const ch of input) history.append(ch);
+    expect(history.value()).toBe(expected);
+  });
+
+  it("preserves large visual strings while filtering queries after their terminator", () => {
+    const history = new BoundedTerminalHistory();
+    const payload = "\x1b]52;c;" + "YQ==".repeat(200_000);
+    history.append(payload);
+    history.append("\x1b");
+    history.append("\\\x1b[?2026$pvisible");
+    expect(history.value()).toBe(payload + "\x1b\\visible");
+  });
+
   it("strips capability traffic at every chunk boundary while preserving visual controls", () => {
     const queries = [
       "\x1b[?2026$p",

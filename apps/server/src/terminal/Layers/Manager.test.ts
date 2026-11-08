@@ -839,6 +839,22 @@ describe("TerminalManager", () => {
     }
   });
 
+  it("does not carry an unfinished restored string into new shell output", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager();
+    fs.writeFileSync(historyLogPath(logsDir), "old\x1b]8;;https://example.com/unfinished");
+    try {
+      await manager.open(openInput());
+      ptyAdapter.processes[0]!.emitData("\x1b[?2026$pnew output\n");
+      const snapshot = await manager.open(openInput());
+      expect(snapshot.history).toContain("new output\n");
+      expect(snapshot.history).not.toContain("\x1b[?2026$p");
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).not.toContain("\x1b[?2026$p");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it("bounds retained and persisted output while delivering every live byte", async () => {
     const { manager, ptyAdapter, logsDir } = makeManager(5000);
     const events: TerminalEvent[] = [];

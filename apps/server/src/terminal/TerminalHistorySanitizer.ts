@@ -19,6 +19,18 @@ export class TerminalHistorySanitizer {
     const output: string[] = [];
     // eslint-disable-next-line no-control-regex -- Recognize 7-bit and C1 control introducers.
     const introducer = /[\x1b\x90\x9b\x9d\x9e\x9f]/g;
+    // eslint-disable-next-line no-control-regex -- String terminators and cancellation controls.
+    const stringControl = /[\x07\x18\x1a\x1b\x9c]/g;
+    const flushString = () => {
+      if (this.stripString === null) {
+        const content = this.pending.slice(this.pending.startsWith("\x1b") ? 2 : 1);
+        this.stripString =
+          (this.stringKind === "P" && /^[01]?[$+][qr]/.test(content)) ||
+          (this.stringKind === "]" && /^(10|11|12);(?:\?|rgb:)/.test(content));
+      }
+      if (!this.stripString) output.push(this.pending);
+      this.pending = "";
+    };
     const startString = (kind: string, introducer: string) => {
       this.mode = "string";
       this.stringKind = kind;
@@ -29,6 +41,16 @@ export class TerminalHistorySanitizer {
     for (let i = 0; i < input.length; i++) {
       const ch = input[i]!;
       const code = input.charCodeAt(i);
+      if (
+        code === 0x1b &&
+        (this.mode === "escape" || this.mode === "escapeIntermediate" || this.mode === "csi")
+      ) {
+        output.push(this.pending);
+        this.clear();
+        this.mode = "escape";
+        this.pending = ch;
+        continue;
+      }
       if (this.mode === "text") {
         // Copy ordinary text in runs rather than allocating one entry per character.
         introducer.lastIndex = i;
@@ -78,18 +100,40 @@ export class TerminalHistorySanitizer {
           this.oversizedCsi = true;
         }
       } else {
-        this.pending += ch;
-        const ended = code === 7 || code === 0x9c || (this.stringEsc && ch === "\\");
-        this.stringEsc = code === 0x1b;
-        if (this.stripString === null && (ended || this.pending.length >= 16)) {
-          const content = this.pending.slice(this.pending.startsWith("\x1b") ? 2 : 1);
-          this.stripString =
-            (this.stringKind === "P" && /^[01]?[$+][qr]/.test(content)) ||
-            (this.stringKind === "]" && /^(10|11|12);(?:\?|rgb:)/.test(content));
+        if (this.stringEsc) {
+          this.stringEsc = false;
+          if (ch !== "\\") {
+            // ESC aborts the string and introduces a new escape sequence.
+            flushString();
+            this.clear();
+            this.mode = "escape";
+            this.pending = "\x1b";
+            i--;
+            continue;
+          }
+          this.pending += "\x1b\\";
+          flushString();
+          this.clear();
+          continue;
+        }
+        if (code === 0x1b) {
+          // Defer ESC until the next chunk/byte distinguishes ST from a new sequence.
+          this.stringEsc = true;
+          continue;
         }
         if (this.stripString !== null) {
-          if (!this.stripString) output.push(this.pending);
-          this.pending = "";
+          stringControl.lastIndex = i;
+          const end = stringControl.exec(input)?.index ?? input.length;
+          if (end > i) {
+            if (!this.stripString) output.push(input.slice(i, end));
+            i = end - 1;
+            continue;
+          }
+        }
+        this.pending += ch;
+        const ended = code === 7 || code === 0x9c || code === 0x18 || code === 0x1a;
+        if (ended || this.pending.length >= 16 || this.stripString !== null) {
+          flushString();
         }
         if (ended) this.clear();
       }
