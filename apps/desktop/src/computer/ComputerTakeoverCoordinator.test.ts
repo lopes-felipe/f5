@@ -33,19 +33,52 @@ const approval: ComputerAccessRequested = {
   apps: [],
 } as unknown as ComputerAccessRequested;
 
-function make(readiness: Array<{ inputSequence: number; lastUserInputAgeMs: number }>) {
+function make(
+  readiness: Array<{ inputSequence: number; lastUserInputAgeMs: number }>,
+  cooperative = false,
+) {
+  let event: (message: Record<string, unknown>) => void = () => {};
+  // Cooperative readiness the helper reports, natively or in heartbeats.
+  const ready = {
+    activityEpoch: 0,
+    lastActivityAgeMs: -1,
+    frontmost: false,
+    monitorHealthy: true,
+    inputSequence: 0,
+    lastUserInputAgeMs: 60_000,
+    inputHeld: false,
+  };
   const helper: ComputerHelper = {
     status: () => ({ available: true, displays: [] }),
     request: vi.fn(async () => ({})),
     control: vi.fn(),
     suspend: vi.fn(async () => {}),
-    onEvent: () => () => {},
-    capabilities: () => ["background-ax-v1"],
+    onEvent: (callback) => {
+      event = callback;
+      return () => {};
+    },
+    capabilities: () =>
+      cooperative ? ["background-ax-v1", "computer-cooperation-v1"] : ["background-ax-v1"],
     drain: vi.fn(async () => {}),
     readiness: vi.fn(
       async () => readiness.shift() ?? { inputSequence: 9, lastUserInputAgeMs: 5000 },
     ),
+    ...(cooperative
+      ? {
+          watch: vi.fn(async () => ({ ...ready })),
+          availability: vi.fn(async () => ({ ...ready })),
+        }
+      : {}),
   };
+  const heartbeat = () =>
+    event({
+      type: "heartbeat",
+      monitorHealthy: ready.monitorHealthy,
+      inputSequence: ready.inputSequence,
+      lastUserInputAgeMs: ready.lastUserInputAgeMs,
+      inputHeld: ready.inputHeld,
+    });
+  const takeoverHolder = cooperative ? { ...holder, cooperative: true } : holder;
   const lease = new ComputerLeaseAuthority();
   const controller = new ComputerController(
     lease,
@@ -59,6 +92,7 @@ function make(readiness: Array<{ inputSequence: number; lastUserInputAgeMs: numb
       paused: vi.fn(),
       backgroundAvailable: () => true,
       takeoverValid: () => true,
+      ...(cooperative ? { cooperationEnabled: () => true } : {}),
     },
   );
   const execution = new ComputerExecutionAuthority();
@@ -71,8 +105,10 @@ function make(readiness: Array<{ inputSequence: number; lastUserInputAgeMs: numb
   });
   const coordinator = new ComputerTakeoverCoordinator(controller, execution, { state: vi.fn() });
   const outcomes: Array<{ holder: ComputerLeaseHolder } | { error: ComputerAutomationError }> = [];
-  coordinator.request("p", "b", "acquire", "approval", holder, (outcome) => outcomes.push(outcome));
-  return { coordinator, controller, helper, lease, outcomes };
+  coordinator.request("p", "b", "acquire", "approval", takeoverHolder, (outcome) =>
+    outcomes.push(outcome),
+  );
+  return { coordinator, controller, helper, lease, outcomes, ready, heartbeat };
 }
 
 describe("foreground takeover coordinator", () => {
@@ -160,6 +196,67 @@ describe("foreground takeover coordinator", () => {
           inputSequence: 5,
         }),
       );
+    } finally {
+      h.coordinator.close();
+      h.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("times out with input-held while a key reads as held with no physical input", async () => {
+    vi.useFakeTimers();
+    const h = make([], true);
+    try {
+      h.ready.inputHeld = true;
+      h.heartbeat();
+      h.coordinator.answered("p", approval, true);
+      await vi.advanceTimersByTimeAsync(30_200);
+      expect(h.outcomes).toEqual([
+        { error: { _tag: "TargetBlocked", kind: "user-active", detail: "input-held" } },
+      ]);
+      // The cached sample blocks arming without a native readiness round trip.
+      expect(h.helper.availability).not.toHaveBeenCalled();
+      expect(h.lease.pendingTakeover()).toBeNull();
+    } finally {
+      h.coordinator.close();
+      h.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("arms on the next poll once held input clears, without returning to the idle wait", async () => {
+    vi.useFakeTimers();
+    const h = make([], true);
+    try {
+      h.ready.inputHeld = true;
+      h.heartbeat();
+      h.coordinator.answered("p", approval, true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.outcomes).toEqual([]);
+      h.ready.inputHeld = false;
+      h.heartbeat();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(h.outcomes).toHaveLength(1);
+      expect((h.outcomes[0] as { holder: ComputerLeaseHolder }).holder.scope.kind).toBe("takeover");
+      // One native re-check while arming: the arm agreed with the wait and did not bounce.
+      expect(h.helper.availability).toHaveBeenCalledTimes(1);
+    } finally {
+      h.coordinator.close();
+      h.controller.close();
+      vi.useRealTimers();
+    }
+  });
+  it("times out with recent-input while the user keeps using the computer", async () => {
+    vi.useFakeTimers();
+    const h = make([], true);
+    try {
+      h.ready.lastUserInputAgeMs = 0;
+      h.heartbeat();
+      const typing = setInterval(() => h.heartbeat(), 250);
+      h.coordinator.answered("p", approval, true);
+      await vi.advanceTimersByTimeAsync(30_200);
+      clearInterval(typing);
+      expect(h.outcomes).toEqual([
+        { error: { _tag: "TargetBlocked", kind: "user-active", detail: "recent-input" } },
+      ]);
     } finally {
       h.coordinator.close();
       h.controller.close();

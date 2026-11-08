@@ -71,7 +71,7 @@ export class ComputerControlError extends Error {
               : error._tag === "ForegroundRequired"
                 ? `ForegroundRequired (${error.reason}): call computer_request_foreground with a short reason.`
                 : error._tag === "TargetBlocked" && error.kind === "user-active"
-                  ? "TargetBlocked user-active: call computer_wait_for_target, then observe again before acting; take a screenshot before coordinates."
+                  ? `TargetBlocked user-active${error.detail ? ` (${error.detail})` : ""}: call computer_wait_for_target, then observe again before acting; take a screenshot before coordinates.`
                   : error._tag === "TargetBlocked" && error.kind === "shared-focus"
                     ? "TargetBlocked shared-focus: another agent acted in that app; press the field with computer_element_action (or use setValue), then type."
                     : error._tag === "TargetBlocked" && error.kind === "foreground-busy"

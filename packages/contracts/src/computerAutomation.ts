@@ -216,10 +216,18 @@ export const ComputerTargetReadiness = Schema.Struct({
   inputHeld: Schema.Boolean,
 });
 export type ComputerTargetReadiness = typeof ComputerTargetReadiness.Type;
+/** Which idle condition kept a "user-active" foreground takeover from arming. */
+export const ComputerUserActiveDetail = Schema.Literals([
+  "recent-input",
+  "input-held",
+  "monitor-unhealthy",
+]);
+export type ComputerUserActiveDetail = typeof ComputerUserActiveDetail.Type;
 export const ComputerTargetAvailability = Schema.Struct({
   available: Schema.Boolean,
   timedOut: Schema.Boolean,
   reason: Schema.optionalKey(Schema.Literals(["user-active", "agent-busy", "foreground-busy"])),
+  detail: Schema.optionalKey(ComputerUserActiveDetail),
   requiresFreshObservation: Schema.Literal(true),
 });
 export type ComputerTargetAvailability = typeof ComputerTargetAvailability.Type;
@@ -525,6 +533,7 @@ export const ComputerAutomationError = Schema.Union([
       "foreground-busy",
       "shared-focus",
     ]),
+    detail: Schema.optionalKey(ComputerUserActiveDetail),
   }),
   Schema.Struct({ _tag: Schema.Literal("Execution"), message: Schema.String }),
   Schema.Struct({

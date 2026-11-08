@@ -7,6 +7,8 @@ import {
 import { ComputerControlError } from "@t3tools/shared/computerControl";
 import type { ComputerHelper } from "./ComputerHelperClient";
 
+/** A foreground takeover arms only after this long without physical input. */
+export const COMPUTER_TAKEOVER_IDLE_MS = 1500;
 export const computerThreadKey = (holder: Pick<ComputerLeaseHolder, "profileId" | "threadId">) =>
   holder.profileId + "\0" + holder.threadId;
 const ownerKey = (holder: ComputerLeaseHolder) =>
@@ -147,6 +149,10 @@ export class ComputerCooperation {
     appId = this.app(holder),
   ): ComputerTargetReadiness | undefined {
     return this.samples.get(sampleKey(appId))?.ready;
+  }
+  /** The cached readiness sample and when it was taken, without a native call. */
+  sample(appId?: string): Readonly<Sample> | undefined {
+    return this.samples.get(sampleKey(appId));
   }
   yield(holder: ComputerLeaseHolder): YieldedComputerTarget {
     const appId = this.app(holder);

@@ -3,13 +3,15 @@ import type {
   ComputerAccessRequested,
   ComputerAutomationError,
   ComputerLeaseHolder,
+  ComputerUserActiveDetail,
 } from "@t3tools/contracts";
 import { ComputerControlError, computerError } from "@t3tools/shared/computerControl";
 import type { ComputerController } from "./ComputerController";
+import { COMPUTER_TAKEOVER_IDLE_MS } from "./ComputerCooperation";
 import type { ComputerExecutionAuthority } from "./ComputerExecutionAuthority";
 import type { ComputerTakeoverReservation } from "./ComputerLeaseAuthority";
 
-export const TAKEOVER_IDLE_MS = 1500;
+export const TAKEOVER_IDLE_MS = COMPUTER_TAKEOVER_IDLE_MS;
 export const TAKEOVER_IDLE_TIMEOUT_MS = 30_000;
 export const TAKEOVER_CONSENT_TIMEOUT_MS = COMPUTER_TAKEOVER_CONSENT_TIMEOUT_MS;
 interface Takeover {
@@ -20,6 +22,8 @@ interface Takeover {
   holder: ComputerLeaseHolder;
   reservation: ComputerTakeoverReservation;
   phase: "consent" | "idle" | "arming" | "settled";
+  /** The last condition that kept the takeover from arming, reported if it times out. */
+  detail?: ComputerUserActiveDetail;
   timers: Array<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>;
   respond: (result: { holder: ComputerLeaseHolder } | { error: ComputerAutomationError }) => void;
 }
@@ -193,16 +197,28 @@ export class ComputerTakeoverCoordinator {
     this.options.state(profileId, takeover.holder, "waiting-idle");
     this.waitIdle(takeover, this.now());
   }
-  /** Every physical input resets the 1.5 s window; give up 30 s after approval. */
+  /**
+   * Every physical input resets the 1.5 s window; give up 30 s after approval, naming the
+   * condition (recent input, held input or an unhealthy monitor) that last blocked arming.
+   */
   private waitIdle(takeover: Takeover, started: number): void {
     takeover.phase = "idle";
     const poll = setInterval(() => {
       if (takeover.phase !== "idle") return;
-      if (this.controller.inputIdleMs() >= TAKEOVER_IDLE_MS) void this.arm(takeover, started);
-      else if (this.now() - started >= TAKEOVER_IDLE_TIMEOUT_MS)
+      const idle = this.controller.takeoverIdle(takeover.holder);
+      if (idle.idle) {
+        void this.arm(takeover, started);
+        return;
+      }
+      takeover.detail = idle.detail;
+      if (this.now() - started >= TAKEOVER_IDLE_TIMEOUT_MS)
         this.fail(
           takeover,
-          new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" }),
+          new ComputerControlError({
+            _tag: "TargetBlocked",
+            kind: "user-active",
+            detail: takeover.detail,
+          }),
         );
     }, 100);
     poll.unref?.();
@@ -222,10 +238,11 @@ export class ComputerTakeoverCoordinator {
         throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
       // Native readiness exchange: the helper's current idle age, not cached telemetry. The
       // helper re-checks the input sequence it reported when the armed generation resumes.
-      const { idleMs } = await this.controller.takeoverReadiness(takeover.holder);
+      const { idleMs, detail } = await this.controller.takeoverReadiness(takeover.holder);
       if (!this.takeovers.has(takeover.requestId))
         throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
       if (idleMs < TAKEOVER_IDLE_MS) {
+        takeover.detail = detail ?? "recent-input";
         release();
         release = undefined;
         this.waitIdle(takeover, started);

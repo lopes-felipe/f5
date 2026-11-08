@@ -25,6 +25,16 @@ describe("ComputerControlError Interrupted messages", () => {
     );
   });
 
+  it("names the user-active detail when one is known", () => {
+    expect(
+      new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active", detail: "input-held" })
+        .message,
+    ).toMatch(/^TargetBlocked user-active \(input-held\): call computer_wait_for_target/);
+    expect(
+      new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" }).message,
+    ).toMatch(/^TargetBlocked user-active: call computer_wait_for_target/);
+  });
+
   it("keeps the structured error unchanged", () => {
     const error = new ComputerControlError({
       _tag: "Interrupted",

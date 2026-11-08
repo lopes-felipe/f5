@@ -11,6 +11,7 @@ import {
   ComputerExecutionState,
   ComputerInterruptionCause,
   ComputerTargetReadiness,
+  ComputerTargetAvailability,
 } from "./computerAutomation";
 
 describe("computer observation and error metadata", () => {
@@ -65,6 +66,34 @@ describe("computer observation and error metadata", () => {
         kind: "shared-focus",
       }),
     ).toEqual({ _tag: "TargetBlocked", kind: "shared-focus" });
+  });
+  it("round-trips the optional user-active detail on errors and target availability", () => {
+    for (const error of [
+      { _tag: "TargetBlocked", kind: "user-active" },
+      { _tag: "TargetBlocked", kind: "user-active", detail: "input-held" },
+    ])
+      expect(Schema.decodeUnknownSync(ComputerAutomationError)(error)).toEqual(error);
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerAutomationError)({
+        _tag: "TargetBlocked",
+        kind: "user-active",
+        detail: "typing",
+      }),
+    ).toThrow();
+    const availability = {
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      detail: "recent-input",
+      requiresFreshObservation: true,
+    };
+    expect(Schema.decodeUnknownSync(ComputerTargetAvailability)(availability)).toEqual(
+      availability,
+    );
+    const { detail: _detail, ...withoutDetail } = availability;
+    expect(Schema.decodeUnknownSync(ComputerTargetAvailability)(withoutDetail)).toEqual(
+      withoutDetail,
+    );
   });
   it.each(["waiting-user", "waiting-agent"])("decodes execution state %s", (state) => {
     expect(Schema.decodeUnknownSync(ComputerExecutionState)(state)).toBe(state);

@@ -442,6 +442,49 @@ describe("cooperative computer control", () => {
       h.controller.close();
     }
   });
+  it("reports a takeover wait available only when the takeover could arm", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      h.ready.inputHeld = true;
+      await expect(h.controller.waitForTarget("held", h.holder, undefined, 300)).resolves.toEqual({
+        available: false,
+        timedOut: true,
+        reason: "user-active",
+        detail: "input-held",
+        requiresFreshObservation: true,
+      });
+      h.ready.inputHeld = false;
+      h.ready.lastUserInputAgeMs = 0;
+      await expect(
+        h.controller.waitForTarget("recent", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: false, reason: "user-active", detail: "recent-input" });
+      h.ready.monitorHealthy = false;
+      await expect(
+        h.controller.waitForTarget("monitor", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ detail: "monitor-unhealthy" });
+      h.ready.monitorHealthy = true;
+      h.ready.lastUserInputAgeMs = 5000;
+      await expect(h.controller.waitForTarget("idle", h.holder, undefined, 300)).resolves.toEqual({
+        available: true,
+        timedOut: false,
+        requiresFreshObservation: true,
+      });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("still reports foreground-busy ahead of user activity for a takeover wait", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      h.lease.acquire({ ...h.holder, threadId: "other", scope: { kind: "foreground" } });
+      h.ready.inputHeld = true;
+      await expect(
+        h.controller.waitForTarget("busy", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: false, timedOut: false, reason: "foreground-busy" });
+    } finally {
+      h.controller.close();
+    }
+  });
   it("the kill chord latches every yielded thread, including more than sixteen", async () => {
     const h = fixture();
     try {

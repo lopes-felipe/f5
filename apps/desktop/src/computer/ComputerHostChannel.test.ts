@@ -41,6 +41,7 @@ function setup(
     cancel: vi.fn(),
     acquire: vi.fn(),
     inputIdleMs: () => 10_000,
+    takeoverIdle: () => ({ idle: true }),
     isPaused: () => false,
     drainBackground: vi.fn(async () => () => {}),
     takeoverReadiness: vi.fn(async () => ({ idleMs: 10_000 })),
