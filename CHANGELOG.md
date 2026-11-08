@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-08
+
 ### Fixed
 
 - On macOS, a stuck synthetic key no longer blocks foreground takeovers in Full access threads while nobody is using the computer. Waiting for the foreground now reports ready only when a takeover can start, and a takeover that times out says why: recent input, held input, or an unhealthy input monitor.
