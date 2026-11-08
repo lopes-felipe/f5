@@ -19,6 +19,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
 - Writes to a repository's shared Git config start a single Git process per attempt while another writer holds the lock, instead of two.
 - Claude in Chrome works in isolated (non-default) F5 profiles on macOS. Their sessions were refused with "Claude in Chrome isn't certified for isolated F5 profiles yet."
