@@ -3625,6 +3625,330 @@ it.effect(
   },
 );
 
+/** An adapter whose native log write blocks on the gate events until released. */
+const makeGatedAdapter = (
+  manager: FakeCodexManager,
+  gateIds: ReadonlyArray<string>,
+  notificationLimits?: { entries: number; bytes: number; controls: number },
+) =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>(),
+      release = yield* Deferred.make<void>();
+    yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+    const logged: ProviderEvent[] = [];
+    const layer = makeCodexAdapterLive({
+      manager,
+      ...(notificationLimits ? { notificationLimits } : {}),
+      nativeEventLogger: {
+        filePath: "merge.log",
+        close: () => Effect.void,
+        write: (value) =>
+          Effect.gen(function* () {
+            const event = value as ProviderEvent;
+            logged.push(event);
+            if (gateIds.includes(event.id)) {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+          }),
+      },
+    }).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return { layer, entered, release, logged };
+  });
+
+const mergeBase = (threadId: string, sessionGeneration = 1) => ({
+  provider: "codex" as const,
+  providerInstanceId: ProviderInstanceId.make("codex"),
+  sessionGeneration,
+  threadId: asThreadId(threadId),
+  turnId: asTurnId(`${threadId}-turn`),
+  createdAt: "2026-11-08T21:16:56.000Z",
+});
+
+const emitCommandDelta = (
+  manager: FakeCodexManager,
+  base: ReturnType<typeof mergeBase>,
+  id: string,
+  itemId: string,
+  delta: string,
+) =>
+  manager.emit("event", {
+    ...base,
+    id: asEventId(id),
+    kind: "notification",
+    method: "item/commandExecution/outputDelta",
+    itemId: asItemId(itemId),
+    payload: { itemId, delta },
+  });
+
+const emitCommandItem = (
+  manager: FakeCodexManager,
+  base: ReturnType<typeof mergeBase>,
+  method: "item/started" | "item/completed",
+  id: string,
+  itemId: string,
+) =>
+  manager.emit("event", {
+    ...base,
+    id: asEventId(id),
+    kind: "notification",
+    method,
+    itemId: asItemId(itemId),
+    payload: {
+      item: {
+        type: "commandExecution",
+        id: itemId,
+        command: "echo",
+        status: method === "item/started" ? "inProgress" : "completed",
+      },
+    },
+  });
+
+const emitTurnCompleted = (
+  manager: FakeCodexManager,
+  base: ReturnType<typeof mergeBase>,
+  id: string,
+) =>
+  manager.emit("event", {
+    ...base,
+    id: asEventId(id),
+    kind: "notification",
+    method: "turn/completed",
+    payload: { turn: { id: base.turnId, status: "completed" } },
+  });
+
+const deltaText = (event: ProviderRuntimeEvent) =>
+  event.type === "content.delta" ? event.payload.delta : "";
+
+const collectUntilCompleted = (adapter: CodexAdapterShape, completions: number) => {
+  let completed = 0;
+  return adapter.streamEvents.pipe(
+    Stream.takeUntil((event) => event.type === "turn.completed" && ++completed === completions),
+    Stream.runCollect,
+    Effect.map((events) => [...events]),
+    Effect.forkChild,
+  );
+};
+
+it.effect(
+  "merges finely interleaved command output bursts per item without overflow or loss",
+  () => {
+    const manager = new FakeCodexManager();
+    return Effect.gen(function* () {
+      const gate = yield* makeGatedAdapter(manager, ["burst-started-a"]);
+      yield* Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const collected = yield* collectUntilCompleted(adapter, 1);
+        const base = mergeBase("burst-thread");
+        const items = ["exec-a", "exec-b", "exec-c"] as const;
+        emitCommandItem(manager, base, "item/started", "burst-started-a", items[0]);
+        yield* Deferred.await(gate.entered);
+        emitCommandItem(manager, base, "item/started", "burst-started-b", items[1]);
+        emitCommandItem(manager, base, "item/started", "burst-started-c", items[2]);
+        const expected = new Map<string, string>(items.map((item) => [item, ""]));
+        let cCount = 0;
+        for (let index = 0; index < 1500; index++) {
+          // Runs of one to three deltas alternate between items, as in the incident.
+          const item =
+            index % 60 === 0 && cCount < 23
+              ? (cCount++, items[2])
+              : Math.floor(index / (1 + (index % 3))) % 2 === 0
+                ? items[0]
+                : items[1];
+          const text = `${item}:${index};`;
+          expected.set(item, expected.get(item)! + text);
+          emitCommandDelta(manager, base, `burst-delta-${index}`, item, text);
+        }
+        for (const item of items)
+          emitCommandItem(manager, base, "item/completed", `burst-completed-${item}`, item);
+        emitTurnCompleted(manager, base, "burst-turn-completed");
+        assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+        yield* Deferred.succeed(gate.release, undefined);
+        const events = yield* Fiber.join(collected);
+        assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+        assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+        const deltas = events.filter((event) => event.type === "content.delta");
+        assert.ok(deltas.length <= 6, `expected merged deltas, got ${deltas.length}`);
+        for (const item of items) {
+          const own = events.filter(
+            (event) => event.type === "content.delta" && event.itemId === item,
+          );
+          assert.equal(own.map(deltaText).join(""), expected.get(item));
+          const completedIndex = events.findIndex(
+            (event) => event.type === "item.completed" && event.itemId === item,
+          );
+          assert.ok(completedIndex > events.lastIndexOf(own.at(-1)!));
+        }
+        assert.equal(events.at(-1)?.type, "turn.completed");
+      }).pipe(Effect.provide(gate.layer));
+    }).pipe(Effect.scoped);
+  },
+);
+
+it.effect("still interrupts on genuine overload of distinct items", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["overload-started"], {
+      entries: 4,
+      bytes: 1024 * 1024,
+      controls: 8,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("overload-thread");
+      emitCommandItem(manager, base, "item/started", "overload-started", "exec-0");
+      yield* Deferred.await(gate.entered);
+      for (let index = 0; index < 10; index++)
+        emitCommandDelta(manager, base, `overload-${index}`, `exec-${index}`, `${index}`);
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 1);
+      emitTurnCompleted(manager, base, "overload-turn-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      assert.equal(events.filter((event) => event.type === "content.delta").length, 4);
+      const error = events.find((event) => event.type === "runtime.error");
+      assert.ok(error?.type === "runtime.error" && error.payload.historyReconciliationRequired);
+      assert.equal(error.eventId, "incomplete:overload-4");
+      const blocked = yield* adapter
+        .sendTurn({ threadId: base.threadId, input: "blocked" })
+        .pipe(Effect.flip);
+      assert.equal(blocked._tag, "ProviderAdapterRequestError");
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("rolls a merged delta over at 64 KiB and seals it at preparation start", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["rollover-started"], {
+      entries: 1024,
+      bytes: 32 * 1024 * 1024,
+      controls: 64,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("rollover-thread");
+      emitCommandItem(manager, base, "item/started", "rollover-started", "exec-big");
+      yield* Deferred.await(gate.entered);
+      let expected = "";
+      for (let index = 0; index < 100; index++) {
+        const text = String.fromCharCode(65 + (index % 26)).repeat(1024);
+        expected += text;
+        emitCommandDelta(manager, base, `rollover-${index}`, "exec-big", text);
+      }
+      // Any other event for the context seals the open notification.
+      emitCommandDelta(manager, base, "sealed-before-usage", "exec-small", "one");
+      manager.emit("event", {
+        ...base,
+        id: asEventId("rollover-usage"),
+        kind: "notification",
+        method: "thread/tokenUsage/updated",
+        payload: {},
+      });
+      emitCommandDelta(manager, base, "sealed-after-usage", "exec-small", "two");
+      emitTurnCompleted(manager, base, "rollover-turn-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      const big = events.filter(
+        (event) => event.type === "content.delta" && event.itemId === "exec-big",
+      );
+      assert.equal(big.length, 2);
+      assert.ok(big.every((event) => Buffer.byteLength(deltaText(event)) <= 64 * 1024));
+      assert.equal(big.map(deltaText).join(""), expected);
+      const small = events.filter(
+        (event) => event.type === "content.delta" && event.itemId === "exec-small",
+      );
+      assert.deepEqual(small.map(deltaText), ["one", "two"]);
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("does not merge a delta into a notification whose preparation started", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["started-first"]);
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("started-thread");
+      emitCommandDelta(manager, base, "started-first", "exec-1", "first");
+      yield* Deferred.await(gate.entered);
+      emitCommandDelta(manager, base, "started-second", "exec-1", "second");
+      emitCommandDelta(manager, base, "started-third", "exec-1", "third");
+      emitTurnCompleted(manager, base, "started-turn-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      assert.deepEqual(events.filter((event) => event.type === "content.delta").map(deltaText), [
+        "first",
+        "secondthird",
+      ]);
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
+it.effect("isolates admission and merging between threads and session generations", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    const gate = yield* makeGatedAdapter(manager, ["x-started", "y-started"], {
+      entries: 4,
+      bytes: 1024 * 1024,
+      controls: 8,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 2);
+      const x = mergeBase("x-thread"),
+        y = mergeBase("y-thread"),
+        yNext = mergeBase("y-thread", 2);
+      emitCommandItem(manager, x, "item/started", "x-started", "x-0");
+      emitCommandItem(manager, y, "item/started", "y-started", "y-item");
+      yield* Deferred.await(gate.entered);
+      let expectedY = "";
+      for (let index = 0; index < 20; index++) {
+        emitCommandDelta(manager, x, `x-${index}`, `x-${index}`, `x${index}`);
+        const text = `y${index};`;
+        expectedY += text;
+        emitCommandDelta(manager, y, `y-${index}`, "y-item", text);
+      }
+      emitCommandDelta(manager, yNext, "y-next", "y-item", "generation-2");
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 1);
+      assert.equal(manager.interruptTurnImpl.mock.calls[0]?.[0], x.threadId);
+      emitTurnCompleted(manager, x, "x-turn-completed");
+      emitTurnCompleted(manager, y, "y-turn-completed");
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      const yDeltas = events.filter(
+        (event) => event.type === "content.delta" && event.threadId === y.threadId,
+      );
+      assert.equal(
+        yDeltas
+          .filter((event) => event.sessionGeneration === 1)
+          .map(deltaText)
+          .join(""),
+        expectedY,
+      );
+      assert.deepEqual(yDeltas.filter((event) => event.sessionGeneration === 2).map(deltaText), [
+        "generation-2",
+      ]);
+      assert.ok(
+        events
+          .filter((event) => event.type === "content.delta" && event.threadId === x.threadId)
+          .every((event) => /^x\d+$/.test(deltaText(event))),
+      );
+      assert.equal(
+        events.filter((event) => event.type === "runtime.error" && event.threadId === y.threadId)
+          .length,
+        0,
+      );
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
 it.effect(
   "stops Codex Chrome's runtime for a call Codex reported running, ahead of queued output and whether or not the interrupt succeeds",
   () => {

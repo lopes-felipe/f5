@@ -14,6 +14,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
 - Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
 - Popovers overlapping the desktop window header respond to hover and clicks.
+- Codex turns that stream bursts of small output chunks are no longer interrupted by notification overflow. Interrupted Codex history with commands, MCP calls or empty reasoning can now be recovered automatically, and the recovery warning stays visible until it is. Planning workflows no longer fail a branch while a plan-format repair turn is starting.
 
 ## [0.1.6] - 2026-11-08
 

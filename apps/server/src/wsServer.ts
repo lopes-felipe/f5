@@ -3870,6 +3870,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             orchestrationEngine,
             providerService,
             providerSessionDirectory,
+            threadCommandExecutionQuery,
           },
           {
             threadIds: [params.threadId],

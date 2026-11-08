@@ -1875,6 +1875,14 @@ export const makeWorkflowService = Effect.gen(function* () {
           : workflow.merge.status !== "in_progress"
       )
         return;
+      // A turn this stage already rejected has its repair outstanding. A later
+      // evaluation of it (a session update while the repair turn starts, with
+      // the same logical timestamp) must neither repair nor fail it again.
+      if (
+        input.turnId ===
+        (branch ? branch.rejectedDocumentTurnId : workflow.merge.rejectedDocumentTurnId)
+      )
+        return;
       const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
       const validation = validateCapturedPlanForTurn({
         workflow: workflow,
@@ -1883,16 +1891,15 @@ export const makeWorkflowService = Effect.gen(function* () {
         turnId: input.turnId,
       });
       if (validation.valid) return;
-      if (isDocumentWorkflow(workflow)) {
-        if (branch && input.branchId) {
-          branch = { ...branch, rejectedDocumentTurnId: input.turnId };
-          workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
-        } else {
-          workflow = {
-            ...workflow,
-            merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
-          };
-        }
+      // Every workflow kind records the rejected turn, so the stage evaluates it once.
+      if (branch && input.branchId) {
+        branch = { ...branch, rejectedDocumentTurnId: input.turnId };
+        workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
+      } else {
+        workflow = {
+          ...workflow,
+          merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
+        };
       }
 
       const error = `${isDocumentWorkflow(workflow) ? "Invalid document" : "Invalid proposed-plan capture"}: ${validation.error}`;
@@ -2957,7 +2964,14 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (isRevisionCompletion && turnId === branch.planTurnId) {
           return workflow;
         }
-        if (isDocumentWorkflow(workflow) && turnId === branch.rejectedDocumentTurnId) {
+        // A rejected turn is not evaluated again while its stage still runs.
+        // Planning branches in error may still accept a late valid capture.
+        if (
+          turnId === branch.rejectedDocumentTurnId &&
+          (isDocumentWorkflow(workflow) ||
+            branch.status === "authoring" ||
+            branch.status === "revising")
+        ) {
           return workflow;
         }
         const completionEvidenceAt =
@@ -3053,7 +3067,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
       const mergeCompletionEvidenceAt =
         thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? null;
-      if (isDocumentWorkflow(workflow) && turnId === workflow.merge.rejectedDocumentTurnId)
+      if (
+        turnId === workflow.merge.rejectedDocumentTurnId &&
+        (isDocumentWorkflow(workflow) || workflow.merge.status === "in_progress")
+      )
         return workflow;
       if (
         workflow.merge.status === "error" &&

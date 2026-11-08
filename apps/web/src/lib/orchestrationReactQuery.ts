@@ -412,6 +412,7 @@ export function applyThreadCommandExecutionEventToQueryCache(
     | { type: "thread.reverted" }
     | { type: "thread.command-execution-recorded" }
     | { type: "thread.command-execution-output-appended" }
+    | { type: "thread.command-execution-output-reconciled" }
   >,
 ): void {
   switch (event.type) {
@@ -461,6 +462,17 @@ export function applyThreadCommandExecutionEventToQueryCache(
       queryClient.setQueryData<OrchestrationGetThreadCommandExecutionResult>(queryKey, (current) =>
         mergeThreadCommandExecutionOutputAppendedDetailResult(current, event, summary),
       );
+      return;
+    }
+
+    case "thread.command-execution-output-reconciled": {
+      // Whether it applied depends on the server row's sequence: refetch it.
+      void queryClient.invalidateQueries({
+        queryKey: orchestrationQueryKeys.threadCommandExecution(
+          event.payload.threadId,
+          event.payload.commandExecutionId,
+        ),
+      });
     }
   }
 }

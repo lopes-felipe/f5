@@ -1,6 +1,7 @@
 import {
   CommandId,
   type OrchestrationCommand,
+  type OrchestrationSession,
   type OrchestrationThread,
   type OrchestrationUsageLimit,
   type RuntimeUsageLimit,
@@ -15,6 +16,36 @@ export type TurnCompletedRuntimeEvent = Extract<ProviderRuntimeEvent, { type: "t
 
 export const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
   CommandId.makeUnsafe(`provider:${event.eventId}:${tag}`);
+
+export const INCOMPLETE_HISTORY_SESSION_ERROR =
+  "Provider output is incomplete. Review history recovery before continuing.";
+
+type SessionErrorFields = Pick<
+  OrchestrationSession,
+  "lastError" | "lastErrorId" | "lastErrorOccurredAt"
+>;
+
+/**
+ * Sends stay fenced while an incomplete-history marker exists, so a session
+ * update that would otherwise clear the error keeps one naming the marker. The
+ * marker's own runtime error text is kept when it is still the projected one.
+ * Only a verified or manual history recovery clears it.
+ */
+export function retainIncompleteHistoryError<S extends SessionErrorFields>(
+  session: S,
+  previous: SessionErrorFields | null | undefined,
+  marker: { readonly eventId: string } | undefined,
+  now: string,
+): S {
+  if (!marker || session.lastError !== null) return session;
+  const same = previous && previous.lastErrorId === marker.eventId ? previous : undefined;
+  return {
+    ...session,
+    lastError: same?.lastError ?? INCOMPLETE_HISTORY_SESSION_ERROR,
+    lastErrorId: marker.eventId,
+    lastErrorOccurredAt: same?.lastErrorOccurredAt ?? now,
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)

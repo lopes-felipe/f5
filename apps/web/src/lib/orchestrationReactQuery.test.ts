@@ -240,6 +240,43 @@ describe("command execution detail query cache", () => {
     expect(queryClient.getQueryState(queryKey)).toBeUndefined();
   });
 
+  it("refetches only the reconciled command's detail after a verified output repair", () => {
+    const queryClient = new QueryClient();
+    const queryKey = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);
+    const otherKey = orchestrationQueryKeys.threadCommandExecution(
+      threadId,
+      OrchestrationCommandExecutionId.makeUnsafe("cmd-2"),
+    );
+    for (const key of [queryKey, otherKey])
+      queryClient.setQueryData(key, {
+        commandExecution: makeExecution({ output: "hello\n" }),
+      } satisfies OrchestrationGetThreadCommandExecutionResult);
+
+    applyThreadCommandExecutionEventToQueryCache(queryClient, {
+      sequence: 6,
+      eventId: EventId.makeUnsafe("event-command-output-reconciled"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: "2026-03-20T10:00:06.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.command-execution-output-reconciled",
+      payload: {
+        threadId,
+        commandExecutionId,
+        expectedLastUpdatedSequence: 5,
+        output: "hello\nworld\n",
+        outputTruncated: false,
+        updatedAt: "2026-03-20T10:00:06.000Z",
+      },
+    });
+
+    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false);
+  });
+
   it("invalidates command detail queries across reconnect recovery", async () => {
     const queryClient = new QueryClient();
     const queryKey = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);
