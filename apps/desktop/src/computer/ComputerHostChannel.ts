@@ -31,8 +31,10 @@ import { computerError, ComputerControlError } from "@t3tools/shared/computerCon
 import { restrictComputerTier } from "@t3tools/shared/computerApps";
 import type { ComputerController, ComputerExecutionStateUpdate } from "./ComputerController";
 import {
+  CHROME_NATIVE_WORK_FINISHING_MESSAGE,
   CHROME_OWN_NATIVE_CONTROL_MESSAGE,
   ChromeLeaseAuthority,
+  isChromeSelfWait,
   nativeScopeExcludesChrome,
 } from "./ChromeLeaseAuthority";
 import type { ChromeProcessSupervisor } from "./ChromeProcessSupervisor";
@@ -487,7 +489,13 @@ export class ComputerHostChannel {
                 )
                   throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
               };
-              check();
+              try {
+                check();
+              } catch (error) {
+                // The thread's own Chrome call or stopping lease clears by itself: wait for it
+                // in the admission queue instead of failing at once.
+                if (!isChromeSelfWait(error)) throw error;
+              }
               const preparationStarted = performance.now();
               if (this.cooperationCapable(profileId))
                 await this.controller.prepareAcquisition(holder);
@@ -550,7 +558,17 @@ export class ComputerHostChannel {
           const acquiring = { holder: message.holder, cancelled: false };
           backend.acquiring.set(requestId, acquiring);
           try {
-            this.chrome.assertNativeAvailable(profileId, undefined, message.holder);
+            try {
+              this.chrome.assertNativeAvailable(profileId, undefined, message.holder);
+            } catch (error) {
+              // A queued takeover re-checks in admission and waits for it to clear; one that
+              // reserves immediately (no reservation capability) must fail now.
+              if (
+                !isChromeSelfWait(error) ||
+                !backend.capabilities.has(COMPUTER_TAKEOVER_RESERVATION_CAPABILITY)
+              )
+                throw error;
+            }
             this.takeovers.request(
               profileId,
               incarnation,
@@ -834,6 +852,13 @@ export class ComputerHostChannel {
               throw new ComputerControlError({
                 _tag: "Execution",
                 message: CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+              });
+            // A released lease's input can still be running (`nativeWork` outlives the lease);
+            // Chrome must not move focus under it.
+            if (this.controller.nativeWorkConflicts("chrome"))
+              throw new ComputerControlError({
+                _tag: "Execution",
+                message: CHROME_NATIVE_WORK_FINISHING_MESSAGE,
               });
             this.send(profileId, { type: "response", requestId: message.requestId, result: true });
           } catch (error) {

@@ -1,8 +1,14 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
+import type { ComputerLeaseHolder } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { ChromeProcessSupervisor, type ChromeProcessIo } from "./ChromeProcessSupervisor";
 import { ComputerHostChannel } from "./ComputerHostChannel";
+import {
+  CHROME_NATIVE_WORK_FINISHING_MESSAGE,
+  CHROME_OWN_CALL_RUNNING_MESSAGE,
+  CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+} from "./ChromeLeaseAuthority";
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
 import { ComputerConsentStore } from "./ComputerConsentStore";
 import type { ComputerController } from "./ComputerController";
@@ -45,7 +51,8 @@ function setup(
     isPaused: () => false,
     drainBackground: vi.fn(async () => () => {}),
     takeoverReadiness: vi.fn(async () => ({ idleMs: 10_000 })),
-    nativeWorkConflicts: vi.fn(() => false),
+    nativeWorkConflicts: vi.fn((_scope: unknown) => false),
+    setAdmissionCheck: vi.fn(),
     cooperationAvailable: () => options.cooperation === true,
     cooperation: { yielded: new Map() },
     prepareAcquisition: vi.fn(async () => {}),
@@ -1798,18 +1805,13 @@ describe("background capability negotiation", () => {
       await vi.waitFor(() => expect(response(requestId)).toBeDefined());
       return response(requestId);
     };
-    const ownNative = {
-      _tag: "Execution",
-      message: "This thread is controlling the computer; Chrome calls wait until that ends.",
-    };
+    const ownNative = { _tag: "Execution", message: CHROME_OWN_NATIVE_CONTROL_MESSAGE };
 
     // No call report yet: unknown reads as running, refused without naming another thread.
+    // (This peer has no reservation capability, so the takeover can't queue and fails now.)
     takeover("unknown");
     expect(response("takeover-unknown")).toMatchObject({
-      error: {
-        _tag: "Execution",
-        message: "A Chrome call from this thread is still running; retry once it finishes.",
-      },
+      error: { _tag: "Execution", message: CHROME_OWN_CALL_RUNNING_MESSAGE },
     });
     // Another thread stays blocked by the Chrome lease.
     h.process.emit("message", {
@@ -1845,6 +1847,97 @@ describe("background capability negotiation", () => {
       holder: h.controller.lease.takeover()!,
     });
     expect(await validate("validate-after")).toMatchObject({ result: true });
+  });
+  describe("a Claude Chrome holder's own native leases", () => {
+    const chromeHolder = {
+      profileId: "profile",
+      threadId: "t",
+      sessionGeneration: "chrome-s",
+      provider: "claude" as const,
+    };
+    const foreground = { ...appHolder, scope: { kind: "foreground" as const } };
+    async function chromeHeld() {
+      const h = setup(true);
+      h.hello(["background-ax-v1", "chrome-call-activity-v1"]);
+      h.controller.acquire.mockImplementation((holder) => h.controller.lease.acquire(holder));
+      h.process.emit("message", {
+        type: "chromeLeaseAcquire",
+        requestId: "chrome",
+        holder: chromeHolder,
+      });
+      await vi.waitFor(() => expect(h.channel.chrome.current()).toEqual(chromeHolder));
+      const calls = (running: boolean) =>
+        h.process.emit("message", {
+          type: "chromeCallsChanged",
+          threadId: "t",
+          sessionGeneration: "chrome-s",
+          running,
+        });
+      const response = (requestId: string) =>
+        sent(h).find((message) => message.type === "response" && message.requestId === requestId);
+      const settled = async (requestId: string) => {
+        await vi.waitFor(() => expect(response(requestId)).toBeDefined());
+        return response(requestId);
+      };
+      const validate = (requestId: string) => {
+        h.process.emit("message", { type: "chromeLeaseValidate", requestId, holder: chromeHolder });
+        return settled(requestId);
+      };
+      return { ...h, calls, settled, validate };
+    }
+
+    it("grants a plain foreground lease once its Chrome calls are idle", async () => {
+      const h = await chromeHeld();
+      h.process.emit("message", { type: "leaseAcquire", requestId: "early", holder: foreground });
+      expect(await h.settled("early")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_OWN_CALL_RUNNING_MESSAGE },
+      });
+      h.calls(false);
+      h.process.emit("message", { type: "leaseAcquire", requestId: "idle", holder: foreground });
+      expect(await h.settled("idle")).toMatchObject({ result: { scope: { kind: "foreground" } } });
+      expect(await h.validate("validate")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_OWN_NATIVE_CONTROL_MESSAGE },
+      });
+    });
+
+    it("refuses a held lease's next action while one of its Chrome calls runs", async () => {
+      const h = await chromeHeld();
+      const check = h.controller.setAdmissionCheck.mock.calls[0]![0] as (
+        holder: ComputerLeaseHolder,
+      ) => void;
+      h.calls(false);
+      expect(() => check(foreground)).not.toThrow();
+      h.calls(true);
+      expect(() => check(foreground)).toThrow(CHROME_OWN_CALL_RUNNING_MESSAGE);
+      h.calls(false);
+      expect(() => check(foreground)).not.toThrow();
+      // A background lease on an app that isn't a browser never collides with Chrome.
+      h.channel.execution.approveSession({
+        profileId: "profile",
+        backendIncarnation: "incarnation",
+        threadId: "t",
+        sessionGeneration: "s",
+        policyRevision: 0,
+      });
+      h.calls(true);
+      expect(() => check(appHolder)).not.toThrow();
+    });
+
+    it("refuses Chrome while released native input is still finishing", async () => {
+      const h = await chromeHeld();
+      h.controller.nativeWorkConflicts.mockImplementation((scope: unknown) => scope === "chrome");
+      expect(await h.validate("draining")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_NATIVE_WORK_FINISHING_MESSAGE },
+      });
+      h.controller.nativeWorkConflicts.mockReturnValue(false);
+      expect(await h.validate("drained")).toMatchObject({ result: true });
+    });
+
+    it("lets Chrome run beside the same thread's background lease on a non-browser app", async () => {
+      const h = await chromeHeld();
+      h.controller.lease.acquire(appHolder);
+      expect(await h.validate("background")).toMatchObject({ result: true });
+    });
   });
   it("cancels a pending takeover on denial and on cancel without arming", async () => {
     const h = setup();

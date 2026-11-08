@@ -11,7 +11,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
 - Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
 - Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
-<<<<<<< HEAD
 - Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
 - Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
 - Popovers overlapping the desktop window header respond to hover and clicks.

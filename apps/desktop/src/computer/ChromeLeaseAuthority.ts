@@ -4,7 +4,7 @@ import type {
   ComputerLeaseHolder,
   ComputerLeaseScope,
 } from "@t3tools/contracts";
-import { ComputerControlError } from "@t3tools/shared/computerControl";
+import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
 import { COMPUTER_CHROME_APP_IDS } from "@t3tools/shared/computerExecution";
 import type { ChromeProcessSupervisor, ChromeStopReason } from "./ChromeProcessSupervisor";
 
@@ -26,9 +26,27 @@ export const CHROME_RECOVERY_MESSAGE =
   "Browser control from an earlier session hasn't stopped yet. Quit Chrome control there or restart your Mac, then retry.";
 export const CHROME_OWN_CALL_RUNNING_MESSAGE =
   "A Chrome call from this thread is still running; retry once it finishes.";
-
+export const CHROME_OWN_STOPPING_MESSAGE =
+  "Chrome control from this thread is stopping; retry once it has stopped.";
+export const CHROME_OWN_CODEX_MESSAGE =
+  "This thread's Codex Chrome session blocks native computer control until it stops; Codex threads can't use both at once.";
 export const CHROME_OWN_NATIVE_CONTROL_MESSAGE =
-  "This thread is controlling the computer; Chrome calls wait until that ends.";
+  "This thread holds foreground computer control, so its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it).";
+export const CHROME_NATIVE_WORK_FINISHING_MESSAGE =
+  "Native computer input is still finishing; retry the Chrome call shortly.";
+
+/**
+ * Refusals of the holder's own thread that clear by themselves (its Chrome call ends, or its
+ * lease finishes stopping), so a native request can wait in the admission queue for them.
+ */
+export function isChromeSelfWait(cause: unknown): boolean {
+  const error = computerError(cause);
+  return (
+    error._tag === "Execution" &&
+    (error.message === CHROME_OWN_CALL_RUNNING_MESSAGE ||
+      error.message === CHROME_OWN_STOPPING_MESSAGE)
+  );
+}
 
 /** Native scopes that exclude Chrome control: foreground, takeover, or a registered browser. */
 export function nativeScopeExcludesChrome(scope: ComputerLeaseScope): boolean {
@@ -43,7 +61,11 @@ export interface ChromeLeaseAuthorityOptions {
   readonly callsIdle?: (holder: ChromeLeaseHolder) => boolean;
   /** One line per lease event, for the desktop log. Never tool inputs or titles. */
   readonly log?: (message: string) => void;
+  readonly now?: () => number;
 }
+
+/** Admission re-runs every 250 ms while requests wait, so each refusal line is rate-limited. */
+const CHROME_LOG_REPEAT_MS = 30_000;
 
 const describeHolder = (holder: ChromeLeaseHolder) =>
   `profile=${holder.profileId} thread=${holder.threadId} provider=${holder.provider} generation=${holder.sessionGeneration}`;
@@ -55,8 +77,9 @@ const describeHolder = (holder: ChromeLeaseHolder) =>
  *
  * One exception: a Claude session holds the lease for its CLI's whole life and can only
  * give it up by stopping, so the holder's own thread may take native control while none of
- * its Chrome calls runs. Chrome calls from that thread are then refused at validation
- * (see `ComputerHostChannel`), so the two never act at once. */
+ * its Chrome calls runs. Chrome calls are then refused at validation while that thread holds
+ * or has reserved such control, and while released native work is still finishing (see
+ * `ComputerHostChannel`), so the two never act at once. */
 export class ChromeLeaseAuthority {
   private holder: ChromeLeaseHolder | null = null;
   private paused = false;
@@ -64,8 +87,8 @@ export class ChromeLeaseAuthority {
   private invalidated = false;
   /** Release requested; waiting for the registered group to exit. */
   private draining = false;
-  /** Admission re-runs per action, so repeated identical lines are logged once. */
-  private lastLog: string | undefined;
+  /** When each rate-limited line was last written. */
+  private readonly logged = new Map<string, number>();
   constructor(
     private readonly changed: (holder: ChromeLeaseHolder | null) => void,
     private readonly supervisor?: Pick<
@@ -95,37 +118,39 @@ export class ChromeLeaseAuthority {
     if (!this.holder)
       throw new ComputerControlError({ _tag: "Execution", message: CHROME_RECOVERY_MESSAGE });
     const holder = this.holder;
-    if (
-      requester &&
-      holder.profileId === profileId &&
-      holder.threadId === requester.threadId &&
-      holder.provider === "claude" &&
-      !this.draining &&
-      !this.invalidated
-    ) {
-      if (this.options.callsIdle?.(holder) === true) {
-        this.log(`native allowed for the Chrome holder's own thread (${describeHolder(holder)})`);
-        return;
-      }
-      this.log(`native refused: own Chrome call running (${describeHolder(holder)})`);
-      throw new ComputerControlError({
-        _tag: "Execution",
-        message: CHROME_OWN_CALL_RUNNING_MESSAGE,
-      });
+    // The holder's own thread is never told another thread holds Chrome.
+    if (requester && holder.profileId === profileId && holder.threadId === requester.threadId) {
+      const refuse = (reason: string, message: string): never => {
+        this.log(`native refused: ${reason} (${describeHolder(holder)})`, true);
+        throw new ComputerControlError({ _tag: "Execution", message });
+      };
+      if (holder.provider !== "claude")
+        refuse("own Codex Chrome session", CHROME_OWN_CODEX_MESSAGE);
+      if (this.draining || this.invalidated)
+        refuse("own Chrome lease stopping", CHROME_OWN_STOPPING_MESSAGE);
+      if (this.options.callsIdle?.(holder) !== true)
+        refuse("own Chrome call running", CHROME_OWN_CALL_RUNNING_MESSAGE);
+      this.log(
+        `native allowed for the Chrome holder's own thread (${describeHolder(holder)})`,
+        true,
+      );
+      return;
     }
     this.log(
       `native refused for profile=${profileId} thread=${requester?.threadId ?? "unknown"}: held by ${describeHolder(holder)}${this.draining ? " (draining)" : ""}${this.invalidated ? " (invalidated)" : ""}`,
+      true,
     );
     this.busy(profileId);
   }
   acquire(holder: ChromeLeaseHolder, native: ComputerLeaseHolder | null): void {
     if (this.recoveryRequired()) {
-      this.log(`acquire refused, recovery required (${describeHolder(holder)})`);
+      this.log(`acquire refused, recovery required (${describeHolder(holder)})`, true);
       throw new ComputerControlError({ _tag: "Execution", message: CHROME_RECOVERY_MESSAGE });
     }
     if (native) {
       this.log(
         `acquire refused (${describeHolder(holder)}): native control held by profile=${native.profileId} thread=${native.threadId}`,
+        true,
       );
       throw new ComputerControlError({
         _tag: "Busy",
@@ -143,6 +168,7 @@ export class ChromeLeaseAuthority {
       if (sameChromeHolder(this.holder, holder) && !this.draining && !this.invalidated) return;
       this.log(
         `acquire refused (${describeHolder(holder)}): held by ${describeHolder(this.holder)}`,
+        true,
       );
       this.busy(holder.profileId);
     }
@@ -220,9 +246,19 @@ export class ChromeLeaseAuthority {
     this.invalidated = true;
     this.release(this.holder, reason);
   }
-  private log(message: string): void {
-    if (!this.options.log || message === this.lastLog) return;
-    this.lastLog = message;
+  /**
+   * Lease transitions are always written. Refusals and grants repeat on every admission retry
+   * and per-action check, so each distinct line is written at most once per 30 s.
+   */
+  private log(message: string, rateLimited = false): void {
+    if (!this.options.log) return;
+    if (rateLimited) {
+      const now = this.options.now?.() ?? Date.now();
+      const last = this.logged.get(message);
+      if (last !== undefined && now - last < CHROME_LOG_REPEAT_MS) return;
+      if (this.logged.size >= 64) this.logged.clear();
+      this.logged.set(message, now);
+    }
     try {
       this.options.log(`chrome lease: ${message}`);
     } catch {
