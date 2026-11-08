@@ -35,6 +35,21 @@ export function describeComputerBusy(error: BusyError): string {
     error.holderIdle === true ? " (idle)" : error.holderIdle === false ? " (working)" : "";
   return `Busy: ${what} is held by ${who}${state}. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.`;
 }
+type InterruptedError = Extract<ComputerAutomationError, { _tag: "Interrupted" }>;
+const INTERRUPTED_GUIDANCE: Record<InterruptedError["cause"], string> = {
+  paused:
+    "computer control for this thread is paused; the user must press Resume in F5 (check the app first if it says Needs recovery). Do not retry until then.",
+  "user-input": "the user used the mouse or keyboard; observe again before acting.",
+  "kill-switch": "the user stopped computer control; stop and ask before continuing.",
+  "access-changed": "app access changed; check computer_status before continuing.",
+  "policy-changed": "computer-use settings changed; check computer_status before continuing.",
+  "turn-ended": "this turn ended; no further computer actions run in it.",
+  "permit-expired": "the action's permit expired before it ran; observe again before acting.",
+};
+/** Names the cause: a bare "Interrupted" reads as a user stop even when F5 paused the thread. */
+function describeComputerInterrupted(error: InterruptedError): string {
+  return `Interrupted (${error.cause}): ${INTERRUPTED_GUIDANCE[error.cause]}`;
+}
 export class ComputerControlError extends Error {
   constructor(readonly error: ComputerAutomationError) {
     super(
@@ -56,7 +71,9 @@ export class ComputerControlError extends Error {
                       ? "TargetBlocked foreground-busy: another chat has the foreground; wait."
                       : error._tag === "TargetBlocked" && error.kind === "other-app"
                         ? "TargetBlocked other-app: the foreground was approved for a different app."
-                        : error._tag,
+                        : error._tag === "Interrupted"
+                          ? describeComputerInterrupted(error)
+                          : error._tag,
     );
   }
 }

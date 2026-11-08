@@ -235,6 +235,7 @@ try {
     appId: fixtureId,
     ...(sequencing ? { delayedFocus: true, expectedText: sequenceText } : {}),
     ...(fixtureBinDirectory ? { preparedDirectory: fixtureBinDirectory } : {}),
+    recoveryChecks: true,
   });
   fixture = granted.child;
   const excluded = await createRehearsalFixture({
@@ -515,6 +516,52 @@ try {
         return;
       }
       throw error;
+    });
+    await check("A shortcut that opens a window succeeds and sends its key-up", async () => {
+      const current = await request<ComputerInspectResult>({
+        op: "inspect",
+        appId: fixtureId,
+        maxNodes: 100,
+      });
+      const field = current.nodes.find((node) => node.name === "Rehearsal input");
+      if (!field) throw new Error("Editable field is missing.");
+      await request({
+        op: "elementAction",
+        appId: fixtureId,
+        snapshotId: current.snapshotId,
+        elementRef: field.elementRef,
+        action: "focus",
+      });
+      const opened = granted.receipt("FIXTURE_WINDOW_OPENED");
+      const released = granted.receipt("FIXTURE_N_UP");
+      // Focus moves on keydown; this must not become TargetBlocked or OutcomeUnknown.
+      await request({ op: "key", chords: ["cmd+n"], repeat: 1 });
+      await waitFor(
+        () =>
+          granted.receipt("FIXTURE_WINDOW_OPENED") > opened &&
+          granted.receipt("FIXTURE_N_UP") > released,
+      );
+      await granted.command("SECOND_WINDOW_CLOSE", "FIXTURE_SECOND_CLOSED");
+    });
+    await check("A press that removes its own element is not an unknown outcome", async () => {
+      const current = await request<ComputerInspectResult>({
+        op: "inspect",
+        appId: fixtureId,
+        maxNodes: 100,
+      });
+      const button = current.nodes.find(
+        (node) => node.name === "Dismissing press" && node.actions.includes("press"),
+      );
+      if (!button) throw new Error("Self-dismissing fixture button is missing.");
+      const dismissed = granted.receipt("FIXTURE_DISMISSED");
+      await request({
+        op: "elementAction",
+        appId: fixtureId,
+        snapshotId: current.snapshotId,
+        elementRef: button.elementRef,
+        action: "press",
+      });
+      await waitFor(() => granted.receipt("FIXTURE_DISMISSED") > dismissed);
     });
   }
   await check("Permit expiry blocks the next real action", async () => {
