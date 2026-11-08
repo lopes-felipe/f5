@@ -2315,7 +2315,9 @@ describe("Thread sidebar", () => {
         () => document.querySelector<HTMLElement>('nav[aria-label="Primary"]'),
         "The nav strip should render.",
       );
-      const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
+      // The strip is pinned above the scroll area, like the New thread row.
+      expect(navigation.closest('[data-sidebar="content"]')).toBeNull();
+      const navLabels =[...navigation.querySelectorAll("button[aria-label]")].map((button) =>
         button.getAttribute("aria-label"),
       );
       expect(navLabels).toEqual([
@@ -4578,9 +4580,9 @@ describe("Thread sidebar", () => {
           ) ?? null,
         "The Pull requests badge should render.",
       );
-      const scrollArea = navigation.closest<HTMLElement>('[data-sidebar="content"]')!;
+      const sidebar = navigation.closest<HTMLElement>('[data-sidebar="sidebar"]')!;
       const badgeRect = badge.parentElement!.getBoundingClientRect();
-      const areaRect = scrollArea.getBoundingClientRect();
+      const areaRect = sidebar.getBoundingClientRect();
       expect(badgeRect.top).toBeGreaterThanOrEqual(areaRect.top);
       expect(badgeRect.right).toBeLessThanOrEqual(areaRect.right);
     } finally {
