@@ -79,7 +79,7 @@ it.effect(
     }),
 );
 
-it.effect("marks only complete evidence from a merged or closed PR as final", () =>
+it.effect("marks only complete evidence from a merged PR as final", () =>
   Effect.gen(function* () {
     const complete = {
       nodes: [{ commit: { message: "Port\n\nUpstream-Topic: pr-2" } }],
@@ -88,7 +88,7 @@ it.effect("marks only complete evidence from a merged or closed PR as final", ()
     const partial = { nodes: [{ commit: { message: "Port" } }], pageInfo: { hasNextPage: true } };
     for (const [state, commits, final] of [
       ["MERGED", complete, true],
-      ["CLOSED", complete, true],
+      ["CLOSED", complete, false],
       ["OPEN", complete, false],
       [undefined, complete, false],
       ["MERGED", partial, false],

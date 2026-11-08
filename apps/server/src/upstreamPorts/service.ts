@@ -3000,7 +3000,7 @@ export function makeUpstreamPortsService(
                 typeof value === "string" && Number.isFinite(Date.parse(value)),
             );
             let needsRetry = false;
-            // A merged or closed PR's trailers are final; only a live batch PR needs re-reading.
+            // A merged PR's trailers are final; an open or closed (reopenable) PR needs re-reading.
             let hasLiveBatchPr = false;
             if (admittedAt) {
               const replies = yield* readSettledPortReplies(deps.sql, threadId, admittedAt);

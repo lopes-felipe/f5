@@ -47,7 +47,9 @@ export class UpstreamGitHubError extends Data.TaggedError("UpstreamGitHubError")
 export interface UpstreamGitHub {
   /**
    * A single GitHub snapshot of the body and commit trailers. Incomplete data cannot prove exclusion.
-   * `final` marks complete evidence from a merged or closed PR, whose commits can no longer change.
+   * `final` marks complete evidence from a merged PR, whose commits can no longer change. Callers
+   * may stop re-reading it, so a later edit to the merged PR's body is not seen. A closed PR is not
+   * final: it can be reopened and gain commits.
    */
   readonly readPullRequestTopicEvidence: (input: {
     readonly cwd: string;
@@ -317,7 +319,7 @@ export function makeUpstreamGitHub(cli: GitHubCliShape): UpstreamGitHub {
             ...messages.filter((message): message is string => typeof message === "string"),
           ],
           complete,
-          final: complete && (pr.state === "MERGED" || pr.state === "CLOSED"),
+          final: complete && pr.state === "MERGED",
         };
       }),
     available,
