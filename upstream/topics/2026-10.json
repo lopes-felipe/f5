@@ -45252,11 +45252,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-08T00:10:53.174Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23576",
-      "status": "port",
+      "reason": "F5 uses owned-process exit status for synchronous setup and settlement scripts, without shell completion wrappers.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal",
