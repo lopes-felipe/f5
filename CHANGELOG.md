@@ -35,6 +35,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
 - Writes to a repository's shared Git config start a single Git process per attempt while another writer holds the lock, instead of two.
 - Claude in Chrome works in isolated (non-default) F5 profiles on macOS. Their sessions were refused with "Claude in Chrome isn't certified for isolated F5 profiles yet."
