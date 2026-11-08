@@ -6,6 +6,7 @@ import { defineConfig } from "vitest/config";
 
 import { ciTestReports } from "../../scripts/lib/ci-test-reports";
 import { isolateTestHome } from "../../scripts/lib/test-home";
+import { chunkCycleGuardPlugin } from "./vite/chunkCycleGuard";
 import pkg from "./package.json" with { type: "json" };
 
 // No-op outside Vitest; dev and production builds keep the real home.
@@ -24,6 +25,7 @@ const buildSourcemap =
 export default defineConfig({
   test: ciTestReports(),
   plugins: [
+    chunkCycleGuardPlugin(),
     tanstackRouter({
       // Route components are the largest independent UI surfaces in F5.
       // Keep route metadata synchronous while loading settings, PR Hub,
