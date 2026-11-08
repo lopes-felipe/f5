@@ -1,6 +1,7 @@
 import {
   type ProjectId,
   type ProviderKind,
+  type UsageAccount,
   type UsageAccounts,
   type UsageMetrics,
   type UsageRange,
@@ -13,11 +14,22 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { AlertTriangleIcon, CoinsIcon, GaugeIcon, RefreshCwIcon, SigmaIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  ArrowLeftRightIcon,
+  CircleAlertIcon,
+  CoinsIcon,
+  DownloadIcon,
+  GaugeIcon,
+  RefreshCwIcon,
+  SigmaIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { useSettings } from "../../hooks/useSettings";
 import { useServerKeybindings } from "../../keybindings";
-import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
+import { downloadTextFile } from "../../lib/downloadTextFile";
+import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 import {
   accountJobsPending,
   forceRefreshUsageAccounts,
@@ -33,15 +45,27 @@ import { cn } from "../../lib/utils";
 import { ensureNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import { useWsConnectionState } from "../../wsConnectionState";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardHeader, CardPanel, CardTitle } from "../ui/card";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
-import { AccountUsageCards, indexQuotaHistory } from "./AccountUsageCards";
+import { Toggle } from "../ui/toggle";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { UnderlineTabs } from "../ui/underline-tabs";
+import {
+  AccountUsageCard,
+  AccountUsageCards,
+  accountSectionId,
+  indexQuotaHistory,
+} from "./AccountUsageCards";
 import { StackedBarChart } from "./charts/StackedBarChart";
 import {
   cacheRateText,
   costDelta,
   costLabel,
+  isCostUnknown,
   providerLabel,
   RANGES,
   rangeLabel,
@@ -49,12 +73,26 @@ import {
   resolveUsageTimeZone,
   tokenDelta,
   tokenFieldDisplay,
+  totalCost,
   usageMetricValue,
 } from "./format";
+import {
+  AboutTheseNumbers,
+  StatTile,
+  type UsageColumn,
+  type UsageSort,
+  UsageSection,
+  UsageTable,
+  UsageToggle,
+} from "./kit";
+import { LimitsGlance } from "./LimitsGlance";
 import { ProjectsThreadsCard } from "./ProjectsThreadsCard";
+import { BudgetAlerts, BudgetSection, useMonthToDateUsage } from "./UsageBudget";
+import { USAGE_CSV_KINDS, usageCsv, usageCsvFilename } from "./usageCsv";
+import { UsagePriceDialog, type UsagePriceDraft } from "./UsagePriceDialog";
+import { unpricedModelCount, UsagePricingPanel } from "./UsagePricingPanel";
 import { UsageProviderFilter } from "./UsageProviderFilter";
 import { isUsageBackShortcut, resolveUsageShortcut } from "./usageShortcuts";
-import { UsagePriceEditor, type UsagePriceDraft } from "./UsagePriceEditor";
 
 export type { UsageSearch, UsageSearchPatch, UsageTab } from "../../lib/usageSearch";
 
@@ -69,6 +107,12 @@ const CHART_LABELS: Record<UsageMetric, string> = {
   cost: "Cost chart",
   turns: "Recorded turns chart",
 };
+
+const TAB_ORDER: ReadonlyArray<{ readonly value: UsageTab; readonly label: string }> = [
+  { value: "limits", label: "Limits" },
+  { value: "activity", label: "Activity" },
+  { value: "pricing", label: "Pricing" },
+];
 
 /** Ranks provider and model rows by the selected metric, then by tokens. */
 function sortByMetric<Entry extends { readonly metrics: UsageMetrics }>(
@@ -86,91 +130,12 @@ function sortByMetric<Entry extends { readonly metrics: UsageMetrics }>(
 // streaming turns refresh at most every 5 seconds.
 const EVENT_THROTTLE_MS = 5_000;
 
-function MetricCard(props: {
-  readonly label: string;
-  readonly value: string;
-  readonly detail: ReactNode;
-  readonly icon: typeof GaugeIcon;
-  readonly delta?: string | null;
-}) {
-  const Icon = props.icon;
-  return (
-    <Card className="rounded-xl">
-      <CardPanel className="p-4">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Icon aria-hidden="true" className="size-3.5" />
-          {props.label}
-        </div>
-        <div className="mt-2 text-2xl font-semibold tracking-tight text-foreground">
-          {props.value}
-        </div>
-        <p className="mt-1 text-2xs text-muted-foreground">{props.detail}</p>
-        {props.delta ? (
-          <p className="mt-0.5 text-2xs text-muted-foreground">{props.delta}</p>
-        ) : null}
-      </CardPanel>
-    </Card>
-  );
-}
-
-function SegmentedControl<Value extends string>(props: {
-  readonly label: string;
-  readonly value: Value;
-  readonly options: ReadonlyArray<{
-    readonly value: Value;
-    readonly label: string;
-    readonly disabled?: boolean;
-  }>;
-  readonly onChange: (value: Value) => void;
-}) {
-  return (
-    <div
-      role="group"
-      aria-label={props.label}
-      className="flex rounded-lg border border-border bg-muted/30 p-0.5"
-    >
-      {props.options.map((option) => (
-        <Button
-          key={option.value}
-          size="xs"
-          variant={props.value === option.value ? "secondary" : "ghost"}
-          aria-pressed={props.value === option.value}
-          disabled={option.disabled}
-          onClick={() => props.onChange(option.value)}
-        >
-          {option.label}
-        </Button>
-      ))}
-    </div>
-  );
-}
-
-function UsageHeader(props: {
-  readonly range: UsageRange;
-  readonly onRangeChange: (range: UsageRange) => void;
-  readonly actions?: ReactNode;
-}) {
-  return (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <div className="flex items-center gap-2">
-          <h1 className="text-xl font-semibold tracking-tight">Usage</h1>
-          {props.actions}
-        </div>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Historical provider-reported tokens and API-equivalent cost, plus account usage and
-          limits. Subscription or invoice spend may differ.
-        </p>
-      </div>
-      <SegmentedControl
-        label="Usage range"
-        value={props.range}
-        options={RANGES}
-        onChange={props.onRangeChange}
-      />
-    </div>
-  );
-}
+const HEADER_NOTE =
+  "Historical provider-reported tokens and API-equivalent cost, plus account usage and limits. Subscription or invoice spend may differ.";
+const CLAUDE_HISTORY_NOTE =
+  "Claude history uses reported main-agent token fields. SDK-reported cost estimates can cover a broader scope and are not billing data.";
+const LIMITS_RANGE_NOTE =
+  "The selected range affects only Codex UTC token history. Quota windows are independent of the range.";
 
 export interface ProjectOption {
   readonly id: ProjectId;
@@ -193,18 +158,12 @@ function CoverageNotes({ summary }: { summary: UsageSummary }) {
   )
     return null;
   return (
-    <section
-      aria-label="Usage coverage"
-      className="rounded-xl border border-warning/25 bg-warning/5 p-4"
-    >
-      <div className="flex items-start gap-2">
-        <AlertTriangleIcon
-          aria-hidden="true"
-          className="mt-0.5 size-4 shrink-0 text-warning-foreground"
-        />
-        <div className="text-xs leading-relaxed">
-          <p className="font-medium text-foreground">Coverage and provider reporting</p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+    <section aria-label="Usage coverage">
+      <Alert variant="warning" role="note">
+        <AlertTriangleIcon aria-hidden="true" />
+        <AlertTitle className="text-xs">Coverage and provider reporting</AlertTitle>
+        <AlertDescription className="text-xs leading-relaxed">
+          <ul className="list-disc space-y-0.5 pl-4">
             {summary.coverage.partialHistory ? (
               <li>
                 Complete retained recording is available from {coverageDate}. Token and turn counts
@@ -232,8 +191,8 @@ function CoverageNotes({ summary }: { summary: UsageSummary }) {
               </li>
             ) : null}
           </ul>
-        </div>
-      </div>
+        </AlertDescription>
+      </Alert>
     </section>
   );
 }
@@ -254,13 +213,154 @@ function coverageStatus(summary: UsageSummary): string {
     : `Token totals reported for ${reporting.totalTokenTurnCount} of ${reporting.recordedTurnCount} recorded turns${legacy}.`;
 }
 
+/** "Updated 2m ago" with the absolute time on hover. */
+function Freshness(props: { readonly at: string | null; readonly prefix?: string }) {
+  if (!props.at) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="cursor-default text-xs text-muted-foreground" />}>
+        {props.prefix ?? "Updated"} {formatRelativeTimeLabel(props.at)}
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">{formatAbsoluteTimeLabel(props.at)}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function ProjectSelect(props: {
+  readonly projectId: ProjectId | undefined;
+  readonly options: ReadonlyArray<ProjectOption>;
+  readonly onChange: (projectId: ProjectId | undefined) => void;
+}) {
+  const selected = props.options.find((option) => option.id === props.projectId);
+  return (
+    <Select
+      value={props.projectId ?? "all"}
+      onValueChange={(value) =>
+        props.onChange(!value || value === "all" ? undefined : (value as ProjectId))
+      }
+    >
+      <SelectTrigger size="xs" className="w-auto max-w-56 min-w-32" aria-label="History project">
+        <SelectValue>{selected?.label ?? "All projects"}</SelectValue>
+      </SelectTrigger>
+      <SelectPopup>
+        <SelectItem value="all">All projects</SelectItem>
+        {props.options.map((option) => (
+          <SelectItem key={option.id} value={option.id}>
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
+  );
+}
+
+function ProvidersModelsSection(props: {
+  readonly summary: UsageSummary;
+  readonly metric: UsageMetric;
+  readonly noRecords: boolean;
+  readonly onSetPrice?: ((provider: ProviderKind, model: string) => void) | undefined;
+}) {
+  const [sort, setSort] = useState<UsageSort | null>(null);
+  const records = recordCountDisplay(props.summary.metrics);
+  type Entry = UsageSummary["byProvider"][number];
+  const metricColumn =
+    props.metric === "cost" ? "cost" : props.metric === "turns" ? "turns" : "tokens";
+  const columns: Array<UsageColumn<Entry>> = [
+    {
+      key: "provider",
+      header: "Provider",
+      sortValue: (entry) => providerLabel(entry.provider),
+      className: "font-medium text-foreground",
+      render: (entry) => providerLabel(entry.provider),
+    },
+    {
+      key: "model",
+      header: "Thread model",
+      sortValue: (entry) => entry.model ?? "",
+      className: "max-w-72 truncate font-mono text-muted-foreground",
+      render: (entry) => entry.model ?? "Unavailable for historical cost",
+    },
+    {
+      key: "turns",
+      header: records.label,
+      align: "right",
+      sortValue: (entry) => entry.metrics.turnCount,
+      render: (entry) => {
+        const entryRecords = recordCountDisplay(entry.metrics);
+        return `${entryRecords.count}${
+          entryRecords.legacyCostEvents
+            ? ` + ${entryRecords.legacyCostEvents} legacy cost records`
+            : ""
+        }`;
+      },
+    },
+    {
+      key: "tokens",
+      header: "Tokens",
+      align: "right",
+      sortValue: (entry) => entry.metrics.totalTokens,
+      render: (entry) => {
+        const tokens = tokenFieldDisplay(entry.metrics, "totalTokens");
+        return (
+          <>
+            {tokens.value}
+            {tokens.detail ? (
+              <span className="block text-2xs text-muted-foreground">{tokens.detail}</span>
+            ) : null}
+          </>
+        );
+      },
+    },
+    {
+      key: "cost",
+      header: "Cost",
+      align: "right",
+      sortValue: (entry) => (isCostUnknown(entry.metrics) ? -1 : totalCost(entry.metrics)),
+      render: (entry) => (
+        <span className="inline-flex items-center gap-2">
+          {costLabel(entry.metrics)}
+          {entry.model !== null && entry.metrics.unpricedTurnCount > 0 && props.onSetPrice ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-label={`Set price for ${entry.model}`}
+              onClick={() => props.onSetPrice?.(entry.provider, entry.model!)}
+            >
+              Set price
+            </Button>
+          ) : null}
+        </span>
+      ),
+    },
+  ];
+  return (
+    <UsageSection title="Providers and models" flush>
+      <UsageTable
+        caption="Providers and models"
+        columns={columns}
+        rows={sortByMetric(props.summary.byProvider, props.metric)}
+        rowKey={(entry) => `${entry.provider}:${entry.model ?? "legacy"}`}
+        sort={sort ?? { key: metricColumn, direction: "desc" }}
+        onSortChange={setSort}
+        empty={
+          props.noRecords
+            ? "No recorded turns in retained data."
+            : "No completed turns in this range."
+        }
+      />
+    </UsageSection>
+  );
+}
+
 /** The Activity body for one summary. */
 export function UsageDashboardView(props: {
   readonly summary: UsageSummary;
   readonly range: UsageRange;
   readonly onRangeChange?: (range: UsageRange) => void;
+  /** A compact range/refresh row for standalone use; the page header replaces it. */
   readonly showHeader?: boolean;
   readonly fetching: boolean;
+  /** Full account cards for standalone use; the page shows them on the Limits tab. */
   readonly accounts?: UsageAccounts | undefined;
   readonly projectId?: ProjectId | undefined;
   readonly projectOptions?: ReadonlyArray<ProjectOption>;
@@ -268,12 +368,20 @@ export function UsageDashboardView(props: {
   readonly onProjectChange?: (projectId: ProjectId | undefined) => void;
   readonly metric?: UsageMetric;
   readonly onMetricChange?: (metric: UsageMetric) => void;
+  readonly compare?: boolean;
+  readonly onCompareChange?: (compare: boolean) => void;
   readonly onRefresh?: () => void;
   readonly error?: string | null;
   readonly onRetry?: () => void;
   readonly onDismissError?: () => void;
-  readonly renderAccounts?: boolean;
   readonly onSetPrice?: (provider: ProviderKind, model: string) => void;
+  readonly onReviewPrices?: () => void;
+  /** Rendered first, before notices (Limits at a glance). */
+  readonly leading?: ReactNode;
+  /** Extra notices after the refresh error (budget). */
+  readonly notices?: ReactNode;
+  /** Rendered after the stat tiles (monthly budget). */
+  readonly budget?: ReactNode;
 }) {
   const { summary } = props;
   const [localMetric, setLocalMetric] = useState<UsageMetric>("tokens");
@@ -294,64 +402,51 @@ export function UsageDashboardView(props: {
     summary.metrics.reporting != null &&
     summary.metrics.reporting.recordedTurnCount === 0 &&
     summary.metrics.reporting.legacyCostEventCount === 0;
+  const unpriced = unpricedModelCount(summary);
+  const status = coverageStatus(summary);
 
   return (
-    <div className="flex w-full flex-col gap-5">
-      {props.showHeader !== false && props.onRangeChange ? (
-        <UsageHeader range={props.range} onRangeChange={props.onRangeChange} />
-      ) : null}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-medium">F5 activity</h2>
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label="Refresh usage"
-            disabled={props.fetching}
-            onClick={props.onRefresh}
-          >
-            <RefreshCwIcon
-              aria-hidden="true"
-              className={cn("size-3.5", props.fetching && "animate-spin")}
-            />
-            Refresh
-          </Button>
-          <span className="text-xs text-muted-foreground" title={summary.generatedAt}>
-            Updated {formatAbsoluteTimeLabel(summary.generatedAt)}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {props.projectOptions && summary.projectScope ? (
-            <select
-              aria-label="History project"
-              className="max-w-56 rounded-md border border-border bg-background p-1 text-xs"
-              value={props.projectId ?? "all"}
-              onChange={(event) =>
-                props.onProjectChange?.(
-                  event.target.value === "all" ? undefined : (event.target.value as ProjectId),
-                )
-              }
+    <div className="flex w-full flex-col gap-4">
+      {props.showHeader !== false && (props.onRangeChange || props.onRefresh) ? (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Freshness at={summary.generatedAt} />
+          {props.onRefresh ? (
+            <Button
+              size="icon-xs"
+              variant="outline"
+              aria-label="Refresh usage"
+              disabled={props.fetching}
+              onClick={props.onRefresh}
             >
-              <option value="all">All projects</option>
-              {props.projectOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              <RefreshCwIcon aria-hidden="true" className={cn(props.fetching && "animate-spin")} />
+            </Button>
+          ) : null}
+          {props.projectOptions && summary.projectScope && props.onProjectChange ? (
+            <ProjectSelect
+              projectId={props.projectId}
+              options={props.projectOptions}
+              onChange={props.onProjectChange}
+            />
+          ) : null}
+          {props.onRangeChange ? (
+            <UsageToggle
+              label="Usage range"
+              value={props.range}
+              options={RANGES}
+              onChange={props.onRangeChange}
+            />
           ) : null}
         </div>
-      </div>
+      ) : null}
+      {props.leading}
       {props.error && (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-2 rounded-lg border border-border p-3 text-xs"
-        >
-          <span>
+        <Alert variant="error">
+          <CircleAlertIcon aria-hidden="true" />
+          <AlertDescription className="text-xs text-foreground">
             {props.error} Last successful history update:{" "}
             {formatAbsoluteTimeLabel(summary.generatedAt)}.
-          </span>
-          <span className="flex gap-1">
+          </AlertDescription>
+          <AlertAction>
             {props.onRetry ? (
               <Button size="xs" variant="outline" onClick={props.onRetry}>
                 Retry
@@ -365,84 +460,125 @@ export function UsageDashboardView(props: {
             >
               Dismiss
             </Button>
-          </span>
-        </div>
+          </AlertAction>
+        </Alert>
       )}
-      <div className="space-y-2">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            label="Total tokens"
-            value={total.value}
-            detail={
-              total.detail ??
-              (summary.metrics.reporting
-                ? `${records.count} recorded turns`
-                : `${summary.metrics.reportedTokenTurnCount} of ${summary.metrics.turnCount} usage records reported tokens`)
-            }
-            delta={tokenDelta(summary)}
-            icon={SigmaIcon}
-          />
-          <MetricCard
-            label="Input / output"
-            value={`${input.value} / ${output.value}`}
-            detail={
-              input.detail || output.detail
-                ? `Input ${input.detail ?? "complete"} · output ${output.detail ?? "complete"}`
-                : "Provider-native fields; cache semantics can differ"
-            }
-            icon={GaugeIcon}
-          />
-          <MetricCard
-            label="Cache read / write"
-            value={`${cacheRead.value} / ${cacheWrite.value}`}
-            detail={
-              [
-                cacheRateText(summary),
-                cacheRead.detail || cacheWrite.detail
-                  ? `Read ${cacheRead.detail ?? "complete"} · write ${cacheWrite.detail ?? "complete"}`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(" · ") || "Reported cache token fields only"
-            }
-            icon={RefreshCwIcon}
-          />
-          <MetricCard
-            label="Cost"
-            value={costLabel(summary.metrics)}
-            detail={`${summary.metrics.pricedTurnCount} priced · ${summary.metrics.unpricedTurnCount} unpriced`}
-            delta={costDelta(summary)}
-            icon={CoinsIcon}
-          />
-        </div>
-        <p role="status" className="text-2xs text-muted-foreground">
-          {coverageStatus(summary)}
-        </p>
+      {unpriced > 0 && props.onReviewPrices ? (
+        <Alert variant="warning" role="note" aria-label="Unpriced models">
+          <AlertTriangleIcon aria-hidden="true" />
+          <AlertDescription className="text-xs text-foreground">
+            {unpriced === 1
+              ? "1 model has unpriced turns, so cost is understated."
+              : `${unpriced} models have unpriced turns, so cost is understated.`}
+          </AlertDescription>
+          <AlertAction>
+            <Button size="xs" variant="outline" onClick={props.onReviewPrices}>
+              Review prices
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
+      {props.notices}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <StatTile
+          label="Total tokens"
+          value={total.value}
+          detail={
+            total.detail ??
+            (summary.metrics.reporting
+              ? `${records.count} recorded turns`
+              : `${summary.metrics.reportedTokenTurnCount} of ${summary.metrics.turnCount} usage records reported tokens`)
+          }
+          delta={tokenDelta(summary)}
+          icon={SigmaIcon}
+        />
+        <StatTile
+          label="Input / output"
+          value={`${input.value} / ${output.value}`}
+          detail={
+            input.detail || output.detail
+              ? `Input ${input.detail ?? "complete"} · output ${output.detail ?? "complete"}`
+              : "Provider-native fields; cache semantics can differ"
+          }
+          icon={GaugeIcon}
+        />
+        <StatTile
+          label="Cache read / write"
+          value={`${cacheRead.value} / ${cacheWrite.value}`}
+          detail={
+            [
+              cacheRateText(summary),
+              cacheRead.detail || cacheWrite.detail
+                ? `Read ${cacheRead.detail ?? "complete"} · write ${cacheWrite.detail ?? "complete"}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "Reported cache token fields only"
+          }
+          icon={RefreshCwIcon}
+        />
+        <StatTile
+          label="Cost"
+          value={costLabel(summary.metrics)}
+          detail={`${summary.metrics.pricedTurnCount} priced · ${summary.metrics.unpricedTurnCount} unpriced`}
+          delta={costDelta(summary)}
+          icon={CoinsIcon}
+        />
       </div>
-      <Card className="rounded-xl">
-        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 p-4 pb-2">
-          <CardTitle className="text-sm">Usage over time</CardTitle>
-          <SegmentedControl
-            label="Chart metric"
-            value={chartMetric}
-            options={METRICS.map((option) => ({
-              ...option,
-              disabled: option.value === "turns" && !turnsAvailable,
-            }))}
-            onChange={onMetricChange}
-          />
-        </CardHeader>
-        <CardPanel className="p-4 pt-2">
-          <StackedBarChart
-            buckets={summary.buckets}
-            metric={chartMetric}
-            label={`${CHART_LABELS[chartMetric]} for ${rangeLabel(props.range)}`}
-            timeZone={summary.timeZone}
-            generatedAt={summary.generatedAt}
-            hourly={summary.range === "24h"}
-          />
-        </CardPanel>
-      </Card>
+      <p role="status" className="sr-only">
+        {status}
+      </p>
+      {props.budget}
+      <UsageSection
+        title="Usage over time"
+        actions={
+          <>
+            {props.onCompareChange ? (
+              <Toggle
+                size="xs"
+                variant="outline"
+                className="px-2 text-xs"
+                aria-label="Compare to previous period"
+                pressed={props.compare ?? false}
+                onPressedChange={(pressed) => props.onCompareChange?.(pressed)}
+              >
+                <ArrowLeftRightIcon aria-hidden="true" />
+                Compare
+              </Toggle>
+            ) : null}
+            <UsageToggle
+              label="Chart metric"
+              value={chartMetric}
+              options={METRICS.map((option) => ({
+                ...option,
+                disabled: option.value === "turns" && !turnsAvailable,
+              }))}
+              onChange={onMetricChange}
+            />
+          </>
+        }
+      >
+        <StackedBarChart
+          buckets={summary.buckets}
+          metric={chartMetric}
+          label={`${CHART_LABELS[chartMetric]} for ${rangeLabel(props.range)}`}
+          timeZone={summary.timeZone}
+          generatedAt={summary.generatedAt}
+          hourly={summary.range === "24h"}
+          previous={props.compare ? (summary.previousBuckets ?? null) : null}
+        />
+        {props.compare && !summary.previousBuckets ? (
+          <p className="mt-2 text-2xs text-muted-foreground">
+            The previous period predates complete recording, so it can't be compared.
+          </p>
+        ) : null}
+      </UsageSection>
+      <ProvidersModelsSection
+        summary={summary}
+        metric={chartMetric}
+        noRecords={noRecords}
+        onSetPrice={props.onSetPrice}
+      />
       {summary.projectScope ? (
         <ProjectsThreadsCard
           scope={summary.projectScope}
@@ -452,90 +588,9 @@ export function UsageDashboardView(props: {
           onSelectProject={(projectId) => props.onProjectChange?.(projectId)}
         />
       ) : null}
-      <Card className="rounded-xl">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm">Providers and models</CardTitle>
-        </CardHeader>
-        <CardPanel className="overflow-x-auto p-0">
-          {summary.byProvider.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">
-              {noRecords
-                ? "No recorded turns in retained data."
-                : "No completed turns in this range."}
-            </p>
-          ) : (
-            <table className="w-full min-w-[640px] text-left text-xs">
-              <thead className="border-y border-border/70 bg-muted/20 text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2 font-medium">Provider</th>
-                  <th className="px-4 py-2 font-medium">Thread model</th>
-                  <th className="px-4 py-2 text-right font-medium">{records.label}</th>
-                  <th className="px-4 py-2 text-right font-medium">Tokens</th>
-                  <th className="px-4 py-2 text-right font-medium">Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortByMetric(summary.byProvider, chartMetric).map((entry) => {
-                  const tokens = tokenFieldDisplay(entry.metrics, "totalTokens");
-                  const entryRecords = recordCountDisplay(entry.metrics);
-                  return (
-                    <tr
-                      key={`${entry.provider}:${entry.model ?? "legacy"}`}
-                      className="border-b border-border/50 last:border-b-0"
-                    >
-                      <td className="px-4 py-2.5 font-medium text-foreground">
-                        {providerLabel(entry.provider)}
-                      </td>
-                      <td className="max-w-72 truncate px-4 py-2.5 font-mono text-muted-foreground">
-                        {entry.model ?? "Unavailable for historical cost"}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {entryRecords.count}
-                        {entryRecords.legacyCostEvents
-                          ? ` + ${entryRecords.legacyCostEvents} legacy cost records`
-                          : ""}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {tokens.value}
-                        {tokens.detail ? (
-                          <span className="block text-2xs text-muted-foreground">
-                            {tokens.detail}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        <span className="inline-flex items-center gap-2">
-                          {costLabel(entry.metrics)}
-                          {entry.model !== null &&
-                          entry.metrics.unpricedTurnCount > 0 &&
-                          props.onSetPrice ? (
-                            <Button
-                              size="xs"
-                              variant="ghost"
-                              aria-label={`Set price for ${entry.model}`}
-                              onClick={() => props.onSetPrice?.(entry.provider, entry.model!)}
-                            >
-                              Set price
-                            </Button>
-                          ) : null}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </CardPanel>
-      </Card>
       <CoverageNotes summary={summary} />
-      <p className="text-xs text-muted-foreground">
-        Claude history uses reported main-agent token fields. SDK-reported cost estimates can cover
-        a broader scope and are not billing data.
-      </p>
-      {props.renderAccounts !== false && props.accounts && (
-        <AccountUsageCards accounts={props.accounts} range={props.range} />
-      )}
+      {props.accounts ? <AccountUsageCards accounts={props.accounts} range={props.range} /> : null}
+      <AboutTheseNumbers notes={[HEADER_NOTE, status, CLAUDE_HISTORY_NOTE]} />
     </div>
   );
 }
@@ -574,29 +629,32 @@ function useThrottled(callback: () => void, delayMs: number) {
   );
 }
 
-function ActivityPanel(props: {
+/**
+ * The page's history summary, shared by the header, Activity and Pricing: live
+ * refresh on usage events, reconnects and bucket rollover.
+ */
+function useUsageSummary(input: {
   readonly range: UsageRange;
   readonly hiddenProviders: ReadonlyArray<ProviderKind>;
   readonly projectId: ProjectId | undefined;
-  readonly metric: UsageMetric;
+  readonly compare: boolean;
   readonly timeZone: string;
-  readonly onSearchChange: (patch: UsageSearchPatch) => void;
 }) {
   const client = useQueryClient();
   const connection = useWsConnectionState();
   const connected = connection.phase === "connected";
   const options = usageSummaryQueryOptions({
-    range: props.range,
-    timeZone: props.timeZone,
-    hiddenProviders: props.hiddenProviders,
-    projectId: props.projectId,
+    range: input.range,
+    timeZone: input.timeZone,
+    hiddenProviders: input.hiddenProviders,
+    projectId: input.projectId,
+    comparePrevious: input.compare,
     enabled: connected,
   });
-  const summaryQuery = useQuery(options);
+  const query = useQuery(options);
   const queryKey = options.queryKey;
   const queryHash = JSON.stringify(queryKey);
   const [dismissedErrorAt, setDismissedErrorAt] = useState(0);
-  const [priceDraft, setPriceDraft] = useState<UsagePriceDraft | null>(null);
   const storeProjects = useStore((state) => state.projects);
 
   const refreshAll = useThrottled(() => {
@@ -632,7 +690,7 @@ function ActivityPanel(props: {
   }, [client, connected, connection.connectedAt]);
 
   // Roll over at the next natural bucket boundary instead of polling.
-  const nextBucketAt = summaryQuery.data?.nextBucketAt ?? null;
+  const nextBucketAt = query.data?.nextBucketAt ?? null;
   // Expired boundaries already refreshed once, so a failed refresh that keeps
   // the old summary cannot loop.
   const refreshedExpiredBoundary = useRef<string | null>(null);
@@ -661,9 +719,9 @@ function ActivityPanel(props: {
     // queryHash stands in for the structurally equal key.
   }, [client, nextBucketAt, queryHash]);
 
-  const scope = summaryQuery.data?.projectScope ?? null;
+  const scope = query.data?.projectScope ?? null;
   const projectOptions = useMemo(() => {
-    const options = new Map<string, { id: ProjectId; label: string }>();
+    const options = new Map<string, ProjectOption>();
     const storeNames = new Map(storeProjects.map((project) => [project.id, project.name]));
     for (const project of scope?.byProject ?? []) {
       if (project.projectId === null) continue;
@@ -676,10 +734,10 @@ function ActivityPanel(props: {
     for (const project of storeProjects)
       if (!options.has(project.id))
         options.set(project.id, { id: project.id, label: project.name });
-    if (props.projectId && !options.has(props.projectId))
-      options.set(props.projectId, { id: props.projectId, label: props.projectId });
+    if (input.projectId && !options.has(input.projectId))
+      options.set(input.projectId, { id: input.projectId, label: input.projectId });
     return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
-  }, [scope, storeProjects, props.projectId]);
+  }, [scope, storeProjects, input.projectId]);
   const projectName = (projectId: ProjectId, title: string | null) =>
     title ?? storeProjects.find((project) => project.id === projectId)?.name ?? "Unknown project";
 
@@ -687,114 +745,28 @@ function ActivityPanel(props: {
     setDismissedErrorAt(0);
     void refreshUsageSummaries(client, queryKey);
   };
-
-  let body: ReactNode;
-  const data = summaryQuery.data;
-  if (summaryQuery.isPending) {
-    body = (
-      <div className="grid w-full gap-4" role="status" aria-label="Loading usage">
-        <Skeleton className="h-16 w-full" />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }, (_, index) => (
-            <Skeleton key={index} className="h-28 w-full rounded-xl" />
-          ))}
-        </div>
-        <Skeleton className="h-64 w-full rounded-xl" />
-      </div>
-    );
-  } else if (!data) {
-    body = (
-      <div className="flex items-center justify-center p-6">
-        <div className="max-w-md text-center">
-          <AlertTriangleIcon aria-hidden="true" className="mx-auto size-7 text-muted-foreground" />
-          <h2 className="mt-3 text-base font-medium">Usage is unavailable</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            The server could not aggregate the requested usage range.
-          </p>
-          <Button className="mt-4" size="sm" variant="outline" onClick={refresh}>
-            <RefreshCwIcon aria-hidden="true" className="size-3.5" />
-            Retry
-          </Button>
-        </div>
-      </div>
-    );
-  } else if (props.projectId && data.projectScope == null) {
-    body = (
-      <div role="alert" className="rounded-lg border border-border p-4 text-sm">
-        Project filtering is unsupported by this server, so project usage is not shown.{" "}
-        <Button
-          size="xs"
-          variant="outline"
-          onClick={() => props.onSearchChange({ projectId: undefined })}
-        >
-          Show all projects
-        </Button>
-      </div>
-    );
-  } else if (
-    data.projectScope &&
-    data.projectScope.selectedProjectId !== (props.projectId ?? null)
-  ) {
-    body = (
-      <div role="alert" className="rounded-lg border border-border p-4 text-sm">
-        The server returned usage for a different project than requested.{" "}
-        <Button size="xs" variant="outline" onClick={refresh}>
-          Retry
-        </Button>
-      </div>
-    );
-  } else {
-    body = (
-      <UsageDashboardView
-        summary={data}
-        range={props.range}
-        showHeader={false}
-        fetching={summaryQuery.isFetching}
-        renderAccounts={false}
-        projectId={props.projectId}
-        projectOptions={projectOptions}
-        projectName={projectName}
-        onProjectChange={(projectId) => props.onSearchChange({ projectId })}
-        metric={props.metric}
-        onMetricChange={(metric) => props.onSearchChange({ metric })}
-        onRefresh={refresh}
-        onRetry={refresh}
-        error={
-          summaryQuery.isError && summaryQuery.errorUpdatedAt > dismissedErrorAt
-            ? "Historical usage refresh failed."
-            : null
-        }
-        onDismissError={() => setDismissedErrorAt(Date.now())}
-        onSetPrice={(provider, model) =>
-          setPriceDraft({ provider, model, nonce: Date.now() + Math.random() })
-        }
-      />
-    );
-  }
-  return (
-    <section aria-label="Activity" className="flex flex-col gap-5">
-      {body}
-      <UsagePriceEditor draft={priceDraft} />
-    </section>
-  );
+  const error =
+    query.isError && query.errorUpdatedAt > dismissedErrorAt
+      ? "Historical usage refresh failed."
+      : null;
+  return {
+    query,
+    refresh,
+    error,
+    dismissError: () => setDismissedErrorAt(Date.now()),
+    projectOptions,
+    projectName,
+  };
 }
 
-/**
- * Account cards with their own loading and error state. The `activity`
- * variant keeps the Activity tab's plain account cards; refresh controls,
- * quota history, and forecasts belong to the Limits tab.
- */
-function LimitsPanel(props: {
-  readonly range: UsageRange;
-  readonly variant: "activity" | "limits";
-  readonly hiddenProviders: ReadonlyArray<ProviderKind>;
-}) {
-  const full = props.variant === "limits";
+type SummaryState = ReturnType<typeof useUsageSummary>;
+
+/** The Limits tab's forced refresh; the header button drives it. */
+function useLimitsRefresh() {
   const client = useQueryClient();
   const accountsQuery = useQuery(usageAccountsQueryOptions());
   const jobsPending = accountJobsPending(accountsQuery.data);
   const [notice, setNotice] = useState<string | null>(null);
-  const [dismissedErrorAt, setDismissedErrorAt] = useState(0);
   const force = useMutation({
     mutationKey: USAGE_ACCOUNTS_FORCE_MUTATION_KEY,
     mutationFn: () => forceRefreshUsageAccounts(client),
@@ -810,65 +782,216 @@ function LimitsPanel(props: {
     useMutationState({
       filters: { mutationKey: USAGE_ACCOUNTS_FORCE_MUTATION_KEY, status: "pending" },
     }).length > 0;
-  const historyQuery = useQuery(usageQuotaHistoryQueryOptions(full && accountsQuery.isSuccess));
+  return {
+    accountsQuery,
+    jobsPending,
+    force,
+    busy: forcePending || jobsPending,
+    notice,
+    start: () => {
+      setNotice(null);
+      force.mutate();
+    },
+  };
+}
+
+type LimitsRefresh = ReturnType<typeof useLimitsRefresh>;
+
+function ActivitySkeleton() {
+  return (
+    <div className="grid w-full gap-4" role="status" aria-label="Loading usage">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }, (_, index) => (
+          <Skeleton key={index} className="h-28 w-full rounded-xl" />
+        ))}
+      </div>
+      <Skeleton className="h-72 w-full rounded-xl" />
+      <Skeleton className="h-48 w-full rounded-xl" />
+    </div>
+  );
+}
+
+function ActivityPanel(props: {
+  readonly range: UsageRange;
+  readonly projectId: ProjectId | undefined;
+  readonly metric: UsageMetric;
+  readonly compare: boolean;
+  readonly timeZone: string;
+  readonly summary: SummaryState;
+  readonly limits: LimitsRefresh;
+  readonly hiddenProviders: ReadonlyArray<ProviderKind>;
+  readonly onSearchChange: (patch: UsageSearchPatch) => void;
+  readonly onOpenAccount: (account: UsageAccount) => void;
+  readonly onSetPrice: (provider: ProviderKind, model: string) => void;
+}) {
+  const { summary } = props;
+  const budget = useSettings((settings) => settings.usageMonthlyBudget) ?? null;
+  const monthToDate = useMonthToDateUsage({ budget, timeZone: props.timeZone, enabled: true });
+  const openPricing = () => props.onSearchChange({ tab: "pricing" });
+  const accounts = props.limits.accountsQuery.data?.filter(
+    (account) => !props.hiddenProviders.includes(account.provider),
+  );
+  const glance = (
+    <LimitsGlance
+      accounts={accounts}
+      loading={props.limits.accountsQuery.isPending}
+      onOpenAccount={props.onOpenAccount}
+      onViewDetails={() => props.onSearchChange({ tab: "limits" })}
+    />
+  );
+
+  let body: ReactNode;
+  const data = summary.query.data;
+  if (summary.query.isPending) {
+    body = (
+      <>
+        {glance}
+        <ActivitySkeleton />
+      </>
+    );
+  } else if (!data) {
+    body = (
+      <>
+        {glance}
+        <UsageSection title="Usage is unavailable" aria-label="Usage unavailable">
+          <div className="flex flex-col items-start gap-3">
+            <p className="text-sm text-muted-foreground">
+              The server could not aggregate the requested usage range.
+            </p>
+            <Button size="sm" variant="outline" onClick={summary.refresh}>
+              <RefreshCwIcon aria-hidden="true" className="size-3.5" />
+              Retry
+            </Button>
+          </div>
+        </UsageSection>
+      </>
+    );
+  } else if (props.projectId && data.projectScope == null) {
+    body = (
+      <>
+        {glance}
+        <Alert variant="warning">
+          <AlertTriangleIcon aria-hidden="true" />
+          <AlertDescription className="text-xs text-foreground">
+            Project filtering is unsupported by this server, so project usage is not shown.
+          </AlertDescription>
+          <AlertAction>
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => props.onSearchChange({ projectId: undefined })}
+            >
+              Show all projects
+            </Button>
+          </AlertAction>
+        </Alert>
+      </>
+    );
+  } else if (
+    data.projectScope &&
+    data.projectScope.selectedProjectId !== (props.projectId ?? null)
+  ) {
+    body = (
+      <>
+        {glance}
+        <Alert variant="error">
+          <CircleAlertIcon aria-hidden="true" />
+          <AlertDescription className="text-xs text-foreground">
+            The server returned usage for a different project than requested.
+          </AlertDescription>
+          <AlertAction>
+            <Button size="xs" variant="outline" onClick={summary.refresh}>
+              Retry
+            </Button>
+          </AlertAction>
+        </Alert>
+      </>
+    );
+  } else {
+    body = (
+      <UsageDashboardView
+        summary={data}
+        range={props.range}
+        showHeader={false}
+        fetching={summary.query.isFetching}
+        projectId={props.projectId}
+        projectOptions={summary.projectOptions}
+        projectName={summary.projectName}
+        onProjectChange={(projectId) => props.onSearchChange({ projectId })}
+        metric={props.metric}
+        onMetricChange={(metric) => props.onSearchChange({ metric })}
+        compare={props.compare}
+        onCompareChange={(compare) => props.onSearchChange({ compare: compare || undefined })}
+        onRefresh={summary.refresh}
+        onRetry={summary.refresh}
+        error={summary.error}
+        onDismissError={summary.dismissError}
+        onSetPrice={props.onSetPrice}
+        onReviewPrices={openPricing}
+        leading={glance}
+        notices={<BudgetAlerts budget={budget} usage={monthToDate} onEdit={openPricing} />}
+        budget={<BudgetSection budget={budget} usage={monthToDate} onEdit={openPricing} />}
+      />
+    );
+  }
+  return (
+    <section aria-label="Activity" className="flex flex-col gap-4">
+      {body}
+    </section>
+  );
+}
+
+/** Account overview tiles, then each account's full section with history and forecasts. */
+function LimitsPanel(props: {
+  readonly range: UsageRange;
+  readonly hiddenProviders: ReadonlyArray<ProviderKind>;
+  readonly limits: LimitsRefresh;
+  readonly scrollTarget: string | null;
+  readonly onScrolled: () => void;
+  readonly onOpenAccount: (account: UsageAccount) => void;
+}) {
+  const client = useQueryClient();
+  const { accountsQuery, force, jobsPending } = props.limits;
+  const [dismissedErrorAt, setDismissedErrorAt] = useState(0);
+  const historyQuery = useQuery(usageQuotaHistoryQueryOptions(accountsQuery.isSuccess));
   const history = useMemo(
-    () => (!full || historyQuery.isError ? undefined : indexQuotaHistory(historyQuery.data)),
-    [full, historyQuery.data, historyQuery.isError],
+    () => (historyQuery.isError ? undefined : indexQuotaHistory(historyQuery.data)),
+    [historyQuery.data, historyQuery.isError],
   );
   // New samples exist once account jobs settle; history failures mean "no history".
   useEffect(() => {
-    if (!full || !accountsQuery.dataUpdatedAt || jobsPending) return;
+    if (!accountsQuery.dataUpdatedAt || jobsPending) return;
     void client.invalidateQueries(
       { queryKey: usageQueryKeys.quotaHistory },
       { cancelRefetch: false },
     );
-  }, [client, full, accountsQuery.dataUpdatedAt, jobsPending]);
+  }, [client, accountsQuery.dataUpdatedAt, jobsPending]);
+  const accounts = accountsQuery.data?.filter(
+    (account) => !props.hiddenProviders.includes(account.provider),
+  );
+  // Scroll to an account opened from a glance tile once its section exists.
+  const { scrollTarget, onScrolled } = props;
+  useEffect(() => {
+    if (!scrollTarget || !accounts) return;
+    const element = document.getElementById(scrollTarget);
+    if (!element) return;
+    element.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    onScrolled();
+  }, [scrollTarget, accounts, onScrolled]);
 
   const errorVisible =
     (force.isError && force.submittedAt > dismissedErrorAt) ||
     (accountsQuery.isError && accountsQuery.errorUpdatedAt > dismissedErrorAt);
   return (
-    <section aria-label="Limits" className="space-y-3">
-      {full ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={forcePending || jobsPending}
-            onClick={() => {
-              setNotice(null);
-              force.mutate();
-            }}
-          >
-            <RefreshCwIcon
-              aria-hidden="true"
-              className={cn("size-3.5", (forcePending || jobsPending) && "animate-spin")}
-            />
-            Refresh limits
-          </Button>
-          {notice ? (
-            <span role="status" className="text-xs text-muted-foreground">
-              {notice}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      {full ? (
-        <p className="text-xs text-muted-foreground">
-          The selected range affects only Codex UTC token history. Quota windows are independent of
-          the range.
-        </p>
-      ) : null}
+    <section aria-label="Limits" className="flex flex-col gap-4">
       {errorVisible ? (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-2 rounded-lg border border-border p-3 text-xs"
-        >
-          <span>
+        <Alert variant="error">
+          <CircleAlertIcon aria-hidden="true" />
+          <AlertDescription className="text-xs text-foreground">
             Account snapshots could not be refreshed.
             {accountsQuery.data ? " Showing the last successful snapshots." : ""}
-          </span>
-          <span className="flex gap-1">
+          </AlertDescription>
+          <AlertAction>
             <Button
               size="xs"
               variant="outline"
@@ -888,24 +1011,76 @@ function LimitsPanel(props: {
             >
               Dismiss
             </Button>
-          </span>
-        </div>
+          </AlertAction>
+        </Alert>
       ) : null}
       {accountsQuery.isPending ? (
-        <div role="status" aria-label="Loading account usage">
-          <Skeleton className="h-32 w-full rounded-xl" />
+        <div role="status" aria-label="Loading account usage" className="flex flex-col gap-4">
+          <Skeleton className="h-40 w-full rounded-xl" />
+          <Skeleton className="h-64 w-full rounded-xl" />
         </div>
       ) : null}
-      {accountsQuery.data ? (
-        <AccountUsageCards
-          accounts={accountsQuery.data.filter(
-            (account) => !props.hiddenProviders.includes(account.provider),
-          )}
-          range={props.range}
-          history={history}
+      {accounts && accounts.length > 1 ? (
+        <LimitsGlance
+          title="Overview"
+          accounts={accounts}
+          loading={false}
+          onOpenAccount={props.onOpenAccount}
         />
       ) : null}
+      {accounts ? (
+        <section aria-label="Account usage and limits" className="flex flex-col gap-4">
+          {accounts.map((account) => (
+            <AccountUsageCard
+              key={account.key}
+              account={account}
+              range={props.range}
+              history={history}
+            />
+          ))}
+        </section>
+      ) : null}
+      <AboutTheseNumbers
+        notes={[
+          LIMITS_RANGE_NOTE,
+          "Quota meters show provider-reported usage. The tick on each bar marks how much of the window has elapsed.",
+        ]}
+      />
     </section>
+  );
+}
+
+function ExportMenu(props: {
+  readonly summary: UsageSummary;
+  readonly range: UsageRange;
+  readonly projectName: (projectId: ProjectId, title: string | null) => string;
+}) {
+  return (
+    <Menu>
+      <MenuTrigger render={<Button size="xs" variant="outline" aria-label="Export usage" />}>
+        <DownloadIcon aria-hidden="true" />
+        Export
+      </MenuTrigger>
+      <MenuPopup align="end">
+        {USAGE_CSV_KINDS.filter(
+          (entry) =>
+            props.summary.projectScope || (entry.kind !== "projects" && entry.kind !== "threads"),
+        ).map((entry) => (
+          <MenuItem
+            key={entry.kind}
+            onClick={() =>
+              downloadTextFile(
+                usageCsvFilename(props.range, entry.kind),
+                usageCsv(props.summary, entry.kind, props.projectName),
+                "text/csv;charset=utf-8",
+              )
+            }
+          >
+            {entry.label} (CSV)
+          </MenuItem>
+        ))}
+      </MenuPopup>
+    </Menu>
   );
 }
 
@@ -931,6 +1106,8 @@ export function UsageDashboard(props: {
     ((patch: UsageSearchPatch) => setLocalSearch((current) => ({ ...current, ...patch })));
   const tab = search.tab ?? props.defaults?.tab ?? "activity";
   const range = search.range ?? props.defaults?.range ?? "7d";
+  const metric = search.metric ?? "tokens";
+  const compare = search.compare === true;
   const timeZone = useMemo(resolveUsageTimeZone, []);
   const keybindings = useServerKeybindings();
   const handlersRef = useRef({ onSearchChange, onBack: props.onBack });
@@ -953,43 +1130,134 @@ export function UsageDashboard(props: {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [keybindings]);
 
+  const summary = useUsageSummary({
+    range,
+    hiddenProviders,
+    projectId: search.projectId,
+    compare: tab === "activity" && compare,
+    timeZone,
+  });
+  const limits = useLimitsRefresh();
+  const [priceDraft, setPriceDraft] = useState<UsagePriceDraft | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<string | null>(null);
+  const onScrolled = useMemo(() => () => setScrollTarget(null), []);
+  const setPrice = (provider: ProviderKind, model: string) =>
+    setPriceDraft({ provider, model, nonce: Date.now() + Math.random() });
+  const openAccount = (account: UsageAccount) => {
+    setScrollTarget(accountSectionId(account));
+    if (tab !== "limits") onSearchChange({ tab: "limits" });
+  };
+  const data = summary.query.data;
+  const unpriced = unpricedModelCount(data);
+  const limitsUpdatedAt = limits.accountsQuery.dataUpdatedAt
+    ? new Date(limits.accountsQuery.dataUpdatedAt).toISOString()
+    : null;
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 sm:py-7">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-2" role="tablist" aria-label="Usage views">
-          {(["activity", "limits"] as const).map((value) => (
-            <Button
-              key={value}
-              role="tab"
-              aria-selected={tab === value}
-              variant={tab === value ? "default" : "outline"}
-              onClick={() => onSearchChange({ tab: value })}
-            >
-              {value === "activity" ? "Activity" : "Limits"}
-            </Button>
-          ))}
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-5 sm:px-6 sm:py-7">
+      <header className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <h1 className="text-xl font-semibold tracking-tight">Usage</h1>
+            <Freshness at={tab === "limits" ? limitsUpdatedAt : (data?.generatedAt ?? null)} />
+            {tab === "limits" ? (
+              <Button
+                size="icon-xs"
+                variant="outline"
+                aria-label="Refresh limits"
+                disabled={limits.busy}
+                onClick={limits.start}
+              >
+                <RefreshCwIcon aria-hidden="true" className={cn(limits.busy && "animate-spin")} />
+              </Button>
+            ) : (
+              <Button
+                size="icon-xs"
+                variant="outline"
+                aria-label="Refresh usage"
+                disabled={summary.query.isFetching}
+                onClick={summary.refresh}
+              >
+                <RefreshCwIcon
+                  aria-hidden="true"
+                  className={cn(summary.query.isFetching && "animate-spin")}
+                />
+              </Button>
+            )}
+            {tab === "limits" && limits.notice ? (
+              <span role="status" className="text-xs text-muted-foreground">
+                {limits.notice}
+              </span>
+            ) : null}
+          </div>
+          {tab === "activity" && data ? (
+            <ExportMenu summary={data} range={range} projectName={summary.projectName} />
+          ) : null}
         </div>
-        <UsageProviderFilter
-          hiddenProviders={hiddenProviderSet}
-          onChange={onHiddenProvidersChange}
+        <UnderlineTabs
+          aria-label="Usage views"
+          value={tab}
+          onValueChange={(value) => onSearchChange({ tab: value })}
+          tabs={TAB_ORDER.map((entry) => ({
+            value: entry.value,
+            label: entry.label,
+            adornment:
+              entry.value === "pricing" && unpriced > 0 ? (
+                <Badge size="sm" variant="warning" aria-label={`${unpriced} unpriced models`}>
+                  {unpriced}
+                </Badge>
+              ) : undefined,
+          }))}
+          trailing={
+            <>
+              <UsageToggle
+                label="Usage range"
+                value={range}
+                options={RANGES}
+                onChange={(next) => onSearchChange({ range: next })}
+              />
+              <UsageProviderFilter
+                hiddenProviders={hiddenProviderSet}
+                onChange={onHiddenProvidersChange}
+              />
+              {tab !== "limits" && data?.projectScope ? (
+                <ProjectSelect
+                  projectId={search.projectId}
+                  options={summary.projectOptions}
+                  onChange={(projectId) => onSearchChange({ projectId })}
+                />
+              ) : null}
+            </>
+          }
         />
-      </div>
-      <UsageHeader range={range} onRangeChange={(next) => onSearchChange({ range: next })} />
+      </header>
       {tab === "activity" ? (
-        <>
-          <ActivityPanel
-            range={range}
-            hiddenProviders={hiddenProviders}
-            projectId={search.projectId}
-            metric={search.metric ?? "tokens"}
-            timeZone={timeZone}
-            onSearchChange={onSearchChange}
-          />
-          <LimitsPanel range={range} variant="activity" hiddenProviders={hiddenProviders} />
-        </>
+        <ActivityPanel
+          range={range}
+          projectId={search.projectId}
+          metric={metric}
+          compare={compare}
+          timeZone={timeZone}
+          summary={summary}
+          limits={limits}
+          hiddenProviders={hiddenProviders}
+          onSearchChange={onSearchChange}
+          onOpenAccount={openAccount}
+          onSetPrice={setPrice}
+        />
+      ) : tab === "limits" ? (
+        <LimitsPanel
+          range={range}
+          hiddenProviders={hiddenProviders}
+          limits={limits}
+          scrollTarget={scrollTarget}
+          onScrolled={onScrolled}
+          onOpenAccount={openAccount}
+        />
       ) : (
-        <LimitsPanel range={range} variant="limits" hiddenProviders={hiddenProviders} />
+        <UsagePricingPanel summary={data} loading={summary.query.isPending} onSetPrice={setPrice} />
       )}
+      <UsagePriceDialog draft={priceDraft} onClose={() => setPriceDraft(null)} />
     </div>
   );
 }

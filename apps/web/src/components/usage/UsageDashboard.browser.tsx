@@ -329,6 +329,8 @@ describe("UsageDashboardView", () => {
       />,
     );
     try {
+      // Caveats live in the collapsed notes at the bottom of the tab.
+      await page.getByRole("button", { name: "About these numbers" }).click();
       await expect
         .element(
           page.getByText(
@@ -543,13 +545,16 @@ describe("UsageDashboardView", () => {
     const view = (metric: "tokens" | "cost") => (
       <UsageDashboardView summary={ranked} range="7d" fetching={false} metric={metric} />
     );
-    const tables = () => [...document.querySelectorAll("table")];
+    const table = (caption: string) =>
+      [...document.querySelectorAll("table")].find(
+        (element) => element.querySelector("caption")?.textContent === caption,
+      )!;
     const projectRows = () =>
-      [...tables()[0]!.querySelectorAll("tbody tr")].map((row) =>
+      [...table("Projects").querySelectorAll("tbody tr")].map((row) =>
         [...row.querySelectorAll("td")].map((cell) => cell.textContent),
       );
     const models = () =>
-      [...tables()[1]!.querySelectorAll("tbody tr td:nth-child(2)")].map(
+      [...table("Providers and models").querySelectorAll("tbody tr td:nth-child(2)")].map(
         (cell) => cell.textContent,
       );
     const screen = await renderWithRouter(view("tokens"));
@@ -783,12 +788,12 @@ describe("query-connected usage dashboard", () => {
     const queryClient = client();
     const screen = await renderDashboard(queryClient);
     try {
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       await page.getByRole("button", { name: "Refresh usage" }).click();
       await expect
         .element(page.getByRole("alert"))
         .toHaveTextContent("Historical usage refresh failed.");
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       await page.getByRole("button", { name: "Dismiss refresh error" }).click();
       await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
       // History refresh never forces account probes.
@@ -849,8 +854,10 @@ describe("query-connected usage dashboard", () => {
     const queryClient = client();
     const screen = await renderDashboard(queryClient);
     try {
-      await expect.element(page.getByText("Codex — default configuration")).toBeVisible();
-      // The Activity tab keeps plain account cards: no refresh controls or history.
+      // Activity leads with the glance tiles: no refresh controls or quota history.
+      await expect
+        .element(page.getByRole("button", { name: "Open Codex — default configuration limits" }))
+        .toBeVisible();
       await expect
         .element(page.getByRole("button", { name: "Refresh limits" }))
         .not.toBeInTheDocument();
@@ -860,11 +867,16 @@ describe("query-connected usage dashboard", () => {
       });
       focusManager.setFocused(false);
       focusManager.setFocused(true);
+      await expect.poll(() => api.getAccounts.mock.calls.length).toBe(2);
+      // The failed account read keeps the last tiles and leaves history alone.
+      await expect
+        .element(page.getByRole("button", { name: "Open Codex — default configuration limits" }))
+        .toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
+      await page.getByRole("tab", { name: "Limits" }).click();
       await expect
         .element(page.getByRole("alert"))
         .toHaveTextContent("Account snapshots could not be refreshed.");
-      await expect.element(page.getByText("Codex — default configuration")).toBeVisible();
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
     } finally {
       await screen.unmount();
       queryClient.clear();
@@ -915,7 +927,7 @@ describe("query-connected usage dashboard", () => {
     const queryClient = client();
     const screen = await renderDashboard(queryClient);
     try {
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       expect(api.getSummary).toHaveBeenCalledTimes(1);
       for (const listener of listeners.domain) listener({ type: "thread.created" });
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -963,7 +975,7 @@ describe("query-connected usage dashboard", () => {
       await page.getByRole("button", { name: "Refresh limits" }).click();
       await expect.poll(() => api.getAccounts.mock.calls.length).toBe(2);
       await page.getByRole("tab", { name: "Activity" }).click();
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       await page.getByRole("tab", { name: "Limits" }).click();
       // The remounted panel still sees the pending forced refresh.
       await expect.element(page.getByRole("button", { name: "Refresh limits" })).toBeDisabled();
@@ -983,7 +995,7 @@ describe("query-connected usage dashboard", () => {
     const queryClient = client();
     const screen = await renderDashboard(queryClient);
     try {
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       expect(api.getSummary).toHaveBeenCalledTimes(1);
       await expect.poll(() => api.getSummary.mock.calls.length, { timeout: 3_000 }).toBe(2);
       // Offline at the boundary: only mark stale; reconnect fetches.
@@ -1012,7 +1024,7 @@ describe("query-connected usage dashboard", () => {
     );
     const screen = await renderDashboard(queryClient);
     try {
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       await expect.poll(() => api.getSummary.mock.calls.length).toBe(1);
       // The refreshed summary still carries the expired boundary: no loop.
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1057,12 +1069,13 @@ describe("query-connected usage dashboard", () => {
       const queryClient = client();
       const screen = await renderDashboard(queryClient);
       try {
+        // Limits at a glance renders first and never waits on history.
+        const glance = page.getByRole("region", { name: "Limits at a glance" });
+        await expect.element(glance).toBeVisible();
         await expect
-          .element(page.getByRole("region", { name: "Account usage and limits" }))
-          .toBeVisible();
-        await expect
-          .element(page.getByRole("progressbar", { name: "Codex · 5-hour limit" }))
-          .toBeVisible();
+          .element(glance.getByTestId("limits-glance-tile").first())
+          // The fixture's resets have passed, so the tile waits for fresh usage.
+          .toHaveTextContent(/Codex — default configuration.*awaiting updated usage/);
         if (state === "failed")
           await expect
             .element(page.getByRole("heading", { name: "Usage is unavailable" }))
@@ -1129,7 +1142,8 @@ describe("query-connected usage dashboard", () => {
       </QueryClientProvider>
     );
     const screen = await render(view("activity", []));
-    const accountCard = () => page.getByRole("heading", { name: "Codex — default configuration" });
+    // A glance tile on Activity, an account section on Limits.
+    const accountCard = () => page.getByText("Codex — default configuration", { exact: true });
     try {
       await expect.element(accountCard()).toBeVisible();
       await page.getByRole("button", { name: "Usage providers" }).click();
@@ -1178,6 +1192,8 @@ describe("query-connected usage dashboard", () => {
       });
       await userEvent.keyboard("l");
       expect(onSearchChange).toHaveBeenLastCalledWith({ tab: "limits" });
+      await userEvent.keyboard("p");
+      expect(onSearchChange).toHaveBeenLastCalledWith({ tab: "pricing" });
       await userEvent.keyboard("3");
       expect(onSearchChange).toHaveBeenLastCalledWith({ range: "30d" });
       await userEvent.keyboard("{Escape}");
@@ -1236,8 +1252,14 @@ describe("query-connected usage dashboard", () => {
       await expect
         .element(page.getByLabelText("Model", { exact: true }))
         .toHaveValue("cursor-agent");
-      await expect.element(page.getByRole("combobox", { name: /^Provider/ })).toHaveValue("cursor");
+      await expect
+        .element(page.getByRole("combobox", { name: "Provider" }))
+        .toHaveTextContent("Cursor");
       await expect.element(page.getByLabelText("Input price")).toHaveFocus();
+      // The dialog opens in place: Activity stays selected behind the modal.
+      await expect
+        .element(page.getByRole("tab", { name: "Activity", includeHidden: true }))
+        .toHaveAttribute("aria-selected", "true");
     } finally {
       await screen.unmount();
       queryClient.clear();
@@ -1356,6 +1378,7 @@ describe("limits", () => {
         .element(page.getByText(/At this pace: limit reached/))
         .toHaveTextContent(/limit reached ~[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}/);
       await expect.element(page.getByTestId("quota-sparkline")).toBeInTheDocument();
+      await page.getByRole("button", { name: "About these numbers" }).click();
       await expect
         .element(page.getByText(/range affects only Codex UTC token history/))
         .toBeVisible();
@@ -1556,7 +1579,7 @@ describe("limits", () => {
       await expect
         .element(page.getByText(message, { exact: state !== "unavailable" }))
         .toBeVisible();
-      await expect.element(page.getByRole("heading", { name: "F5 activity" })).toBeVisible();
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
       if (state === "unavailable")
         await expect.element(page.getByText(/Showing data from/)).toBeVisible();
     } finally {
@@ -1658,7 +1681,8 @@ describe("limits", () => {
         .element(callout.getByRole("button", { name: "Use reset credit (2)" }))
         .toBeVisible();
       expect(page.getByRole("button", { name: /reset credit/ }).all()).toHaveLength(1);
-      await expect.element(page.getByText("plus", { exact: true })).toBeVisible();
+      // The plan shows in the account header and beside its limit group.
+      await expect.element(page.getByText("plus", { exact: true }).first()).toBeVisible();
       await expect.element(page.getByText("Spark", { exact: true })).toBeVisible();
       await expect
         .element(page.getByText("Credits: 12.50 · 2 limit resets available"))
@@ -1925,6 +1949,183 @@ describe("limits", () => {
       await page.getByRole("button", { name: "Confirm redemption" }).click();
       await expect.poll(() => api.consumeResetCredit.mock.calls.length).toBe(2);
       expect(api.consumeResetCredit.mock.calls[0]).toEqual(api.consumeResetCredit.mock.calls[1]);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+});
+
+describe("unified page", () => {
+  it("orders tabs Limits first, badges unpriced models and opens Pricing from the notice", async () => {
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue(accounts());
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const tabs = page.getByRole("tab");
+      await expect.element(tabs.nth(0)).toHaveTextContent("Limits");
+      await expect.element(tabs.nth(1)).toHaveTextContent("Activity");
+      // Both fixture models have unpriced turns.
+      await expect
+        .element(page.getByRole("tab", { name: /Pricing/ }))
+        .toHaveTextContent(/^Pricing2$/);
+      // Limits at a glance is the first block on Activity.
+      const activity = page.getByRole("region", { name: "Activity" });
+      await expect
+        .element(activity.getByRole("region").first())
+        .toHaveAttribute("aria-label", "Limits at a glance");
+      await page.getByRole("note", { name: "Unpriced models" }).getByRole("button").click();
+      await expect
+        .element(page.getByRole("tab", { name: /Pricing/ }))
+        .toHaveAttribute("aria-selected", "true");
+      const rows = page.getByRole("table", { name: "Model prices" }).getByRole("row");
+      await expect.element(rows.nth(1)).toHaveTextContent(/Unpriced · 1/);
+      await expect.element(rows.nth(2)).toHaveTextContent(/Unpriced · 1/);
+      // Pricing reuses the Activity summary instead of requesting another.
+      expect(api.getSummary).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("switches to Limits from the glance", async () => {
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue(accounts());
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      await page.getByRole("button", { name: "View details" }).click();
+      await expect
+        .element(page.getByRole("tab", { name: "Limits" }))
+        .toHaveAttribute("aria-selected", "true");
+      await expect
+        .element(page.getByRole("region", { name: "Account usage and limits" }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("sorts a table from its header and filters threads by name", async () => {
+    const screen = await renderWithRouter(
+      <UsageDashboardView summary={scoped()} range="7d" fetching={false} />,
+    );
+    const models = () =>
+      [
+        ...[...document.querySelectorAll("table")]
+          .find((table) => table.querySelector("caption")?.textContent === "Providers and models")!
+          .querySelectorAll("tbody tr td:nth-child(2)"),
+      ].map((cell) => cell.textContent);
+    try {
+      await expect.element(page.getByText("Projects and threads")).toBeVisible();
+      expect(models()).toEqual(["gpt-5.6", "cursor-agent"]);
+      const tokens = page
+        .getByRole("table", { name: "Providers and models" })
+        .getByRole("columnheader", { name: /Tokens/ });
+      await expect.element(tokens).toHaveAttribute("aria-sort", "descending");
+      await tokens.getByRole("button").click();
+      await expect.element(tokens).toHaveAttribute("aria-sort", "ascending");
+      expect(models()).toEqual(["cursor-agent", "gpt-5.6"]);
+
+      await page.getByRole("button", { name: "Threads" }).click();
+      await page.getByLabelText("Filter by name").fill("fix");
+      const threads = page.getByRole("table", { name: "Threads" }).getByRole("row");
+      expect(threads.all()).toHaveLength(2);
+      await expect.element(threads.nth(1)).toHaveTextContent(/Fix bug/);
+      await page.getByLabelText("Filter by name").fill("zzz");
+      await expect.element(page.getByText("No threads match “zzz”.")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("exports a breakdown as a dated CSV", async () => {
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue(accounts());
+    const downloads: Array<string> = [];
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.download);
+      });
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      await page.getByRole("button", { name: "Export usage" }).click();
+      await page.getByRole("menuitem", { name: "Providers and models (CSV)" }).click();
+      expect(downloads).toHaveLength(1);
+      expect(downloads[0]).toMatch(/^f5-usage-7d-models-\d{4}-\d{2}-\d{2}\.csv$/);
+    } finally {
+      click.mockRestore();
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("requests and draws the previous period when comparing", async () => {
+    api.getSummary.mockResolvedValue(
+      summary({
+        previousBuckets: [
+          { key: "2026-08-07", startAt: "2026-08-07T00:00:00.000Z", metrics: metrics() },
+          { key: "2026-08-08", startAt: "2026-08-08T00:00:00.000Z", metrics: metrics() },
+        ],
+      }),
+    );
+    api.getAccounts.mockResolvedValue(accounts());
+    const onSearchChange = vi.fn();
+    const queryClient = client();
+    const screen = await renderDashboard(
+      queryClient,
+      <UsageDashboard search={{ compare: true }} onSearchChange={onSearchChange} />,
+    );
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Compare to previous period" }))
+        .toHaveAttribute("aria-pressed", "true");
+      expect(api.getSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ includePreviousBuckets: true }),
+        expect.anything(),
+      );
+      expect(page.getByTestId("usage-chart-previous").all()).toHaveLength(2);
+      await page.getByRole("button", { name: "Compare to previous period" }).click();
+      expect(onSearchChange).toHaveBeenLastCalledWith({ compare: undefined });
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("meters the monthly budget and warns once it is exceeded", async () => {
+    (settings.current as Record<string, unknown>).usageMonthlyBudget = {
+      costUsd: 10,
+      tokens: null,
+    };
+    const today = new Date().toISOString().slice(0, 10);
+    api.getSummary.mockImplementation(async (input: { range: string }) =>
+      input.range === "90d"
+        ? summary({
+            range: "90d",
+            generatedAt: new Date().toISOString(),
+            buckets: [bucket(today, { metrics: metrics({ providerReportedCostUsd: 50 }) })],
+          })
+        : summary(),
+    );
+    api.getAccounts.mockResolvedValue(accounts());
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      await expect.element(page.getByText("Monthly budget exceeded")).toBeVisible();
+      await expect
+        .element(page.getByRole("progressbar", { name: "Cost budget" }))
+        .toHaveAttribute("aria-valuetext", "500% used");
+      // The budget covers everything: no provider or project filter.
+      expect(api.getSummary).toHaveBeenCalledWith(
+        expect.not.objectContaining({ hiddenProviders: expect.anything() }),
+        expect.anything(),
+      );
     } finally {
       await screen.unmount();
       queryClient.clear();

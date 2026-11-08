@@ -34,6 +34,7 @@ import {
   applyModelAliases,
   resolveModelAliases,
   aggregateUsageScope,
+  buildPreviousBuckets,
   buildUsageProjectScope,
   buildUsageSummary,
   previousUsageWindow,
@@ -241,6 +242,28 @@ const make = Effect.gen(function* () {
             priceOverrides,
           )
         : null;
+      const previousBuckets =
+        request.includePreviousBuckets && previous
+          ? yield* Effect.gen(function* () {
+              const previousPlan = planOrFail({
+                range: request.range,
+                timeZone: request.timeZone,
+                now: new Date(Date.parse(plan.startedAt) - 1),
+              });
+              return buildPreviousBuckets({
+                currentPlan: plan,
+                previousPlan,
+                rows: applyModelAliases(
+                  yield* repository.summarizeBuckets({
+                    buckets: previousPlan.buckets,
+                    ...filters,
+                  }),
+                  modelAliases,
+                ),
+                priceOverrides,
+              });
+            })
+          : null;
       const titles = yield* repository.readScopeTitles({
         threadIds: aggregation.threads.map((thread) => thread.id),
         projectIds: aggregation.projects.flatMap((project) =>
@@ -256,6 +279,7 @@ const make = Effect.gen(function* () {
         rows,
         projectScope: buildUsageProjectScope({ aggregation, selectedProjectId, titles }),
         previousMetrics,
+        previousBuckets,
       });
     });
 

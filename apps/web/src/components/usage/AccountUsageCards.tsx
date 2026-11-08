@@ -17,6 +17,8 @@ import {
 } from "@t3tools/shared/usageLimit";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
+import { Alert, AlertDescription } from "../ui/alert";
+import { Badge } from "../ui/badge";
 import { DailyTokenBars } from "./charts/DailyTokenBars";
 import { QuotaMeter, QuotaMeterLegend } from "./charts/QuotaMeter";
 import { TightestLimitCallout, tightestQuotaWindow } from "./charts/TightestLimitCallout";
@@ -24,6 +26,7 @@ import { codexAccountRangeTokens, codexDailyTokenSeries } from "./codexDailyToke
 import { providerLabel } from "./format";
 import { ResetCreditButton } from "./ResetCreditButton";
 import { ClaudeUsageAnalysisPanel } from "./ClaudeUsageAnalysisPanel";
+import { StatTile, UsageSection, UsageSubsection } from "./kit";
 
 const RESET_MATCH_MS = 10 * 60_000;
 
@@ -76,15 +79,6 @@ function compactDecimalCount(value: string | null): string {
   }
 }
 
-function StatTile(props: { readonly label: string; readonly value: string }) {
-  return (
-    <div className="rounded-lg border border-border/60 px-3 py-2">
-      <p className="text-2xs text-muted-foreground">{props.label}</p>
-      <p className="mt-0.5 text-lg font-semibold tabular-nums">{props.value}</p>
-    </div>
-  );
-}
-
 function CodexTokenSummary(props: {
   readonly fetchedAt: string;
   readonly tokenSummary: CodexAccountTokenSummary | null;
@@ -95,21 +89,28 @@ function CodexTokenSummary(props: {
   const series = codexDailyTokenSeries(props);
   if (!summary && !series) return null;
   return (
-    <div className="space-y-3 pt-2">
+    <div className="space-y-3">
       {summary ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatTile
+            variant="inset"
             label={`Account tokens · ${
               props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`
             }`}
             value={compactDecimalCount(codexAccountRangeTokens(props))}
           />
-          <StatTile label="Lifetime tokens" value={compactDecimalCount(summary.lifetimeTokens)} />
           <StatTile
+            variant="inset"
+            label="Lifetime tokens"
+            value={compactDecimalCount(summary.lifetimeTokens)}
+          />
+          <StatTile
+            variant="inset"
             label="Peak daily tokens"
             value={compactDecimalCount(summary.peakDailyTokens)}
           />
           <StatTile
+            variant="inset"
             label="Current usage streak"
             value={
               summary.currentStreakDays === null
@@ -209,7 +210,7 @@ function CodexLimits(props: {
       : []),
   ];
   return (
-    <div className="space-y-3 border-t border-border/60 pt-4">
+    <div className="space-y-3">
       <TightestLimitCallout
         windows={codexCalloutWindows(props.section)}
         {...(instanceId && resetCreditInCallout(props.section, nowMs)
@@ -231,9 +232,9 @@ function CodexLimits(props: {
           <div className="flex items-center gap-2">
             <p className="text-xs font-medium">{limit.name ?? limit.id}</p>
             {limit.planType ? (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
+              <Badge size="sm" variant="secondary">
                 {limit.planType}
-              </span>
+              </Badge>
             ) : null}
           </div>
           {(["primary", "secondary", "individual"] as const).map((slot) => {
@@ -307,39 +308,278 @@ function withHistory(
   return history ? { history } : {};
 }
 
-function SectionStatus(props: {
-  readonly account: UsageAccount;
-  readonly section: AccountUsageSection;
-}) {
-  const { account, section } = props;
+const SECTION_LABELS: Record<AccountUsageSection["kind"], string> = {
+  "codex-tokens": "Token history",
+  "codex-limits": "Rate limits",
+  "claude-usage": "Claude plan",
+  "provider-limits": "Limits",
+};
+
+/** "Updated …" plus a restart badge, shown beside a section label. */
+function SectionMeta(props: { readonly section: AccountUsageSection }) {
+  const { section } = props;
   // A snapshot with no attempt since startup was restored from disk.
   const restored = section.snapshot !== null && section.lastAttemptAt === null;
   return (
     <>
-      <p className="text-xs text-muted-foreground">
-        {section.kind === "codex-tokens"
-          ? "Token history · "
-          : section.kind === "codex-limits"
-            ? "Rate limits · "
-            : ""}
+      <span>
         {section.snapshot
           ? `Updated ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}`
           : "No successful snapshot yet"}
-        {restored ? (
-          <span className="text-warning-foreground"> · Last known before restart</span>
-        ) : null}
-      </p>
-      {section.outcome !== "available" && (section.lastAttemptAt || section.errorCode) ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          {section.outcome === "unsupported"
-            ? `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`
-            : ACCOUNT_ERROR_MESSAGES[section.errorCode ?? "temporary-failure"]}
-          {section.snapshot
-            ? ` Showing data from ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}.`
-            : ""}
-        </p>
+      </span>
+      {restored ? (
+        <Badge size="sm" variant="warning">
+          Last known before restart
+        </Badge>
       ) : null}
     </>
+  );
+}
+
+/** Why the latest attempt failed, as an inline notice. */
+function SectionError(props: {
+  readonly account: UsageAccount;
+  readonly section: AccountUsageSection;
+}) {
+  const { account, section } = props;
+  if (section.outcome === "available" || (!section.lastAttemptAt && !section.errorCode))
+    return null;
+  return (
+    <Alert variant={section.outcome === "unsupported" ? "default" : "warning"} role="status">
+      <AlertDescription className="text-xs">
+        {section.outcome === "unsupported"
+          ? `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`
+          : ACCOUNT_ERROR_MESSAGES[section.errorCode ?? "temporary-failure"]}
+        {section.snapshot
+          ? ` Showing data from ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}.`
+          : ""}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+const PROVIDER_NOTES: Partial<Record<UsageAccount["provider"], string>> = {
+  codex:
+    "Provider-native ChatGPT/Codex account totals and quota windows. These are not dollar costs.",
+  claudeAgent: "Configured instance's server-default authentication context.",
+};
+
+/** Plan label for an account header: Claude subscription or Codex plan type. */
+export function accountPlanLabel(account: UsageAccount): string | null {
+  for (const section of account.sections) {
+    if (section.kind === "claude-usage" && section.snapshot?.data.subscriptionLabel)
+      return section.snapshot.data.subscriptionLabel;
+    if (section.kind === "codex-limits") {
+      const plan = section.snapshot?.data.rateLimits.find((limit) => limit.planType)?.planType;
+      if (plan) return plan;
+    }
+  }
+  return null;
+}
+
+export interface AccountGlanceWindow extends QuotaWindow {
+  readonly observedAt: string;
+}
+
+/**
+ * Every live-comparable quota window an account reports, labelled for a compact
+ * summary. Claude's monthly spend meter is excluded, as in the callout.
+ */
+export function accountQuotaWindows(account: UsageAccount): Array<AccountGlanceWindow> {
+  return account.sections.flatMap((section): Array<AccountGlanceWindow> => {
+    const observedAt = section.snapshot?.fetchedAt;
+    if (!observedAt) return [];
+    if (section.kind === "codex-limits")
+      return codexCalloutWindows(section).map((window) => ({ ...window, observedAt }));
+    if (section.kind === "provider-limits" || section.kind === "claude-usage")
+      return quotaWindowsFromSection(section)
+        .filter((window) => window.windowKey !== CLAUDE_MONTHLY_SPEND_WINDOW_KEY)
+        .map((window) => ({ ...window, observedAt }));
+    return [];
+  });
+}
+
+/** The account's newest snapshot time, or null. */
+export function accountUpdatedAt(account: UsageAccount): string | null {
+  let latest: string | null = null;
+  for (const section of account.sections)
+    if (section.snapshot && (!latest || section.snapshot.fetchedAt > latest))
+      latest = section.snapshot.fetchedAt;
+  return latest;
+}
+
+/** Status text for an account with nothing to meter, or null when it has data. */
+export function accountStatusText(account: UsageAccount): string | null {
+  if (!account.enabled)
+    return `${providerLabel(account.provider)} is disabled in provider settings.`;
+  for (const section of account.sections) {
+    if (section.outcome === "unsupported")
+      return `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`;
+    if (section.errorCode) return ACCOUNT_ERROR_MESSAGES[section.errorCode];
+  }
+  const claude = account.sections.find((section) => section.kind === "claude-usage");
+  if (claude?.kind === "claude-usage" && claude.snapshot && !claude.snapshot.data.limitsAvailable)
+    return "Plan limits aren't reported for this Claude session.";
+  return account.sections.some((section) => section.snapshot)
+    ? "No quota windows reported."
+    : "No successful snapshot yet.";
+}
+
+export function accountNeedsAuthentication(account: UsageAccount): boolean {
+  return account.sections.some((section) => section.errorCode === "authentication-required");
+}
+
+export function accountSectionId(account: UsageAccount): string {
+  return `usage-account-${account.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function AccountSectionBody(props: {
+  readonly account: UsageAccount;
+  readonly section: AccountUsageSection;
+  readonly range: UsageRange;
+  readonly history: QuotaHistoryIndex | undefined;
+}) {
+  const { account, section, history } = props;
+  return (
+    <>
+      <SectionError account={account} section={section} />
+      {section.kind === "provider-limits" && section.snapshot && (
+        <QuotaWindowRows
+          account={account}
+          windows={quotaWindowsFromSection(section)}
+          observedAt={section.snapshot.fetchedAt}
+          history={history}
+        />
+      )}
+      {section.kind === "codex-limits" &&
+        section.snapshot?.data.resetCredits &&
+        account.providerInstanceId &&
+        !resetCreditInCallout(section, Date.now()) && (
+          <ResetCreditButton
+            instanceId={account.providerInstanceId}
+            accountName={account.displayName}
+            count={section.snapshot.data.resetCredits.availableCount}
+            windowName={codexResetWindowName(section, Date.now())}
+          />
+        )}
+      {section.kind === "claude-usage" && section.snapshot && (
+        <div className="space-y-3">
+          {!section.snapshot.data.limitsAvailable ? (
+            <p className="text-xs text-muted-foreground">
+              Plan limits aren't reported for this Claude session.
+            </p>
+          ) : section.snapshot.data.windows.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Account usage is temporarily unavailable.
+            </p>
+          ) : (
+            <QuotaWindowRows
+              account={account}
+              windows={quotaWindowsFromSection(section)}
+              observedAt={section.snapshot.fetchedAt}
+              history={history}
+            />
+          )}
+          {section.snapshot.data.extraUsage && (
+            <div className="space-y-2">
+              <p className="text-xs">
+                Extra usage {section.snapshot.data.extraUsage.enabled ? "enabled" : "disabled"}
+              </p>
+              {/* The monthly spend window already meters enabled extra usage. */}
+              {section.snapshot.data.extraUsage.enabled &&
+                !section.snapshot.data.windows.some(
+                  (window) => window.key === CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
+                ) && (
+                  <QuotaMeter
+                    label="Extra usage"
+                    accessibleName={`${account.displayName} · Extra usage`}
+                    utilization={section.snapshot.data.extraUsage.utilization}
+                    resetsAt={null}
+                  />
+                )}
+            </div>
+          )}
+        </div>
+      )}
+      {section.kind === "codex-tokens" && section.snapshot && (
+        <CodexTokenSummary
+          range={props.range}
+          fetchedAt={section.snapshot.fetchedAt}
+          tokenSummary={section.snapshot.data.tokenSummary}
+          dailyUsageBuckets={section.snapshot.data.dailyUsageBuckets}
+        />
+      )}
+      {section.kind === "codex-limits" && (
+        <CodexLimits account={account} section={section} history={history} />
+      )}
+    </>
+  );
+}
+
+/** One account as a section; its snapshot groups are subsections. */
+export function AccountUsageCard(props: {
+  readonly account: UsageAccount;
+  readonly range: UsageRange;
+  readonly history?: QuotaHistoryIndex | undefined;
+}) {
+  const { account } = props;
+  const plan = accountPlanLabel(account);
+  return (
+    <UsageSection
+      id={accountSectionId(account)}
+      aria-label={account.displayName}
+      title={
+        <span className="inline-flex items-center gap-2">
+          <span>{account.displayName}</span>
+          {plan ? (
+            <Badge size="sm" variant="secondary">
+              {plan}
+            </Badge>
+          ) : null}
+        </span>
+      }
+      info={PROVIDER_NOTES[account.provider]}
+      infoLabel={`About ${account.displayName}`}
+      actions={
+        <span role="status">
+          {account.refreshState === "idle" ? null : (
+            <Badge size="sm" variant="info">
+              {account.refreshState === "queued" ? "Queued" : "Refreshing…"}
+            </Badge>
+          )}
+        </span>
+      }
+    >
+      <div className="space-y-3">
+        {!account.enabled ? (
+          <p className="text-xs text-muted-foreground">
+            {providerLabel(account.provider)} is disabled in provider settings.
+          </p>
+        ) : (
+          account.sections.map((section, index) => (
+            <UsageSubsection
+              key={section.kind}
+              first={index === 0}
+              label={SECTION_LABELS[section.kind]}
+              meta={<SectionMeta section={section} />}
+            >
+              <AccountSectionBody
+                account={account}
+                section={section}
+                range={props.range}
+                history={props.history}
+              />
+            </UsageSubsection>
+          ))
+        )}
+        {account.enabled && account.provider === "claudeAgent" && account.providerInstanceId && (
+          <ClaudeUsageAnalysisPanel
+            instanceId={account.providerInstanceId}
+            analysis={account.usageAnalysis}
+          />
+        )}
+      </div>
+    </UsageSection>
   );
 }
 
@@ -353,124 +593,9 @@ export function AccountUsageCards({
   history?: QuotaHistoryIndex | undefined;
 }) {
   return (
-    <section aria-label="Account usage and limits" className="space-y-3">
-      <h2 className="text-sm font-medium">Account usage and limits</h2>
+    <section aria-label="Account usage and limits" className="flex flex-col gap-4">
       {accounts.map((account) => (
-        <div key={account.key} className="space-y-2 rounded-xl border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-medium">{account.displayName}</h3>
-            <span role="status" className="text-xs text-muted-foreground">
-              {account.refreshState === "idle"
-                ? ""
-                : account.refreshState === "queued"
-                  ? "Queued"
-                  : "Refreshing…"}
-            </span>
-          </div>
-          {account.provider === "codex" && (
-            <p className="text-xs text-muted-foreground">
-              Provider-native ChatGPT/Codex account totals and quota windows. These are not dollar
-              costs.
-            </p>
-          )}
-          {account.provider === "claudeAgent" && (
-            <p className="text-xs text-muted-foreground">
-              Configured instance's server-default authentication context.
-            </p>
-          )}
-          {!account.enabled ? (
-            <p className="text-xs text-muted-foreground">
-              {providerLabel(account.provider)} is disabled in provider settings.
-            </p>
-          ) : (
-            account.sections.map((section) => (
-              <div key={section.kind} className="space-y-2">
-                <SectionStatus account={account} section={section} />
-                {section.kind === "provider-limits" && section.snapshot && (
-                  <QuotaWindowRows
-                    account={account}
-                    windows={quotaWindowsFromSection(section)}
-                    observedAt={section.snapshot.fetchedAt}
-                    history={history}
-                  />
-                )}
-                {section.kind === "codex-limits" &&
-                  section.snapshot?.data.resetCredits &&
-                  account.providerInstanceId &&
-                  !resetCreditInCallout(section, Date.now()) && (
-                    <ResetCreditButton
-                      instanceId={account.providerInstanceId}
-                      accountName={account.displayName}
-                      count={section.snapshot.data.resetCredits.availableCount}
-                      windowName={codexResetWindowName(section, Date.now())}
-                    />
-                  )}
-                {section.kind === "claude-usage" && section.snapshot && (
-                  <div className="space-y-3">
-                    {section.snapshot.data.subscriptionLabel && (
-                      <p className="text-xs font-medium">
-                        {section.snapshot.data.subscriptionLabel}
-                      </p>
-                    )}
-                    {!section.snapshot.data.limitsAvailable ? (
-                      <p className="text-xs text-muted-foreground">
-                        Plan limits aren't reported for this Claude session.
-                      </p>
-                    ) : section.snapshot.data.windows.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        Account usage is temporarily unavailable.
-                      </p>
-                    ) : (
-                      <QuotaWindowRows
-                        account={account}
-                        windows={quotaWindowsFromSection(section)}
-                        observedAt={section.snapshot.fetchedAt}
-                        history={history}
-                      />
-                    )}
-                    {section.snapshot.data.extraUsage && (
-                      <div className="space-y-2">
-                        <p className="text-xs">
-                          Extra usage{" "}
-                          {section.snapshot.data.extraUsage.enabled ? "enabled" : "disabled"}
-                        </p>
-                        {/* The monthly spend window already meters enabled extra usage. */}
-                        {section.snapshot.data.extraUsage.enabled &&
-                          !section.snapshot.data.windows.some(
-                            (window) => window.key === CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
-                          ) && (
-                            <QuotaMeter
-                              label="Extra usage"
-                              accessibleName={`${account.displayName} · Extra usage`}
-                              utilization={section.snapshot.data.extraUsage.utilization}
-                              resetsAt={null}
-                            />
-                          )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {section.kind === "codex-tokens" && section.snapshot && (
-                  <CodexTokenSummary
-                    range={range}
-                    fetchedAt={section.snapshot.fetchedAt}
-                    tokenSummary={section.snapshot.data.tokenSummary}
-                    dailyUsageBuckets={section.snapshot.data.dailyUsageBuckets}
-                  />
-                )}
-                {section.kind === "codex-limits" && (
-                  <CodexLimits account={account} section={section} history={history} />
-                )}
-              </div>
-            ))
-          )}
-          {account.enabled && account.provider === "claudeAgent" && account.providerInstanceId && (
-            <ClaudeUsageAnalysisPanel
-              instanceId={account.providerInstanceId}
-              analysis={account.usageAnalysis}
-            />
-          )}
-        </div>
+        <AccountUsageCard key={account.key} account={account} range={range} history={history} />
       ))}
     </section>
   );

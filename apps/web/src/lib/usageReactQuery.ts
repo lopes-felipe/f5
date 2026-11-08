@@ -19,6 +19,7 @@ export const usageQueryKeys = {
     provider?: ProviderKind,
     projectId?: ProjectId,
     hiddenProviders: ReadonlyArray<ProviderKind> = [],
+    comparePrevious = false,
   ) =>
     [
       "usage",
@@ -28,6 +29,8 @@ export const usageQueryKeys = {
       provider ?? "all",
       projectId ?? "all",
       hiddenProviders.toSorted().join(","),
+      // Only comparison summaries carry the extra segment, so plain keys keep their shape.
+      ...(comparePrevious ? (["compare"] as const) : []),
     ] as const,
   accounts: ["usage", "accounts"] as const,
   quotaHistory: ["usage", "quota-history"] as const,
@@ -46,12 +49,22 @@ export function usageSummaryQueryOptions(input: {
   readonly provider?: ProviderKind | undefined;
   readonly projectId?: ProjectId | undefined;
   readonly hiddenProviders?: ReadonlyArray<ProviderKind>;
+  /** Also fetch the previous period's buckets for the chart overlay. */
+  readonly comparePrevious?: boolean;
   readonly enabled?: boolean;
 }) {
   const { range, timeZone, provider, projectId } = input;
+  const comparePrevious = input.comparePrevious ?? false;
   const hiddenProviders = input.hiddenProviders?.toSorted() ?? [];
   return queryOptions({
-    queryKey: usageQueryKeys.summary(range, timeZone, provider, projectId, hiddenProviders),
+    queryKey: usageQueryKeys.summary(
+      range,
+      timeZone,
+      provider,
+      projectId,
+      hiddenProviders,
+      comparePrevious,
+    ),
     queryFn: async (context) =>
       decodeUsageSummary(
         await ensureNativeApi().usage.getSummary(
@@ -61,6 +74,7 @@ export function usageSummaryQueryOptions(input: {
             ...(provider ? { provider } : {}),
             ...(projectId ? { projectId } : {}),
             ...(hiddenProviders.length > 0 ? { hiddenProviders } : {}),
+            ...(comparePrevious ? { includePreviousBuckets: true } : {}),
           },
           rpcQueryContext(context),
         ),

@@ -359,6 +359,8 @@ export function formatKeybindingCommandLabel(
       return "Usage: show recorded turns";
     case "usage.limits":
       return "Usage: show limits";
+    case "usage.pricing":
+      return "Usage: show pricing";
     case "usage.period.day":
       return "Usage: past 24 hours";
     case "usage.period.week":
