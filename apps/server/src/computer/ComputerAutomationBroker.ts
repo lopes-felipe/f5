@@ -2364,6 +2364,7 @@ export class ComputerAutomationBrokerRuntime {
     elementRefs?: string[];
     available?: boolean;
     reason?: ComputerTargetAvailability["reason"] | "partial-tree";
+    detail?: ComputerTargetAvailability["detail"];
     settled?: boolean;
     tree?: ComputerInspectResult;
     requiresFreshObservation?: true;

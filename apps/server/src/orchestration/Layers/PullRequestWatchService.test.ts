@@ -101,12 +101,13 @@ const fixture = Effect.gen(function* () {
       })) as unknown as typeof fetch,
   });
   const nativeHub = yield* makeForgePrHubService(account, provider);
-  const source = yield* provider.getDetail(ref);
+  const source = yield* provider.getDetail(ref, { checks: true });
   const detail = forgeDetail(forgeTracked(account, ref, source, provider), source);
   const delayed = yield* Deferred.make<void>();
   const entered = yield* Deferred.make<void>();
   const state = {
     checks: [] as PrHubCheck[],
+    partialChecks: false,
     comments: [] as PrHubTimelineComment[],
     calls: 0,
     fail: false,
@@ -146,6 +147,7 @@ const fixture = Effect.gen(function* () {
             ...detail.detail,
             state: state.closed ? ("merged" as const) : ("open" as const),
             checks: state.checks,
+            truncatedSections: state.partialChecks ? ["checks" as const] : [],
             mergeable: state.quiet ? ("mergeable" as const) : ("unknown" as const),
           },
         };
@@ -305,6 +307,42 @@ it.effect("rolls back watch state when queue admission fails and retries the sam
       f.state.queueFail = false;
       yield* f.service.sweep;
       assert.deepStrictEqual((yield* f.watches.get(threadId, key))?.watch.failedChecks, ["CI"]);
+      assert.lengthOf(yield* f.items(), 1);
+    }),
+  ),
+);
+it.effect("wakes for a failed GitLab child but never passes an incomplete bridge read", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      yield* f.service.startWatch(f.input);
+      const head: PrHubCheck = {
+        name: "Pipeline",
+        status: "success",
+        description: null,
+        url: null,
+      };
+      const child: PrHubCheck = {
+        name: "Downstream: Pipeline",
+        status: "failure",
+        description: "Downstream pipeline",
+        url: null,
+      };
+      f.state.checks = [head, child];
+      yield* f.service.sweep;
+      assert.deepEqual((yield* f.watches.get(threadId, key))?.watch.failedChecks, [
+        "Downstream: Pipeline",
+      ]);
+      assert.lengthOf(yield* f.items(), 1);
+      f.state.checks = [head];
+      f.state.partialChecks = true;
+      yield* TestClock.adjust("1 minute");
+      yield* f.service.sweep;
+      assert.lengthOf(yield* f.items(), 1);
+      assert.equal((yield* f.watches.get(threadId, key))?.watch.passed, false);
+      f.state.checks = [head, child];
+      f.state.partialChecks = false;
+      yield* TestClock.adjust("1 minute");
+      yield* f.service.sweep;
       assert.lengthOf(yield* f.items(), 1);
     }),
   ),

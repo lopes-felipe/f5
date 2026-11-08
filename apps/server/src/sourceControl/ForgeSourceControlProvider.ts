@@ -4,6 +4,7 @@ import {
   SOURCE_CONTROL_PULL_REQUEST_ACTIONS,
   type ForgeAction,
   type ForgeCapabilities,
+  type PrHubCheck,
   type SourceControlPullRequestAction,
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import { quoteGitPatchPath, unquoteGitPatchPath } from "@t3tools/shared/gitPatch
 import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
 import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
+import { gitLabHeadPipelineChecks, gitLabTriggerJobChecks } from "./gitLabPipelineChecks.ts";
 import {
   SourceControlProviderError,
   type SourceControlProvider,
@@ -38,6 +40,8 @@ export interface ForgeFile {
 export interface ForgeDetail extends SourceControlPullRequestSummary {
   readonly body: string;
   readonly raw: Readonly<Record<string, unknown>>;
+  readonly checks?: ReadonlyArray<PrHubCheck>;
+  readonly checksComplete?: boolean;
 }
 export interface ForgeCommentInput {
   readonly ref: SourceControlPullRequestRef;
@@ -60,6 +64,7 @@ export interface ForgeProvider extends SourceControlProvider {
   ) => Effect.Effect<ReadonlyArray<ForgeDetail>, SourceControlProviderError>;
   readonly getDetail: (
     ref: SourceControlPullRequestRef,
+    options?: { readonly checks?: boolean },
   ) => Effect.Effect<ForgeDetail, SourceControlProviderError>;
   readonly getFiles: (
     ref: SourceControlPullRequestRef,
@@ -461,19 +466,52 @@ export function makeForgeSourceControlProvider(options: {
         return yield* error("reference", "Invalid pull request reference.", "invalid_response");
       return ref;
     });
-  const getDetail = (ref: SourceControlPullRequestRef) =>
+  const getDetail = (ref: SourceControlPullRequestRef, options?: { readonly checks?: boolean }) =>
     request(ref, undefined, pull(ref)).pipe(
       Effect.flatMap((value) =>
         Effect.gen(function* () {
-          const detail = summary(value, ref);
+          let detail = summary(value, ref);
           if (kind === "gitlab" && detail.isCrossRepository) {
             const source = object(value).source_project_id;
             const project = object(
               yield* request(ref, undefined, "", "GET", undefined, false, String(source)),
             );
-            return {
+            detail = {
               ...detail,
               headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
+            };
+          }
+          if (kind !== "gitlab" || !options?.checks) return detail;
+          detail = {
+            ...detail,
+            checks: gitLabHeadPipelineChecks(detail.raw.head_pipeline),
+            checksComplete: detail.raw.head_pipeline == null,
+          };
+          const pipeline = object(detail.raw.head_pipeline);
+          if (
+            kind === "gitlab" &&
+            Number.isSafeInteger(pipeline.id) &&
+            Number(pipeline.id) > 0 &&
+            Number.isSafeInteger(pipeline.project_id) &&
+            Number(pipeline.project_id) > 0
+          ) {
+            // Fork pipelines belong to their source project. Keep the selected host/account.
+            const downstream = yield* request(
+              ref,
+              undefined,
+              "/pipelines/" + pipeline.id + "/bridges?per_page=100",
+              "GET",
+              undefined,
+              false,
+              String(pipeline.project_id),
+            ).pipe(
+              Effect.map(gitLabTriggerJobChecks),
+              Effect.catch(() => Effect.succeed(null)),
+            );
+            detail = {
+              ...detail,
+              checks: [...(detail.checks ?? []), ...(downstream ?? [])],
+              checksComplete: downstream !== null,
             };
           }
           return detail;
@@ -1212,8 +1250,11 @@ export function makeForgeSourceControlProvider(options: {
         getDetail(ref).pipe(
           Effect.flatMap((detail) => {
             const reviewers = rows(detail.raw.reviewers ?? detail.raw.requested_reviewers)
-              .map((v) => text(v.login ?? v.uuid ?? v.id))
-              .filter((id) => !input.remove.includes(id));
+              .map(
+                (v) =>
+                  text(v.login ?? v.uuid) || (typeof v.id === "number" ? String(v.id) : text(v.id)),
+              )
+              .filter((id) => id.length > 0 && !input.remove.includes(id));
             return setReviewers({ ref, reviewers: [...new Set([...reviewers, ...input.add])] });
           }),
         ),

@@ -1116,6 +1116,14 @@ async function executeComputerBatch(
           verification?.verified !== true
         )
           stopped = "unverified";
+        // A shortcut that moved focus, or a foreground press that removed its element, needs
+        // a fresh observation: later steps would otherwise act on an unexpected window.
+        else if (
+          verification?.verified === false &&
+          (op === "key" ||
+            (delivery !== "background" && op === "elementAction" && step.action !== "focus"))
+        )
+          stopped = "unverified";
         if (stopped) break;
       } catch (cause) {
         steps.push({ op: step.op, ok: false, error: computerError(cause) });

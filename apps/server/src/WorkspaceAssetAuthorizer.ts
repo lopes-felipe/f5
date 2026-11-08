@@ -72,6 +72,7 @@ interface HandleRecord {
 }
 
 export interface WorkspaceAssetReader {
+  readonly rootRealPath: string;
   readonly issueFileHandle: (input: {
     relativePath: string;
     grant: "file" | "html-document";
@@ -413,6 +414,7 @@ export function makeWorkspaceAssetAuthorizer(input: {
     };
 
     return {
+      rootRealPath,
       identity,
       openFile: (relativePath) => openContainedFile(rootPath, relativePath),
       issueFileHandle: ({ relativePath, grant }) => {

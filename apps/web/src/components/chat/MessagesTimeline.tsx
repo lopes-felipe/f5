@@ -1837,7 +1837,7 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
       {row.kind === "message" ? (
-        <h2 className="sr-only">
+        <h2 className="sr-only" data-assistant-quote-exclude>
           {row.message.role === "user"
             ? "You"
             : row.message.role === "assistant"
@@ -4844,7 +4844,10 @@ function AssistantMessageRowContent(props: {
           />
         </div>
         <AssistantChangedFiles externals={externals} />
-        <div className="mt-1.5 flex min-h-7 items-center justify-between gap-2">
+        <div
+          data-assistant-quote-exclude
+          className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
+        >
           <p className="text-2xs text-muted-foreground tabular-nums">
             <LiveMessageMeta
               createdAt={row.message.createdAt}
