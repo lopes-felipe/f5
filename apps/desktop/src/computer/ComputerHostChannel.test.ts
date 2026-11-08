@@ -1730,6 +1730,122 @@ describe("background capability negotiation", () => {
     h.process.emit("message", { type: "leaseRelease", requestId: "x", holder: armed });
     expect(h.channel.execution.validTakeover(armed, "incarnation")).toBe(false);
   });
+  it("lets the Claude Chrome holder's own thread take over while its calls are idle, and holds its Chrome calls meanwhile", async () => {
+    const h = setup(true);
+    h.hello(["background-ax-v1", "chrome-call-activity-v1"]);
+    const chromeHolder = {
+      profileId: "profile",
+      threadId: "t",
+      sessionGeneration: "chrome-s",
+      provider: "claude",
+    };
+    h.process.emit("message", {
+      type: "chromeLeaseAcquire",
+      requestId: "chrome",
+      holder: chromeHolder,
+    });
+    await vi.waitFor(() => expect(h.channel.chrome.current()).toEqual(chromeHolder));
+    h.process.emit("message", {
+      type: "accessRequested",
+      request: {
+        requestId: "session",
+        threadId: "t",
+        sessionGeneration: "s",
+        reason: "r",
+        kind: "session-actions",
+        background: true,
+        apps: [],
+      },
+    });
+    h.channel.answerAccess("profile", {
+      requestId: "session",
+      backendIncarnation: "incarnation",
+      decisions: [],
+      allowSessionActions: true,
+    });
+    const takeover = (suffix: string, threadId = "t") => {
+      h.process.emit("message", {
+        type: "accessRequested",
+        request: {
+          requestId: `approval-${suffix}`,
+          threadId,
+          sessionGeneration: "s",
+          reason: "Need to drag",
+          kind: "foreground-takeover",
+          takeover: { appId: "com.apple.calculator", threadId, turnId: "turn", reason: "r" },
+          apps: [],
+        },
+      });
+      h.process.emit("message", {
+        type: "foregroundTakeoverAcquire",
+        requestId: `takeover-${suffix}`,
+        approvalRequestId: `approval-${suffix}`,
+        holder: {
+          ...appHolder,
+          threadId,
+          scope: {
+            kind: "takeover",
+            appId: "com.apple.calculator",
+            approvalReceipt: `approval-${suffix}`,
+          },
+        },
+      });
+    };
+    const response = (requestId: string) =>
+      sent(h).find((message) => message.type === "response" && message.requestId === requestId);
+    const validate = async (requestId: string) => {
+      h.process.emit("message", { type: "chromeLeaseValidate", requestId, holder: chromeHolder });
+      await vi.waitFor(() => expect(response(requestId)).toBeDefined());
+      return response(requestId);
+    };
+    const ownNative = {
+      _tag: "Execution",
+      message: "This thread is controlling the computer; Chrome calls wait until that ends.",
+    };
+
+    // No call report yet: unknown reads as running, refused without naming another thread.
+    takeover("unknown");
+    expect(response("takeover-unknown")).toMatchObject({
+      error: {
+        _tag: "Execution",
+        message: "A Chrome call from this thread is still running; retry once it finishes.",
+      },
+    });
+    // Another thread stays blocked by the Chrome lease.
+    h.process.emit("message", {
+      type: "chromeCallsChanged",
+      threadId: "t",
+      sessionGeneration: "chrome-s",
+      running: false,
+    });
+    takeover("other", "other-thread");
+    expect(response("takeover-other")).toMatchObject({
+      error: { _tag: "Busy", resource: "chrome", holderThreadId: "t" },
+    });
+
+    takeover("idle");
+    expect(h.controller.lease.pendingTakeover()?.holder.threadId).toBe("t");
+    expect(await validate("validate-reserved")).toMatchObject({ error: ownNative });
+    h.channel.answerAccess("profile", {
+      requestId: "approval-idle",
+      backendIncarnation: "incarnation",
+      decisions: [],
+      allowForegroundTakeover: true,
+    });
+    await vi.waitFor(() =>
+      expect(response("takeover-idle")).toMatchObject({
+        result: { scope: { kind: "takeover", appId: "com.apple.calculator" } },
+      }),
+    );
+    expect(h.channel.chrome.current()).toEqual(chromeHolder);
+    expect(await validate("validate-armed")).toMatchObject({ error: ownNative });
+    h.process.emit("message", {
+      type: "leaseRelease",
+      requestId: "release",
+      holder: h.controller.lease.takeover()!,
+    });
+    expect(await validate("validate-after")).toMatchObject({ result: true });
+  });
   it("cancels a pending takeover on denial and on cancel without arming", async () => {
     const h = setup();
     h.hello(["background-ax-v1"]);

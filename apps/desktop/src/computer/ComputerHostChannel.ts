@@ -30,7 +30,11 @@ import {
 import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
 import { restrictComputerTier } from "@t3tools/shared/computerApps";
 import type { ComputerController, ComputerExecutionStateUpdate } from "./ComputerController";
-import { ChromeLeaseAuthority } from "./ChromeLeaseAuthority";
+import {
+  CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+  ChromeLeaseAuthority,
+  nativeScopeExcludesChrome,
+} from "./ChromeLeaseAuthority";
 import type { ChromeProcessSupervisor } from "./ChromeProcessSupervisor";
 import { sameComputerHolder } from "./ComputerLeaseAuthority";
 import { ComputerExecutionAuthority } from "./ComputerExecutionAuthority";
@@ -91,6 +95,8 @@ export class ComputerHostChannel {
       verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
       /** The profile chose "always allow" for this integration in main's dialog. */
       alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
+      /** Chrome lease events, one line each, for the desktop log. */
+      log?: (message: string) => void;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -120,18 +126,26 @@ export class ComputerHostChannel {
       consents?: ComputerConsentStore;
     } = {},
   ) {
-    this.chrome = new ChromeLeaseAuthority((holder) => {
-      // A report outlives only its own lease; a later holder starts unknown.
-      const previous = this.chromeCallsHolder;
-      if (previous && (!holder || chromeCallsKey(previous) !== chromeCallsKey(holder)))
-        this.chromeCalls.delete(chromeCallsKey(previous));
-      this.chromeCallsHolder = holder;
-      for (const profileId of this.backends.keys()) this.sendChromeLease(profileId, holder);
-      this.chromeOptions?.changed?.(holder);
-    }, chromeOptions?.supervisor);
+    this.chrome = new ChromeLeaseAuthority(
+      (holder) => {
+        // A report outlives only its own lease; a later holder starts unknown.
+        const previous = this.chromeCallsHolder;
+        if (previous && (!holder || chromeCallsKey(previous) !== chromeCallsKey(holder)))
+          this.chromeCalls.delete(chromeCallsKey(previous));
+        this.chromeCallsHolder = holder;
+        for (const profileId of this.backends.keys()) this.sendChromeLease(profileId, holder);
+        this.chromeOptions?.changed?.(holder);
+      },
+      chromeOptions?.supervisor,
+      {
+        // Only an explicit "no call running" report counts; unknown stays busy.
+        callsIdle: (holder) => this.chromeCalls.get(chromeCallsKey(holder)) === false,
+        ...(chromeOptions?.log ? { log: chromeOptions.log } : {}),
+      },
+    );
     this.execution = options.execution ?? new ComputerExecutionAuthority();
     controller.setAdmissionCheck?.((holder) => {
-      this.chrome.assertNativeAvailable(holder.profileId, holder.scope);
+      this.chrome.assertNativeAvailable(holder.profileId, holder.scope, holder);
       if (
         !this.execution.revisionAccepted(holder.profileId, holder.threadId, holder.policyRevision)
       )
@@ -157,6 +171,15 @@ export class ComputerHostChannel {
           ...(holder.scope.kind !== "foreground" ? { appId: holder.scope.appId } : {}),
         }),
     });
+  }
+  /** A native lease or takeover reservation of this thread that Chrome control would collide with. */
+  private holdsNativeExcludingChrome(profileId: string, threadId: string): boolean {
+    const own = (holder: ComputerLeaseHolder) =>
+      holder.profileId === profileId &&
+      holder.threadId === threadId &&
+      nativeScopeExcludesChrome(holder.scope);
+    const pending = this.controller.lease.pendingTakeover()?.holder;
+    return this.controller.lease.holders().some(own) || (pending !== undefined && own(pending));
   }
   private capable(backend: Backend | undefined): boolean {
     return backend?.capabilities.has(COMPUTER_BACKGROUND_CAPABILITY) ?? false;
@@ -441,7 +464,7 @@ export class ComputerHostChannel {
               const check = () => {
                 if (this.backends.get(profileId) !== backend || acquiring.cancelled)
                   throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
-                this.chrome.assertNativeAvailable(profileId, holder.scope);
+                this.chrome.assertNativeAvailable(profileId, holder.scope, holder);
                 const status = this.status();
                 if (!status.available)
                   throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
@@ -527,7 +550,7 @@ export class ComputerHostChannel {
           const acquiring = { holder: message.holder, cancelled: false };
           backend.acquiring.set(requestId, acquiring);
           try {
-            this.chrome.assertNativeAvailable(profileId);
+            this.chrome.assertNativeAvailable(profileId, undefined, message.holder);
             this.takeovers.request(
               profileId,
               incarnation,
@@ -805,6 +828,13 @@ export class ComputerHostChannel {
             if (!status.available)
               throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
             this.chrome.validate(message.holder);
+            // The holder's own thread may hold native control beside Chrome (see
+            // `ChromeLeaseAuthority`); its Chrome calls wait until that control ends.
+            if (this.holdsNativeExcludingChrome(profileId, message.holder.threadId))
+              throw new ComputerControlError({
+                _tag: "Execution",
+                message: CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+              });
             this.send(profileId, { type: "response", requestId: message.requestId, result: true });
           } catch (error) {
             fail(message.requestId, error);

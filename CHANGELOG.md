@@ -11,9 +11,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
 - Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
 - Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
+<<<<<<< HEAD
 - Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
 - Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
 - Popovers overlapping the desktop window header respond to hover and clicks.
+- A Claude thread with Claude in Chrome on can take foreground control of other apps while none of its Chrome calls is running, instead of failing with "Chrome is held by another thread". Once it does, its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it). Foreground takeover refusals name the thread holding control, and the desktop log records Chrome lease events.
 
 ## [0.1.6] - 2026-11-08
 

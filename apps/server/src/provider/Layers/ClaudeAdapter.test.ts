@@ -26,6 +26,7 @@ import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as computerBackendPolicy from "../../computer/computerBackendPolicy";
+import { ComputerControlError } from "@t3tools/shared/computerControl";
 import * as claudeAgentBrowser from "./claudeAgentBrowser";
 import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
@@ -1515,7 +1516,7 @@ describe("ClaudeAdapter agent browser", () => {
   });
 
   /** A certified Claude in Chrome launch with an in-memory lease, registration and broker. */
-  function certifiedChromeFixture() {
+  function certifiedChromeFixture(options: { validate?: () => Promise<void> } = {}) {
     const artifacts = new Map<string, string>();
     const saved = new Map<string, ChromeNativeHostTransaction>();
     const release = vi.fn();
@@ -1562,7 +1563,7 @@ describe("ClaudeAdapter agent browser", () => {
       executableRealpath: "/bundle/claude",
       acquire,
       release,
-      validate: async () => {},
+      validate: options.validate ?? (async () => {}),
       consent: async () => true,
       paused: () => computerBroker.pause.has(THREAD_ID),
       policyEnabled: async () => policyRef.current?.current.claudeInChrome ?? false,
@@ -1593,7 +1594,17 @@ describe("ClaudeAdapter agent browser", () => {
       { computerAutomationBroker: computerBroker, chromeRuntime: runtime },
     );
     policyRef.current = policy;
-    return { harness, policy, computerBroker, acquire, release, releasers, unregistered };
+    return {
+      harness,
+      policy,
+      computerBroker,
+      acquire,
+      release,
+      releasers,
+      unregistered,
+      artifacts,
+      record,
+    };
   }
 
   it.effect(
@@ -1645,6 +1656,95 @@ describe("ClaudeAdapter agent browser", () => {
         assert.equal(release.mock.calls.length, 1);
         assert.equal(unregistered.mock.calls.length, 1);
         assert.equal(computerBroker.generation(THREAD_ID), undefined);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "reports a Chrome call running before main validates it, and ends it on a denial or the turn's end",
+    () => {
+      const order: string[] = [];
+      let refuse = false;
+      const { harness, computerBroker, artifacts, record } = certifiedChromeFixture({
+        validate: async () => {
+          order.push("validate");
+          if (refuse)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message:
+                "This thread is controlling the computer; Chrome calls wait until that ends.",
+            });
+        },
+      });
+      harness.query.mcpServerStatusValue = [
+        { name: "claude-in-chrome", status: "connected", source: "dynamic" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        const report = computerBroker.reportChromeCalls.bind(computerBroker);
+        vi.spyOn(computerBroker, "reportChromeCalls").mockImplementation(
+          (threadId, generation, running) => {
+            order.push(`calls:${running}`);
+            report(threadId, generation, running);
+          },
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        artifacts.set(
+          "user",
+          JSON.stringify({
+            name: record.identity.hostName,
+            type: "stdio",
+            path: "/test/host",
+            allowed_origins: record.identity.allowedOrigins,
+          }),
+        );
+        artifacts.set("/test/host", "wrapper");
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "session.configured" &&
+                  JSON.stringify(event.payload.config.agentBrowser).includes(
+                    '"chrome":{"state":"connected"',
+                  ),
+              ),
+            ),
+          ),
+        );
+        const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
+          .hooks[0]!;
+        const call = () =>
+          hook(preToolUse("mcp__claude-in-chrome__navigate"), undefined, {
+            signal: new AbortController().signal,
+          });
+        // Main refuses: the call never runs, so its report ends with the denial.
+        refuse = true;
+        order.length = 0;
+        assert.equal(hookDecision(yield* Effect.promise(call)), "deny");
+        // Validation runs once per admission; later steps re-check only local state.
+        assert.deepEqual(order.slice(0, 2), ["calls:true", "validate"]);
+        assert.equal(order.at(-1), "calls:false");
+        // Admitted inside a turn: running until the turn ends.
+        refuse = false;
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        order.length = 0;
+        assert.notEqual(hookDecision(yield* Effect.promise(call)), "deny");
+        assert.deepEqual(order, ["calls:true", "validate"]);
+        emitClaudeSuccessResult(harness.query, { uuid: "result-turn" });
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(order.at(-1), "calls:false")));
       }).pipe(
         Effect.ensuring(Effect.sync(() => computerBroker.close())),
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
