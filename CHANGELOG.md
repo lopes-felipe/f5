@@ -4,12 +4,28 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-08
+
+### Fixed
+
+- On macOS, a stuck synthetic key no longer blocks foreground takeovers in Full access threads while nobody is using the computer. Waiting for the foreground now reports ready only when a takeover can start, and a takeover that times out says why: recent input, held input, or an unhealthy input monitor.
+
+## [0.1.5] - 2026-11-08
+
 ### Added
 
 - Computer batches run known steps in one app and stop at the first failure or unconfirmed effect; app-targeted waits can return when the accessibility tree settles.
 - Keep Awake has an opt-in "Keep display on" switch that also stops idle display sleep and the idle screen lock while keep-awake is active. It falls back to system-only keep-awake when the lid is closed on the built-in display, the battery is below 20% or unknown, or the Mac runs hot. Outside macOS, where the battery level can't be read, it falls back on battery power.
+- Fair waiting for conflicting computer leases and takeover reservations across agents and profiles. Takeover consent appears after control is reserved.
+- Shared background apps with serialized writes, fresh inspection after another agent's changes, and press-before-type focus checks.
+- App-targeted key and element-scroll interfaces, native process/window delivery, and a real-app rehearsal runner. Background-event app support remains gated: no apps are enabled until their rehearsals pass.
+- Saved native computer approvals can include optional foreground takeovers per app in Full access threads.
 
 ### Changed
+
+- In Full access threads, mouse or keyboard input during foreground control makes the agent wait and shows an idle countdown. Other foreground threads keep the pause-and-Resume flow.
+- "Chrome is busy" errors name the thread holding Chrome (in the same profile) and whether it is working. Idle Chrome holders show in the banner with View and Release, a Chrome-enabled Claude session stops after 10 idle minutes, and a new Chrome-enabled thread takes Chrome from an idle one, whose next message then resumes cold.
+- Large commits no longer run a synchronous WAL checkpoint on the database writer. After large bursts the WAL can keep up to 128 MiB on disk instead of 32 MiB.
 
 - Computer performance rehearsals measure verified task effects, report invalid samples and cleanup failures, and require matched fixture and harness identities for comparisons.
 
@@ -20,22 +36,27 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
-
+- Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
 - Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
 - Writes to a repository's shared Git config start a single Git process per attempt while another writer holds the lock, instead of two.
 - Claude in Chrome works in isolated (non-default) F5 profiles on macOS. Their sessions were refused with "Claude in Chrome isn't certified for isolated F5 profiles yet."
+- Agent clicks in the desktop preview no longer take focus from the composer, and local sign-in pages that query loopback permissions work in the preview.
+- Deleting the open thread no longer opens a settled or snoozed thread next; F5 goes home when no other thread qualifies. Sidebar terminal indicators update per row.
+- With appearance set to System on Linux, F5 follows desktop light and dark changes without a restart, including on KDE.
+- Workspace content search keeps matches on lines longer than 512 characters and keeps working through slow index refreshes. The Files tree opens symlinked files and folders inside the workspace.
+- Terminal selections and their Add to chat menu survive output that doesn't change the selected text, and Add to chat uses the right line numbers after scrolling.
+- Composer model picks for a specific provider instance keep their exact model name, including custom names such as `gpt-5.3` that look like built-in aliases.
+- Relative file links with routing punctuation, such as `posts.$postId.tsx`, `(group)/[id]/+page.svelte` and `@scope/pkg`, open as workspace files.
+- CLIProxy usage works for hubs hosted under a path prefix, and panel URLs such as `https://hub.example/cliproxy/management.html` can be pasted directly.
+- macOS foreground computer control no longer pauses in "Needs recovery" after a shortcut that opens a window (such as ⌘N) or a press that closes its own popover. Those actions now report success with `verified: false`, a batch stops after them so the agent observes first, and a shortcut's key-up is always sent. A press that times out still counts as unknown. When control is interrupted, agents see why instead of a bare "Interrupted".
 
 ## [0.1.4] - 2026-11-05
 
 ### Added
 
-- Fair waiting for conflicting computer leases and takeover reservations across agents and profiles. Takeover consent appears after control is reserved.
-- Shared background apps with serialized writes, fresh inspection after another agent's changes, and press-before-type focus checks.
-- App-targeted key and element-scroll interfaces, native process/window delivery, and a real-app rehearsal runner. Background-event app support remains gated: no apps are enabled until their rehearsals pass.
-
 - Cooperative computer use waits for ordinary user contention without a Resume dialog, including foreground control in Full access threads. A wait tool, fresh-observation checks, and a foreground countdown support continuation after you go idle.
 
-- Native computer approvals can persist per project, including app access, session actions, and optional foreground takeovers per app in Full access threads, with profile-wide Full access session opt-in. Settings lists and immediately revokes saved permissions; failed saves are shown as lasting until F5 closes.
+- Native computer approvals can persist per project, including app access and session actions, with profile-wide Full access session opt-in. Settings lists and immediately revokes saved permissions; failed saves are shown as lasting until F5 closes.
 
 - Claude in Chrome is certified on macOS on Apple silicon from Claude Code 2.1.317, so it can be turned on.
 - A profile can always allow Claude in Chrome taking the browser connection back from your terminal Claude, revocable in Settings → Browser & Computer. Replacing another F5 profile's setup always asks.
@@ -50,7 +71,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Changed
 
 - Interacting with an agent's background app makes it wait until you leave. Explicit Pause, Stop, the stop shortcut, and uncertain outcomes still require confirmed Resume.
-- In Full access threads, mouse or keyboard input during foreground control makes the agent wait and shows an idle countdown. Other foreground threads keep the pause-and-Resume flow.
 
 - Computer access requests appear in a non-modal panel that leaves F5 interactive and keeps composer focus.
 - Closed computer sessions release their permission receipts without requiring a backend disconnect.
