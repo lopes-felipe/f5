@@ -186,7 +186,11 @@ it("validates, saves and clears the monthly budget", async () => {
     const budget = page.getByRole("region", { name: "Monthly budget" });
     await budget.getByLabelText("Token budget").fill("1.5");
     await budget.getByRole("button", { name: "Save budget" }).click();
-    await expect.element(budget.getByRole("alert")).toHaveTextContent("whole, non-negative");
+    await expect.element(budget.getByRole("alert")).toHaveTextContent("whole token budget");
+    await budget.getByLabelText("Token budget").fill("");
+    await budget.getByLabelText("Cost budget").fill("0");
+    await budget.getByRole("button", { name: "Save budget" }).click();
+    await expect.element(budget.getByRole("alert")).toHaveTextContent("above $0");
     expect(settings.updateSettings).not.toHaveBeenCalled();
 
     await budget.getByLabelText("Token budget").fill("250,000,000");

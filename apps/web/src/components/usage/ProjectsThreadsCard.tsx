@@ -14,7 +14,14 @@ import {
   totalCost,
   usageMetricValue,
 } from "./format";
-import { type UsageColumn, type UsageSort, UsageSection, UsageTable, UsageToggle } from "./kit";
+import {
+  sortUsageRows,
+  type UsageColumn,
+  type UsageSort,
+  UsageSection,
+  UsageTable,
+  UsageToggle,
+} from "./kit";
 
 const INITIAL_PROJECT_ROWS = 10;
 const TOP_THREAD_ROWS = 10;
@@ -99,7 +106,7 @@ export function ProjectsThreadsCard(props: {
     })),
     props.metric,
   );
-  const threadRows = sortRows(
+  const allThreadRows = sortRows(
     scope.topThreads.map((thread) => ({
       key: thread.threadId,
       name: thread.title ?? "Untitled thread",
@@ -118,17 +125,11 @@ export function ProjectsThreadsCard(props: {
       unattributed: false,
     })),
     props.metric,
-    // The server sends the top threads by every metric; show the top by this one.
-  ).slice(0, TOP_THREAD_ROWS);
+  );
+  // The server sends the top threads by every metric; show the top by this one,
+  // but let search reach all of them.
+  const threadRows = allThreadRows.slice(0, TOP_THREAD_ROWS);
   const searching = query.trim() !== "";
-  const visibleProjects = projectRows.filter((row) => matchesUsageRowQuery(row, query));
-  const visibleThreads = threadRows.filter((row) => matchesUsageRowQuery(row, query));
-  const rows =
-    view === "projects"
-      ? showAll || searching
-        ? visibleProjects
-        : visibleProjects.slice(0, INITIAL_PROJECT_ROWS)
-      : visibleThreads;
   const selectedName =
     scope.selectedProjectId === null
       ? null
@@ -231,6 +232,20 @@ export function ProjectsThreadsCard(props: {
   ];
   // Without a chosen column the rows keep the selected-metric order.
   const effectiveSort: UsageSort = sort ?? { key: METRIC_COLUMN[props.metric], direction: "desc" };
+  const pinLast = (row: Row) => row.unattributed;
+  // Sort the whole list before trimming, so a column sort reaches every project.
+  const visibleProjects = sortUsageRows(
+    projectRows.filter((row) => matchesUsageRowQuery(row, query)),
+    columns,
+    effectiveSort,
+    pinLast,
+  );
+  const rows =
+    view === "projects"
+      ? showAll || searching
+        ? visibleProjects
+        : visibleProjects.slice(0, INITIAL_PROJECT_ROWS)
+      : (searching ? allThreadRows : threadRows).filter((row) => matchesUsageRowQuery(row, query));
 
   return (
     <UsageSection
@@ -291,7 +306,7 @@ export function ProjectsThreadsCard(props: {
         rowClassName={(row) => (row.deleted || row.unattributed) && "text-muted-foreground"}
         sort={effectiveSort}
         onSortChange={setSort}
-        pinLast={(row) => row.unattributed}
+        pinLast={pinLast}
         empty={
           searching ? `No ${view} match “${query.trim()}”.` : "No recorded usage in this range."
         }
@@ -309,7 +324,9 @@ export function ProjectsThreadsCard(props: {
             ) : null}
             {view === "threads" && threadRows.length > 0 ? (
               <p className="border-t border-border/50 p-3 text-2xs text-muted-foreground">
-                Showing top {threadRows.length} of {scope.threadCount} threads
+                {searching
+                  ? `Search covers the top ${allThreadRows.length} of ${scope.threadCount} threads.`
+                  : `Showing top ${threadRows.length} of ${scope.threadCount} threads`}
               </p>
             ) : null}
           </>

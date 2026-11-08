@@ -16,10 +16,15 @@ export const USAGE_CSV_KINDS: ReadonlyArray<{
 
 type Cell = string | number | boolean | null | undefined;
 
-/** RFC 4180 quoting: wrap fields containing a quote, comma, CR or LF and double inner quotes. */
+/**
+ * RFC 4180 quoting: wrap fields containing a quote, comma, CR or LF and double
+ * inner quotes. Text cells that a spreadsheet would read as a formula (thread
+ * titles can carry agent output) get a leading `'`; numbers stay raw.
+ */
 export function csvField(value: Cell): string {
   if (value === null || value === undefined) return "";
-  const text = String(value);
+  const raw = String(value);
+  const text = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 

@@ -651,7 +651,23 @@ function useUsageSummary(input: {
     comparePrevious: input.compare,
     enabled: connected,
   });
-  const query = useQuery(options);
+  // Toggling Compare changes the key; show the other variant's data meanwhile
+  // instead of swapping the whole tab for a skeleton.
+  const siblingKey = usageQueryKeys.summary(
+    input.range,
+    input.timeZone,
+    undefined,
+    input.projectId,
+    input.hiddenProviders,
+    !input.compare,
+  );
+  const query = useQuery({
+    ...options,
+    placeholderData: () => {
+      const sibling = client.getQueryData<UsageSummary>(siblingKey);
+      return sibling && !input.compare ? { ...sibling, previousBuckets: null } : sibling;
+    },
+  });
   const queryKey = options.queryKey;
   const queryHash = JSON.stringify(queryKey);
   const [dismissedErrorAt, setDismissedErrorAt] = useState(0);

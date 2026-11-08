@@ -2042,6 +2042,89 @@ describe("unified page", () => {
     }
   });
 
+  it("sorts every project before trimming and searches past the top threads", async () => {
+    const base = scoped();
+    const many = Array.from({ length: 12 }, (_, index) => ({
+      projectId: ProjectId.makeUnsafe(`project-${index + 1}`),
+      title: `Project ${index + 1}`,
+      deleted: false,
+      metrics: metrics({ totalTokens: (12 - index) * 100 }),
+    }));
+    const threads = Array.from({ length: 12 }, (_, index) => ({
+      threadId: ThreadId.makeUnsafe(`thread-${index + 1}`),
+      projectId: many[0]!.projectId,
+      title: `Thread ${index + 1}`,
+      deleted: false,
+      metrics: metrics({ totalTokens: (12 - index) * 100 }),
+    }));
+    const screen = await renderWithRouter(
+      <UsageDashboardView
+        summary={{
+          ...base,
+          projectScope: {
+            ...base.projectScope!,
+            byProject: many,
+            topThreads: threads,
+            threadCount: 12,
+          },
+        }}
+        range="7d"
+        fetching={false}
+      />,
+    );
+    const firstName = (caption: string) =>
+      [...document.querySelectorAll("table")]
+        .find((table) => table.querySelector("caption")?.textContent === caption)!
+        .querySelector("tbody tr td")?.textContent;
+    try {
+      const projects = page.getByRole("table", { name: "Projects" });
+      await expect.element(projects).toBeVisible();
+      expect(projects.getByRole("row").all()).toHaveLength(11);
+      expect(firstName("Projects")).toBe("Project 1");
+      await projects
+        .getByRole("columnheader", { name: /Known tokens/ })
+        .getByRole("button")
+        .click();
+      // Ascending reaches the lowest projects, which were outside the first ten.
+      expect(firstName("Projects")).toBe("Project 12");
+
+      await page.getByRole("button", { name: "Threads" }).click();
+      await page.getByLabelText("Filter by name").fill("thread 12");
+      await expect
+        .element(page.getByRole("table", { name: "Threads" }))
+        .toHaveTextContent("Thread 12");
+      await expect.element(page.getByText("Search covers the top 12 of 12 threads.")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps Activity on screen while turning Compare on", async () => {
+    api.getSummary.mockImplementation((input: { includePreviousBuckets?: boolean }) =>
+      input.includePreviousBuckets ? new Promise(() => {}) : Promise.resolve(scoped()),
+    );
+    api.getAccounts.mockResolvedValue(accounts());
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const compare = page.getByRole("button", { name: "Compare to previous period" });
+      await expect.element(compare).toBeVisible();
+      await compare.click();
+      await vi.waitFor(() =>
+        expect(api.getSummary).toHaveBeenCalledWith(
+          expect.objectContaining({ includePreviousBuckets: true }),
+          expect.anything(),
+        ),
+      );
+      await expect.element(compare).toHaveAttribute("aria-pressed", "true");
+      await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
+      await expect.element(page.getByText("Projects and threads")).toBeVisible();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
   it("exports a breakdown as a dated CSV", async () => {
     api.getSummary.mockResolvedValue(summary());
     api.getAccounts.mockResolvedValue(accounts());

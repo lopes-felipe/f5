@@ -335,9 +335,28 @@ export function buildUsageSummary(input: {
  * The previous period's buckets, index-aligned with the current plan: the same
  * planner run with `now` just before the current start. Rows already carry aliases.
  */
-export function buildPreviousBuckets(input: {
+/**
+ * The previous period's buckets, index-aligned with the current plan, or null
+ * when the earliest of them starts before complete coverage. Calendar buckets
+ * can start up to a day (an hour for 24h) before the equal-length window that
+ * `previousUsageWindow` validates, so the gate checks the buckets themselves.
+ */
+export function previousBucketWindows(input: {
   readonly currentPlan: UsageBucketPlan;
   readonly previousPlan: UsageBucketPlan;
+  readonly coverageStartedAt: IsoDateTime;
+  readonly factCutoverAt: IsoDateTime;
+}): UsageBucketPlan["buckets"] | null {
+  const buckets = input.previousPlan.buckets.slice(-input.currentPlan.buckets.length);
+  const first = buckets[0];
+  if (!first || buckets.length !== input.currentPlan.buckets.length) return null;
+  const completeFrom =
+    input.factCutoverAt > input.coverageStartedAt ? input.factCutoverAt : input.coverageStartedAt;
+  return first.startAt >= completeFrom ? buckets : null;
+}
+
+export function buildPreviousBuckets(input: {
+  readonly buckets: UsageBucketPlan["buckets"];
   readonly rows: ReadonlyArray<BucketUsageSummaryRow>;
   readonly priceOverrides?: ReadonlyArray<UsagePriceOverride>;
 }): Array<UsagePreviousBucket> {
@@ -347,7 +366,7 @@ export function buildPreviousBuckets(input: {
     rows.push(row);
     rowsByBucket.set(row.bucketKey, rows);
   }
-  return input.previousPlan.buckets.slice(-input.currentPlan.buckets.length).map((bucket) => ({
+  return input.buckets.map((bucket) => ({
     key: bucket.key,
     startAt: bucket.startAt,
     metrics: aggregateUsageMetrics(rowsByBucket.get(bucket.key) ?? [], input.priceOverrides),

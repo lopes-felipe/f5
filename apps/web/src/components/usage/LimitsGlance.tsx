@@ -142,9 +142,11 @@ function AccountTile(props: {
         </>
       ) : (
         <p className="flex-1 text-xs text-muted-foreground">
-          {windows.length > 0
-            ? "Reset time passed; awaiting updated usage."
-            : accountStatusText(account)}
+          {windows.length === 0
+            ? accountStatusText(account)
+            : windows.some((window) => window.usedPercent !== null)
+              ? "Reset time passed; awaiting updated usage."
+              : "Usage for these limits isn't reported yet."}
         </p>
       )}
       {accountNeedsAuthentication(account) ? (

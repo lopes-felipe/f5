@@ -364,10 +364,11 @@ export function parseBudgetForm(input: {
     input.tokens.replaceAll(/[,_\s]/g, "") === ""
       ? null
       : Number(input.tokens.replaceAll(/[,_\s]/g, ""));
-  if (cost !== null && (!Number.isFinite(cost) || cost < 0))
-    return "Enter a non-negative cost budget.";
-  if (tokens !== null && (!Number.isInteger(tokens) || tokens < 0))
-    return "Enter a whole, non-negative token budget.";
+  // Zero would save but read as "no budget" everywhere, so ask for empty instead.
+  if (cost !== null && (!Number.isFinite(cost) || cost <= 0))
+    return "Enter a cost budget above $0, or leave it empty.";
+  if (tokens !== null && (!Number.isInteger(tokens) || tokens <= 0))
+    return "Enter a whole token budget above 0, or leave it empty.";
   if (cost === null && tokens === null) return null;
   return { costUsd: cost, tokens };
 }

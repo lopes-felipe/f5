@@ -290,4 +290,50 @@ it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
       }).pipe(Effect.provide(serviceLayer));
     }).pipe(Effect.provide(UsageFactRepositoryLive)),
   );
+
+  it.effect("gates previous buckets on their own first day, not the equal-length window", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0116;
+      const sql = yield* SqlClient.SqlClient;
+      // Mid-day: the equal-length previous window starts around Aug 7 12:00,
+      // after coverage, but the first previous bucket starts at Aug 7 00:00.
+      yield* sql`
+        UPDATE projection_usage_metadata
+        SET coverage_started_at = '2026-08-07T06:00:00.000Z',
+            fact_cutover_at = '2026-08-07T06:00:00.000Z'
+      `;
+      yield* TestClock.setTime(Date.parse("2026-08-20T12:00:00.000Z"));
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const partial = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          includePreviousBuckets: true,
+        });
+        assert.isNotNull(partial.previousMetrics);
+        assert.isNull(partial.previousBuckets);
+      }).pipe(Effect.provide(serviceLayer));
+
+      yield* sql`
+        UPDATE projection_usage_metadata
+        SET coverage_started_at = '2026-08-07T00:00:00.000Z',
+            fact_cutover_at = '2026-08-07T00:00:00.000Z'
+      `;
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const complete = yield* usage.getSummary({
+          range: "7d",
+          timeZone: "UTC",
+          includePreviousBuckets: true,
+        });
+        assert.equal(complete.previousBuckets?.[0]?.startAt, "2026-08-07T00:00:00.000Z");
+        assert.equal(complete.previousBuckets?.length, complete.buckets.length);
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
 });

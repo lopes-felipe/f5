@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { usageSummaryQueryOptions } from "../../lib/usageReactQuery";
 import { cn } from "../../lib/utils";
+import { useWsConnectionState } from "../../wsConnectionState";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { compactNumber, formatUsd } from "./format";
@@ -19,16 +20,23 @@ import {
 
 /**
  * Month-to-date usage for the budget: every provider and project, from the 90-day
- * daily summary (which always covers the current month). Runs only with a budget.
+ * daily summary (which always covers the current month). Runs only with a budget
+ * and a live connection; when Activity already shows unfiltered 90d it shares
+ * that query.
  */
 export function useMonthToDateUsage(input: {
   readonly budget: UsageMonthlyBudget | null;
   readonly timeZone: string;
   readonly enabled: boolean;
 }): MonthToDateUsage | null {
+  const connected = useWsConnectionState().phase === "connected";
   const active = input.enabled && hasBudget(input.budget);
   const query = useQuery(
-    usageSummaryQueryOptions({ range: "90d", timeZone: input.timeZone, enabled: active }),
+    usageSummaryQueryOptions({
+      range: "90d",
+      timeZone: input.timeZone,
+      enabled: active && connected,
+    }),
   );
   const [nowMs, setNowMs] = useState(Date.now);
   useEffect(() => {

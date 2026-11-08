@@ -430,7 +430,11 @@ export function accountNeedsAuthentication(account: UsageAccount): boolean {
 }
 
 export function accountSectionId(account: UsageAccount): string {
-  return `usage-account-${account.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  // Hex-escape instead of collapsing, so `a:b` and `a-b` stay distinct ids.
+  return `usage-account-${account.key.replace(
+    /[^a-zA-Z0-9-]/g,
+    (char) => `_${char.codePointAt(0)!.toString(16)}_`,
+  )}`;
 }
 
 function AccountSectionBody(props: {
