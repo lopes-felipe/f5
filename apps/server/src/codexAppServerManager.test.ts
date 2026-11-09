@@ -762,6 +762,54 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("removes a stale browser tool flag when resume falls back to a fresh thread", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-browser-fallback-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.166.0");
+    let resumed = false;
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockImplementation(async (_context, method) => {
+      if (method === "thread/resume" && !resumed) {
+        resumed = true;
+        throw new Error("thread/resume failed: thread not found");
+      }
+      if (method === "thread/start" || method === "thread/resume")
+        return { thread: { id: "fresh-without-tool" } };
+      return {};
+    });
+    try {
+      const input = {
+        threadId: asThreadId("browser-fallback"),
+        cwd: directory,
+        runtimeMode: "full-access" as const,
+        providerOptions: { codex: { binaryPath } },
+      };
+      const first = await manager.startSession({
+        ...input,
+        resumeCursor: { threadId: "missing", f5BrowserResume: true, unrelated: "keep" },
+      });
+      expect(first.resumeCursor).toMatchObject({
+        threadId: "fresh-without-tool",
+        unrelated: "keep",
+      });
+      expect(first.resumeCursor).not.toHaveProperty("f5BrowserResume");
+      await manager.startSession({
+        ...input,
+        resumeCursor: first.resumeCursor,
+        browserResume: async () => ({}),
+      });
+      expect(manager.browserResumeAvailable(input.threadId)).toBe(false);
+    } finally {
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
   it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
     const binaryPath = path.join(directory, "codex.cjs");

@@ -42,19 +42,26 @@ export async function waitForControl(
   ready: () => boolean | Promise<boolean>,
   deadline: number,
   check: () => Promise<void>,
+  timeoutMessage?: () => string,
 ): Promise<void> {
+  const remaining = () => {
+    try {
+      return computerRemainingBudget(deadline);
+    } catch (error) {
+      if (timeoutMessage) throw handoffError(timeoutMessage());
+      throw error;
+    }
+  };
   for (;;) {
-    computerRemainingBudget(deadline);
+    remaining();
     await check();
     if (await ready()) {
-      computerRemainingBudget(deadline);
+      remaining();
       await check();
-      computerRemainingBudget(deadline);
+      remaining();
       return;
     }
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, Math.min(25, computerRemainingBudget(deadline))),
-    );
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, remaining())));
   }
 }
 

@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { ComputerControlError, computerRequestPayload } from "@t3tools/shared/computerControl";
+import {
+  ComputerControlError,
+  computerRequestPayload,
+  CHROME_OWN_STOPPING_MESSAGE,
+} from "@t3tools/shared/computerControl";
 import { describe, expect, it, vi } from "vitest";
 import type { ComputerLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
 import {
@@ -204,7 +208,7 @@ describe("computer broker safety boundaries", () => {
       h.ipc.emit("message", { type: "chromeLeaseChanged", holder });
       await expect(
         h.broker.waitForChromeRelease("t", "s", performance.now() + 5, async () => {}),
-      ).rejects.toThrow("timed out");
+      ).rejects.toThrow(CHROME_OWN_STOPPING_MESSAGE);
       h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null });
       await h.broker.waitForChromeRelease("t", "s", performance.now() + 100, async () => {});
     } finally {
@@ -1035,6 +1039,44 @@ describe("computer broker safety boundaries", () => {
 });
 
 describe("background delivery", () => {
+  it("cleans up a failed foreground handoff so browser_resume can succeed in the same turn", async () => {
+    const h = await backgroundHarness();
+    h.ipc.appResults = [
+      {
+        appId: "com.apple.TextEdit",
+        name: "TextEdit",
+        tier: "full",
+        running: true,
+        frontmost: false,
+      },
+    ];
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.broker.registerCodexHandoff("t", "s", {
+        native: async () => {
+          throw new Error("Chrome call still running");
+        },
+        browser: (deadline, check) => h.broker.prepareCodexBrowser("t", "s", deadline, check),
+        status: () => ({ state: "ready" }),
+      });
+      await expect(h.broker.requestForeground("t", "s", "TextEdit", "Drag")).rejects.toThrow(
+        "Chrome call still running",
+      );
+      const acquire = vi.spyOn(h.broker, "acquireChromeLease").mockResolvedValue(undefined);
+      await expect(h.broker.resumeCodexBrowser("t", "s")).resolves.toMatchObject({
+        state: "ready",
+      });
+      expect(acquire).toHaveBeenCalledOnce();
+    } finally {
+      h.broker.close();
+    }
+  });
   async function backgroundHarness(platform: "darwin" | "win32" = "darwin") {
     const h = await harness(platform);
     h.set({

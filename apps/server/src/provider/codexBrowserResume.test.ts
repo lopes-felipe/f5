@@ -27,6 +27,9 @@ function harness() {
     handleServerRequest(context: unknown, request: unknown): void;
     handleServerNotification(context: unknown, notification: unknown): void;
     writeServerRequestResponse(context: unknown, response: unknown): void;
+    retireMcpCalls(context: unknown, threadId: string, turnId: string): void;
+    sendRequest(...args: unknown[]): Promise<unknown>;
+    openOneOffThread(threadId: ThreadId, input: unknown): Promise<void>;
   };
   internal.sessions.set("f5-thread", context);
   const reply = vi.spyOn(internal, "writeServerRequestResponse").mockImplementation(() => {});
@@ -48,6 +51,93 @@ function harness() {
 }
 
 describe("browser_resume host tool", () => {
+  it.each(["complete", "interrupt"])(
+    "retires missing MCP completions on %s without clearing other turns",
+    async (ending) => {
+      const h = harness();
+      const item = (id: string, turnId: string, threadId = "provider-thread") =>
+        h.internal.handleServerNotification(h.context, {
+          method: "item/started",
+          params: { threadId, turnId, item: { id, type: "mcpToolCall", server: "node_repl" } },
+        });
+      item("abandoned", "turn");
+      item("child-working", "child-turn", "child");
+      expect(h.context.mcpCalls.size).toBe(2);
+      if (ending === "complete") {
+        h.internal.handleServerNotification(h.context, {
+          method: "turn/completed",
+          params: { threadId: "provider-thread", turn: { id: "turn", status: "completed" } },
+        });
+      } else {
+        vi.spyOn(h.internal, "sendRequest").mockResolvedValue({});
+        await h.manager.interruptTurn(ThreadId.makeUnsafe("f5-thread"));
+      }
+      item("late-start", "turn");
+      expect([...h.context.mcpCalls]).toEqual(["child-working"]);
+      h.internal.retireMcpCalls(h.context, "child", "child-turn");
+      await h.manager.waitForMcpIdle(
+        ThreadId.makeUnsafe("f5-thread"),
+        performance.now() + 1000,
+        async () => {},
+      );
+    },
+  );
+
+  it("drops abandoned MCP calls when switching a warm app-server to another provider thread", async () => {
+    const h = harness();
+    h.internal.handleServerNotification(h.context, {
+      method: "item/started",
+      params: {
+        threadId: "provider-thread",
+        turnId: "turn",
+        item: { id: "abandoned", type: "mcpToolCall", server: "node_repl" },
+      },
+    });
+    vi.spyOn(h.internal, "sendRequest").mockResolvedValue({
+      thread: { id: "new-provider-thread" },
+    });
+    // No account/model gates are needed by the credential-free warm-thread path.
+    Object.assign(h.context, { account: { type: "unknown", planType: null, sparkEnabled: false } });
+    await h.internal.openOneOffThread(ThreadId.makeUnsafe("f5-thread"), {
+      cwd: "/tmp",
+      runtimeMode: "full-access",
+    });
+    expect(h.context.mcpCalls.size).toBe(0);
+    h.internal.handleServerNotification(h.context, {
+      method: "item/started",
+      params: {
+        threadId: "provider-thread",
+        turnId: "turn",
+        item: { id: "late", type: "mcpToolCall", server: "node_repl" },
+      },
+    });
+    expect(h.context.mcpCalls.size).toBe(0);
+  });
+
+  it("names the required runtime mode instead of blaming the arguments", async () => {
+    const h = harness();
+    h.context.session.runtimeMode = "approval-required";
+    h.call();
+    await vi.waitFor(() =>
+      expect(h.reply).toHaveBeenCalledWith(h.context, {
+        id: 1,
+        result: {
+          success: false,
+          contentItems: [
+            { type: "inputText", text: '{"error":"browser_resume requires Full access."}' },
+          ],
+        },
+      }),
+    );
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(
+      buildCodexThreadOpenRequestParams({
+        runtimeMode: "approval-required",
+        cliVersion: "0.166.0",
+        browserResume: true,
+      }).start,
+    ).not.toHaveProperty("dynamicTools");
+  });
   it("registers the tool only on new provider threads, without unsupported resume fields", () => {
     const params = buildCodexThreadOpenRequestParams({
       runtimeMode: "full-access",

@@ -8,6 +8,7 @@ import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/li
 import {
   CODEX_BROWSER_RESUME_TOOL,
   validBrowserResumeArguments,
+  codexBrowserResumeCursor,
 } from "./provider/codexBrowserResume";
 import { waitForControl } from "./computer/CodexControlHandoff";
 
@@ -209,6 +210,9 @@ interface CodexSessionContext {
   browserResume?: () => Promise<unknown>;
   browserResumeRegistered?: boolean;
   mcpCalls?: Set<string>;
+  mcpCallOwners?: Map<string, { threadId: string; turnId: string }>;
+  retiredMcpTurns?: Set<string>;
+  retiredMcpThreads?: Set<string>;
   mcpEventIdentity?: ProviderAdapterSessionStartInput["mcpEventIdentity"];
   session: ProviderSession;
   mcpStartupStatuses?: Map<string, CodexControlMcpServerStatus>;
@@ -747,7 +751,9 @@ export function buildCodexThreadOpenRequestParams(input: {
     start: {
       ...overrides,
       experimentalRawEvents: false,
-      ...(input.browserResume && supportsCodexRelease5(input.cliVersion)
+      ...(input.browserResume &&
+      input.runtimeMode === "full-access" &&
+      supportsCodexRelease5(input.cliVersion)
         ? { dynamicTools: [CODEX_BROWSER_RESUME_TOOL] }
         : {}),
     },
@@ -1356,10 +1362,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       context = {
         ...(input.browserResume ? { browserResume: input.browserResume } : {}),
-        browserResumeRegistered:
-          !!input.browserResume &&
-          supportsCodexRelease5(cliVersion) &&
-          (!resumeThreadId || asObject(input.resumeCursor)?.f5BrowserResume === true),
+        browserResumeRegistered: false,
         session,
         ...(input.mcpEventIdentity ? { mcpEventIdentity: input.mcpEventIdentity } : {}),
         account: {
@@ -1547,20 +1550,18 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod,
         threadOpenResponse,
       );
-      if (
-        threadOpenMethod === "thread/start" &&
-        input.browserResume &&
-        supportsCodexRelease5(cliVersion)
-      )
-        context.browserResumeRegistered = true;
+      context.browserResumeRegistered =
+        threadOpenMethod === "thread/start"
+          ? !!threadOpenParams.start.dynamicTools
+          : asObject(input.resumeCursor)?.f5BrowserResume === true;
 
       this.updateSession(context, {
         status: "ready",
-        resumeCursor: {
-          ...asObject(input.resumeCursor),
-          threadId: providerThreadId,
-          ...(context.browserResumeRegistered ? { f5BrowserResume: true } : {}),
-        },
+        resumeCursor: codexBrowserResumeCursor(
+          asObject(input.resumeCursor),
+          providerThreadId,
+          context.browserResumeRegistered,
+        ),
       });
       if (supportsCodexRelease5(context.cliVersion) && context.readState === undefined) {
         void this.sendRequest(
@@ -1978,6 +1979,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
     const response = await this.sendRequest(context, "thread/start", params.start);
     const providerThreadId = this.readThreadOpenProviderThreadId("thread/start", response);
+    const previousThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+    if (previousThreadId) {
+      context.retiredMcpThreads ??= new Set();
+      context.retiredMcpThreads.add(previousThreadId);
+    }
+    context.mcpCalls?.clear();
+    context.mcpCallOwners?.clear();
     context.browserResumeRegistered = !!params.start.dynamicTools;
     context.instructionContext = buildCodexInstructionContext(
       {
@@ -2675,6 +2683,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       threadId: providerThreadId,
       turnId: effectiveTurnId,
     });
+    this.retireMcpCalls(context, providerThreadId, effectiveTurnId);
   }
 
   async readThread(threadId: ThreadId): Promise<CodexThreadSnapshot> {
@@ -3278,6 +3287,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         if (!this.isLiveContext(context)) throw new Error("The Codex session ended.");
         await check();
       },
+      () => "An MCP call is still running; retry browser_resume once it finishes.",
     );
   }
 
@@ -3782,6 +3792,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     );
   }
 
+  private retireMcpCalls(context: CodexSessionContext, threadId: string, turnId: string): void {
+    const key = JSON.stringify([threadId, turnId]);
+    context.retiredMcpTurns ??= new Set();
+    context.retiredMcpTurns.add(key);
+    if (context.retiredMcpTurns.size > 256)
+      context.retiredMcpTurns.delete(context.retiredMcpTurns.values().next().value!);
+    for (const [id, owner] of context.mcpCallOwners ?? []) {
+      if (owner.threadId === threadId && owner.turnId === turnId) {
+        context.mcpCalls?.delete(id);
+        context.mcpCallOwners?.delete(id);
+      }
+    }
+  }
+
   private handleServerNotification(
     context: CodexSessionContext,
     notification: JsonRpcNotification,
@@ -3790,10 +3814,35 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const params = asObject(notification.params);
       const item = asObject(params?.item);
       if (item?.type === "mcpToolCall" && typeof item.id === "string") {
+        const threadId =
+          readNotificationProviderThreadId(notification.params) ??
+          readResumeCursorThreadId(context.session.resumeCursor);
+        const turnId =
+          this.readRouteFields(notification.params).turnId ?? context.session.activeTurnId;
         context.mcpCalls ??= new Set();
-        if (notification.method === "item/started") context.mcpCalls.add(item.id);
-        else context.mcpCalls.delete(item.id);
+        context.mcpCallOwners ??= new Map();
+        if (
+          notification.method === "item/started" &&
+          threadId &&
+          turnId &&
+          !context.retiredMcpThreads?.has(threadId) &&
+          !context.retiredMcpTurns?.has(JSON.stringify([threadId, turnId]))
+        ) {
+          context.mcpCalls.add(item.id);
+          context.mcpCallOwners.set(item.id, { threadId, turnId });
+        } else if (notification.method === "item/completed") {
+          context.mcpCalls.delete(item.id);
+          context.mcpCallOwners.delete(item.id);
+        }
       }
+    }
+    if (notification.method === "turn/completed") {
+      const threadId =
+        readNotificationProviderThreadId(notification.params) ??
+        readResumeCursorThreadId(context.session.resumeCursor);
+      const turnId =
+        this.readRouteFields(notification.params).turnId ?? context.session.activeTurnId;
+      if (threadId && turnId) this.retireMcpCalls(context, threadId, turnId);
     }
     if (notification.method === "mcpServer/startupStatus/updated") {
       const params = asObject(notification.params);
@@ -4172,8 +4221,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (
       request.method === "item/tool/call" &&
       asObject(request.params)?.tool === "browser_resume" &&
-      context.browserResume &&
-      context.browserResumeRegistered
+      context.browserResume
     ) {
       const params = asObject(request.params)!;
       const turnId = context.session.activeTurnId;
@@ -4183,12 +4231,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         params.threadId === readResumeCursorThreadId(context.session.resumeCursor) &&
         typeof params.callId === "string" &&
         !!turnId &&
-        params.turnId === turnId &&
-        context.session.runtimeMode === "full-access";
+        params.turnId === turnId;
       void (async () => {
         let success = false;
         let value: unknown;
         try {
+          if (context.session.runtimeMode !== "full-access")
+            throw new Error("browser_resume requires Full access.");
+          if (!context.browserResumeRegistered)
+            throw new Error(
+              "browser_resume is not registered on this provider thread. Chrome can restart with the next message.",
+            );
           if (!valid)
             throw new Error(
               "Invalid or stale browser_resume request; supply a nonempty reason during the active turn.",
@@ -4774,10 +4827,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   private updateSession(context: CodexSessionContext, updates: Partial<ProviderSession>): void {
-    if (updates.resumeCursor && context.browserResumeRegistered)
+    if (updates.resumeCursor)
       updates = {
         ...updates,
-        resumeCursor: { ...asObject(updates.resumeCursor), f5BrowserResume: true },
+        resumeCursor: codexBrowserResumeCursor(
+          asObject(updates.resumeCursor),
+          readResumeCursorThreadId(updates.resumeCursor),
+          context.browserResumeRegistered === true,
+        ),
       };
     context.session = {
       ...context.session,

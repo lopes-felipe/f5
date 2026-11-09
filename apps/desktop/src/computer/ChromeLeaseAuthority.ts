@@ -4,7 +4,13 @@ import type {
   ComputerLeaseHolder,
   ComputerLeaseScope,
 } from "@t3tools/contracts";
-import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
+import {
+  computerError,
+  ComputerControlError,
+  CHROME_OWN_CALL_RUNNING_MESSAGE,
+  CHROME_OWN_STOPPING_MESSAGE,
+} from "@t3tools/shared/computerControl";
+export { CHROME_OWN_CALL_RUNNING_MESSAGE, CHROME_OWN_STOPPING_MESSAGE };
 import { COMPUTER_CHROME_APP_IDS } from "@t3tools/shared/computerExecution";
 import type { ChromeProcessSupervisor, ChromeStopReason } from "./ChromeProcessSupervisor";
 
@@ -24,10 +30,6 @@ const ownedBy = (holder: ChromeLeaseHolder) => (registration: ChromeProcessRegis
 
 export const CHROME_RECOVERY_MESSAGE =
   "Browser control from an earlier session hasn't stopped yet. Quit Chrome control there or restart your Mac, then retry.";
-export const CHROME_OWN_CALL_RUNNING_MESSAGE =
-  "A Chrome call from this thread is still running; retry once it finishes.";
-export const CHROME_OWN_STOPPING_MESSAGE =
-  "Chrome control from this thread is stopping; retry once it has stopped.";
 export const CHROME_OWN_CODEX_MESSAGE =
   "This thread's Codex Chrome session blocks native computer control until it stops; Codex threads can't use both at once.";
 export const CHROME_OWN_NATIVE_CONTROL_MESSAGE =

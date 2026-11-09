@@ -17,6 +17,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Codex can hand off Chrome control to native apps without asking the user to stop Chrome. The handoff waits for the browser runtime to exit. New Codex threads can return to Chrome in the same turn with the host's `browser_resume` tool; older provider threads retain next-message restart behavior.
+- Interrupted MCP calls and failed foreground handoffs no longer block later Chrome resumes. Parked browsers retain next-message recovery until the host resume tool succeeds, and restore it after a failed resume.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.

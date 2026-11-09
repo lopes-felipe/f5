@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import { AgentControlPause } from "../mcp/agentControlPause";
 import type { CodexHandoff } from "../computer/CodexControlHandoff";
+import { CHROME_OWN_CALL_RUNNING_MESSAGE } from "@t3tools/shared/computerControl";
 import { toolInventorySha256 } from "../mcp/IntegrationProxyCatalog";
 import {
   CODEX_CHROME_IDLE_MS,
@@ -159,6 +160,7 @@ describe("CodexChromeSession", () => {
   it("parks an unused browser for native work, waits for exit, and stays parked across turns", async () => {
     const h = harness();
     await ready(h);
+    await h.handoff().browser(performance.now() + 1000, async () => {});
     await h.session.beforeTurn();
     let exited!: () => void;
     h.broker.waitForChromeRelease.mockImplementationOnce(
@@ -202,7 +204,7 @@ describe("CodexChromeSession", () => {
     await ready(h);
     h.session.toolCall("call", true);
     await expect(h.handoff().native(performance.now() + 5, async () => {})).rejects.toThrow(
-      "timed out",
+      CHROME_OWN_CALL_RUNNING_MESSAGE,
     );
     expect(h.stopped()).toEqual([]);
     h.session.toolCall("call", false);
@@ -218,16 +220,17 @@ describe("CodexChromeSession", () => {
       h.session.startupStatus("ready");
     });
     await h.handoff().browser(performance.now() + 1000, async () => {});
-    expect(waitForMcpIdle).toHaveBeenCalledOnce();
+    expect(waitForMcpIdle).toHaveBeenCalledTimes(2);
     expect(h.broker.prepareCodexBrowser).toHaveBeenCalledOnce();
     expect(h.codex.reload).toHaveBeenCalledOnce();
     expect(h.session.state).toBe("ready");
     expect(h.handoff().status()).toEqual({ state: "ready" });
   });
 
-  it("keeps a failed restart parked and releases its reservation", async () => {
+  it("releases a failed restart's reservation and recovers on the next message", async () => {
     const h = harness();
     await ready(h);
+    await h.handoff().browser(performance.now() + 1000, async () => {});
     await h.handoff().native(performance.now() + 1000, async () => {});
     h.codex.reload.mockRejectedValueOnce(new Error("reload failed"));
     await expect(h.handoff().browser(performance.now() + 1000, async () => {})).rejects.toThrow(
@@ -237,8 +240,12 @@ describe("CodexChromeSession", () => {
     expect(h.broker.host.send).toHaveBeenCalledWith(
       expect.objectContaining({ type: "chromeLeaseRelease" }),
     );
+    h.codex.reload.mockImplementation(async () => {
+      h.session.startupStatus("ready");
+    });
     await h.session.beforeTurn();
-    expect(h.codex.reload).toHaveBeenCalledTimes(1);
+    expect(h.codex.reload).toHaveBeenCalledTimes(2);
+    expect(h.session.state).toBe("ready");
   });
 
   it("still permits native handoff when Chrome was turned off", async () => {
@@ -256,14 +263,78 @@ describe("CodexChromeSession", () => {
     );
   });
 
-  it("keeps native handoff parked after Pause and Resume", async () => {
+  it("restarts on the next message after Pause and Resume when no runtime remains", async () => {
     const h = harness();
     await ready(h);
     h.pause.set("thread-1", true);
     h.pause.set("thread-1", false);
     await h.handoff().native(performance.now() + 1000, async () => {});
+    h.codex.reload.mockImplementation(async () => {
+      h.session.startupStatus("ready");
+    });
     await h.session.beforeTurn();
+    expect(h.codex.reload).toHaveBeenCalledOnce();
+  });
+
+  it("does not claim or release a lease when native preparation fails before reserving", async () => {
+    const h = harness();
+    await ready(h);
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    h.broker.host.send.mockClear();
+    h.broker.reportChromeCalls.mockClear();
+    h.broker.prepareCodexBrowser.mockRejectedValueOnce(new Error("native request pending"));
+    await expect(h.handoff().browser(performance.now() + 1000, async () => {})).rejects.toThrow(
+      "native request pending",
+    );
+    expect(h.broker.host.send).not.toHaveBeenCalled();
+    expect(h.broker.reportChromeCalls).not.toHaveBeenCalled();
+  });
+
+  it("checks MCP idle again after native preparation, before reloading", async () => {
+    let calls = 0;
+    let finish!: () => void;
+    const waitForMcpIdle = vi.fn(async () => {
+      if (++calls === 2)
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+    });
+    const h = harness({ waitForMcpIdle });
+    await ready(h);
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    h.codex.reload.mockImplementation(async () => {
+      h.session.startupStatus("ready");
+    });
+    const resumed = h.handoff().browser(performance.now() + 1000, async () => {});
+    await vi.waitFor(() => expect(calls).toBe(2));
+    expect(h.broker.prepareCodexBrowser).toHaveBeenCalledOnce();
     expect(h.codex.reload).not.toHaveBeenCalled();
+    finish();
+    await resumed;
+    expect(h.codex.reload).toHaveBeenCalledOnce();
+  });
+
+  it("does not overwrite stopped status for repeated native actions, and refreshes off/on policy", async () => {
+    const h = harness();
+    await ready(h);
+    await h.handoff().browser(performance.now() + 1000, async () => {});
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    const count = h.states.length;
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    expect(h.states.length).toBe(count);
+    h.policy.enabled = false;
+    h.disable();
+    const off = h.states.at(-1);
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    expect(h.states.at(-1)).toEqual(off);
+    await h.session.beforeTurn();
+    expect(h.handoff().status().state).toBe("off");
+    h.policy.enabled = true;
+    h.codex.reload.mockImplementation(async () => {
+      h.session.startupStatus("ready");
+    });
+    await h.session.beforeTurn();
+    expect(h.session.state).toBe("ready");
   });
   it("retains actionable browser failures while still permitting native work", async () => {
     const h = harness();

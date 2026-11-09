@@ -21,3 +21,17 @@ export function validBrowserResumeArguments(value: unknown): boolean {
     args.reason.trim().length > 0
   );
 }
+
+/** Registration belongs to the opened provider thread, not its predecessor's cursor. */
+export function codexBrowserResumeCursor(
+  cursor: Record<string, unknown> | undefined,
+  threadId: string | undefined,
+  registered: boolean,
+): Record<string, unknown> {
+  const { f5BrowserResume: _previous, ...rest } = cursor ?? {};
+  return {
+    ...rest,
+    ...(threadId !== undefined ? { threadId } : {}),
+    ...(registered ? { f5BrowserResume: true } : {}),
+  };
+}

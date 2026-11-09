@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { AgentCapabilityState } from "@t3tools/contracts";
 import {
+  CHROME_OWN_CALL_RUNNING_MESSAGE,
+  CHROME_OWN_STOPPING_MESSAGE,
+} from "@t3tools/shared/computerControl";
+import {
   CODEX_CHROME_DRAIN_TOOL,
   CODEX_CHROME_IDLE_MS,
 } from "@t3tools/shared/providerIntegrationCertification";
@@ -129,6 +133,8 @@ export function listedTools(row: unknown): IntegrationTool[] | undefined {
 export class CodexChromeSession {
   private readonly handoff = new CodexControlHandoff();
   private parked = false;
+  /** Until the host tool has worked in this backend, retain next-message recovery. */
+  private browserResumeProven = false;
   private unavailableDetail?: string;
   private disabled = false;
   private phase: "starting" | "ready" | "stopped" | "unavailable" | "disposed" = "starting";
@@ -264,10 +270,20 @@ export class CodexChromeSession {
    */
   async beforeTurn(
     deadline = performance.now() + (this.deps.startWaitMs ?? CODEX_CHROME_RESTART_WAIT_MS),
+    beforeReload?: () => Promise<void>,
   ): Promise<void> {
     this.clearIdle();
     this.turnActive = true;
-    if (this.parked && this.deps.supportsBrowserResume?.() !== false) return;
+    if (this.phase === "disposed" || this.phase === "unavailable") return;
+    const wasDisabled = this.disabled;
+    const refusal = await this.gate();
+    if (refusal) {
+      this.stop(refusal.state, refusal.detail);
+      return;
+    }
+    if (wasDisabled) this.parked = false;
+    if (this.parked && this.browserResumeProven && this.deps.supportsBrowserResume?.() !== false)
+      return;
     this.parked = false;
     if (this.phase === "starting") {
       // The first turn can start before Codex reports the runtime; wait for its adoption.
@@ -276,17 +292,12 @@ export class CodexChromeSession {
       return;
     }
     if (this.phase !== "stopped") return;
-    const refusal = await this.gate();
-    if (refusal) {
-      this.deps.stateChanged(refusal.state, refusal.detail);
-      return;
-    }
-    if (this.phase !== "stopped") return;
     this.phase = "starting";
     this.adoption = undefined;
     this.deps.stateChanged("pending");
     // Codex reports the new runtime's startup; adoption starts from that notification.
     const settled = this.startSettled();
+    await beforeReload?.();
     try {
       await computerWithinDeadline(deadline, () => this.deps.codex.reload());
     } catch (error) {
@@ -319,13 +330,12 @@ export class CodexChromeSession {
       () => this.phase !== "starting" && !this.readoption && !this.callRunning,
       deadline,
       live,
+      () => (this.callRunning ? CHROME_OWN_CALL_RUNNING_MESSAGE : CHROME_OWN_STOPPING_MESSAGE),
     );
-    this.parked = true;
-    this.stop(
-      "pending",
-      "Chrome is parked for native work. Call browser_resume to return to Chrome.",
-      "release",
-    );
+    if (this.phase === "ready" || this.launchToken || this.leaseHeld) {
+      this.parked = true;
+      this.stop("pending", "Chrome is paused while this thread controls another app.", "release");
+    }
     await this.deps.broker.waitForChromeRelease(
       this.deps.threadId,
       this.deps.generation,
@@ -337,28 +347,40 @@ export class CodexChromeSession {
   private async resumeBrowser(deadline: number, check: () => Promise<void>): Promise<void> {
     const live = () => this.checkHandoff(check);
     await live();
-    if (this.phase === "ready") return;
-    await this.deps.waitForMcpIdle?.(deadline, live);
-    // Mark first: cancellation after main reserves Chrome must release the reservation too.
-    this.leaseHeld = true;
+    if (this.phase === "ready") {
+      this.browserResumeProven = true;
+      return;
+    }
     try {
+      await this.deps.waitForMcpIdle?.(deadline, live);
       await this.deps.broker.prepareCodexBrowser(
         this.deps.threadId,
         this.deps.generation,
         deadline,
         live,
       );
+      // prepareCodexBrowser owns cleanup until its reservation has succeeded.
+      this.leaseHeld = true;
       await live();
       this.parked = false;
-      await this.beforeTurn(deadline);
+      await this.beforeTurn(deadline, async () => {
+        await this.deps.waitForMcpIdle?.(deadline, live);
+        await live();
+      });
       computerRemainingBudget(deadline);
       await live();
       if (this.state !== "ready")
         throw handoffError("Chrome did not become ready; retry browser_resume.");
+      this.browserResumeProven = true;
     } catch (error) {
+      this.browserResumeProven = false;
       this.parked = true;
-      if (this.phase !== "disposed")
-        this.stop("pending", "Chrome restart did not complete. Call browser_resume to retry.");
+      if (this.phase === "disposed") this.release();
+      else
+        this.stop(
+          "pending",
+          "Chrome could not restart. Retry Chrome control or send another message.",
+        );
       throw error;
     }
   }

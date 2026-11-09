@@ -39,6 +39,7 @@ import {
   computerError,
   computerRequestPayload,
   isComputerMutation,
+  CHROME_OWN_STOPPING_MESSAGE,
 } from "@t3tools/shared/computerControl";
 import {
   COMPUTER_CHROME_APP_IDS,
@@ -1005,6 +1006,7 @@ export class ComputerAutomationBrokerRuntime {
         this.chromeHolder.sessionGeneration !== generation,
       deadline,
       check,
+      () => CHROME_OWN_STOPPING_MESSAGE,
     );
   }
 
@@ -1075,6 +1077,7 @@ export class ComputerAutomationBrokerRuntime {
         },
         deadline,
         check,
+        () => "Native computer work is still finishing; retry browser_resume once it finishes.",
       );
     } catch (error) {
       if (reserved) this.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder });
@@ -2083,11 +2086,14 @@ export class ComputerAutomationBrokerRuntime {
     this.cancelTurn(threadId, generation, ctx.turnId, "paused", false, false);
     const acquireId = randomUUID();
     const approvalId = randomUUID();
-    binding.takeover = { acquireId, approvalId, appId: app.appId };
     const live = await this.context(threadId, generation);
     // A takeover excludes Chrome control and main checks Chrome before it reserves: an idle
     // Chrome holder in this profile gives way first instead of the takeover waiting on it.
     await this.preemptChromeFor(threadId, { kind: "foreground" });
+    this.assertRevision(binding, revision, turnRevision);
+    if (this.bindings.get(threadId) !== binding || this.pause.has(threadId))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    binding.takeover = { acquireId, approvalId, appId: app.appId };
     const reservationController = new AbortController();
     const reserved = this.host.takeoverReservationCapable()
       ? this.host.awaitEvent(

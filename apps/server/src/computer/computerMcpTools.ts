@@ -299,7 +299,7 @@ const descriptions: Record<string, string> = {
   computer_request_access:
     "Set typing: true to request typing for an app already allowed clicks; typingAllowed in the result is the effective typing permission. Ask the user to allow up to 10 apps in F5's native dialog.",
   computer_request_foreground:
-    "Requests app foreground after user idle. Parks Codex Chrome; browser_resume restores it.",
+    "Asks the user to let you take the foreground in one granted app; waits until they stop typing.",
   computer_screenshot:
     "Capture granted apps on one display, or one app in background mode; ungranted windows are hidden.",
   computer_zoom: "View a region of a display screenshot in more detail; viewing only.",
