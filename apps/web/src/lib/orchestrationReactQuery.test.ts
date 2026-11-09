@@ -8,7 +8,7 @@ import {
   type OrchestrationGetThreadCommandExecutionResult,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as nativeApi from "../nativeApi";
@@ -23,6 +23,7 @@ import {
   orchestrationQueryKeys,
   scheduleThreadCommandExecutionRefreshIfMissing,
   shouldBackfillThreadHistory,
+  threadCommandExecutionQueryOptions,
 } from "./orchestrationReactQuery";
 
 const threadId = ThreadId.makeUnsafe("thread-1");
@@ -238,6 +239,100 @@ describe("command execution detail query cache", () => {
     });
 
     expect(queryClient.getQueryState(queryKey)).toBeUndefined();
+  });
+
+  it("refetches only the reconciled command's detail after a verified output repair", async () => {
+    const queryClient = new QueryClient();
+    const queryKey = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);
+    const otherKey = orchestrationQueryKeys.threadCommandExecution(
+      threadId,
+      OrchestrationCommandExecutionId.makeUnsafe("cmd-2"),
+    );
+    for (const key of [queryKey, otherKey])
+      queryClient.setQueryData(key, {
+        commandExecution: makeExecution({ output: "hello\n" }),
+      } satisfies OrchestrationGetThreadCommandExecutionResult);
+
+    applyThreadCommandExecutionEventToQueryCache(queryClient, {
+      sequence: 6,
+      eventId: EventId.makeUnsafe("event-command-output-reconciled"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: "2026-03-20T10:00:06.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.command-execution-output-reconciled",
+      payload: {
+        threadId,
+        commandExecutionId,
+        expectedLastUpdatedSequence: 5,
+        output: "hello\nworld\n",
+        outputTruncated: false,
+        updatedAt: "2026-03-20T10:00:06.000Z",
+      },
+    });
+
+    await vi.waitFor(() => expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true));
+    expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false);
+  });
+
+  it("refetches a repaired command's detail even while an older read is in flight", async () => {
+    const queryClient = new QueryClient();
+    let finishOld: (value: OrchestrationGetThreadCommandExecutionResult) => void = () => {};
+    const repaired = makeExecution({ output: "hello\nworld\n", lastUpdatedSequence: 6 });
+    const getThreadCommandExecution = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<OrchestrationGetThreadCommandExecutionResult>((resolve) => {
+          finishOld = resolve;
+        }),
+      )
+      .mockResolvedValueOnce({ commandExecution: repaired });
+    vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+      orchestration: { getThreadCommandExecution },
+    } as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
+    const observer = new QueryObserver(
+      queryClient,
+      threadCommandExecutionQueryOptions({ threadId, commandExecutionId }),
+    );
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      await vi.waitFor(() => expect(getThreadCommandExecution).toHaveBeenCalledTimes(1));
+      applyThreadCommandExecutionEventToQueryCache(queryClient, {
+        sequence: 6,
+        eventId: EventId.makeUnsafe("event-command-output-reconciled-in-flight"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-20T10:00:06.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.command-execution-output-reconciled",
+        payload: {
+          threadId,
+          commandExecutionId,
+          expectedLastUpdatedSequence: 5,
+          output: "hello\nworld\n",
+          outputTruncated: false,
+          updatedAt: "2026-03-20T10:00:06.000Z",
+        },
+      });
+      // The pre-repair read answers late with the old output.
+      finishOld({ commandExecution: makeExecution({ output: "hello\n" }) });
+      await vi.waitFor(() =>
+        expect(
+          queryClient.getQueryData(
+            orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId),
+          ),
+        ).toEqual({ commandExecution: repaired }),
+      );
+      expect(getThreadCommandExecution).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("invalidates command detail queries across reconnect recovery", async () => {

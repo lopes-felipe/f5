@@ -267,10 +267,10 @@ interface CodexSessionContext {
   nativeGoalPauseInFlight?: boolean;
   requestedRuntime?: Record<string, unknown>;
   /**
-   * Whether F5 put the fast tier on this provider thread. A turn clears the
+   * Whether F5 put a service tier on this provider thread. A turn clears the
    * tier only then, so a tier from the user's `config.toml` is left alone.
    */
-  fastTierApplied?: boolean;
+  serviceTierApplied?: boolean;
   childThreadIds?: Set<string>;
   forkNotifications?: JsonRpcNotification[] | undefined;
   forkNotificationOverflow?: boolean;
@@ -350,7 +350,7 @@ export interface CodexAppServerSendTurnInput {
     { type: "image"; url: string } | { type: "localImage"; path: string }
   >;
   readonly model?: string;
-  readonly serviceTier?: "fast" | null;
+  readonly serviceTier?: "fast" | "default" | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
 }
@@ -1562,7 +1562,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           : [],
       );
       context.requestedRuntime = { model: input.model, serviceTier: input.serviceTier };
-      context.fastTierApplied = launchServiceTier === "fast" || launchServiceTier === "priority";
+      context.serviceTierApplied = typeof launchServiceTier === "string";
       this.emitSessionConfigured(context, {
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
@@ -1616,11 +1616,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
     if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
-    // `null` only undoes a fast tier F5 applied; otherwise the thread keeps
+    // `null` only undoes a tier F5 applied; otherwise the thread keeps
     // whatever tier the user's config chose.
     const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
     const turnInput =
-      input.serviceTier === null && !context.fastTierApplied ? inputWithoutTier : input;
+      input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
     const turnStartParams = buildCodexTurnStartParams(turnInput, {
       providerThreadId,
       model: context.session.model,
@@ -1678,8 +1678,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       serviceTier: input.serviceTier,
     };
     if (turnStartParams.serviceTier !== undefined) {
-      context.fastTierApplied =
-        turnStartParams.serviceTier === "fast" || turnStartParams.serviceTier === "priority";
+      context.serviceTierApplied = typeof turnStartParams.serviceTier === "string";
     }
     if (nextConfiguredModel !== undefined) {
       const modelContextWindowTokens = lookupModelContextWindowTokens({
@@ -1723,7 +1722,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly cwd?: string;
     readonly model?: string;
     readonly effort?: string | undefined;
-    readonly serviceTier?: "fast" | null;
+    readonly serviceTier?: "fast" | "default" | null;
     readonly runtimeMode?: RuntimeMode;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     readonly timeoutMs?: number;

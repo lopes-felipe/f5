@@ -1210,9 +1210,10 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     throw Failure("StaleElement", "reason", "element-gone")
   }
   try checkPermit(request)
-  // A slow app may take longer than the process-wide ceiling to act; only this element.
-  if background { _ = AXUIElementSetMessagingTimeout(element, 2) }
-  defer { if background { _ = AXUIElementSetMessagingTimeout(element, 0.25) } }
+  // A slow app may take longer than the process-wide ceiling to act (in the foreground too:
+  // a swatch applies its color, closes its popover and re-renders); only this element.
+  _ = AXUIElementSetMessagingTimeout(element, 2)
+  defer { _ = AXUIElementSetMessagingTimeout(element, 0.25) }
   let result: AXError
   if action == "setValue" || action == "focus" {
     var settable = DarwinBoolean(false)
@@ -1244,7 +1245,16 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     result = AXUIElementPerformAction(element, native as CFString)
     if let dispatch { try endBackgroundAction(dispatch, succeeded: result == .success) }
   }
-  switch computerElementDispatchOutcome(action: action, error: result, background: background) {
+  var outcome = computerElementDispatchOutcome(
+    action: action, error: result, background: background)
+  if !background && result == .cannotComplete {
+    // One bounded probe: a press that already removed its own element was received.
+    _ = AXUIElementSetMessagingTimeout(element, 0.25)
+    var probed: CFTypeRef?
+    let probe = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &probed)
+    outcome = computerElementTimeoutOutcome(action: action, elementGone: probe == .invalidUIElement)
+  }
+  switch outcome {
   case .success: break
   case .unverified:
     // A foreground press that removed its own element (a swatch closing its popover) worked
@@ -1254,6 +1264,8 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     // Errors proving nothing happened stay typed instead of escalating to OutcomeUnknown.
     if !started { locked { _ = postedRequests.remove(string(request, "requestId")) } }
     if let reason { throw Failure(tag, "reason", reason) }
+    // The AX code is diagnostic only: the response's error stays a bare OutcomeUnknown.
+    if tag == "OutcomeUnknown" { throw Failure(tag, "axError", Int(result.rawValue)) }
     throw Failure(tag)
   }
   if action == "focus" {
@@ -2168,6 +2180,8 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   }
   return result
 }
+/// Runs one request and emits exactly one response; failures carry the agent-facing error
+/// and, for `OutcomeUnknown`, a separate log-only diagnostic.
 func execute(_ message: [String: Any]) {
   let request = message["request"] as? [String: Any] ?? [:]
   let host = message["hostAuthorization"] as? [String: Any] ?? [:]
@@ -2232,7 +2246,16 @@ func execute(_ message: [String: Any]) {
       }
       let error = computerActionFailure(
         failure.payload, tracked: tracked, background: isBackground(request), posted: started)
-      emit(["type": "response", "requestId": id, "error": error])
+      var response: [String: Any] = [
+        "type": "response", "requestId": id, "error": computerAgentFacingError(error),
+      ]
+      if let diagnostic = computerOutcomeUnknownDiagnostic(
+        error: error, failure: failure.payload, op: op, appId: string(request, "appId"),
+        background: isBackground(request))
+      {
+        response["diagnostic"] = diagnostic
+      }
+      emit(response)
     } catch {
       let started = tracked && locked { postedRequests.contains(id) }
       if started && !isBackground(request) {

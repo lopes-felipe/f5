@@ -9,10 +9,30 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { builtinFetchUsesHttp2, ignoreMacosTypeOfServiceEinval } from "./outboundHttp.ts";
+import {
+  builtinFetchUsesHttp2,
+  extendConnectionAttemptTimeout,
+  ignoreMacosTypeOfServiceEinval,
+} from "./outboundHttp.ts";
 import { LOCALHOST_TEST_CERT, LOCALHOST_TEST_KEY } from "./testUtils/localhostTls.ts";
 
 const run = promisify(execFile);
+
+it("raises short connection attempts to one second while preserving larger overrides", () => {
+  const previous = Net.getDefaultAutoSelectFamilyAttemptTimeout();
+  try {
+    for (const [configured, expected] of [
+      [50, 1_000],
+      [5_000, 5_000],
+    ]) {
+      Net.setDefaultAutoSelectFamilyAttemptTimeout(configured!);
+      extendConnectionAttemptTimeout();
+      expect(Net.getDefaultAutoSelectFamilyAttemptTimeout()).toBe(expected);
+    }
+  } finally {
+    Net.setDefaultAutoSelectFamilyAttemptTimeout(previous);
+  }
+});
 
 it("ignores only macOS EINVAL from the optional socket QoS hint", () => {
   const socket = {} as Net.Socket;

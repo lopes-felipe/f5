@@ -318,6 +318,65 @@ it.layer(layer)("compactThreadEvents", (it) => {
     }),
   );
 
+  it.effect("applies verified output repairs by sequence and replays them after compaction", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* OrchestrationEventStore;
+      yield* sql`DELETE FROM orchestration_events`;
+      yield* sql`DELETE FROM orchestration_event_compaction`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_command_executions`;
+      yield* seed;
+      const [row] = yield* sql<{ readonly sequence: number }>`
+        SELECT last_updated_sequence AS sequence FROM projection_thread_command_executions
+      `;
+      const reconcile = (input: {
+        readonly commandExecutionId: OrchestrationCommandExecutionId;
+        readonly expectedLastUpdatedSequence: number;
+        readonly output: string;
+      }) =>
+        store.append(
+          threadEvent({
+            type: "thread.command-execution-output-reconciled",
+            payload: { threadId, ...input, outputTruncated: false, updatedAt: at },
+          }),
+        );
+      const verified = `${"v".repeat(300 * 1024)}end`;
+      // A row that moved on, and an unknown command, are left alone.
+      yield* reconcile({
+        commandExecutionId,
+        expectedLastUpdatedSequence: row!.sequence - 1,
+        output: "stale",
+      });
+      yield* reconcile({
+        commandExecutionId: OrchestrationCommandExecutionId.makeUnsafe("unknown-command"),
+        expectedLastUpdatedSequence: row!.sequence,
+        output: "unknown",
+      });
+      yield* reconcile({
+        commandExecutionId,
+        expectedLastUpdatedSequence: row!.sequence,
+        output: verified,
+      });
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+      const repaired = yield* projectedState;
+      assert.equal(repaired.commands.length, 1);
+      // Output past the projection's cap keeps F5's head and tail.
+      assert.equal(repaired.commands[0]!.outputTruncated, 1);
+      assert.isTrue(repaired.commands[0]!.output.startsWith("vvv"));
+      assert.isTrue(repaired.commands[0]!.output.endsWith("end"));
+
+      const result = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.equal(result.commandOutputsCompacted, 1);
+      yield* sql`DELETE FROM projection_thread_command_executions`;
+      yield* sql`
+        DELETE FROM projection_state WHERE projector = 'projection.thread-command-executions'
+      `;
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+      assert.deepStrictEqual((yield* projectedState).commands, repaired.commands);
+    }),
+  );
+
   it.effect("leaves threads alone until every projector has applied their events", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

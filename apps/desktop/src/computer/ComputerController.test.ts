@@ -5,8 +5,10 @@ import type {
   ComputerAutomationRequest,
   ComputerLeaseHolder,
 } from "@t3tools/contracts";
-import { computerRequestPayload } from "@t3tools/shared/computerControl";
+import { ComputerControlError, computerRequestPayload } from "@t3tools/shared/computerControl";
 import { ComputerController } from "./ComputerController";
+import { ComputerHostChannel } from "./ComputerHostChannel";
+import { applyComputerPause } from "./computerPause";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 import type { ComputerHelper } from "./ComputerHelperClient";
 const auth: ComputerAuthorization = {
@@ -124,6 +126,107 @@ describe("main computer controller", () => {
       ["computer held input: none"],
       ["computer held input: none"],
     ]);
+  });
+  it("logs the helper's outcome-unknown diagnostic, pattern-checked", () => {
+    const h = make();
+    h.event({
+      type: "response",
+      requestId: "unknown",
+      error: { _tag: "OutcomeUnknown" },
+      diagnostic: {
+        op: "elementAction",
+        appId: "com.apple.Preview",
+        axError: -25204,
+        delivery: "foreground",
+      },
+    });
+    h.event({
+      type: "response",
+      requestId: "odd",
+      error: { _tag: "OutcomeUnknown" },
+      diagnostic: { op: "type text", appId: "a b", axError: "x", delivery: "elsewhere" },
+    });
+    h.event({ type: "response", requestId: "bare", error: { _tag: "OutcomeUnknown" } });
+    h.event({ type: "response", requestId: "stale", error: { _tag: "StaleElement" } });
+    h.event({ type: "response", requestId: "ok", result: {} });
+    expect(h.log.mock.calls).toEqual([
+      [
+        "computer outcome-unknown: op=elementAction app=com.apple.Preview axError=-25204 delivery=fg",
+      ],
+      ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
+      ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
+    ]);
+  });
+  it("leaves recovery on a confirmed Resume for a thread that also holds the Chrome lease", async () => {
+    const h = make();
+    const channel = new ComputerHostChannel(h.controller, () => ({ available: true }), vi.fn(), {
+      certified: () => true,
+    });
+    const chrome = {
+      profileId: "p",
+      threadId: "t",
+      sessionGeneration: "s",
+      provider: "claude" as const,
+    };
+    channel.chrome.acquire(chrome, null);
+    const deps = {
+      controller: h.controller,
+      channel,
+      consent: { confirmResume: vi.fn(async () => true) },
+      supervisor: { resumed: vi.fn() },
+    };
+    h.request.mockRejectedValueOnce(new ComputerControlError({ _tag: "OutcomeUnknown" }));
+    try {
+      await expect(h.controller.invoke(envelope("unknown"))).rejects.toMatchObject({
+        error: { _tag: "OutcomeUnknown" },
+      });
+      expect(h.controller.resumeTarget("p", "t")).toMatchObject({ recovery: true });
+      await expect(h.controller.invoke(envelope("refused"))).rejects.toMatchObject({
+        error: { _tag: "Interrupted", cause: "paused" },
+      });
+      await applyComputerPause(deps, "p", "t", false);
+      expect(deps.consent.confirmResume).toHaveBeenCalledWith("p", "Thread", { recovery: true });
+      expect(h.controller.resumeTarget("p", "t")).toMatchObject({
+        recovery: false,
+        pauseCause: undefined,
+      });
+      expect(() => channel.chrome.validate(chrome)).not.toThrow();
+      const next = h.lease.holders().find((entry) => entry.threadId === "t");
+      const generation =
+        next?.executionGeneration ?? h.controller.acquire(holder).executionGeneration;
+      await expect(
+        h.controller.invoke(envelope("admitted", { ...auth, executionGeneration: generation })),
+      ).resolves.toBeDefined();
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("resumes Chrome but keeps native paused when the helper is unavailable", async () => {
+    const h = make();
+    const channel = new ComputerHostChannel(h.controller, () => ({ available: true }), vi.fn(), {
+      certified: () => true,
+    });
+    const chrome = {
+      profileId: "p",
+      threadId: "t",
+      sessionGeneration: "s",
+      provider: "claude" as const,
+    };
+    channel.chrome.acquire(chrome, null);
+    try {
+      channel.setThreadPaused("p", "t", true);
+      vi.mocked(h.helper.status).mockReturnValue({ available: false, reason: "monitor-unhealthy" });
+      expect(channel.setThreadPaused("p", "t", false)).toBe(true);
+      expect(() => channel.chrome.validate(chrome)).not.toThrow();
+      expect(h.controller.resumeTarget("p", "t")).toMatchObject({ pauseCause: "paused" });
+      // Without the Chrome lease the native refusal still reaches the user.
+      channel.chrome.release(chrome);
+      expect(() => channel.setThreadPaused("p", "t", false)).toThrow(
+        expect.objectContaining({ error: { _tag: "Unavailable", reason: "monitor-unhealthy" } }),
+      );
+    } finally {
+      h.controller.close();
+    }
   });
   it("keeps control active when a foreground action succeeds unverified", async () => {
     const h = make();
