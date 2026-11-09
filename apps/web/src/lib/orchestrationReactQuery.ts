@@ -412,6 +412,7 @@ export function applyThreadCommandExecutionEventToQueryCache(
     | { type: "thread.reverted" }
     | { type: "thread.command-execution-recorded" }
     | { type: "thread.command-execution-output-appended" }
+    | { type: "thread.command-execution-output-reconciled" }
   >,
 ): void {
   switch (event.type) {
@@ -461,6 +462,23 @@ export function applyThreadCommandExecutionEventToQueryCache(
       queryClient.setQueryData<OrchestrationGetThreadCommandExecutionResult>(queryKey, (current) =>
         mergeThreadCommandExecutionOutputAppendedDetailResult(current, event, summary),
       );
+      return;
+    }
+
+    case "thread.command-execution-output-reconciled": {
+      // Whether it applied depends on the server row's sequence: refetch it. A read already
+      // in flight started before the repair, so the refetch must not join it: neither the
+      // shared RPC nor the query's own fetch, which a refetch joins while there is no data.
+      inFlightThreadCommandExecutionDetailRequests.delete(
+        `${event.payload.threadId}:${event.payload.commandExecutionId}`,
+      );
+      const queryKey = orchestrationQueryKeys.threadCommandExecution(
+        event.payload.threadId,
+        event.payload.commandExecutionId,
+      );
+      void queryClient
+        .cancelQueries({ queryKey })
+        .then(() => queryClient.invalidateQueries({ queryKey }));
     }
   }
 }

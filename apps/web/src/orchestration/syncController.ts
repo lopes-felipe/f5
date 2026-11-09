@@ -398,6 +398,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
       case "thread.reverted":
       case "thread.command-execution-recorded":
       case "thread.command-execution-output-appended":
+      case "thread.command-execution-output-reconciled":
         applyThreadCommandExecutionEventToQueryCache(queryClient, event);
         break;
       default:
@@ -441,6 +442,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
         case "thread.reverted":
         case "thread.command-execution-recorded":
         case "thread.command-execution-output-appended":
+        case "thread.command-execution-output-reconciled":
           applyThreadCommandExecutionEventToQueryCache(queryClient, event);
           break;
         default:

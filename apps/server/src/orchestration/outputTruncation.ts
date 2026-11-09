@@ -107,3 +107,22 @@ export function truncateMiddleByBytes(
     truncated: true,
   };
 }
+
+/** Largest command transcript the command-execution projection keeps. */
+export const MAX_COMMAND_TRANSCRIPT_BYTES = 256 * 1024;
+export const COMMAND_TRANSCRIPT_HEAD_BYTES = 96 * 1024;
+export const COMMAND_TRANSCRIPT_TRUNCATION_MARKER =
+  "\n\n[... transcript truncated; middle output omitted ...]\n\n";
+
+/** The capped copy of a command transcript the projection stores. */
+export function truncateCommandTranscriptOutput(output: string): {
+  output: string;
+  outputTruncated: boolean;
+} {
+  const result = truncateMiddleByBytes(output, {
+    maxBytes: MAX_COMMAND_TRANSCRIPT_BYTES,
+    headBytes: COMMAND_TRANSCRIPT_HEAD_BYTES,
+    marker: COMMAND_TRANSCRIPT_TRUNCATION_MARKER,
+  });
+  return { output: result.output, outputTruncated: result.truncated };
+}

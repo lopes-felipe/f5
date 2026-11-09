@@ -218,6 +218,7 @@ export type SubmissionStatus = (typeof SUBMISSION_STATUSES)[number];
 const isStreamingOutput = (event: OrchestrationEvent) =>
   (event.type === "thread.message-sent" && event.payload.streaming) ||
   event.type === "thread.command-execution-output-appended" ||
+  event.type === "thread.command-execution-output-reconciled" ||
   event.type === "thread.usage-recorded";
 
 /** Statuses a waiter keeps waiting through. */
