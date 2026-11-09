@@ -14260,11 +14260,20 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:47:32.441Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/terminal/TerminalHistorySanitizer.ts:103"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-29604",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal"
@@ -16825,11 +16834,21 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:47:32.441Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/session-logic.ts:1965",
+          "apps/web/src/components/chat/MessagesTimeline.tsx:4061"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-29971",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
