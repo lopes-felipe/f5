@@ -60,10 +60,14 @@ it("returns before completion, deduplicates retries, and registers a successful 
         const retry = yield* tracker.start(input);
         expect(first.destination).toBe(path.join(input.parentPath, "repo"));
         expect(retry.operationId).toBe(first.operationId);
-        yield* Effect.promise(() => expect.poll(() => clone.mock.calls.length).toBe(1));
+        yield* Effect.promise(() =>
+          expect.poll(() => clone.mock.calls.length, { timeout: 10_000 }).toBe(1),
+        );
         expect(register).not.toHaveBeenCalled();
         yield* Deferred.succeed(done, undefined);
-        yield* Effect.promise(() => expect.poll(() => tracker.list()[0]?.status).toBe("complete"));
+        yield* Effect.promise(() =>
+          expect.poll(() => tracker.list()[0]?.status, { timeout: 10_000 }).toBe("complete"),
+        );
         expect(register).toHaveBeenCalledTimes(1);
         const conflict = yield* tracker.start({ ...input, url: "other/repo" }).pipe(Effect.result);
         expect(conflict._tag).toBe("Failure");
@@ -78,6 +82,7 @@ it("cancels the owned process and preserves partial files without creating a pro
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
+        const partialWritten = yield* Deferred.make<void>();
         const tracker = yield* makeProjectCloneTracker({
           ...input,
           scope: yield* Effect.scope,
@@ -85,6 +90,7 @@ it("cancels the owned process and preserves partial files without creating a pro
           git: {
             cloneRepository: ({ cwd }) =>
               Effect.promise(() => writeFile(path.join(cwd, "partial"), "kept")).pipe(
+                Effect.andThen(Deferred.succeed(partialWritten, undefined)),
                 Effect.andThen(Effect.never),
                 Effect.onInterrupt(() =>
                   Effect.sync(() => {
@@ -95,11 +101,7 @@ it("cancels the owned process and preserves partial files without creating a pro
           },
         });
         yield* tracker.start(input);
-        yield* Effect.promise(() =>
-          expect
-            .poll(async () => readFile(path.join(input.parentPath, "repo/partial"), "utf8"))
-            .toBe("kept"),
-        );
+        yield* Deferred.await(partialWritten);
         yield* tracker.cancel(input.operationId);
         expect(interrupted).toBe(true);
         expect(tracker.list()[0]?.status).toBe("cancelled");
@@ -157,6 +159,7 @@ it("limits running clones to two and keeps the queue moving after a failure", as
     Effect.scoped(
       Effect.gen(function* () {
         const release = yield* Deferred.make<void>();
+        const twoRunning = yield* Deferred.make<void>();
         let active = 0;
         let peak = 0;
         const tracker = yield* makeProjectCloneTracker({
@@ -168,6 +171,7 @@ it("limits running clones to two and keeps the queue moving after a failure", as
               Effect.gen(function* () {
                 active += 1;
                 peak = Math.max(peak, active);
+                if (active === 2) yield* Deferred.succeed(twoRunning, undefined);
                 yield* Deferred.await(release);
                 if (cwd.endsWith("repo-0"))
                   return yield* Effect.fail(
@@ -193,15 +197,23 @@ it("limits running clones to two and keeps the queue moving after a failure", as
             operationId: randomUUID(),
             directoryName: `repo-${index}`,
           });
-        yield* Effect.promise(() => expect.poll(() => active).toBe(2));
+        yield* Deferred.await(twoRunning);
         expect(tracker.list().filter((job) => job.status === "queued")).toHaveLength(2);
         yield* Deferred.succeed(release, undefined);
+        // Each job serializes durable history writes. Windows CI can exceed
+        // Vitest's one-second polling default even when the queue is healthy.
         yield* Effect.promise(() =>
           expect
-            .poll(() => tracker.list().filter((job) => job.status === "complete").length)
-            .toBe(3),
+            .poll(
+              () =>
+                tracker
+                  .list()
+                  .map((job) => job.status)
+                  .sort(),
+              { timeout: 10_000 },
+            )
+            .toEqual(["complete", "complete", "complete", "failed"]),
         );
-        expect(tracker.list().filter((job) => job.status === "failed")).toHaveLength(1);
         expect(peak).toBe(2);
       }),
     ),
@@ -229,7 +241,9 @@ it("quarantines corrupt history without preventing startup", async () => {
           yield* Effect.promise(() => readFile(path.join(input.stateDir, quarantined!), "utf8")),
         ).toBe("{broken");
         yield* tracker.start(input);
-        yield* Effect.promise(() => expect.poll(() => tracker.list()[0]?.status).toBe("complete"));
+        yield* Effect.promise(() =>
+          expect.poll(() => tracker.list()[0]?.status, { timeout: 10_000 }).toBe("complete"),
+        );
       }),
     ),
   );

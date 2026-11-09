@@ -48,17 +48,40 @@ function event(type: OrchestrationEvent["type"], payload: Record<string, unknown
     payload: { threadId, ...payload },
   });
 }
-function apply(saved: OrchestrationEvent, steerFallback = false) {
+function apply(saved: OrchestrationEvent, steerFallback = false, model = readModel) {
   return system.run(
     system.sql.withTransaction(
       makeCommitSideEffects({
         sql: system.sql,
         transitions: Option.none(),
         queueStore: Option.none(),
-      })(saved, { commandType: "thread.turn.start", steerFallback, readModel }),
+      })(saved, { commandType: "thread.turn.start", steerFallback, readModel: model }),
     ),
   );
 }
+it("records a stopped usage failure even before its automatic schedule exists", async () => {
+  const model = {
+    ...readModel,
+    threads: [
+      {
+        id: threadId,
+        session: { usageLimit: { providerInstanceId: "claude", turnId: "limited-turn" } },
+      },
+    ] as unknown as typeof readModel.threads,
+  };
+  await apply(event("thread.session-stop-requested", { createdAt: at }), false, model);
+  const rows = await system.run(
+    system.sql`SELECT limit_key,state,auto_eligible_at_failure FROM usage_limit_resumes`,
+  );
+  expect(rows).toEqual([
+    {
+      limit_key: "instance:claude:turn:limited-turn",
+      state: "cancelled",
+      auto_eligible_at_failure: 0,
+    },
+  ]);
+});
+
 const attachment = {
   type: "image",
   id: "image",

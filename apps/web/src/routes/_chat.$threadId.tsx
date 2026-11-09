@@ -4,7 +4,13 @@ import {
   type ProjectId,
   type TaskItem,
 } from "@t3tools/contracts";
-import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  retainSearchParams,
+  useNavigate,
+  useRouter,
+  useRouterState,
+} from "@tanstack/react-router";
 
 import { RouteErrorView } from "../components/RouteErrorView";
 import {
@@ -346,6 +352,8 @@ function ThreadDetailErrorView(props: {
 function ChatThreadRouteView() {
   const startupReady = useStartupReady();
   const navigate = useNavigate();
+  const router = useRouter();
+  const navigationPending = useRouterState({ select: (state) => state.isLoading });
   const threadId = Route.useParams({
     select: (params) => ThreadId.makeUnsafe(params.threadId),
   });
@@ -494,11 +502,14 @@ function ChatThreadRouteView() {
     }
 
     if (!routeThreadExists) {
+      // Bootstrap rollback can rekey a draft and navigate in the same tick.
+      // The old route must not cancel that navigation with a stale redirect.
+      if (router.state.isLoading || router.state.location.pathname !== "/" + threadId) return;
       useRightPanelStore.getState().removeThread(threadId);
       void navigate({ to: "/", replace: true });
       return;
     }
-  }, [navigate, routeThreadExists, startupReady, threadId]);
+  }, [navigate, navigationPending, routeThreadExists, router, startupReady, threadId]);
 
   const clearSearchParamsForSurfaces = useCallback(
     (surfaces: ReadonlyArray<RightPanelSurface>) => {

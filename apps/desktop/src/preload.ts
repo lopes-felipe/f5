@@ -187,6 +187,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener("desktop:prompt-links-available", wrapped);
     };
   },
+  revealWindow: () => ipcRenderer.invoke("desktop:reveal-window"),
   getPathForFile: (file) => {
     const resolvedPath = webUtils.getPathForFile(file);
     return resolvedPath.length > 0 ? resolvedPath : null;
