@@ -11,7 +11,7 @@ function harness() {
   const manager = new CodexAppServerManager();
   const resume = vi.fn(async (): Promise<unknown> => ({ state: "ready" }));
   const context = {
-    browserResume: resume,
+    browserResume: resume as (() => Promise<unknown>) | undefined,
     browserResumeRegistered: true,
     mcpCalls: new Set<string>(),
     session: {
@@ -117,6 +117,7 @@ describe("browser_resume host tool", () => {
   it("names the required runtime mode instead of blaming the arguments", async () => {
     const h = harness();
     h.context.session.runtimeMode = "approval-required";
+    h.context.browserResume = undefined;
     h.call();
     await vi.waitFor(() =>
       expect(h.reply).toHaveBeenCalledWith(h.context, {

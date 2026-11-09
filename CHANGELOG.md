@@ -16,8 +16,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Codex can hand off Chrome control to native apps without asking the user to stop Chrome. The handoff waits for the browser runtime to exit. New Codex threads can return to Chrome in the same turn with the host's `browser_resume` tool; older provider threads retain next-message restart behavior.
-- Interrupted MCP calls and failed foreground handoffs no longer block later Chrome resumes. Parked browsers retain next-message recovery until the host resume tool succeeds, and restore it after a failed resume.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
@@ -36,6 +34,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
 - Popovers overlapping the desktop window header respond to hover and clicks.
 - A Claude thread with Claude in Chrome on can take foreground control of other apps while none of its Chrome calls is running, instead of failing with "Chrome is held by another thread". Once it does, its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it). Foreground takeover refusals name the thread holding control, and the desktop log records Chrome lease events.
+- Codex can hand off Chrome control to native apps without asking the user to stop Chrome. The handoff waits for the browser runtime to exit. New Codex threads can return to Chrome in the same turn with the host's `browser_resume` tool; older provider threads retain next-message restart behavior.
+- Interrupted MCP calls and failed foreground handoffs no longer block later Chrome resumes. Parked browsers retain next-message recovery until the host resume tool succeeds, and restore it after a failed resume.
 - Queued upstream ports no longer wait indefinitely on files held by an equivalent topic once the port PR that included it has merged. Outcome recovery stops re-reading merged port PRs from GitHub.
 - Planning workflows no longer fail a branch or the merge while its plan-format repair turn is starting. If that repair turn cannot start, the stage shows an error with Retry instead of staying in progress with no turn.
 - Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down; on macOS, Caps Lock's lock state never counts. A hold stuck in system state stops counting after two minutes without any input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)", and a pause or policy change during the wait reports its own cause.

@@ -4220,8 +4220,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (!this.isLiveContext(context)) return;
     if (
       request.method === "item/tool/call" &&
-      asObject(request.params)?.tool === "browser_resume" &&
-      context.browserResume
+      asObject(request.params)?.tool === "browser_resume"
     ) {
       const params = asObject(request.params)!;
       const turnId = context.session.activeTurnId;
@@ -4238,7 +4237,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         try {
           if (context.session.runtimeMode !== "full-access")
             throw new Error("browser_resume requires Full access.");
-          if (!context.browserResumeRegistered)
+          if (!context.browserResumeRegistered || !context.browserResume)
             throw new Error(
               "browser_resume is not registered on this provider thread. Chrome can restart with the next message.",
             );
