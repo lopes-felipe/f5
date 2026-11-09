@@ -18493,11 +18493,13 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
-      "decidedAt": "2026-11-09T19:23:49.892Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T19:25:12.440Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-30370",
-      "status": "port",
+      "reason": "F5 has no sidebar-hidden side-chat or subagent thread records; subagents are activity data, so deletion fallback cannot select them.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
