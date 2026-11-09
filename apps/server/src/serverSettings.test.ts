@@ -1041,14 +1041,23 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     [false, true].flatMap((inline) =>
       [false, true].flatMap((redactedLast) =>
         [
-          { value: "", sensitive: true },
-          { value: "plain", sensitive: false },
-          { value: "replacement", sensitive: true },
-        ].map((duplicate) => ({ inline, redactedLast, duplicate })),
+          { label: "empty sensitive", value: "", sensitive: true },
+          { label: "plain", value: "plain", sensitive: false },
+          { label: "replacement", value: "replacement", sensitive: true },
+        ].map(({ label, ...duplicate }) => ({
+          label: [
+            inline ? "inline" : "stored",
+            redactedLast ? "redacted last" : "redacted first",
+            label,
+          ].join(", "),
+          inline,
+          redactedLast,
+          duplicate,
+        })),
       ),
     ),
   )(
-    "preserves a secret claimed by a redacted duplicate (%j)",
+    "preserves a secret claimed by a redacted duplicate ($label)",
     ({ inline, redactedLast, duplicate }) =>
       Effect.gen(function* () {
         const service = yield* ServerSettingsService;
