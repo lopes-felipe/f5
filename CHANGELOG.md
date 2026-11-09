@@ -16,6 +16,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Collapsed diff files defer syntax highlighting until expanded, making large diffs cheaper to scroll.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
