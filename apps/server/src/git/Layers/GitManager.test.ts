@@ -566,7 +566,8 @@ describe("GitManager unit", () => {
         prepareCommitContext: () => Effect.succeed(null),
       },
     });
-    vi.spyOn(github.service, "listOpenPullRequests")
+    const lookup = vi
+      .spyOn(github.service, "listOpenPullRequests")
       .mockReturnValueOnce(Effect.succeed([]))
       .mockReturnValueOnce(
         Effect.fail(
@@ -582,6 +583,7 @@ describe("GitManager unit", () => {
     );
 
     expect(github.calls).toContain("createPullRequest:main:feature/test");
+    expect(lookup).toHaveBeenCalledTimes(2);
     expect(result.pr).toEqual({
       status: "created",
       baseBranch: "main",

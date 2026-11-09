@@ -1317,7 +1317,8 @@ export const makeGitManager = Effect.gen(function* () {
         Effect.catch((error) =>
           Effect.logWarning("GitManager.runPrStep lookup after create failed", {
             provider: sourceControlProvider.kind,
-            errorTag: error._tag,
+            kind: error.kind,
+            operation: error.operation,
           }).pipe(Effect.as(null)),
         ),
       );
