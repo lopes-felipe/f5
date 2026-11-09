@@ -6106,7 +6106,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             return;
           case "informational":
-            if (message.level === "warning" || message.level === "notice") {
+            if (message.level !== "info") {
               yield* emitRuntimeWarning(context, message.content);
             } else {
               yield* Effect.logDebug("Claude informational message", { detail: message });

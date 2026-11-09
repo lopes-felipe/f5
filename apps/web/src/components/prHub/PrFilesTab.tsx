@@ -1,4 +1,8 @@
 import { PrViewedFile } from "./PrViewedFile";
+import { describePrDiffError } from "./prDiffError";
+import { forgeProviderLabel } from "./forgePresentation";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../ui/empty";
 import { orderPrFilePages } from "./prFileOrder";
 import { ForgeComposer } from "./ForgeControls";
 import { CopyPathButton } from "../CopyPathButton";
@@ -14,8 +18,8 @@ import { AlertTriangleIcon, FileIcon, LoaderCircleIcon } from "lucide-react";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 
 import { prHubFilesQueryOptions } from "../../lib/prHubReactQuery";
-import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 
 const LazyPrFileDiff = lazy(() =>
@@ -59,22 +63,40 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
     );
   }
   if (query.isError) {
+    const error = query.error instanceof Error ? query.error.message : String(query.error);
+    const providerName = forgeProviderLabel(pr.provider);
+    const { title, description } = describePrDiffError(error, providerName);
     return (
-      <Alert variant="error" role="tabpanel">
+      <Empty role="tabpanel" aria-label="Files" className="min-h-64">
         <AlertTriangleIcon />
-        <AlertTitle>Changed files unavailable</AlertTitle>
-        <AlertDescription>
-          <span>{query.error instanceof Error ? query.error.message : "GitHub files failed."}</span>
+        <EmptyHeader>
+          <EmptyTitle>{title}</EmptyTitle>
+          <EmptyDescription>{description}</EmptyDescription>
+        </EmptyHeader>
+        <div className="flex flex-wrap justify-center gap-2">
           <Button size="xs" variant="outline" onClick={() => void query.refetch()}>
             Retry
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            render={<OpenLinkAnchor href={pr.url} target="_blank" rel="noopener noreferrer" />}
+          >
+            Open on {providerName}
           </Button>
           {comparisonMode === "changes_since_review" ? (
             <Button size="xs" variant="outline" onClick={() => setComparisonMode("current_pr")}>
               Return to current PR
             </Button>
           ) : null}
-        </AlertDescription>
-      </Alert>
+        </div>
+        <details className="w-full max-w-lg text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Technical details</summary>
+          <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border p-3 text-left">
+            {error}
+          </pre>
+        </details>
+      </Empty>
     );
   }
 

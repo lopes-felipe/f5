@@ -296,6 +296,7 @@ export default function GitActionsControl({
   const gitStatusForActions = isGitStatusOutOfSync ? null : gitStatus;
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
+  const workingTreeRoot = gitStatusForActions?.workingTree.rootPath ?? null;
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
@@ -925,7 +926,7 @@ export default function GitActionsControl({
   const openChangedFileInEditor = useCallback(
     (filePath: string) => {
       const api = readNativeApi();
-      if (!api || !gitCwd) {
+      if (!api || !workingTreeRoot) {
         toastManager.add({
           type: "error",
           title: "Editor opening is unavailable.",
@@ -933,7 +934,7 @@ export default function GitActionsControl({
         });
         return;
       }
-      const target = resolvePathLinkTarget(filePath, gitCwd);
+      const target = resolvePathLinkTarget(filePath, workingTreeRoot);
       void openInPreferredEditor(api, target).catch((error) => {
         toastManager.add({
           type: "error",
@@ -943,7 +944,7 @@ export default function GitActionsControl({
         });
       });
     },
-    [gitCwd, threadToastData],
+    [workingTreeRoot, threadToastData],
   );
 
   if (!gitCwd) return null;
@@ -1274,6 +1275,7 @@ export default function GitActionsControl({
                               <button
                                 type="button"
                                 className="flex flex-1 items-center justify-between gap-3 text-left truncate"
+                                disabled={workingTreeRoot === null}
                                 onClick={() => openChangedFileInEditor(file.path)}
                               >
                                 <MiddleTruncate
