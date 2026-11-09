@@ -80,10 +80,6 @@ struct State {
     started: Instant,
     held: Mutex<HashSet<u16>>,
     held_unicode: Mutex<HashSet<u16>>,
-    /// Physical holds seen by the low-level hooks; see `crate::held`.
-    physical_held: Mutex<crate::held::HeldInputTracker>,
-    /// Last reported physical holds, so a stuck input is logged once per transition.
-    reported_held: Mutex<Vec<u16>>,
     snapshots: Mutex<HashMap<String, Vec<Snapshot>>>,
 }
 impl State {
@@ -753,8 +749,6 @@ pub fn run() {
         started: Instant::now(),
         held: Mutex::new(HashSet::new()),
         held_unicode: Mutex::new(HashSet::new()),
-        physical_held: Mutex::new(crate::held::HeldInputTracker::default()),
-        reported_held: Mutex::new(Vec::new()),
         snapshots: Mutex::new(HashMap::new()),
     });
     let _ = STATE.set(state.clone());
@@ -775,7 +769,6 @@ pub fn run() {
         state
             .hook_thread
             .store(GetCurrentThreadId() as u64, Ordering::SeqCst);
-        state.physical_held.lock().unwrap().reset();
         let mut keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_hook), None, 0);
         let mut mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0);
         state
@@ -785,8 +778,6 @@ pub fn run() {
             if message.message == WM_APP + 5 {
                 state.healthy.store(false, Ordering::SeqCst);
                 state.keyboard_hook_installed.store(false, Ordering::SeqCst);
-                // Edges were missed while the hooks were down.
-                state.physical_held.lock().unwrap().reset();
                 if let Ok(hook) = keyboard {
                     let _ = UnhookWindowsHookEx(hook);
                 }
@@ -939,9 +930,8 @@ pub fn run() {
             } else {
                 (state.started.elapsed().as_millis() as u64 + 1).saturating_sub(last) as i64
             };
-            let held = cooperation::held_inputs();
             emit(
-                json!({"type":"heartbeat","monitorHealthy":state.monitors_ready(),"suspended":active.is_empty(),"activeGenerations":active,"inputSequence":state.input_sequence.load(Ordering::SeqCst),"lastUserInputAgeMs":age,"inputHeld":!held.is_empty(),"heldInputs":cooperation::held_diagnostics(&held),"targets":cooperation::target_summaries(),"frontmostAppId":unsafe { owner(GetForegroundWindow()).ok().map(|(id,_)|id) }}),
+                json!({"type":"heartbeat","monitorHealthy":state.monitors_ready(),"suspended":active.is_empty(),"activeGenerations":active,"inputSequence":state.input_sequence.load(Ordering::SeqCst),"lastUserInputAgeMs":age,"inputHeld":cooperation::held(),"targets":cooperation::target_summaries(),"frontmostAppId":unsafe { owner(GetForegroundWindow()).ok().map(|(id,_)|id) }}),
             );
             emit_status();
         }

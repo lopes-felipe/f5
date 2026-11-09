@@ -106,19 +106,6 @@ const STOP_CAUSE: Record<
   "access-changed": "access-changed",
 };
 const isForegroundHolder = (holder: ComputerLeaseHolder) => holder.scope.kind !== "app";
-/** `kind:code` per held input; anything other than a kind and a numeric code is left out. */
-function heldInputSummary(value: unknown): string {
-  const entries = (Array.isArray(value) ? value : []).flatMap((entry: unknown) => {
-    const record = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
-    return typeof record.kind === "string" &&
-      /^(key|modifier|button)$/.test(record.kind) &&
-      typeof record.code === "number" &&
-      Number.isInteger(record.code)
-      ? [`${record.kind}:${record.code}`]
-      : [];
-  });
-  return entries.length ? entries.join(" ") : "none";
-}
 export class ComputerController {
   readonly cooperation: ComputerCooperation;
   readonly admission: ComputerAdmissionQueue;
@@ -202,8 +189,6 @@ export class ComputerController {
       cooperationEnabled?: (profileId: string) => boolean;
       targetYielded?: (holder: ComputerLeaseHolder, appId?: string) => void;
       foregroundContinued?: (previous: ComputerLeaseHolder, next: ComputerLeaseHolder) => void;
-      /** Writes one line to the desktop log. */
-      log?: (message: string) => void;
       now?: () => number;
     },
   ) {
@@ -612,9 +597,6 @@ export class ComputerController {
     } else if (message.type === "targetInterrupted") {
       if (tagged && this.yieldable(tagged, message.cause)) this.yieldHolder(tagged);
       else if (tagged) this.stopThread(tagged, "target-active");
-    } else if (message.type === "heldInput") {
-      // The helper reports each change of the held set, so a stuck input can be named.
-      this.options.log?.(`computer held input: ${heldInputSummary(message.heldInputs)}`);
     } else if (message.type === "activationIncident") {
       if (tagged) this.stopThread(tagged, "activation");
     } else if (message.type === "executionState") {

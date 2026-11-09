@@ -299,18 +299,14 @@ export class DesktopComputerHost {
       this.send(message);
     });
   }
-  /**
-   * Cancel a correlated exchange locally and on the desktop; late replies are ignored. The
-   * waiter is rejected with `reason` as given: usually a `ComputerControlError`, or an abort
-   * signal's reason (such as a deadline sentinel) that the caller maps itself.
-   */
-  abandon(requestId: string, reason: unknown): void {
+  /** Cancel a correlated exchange locally and on the desktop; late replies are ignored. */
+  abandon(requestId: string, error: ComputerControlError): void {
     const pending = this.pending.get(requestId);
     if (!pending) return;
     this.pending.delete(requestId);
     clearTimeout(pending.timer);
     this.send({ type: "cancel", requestId });
-    pending.reject(reason);
+    pending.reject(error);
   }
   request(request: ComputerAutomationRequest): Promise<unknown> {
     const requestId = request.requestId;

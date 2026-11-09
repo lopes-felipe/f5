@@ -126,44 +126,8 @@ pub(super) fn release_watch(app: &str, owner: &str) {
         }
     }
 }
-/// Hook-safe: one short uncontended lock per physical (non-injected, non-F5) event.
-pub(super) fn observe_physical(event: crate::held::HeldEvent) {
-    let state = STATE.get().unwrap();
-    state.physical_held.lock().unwrap().observe(event, now_ms());
-}
-/// Virtual-key codes the user is holding, oldest first. A hold counts only when the hook saw it
-/// go down and `GetAsyncKeyState` still reports it; see `crate::held`.
-pub(super) fn held_inputs() -> Vec<u16> {
-    let state = STATE.get().unwrap();
-    let sampled = state.physical_held.lock().unwrap().sample();
-    // Async key queries stay outside the lock. Only entries unchanged since this sample are
-    // dropped, so a release and re-press in between keeps the new hold.
-    let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
-    let released: Vec<(u16, u64)> = sampled
-        .into_iter()
-        .filter(|(code, _)| {
-            !crate::held::system_codes(*code, swapped)
-                .iter()
-                .any(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
-        })
-        .collect();
-    let held = state
-        .physical_held
-        .lock()
-        .unwrap()
-        .held(now_ms(), &released);
-    let mut reported = state.reported_held.lock().unwrap();
-    if *reported != held {
-        // One diagnostic per transition, so a stuck input can be named without per-beat noise.
-        emit(json!({"type":"heldInput","heldInputs":held_diagnostics(&held)}));
-        reported.clone_from(&held);
-    }
-    held
-}
-pub(super) fn held_diagnostics(held: &[u16]) -> Vec<Value> {
-    held.iter()
-        .map(|code| crate::held::diagnostic(*code))
-        .collect()
+pub(super) fn held() -> bool {
+    (1..256).any(|key| unsafe { GetAsyncKeyState(key) < 0 })
 }
 pub(super) fn readiness(app: Option<&str>) -> Result<Value, Value> {
     let state = STATE.get().unwrap();
@@ -203,12 +167,10 @@ pub(super) fn readiness(app: Option<&str>) -> Result<Value, Value> {
     } else {
         (sequence, age, false)
     };
-    let held = held_inputs();
     Ok(
         json!({"activityEpoch":epoch,"lastActivityAgeMs":activity_age,"frontmost":frontmost,
         "monitorHealthy":state.monitors_ready(),"inputSequence":sequence,
-        "lastUserInputAgeMs":age,"inputHeld":!held.is_empty(),
-        "heldInputs":held_diagnostics(&held)}),
+        "lastUserInputAgeMs":age,"inputHeld":held()}),
     )
 }
 pub(super) fn epoch_matches(app: &str, expected: u64) -> bool {

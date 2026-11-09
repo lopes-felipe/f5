@@ -5,8 +5,6 @@ mod desktop;
 #[cfg(any(windows, test))]
 mod geometry;
 #[cfg(any(windows, test))]
-mod held;
-#[cfg(any(windows, test))]
 mod inspection;
 mod permits;
 #[cfg(any(windows, test))]

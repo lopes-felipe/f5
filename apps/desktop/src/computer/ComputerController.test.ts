@@ -64,14 +64,12 @@ function make(platform: "darwin" | "win32" = "darwin") {
     action: vi.fn(async () => {}),
     windowIds: () => [],
   };
-  const log = vi.fn();
   const controller = new ComputerController(lease, helper, overlay, {
     f5Pids: () => [1],
     f5BundlePath: "F5",
     platform,
     activity,
     paused,
-    log,
   });
   controller.updateGrants(auth);
   const held = controller.acquire(holder);
@@ -82,7 +80,6 @@ function make(platform: "darwin" | "win32" = "darwin") {
     lease,
     paused,
     activity,
-    log,
     overlay,
     held,
     event: (message: Record<string, unknown>) => event(message),
@@ -104,26 +101,6 @@ function envelope(id: string, authorization = auth, extras: Record<string, unkno
   } as ComputerAutomationRequest;
 }
 describe("main computer controller", () => {
-  it("logs held-input transitions with codes only", () => {
-    const h = make();
-    try {
-      h.event({
-        type: "heldInput",
-        heldInputs: [
-          { kind: "modifier", code: 56 },
-          { kind: "button", code: 0 },
-          { kind: "key", text: "a" },
-        ],
-      });
-      h.event({ type: "heldInput", heldInputs: [] });
-      expect(h.log.mock.calls).toEqual([
-        ["computer held input: modifier:56 button:0"],
-        ["computer held input: none"],
-      ]);
-    } finally {
-      h.controller.close();
-    }
-  });
   it("keeps control active when a foreground action succeeds unverified", async () => {
     const h = make();
     // A shortcut that opens a window, or a press that closes its own popover, comes back
