@@ -195,7 +195,7 @@ export function buildNewThreadInProjectItems(input: {
   const noProjectItem = currentIsScratch
     ? { ...input.noProjectItem, description: "Current" }
     : input.noProjectItem;
-  items.splice(currentIsScratch ? 0 : Math.min(1, items.length), 0, noProjectItem);
+  items.splice(current && !currentIsScratch ? 1 : 0, 0, noProjectItem);
   return items;
 }
 

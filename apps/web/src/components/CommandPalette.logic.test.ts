@@ -76,11 +76,13 @@ describe("buildNewThreadInProjectItems", () => {
   });
 
   it.each([null, ProjectId.makeUnsafe("missing")])(
-    "preserves project order without a current project (%s)",
-    (id) => {
-      const { items } = build([first, last, scratch], id);
-      expect(items.map((item) => item.title)).toEqual(["first", "No project", "last"]);
+    "keeps No project as the default without a current project (%s)",
+    async (id) => {
+      const { items, runScratch } = build([first, last, scratch], id);
+      expect(items.map((item) => item.title)).toEqual(["No project", "first", "last"]);
       expect(items.every((item) => !item.description?.includes("Current"))).toBe(true);
+      await items[0]!.run();
+      expect(runScratch).toHaveBeenCalledOnce();
     },
   );
 
