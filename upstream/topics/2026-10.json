@@ -23262,11 +23262,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T20:14:48.262Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19300",
-      "status": "port",
+      "reason": "F5 has no desktop topology polling; its synchronous preload IPC read runs once at startup.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
