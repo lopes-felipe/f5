@@ -657,6 +657,7 @@ export function ChatComposer({
                               <AttachmentImage
                                 name={name}
                                 mimeType={image?.mimeType}
+                                sourceBlob={image?.file}
                                 src={previewUrl}
                                 alt={name}
                                 className="h-full w-full object-cover"

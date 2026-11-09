@@ -20,8 +20,11 @@ it("restores the authenticated sender's window before showing and focusing", () 
         calls.push("focus");
       },
     }),
+    () => {
+      calls.push("activate");
+    },
   );
-  expect(calls).toEqual(["authorize", "restore", "show", "focus"]);
+  expect(calls).toEqual(["authorize", "restore", "show", "activate", "focus"]);
 });
 
 it("rejects unauthorized callers before looking up a window", () => {

@@ -4651,6 +4651,7 @@ function UserMessageRowContent(props: {
                           <AttachmentImage
                             name={image.name}
                             mimeType={image.mimeType}
+                            sourceBlob={image.sourceBlob}
                             src={previewUrl}
                             alt={image.name}
                             className={cn(

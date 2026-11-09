@@ -5,25 +5,37 @@ import {
   type ComponentProps,
   type SyntheticEvent,
 } from "react";
+import { fetchImageAttachmentBlob } from "./chat/imageAttachmentActions";
+import { decodeHeicPreview } from "../lib/heicPreview";
+import { MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES } from "../lib/imageCompression.core";
+import { processComposerImageTaskBounded } from "../lib/imageCompression";
 
 export type AttachmentImageProps = ComponentProps<"img"> & {
   name: string;
   mimeType?: string | undefined;
+  sourceBlob?: Blob | undefined;
 };
 
 export function isHeicAttachment(name: string, mimeType = "") {
   return /^image\/hei[cf](?:-sequence)?$/i.test(mimeType) || /\.hei[cf]$/i.test(name);
 }
 
-export function AttachmentImage({ name, mimeType, ...props }: AttachmentImageProps) {
+export function AttachmentImage({ name, mimeType, sourceBlob, ...props }: AttachmentImageProps) {
   return isHeicAttachment(name, mimeType) ? (
-    <HeicImage key={props.src} {...props} name={name} />
+    <HeicImage key={props.src} {...props} name={name} sourceBlob={sourceBlob} />
   ) : (
     <img {...props} />
   );
 }
 
-function HeicImage({ name, src, onError, ...props }: AttachmentImageProps) {
+function HeicImage({
+  name,
+  src,
+  sourceBlob,
+  mimeType: _mimeType,
+  onError,
+  ...props
+}: AttachmentImageProps) {
   const [error, setError] = useState<SyntheticEvent<HTMLImageElement> | null>(null);
   const [decoded, setDecoded] = useState<string>();
   const reportError = useEffectEvent((event: SyntheticEvent<HTMLImageElement>) => onError?.(event));
@@ -33,15 +45,17 @@ function HeicImage({ name, src, onError, ...props }: AttachmentImageProps) {
     let url: string | undefined;
     void (async () => {
       try {
-        const response = await fetch(src, { signal: controller.signal });
-        if (!response.ok) throw new Error("Image unavailable");
-        const blob = await response.blob();
+        const result = await processComposerImageTaskBounded(async () => {
+          const blob = await fetchImageAttachmentBlob(
+            { src, name, mimeType: "image/heic", ...(sourceBlob ? { sourceBlob } : {}) },
+            { signal: controller.signal, maxBytes: MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES },
+          );
+          if (controller.signal.aborted) return { ok: false, reason: "cancelled" };
+          return decodeHeicPreview(blob, name, controller.signal);
+        }, controller.signal);
         if (controller.signal.aborted) return;
-        const { heicTo } = await import("heic-to/csp");
-        if (controller.signal.aborted) return;
-        const jpeg = await heicTo({ blob, type: "image/jpeg", quality: 0.9 });
-        if (controller.signal.aborted) return;
-        url = URL.createObjectURL(jpeg);
+        if (!result.ok) throw new Error("HEIC conversion failed.");
+        url = URL.createObjectURL(result.file);
         setDecoded(url);
       } catch {
         if (!controller.signal.aborted) reportError(error);
@@ -51,6 +65,6 @@ function HeicImage({ name, src, onError, ...props }: AttachmentImageProps) {
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [error, src, name]);
+  }, [error, src, name, sourceBlob]);
   return <img {...props} src={decoded ?? src} onError={error ? onError : setError} />;
 }

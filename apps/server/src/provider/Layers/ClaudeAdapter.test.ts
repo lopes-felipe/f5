@@ -13913,10 +13913,7 @@ describe("ClaudeAdapterLive", () => {
           {
             question: "Which framework?",
             header: "Framework",
-            options: [
-              { label: "React", description: "React.js" },
-              { label: "Vue", description: "Vue.js" },
-            ],
+            options: [{ label: "React", description: " \t " }, { label: "Vue" }],
             multiSelect: false,
           },
         ],
@@ -13945,6 +13942,10 @@ describe("ClaudeAdapterLive", () => {
       // Regression for #2388: the UI's draft-answer key must match the
       // question text that Claude uses when rendering AskUserQuestion output.
       assert.equal(requestedEvent.value.payload.questions[0]?.id, "Which framework?");
+      assert.deepEqual(requestedEvent.value.payload.questions[0]?.options, [
+        { label: "React", description: "React" },
+        { label: "Vue", description: "Vue" },
+      ]);
       assert.deepEqual(requestedEvent.value.providerRefs, {
         providerItemId: ProviderItemId.makeUnsafe("tool-ask-1"),
       });

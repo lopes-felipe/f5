@@ -224,6 +224,7 @@ import {
   derivePendingUserInputProgress,
   seedPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
+  appendPendingUserInputFileReferences,
   togglePendingUserInputOption,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
@@ -354,6 +355,7 @@ import {
   type PersistedComposerImageAttachment,
   type PromptStashDraftSelection,
   useComposerDraftStore,
+  hasSendableComposerDraftContent,
 } from "../composerDraftStore";
 import {
   providerModelOptionsToSelections,
@@ -4924,7 +4926,11 @@ export default memo(function ChatView({
     if (!activeThreadId || !activeProject || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
 
-    if (blockingUserInputs.length > 0 && !activePendingProgress?.activeQuestion) {
+    if (
+      blockingUserInputs.length > 0 &&
+      (!activePendingProgress?.activeQuestion ||
+        activePendingProgress.activeQuestion.allowCustomAnswer === false)
+    ) {
       toastManager.add({
         type: "error",
         title: "Attach files after answering plan questions.",
@@ -4951,14 +4957,21 @@ export default memo(function ChatView({
     if (paths.length > 0) {
       if (activePendingProgress?.activeQuestion) {
         if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
-        const text = [activePendingProgress.customAnswer, ...paths].filter(Boolean).join("\n");
+        const next = appendPendingUserInputFileReferences(
+          {
+            ...activePendingProgress.activeDraft,
+            customAnswer: activePendingProgress.customAnswer,
+          },
+          paths,
+        );
+        const text = next.customAnswer ?? "";
         onChangeActivePendingUserInputCustomAnswer(
           activePendingProgress.activeQuestion.id,
           text,
           text.length,
           text.length,
           false,
-          [],
+          next.mentions ?? [],
         );
       } else {
         addComposerFilePathsToDraft(paths);
@@ -5899,18 +5912,40 @@ export default memo(function ChatView({
       error?: unknown,
     ) => {
       removeOptimisticMessage(messageIdForSend);
-      if (composerMatchesClearedState()) {
+      const liveDraft = useComposerDraftStore.getState().draftsByThreadId[threadIdForSend];
+      if (
+        (!liveDraft || !hasSendableComposerDraftContent(liveDraft)) &&
+        composerMatchesClearedState()
+      ) {
         restoreComposerRollback(failureRollback);
       }
-      toastManager.add({ type: "error", title: message });
+      let retryThreadId = threadIdForSend;
+      if (isLocalDraftThread) setDraftThreadContext(threadIdForSend, { promoting: false });
       // The server keeps a rolled-back thread id as deleted, so the draft moves
       // to a fresh id and the user can simply send again.
       if (isLocalDraftThread && wasBootstrapThreadRolledBack(error)) {
         const freshThreadId = newThreadId();
         if (useComposerDraftStore.getState().rekeyDraftThread(threadIdForSend, freshThreadId)) {
-          void navigate({ to: "/$threadId", params: { threadId: freshThreadId }, replace: true });
+          retryThreadId = freshThreadId;
+          if (isMountedRef.current) {
+            void navigate({ to: "/$threadId", params: { threadId: freshThreadId }, replace: true });
+          }
         }
       }
+      toastManager.add({
+        type: "error",
+        title: message,
+        ...(isLocalDraftThread
+          ? {
+              actionProps: {
+                children: "Open draft",
+                onClick: () => {
+                  void navigate({ to: "/$threadId", params: { threadId: retryThreadId } });
+                },
+              },
+            }
+          : {}),
+      });
     };
 
     try {
@@ -6021,9 +6056,8 @@ export default memo(function ChatView({
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to send message.";
-      restoreDraftAfterFailure(message, rollback);
+      restoreDraftAfterFailure(message, rollback, error);
     } finally {
-      setDraftThreadContext(threadIdForSend, { promoting: false });
       sendInFlightRef.current = false;
     }
   };

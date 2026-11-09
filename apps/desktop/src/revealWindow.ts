@@ -10,11 +10,13 @@ type RevealableWindow = {
 export function revealSenderWindow(
   authorize: () => void,
   senderWindow: () => RevealableWindow | null,
+  activateApp: () => void = () => undefined,
 ) {
   authorize();
   const window = senderWindow();
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
   window.show();
+  activateApp();
   window.focus();
 }

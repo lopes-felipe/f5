@@ -158,6 +158,14 @@ export function processComposerImageBounded(
   file: File,
   signal: AbortSignal,
 ): Promise<CompressComposerImageResult> {
+  return processComposerImageTaskBounded(() => processor(file, { signal }), signal);
+}
+
+/** Keep source fetching inside the same budget as decoding to bound retained bytes. */
+export function processComposerImageTaskBounded(
+  task: () => Promise<CompressComposerImageResult>,
+  signal: AbortSignal,
+): Promise<CompressComposerImageResult> {
   if (signal.aborted) return Promise.resolve({ ok: false, reason: "cancelled" });
   if (conversionQueue.length >= 100) return Promise.resolve({ ok: false, reason: "busy" });
   return new Promise((resolve) => {
@@ -172,7 +180,7 @@ export function processComposerImageBounded(
       // the slot is always released and the queue keeps moving.
       let conversion: Promise<CompressComposerImageResult>;
       try {
-        conversion = processor(file, { signal });
+        conversion = task();
       } catch (error) {
         conversion = Promise.reject(error);
       }

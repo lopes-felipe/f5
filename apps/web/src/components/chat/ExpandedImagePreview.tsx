@@ -256,6 +256,7 @@ export function ExpandedImageDialog({
           src={item.previewSrc}
           name={item.name}
           mimeType={item.mimeType}
+          sourceBlob={item.sourceBlob}
           onContextMenu={handleContextMenu}
         />
         <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground">

@@ -9,11 +9,13 @@ export function ZoomableImage({
   src,
   name,
   mimeType,
+  sourceBlob,
   onContextMenu,
 }: {
   src: string;
   name: string;
   mimeType?: string | undefined;
+  sourceBlob?: Blob | undefined;
   onContextMenu: MouseEventHandler<HTMLImageElement>;
 }) {
   const [zoom, setZoom] = useState(1);
@@ -56,6 +58,7 @@ export function ZoomableImage({
         <AttachmentImage
           name={name}
           mimeType={mimeType}
+          sourceBlob={sourceBlob}
           ref={imageRef}
           src={src}
           alt={name}

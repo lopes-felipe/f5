@@ -3590,6 +3590,9 @@ function registerIpcHandlers(): void {
         authorizeAppMainFrame(event, "Window reveal");
       },
       () => BrowserWindow.fromWebContents(event.sender),
+      () => {
+        if (process.platform === "darwin") app.focus({ steal: true });
+      },
     );
   });
   const assertFileCaller = (event: Electron.IpcMainInvokeEvent) => {

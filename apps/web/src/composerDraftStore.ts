@@ -1795,7 +1795,11 @@ function toPersistedComposerDraftState(
   }
   return {
     draftsByThreadId: persistedDraftsByThreadId,
-    draftThreadsByThreadId: snapshot.draftThreadsByThreadId,
+    draftThreadsByThreadId: Object.fromEntries(
+      Object.entries(snapshot.draftThreadsByThreadId).map(
+        ([id, { promoting: _promoting, ...draft }]) => [id, draft],
+      ),
+    ),
     projectDraftThreadIdByProjectId: snapshot.projectDraftThreadIdByProjectId,
     promptStashes: snapshot.promptStashes,
   } as PersistedComposerDraftStoreState;
@@ -2004,7 +2008,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           moved = true;
           const nextDraftThreadsByThreadId: Record<ThreadId, DraftThreadState> = {
             ...state.draftThreadsByThreadId,
-            [toThreadId]: { ...draftThread, createdAt: new Date().toISOString() },
+            [toThreadId]: { ...draftThread, promoting: false, createdAt: new Date().toISOString() },
           };
           delete nextDraftThreadsByThreadId[fromThreadId];
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
@@ -2050,7 +2054,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextWorktreePath = workspace.worktreePath;
           const nextDraftThread: DraftThreadState = {
             projectId: nextProjectId,
-            promoting: options.promoting ?? existing.promoting ?? false,
+            ...(existing.promoting !== undefined ? { promoting: existing.promoting } : {}),
+            ...(options.promoting !== undefined ? { promoting: options.promoting } : {}),
             createdAt:
               options.createdAt === undefined
                 ? existing.createdAt
@@ -3673,7 +3678,11 @@ export function pruneOrphanedDraftThreads(validProjectIds: ReadonlySet<string>):
 
     const referencedThreadIds = new Set(Object.values(nextProjectDraftThreadIdByProjectId));
     for (const threadId of Object.keys(nextDraftThreadsByThreadId) as ThreadId[]) {
-      if (referencedThreadIds.has(threadId)) {
+      if (
+        referencedThreadIds.has(threadId) ||
+        nextDraftThreadsByThreadId[threadId]?.promoting ||
+        (state.draftsByThreadId[threadId] && !isEmptyThreadDraft(state.draftsByThreadId[threadId]!))
+      ) {
         continue;
       }
       delete nextDraftThreadsByThreadId[threadId];
