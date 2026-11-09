@@ -105,10 +105,9 @@ final class HeldInputTrackerTests: XCTestCase {
     var tracker = HeldInputTracker()
     tracker.observe(.modifierChanged(56, down: true), now: 0)
     tracker.observe(.buttonDown(0), now: 0)
-    // No further events: a held Cmd or a stationary press sends none. Equal down times sort by
-    // kind, so the button comes first.
+    // No further events: a held Cmd or a stationary press sends none.
     XCTAssertEqual(
-      held(&tracker, now: HeldInputTracker.staleAfter * 10) { _ in true }, [left, shift])
+      held(&tracker, now: HeldInputTracker.staleAfter * 10) { _ in true }, [shift, left])
   }
 
   func testKeyHoldWithoutRecentPhysicalInputStopsCounting() {
