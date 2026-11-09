@@ -411,6 +411,8 @@ export function codexChromeChildEnvironment(
 /** Appended to the session's developer instructions so Codex can find the skill. */
 export function codexChromeInstructions(installation: CodexChromeInstallation): string {
   return [
+    "Until browser_resume succeeds in this backend session, a parked browser also restarts with the next message. A failed resume restores this recovery fallback.",
+    "Conflicting native computer control automatically parks Chrome. If browser_resume is available, call it by itself to return to Chrome, then recreate browser variables and tab handles. Older provider threads resume Chrome on the next message. Do not ask the user to stop Chrome for an automatic handoff.",
     "Chrome control is available through the `node_repl` MCP server's `js` tool.",
     `Before using it, read the skill at ${installation.skillPath}.`,
     `The Chrome plugin's files are under ${installation.pluginRoot}.`,

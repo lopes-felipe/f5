@@ -5,6 +5,12 @@ import {
   type ComputerAutomationRequest,
 } from "@t3tools/contracts";
 
+/** Native admission and broker handoff waits use the same retryable self-wait reasons. */
+export const CHROME_OWN_CALL_RUNNING_MESSAGE =
+  "A Chrome call from this thread is still running; retry once it finishes.";
+export const CHROME_OWN_STOPPING_MESSAGE =
+  "Chrome control from this thread is stopping; retry once it has stopped.";
+
 const OBSERVATIONS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "status",
   "listApps",

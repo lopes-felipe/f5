@@ -4084,6 +4084,9 @@ it.effect(
       pause: { subscribe: () => () => undefined, has: () => false },
       onChromeDisabled: () => () => undefined,
       registerChromeReleaser: () => () => undefined,
+      registerCodexHandoff: () => () => undefined,
+      waitForChromeRelease: async () => {},
+      prepareCodexBrowser: async () => {},
       chromeRecoveryRequired: () => false,
     };
     const spies = [
@@ -4297,6 +4300,9 @@ it.effect(
       pause: { subscribe: () => () => undefined, has: () => false },
       onChromeDisabled: () => () => undefined,
       registerChromeReleaser: () => () => undefined,
+      registerCodexHandoff: () => () => undefined,
+      waitForChromeRelease: async () => {},
+      prepareCodexBrowser: async () => {},
       chromeRecoveryRequired: () => false,
     };
     const installation = {

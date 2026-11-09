@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { ComputerControlError, computerRequestPayload } from "@t3tools/shared/computerControl";
+import {
+  ComputerControlError,
+  computerRequestPayload,
+  CHROME_OWN_STOPPING_MESSAGE,
+} from "@t3tools/shared/computerControl";
 import { describe, expect, it, vi } from "vitest";
 import type { ComputerLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
 import {
@@ -117,6 +121,126 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
 }
 describe("computer broker safety boundaries", () => {
+  it("waits for its own Codex handoff before dispatching native work", async () => {
+    const h = await harness();
+    try {
+      let release!: () => void;
+      const native = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      h.broker.registerCodexHandoff("t", "s", {
+        native,
+        browser: async () => {},
+        status: () => ({ state: "ready" }),
+      });
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "sunflower" });
+      await vi.waitFor(() => expect(native).toHaveBeenCalledOnce());
+      expect(h.ipc.messages.some((m) => m.type === "leaseAcquire" || m.type === "request")).toBe(
+        false,
+      );
+      release();
+      await pending;
+      expect(h.ipc.messages.some((m) => m.type === "leaseAcquire")).toBe(true);
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("does not dispatch native work after pause during handoff", async () => {
+    const h = await harness();
+    try {
+      let release!: () => void;
+      const native = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      h.broker.registerCodexHandoff("t", "s", {
+        native,
+        browser: async () => {},
+        status: () => ({ state: "ready" }),
+      });
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "sunflower" });
+      const refused = expect(pending).rejects.toMatchObject({
+        error: { _tag: "Interrupted", cause: "paused" },
+      });
+      await vi.waitFor(() => expect(native).toHaveBeenCalledOnce());
+      h.broker.setPaused("t", true);
+      h.broker.setPaused("t", false);
+      release();
+      await refused;
+      expect(h.ipc.messages.some((m) => m.type === "leaseAcquire" || m.type === "request")).toBe(
+        false,
+      );
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("exposes parked Chrome separately from backend availability without changing grants", async () => {
+    const h = await harness();
+    try {
+      h.broker.registerCodexHandoff("t", "s", {
+        native: async () => {},
+        browser: async () => {},
+        status: () => ({ state: "parked-for-native", nextAction: "browser_resume" }),
+      });
+      await h.broker.invoke("t", "s", { op: "status" });
+      const grants = h.broker.access.grants("t");
+      expect(await h.broker.invoke("t", "s", { op: "status" })).toMatchObject({
+        available: true,
+        control: { chrome: { state: "parked-for-native", nextAction: "browser_resume" } },
+      });
+      expect(h.broker.access.grants("t")).toEqual(grants);
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("waits for desktop lease release rather than trusting the stop request", async () => {
+    const h = await harness();
+    try {
+      const holder = { profileId: "p", threadId: "t", sessionGeneration: "s", provider: "codex" };
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder });
+      await expect(
+        h.broker.waitForChromeRelease("t", "s", performance.now() + 5, async () => {}),
+      ).rejects.toThrow(CHROME_OWN_STOPPING_MESSAGE);
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null });
+      await h.broker.waitForChromeRelease("t", "s", performance.now() + 100, async () => {});
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("releases a Chrome reservation if pause arrives with the acquire reply", async () => {
+    const h = await harness();
+    try {
+      const original = h.ipc.send.bind(h.ipc);
+      vi.spyOn(h.ipc, "send").mockImplementation((raw, callback) => {
+        const message = raw as DesktopComputerHostMessage;
+        if (message.type !== "chromeLeaseAcquire") return original(raw, callback);
+        h.ipc.messages.push(message);
+        callback(null);
+        queueMicrotask(() => {
+          h.broker.setPaused("t", true);
+          h.ipc.emit("message", { type: "response", requestId: message.requestId, result: true });
+        });
+        return true;
+      });
+      await expect(
+        h.broker.prepareCodexBrowser("t", "s", performance.now() + 1000, async () => {
+          if (h.broker.pause.has("t")) throw new Error("paused");
+        }),
+      ).rejects.toThrow("paused");
+      expect(h.ipc.messages.some((m) => m.type === "chromeLeaseRelease")).toBe(true);
+    } finally {
+      h.broker.close();
+    }
+  });
+
   it("does not dispatch a mutation when context consumes its absolute batch deadline", async () => {
     const h = await harness();
     try {
@@ -915,6 +1039,44 @@ describe("computer broker safety boundaries", () => {
 });
 
 describe("background delivery", () => {
+  it("cleans up a failed foreground handoff so browser_resume can succeed in the same turn", async () => {
+    const h = await backgroundHarness();
+    h.ipc.appResults = [
+      {
+        appId: "com.apple.TextEdit",
+        name: "TextEdit",
+        tier: "full",
+        running: true,
+        frontmost: false,
+      },
+    ];
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.broker.registerCodexHandoff("t", "s", {
+        native: async () => {
+          throw new Error("Chrome call still running");
+        },
+        browser: (deadline, check) => h.broker.prepareCodexBrowser("t", "s", deadline, check),
+        status: () => ({ state: "ready" }),
+      });
+      await expect(h.broker.requestForeground("t", "s", "TextEdit", "Drag")).rejects.toThrow(
+        "Chrome call still running",
+      );
+      const acquire = vi.spyOn(h.broker, "acquireChromeLease").mockResolvedValue(undefined);
+      await expect(h.broker.resumeCodexBrowser("t", "s")).resolves.toMatchObject({
+        state: "ready",
+      });
+      expect(acquire).toHaveBeenCalledOnce();
+    } finally {
+      h.broker.close();
+    }
+  });
   async function backgroundHarness(platform: "darwin" | "win32" = "darwin") {
     const h = await harness(platform);
     h.set({

@@ -2805,6 +2805,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                         meta,
                       ),
                   },
+                  supportsBrowserResume: () => manager.browserResumeAvailable(threadId),
+                  waitForMcpIdle: (deadline, check) =>
+                    manager.waitForMcpIdle(threadId, deadline, check),
                   policyEnabled: () =>
                     Effect.runPromise(
                       resolveAgentBrowserPolicy(threadId).pipe(
@@ -2888,7 +2891,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 }),
             })
           : {};
+        const chromeGeneration = chromeBroker?.generation(input.threadId);
         const managerInput: CodexAppServerStartSessionInput = {
+          ...(chromeServer && chromeBroker && chromeGeneration
+            ? {
+                browserResume: () =>
+                  chromeBroker.resumeCodexBrowser(input.threadId, chromeGeneration),
+              }
+            : {}),
           ...(input.mcpEventIdentity ? { mcpEventIdentity: input.mcpEventIdentity } : {}),
           threadId: input.threadId,
           provider: "codex",
