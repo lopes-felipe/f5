@@ -11,6 +11,7 @@ function deferred<T>() {
 function fixture(
   check = vi.fn(async (): Promise<{ version: string; releaseNotes: null } | null> => null),
   timeoutMs = 1000,
+  isQuitting = () => false,
 ) {
   let state = {
     ...createInitialDesktopUpdateState("0.1.0", {
@@ -31,6 +32,7 @@ function fixture(
     },
     writePreferences,
     timeoutMs,
+    isQuitting,
     port: { check, download, applySettings },
   });
   return {
@@ -48,6 +50,38 @@ function fixture(
   };
 }
 describe("update queue", () => {
+  it("restores a cached installer only after the native check finishes", async () => {
+    const pending = deferred<{ version: string; releaseNotes: null; cachedDownload: boolean }>();
+    const f = fixture(vi.fn(() => pending.promise));
+    f.download.mockImplementation(async () => {
+      f.state = { ...f.state, status: "downloaded", downloadedVersion: "0.2.0" };
+    });
+    const check = f.controller.requestCheck("startup");
+    await Promise.resolve();
+    expect(f.download).not.toHaveBeenCalled();
+    pending.resolve({ version: "0.2.0", releaseNotes: null, cachedDownload: true });
+    await check;
+    expect(f.download).toHaveBeenCalledTimes(1);
+    expect(f.state.status).toBe("downloaded");
+    expect(f.state.downloadedVersion).toBe("0.2.0");
+  });
+  it.each([false, true])(
+    "keeps uncached updates manual and abandons recovery when quitting (%s)",
+    async (quitting) => {
+      const f = fixture(
+        vi.fn(async () => ({
+          version: "0.2.0",
+          releaseNotes: null,
+          cachedDownload: quitting,
+        })),
+        1000,
+        () => quitting,
+      );
+      await f.controller.requestCheck("startup");
+      expect(f.state.status).toBe("available");
+      expect(f.download).not.toHaveBeenCalled();
+    },
+  );
   it("coalesces checks and timestamps completion", async () => {
     const pending = deferred<null>();
     const f = fixture(vi.fn(() => pending.promise));

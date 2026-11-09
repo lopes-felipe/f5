@@ -15,7 +15,11 @@ import {
 } from "./updateMachine";
 
 export interface UpdaterPort {
-  check(): Promise<{ version: string; releaseNotes: string | null } | null>;
+  check(): Promise<{
+    version: string;
+    releaseNotes: string | null;
+    cachedDownload?: boolean;
+  } | null>;
   download(): Promise<unknown>;
   applySettings(settings: {
     channel: string;
@@ -29,6 +33,7 @@ export function createUpdateController(options: {
   emit(state: DesktopUpdateState): void;
   writePreferences(channel: DesktopUpdateChannel): void;
   timeoutMs?: number;
+  isQuitting?(): boolean;
 }) {
   let queue: Promise<unknown> = Promise.resolve();
   let pendingManual = false;
@@ -98,6 +103,16 @@ export function createUpdateController(options: {
             )
           : reduceDesktopUpdateStateOnNoUpdate(options.getState(), now),
       );
+      // The native check has finished, so electron-updater can now validate its
+      // cached installer and emit update-downloaded on this launch.
+      if (
+        info?.cachedDownload &&
+        !options.isQuitting?.() &&
+        options.getState().status === "available" &&
+        options.getState().availableVersion === info.version
+      ) {
+        await download();
+      }
     } catch (error) {
       options.emit(
         reduceDesktopUpdateStateOnCheckFailure(
@@ -112,6 +127,22 @@ export function createUpdateController(options: {
     }
     return result(true);
   }
+  async function download(): Promise<DesktopUpdateActionResult> {
+    if (options.isQuitting?.() || options.getState().status !== "available") return result(false);
+    options.emit(reduceDesktopUpdateStateOnDownloadStart(options.getState()));
+    try {
+      await options.port.download();
+      return result(true);
+    } catch (error) {
+      options.emit(
+        reduceDesktopUpdateStateOnDownloadFailure(
+          options.getState(),
+          getUpdateErrorMessage(error, "download"),
+        ),
+      );
+      return { ...result(true), completed: false };
+    }
+  }
   return {
     applyChannel,
     requestCheck(reason: string) {
@@ -124,22 +155,7 @@ export function createUpdateController(options: {
       return pendingCheck;
     },
     download() {
-      return enqueue(async () => {
-        if (options.getState().status !== "available") return result(false);
-        options.emit(reduceDesktopUpdateStateOnDownloadStart(options.getState()));
-        try {
-          await options.port.download();
-          return result(true);
-        } catch (error) {
-          options.emit(
-            reduceDesktopUpdateStateOnDownloadFailure(
-              options.getState(),
-              getUpdateErrorMessage(error, "download"),
-            ),
-          );
-          return { ...result(true), completed: false };
-        }
-      });
+      return enqueue(download);
     },
     setChannel(channel: DesktopUpdateChannel) {
       if (["downloading", "preparing"].includes(options.getState().status))

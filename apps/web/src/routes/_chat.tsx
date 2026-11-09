@@ -42,6 +42,7 @@ import {
   resolveAcceptedThreadSidebarWidth,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
   THREAD_SIDEBAR_MIN_WIDTH_PX,
+  THREAD_MAIN_PANEL_MIN_WIDTH_PX,
   THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
@@ -129,6 +130,7 @@ function ChatRouteLayout() {
   return (
     <SidebarProvider
       defaultOpen
+      mobileBreakpoint={THREAD_SIDEBAR_MIN_WIDTH_PX + THREAD_MAIN_PANEL_MIN_WIDTH_PX}
       keyboardShortcut
       className="bg-sidebar"
       data-thread-sidebar-layout="true"

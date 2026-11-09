@@ -32,6 +32,7 @@ import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
+import { hasCachedUpdate } from "./updateCache";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
@@ -2918,6 +2919,7 @@ function configureAutoUpdater(): void {
   autoUpdater.autoInstallOnAppQuit = false;
   let lastLoggedDownloadMilestone = -1;
   updateController = createUpdateController({
+    isQuitting: () => isQuitting,
     getState: () => updateState,
     emit: (state) => setUpdateState(state),
     writePreferences: (value) => writeUpdatePreferences(preferencesPath, value),
@@ -2932,6 +2934,13 @@ function configureAutoUpdater(): void {
         return result?.isUpdateAvailable
           ? {
               version: result.updateInfo.version,
+              cachedDownload: await hasCachedUpdate(
+                autoUpdater,
+                result.updateInfo.files,
+                desktopRuntimeInfo,
+                process.platform,
+                process.resourcesPath,
+              ),
               releaseNotes: normalizeDesktopUpdateReleaseNotes(result.updateInfo.releaseNotes),
             }
           : null;
@@ -4248,7 +4257,7 @@ function createWindow(
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 840,
+    minWidth: 600,
     minHeight: 620,
     show: false,
     autoHideMenuBar: true,
