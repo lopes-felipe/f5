@@ -2,22 +2,40 @@ import ApplicationServices
 import CoreGraphics
 
 /// One accessibility element as the secure-field audit reads it.
-/// `childrenReadable` is false only when reading children failed with a real error.
+/// `childrenReadable` and `subroleReadable` are false only when that read failed with a real
+/// error.
 public struct ComputerSecureAuditNode<Handle> {
   public var role: String?
   public var subrole: String?
   public var frame: CGRect?
   public var children: [Handle]
   public var childrenReadable: Bool
+  public var subroleReadable: Bool
   public init(
     role: String?, subrole: String? = nil, frame: CGRect?, children: [Handle] = [],
-    childrenReadable: Bool = true
+    childrenReadable: Bool = true, subroleReadable: Bool = true
   ) {
     self.role = role
     self.subrole = subrole
     self.frame = frame
     self.children = children
     self.childrenReadable = childrenReadable
+    self.subroleReadable = subroleReadable
+  }
+}
+
+/// Roles that can carry the `AXSecureTextField` subrole. When such an element's subrole cannot
+/// be read, the audit treats it as a secure field; for any other role the subrole is irrelevant.
+let computerSecureAuditSecureCapableRoles: Set<String> = [
+  "AXTextField", "AXTextArea", "AXComboBox",
+]
+
+extension ComputerSecureAuditNode {
+  /// True when this element is, or cannot be ruled out as, a secure text field.
+  var mayBeSecureField: Bool {
+    if role == "AXSecureTextField" || subrole == "AXSecureTextField" { return true }
+    guard !subroleReadable, let role else { return false }
+    return computerSecureAuditSecureCapableRoles.contains(role)
   }
 }
 
@@ -65,14 +83,12 @@ func computerAXValue<T>(_ value: AnyObject, _ type: AXValueType, _ empty: T) -> 
 }
 
 /// Parses one batched read of `computerSecureAuditAttributes`. Missing attributes come back
-/// as embedded AX errors; children count as unreadable only for real errors.
+/// as embedded AX errors; children and subrole count as unreadable only for real errors.
 public func computerSecureAuditNode(_ values: [AnyObject]) -> ComputerSecureAuditNode<AXUIElement>?
 {
   guard values.count == 5 else { return nil }
-  if let error = computerAXBatchError(values[1]),
-    error != .attributeUnsupported && error != .noValue
-  {
-    return nil
+  func readable(_ error: AXError?) -> Bool {
+    error.map { $0 == .attributeUnsupported || $0 == .noValue } ?? true
   }
   let frame = computerAXValue(values[2], .cgPoint, CGPoint.zero).flatMap { point in
     computerAXValue(values[3], .cgSize, CGSize.zero).map { CGRect(origin: point, size: $0) }
@@ -81,7 +97,8 @@ public func computerSecureAuditNode(_ values: [AnyObject]) -> ComputerSecureAudi
   return ComputerSecureAuditNode(
     role: values[0] as? String, subrole: values[1] as? String, frame: frame,
     children: childrenError == nil ? values[4] as? [AXUIElement] ?? [] : [],
-    childrenReadable: childrenError.map { $0 == .attributeUnsupported || $0 == .noValue } ?? true)
+    childrenReadable: readable(childrenError),
+    subroleReadable: readable(computerAXBatchError(values[1])))
 }
 
 /// Text and image leaves cannot contain a secure field; Chrome's inline text boxes under
@@ -162,7 +179,9 @@ public func computerSecureAudit<Handle>(
       continue
     }
     let own = node.frame.flatMap { computerSecureAuditRectIsValid($0) ? $0 : nil }
-    if role == "AXSecureTextField" || node.subrole == "AXSecureTextField" {
+    // Diagnostic only: the subrole matters solely for secure-capable roles, handled below.
+    if !node.subroleReadable { diagnostics?.stop(.unreadableSubrole) }
+    if node.mayBeSecureField {
       if let own {
         append(own)
       } else {
@@ -198,12 +217,13 @@ public func computerSecureAudit<Handle>(
           }
           visited += 1
           diagnostics?.visitNode()
-          guard let field = read(handle), let fieldRole = field.role else {
+          guard let field = read(handle), field.role != nil else {
             diagnostics?.stop(.unreadableNode)
             safe = false
             break
           }
-          if fieldRole == "AXSecureTextField" || field.subrole == "AXSecureTextField" {
+          if !field.subroleReadable { diagnostics?.stop(.unreadableSubrole) }
+          if field.mayBeSecureField {
             guard let frame = field.frame, computerSecureAuditRectIsValid(frame) else {
               diagnostics?.stop(.secureFieldWithoutFrame)
               safe = false

@@ -7,6 +7,8 @@ public final class ComputerSecureAuditDiagnostics {
     case depthLimit = "depth-limit"
     case unreadableNode = "unreadable-node"
     case unreadableChildren = "unreadable-children"
+    /// An element's subrole read failed. Masks only when the role can be a secure field.
+    case unreadableSubrole = "unreadable-subrole"
     case secureFieldWithoutFrame = "secure-field-without-frame"
     case searchLimit = "search-limit"
     case searchIncomplete = "search-incomplete"
