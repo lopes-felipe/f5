@@ -627,6 +627,17 @@ describe("resolveClaudeApiModelId", () => {
 });
 
 describe("Claude version gates", () => {
+  it.each(["fable", "claude-fable", "fable[200k]"])(
+    "warns saved sessions using %s below the Fable 5.2 version gate",
+    (model) => {
+      expect(claudeSessionModelGateMessage(model, "2.1.289")).toBe(
+        "This session runs Claude Code v2.1.289, which is too old for Claude Fable 5.2. Upgrade to v2.1.290 or newer.",
+      );
+      expect(claudeSessionModelGateMessage(model, "2.1.290")).toBeUndefined();
+      expect(claudeSessionModelGateMessage(model, undefined)).toBeUndefined();
+    },
+  );
+
   it("orders minimum versions descending so the first failing gate recommends a sufficient upgrade", () => {
     for (let i = 1; i < VERSION_GATED_CLAUDE_MODELS.length; i++) {
       expect(
