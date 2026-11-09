@@ -188,36 +188,106 @@ describe("getReviewPreviewDiff", () => {
     expect(git(cwd, ["status", "--porcelain=v1"])).toBe(statusBefore);
   });
 
-  it.each([false, true])(
-    "preserves a staged deletion left on disk (staged copy: %s)",
-    async (stagedCopy) => {
+  it.each([
+    { stagedCopy: false, nested: false },
+    { stagedCopy: true, nested: false },
+    { stagedCopy: false, nested: true },
+    { stagedCopy: true, nested: true },
+  ])(
+    "preserves a staged deletion left on disk (staged copy: $stagedCopy, nested: $nested)",
+    async ({ stagedCopy, nested }) => {
       const cwd = makeRepository();
-      write(cwd, "removed.txt", "remove me\n");
-      git(cwd, ["add", "removed.txt"]);
+      write(cwd, "sub/removed.txt", "remove me\n");
+      git(cwd, ["add", "sub/removed.txt"]);
       git(cwd, ["commit", "-m", "add removable file"]);
-      git(cwd, ["rm", "--cached", "removed.txt"]);
+      git(cwd, ["rm", "--cached", "sub/removed.txt"]);
       if (stagedCopy) {
-        write(cwd, "copy.txt", "remove me\n");
-        git(cwd, ["add", "copy.txt"]);
+        write(cwd, "sub/copy.txt", "remove me\n");
+        git(cwd, ["add", "sub/copy.txt"]);
       }
       const indexBefore = fs.readFileSync(path.join(cwd, ".git", "index"));
       const statusBefore = git(cwd, ["status", "--porcelain=v1"]);
 
-      const result = await preview(cwd, "working-tree");
+      const result = await preview(nested ? path.join(cwd, "sub") : cwd, "working-tree");
 
       expect(result.kind).toBe("success");
       if (result.kind !== "success") return;
       for (const text of stagedCopy
-        ? ["rename from removed.txt", "rename to copy.txt"]
+        ? ["rename from sub/removed.txt", "rename to sub/copy.txt"]
         : ["deleted file mode", "-remove me"]) {
         expect(result.patch).toContain(text);
       }
       expect(result.patch).not.toContain("new file mode");
       expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
       expect(git(cwd, ["status", "--porcelain=v1"])).toBe(statusBefore);
-      expect(fs.readFileSync(path.join(cwd, "removed.txt"), "utf8")).toBe("remove me\n");
+      expect(fs.readFileSync(path.join(cwd, "sub/removed.txt"), "utf8")).toBe("remove me\n");
     },
   );
+
+  it("previews deletion metadata over the byte limit without needless index updates", async () => {
+    const cwd = makeRepository();
+    for (let index = 0; index < 4200; index += 1) {
+      write(cwd, "vendor/" + String(index).padStart(5, "0") + "-".repeat(60) + ".txt", "old\n");
+    }
+    git(cwd, ["add", "vendor"]);
+    git(cwd, ["commit", "-m", "add vendor files"]);
+    git(cwd, ["rm", "-r", "vendor"]);
+    expect(
+      Buffer.byteLength(
+        gitRaw(cwd, [
+          "diff",
+          "--cached",
+          "--no-renames",
+          "--name-only",
+          "--diff-filter=D",
+          "-z",
+          "HEAD",
+          "--",
+        ]),
+      ),
+    ).toBeGreaterThan(256 * 1024);
+    const indexBefore = fs.readFileSync(path.join(cwd, ".git", "index"));
+    let indexUpdates = 0;
+
+    const result = await preview(cwd, "working-tree", undefined, {
+      processRunner: (command, args, options) => {
+        if (args[0] === "update-index") indexUpdates += 1;
+        return runProcess(command, args, options);
+      },
+    });
+
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.truncated).toBe(true);
+    expect(result.truncationReason).toBe("The staged deletions list was truncated.");
+    expect(result.patch).toContain("deleted file mode");
+    expect(indexUpdates).toBe(0);
+    expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
+  });
+
+  it("preserves only complete deletion paths when metadata is truncated", async () => {
+    const cwd = makeRepository();
+    write(cwd, "removed.txt", "remove me\n");
+    git(cwd, ["add", "."]);
+    git(cwd, ["commit", "-m", "add removable file"]);
+    git(cwd, ["rm", "--cached", "removed.txt"]);
+
+    const result = await preview(cwd, "working-tree", undefined, {
+      processRunner: async (command, args, options) => {
+        const result = await runProcess(command, args, options);
+        return args.includes("--diff-filter=D")
+          ? { ...result, stdout: "removed.txt\0incomplete", stdoutTruncated: true }
+          : result;
+      },
+    });
+
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.truncated).toBe(true);
+    expect(result.patch).toContain("deleted file mode");
+    expect(result.patch).not.toContain("incomplete");
+    expect(result.truncationReason).toBe("The staged deletions list was truncated.");
+  });
 
   it("uses merge-base three-dot semantics for branch-range patches", async () => {
     const cwd = makeRepository();

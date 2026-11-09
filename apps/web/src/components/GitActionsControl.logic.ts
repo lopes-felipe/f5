@@ -256,7 +256,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: true,
         kind: "show_hint",
-        hint: 'Add an "origin" remote before pushing or creating a PR.',
+        hint: "Add a remote before pushing or creating a PR.",
       };
     }
     if (!isAhead) {

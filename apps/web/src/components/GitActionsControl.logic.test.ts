@@ -683,7 +683,7 @@ describe("when: branch has no upstream configured", () => {
     assert.deepEqual(quick, {
       kind: "show_hint",
       label: "Push",
-      hint: 'Add an "origin" remote before pushing or creating a PR.',
+      hint: "Add a remote before pushing or creating a PR.",
       disabled: true,
     });
   });

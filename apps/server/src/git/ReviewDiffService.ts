@@ -234,8 +234,24 @@ function resolveDefaultBaseRef(
   });
 }
 
+function existingWorkingTreePaths(cwd: string, paths: ReadonlyArray<string>) {
+  return Effect.forEach(
+    [...new Set(paths)],
+    (candidate) =>
+      Effect.promise(() =>
+        lstat(path.join(cwd, candidate)).then(
+          () => candidate,
+          () => null,
+        ),
+      ),
+    { concurrency: 32 },
+  ).pipe(
+    Effect.map((paths) => paths.filter((candidate): candidate is string => candidate !== null)),
+  );
+}
+
 function makeWorkingTreePatch(
-  cwd: string,
+  workingDirectory: string,
   ignoreWhitespace: boolean,
   execution: ReviewDiffExecutionOptions,
 ): Effect.Effect<WorkingTreePatch | ReviewPreviewDiffFailure, Error> {
@@ -249,6 +265,16 @@ function makeWorkingTreePatch(
     }),
     (directory) =>
       Effect.gen(function* () {
+        // diff metadata is root-relative; use the same base for ls-files, lstat and index edits.
+        const root = yield* runGit(
+          workingDirectory,
+          ["rev-parse", "--show-toplevel"],
+          undefined,
+          execution,
+        );
+        const rootFailure = commandFailure(root);
+        if (rootFailure) return rootFailure;
+        const cwd = root.stdout.replace(/\r?\n$/, "");
         const indexPath = path.join(directory, `index-${randomUUID()}`);
         const env = { GIT_INDEX_FILE: indexPath };
         const readTree = yield* runGit(cwd, ["read-tree", "HEAD"], { env }, execution);
@@ -300,20 +326,24 @@ function makeWorkingTreePatch(
         );
         const stagedDeletionsFailure = commandFailure(stagedDeletions);
         if (stagedDeletionsFailure) return stagedDeletionsFailure;
-        if (stagedDeletions.stdoutTruncated) {
-          return failure(
-            "git_failed",
-            "The staged deletions list exceeded the review limit.",
-            true,
-          );
-        }
-        const deletedPaths = stagedDeletions.stdout.split("\0").filter(Boolean);
+        const stagedDeletionsOutput = stagedDeletions.stdoutTruncated
+          ? stagedDeletions.stdout.slice(0, stagedDeletions.stdout.lastIndexOf("\0") + 1)
+          : stagedDeletions.stdout;
+        const stagedDeletionsTruncated = stagedDeletions.stdoutTruncated === true;
+        const deletedPaths = stagedDeletionsOutput.split("\0").filter(Boolean);
         const deletedPathSet = new Set(deletedPaths);
         // Start from HEAD, but preserve index deletions even if their files remain on disk.
-        for (let offset = 0; offset < deletedPaths.length; offset += 64) {
+        // Missing files already appear deleted in the final diff without editing this index.
+        const existingDeletedPaths = yield* existingWorkingTreePaths(cwd, deletedPaths);
+        for (let offset = 0; offset < existingDeletedPaths.length; offset += 64) {
           const remove = yield* runGit(
             cwd,
-            ["update-index", "--force-remove", "--", ...deletedPaths.slice(offset, offset + 64)],
+            [
+              "update-index",
+              "--force-remove",
+              "--",
+              ...existingDeletedPaths.slice(offset, offset + 64),
+            ],
             { env },
             execution,
           );
@@ -337,16 +367,7 @@ function makeWorkingTreePatch(
           ...allPaths.slice(0, UNTRACKED_LIMIT_PATHS),
           ...stagedAdditionPaths,
         ];
-        const paths = (yield* Effect.promise(() =>
-          Promise.all(
-            [...new Set(candidatePaths)].map(async (candidate) =>
-              lstat(path.join(cwd, candidate)).then(
-                () => candidate,
-                () => null,
-              ),
-            ),
-          ),
-        )).filter((candidate): candidate is string => candidate !== null);
+        const paths = yield* existingWorkingTreePaths(cwd, candidatePaths);
         for (let offset = 0; offset < paths.length; offset += 64) {
           const add = yield* runGit(
             cwd,
@@ -386,12 +407,17 @@ function makeWorkingTreePatch(
         return {
           kind: "patch" as const,
           patch: bounded.patch,
-          truncated: bounded.truncated || untrackedTruncated || stagedAdditionsTruncated,
+          truncated:
+            bounded.truncated ||
+            untrackedTruncated ||
+            stagedAdditionsTruncated ||
+            stagedDeletionsTruncated,
           reason:
             (untrackedTruncated
               ? `Only the first ${UNTRACKED_LIMIT_PATHS} untracked paths were included.`
               : null) ??
             (stagedAdditionsTruncated ? "The staged additions list was truncated." : null) ??
+            (stagedDeletionsTruncated ? "The staged deletions list was truncated." : null) ??
             bounded.reason,
         };
       }),

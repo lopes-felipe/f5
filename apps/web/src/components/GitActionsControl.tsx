@@ -179,7 +179,7 @@ function getMenuActionDisabledReason({
       return "Branch is behind upstream. Pull/rebase before pushing.";
     }
     if (!gitStatus.hasUpstream && !hasOriginRemote) {
-      return 'Add an "origin" remote before pushing.';
+      return "Add a remote before pushing.";
     }
     if (!isAhead) {
       return "No local commits to push.";
@@ -197,7 +197,7 @@ function getMenuActionDisabledReason({
     return "Commit local changes before creating a PR.";
   }
   if (!gitStatus.hasUpstream && !hasOriginRemote) {
-    return 'Add an "origin" remote before creating a PR.';
+    return "Add a remote before creating a PR.";
   }
   if (!isAhead) {
     return "No local commits to include in a PR.";
