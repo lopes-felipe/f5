@@ -1,4 +1,4 @@
-import { type ThreadId } from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, type ThreadId } from "@t3tools/contracts";
 import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 import { extractTrailingAttachedFiles } from "./attachedFiles";
 
@@ -165,7 +165,7 @@ export function buildTerminalContextBlock(
   for (let index = 0; index < normalizedContexts.length; index += 1) {
     const context = normalizedContexts[index]!;
     lines.push(`- ${formatTerminalContextLabel(context)}:`);
-    lines.push(...buildTerminalContextBodyLines(context));
+    for (const line of buildTerminalContextBodyLines(context)) lines.push(line);
     if (index < normalizedContexts.length - 1) {
       lines.push("");
     }
@@ -203,9 +203,19 @@ export function materializeInlineTerminalContextPrompt(
 export function appendTerminalContextsToPrompt(
   prompt: string,
   contexts: ReadonlyArray<TerminalContextSelection>,
+  maxChars = PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 ): string {
   const trimmedPrompt = materializeInlineTerminalContextPrompt(prompt, contexts).trim();
-  const contextBlock = buildTerminalContextBlock(contexts);
+  let contextBlock = buildTerminalContextBlock(contexts);
+  const suffix = "\n… truncated …\n</terminal_context>";
+  const budget = Math.max(0, maxChars - trimmedPrompt.length - (trimmedPrompt ? 2 : 0));
+  if (contextBlock.length > budget) {
+    if (budget <= suffix.length) return trimmedPrompt;
+    let end = budget - suffix.length;
+    const last = contextBlock.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end--;
+    contextBlock = contextBlock.slice(0, end) + suffix;
+  }
   if (contextBlock.length === 0) {
     return trimmedPrompt;
   }

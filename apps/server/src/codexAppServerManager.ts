@@ -2384,7 +2384,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         expectedRemainingTurnIds: history.turns.slice(0, boundary).map((turn) => turn.id),
       });
       const response = asObject(
-        await request("thread/fork", { ...forkParams, deferGoalContinuation: true }),
+        await this.forkWithArchivedRecovery(
+          context,
+          { ...forkParams, deferGoalContinuation: true },
+          request,
+        ),
       );
       const forkId = asObject(response?.thread)?.id;
       if (typeof forkId !== "string" || forkId === threadId)
@@ -2918,7 +2922,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     try {
       let response: unknown;
       try {
-        response = await this.sendRequest(context, "thread/fork", forkParams);
+        response = await this.forkWithArchivedRecovery(context, forkParams);
       } catch (error) {
         if (!(error instanceof CodexJsonRpcError)) {
           context.unsettledFork = true;
@@ -4532,6 +4536,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.cacheReadState(context, asObject(response.result)?.readState);
     }
     pending.resolve(response.result);
+  }
+
+  private async forkWithArchivedRecovery(
+    context: CodexSessionContext,
+    params: Record<string, unknown>,
+    request = (method: string, input: Record<string, unknown>): Promise<unknown> =>
+      this.sendRequest(context, method, input),
+  ): Promise<unknown> {
+    try {
+      return await request("thread/fork", params);
+    } catch (error) {
+      if (!isArchivedThreadResumeError(error)) throw error;
+      await request("thread/unarchive", { threadId: params.threadId });
+      return request("thread/fork", params);
+    }
   }
 
   private async sendRequest<TResponse>(

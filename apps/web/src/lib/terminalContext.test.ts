@@ -38,6 +38,18 @@ function makeContext(overrides?: Partial<TerminalContextDraft>): TerminalContext
   };
 }
 
+it("bounds combined terminal context without splitting a surrogate pair", () => {
+  const result = appendTerminalContextsToPrompt(
+    "Investigate",
+    [makeContext({ text: "😀".repeat(100_000) }), makeContext({ text: "more".repeat(100_000) })],
+    1_001,
+  );
+  expect(result.length).toBeLessThanOrEqual(1_001);
+  expect(result).toContain("… truncated …");
+  expect(result.endsWith("</terminal_context>")).toBe(true);
+  expect(result).not.toMatch(/[\ud800-\udfff]/u);
+});
+
 describe("terminalContext", () => {
   it("formats terminal labels with line ranges", () => {
     expect(formatTerminalContextLabel(makeContext())).toBe("Terminal 1 lines 12-13");

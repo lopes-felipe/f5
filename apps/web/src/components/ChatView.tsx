@@ -5860,6 +5860,9 @@ export default memo(function ChatView({
     const messageTextWithContexts = appendTerminalContextsToPrompt(
       rewrittenPromptForSend,
       composerTerminalContextsSnapshot,
+      sendLimits.maxInputChars -
+        appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length -
+        (composerFilePathsSnapshot.length > 0 ? 2 : 0),
     );
     const messageTextForSend = appendAttachedFilesToPrompt(
       messageTextWithContexts,
