@@ -17,6 +17,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.

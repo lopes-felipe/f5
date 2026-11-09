@@ -6,7 +6,7 @@ import type {
   ProjectSettingsResult,
   ThreadEnvMode,
 } from "@t3tools/contracts";
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { nonDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 
@@ -17,6 +17,7 @@ import {
   readLegacyClientSetting,
 } from "../hooks/useMigrateClientSettings";
 import { ensureNativeApi } from "../nativeApi";
+import { getWsConnectionState } from "../wsConnectionState";
 
 const CHECKED_IN_PROJECT_CONFIG_STALE_TIME_MS = 5_000;
 
@@ -63,48 +64,54 @@ export function cachedProjectThreadEnvModeSource(
   return "global";
 }
 
+export async function resolveProjectThreadEnvMode(
+  queryClient: QueryClient,
+  projectId: ProjectId,
+  options: ResolveProjectThreadEnvModeOptions = {},
+): Promise<ThreadEnvMode> {
+  if (options.requested)
+    return options.forceNonDefault ? nonDefaultThreadEnvMode(options.requested) : options.requested;
+  const readCached = () => {
+    const cached = queryClient.getQueryData(projectSettingsQueryOptions(projectId).queryKey);
+    const settings = cached?.settings ?? {
+      ...cachedGlobalDraftSettings(),
+      defaultThreadEnvMode: resolveCachedProjectThreadEnvMode(projectId),
+    };
+    const source =
+      cached?.sources.defaultThreadEnvMode ??
+      cachedProjectThreadEnvModeSource(
+        projectId,
+        queryClient.getQueryData(projectCheckedInConfigQueryOptions(projectId).queryKey),
+      );
+    return { settings, source };
+  };
+  const resolveMode = ({ settings, source }: ReturnType<typeof readCached>) => {
+    const envMode = pendingLegacyThreadEnvMode(settings, source) ?? settings.defaultThreadEnvMode;
+    return options.forceNonDefault ? nonDefaultThreadEnvMode(envMode) : envMode;
+  };
+  // Neither migration nor settings reads should queue behind an offline server.
+  if (getWsConnectionState().phase !== "connected") return resolveMode(readCached());
+  const hadPendingMigration = readLegacyClientSetting() !== undefined;
+  await migrateLegacyClientSetting().catch(() => undefined);
+  const query = projectSettingsQueryOptions(projectId);
+  // A copy fetched before the migration landed would carry the old default,
+  // and fetchQuery joins a request already in flight instead of starting one.
+  if (hadPendingMigration) await queryClient.cancelQueries({ queryKey: query.queryKey });
+  const { settings, source } = await queryClient
+    .fetchQuery(hadPendingMigration ? { ...query, staleTime: 0 } : query)
+    .then((result) => ({
+      settings: result.settings,
+      source: result.sources.defaultThreadEnvMode,
+    }))
+    .catch(readCached);
+  return resolveMode({ settings, source });
+}
+
 export function useProjectThreadEnvModeResolver() {
   const queryClient = useQueryClient();
   return useCallback(
-    async (
-      projectId: ProjectId,
-      options: ResolveProjectThreadEnvModeOptions = {},
-    ): Promise<ThreadEnvMode> => {
-      if (options.requested)
-        return options.forceNonDefault
-          ? nonDefaultThreadEnvMode(options.requested)
-          : options.requested;
-      const hadPendingMigration = readLegacyClientSetting() !== undefined;
-      await migrateLegacyClientSetting().catch(() => undefined);
-      const query = projectSettingsQueryOptions(projectId);
-      // A copy fetched before the migration landed would carry the old default,
-      // and fetchQuery joins a request already in flight instead of starting one.
-      if (hadPendingMigration) await queryClient.cancelQueries({ queryKey: query.queryKey });
-      const { settings, source } = await queryClient
-        .fetchQuery(hadPendingMigration ? { ...query, staleTime: 0 } : query)
-        .then((result) => ({
-          settings: result.settings,
-          source: result.sources.defaultThreadEnvMode,
-        }))
-        .catch(() => {
-          const cached = queryClient.getQueryData(query.queryKey);
-          if (cached)
-            return { settings: cached.settings, source: cached.sources.defaultThreadEnvMode };
-          const global = cachedGlobalDraftSettings();
-          return {
-            settings: {
-              ...global,
-              defaultThreadEnvMode: resolveCachedProjectThreadEnvMode(projectId),
-            },
-            source: cachedProjectThreadEnvModeSource(
-              projectId,
-              queryClient.getQueryData(projectCheckedInConfigQueryOptions(projectId).queryKey),
-            ),
-          };
-        });
-      const envMode = pendingLegacyThreadEnvMode(settings, source) ?? settings.defaultThreadEnvMode;
-      return options.forceNonDefault ? nonDefaultThreadEnvMode(envMode) : envMode;
-    },
+    (projectId: ProjectId, options?: ResolveProjectThreadEnvModeOptions) =>
+      resolveProjectThreadEnvMode(queryClient, projectId, options),
     [queryClient],
   );
 }

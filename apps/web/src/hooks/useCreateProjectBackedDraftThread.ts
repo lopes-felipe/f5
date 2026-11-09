@@ -20,6 +20,7 @@ import { newThreadId } from "../lib/utils";
 import { useProjectThreadEnvModeResolver } from "../lib/projectConfigReactQuery";
 import { getModelPreferences } from "../modelPreferencesStore";
 import { useStore } from "../store";
+import { getWsConnectionState } from "../wsConnectionState";
 
 export interface CreateProjectBackedDraftThreadOptions {
   /** Rechecked after async settings resolution, immediately before navigation. */
@@ -101,9 +102,13 @@ export async function createProjectBackedDraftThread({
   let resolvedSettings: ServerSettings | undefined;
   let runtimeMode = defaultDraftRuntimeMode(projectId);
   try {
-    resolvedSettings = (await ensureNativeApi().server.getProjectSettings({ projectId })).settings;
-    rememberDraftSettings(resolvedSettings, projectId);
-    runtimeMode = resolvedSettings.defaultRuntimeMode;
+    // Read requests can wait for reconnection. A local draft must open immediately.
+    if (getWsConnectionState().phase === "connected") {
+      resolvedSettings = (await ensureNativeApi().server.getProjectSettings({ projectId }))
+        .settings;
+      rememberDraftSettings(resolvedSettings, projectId);
+      runtimeMode = resolvedSettings.defaultRuntimeMode;
+    }
   } catch {
     // Local draft creation remains available while reconnecting.
   }
