@@ -1287,39 +1287,52 @@ const makeGitCore = Effect.gen(function* () {
 
       // Porcelain diff can refresh the real index even with optional locks
       // disabled. Plumbing preserves status totals without that side effect.
-      const [statusStdout, unstagedNumstatStdout, stagedNumstatStdout, headNumstatResult] =
-        yield* Effect.all(
-          [
-            executeGit(
-              "GitCore.statusDetails.status",
-              cwd,
-              ["status", "--porcelain=2", "--branch", "-z"],
-              {
-                env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-                maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES,
-              },
-            ).pipe(Effect.map((result) => result.stdout)),
-            executeGit(
-              "GitCore.statusDetails.unstagedNumstat",
-              cwd,
-              ["diff-files", "-M", "--numstat", "-z"],
-              { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
-            ).pipe(Effect.map((result) => result.stdout)),
-            executeGit(
-              "GitCore.statusDetails.stagedNumstat",
-              cwd,
-              ["diff", "--cached", "--numstat", "-z"],
-              { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
-            ).pipe(Effect.map((result) => result.stdout)),
-            executeGit(
-              "GitCore.statusDetails.headNumstat",
-              cwd,
-              ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"],
-              { allowNonZeroExit: true, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
-            ),
-          ],
-          { concurrency: "unbounded" },
-        );
+      const [
+        statusStdout,
+        unstagedNumstatStdout,
+        stagedNumstatStdout,
+        headNumstatResult,
+        rootPath,
+      ] = yield* Effect.all(
+        [
+          executeGit(
+            "GitCore.statusDetails.status",
+            cwd,
+            ["status", "--porcelain=2", "--branch", "-z"],
+            {
+              env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+              maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES,
+            },
+          ).pipe(Effect.map((result) => result.stdout)),
+          executeGit(
+            "GitCore.statusDetails.unstagedNumstat",
+            cwd,
+            ["diff-files", "-M", "--numstat", "-z"],
+            { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+          ).pipe(Effect.map((result) => result.stdout)),
+          executeGit(
+            "GitCore.statusDetails.stagedNumstat",
+            cwd,
+            ["diff", "--cached", "--numstat", "-z"],
+            { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+          ).pipe(Effect.map((result) => result.stdout)),
+          executeGit(
+            "GitCore.statusDetails.headNumstat",
+            cwd,
+            ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"],
+            { allowNonZeroExit: true, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+          ),
+          runGitStdout("GitCore.statusDetails.root", cwd, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+          ]).pipe(
+            Effect.map(stripPathTerminator),
+            Effect.catch(() => Effect.succeed("")),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
 
       let branch: string | null = null;
       let upstreamRef: string | null = null;
@@ -1422,14 +1435,6 @@ const makeGitCore = Effect.gen(function* () {
           ? aggregate.deletions
           : splitAggregate.deletions;
 
-      const rootPath = yield* runGitStdout("GitCore.statusDetails.root", cwd, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--show-toplevel",
-      ]).pipe(
-        Effect.map(stripPathTerminator),
-        Effect.catch(() => Effect.succeed("")),
-      );
       const result = {
         branch,
         upstreamRef,
@@ -1782,14 +1787,30 @@ const makeGitCore = Effect.gen(function* () {
   const stageSelectedFiles = (
     execute: (
       args: readonly string[],
+      options?: Pick<ExecuteGitOptions, "onStdoutChunk">,
     ) => Effect.Effect<{ readonly stdout: string }, GitCommandError>,
     filePaths: readonly string[] | undefined,
   ) =>
     Effect.gen(function* () {
       // A staged rename's source is absent from the index and worktree. Keep
       // it selectable for commit, while excluding it from add's pathspecs.
-      const stagePaths = filePaths?.length
-        ? (yield* execute([
+      let stagePaths: readonly string[] | undefined;
+      if (filePaths?.length) {
+        const selections = new Set(filePaths.map((file) => file.replace(/\/$/, "")));
+        const matched = new Set<string>();
+        const matchPath = (file: string) => {
+          if (selections.has(".")) matched.add(".");
+          if (selections.has(file)) matched.add(file);
+          for (let end = file.indexOf("/"); end >= 0; end = file.indexOf("/", end + 1)) {
+            const directory = file.slice(0, end);
+            if (selections.has(directory)) matched.add(directory);
+          }
+        };
+        const decoder = new TextDecoder();
+        let pending = "";
+        let streamed = false;
+        const result = yield* execute(
+          [
             "ls-files",
             "--cached",
             "--others",
@@ -1798,10 +1819,23 @@ const makeGitCore = Effect.gen(function* () {
             "-z",
             "--",
             ...filePaths.map(topLiteralGitPathspec),
-          ])).stdout
-            .split("\0")
-            .filter(Boolean)
-        : undefined;
+          ],
+          {
+            onStdoutChunk: (chunk) => {
+              streamed = true;
+              pending += decoder.decode(chunk, { stream: true });
+              let end: number;
+              while ((end = pending.indexOf("\0")) >= 0) {
+                matchPath(pending.slice(0, end));
+                pending = pending.slice(end + 1);
+              }
+            },
+          },
+        );
+        // Scripted Git services can return buffered output instead of invoking the consumer.
+        if (!streamed) for (const file of result.stdout.split("\0")) matchPath(file);
+        stagePaths = filePaths.filter((file) => matched.has(file.replace(/\/$/, "")));
+      }
       if (stagePaths === undefined || stagePaths.length > 0) {
         yield* execute([
           "add",
@@ -1834,7 +1868,10 @@ const makeGitCore = Effect.gen(function* () {
         (temporaryIndex) =>
           Effect.gen(function* () {
             const env = { GIT_INDEX_FILE: temporaryIndex, GIT_OPTIONAL_LOCKS: "0" };
-            const temporaryGit = (args: readonly string[]) =>
+            const temporaryGit = (
+              args: readonly string[],
+              options?: Pick<ExecuteGitOptions, "onStdoutChunk">,
+            ) =>
               executeGit(
                 "GitCore.commitIndex",
                 cwd,
@@ -1845,7 +1882,7 @@ const makeGitCore = Effect.gen(function* () {
                   ]),
                   ...args,
                 ],
-                { env },
+                { ...options, env },
               );
             if (originalIndex !== null) {
               yield* Effect.tryPromise({
@@ -1998,7 +2035,7 @@ const makeGitCore = Effect.gen(function* () {
           yield* Effect.scoped(checkoutBranch({ cwd, branch: options.newBranch }));
         }
         yield* stageSelectedFiles(
-          (args) => executeGit("GitCore.commitPrepared.stage", cwd, args),
+          (args, options) => executeGit("GitCore.commitPrepared.stage", cwd, args, options),
           expected.filePaths,
         );
         const result = yield* commit(cwd, subject, body, expected.filePaths);

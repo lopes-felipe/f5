@@ -4190,7 +4190,7 @@ describe("ClaudeAdapterLive", () => {
         {
           type: "system",
           subtype: "informational",
-          level: "error",
+          level: "suggestion",
           content: "Prompt dropped by a hook: Deploys are frozen.",
         },
         { type: "system", subtype: "model_refusal_no_fallback", content: "Refused" },

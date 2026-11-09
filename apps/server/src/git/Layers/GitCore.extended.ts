@@ -229,6 +229,46 @@ function commitWithDate(
 
 it.layer(TestLayer)("git integration", (it) => {
   describe("commit generation isolation", () => {
+    it.effect(
+      "commits a large selected directory without expanding its staging arguments",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(path.join(cwd, "gen"));
+          // More than the buffered Git output cap, and macOS argv limits.
+          yield* Effect.forEach(
+            Array.from({ length: 8500 }, (_, index) => index),
+            (index) =>
+              writeTextFile(
+                path.join(cwd, "gen", String(index).padStart(5, "0") + "-".repeat(120) + ".txt"),
+                "x\n",
+              ),
+            { concurrency: 32 },
+          );
+          yield* writeTextFile(path.join(cwd, "unselected.txt"), "leave out\n");
+          const core = yield* GitCore;
+          const context = yield* core.prepareCommitContext(cwd, ["gen/"]);
+          expect(context).not.toBeNull();
+          expect((yield* core.commitPrepared(cwd, "Generated files", "", context!)).status).toBe(
+            "created",
+          );
+          expect(yield* git(cwd, ["status", "--porcelain"])).toBe("?? unselected.txt");
+          let count = 0;
+          yield* (yield* GitService).execute({
+            operation: "GitCore.test.countGeneratedFiles",
+            cwd,
+            args: ["ls-tree", "-r", "--name-only", "-z", "HEAD:gen"],
+            onStdoutChunk: (chunk) => {
+              for (const byte of chunk) if (byte === 0) count++;
+            },
+          });
+          expect(count).toBe(8500);
+        }),
+      { timeout: 60_000 },
+    );
+
     it.effect("commits repository-relative renamed and Unicode paths from a nested project", () =>
       Effect.gen(function* () {
         const cwd = path.join(yield* makeTmpDir(), "repo ");

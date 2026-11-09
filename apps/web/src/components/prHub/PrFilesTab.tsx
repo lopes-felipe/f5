@@ -1,5 +1,7 @@
 import { PrViewedFile } from "./PrViewedFile";
 import { describePrDiffError } from "./prDiffError";
+import { forgeProviderLabel } from "./forgePresentation";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../ui/empty";
 import { orderPrFilePages } from "./prFileOrder";
 import { ForgeComposer } from "./ForgeControls";
@@ -62,7 +64,8 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
   }
   if (query.isError) {
     const error = query.error instanceof Error ? query.error.message : String(query.error);
-    const { title, description } = describePrDiffError(error);
+    const providerName = forgeProviderLabel(pr.provider);
+    const { title, description } = describePrDiffError(error, providerName);
     return (
       <Empty role="tabpanel" aria-label="Files" className="min-h-64">
         <AlertTriangleIcon />
@@ -77,9 +80,9 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
           <Button
             size="xs"
             variant="outline"
-            render={<a href={pr.url} target="_blank" rel="noopener noreferrer" />}
+            render={<OpenLinkAnchor href={pr.url} target="_blank" rel="noopener noreferrer" />}
           >
-            Open on GitHub
+            Open on {providerName}
           </Button>
           {comparisonMode === "changes_since_review" ? (
             <Button size="xs" variant="outline" onClick={() => setComparisonMode("current_pr")}>
