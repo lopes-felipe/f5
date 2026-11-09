@@ -64,12 +64,14 @@ function make(platform: "darwin" | "win32" = "darwin") {
     action: vi.fn(async () => {}),
     windowIds: () => [],
   };
+  const log = vi.fn();
   const controller = new ComputerController(lease, helper, overlay, {
     f5Pids: () => [1],
     f5BundlePath: "F5",
     platform,
     activity,
     paused,
+    log,
   });
   controller.updateGrants(auth);
   const held = controller.acquire(holder);
@@ -82,6 +84,7 @@ function make(platform: "darwin" | "win32" = "darwin") {
     activity,
     overlay,
     held,
+    log,
     event: (message: Record<string, unknown>) => event(message),
   };
 }
@@ -101,6 +104,27 @@ function envelope(id: string, authorization = auth, extras: Record<string, unkno
   } as ComputerAutomationRequest;
 }
 describe("main computer controller", () => {
+  it("logs held-input transitions with codes only and drops malformed entries", () => {
+    const h = make();
+    h.event({
+      type: "heldInput",
+      heldInputs: [
+        { kind: "modifier", code: 56 },
+        { kind: "button", code: 0 },
+        { kind: "key", code: "a" },
+        { kind: "secret", code: 1 },
+        { kind: "key", code: -1 },
+        null,
+      ],
+    });
+    h.event({ type: "heldInput", heldInputs: [] });
+    h.event({ type: "heldInput", heldInputs: "garbage" });
+    expect(h.log.mock.calls).toEqual([
+      ["computer held input: modifier:56, button:0"],
+      ["computer held input: none"],
+      ["computer held input: none"],
+    ]);
+  });
   it("keeps control active when a foreground action succeeds unverified", async () => {
     const h = make();
     // A shortcut that opens a window, or a press that closes its own popover, comes back
