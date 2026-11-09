@@ -4383,6 +4383,37 @@ it("ends the session when codex app-server sends a message over the size cap", (
   expect(internal.sessions.has("oversized")).toBe(false);
 });
 describe("Release 5 native operations", () => {
+  it("unarchives and retries a fork with identical parameters, without retrying other errors", async () => {
+    const manager = new CodexAppServerManager();
+    const fork = manager as unknown as {
+      forkWithArchivedRecovery: (
+        context: unknown,
+        params: Record<string, unknown>,
+        request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+      ) => Promise<unknown>;
+    };
+    const params = { threadId: "archived", lastTurnId: "boundary", deferGoalContinuation: true };
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("session archived is archived. Run codex unarchive archived"),
+      )
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ thread: { id: "forked" } });
+    await expect(fork.forkWithArchivedRecovery({}, params, request)).resolves.toEqual({
+      thread: { id: "forked" },
+    });
+    expect(request.mock.calls).toEqual([
+      ["thread/fork", params],
+      ["thread/unarchive", { threadId: "archived" }],
+      ["thread/fork", params],
+    ]);
+    const failed = vi.fn().mockRejectedValue(new Error("connection lost"));
+    await expect(fork.forkWithArchivedRecovery({}, params, failed)).rejects.toThrow(
+      "connection lost",
+    );
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
   it.each(["receipt", "history"] as const)(
     "preserves cancellation while awaiting %s before sample dispatch",
     async (phase) => {

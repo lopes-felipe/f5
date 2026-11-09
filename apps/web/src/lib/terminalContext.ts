@@ -1,5 +1,6 @@
-import { type ThreadId } from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, type ThreadId } from "@t3tools/contracts";
 import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
+import { getMessageTextMaxChars } from "@t3tools/shared/providerInput";
 import { extractTrailingAttachedFiles } from "./attachedFiles";
 
 export interface TerminalContextSelection {
@@ -165,7 +166,7 @@ export function buildTerminalContextBlock(
   for (let index = 0; index < normalizedContexts.length; index += 1) {
     const context = normalizedContexts[index]!;
     lines.push(`- ${formatTerminalContextLabel(context)}:`);
-    lines.push(...buildTerminalContextBodyLines(context));
+    for (const line of buildTerminalContextBodyLines(context)) lines.push(line);
     if (index < normalizedContexts.length - 1) {
       lines.push("");
     }
@@ -203,9 +204,22 @@ export function materializeInlineTerminalContextPrompt(
 export function appendTerminalContextsToPrompt(
   prompt: string,
   contexts: ReadonlyArray<TerminalContextSelection>,
+  maxChars = PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 ): string {
   const trimmedPrompt = materializeInlineTerminalContextPrompt(prompt, contexts).trim();
-  const contextBlock = buildTerminalContextBlock(contexts);
+  let contextBlock = buildTerminalContextBlock(contexts);
+  const suffix = "\n  … truncated …\n</terminal_context>";
+  const limit = getMessageTextMaxChars(trimmedPrompt + "\n" + contextBlock, maxChars);
+  const budget = Math.max(0, limit - trimmedPrompt.length - (trimmedPrompt ? 2 : 0));
+  if (contextBlock.length > budget) {
+    const firstHeaderEnd = contextBlock.indexOf("\n", contextBlock.indexOf("\n") + 1);
+    const end = contextBlock.lastIndexOf("\n", budget - suffix.length);
+    // Preserve a complete opening tag and header. If those cannot fit, keep the
+    // original block so send validation reports a length error instead of losing context.
+    if (end >= firstHeaderEnd && firstHeaderEnd >= 0) {
+      contextBlock = contextBlock.slice(0, end) + suffix;
+    }
+  }
   if (contextBlock.length === 0) {
     return trimmedPrompt;
   }

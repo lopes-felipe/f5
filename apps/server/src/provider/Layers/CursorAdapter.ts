@@ -1011,13 +1011,14 @@ export function makeCursorAdapter(
                     decision: resolved,
                   }),
                 );
+                const optionId = acpPermissionOutcome(resolved, params.options);
                 return {
                   outcome:
-                    resolved === "cancel"
+                    optionId === undefined
                       ? ({ outcome: "cancelled" } as const)
                       : {
                           outcome: "selected" as const,
-                          optionId: acpPermissionOutcome(resolved),
+                          optionId,
                         },
                 };
               }),

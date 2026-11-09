@@ -308,7 +308,15 @@ function parseRemoteParts(input: {
 
 export function isSshRemoteUrl(remoteUrl: string): boolean {
   const trimmed = remoteUrl.trim();
-  return /^[a-zA-Z0-9._-]+@[^:/\s]+:/.test(trimmed) || trimmed.toLowerCase().startsWith("ssh://");
+  return (
+    /^[a-zA-Z0-9._-]+@[^:/\s]+:/.test(trimmed) ||
+    trimmed.toLowerCase().startsWith("ssh://") ||
+    userlessScpRemoteHost(trimmed) !== null
+  );
+}
+
+export function userlessScpRemoteHost(remoteUrl: string): string | null {
+  return /^([^@:/\\\s]{2,}):(?!:)\/?[^/\s]+(?:\/[^/\s]+)+\/?$/u.exec(remoteUrl.trim())?.[1] ?? null;
 }
 
 export function parseSourceControlRemoteUrl(
@@ -319,7 +327,10 @@ export function parseSourceControlRemoteUrl(
     return { kind: "unknown", host: null, owner: null, repository: null, webUrl: null };
   }
 
-  const sshMatch = /^[a-zA-Z0-9._-]+@([^:/\s]+):(.+)$/.exec(raw);
+  const userlessHost = userlessScpRemoteHost(raw);
+  const sshMatch =
+    /^[a-zA-Z0-9._-]+@([^:/\s]+):(.+)$/.exec(raw) ??
+    (userlessHost ? [raw, userlessHost, raw.slice(userlessHost.length + 1)] : null);
   if (sshMatch) {
     const host = sshMatch[1]!.trim();
     const parsed = parseRemoteParts({ host, pathname: sshMatch[2] ?? "" });
