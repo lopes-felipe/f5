@@ -112,6 +112,7 @@ import { getSafeExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
+import { applyComputerPause } from "./computer/computerPause";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
 import { clickPreviewGuest } from "./preview/guestFocus";
 import type { ProfileRecord } from "@t3tools/contracts";
@@ -810,27 +811,8 @@ function initializeComputerSystem(): void {
         helper.retry();
     },
     answer: (profile, answer) => consent.review(profile, answer),
-    pause: async (profileId, threadId, paused) => {
-      const target = controller.resumeTarget(profileId, threadId);
-      const chromeHolder = channel.chrome.current();
-      if (
-        !paused &&
-        (controller.requiresLocalResume(profileId, threadId) ||
-          (chromeHolder?.profileId === profileId && chromeHolder.threadId === threadId))
-      ) {
-        if (!(await consent.confirmResume(profileId, target.title, { recovery: target.recovery })))
-          throw new Error("Computer control remains paused.");
-        if (
-          controller.resumeTarget(profileId, threadId).authorization !== target.authorization ||
-          channel.chrome.current() !== chromeHolder
-        )
-          throw new Error("The computer session changed while Resume was being confirmed.");
-      }
-      if (!channel.pauseChrome(profileId, threadId, paused))
-        controller.setPaused(profileId, threadId, paused);
-      if (!paused) supervisor.resumed(profileId, threadId);
-      channel.send(profileId, { type: "pauseChanged", threadId, paused });
-    },
+    pause: (profileId, threadId, paused) =>
+      applyComputerPause({ controller, channel, consent, supervisor }, profileId, threadId, paused),
   });
   if (
     computerCertificationStatus(

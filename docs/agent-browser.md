@@ -671,8 +671,16 @@ session approval must be granted again. Background mode forces the F5 native bac
 
 Interruptions before dispatch report `Interrupted`; after dispatch, `OutcomeUnknown`, which
 puts the thread into recovery until the user resumes locally. This covers cancellation,
-timeouts and helper loss alike, and partially typed text. A dispatched mutation keeps
-excluding conflicting scopes (including Chrome) after its lease is released, until the helper
+timeouts and helper loss alike, and partially typed text. Local Pause/Resume changes native
+control and the thread's Chrome lease together, native first: a refusal about the thread's
+target keeps Chrome paused, while an unavailable helper still lets a Chrome holder resume
+Chrome and leaves native latched. Resuming only one would leave the other latched. Element
+actions dispatch with a 2 s AX messaging timeout in both deliveries. A foreground press that
+still times out but has removed its own element (a swatch closing its popover) is reported
+unverified, not unknown. Main logs each `OutcomeUnknown` the helper reports as `computer
+outcome-unknown` with the op, app, delivery and AX error code; outcomes main infers itself
+(request timeout, helper loss) are not logged there. The agent-facing error is unchanged.
+A dispatched mutation keeps excluding conflicting scopes (including Chrome) after its lease is released, until the helper
 answers or a drain confirms. A generation still stuck in its app after the helper's 5 s drain
 bound reports `drained: false`: that work stays excluded and is drained again, a takeover
 gets `foreground-busy`, and the shared helper is retired only if it stops answering

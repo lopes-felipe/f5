@@ -20,6 +20,24 @@ final class ElementDispatchTests: XCTestCase {
       }
     }
   }
+  func testForegroundTimeoutThatRemovedItsElementIsUnverified() {
+    // A swatch whose press timed out while closing its popover was received.
+    for action in ["press", "increment", "showMenu"] {
+      XCTAssertEqual(computerElementTimeoutOutcome(action: action, elementGone: true), .unverified)
+    }
+  }
+  func testForegroundTimeoutWithElementPresentOrWriteStaysUnknown() {
+    for action in ["press", "setValue", "focus"] {
+      XCTAssertEqual(
+        computerElementTimeoutOutcome(action: action, elementGone: false),
+        .failed(tag: "OutcomeUnknown", reason: nil, started: true))
+    }
+    for action in ["setValue", "focus"] {
+      XCTAssertEqual(
+        computerElementTimeoutOutcome(action: action, elementGone: true),
+        .failed(tag: "OutcomeUnknown", reason: nil, started: true))
+    }
+  }
   func testRefusedPressProvesNoEffect() {
     for error in [AXError.apiDisabled, .notImplemented, .illegalArgument] {
       for background in [false, true] {
