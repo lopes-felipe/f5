@@ -26828,11 +26828,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:48:24.971Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ChatView.tsx:5187"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-20024",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer"
@@ -27597,11 +27606,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:48:24.971Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20167",
-      "status": "port",
+      "reason": "F5 reserves and rejects --add-dir launch arguments.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -28224,11 +28235,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:28.512Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:48:24.971Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/rightPanelNavigation.ts:27"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-20297",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "panels",
@@ -31448,11 +31468,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:28.968Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:48:24.971Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ChatView.tsx:7533",
+          "apps/web/src/components/ChatView.tsx:4325"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-20929",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
@@ -32923,11 +32953,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:48:24.972Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/nextTurnQueue/Layers/NextTurnQueueDispatcher.ts:1304"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-21191",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "server",
@@ -35978,11 +36017,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:48:24.972Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ChatView.tsx:7533"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-21763",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer"
