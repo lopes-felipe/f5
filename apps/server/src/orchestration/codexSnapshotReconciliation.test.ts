@@ -248,6 +248,7 @@ it.each([
 const TOOL_HISTORY_MODES = [
   "complete",
   "codex-truncated",
+  "codex-truncated-longer",
   "divergent-output",
   "missing-tool-completed",
   "reasoning-text",
@@ -276,16 +277,22 @@ it.each(TOOL_HISTORY_MODES)(
       `cmdexec:${threadId}:exec-1`,
     );
     const head = "head-line\n".repeat(20);
+    const codexTruncated = mode === "codex-truncated" || mode === "codex-truncated-longer";
+    // F5 streamed less than Codex's saved head, or (longer) more than it.
     const streamed =
       mode === "divergent-output"
         ? "unrelated\n"
-        : mode === "codex-truncated"
+        : mode === "codex-truncated-longer"
           ? `${head}more streamed\n`
           : "head-line\n";
-    const fullOutput =
-      mode === "codex-truncated"
-        ? `${head}${CODEX_PERSISTENCE_TRUNCATION_MARKER}tail-line\n`
-        : `${"head-line\n".repeat(20)}done\n`;
+    const fullOutput = codexTruncated
+      ? `${head}${CODEX_PERSISTENCE_TRUNCATION_MARKER}tail-line\n`
+      : `${"head-line\n".repeat(20)}done\n`;
+    // A longer streamed prefix is kept whole, followed by Codex's marker and tail.
+    const repairedOutput =
+      mode === "codex-truncated-longer"
+        ? `${streamed}${CODEX_PERSISTENCE_TRUNCATION_MARKER}tail-line\n`
+        : fullOutput;
     let command = 0;
     let injectAppend = mode === "stale-sequence";
     const dispatch = (input: CommandInput) =>
@@ -520,11 +527,11 @@ it.each(TOOL_HISTORY_MODES)(
       const state = await system.run(system.engine.getReadModel());
       const thread = state.threads.find((entry) => entry.id === threadId)!;
       const row = await readRow();
-      const recovered = mode === "complete" || mode === "codex-truncated";
+      const recovered = mode === "complete" || codexTruncated;
       expect(acknowledgements).toBe(recovered ? 1 : 0);
       if (recovered) {
-        expect(row?.output).toBe(fullOutput);
-        expect(row?.outputTruncated).toBe(mode === "codex-truncated");
+        expect(row?.output).toBe(repairedOutput);
+        expect(row?.outputTruncated).toBe(codexTruncated);
         expect(
           thread.messages.find((message) => message.id === "assistant:native-item")?.text,
         ).toBe(" prefix suffix");
@@ -573,21 +580,38 @@ it("plans command output repair only for a prefix of this exact command", () => 
   const item = { itemId: "exec-1", output: "abcdef" };
   expect(planCommandOutputRepair(row, item, "turn")).toMatchObject({
     expectedLastUpdatedSequence: 7,
-    output: "abcdef",
-    outputTruncated: false,
+    expected: { output: "abcdef", outputTruncated: false },
   });
   expect(planCommandOutputRepair({ ...row, output: "abcdef" }, item, "turn")).toBe("current");
   expect(planCommandOutputRepair({ ...row, output: "xyz" }, item, "turn")).toBeUndefined();
   expect(planCommandOutputRepair(row, item, "other-turn")).toBeUndefined();
   expect(planCommandOutputRepair({ ...row, status: "running" }, item, "turn")).toBeUndefined();
   expect(planCommandOutputRepair(null, item, "turn")).toBeUndefined();
-  const truncated = { itemId: "exec-1", output: `ab${CODEX_PERSISTENCE_TRUNCATION_MARKER}z` };
+  const marker = CODEX_PERSISTENCE_TRUNCATION_MARKER;
+  // Codex's saved head is shorter than what F5 streamed: F5's text is kept, then the tail.
+  const truncated = { itemId: "exec-1", output: `ab${marker}z` };
   expect(planCommandOutputRepair(row, truncated, "turn")).toMatchObject({
-    outputTruncated: true,
-    expected: { outputTruncated: true },
+    expected: { output: `abc${marker}z`, outputTruncated: true },
   });
-  // Larger than the projection keeps: F5's own head-and-tail cap applies.
+  expect(
+    planCommandOutputRepair(
+      { ...row, output: `abc${marker}z`, outputTruncated: true },
+      truncated,
+      "turn",
+    ),
+  ).toBe("current");
+  // Codex's head extends F5's text: its copy is stored as saved.
+  expect(
+    planCommandOutputRepair(row, { itemId: "exec-1", output: `abcd${marker}z` }, "turn"),
+  ).toMatchObject({ expected: { output: `abcd${marker}z`, outputTruncated: true } });
+  expect(
+    planCommandOutputRepair(row, { itemId: "exec-1", output: `xy${marker}z` }, "turn"),
+  ).toBeUndefined();
+  // Larger than the projection keeps: the event carries F5's capped copy, never more.
   const large = { itemId: "exec-1", output: `abc${"y".repeat(300 * 1024)}` };
   const repair = planCommandOutputRepair(row, large, "turn");
   expect(repair !== "current" && repair?.expected.outputTruncated).toBe(true);
+  expect(
+    repair !== "current" && Buffer.byteLength(repair?.expected.output ?? "") <= 256 * 1024,
+  ).toBe(true);
 });

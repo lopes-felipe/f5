@@ -3868,6 +3868,47 @@ it.effect("rolls a merged delta over at 64 KiB and seals it at preparation start
   }).pipe(Effect.scoped);
 });
 
+it.effect("charges merged deltas by their text, so tiny-chunk bursts fit a small byte cap", () => {
+  const manager = new FakeCodexManager();
+  return Effect.gen(function* () {
+    // Each native delta carries a few hundred bytes of envelope for one byte of text.
+    const gate = yield* makeGatedAdapter(manager, ["tiny-started"], {
+      entries: 4,
+      bytes: 8 * 1024,
+      controls: 8,
+    });
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const collected = yield* collectUntilCompleted(adapter, 1);
+      const base = mergeBase("tiny-thread");
+      emitCommandItem(manager, base, "item/started", "tiny-started", "exec-tiny");
+      yield* Deferred.await(gate.entered);
+      let expected = "";
+      for (let index = 0; index < 4000; index++) {
+        const text = String.fromCharCode(97 + (index % 26));
+        expected += text;
+        emitCommandDelta(manager, base, `tiny-${index}`, "exec-tiny", text);
+      }
+      emitTurnCompleted(manager, base, "tiny-turn-completed");
+      assert.equal(manager.interruptTurnImpl.mock.calls.length, 0);
+      yield* Deferred.succeed(gate.release, undefined);
+      const events = yield* Fiber.join(collected);
+      assert.equal(events.filter((event) => event.type === "runtime.error").length, 0);
+      const deltas = events.filter((event) => event.type === "content.delta");
+      assert.equal(deltas.map(deltaText).join(""), expected);
+      // The native log names the merged range instead of hiding it.
+      const merged = gate.logged.find((entry) => entry.id === "tiny-0") as
+        | (ProviderEvent & { coalesced?: { count: number; lastEventId?: string } })
+        | undefined;
+      assert.deepEqual(merged?.coalesced, {
+        count: 4000,
+        lastEventId: "tiny-3999",
+        lastCreatedAt: base.createdAt,
+      });
+    }).pipe(Effect.provide(gate.layer));
+  }).pipe(Effect.scoped);
+});
+
 it.effect("does not merge a delta into a notification whose preparation started", () => {
   const manager = new FakeCodexManager();
   return Effect.gen(function* () {

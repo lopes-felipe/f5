@@ -702,6 +702,8 @@ interface PendingDeltaSlot {
   textBytes: number;
   readonly lease: AdmissionLease;
   next?: Promise<void>;
+  /** The last native delta merged in, recorded in the native log. */
+  last?: { readonly id: string; readonly createdAt: string };
 }
 
 /** The first delta's identity and timestamp, carrying every merged part in order. */
@@ -3435,14 +3437,26 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     yield* Effect.acquireRelease(
       Effect.gen(function* () {
-        const writeNativeEvent = (event: ProviderEvent) =>
+        const writeNativeEvent = (event: ProviderEvent, merged?: PendingDeltaSlot) =>
           Effect.gen(function* () {
             if (!nativeEventLogger) {
               return;
             }
+            const sanitized = automationEventSanitizer.sanitize(event.threadId, event);
+            // A merged notification names how many native deltas it carries and the last
+            // one, so a log taken during a burst still shows the real notification sequence.
             yield* writeProviderEventLog(
               nativeEventLogger,
-              automationEventSanitizer.sanitize(event.threadId, event),
+              merged && merged.parts.length > 1
+                ? {
+                    ...(sanitized as Record<string, unknown>),
+                    coalesced: {
+                      count: merged.parts.length,
+                      lastEventId: merged.last?.id,
+                      lastCreatedAt: merged.last?.createdAt,
+                    },
+                  }
+                : sanitized,
               event.threadId,
             );
           });
@@ -3531,12 +3545,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             const slot = contextSlots?.get(mergeable.identity);
             if (slot) {
               const deltaBytes = Buffer.byteLength(mergeable.delta);
+              // Only the text is kept, so only the text is charged: the event envelope
+              // (hundreds of bytes per tiny chunk) is dropped when it merges.
               if (
                 slot.textBytes + deltaBytes <= MAX_MERGED_DELTA_BYTES &&
-                slot.lease.extend(bytes)
+                slot.lease.extend(deltaBytes)
               ) {
                 slot.parts.push(mergeable.delta);
                 slot.textBytes += deltaBytes;
+                slot.last = { id: event.id, createdAt: event.createdAt };
                 return slot.next;
               }
               contextSlots!.delete(mergeable.identity);
@@ -3621,7 +3638,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               if (isSyntheticOneOffThreadId(event.threadId)) {
                 return;
               }
-              yield* writeNativeEvent(event);
+              yield* writeNativeEvent(event, slot);
               if (event.method === "turn/started") {
                 turnStartedAtByThread.set(key, event.createdAt);
                 terminalFailureByThread.delete(key);

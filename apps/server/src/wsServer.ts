@@ -391,6 +391,7 @@ import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
+import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
@@ -4583,9 +4584,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         if (request.body._tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) {
           if (!providerService.nativeOperations.historyRecovery)
             return yield* new RouteRequestError({ message: "History recovery is unavailable." });
-          return yield* providerService.nativeOperations
-            .historyRecovery(stripRequestTag(request.body))
+          const recovery = stripRequestTag(request.body);
+          const result = yield* providerService.nativeOperations
+            .historyRecovery(recovery)
             .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+          // Accepting the history releases its fence: the warning kept for it goes too.
+          if (recovery.action === "acknowledge" && recovery.expected) {
+            const cleared = makeHistoryRecoveredSessionSet({
+              thread: (yield* orchestrationEngine.getReadModel()).threads.find(
+                (entry) => entry.id === recovery.threadId,
+              ),
+              markerId: recovery.expected.eventId,
+              commandId: CommandId.makeUnsafe(
+                `server:history-accepted:${recovery.threadId}:${crypto.randomUUID()}`,
+              ),
+              createdAt: new Date().toISOString(),
+            });
+            if (cleared) yield* orchestrationEngine.dispatch(cleared);
+          }
+          return result;
         }
         if (request.body._tag === NATIVE_OPERATION_WS_METHODS.markRead) {
           yield* providerService.nativeOperations.markRead?.(input.threadId) ?? Effect.void;

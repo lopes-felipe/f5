@@ -16,6 +16,7 @@ import type { ProviderServiceShape } from "../provider/Services/ProviderService.
 import type { ProviderSessionDirectoryShape } from "../provider/Services/ProviderSessionDirectory.ts";
 import { commandExecutionIdForRuntimeItem } from "./commandExecutionIds.ts";
 import { truncateCommandTranscriptOutput } from "./outputTruncation.ts";
+import { makeHistoryRecoveredSessionSet } from "./providerTerminalLifecycle.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 import type { ThreadCommandExecutionQueryShape } from "./Services/ThreadCommandExecutionQuery.ts";
 
@@ -275,9 +276,10 @@ function classifyIncompleteTurnItems(
 interface CommandOutputRepair {
   readonly commandExecutionId: OrchestrationCommandExecution["id"];
   readonly expectedLastUpdatedSequence: number;
-  readonly output: string;
-  readonly outputTruncated: boolean;
-  /** The projected row once the repair applied. */
+  /**
+   * The output the row holds once repaired, already capped like the projection caps it, so
+   * the event log and every client receive at most the projected size.
+   */
   readonly expected: { readonly output: string; readonly outputTruncated: boolean };
 }
 
@@ -285,6 +287,14 @@ interface CommandOutputRepair {
  * The repair of a command's projected output from provider history, `"current"`
  * when the row already holds it, or undefined when the history cannot be shown
  * to extend what F5 streamed for this exact command.
+ *
+ * Codex saves large output as a head, a marker and a tail. When F5 streamed less than that
+ * head, the repair stores Codex's copy. When F5 streamed more, it keeps everything F5 has and
+ * appends the marker and Codex's tail, so no streamed text is replaced: the marker stands for
+ * output neither copy holds, whose size is unknown.
+ *
+ * A row F5 itself already capped (streamed past the projection's 256 KiB limit) lost its
+ * middle, so it cannot be compared and is never repaired automatically.
  */
 export function planCommandOutputRepair(
   row: OrchestrationCommandExecution | null,
@@ -300,25 +310,40 @@ export function planCommandOutputRepair(
     return undefined;
   const markerIndex = item.output.indexOf(CODEX_PERSISTENCE_TRUNCATION_MARKER);
   const codexTruncated = markerIndex >= 0;
-  const projected = truncateCommandTranscriptOutput(item.output);
-  const expected = {
-    output: projected.output,
-    outputTruncated: projected.outputTruncated || codexTruncated,
+  const head = codexTruncated ? item.output.slice(0, markerIndex) : item.output;
+  const savedTail = codexTruncated ? item.output.slice(markerIndex) : "";
+  const capped = (output: string) => {
+    const projected = truncateCommandTranscriptOutput(output);
+    return {
+      output: projected.output,
+      outputTruncated: projected.outputTruncated || codexTruncated,
+    };
   };
-  if (row.output === expected.output && row.outputTruncated === expected.outputTruncated)
+  const matches = (expected: CommandOutputRepair["expected"]) =>
+    row.output === expected.output && row.outputTruncated === expected.outputTruncated;
+  if (matches(capped(item.output))) return "current";
+  // A spliced repair already applied: F5's prefix, then Codex's marker and tail.
+  if (
+    codexTruncated &&
+    row.outputTruncated &&
+    row.output.startsWith(head) &&
+    row.output.endsWith(savedTail)
+  )
     return "current";
   if (row.outputTruncated) return undefined;
-  if (codexTruncated) {
-    // Only Codex's head is comparable; its tail follows output F5 never saw.
-    const head = item.output.slice(0, markerIndex);
-    if (!row.output.startsWith(head) && !head.startsWith(row.output)) return undefined;
-  } else if (!item.output.startsWith(row.output)) return undefined;
+  let target: string;
+  if (!codexTruncated) {
+    if (!item.output.startsWith(row.output)) return undefined;
+    target = item.output;
+  } else if (head.startsWith(row.output)) {
+    target = item.output;
+  } else if (row.output.startsWith(head)) {
+    target = `${row.output}${savedTail}`;
+  } else return undefined;
   return {
     commandExecutionId: row.id,
     expectedLastUpdatedSequence: row.lastUpdatedSequence,
-    output: item.output,
-    outputTruncated: codexTruncated,
-    expected,
+    expected: capped(target),
   };
 }
 
@@ -548,8 +573,8 @@ export const reconcileCodexThreadSnapshots = (
                 threadId,
                 commandExecutionId: repair.commandExecutionId,
                 expectedLastUpdatedSequence: repair.expectedLastUpdatedSequence,
-                output: repair.output,
-                outputTruncated: repair.outputTruncated,
+                output: repair.expected.output,
+                outputTruncated: repair.expected.outputTruncated,
                 updatedAt: input.createdAt,
                 createdAt: input.createdAt,
               });
@@ -578,29 +603,18 @@ export const reconcileCodexThreadSnapshots = (
               });
             if (!acknowledged) return;
             // The recovery warning was kept visible only for this marker.
-            const recovered = yield* getCurrentThread(threadId);
-            const session = recovered?.session;
-            if (session && session.lastErrorId === incomplete.eventId)
-              yield* dependencies.orchestrationEngine.dispatch({
-                type: "thread.session.set",
-                commandId: buildSnapshotCommandId(
-                  input.reason,
-                  threadId,
-                  turn.id,
-                  "history-recovered",
-                ),
+            const recovered = makeHistoryRecoveredSessionSet({
+              thread: yield* getCurrentThread(threadId),
+              markerId: incomplete.eventId,
+              commandId: buildSnapshotCommandId(
+                input.reason,
                 threadId,
-                session: {
-                  ...session,
-                  status: session.status === "error" ? "ready" : session.status,
-                  lastError: null,
-                  lastErrorId: null,
-                  lastErrorOccurredAt: null,
-                  lastErrorRetryability: null,
-                  updatedAt: input.createdAt,
-                },
-                createdAt: input.createdAt,
-              });
+                turn.id,
+                "history-recovered",
+              ),
+              createdAt: input.createdAt,
+            });
+            if (recovered) yield* dependencies.orchestrationEngine.dispatch(recovered);
             return;
           }
 

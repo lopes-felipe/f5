@@ -466,13 +466,19 @@ export function applyThreadCommandExecutionEventToQueryCache(
     }
 
     case "thread.command-execution-output-reconciled": {
-      // Whether it applied depends on the server row's sequence: refetch it.
-      void queryClient.invalidateQueries({
-        queryKey: orchestrationQueryKeys.threadCommandExecution(
-          event.payload.threadId,
-          event.payload.commandExecutionId,
-        ),
-      });
+      // Whether it applied depends on the server row's sequence: refetch it. A read already
+      // in flight started before the repair, so the refetch must not join it: neither the
+      // shared RPC nor the query's own fetch, which a refetch joins while there is no data.
+      inFlightThreadCommandExecutionDetailRequests.delete(
+        `${event.payload.threadId}:${event.payload.commandExecutionId}`,
+      );
+      const queryKey = orchestrationQueryKeys.threadCommandExecution(
+        event.payload.threadId,
+        event.payload.commandExecutionId,
+      );
+      void queryClient
+        .cancelQueries({ queryKey })
+        .then(() => queryClient.invalidateQueries({ queryKey }));
     }
   }
 }

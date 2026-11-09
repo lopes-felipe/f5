@@ -26,6 +26,45 @@ type SessionErrorFields = Pick<
 >;
 
 /**
+ * The session update that removes the incomplete-history warning once `markerId` is no longer
+ * fenced (verified recovery or the user accepting the history), or undefined when nothing
+ * should change: the session shows another error, or a turn already started, whose own
+ * lifecycle updates own the session from here.
+ */
+export function makeHistoryRecoveredSessionSet(input: {
+  readonly thread: Pick<OrchestrationThread, "id" | "session"> | undefined;
+  readonly markerId: string;
+  readonly commandId: CommandId;
+  readonly createdAt: string;
+}): Extract<OrchestrationCommand, { type: "thread.session.set" }> | undefined {
+  const session = input.thread?.session;
+  if (
+    !input.thread ||
+    !session ||
+    session.lastErrorId !== input.markerId ||
+    session.activeTurnId != null ||
+    session.status === "running" ||
+    session.status === "starting"
+  )
+    return undefined;
+  return {
+    type: "thread.session.set",
+    commandId: input.commandId,
+    threadId: input.thread.id,
+    session: {
+      ...session,
+      status: session.status === "error" ? "ready" : session.status,
+      lastError: null,
+      lastErrorId: null,
+      lastErrorOccurredAt: null,
+      lastErrorRetryability: null,
+      updatedAt: input.createdAt,
+    },
+    createdAt: input.createdAt,
+  };
+}
+
+/**
  * Sends stay fenced while an incomplete-history marker exists, so a session
  * update that would otherwise clear the error keeps one naming the marker. The
  * marker's own runtime error text is kept when it is still the projected one.
