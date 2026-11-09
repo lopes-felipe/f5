@@ -2023,3 +2023,26 @@ it("ends target waits at the deadline as timeouts, letting the desktop answer fi
     h.broker.close();
   }
 });
+
+it("ends a target wait paused mid-wait as a pause, not a turn end", async () => {
+  const h = await harness();
+  try {
+    h.broker.beginTurn("t", "turn");
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    const waiting = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() =>
+      expect(h.ipc.messages.some((message) => message.type === "targetWait")).toBe(true),
+    );
+    const request = h.ipc.messages.find((message) => message.type === "targetWait")!;
+    h.broker.setPaused("t", true);
+    await expect(waiting).rejects.toMatchObject({
+      error: { _tag: "Interrupted", cause: "paused" },
+    });
+    expect(h.ipc.messages).toContainEqual({ type: "cancel", requestId: request.requestId });
+  } finally {
+    h.broker.close();
+  }
+});

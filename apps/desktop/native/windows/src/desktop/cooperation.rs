@@ -131,26 +131,27 @@ pub(super) fn observe_physical(event: crate::held::HeldEvent) {
     let state = STATE.get().unwrap();
     state.physical_held.lock().unwrap().observe(event, now_ms());
 }
-/// Virtual-key codes the user is holding, oldest first; see `crate::held`. A hold counts only
-/// when the hook saw it go down and `GetAsyncKeyState` still reports it, and only while
-/// physical input arrived within `STALE_AFTER_MS`.
+/// Virtual-key codes the user is holding, oldest first. A hold counts only when the hook saw it
+/// go down and `GetAsyncKeyState` still reports it; see `crate::held`.
 pub(super) fn held_inputs() -> Vec<u16> {
     let state = STATE.get().unwrap();
-    let candidates = state.physical_held.lock().unwrap().candidates();
-    // Async key queries stay outside the lock; entries hooked meanwhile are kept until next time.
+    let sampled = state.physical_held.lock().unwrap().sample();
+    // Async key queries stay outside the lock. Only entries unchanged since this sample are
+    // dropped, so a release and re-press in between keeps the new hold.
     let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
-    let system: HashSet<u16> = candidates
-        .iter()
-        .copied()
-        .filter(|code| {
-            crate::held::system_codes(*code, swapped)
+    let released: Vec<(u16, u64)> = sampled
+        .into_iter()
+        .filter(|(code, _)| {
+            !crate::held::system_codes(*code, swapped)
                 .iter()
                 .any(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
         })
         .collect();
-    let held = state.physical_held.lock().unwrap().held(now_ms(), |code| {
-        !candidates.contains(&code) || system.contains(&code)
-    });
+    let held = state
+        .physical_held
+        .lock()
+        .unwrap()
+        .held(now_ms(), &released);
     let mut reported = state.reported_held.lock().unwrap();
     if *reported != held {
         // One diagnostic per transition, so a stuck input can be named without per-beat noise.

@@ -415,44 +415,29 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
-/// The flag a modifier key code sets while down. Caps Lock is a toggle and is never a hold.
-func modifierFlag(_ keyCode: Int) -> CGEventFlags? {
-  switch keyCode {
-  case 54, 55: .maskCommand
-  case 56, 60: .maskShift
-  case 58, 61: .maskAlternate
-  case 59, 62: .maskControl
-  case 63: .maskSecondaryFn
-  default: nil
-  }
-}
 /// Keys, modifiers and buttons the user is holding, oldest first (diagnostic codes only).
-/// A hold counts only when the session tap saw it go down from a hardware source and the HID
-/// system still reports it, and only while physical input of any kind arrived within
-/// `HeldInputTracker.staleAfter`. HID state alone cannot tell who pressed a key or when: a
-/// lost key-up, a virtual device, another tool's posts or Caps Lock's key code would otherwise
-/// block a foreground takeover forever while nobody touches the keyboard or mouse. Input that
-/// arrives as software events (Screen Sharing, Universal Control, accessibility drivers) does
-/// not count as held, so a remote user holding a drag still does not block a takeover.
+/// A hold counts only when the session tap saw it go down from the HID system and the HID
+/// system still reports it (see `HeldInputTracker`). HID state alone cannot tell who pressed a
+/// key or when: a lost key-up, a virtual device, another tool's posts or Caps Lock's key code
+/// would otherwise block a foreground takeover forever while nobody touches the keyboard or
+/// mouse. Input that arrives as software events (Screen Sharing, Universal Control,
+/// accessibility drivers) does not count as held, so a remote user holding a drag still does
+/// not block a takeover.
 func heldPhysicalInputs() -> [HeldInput] {
-  let candidates = locked { Set(heldInputTracker.downs.keys) }
+  let sampled = locked { heldInputTracker.downs.mapValues(\.revision) }
   let state = CGEventSourceStateID.hidSystemState
-  let flags = CGEventSource.flagsState(state)
-  // HID queries stay outside the state lock; entries tapped meanwhile are kept until next time.
-  let system = candidates.filter { input in
-    switch input.kind {
-    case .key: CGEventSource.keyState(state, key: CGKeyCode(input.code))
-    case .button:
-      CGMouseButton(rawValue: UInt32(input.code)).map {
-        CGEventSource.buttonState(state, button: $0)
-      } ?? false
-    case .modifier: modifierFlag(input.code).map { flags.contains($0) } ?? false
-    }
+  let flags = CGEventSource.flagsState(state).rawValue
+  // HID queries stay outside the state lock. Only entries unchanged since this sample are
+  // dropped, so a release and re-press in between keeps the new hold.
+  let released = sampled.filter { input, _ in
+    !input.systemReportsDown(
+      flags: flags, keyDown: { CGEventSource.keyState(state, key: $0) },
+      buttonDown: { CGEventSource.buttonState(state, button: $0) })
   }
   let now = ProcessInfo.processInfo.systemUptime
   let (held, changed) = locked {
     () -> ([HeldInput], Bool) in
-    let held = heldInputTracker.held(now: now) { !candidates.contains($0) || system.contains($0) }
+    let held = heldInputTracker.held(now: now, released: released)
     defer { reportedHeldInputs = held }
     return (held, held != reportedHeldInputs)
   }
@@ -555,7 +540,7 @@ func installMonitor() {
   let types: [CGEventType] = [
     .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
     .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged, .rightMouseDragged,
-    .scrollWheel,
+    .otherMouseDragged, .scrollWheel,
   ]
   let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
   locked { heldInputTracker.reset() }
@@ -580,20 +565,10 @@ func installMonitor() {
         userData: event.getIntegerValueField(.eventSourceUserData),
         sourceStateID: event.getIntegerValueField(.eventSourceStateID))
       {
-        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
-        let held: HeldInputEvent =
-          switch type {
-          case .keyDown: .keyDown(keyCode)
-          case .keyUp: .keyUp(keyCode)
-          case .flagsChanged: .modifierChanged(keyCode)
-          case .leftMouseDown: .buttonDown(0)
-          case .rightMouseDown: .buttonDown(1)
-          case .otherMouseDown: .buttonDown(Int(event.getIntegerValueField(.mouseEventButtonNumber)))
-          case .leftMouseUp: .buttonUp(0)
-          case .rightMouseUp: .buttonUp(1)
-          case .otherMouseUp: .buttonUp(Int(event.getIntegerValueField(.mouseEventButtonNumber)))
-          default: .activity
-          }
+        let held = HeldInputEvent(
+          type: type, keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)),
+          buttonNumber: Int(event.getIntegerValueField(.mouseEventButtonNumber)),
+          flags: event.flags.rawValue)
         let now = ProcessInfo.processInfo.systemUptime
         locked { heldInputTracker.observe(held, now: now) }
       }
@@ -621,12 +596,18 @@ func installMonitor() {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: .pointerDown
         case .keyDown: .keyDown
         case .scrollWheel: .scroll
-        case .leftMouseDragged, .rightMouseDragged: .dragStart
-        case .leftMouseUp, .rightMouseUp: dragging ? .drop : nil
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: .dragStart
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp: dragging ? .drop : nil
         default: nil
         }
-      if type == .leftMouseDragged || type == .rightMouseDragged { dragging = true }
-      if type == .leftMouseUp || type == .rightMouseUp || type == .leftMouseDown { dragging = false }
+      let dragged = type == .leftMouseDragged || type == .rightMouseDragged
+        || type == .otherMouseDragged
+      if dragged { dragging = true }
+      if type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp
+        || type == .leftMouseDown
+      {
+        dragging = false
+      }
       var overflow = false
       let queued: Bool = locked {
         if significant {
@@ -663,7 +644,7 @@ func installMonitor() {
         let cause = type == .mouseMoved ? "move"
           : type == .scrollWheel ? "scroll"
           : type == .keyDown || type == .keyUp || type == .flagsChanged ? "key"
-          : type == .leftMouseDragged || type == .rightMouseDragged ? "drag" : "pointer"
+          : dragged ? "drag" : "pointer"
         let foreground = permits.suspendForeground(cause: cause)
         for generation in foreground {
           interrupt(generation, ["type": "physicalInput", "cause": cause])

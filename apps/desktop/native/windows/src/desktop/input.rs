@@ -237,16 +237,11 @@ pub(super) unsafe extern "system" fn key_hook(code: i32, w: WPARAM, l: LPARAM) -
             );
             return LRESULT(1); // Health probes never reach application message queues.
         } else if input.dwExtraInfo != MARK {
-            if input.flags.0 & LLKHF_INJECTED.0 == 0 {
-                let message = w.0 as u32;
-                let code = input.vkCode as u16;
-                let event = if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
-                    crate::held::HeldEvent::Down(code)
-                } else if message == WM_KEYUP || message == WM_SYSKEYUP {
-                    crate::held::HeldEvent::Up(code)
-                } else {
-                    crate::held::HeldEvent::Activity
-                };
+            if let Some(event) = crate::held::key_event(
+                w.0 as u32,
+                input.vkCode as u16,
+                input.flags.0 & LLKHF_INJECTED.0 != 0,
+            ) {
                 cooperation::observe_physical(event);
             }
             if crate::safety::stop_chord(
@@ -271,24 +266,11 @@ pub(super) unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM)
             return LRESULT(1);
         } else if input.dwExtraInfo != MARK {
             let message = w.0 as u32;
-            if input.flags & LLMHF_INJECTED == 0 {
-                use crate::held::HeldEvent::{Activity, Down, Up};
-                let x = if (input.mouseData >> 16) as u16 == 1 {
-                    VK_XBUTTON1.0
-                } else {
-                    VK_XBUTTON2.0
-                };
-                let event = match message {
-                    WM_LBUTTONDOWN => Down(VK_LBUTTON.0),
-                    WM_LBUTTONUP => Up(VK_LBUTTON.0),
-                    WM_RBUTTONDOWN => Down(VK_RBUTTON.0),
-                    WM_RBUTTONUP => Up(VK_RBUTTON.0),
-                    WM_MBUTTONDOWN => Down(VK_MBUTTON.0),
-                    WM_MBUTTONUP => Up(VK_MBUTTON.0),
-                    WM_XBUTTONDOWN => Down(x),
-                    WM_XBUTTONUP => Up(x),
-                    _ => Activity,
-                };
+            if let Some(event) = crate::held::mouse_event(
+                message,
+                input.mouseData,
+                input.flags & LLMHF_INJECTED != 0,
+            ) {
                 cooperation::observe_physical(event);
             }
             mouse_activity(
