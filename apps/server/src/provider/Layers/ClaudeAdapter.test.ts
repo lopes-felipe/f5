@@ -8053,7 +8053,7 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         providerOptions: { claudeAgent: { subagentModel: "inherit" } },
       });
-      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-2");
       assert.equal(
         harness.getLastCreateQueryInput()?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL,
         undefined,
@@ -8063,7 +8063,7 @@ describe("ClaudeAdapterLive", () => {
         type: "result",
         subtype: "error_during_execution",
         is_error: true,
-        errors: ["Model claude-fable-5-1 is not supported by this executable"],
+        errors: ["Model claude-fable-5-2 is not supported by this executable"],
         session_id: "sdk-fable-rejected",
         uuid: "fable-rejection",
       } as unknown as SDKMessage);
@@ -8073,7 +8073,7 @@ describe("ClaudeAdapterLive", () => {
       );
       const completed = failureEvents.find((event) => event.type === "turn.completed");
       assert.equal(completed?.payload.state, "failed");
-      assert.match(completed?.payload.errorMessage ?? "", /claude-fable-5-1/);
+      assert.match(completed?.payload.errorMessage ?? "", /claude-fable-5-2/);
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: "claudeAgent",
@@ -12861,7 +12861,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("switches Fable 5 at 200k to native 1M Fable 5.1, resumes, and switches back", () => {
+  it.effect("switches Fable 5 at 200k to native 1M Fable 5.2, resumes, and switches back", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -12891,7 +12891,7 @@ describe("ClaudeAdapterLive", () => {
         modelSelection: selection,
         attachments: [],
       });
-      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5-1"]);
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5-2"]);
       assert.deepEqual(harness.query.applyFlagSettingsCalls, [
         { effortLevel: "high", fastMode: false, alwaysThinkingEnabled: null },
       ]);
@@ -12901,7 +12901,7 @@ describe("ClaudeAdapterLive", () => {
       ).pipe(Stream.runHead);
       assert.equal(configured._tag, "Some");
       if (configured._tag === "Some") {
-        assert.equal(configured.value.payload.config.model, "claude-fable-5-1");
+        assert.equal(configured.value.payload.config.model, "claude-fable-5-2");
         assert.equal(configured.value.payload.config.context_window, undefined);
         assert.equal(configured.value.payload.config.modelContextWindowTokens, 1_000_000);
       }
@@ -12917,8 +12917,8 @@ describe("ClaudeAdapterLive", () => {
           turnCount: 1,
         },
       });
-      assert.equal(resumed.model, "claude-fable-5-1");
-      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
+      assert.equal(resumed.model, "claude-fable-5-2");
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-2");
       const resumedConfig = yield* Stream.filter(
         adapter.streamEvents,
         (event) => event.type === "session.configured",
