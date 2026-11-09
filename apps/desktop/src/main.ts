@@ -217,7 +217,7 @@ import {
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
-import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
+import { formatErrorMessage, loadPreviewURL } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { fetchPreviewFaviconDataUrl } from "./preview/previewFavicon";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
@@ -4140,10 +4140,10 @@ function registerIpcHandlers(): void {
         // interrupted rather than report success or a load failure.
         const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
         try {
-          await guest.loadURL(url);
+          await loadPreviewURL(guest, url);
         } catch (error) {
           takeover?.check();
-          if (!isPreviewNavigationAbortError(error)) throw error;
+          throw error;
         }
         takeover?.check();
       },
