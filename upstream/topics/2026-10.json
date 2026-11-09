@@ -27708,11 +27708,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:58:07.259Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20183",
-      "status": "port",
+      "reason": "F5 opens a home dashboard rather than an automatic startup composer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -30037,11 +30039,20 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T18:58:07.259Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/hooks/useOpenLink.ts:49"
+        ],
+        "f5Refs": [
+          "6ab0a5df447bbb9785872706acecb69a48f130b5"
+        ]
+      },
       "id": "pr-20747",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
