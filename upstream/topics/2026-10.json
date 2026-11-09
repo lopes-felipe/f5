@@ -14722,14 +14722,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T09:54:53.523Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17265",
+      "reason": "F5 does not persist or render Codex compaction items as running work-log cards.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-15631"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -40117,11 +40119,21 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T09:54:53.523Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:1028",
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:1064"
+        ],
+        "f5Refs": [
+          "23e4bb9f291934c7d160b8b1fb17c50debef6f16"
+        ]
+      },
       "id": "pr-22541",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -42918,11 +42930,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T09:54:53.523Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22938",
-      "status": "port",
+      "reason": "F5 does not project OpenCode todo.updated events into plan steps.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -70151,11 +70165,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T09:54:53.523Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/mcp/previewMcpTools.ts:117",
+          "apps/server/src/mcp/previewMcpTools.ts:119"
+        ],
+        "f5Refs": [
+          "23e4bb9f291934c7d160b8b1fb17c50debef6f16"
+        ]
+      },
       "id": "pr-5128",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -71345,11 +71369,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T09:54:53.523Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:6940",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:9608"
+        ],
+        "f5Refs": [
+          "23e4bb9f291934c7d160b8b1fb17c50debef6f16"
+        ]
+      },
       "id": "pr-5568",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
