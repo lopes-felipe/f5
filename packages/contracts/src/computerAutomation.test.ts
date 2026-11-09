@@ -298,6 +298,23 @@ describe("computer observation and error metadata", () => {
       },
     };
     expect(Schema.decodeUnknownSync(ComputerScreenshot)(value)).toEqual(value);
+    const unreadableSubrole = {
+      ...value,
+      secureAudit: {
+        ...value.secureAudit,
+        windows: [
+          {
+            ...value.secureAudit.windows[0],
+            complete: true,
+            stopReasons: ["unreadable-subrole"],
+            axFailures: [{ operation: "subrole", error: -25200, count: 1 }],
+          },
+        ],
+      },
+    };
+    expect(Schema.decodeUnknownSync(ComputerScreenshot)(unreadableSubrole)).toEqual(
+      unreadableSubrole,
+    );
     const { secureAudit: _, passwordMasking: _mode, ...legacy } = value;
     expect(Schema.decodeUnknownSync(ComputerScreenshot)(legacy)).toEqual(legacy);
     expect(
