@@ -229,6 +229,36 @@ function commitWithDate(
 
 it.layer(TestLayer)("git integration", (it) => {
   describe("commit generation isolation", () => {
+    it.effect("commits repository-relative renamed and Unicode paths from a nested project", () =>
+      Effect.gen(function* () {
+        const cwd = path.join(yield* makeTmpDir(), "repo ");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(cwd);
+        yield* initRepoWithCommit(cwd);
+        yield* fs.makeDirectory(path.join(cwd, "nested"));
+        yield* writeTextFile(path.join(cwd, "nested", "old.ts"), "one\ntwo\nthree\n");
+        yield* writeTextFile(path.join(cwd, "café notes.md"), "draft\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "Add files"]);
+        yield* git(cwd, ["mv", "nested/old.ts", "nested/new.ts"]);
+        yield* writeTextFile(path.join(cwd, "café notes.md"), "draft\nedit\n");
+        const core = yield* GitCore;
+        const nested = path.join(cwd, "nested");
+        const status = yield* core.statusDetails(nested);
+        expect(status.workingTree.rootPath).toBe(yield* fs.realPath(cwd));
+        expect(status.workingTree.files.map((file) => file.path)).toEqual([
+          "café notes.md",
+          "nested/new.ts",
+          "nested/old.ts",
+        ]);
+        const selection = status.workingTree.files.map((file) => file.path);
+        const prepared = yield* core.prepareCommitContext(nested, selection);
+        expect(prepared).not.toBeNull();
+        yield* core.commitPrepared(nested, "Selected changes", "", prepared!);
+        expect(yield* git(cwd, ["status", "--porcelain"])).toBe("");
+      }),
+    );
+
     for (const split of [false, true]) {
       it.effect(
         `preserves partial staging and materializes a temporary index (split=${split})`,

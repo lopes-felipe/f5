@@ -1,4 +1,4 @@
-import { gitConfigArgs, literalGitPathspec } from "@t3tools/shared/git";
+import { gitConfigArgs, topLiteralGitPathspec } from "@t3tools/shared/git";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { Option } from "effect";
 import {
@@ -1357,7 +1357,10 @@ const makeGitCore = Effect.gen(function* () {
           hasWorkingTreeChanges = true;
           const pathValue = parsePorcelainPath(line);
           if (pathValue) changedFilesWithoutNumstat.add(pathValue);
-          if (line.startsWith("2 ")) index += 1;
+          if (line.startsWith("2 ")) {
+            const originalPath = statusRecords[++index];
+            if (originalPath) changedFilesWithoutNumstat.add(originalPath);
+          }
         }
       }
 
@@ -1419,11 +1422,20 @@ const makeGitCore = Effect.gen(function* () {
           ? aggregate.deletions
           : splitAggregate.deletions;
 
+      const rootPath = yield* runGitStdout("GitCore.statusDetails.root", cwd, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+      ]).pipe(
+        Effect.map(stripPathTerminator),
+        Effect.catch(() => Effect.succeed("")),
+      );
       const result = {
         branch,
         upstreamRef,
         hasWorkingTreeChanges,
         workingTree: {
+          ...(rootPath ? { rootPath } : {}),
           files,
           insertions,
           deletions,
@@ -1767,6 +1779,38 @@ const makeGitCore = Effect.gen(function* () {
       return hash.digest("hex");
     });
 
+  const stageSelectedFiles = (
+    execute: (
+      args: readonly string[],
+    ) => Effect.Effect<{ readonly stdout: string }, GitCommandError>,
+    filePaths: readonly string[] | undefined,
+  ) =>
+    Effect.gen(function* () {
+      // A staged rename's source is absent from the index and worktree. Keep
+      // it selectable for commit, while excluding it from add's pathspecs.
+      const stagePaths = filePaths?.length
+        ? (yield* execute([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+            "--",
+            ...filePaths.map(topLiteralGitPathspec),
+          ])).stdout
+            .split("\0")
+            .filter(Boolean)
+        : undefined;
+      if (stagePaths === undefined || stagePaths.length > 0) {
+        yield* execute([
+          "add",
+          "-A",
+          ...(stagePaths ? ["--", ...stagePaths.map(topLiteralGitPathspec)] : []),
+        ]);
+      }
+    });
+
   // Temporary indexes live beside the real index so split-index dependencies can
   // be resolved and materialized before staging. No repository lock spans generation.
   const withPreparedIndex = <A>(
@@ -1827,11 +1871,7 @@ const makeGitCore = Effect.gen(function* () {
             } else {
               yield* temporaryGit(head ? ["read-tree", head] : ["read-tree", "--empty"]);
             }
-            yield* temporaryGit([
-              "add",
-              "-A",
-              ...(filePaths?.length ? ["--", ...filePaths.map(literalGitPathspec)] : []),
-            ]);
+            yield* stageSelectedFiles(temporaryGit, filePaths);
             const includedTree = (yield* temporaryGit(["write-tree"])).stdout.trim();
             const result = yield* use(env);
             const stable =
@@ -1863,7 +1903,7 @@ const makeGitCore = Effect.gen(function* () {
     Effect.gen(function* () {
       const prepared = yield* withPreparedIndex(cwd, filePaths, (env) =>
         Effect.gen(function* () {
-          const paths = filePaths?.length ? ["--", ...filePaths.map(literalGitPathspec)] : [];
+          const paths = filePaths?.length ? ["--", ...filePaths.map(topLiteralGitPathspec)] : [];
           const stagedSummary = (yield* executeGit(
             "GitCore.prepareCommitContext.stagedSummary",
             cwd,
@@ -1957,13 +1997,10 @@ const makeGitCore = Effect.gen(function* () {
           yield* createBranch({ cwd, branch: options.newBranch });
           yield* Effect.scoped(checkoutBranch({ cwd, branch: options.newBranch }));
         }
-        yield* runGit("GitCore.commitPrepared.stage", cwd, [
-          "add",
-          "-A",
-          ...(expected.filePaths?.length
-            ? ["--", ...expected.filePaths.map(literalGitPathspec)]
-            : []),
-        ]);
+        yield* stageSelectedFiles(
+          (args) => executeGit("GitCore.commitPrepared.stage", cwd, args),
+          expected.filePaths,
+        );
         const result = yield* commit(cwd, subject, body, expected.filePaths);
         preparedContexts.delete(context);
         return { status: "created" as const, commitSha: result.commitSha };
@@ -1988,7 +2025,7 @@ const makeGitCore = Effect.gen(function* () {
           .exists(isAbsolutePath(mergeHeadPath) ? mergeHeadPath : resolvePath(cwd, mergeHeadPath))
           .pipe(Effect.catch(() => Effect.succeed(false)));
         if (!mergeInProgress) {
-          args.push("--only", "--", ...filePaths.map(literalGitPathspec));
+          args.push("--only", "--", ...filePaths.map(topLiteralGitPathspec));
         }
       }
       // The summary lists every created or deleted path.

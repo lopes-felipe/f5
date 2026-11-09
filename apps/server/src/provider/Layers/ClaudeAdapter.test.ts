@@ -4187,6 +4187,12 @@ describe("ClaudeAdapterLive", () => {
           agent_id: "agent-1",
         },
         { type: "system", subtype: "informational", level: "notice", content: "Notice" },
+        {
+          type: "system",
+          subtype: "informational",
+          level: "error",
+          content: "Prompt dropped by a hook: Deploys are frozen.",
+        },
         { type: "system", subtype: "model_refusal_no_fallback", content: "Refused" },
         { type: "system", subtype: "informational", level: "info", content: "Quiet" },
         { type: "system", subtype: "future_notice" },
@@ -4205,7 +4211,12 @@ describe("ClaudeAdapterLive", () => {
         events
           .filter((event) => event.type === "runtime.warning")
           .map((event) => event.payload.message),
-        ["Write was denied: Policy restriction", "Notice", "Refused"],
+        [
+          "Write was denied: Policy restriction",
+          "Notice",
+          "Prompt dropped by a hook: Deploys are frozen.",
+          "Refused",
+        ],
       );
       const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
         resume: string;

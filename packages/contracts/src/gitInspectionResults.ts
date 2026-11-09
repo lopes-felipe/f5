@@ -51,6 +51,7 @@ export const GitStatusResult = Schema.Struct({
   branch: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
   hasWorkingTreeChanges: Schema.Boolean,
   workingTree: Schema.Struct({
+    rootPath: Schema.optionalKey(FilesystemPath),
     files: Schema.Array(
       Schema.Struct({
         path: FilesystemPath,
