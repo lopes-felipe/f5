@@ -22598,12 +22598,16 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T19:09:48.816Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33131",
+      "reason": "This is mostly removals of features f5 may still want, plus a settings reshuffle around a Labs setting f5 has not adopted yet (pr-30000 is still in the inbox).",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-30000"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
