@@ -21,6 +21,23 @@ function metadata(width: number, height: number) {
   return bytes;
 }
 
+function container(type: string, child: ArrayBuffer, fullBox = false): ArrayBuffer {
+  const header = fullBox ? 12 : 8;
+  const bytes = new ArrayBuffer(header + child.byteLength);
+  const view = new DataView(bytes);
+  view.setUint32(0, bytes.byteLength);
+  new Uint8Array(bytes, 4, 4).set([...type].map((letter) => letter.charCodeAt(0)));
+  new Uint8Array(bytes, header).set(new Uint8Array(child));
+  return bytes;
+}
+
+it("checks spatial extents nested under a meta FullBox, iprp, and ipco", () => {
+  const nested = (width: number) =>
+    container("meta", container("iprp", container("ipco", metadata(width, 8000))), true);
+  expect(() => validateHeicDimensions(nested(8000))).not.toThrow();
+  expect(() => validateHeicDimensions(nested(8001))).toThrow("pixel limit");
+});
+
 it("rejects missing, malformed, and excessive spatial extents before decoding", () => {
   expect(() => validateHeicDimensions(metadata(8000, 8000))).not.toThrow();
   expect(() => validateHeicDimensions(metadata(8001, 8000))).toThrow("pixel limit");
@@ -37,6 +54,34 @@ it("rejects oversized source blobs without loading the decoder", async () => {
     reason: "too-large",
   });
   expect(decoder.decode).not.toHaveBeenCalled();
+});
+
+it("bounds non-interruptible decodes even when their callers cancel", async () => {
+  const release: Array<() => void> = [];
+  const close = vi.fn();
+  decoder.decode.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release.push(() => resolve({ width: 100, height: 100, close }));
+      }),
+  );
+  const blob = new Blob([metadata(100, 100)]);
+  const controllers = [new AbortController(), new AbortController()];
+  const pending = controllers.map((controller) =>
+    decodeHeicPreview(blob, "image.heic", controller.signal),
+  );
+  await vi.waitFor(() => expect(decoder.decode).toHaveBeenCalledTimes(2));
+  controllers.forEach((controller) => controller.abort());
+  expect(await decodeHeicPreview(blob, "extra.heic", new AbortController().signal)).toEqual({
+    ok: false,
+    reason: "busy",
+  });
+  release.forEach((finish) => finish());
+  expect(await Promise.all(pending)).toEqual([
+    { ok: false, reason: "cancelled" },
+    { ok: false, reason: "cancelled" },
+  ]);
+  expect(close).toHaveBeenCalledTimes(2);
 });
 
 it("limits concurrent decodes, scales to the attachment edge, and closes each bitmap", async () => {

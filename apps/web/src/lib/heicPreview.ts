@@ -47,42 +47,55 @@ export function validateHeicDimensions(bytes: ArrayBuffer): void {
 }
 
 let decoder: Promise<typeof import("heic-to/csp")> | undefined;
+let activeHeicDecodes = 0;
 const decodeHeic: ComposerImageProcessor = async (file, options) => {
   if (file.size > MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES) return { ok: false, reason: "too-large" };
-  validateHeicDimensions(await file.arrayBuffer());
-  if (options?.signal?.aborted) return { ok: false, reason: "cancelled" };
-  const { heicTo } = await (decoder ??= import("heic-to/csp").catch((error) => {
-    decoder = undefined;
-    throw error;
-  }));
-  if (options?.signal?.aborted) return { ok: false, reason: "cancelled" };
-  const bitmap = await heicTo({ blob: file, type: "bitmap" });
+  // A deadline can free the shared composer slot before libheif returns.
+  // Keep a separate bound on those non-interruptible decodes until their bitmaps are released.
+  if (activeHeicDecodes >= 2) return { ok: false, reason: "busy" };
+  activeHeicDecodes++;
   try {
+    validateHeicDimensions(await file.arrayBuffer());
     if (options?.signal?.aborted) return { ok: false, reason: "cancelled" };
-    if (!bitmap.width || !bitmap.height || bitmap.width * bitmap.height > MAX_HEIC_DECODE_PIXELS) {
-      return { ok: false, reason: "too-large" };
+    const { heicTo } = await (decoder ??= import("heic-to/csp").catch((error) => {
+      decoder = undefined;
+      throw error;
+    }));
+    if (options?.signal?.aborted) return { ok: false, reason: "cancelled" };
+    const bitmap = await heicTo({ blob: file, type: "bitmap" });
+    try {
+      if (options?.signal?.aborted) return { ok: false, reason: "cancelled" };
+      if (
+        !bitmap.width ||
+        !bitmap.height ||
+        bitmap.width * bitmap.height > MAX_HEIC_DECODE_PIXELS
+      ) {
+        return { ok: false, reason: "too-large" };
+      }
+      const scale = Math.min(1, IMAGE_ATTACHMENT_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return { ok: false, reason: "unsupported" };
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", 0.9),
+      );
+      if (!blob) return { ok: false, reason: "unreadable" };
+      const output = new File([blob], file.name, { type: blob.type });
+      return {
+        ok: true,
+        file: output,
+        recompressed: true,
+        originalSizeBytes: file.size,
+        finalSizeBytes: output.size,
+      };
+    } finally {
+      bitmap.close();
     }
-    const scale = Math.min(1, IMAGE_ATTACHMENT_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) return { ok: false, reason: "unsupported" };
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.9),
-    );
-    if (!blob) return { ok: false, reason: "unreadable" };
-    const output = new File([blob], file.name, { type: blob.type });
-    return {
-      ok: true,
-      file: output,
-      recompressed: true,
-      originalSizeBytes: file.size,
-      finalSizeBytes: output.size,
-    };
   } finally {
-    bitmap.close();
+    activeHeicDecodes--;
   }
 };
 

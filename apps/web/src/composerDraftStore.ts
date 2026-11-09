@@ -582,8 +582,8 @@ export type PromptStashRestoreResult =
   | { readonly status: "failed"; readonly message: string };
 
 export interface DraftThreadState extends WorktreeCreationOptions {
-  /** Reserves a draft during first send. Never persisted. */
-  promoting?: boolean;
+  /** True while admission is unresolved; "accepted" reserves until server sync. Never persisted. */
+  promoting?: boolean | "accepted";
   projectId: ProjectId;
   createdAt: string;
   runtimeMode: RuntimeMode;
@@ -765,7 +765,7 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     options: {
       sharedFilesystemConfirmed?: boolean;
-      promoting?: boolean;
+      promoting?: boolean | "accepted";
       branch?: string | null;
       worktreePath?: string | null;
       projectId?: ProjectId;
@@ -3621,6 +3621,7 @@ export function useComposerThreadDraft(threadId: ThreadId): ComposerThreadDraftS
 
 /**
  * Clear draft threads that have been promoted to server threads.
+ * Pending admission keeps its context for rollback; accepted admission can be reconciled.
  *
  * Call this after a snapshot sync so the route guard in `_chat.$threadId`
  * sees the server thread before the draft is removed — avoids a redirect
@@ -3630,9 +3631,26 @@ export function clearPromotedDraftThreads(serverThreadIds: ReadonlySet<ThreadId>
   const store = useComposerDraftStore.getState();
   const draftThreadIds = Object.keys(store.draftThreadsByThreadId) as ThreadId[];
   for (const draftId of draftThreadIds) {
-    if (serverThreadIds.has(draftId)) {
+    if (serverThreadIds.has(draftId) && store.getDraftThread(draftId)?.promoting !== true) {
       store.clearDraftThread(draftId);
     }
+  }
+}
+
+/** Settle admission without exposing an accepted draft for reuse before its server shell arrives. */
+export function settleDraftThreadPromotion(
+  threadId: ThreadId,
+  outcome: "accepted" | "restored",
+  serverThreadExists = false,
+): void {
+  const store = useComposerDraftStore.getState();
+  if (!store.getDraftThread(threadId)?.promoting) return;
+  if (outcome === "accepted" && serverThreadExists) {
+    store.clearDraftThread(threadId);
+  } else {
+    store.setDraftThreadContext(threadId, {
+      promoting: outcome === "accepted" ? "accepted" : false,
+    });
   }
 }
 

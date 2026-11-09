@@ -18,5 +18,6 @@ export function revealSenderWindow(
   if (window.isMinimized()) window.restore();
   window.show();
   activateApp();
+  // Target this profile's window explicitly after application-wide macOS activation.
   window.focus();
 }

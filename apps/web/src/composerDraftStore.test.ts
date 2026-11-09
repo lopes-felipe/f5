@@ -27,6 +27,8 @@ import {
   flushComposerDraftPersistence,
   mergePersistedRecords,
   pruneOrphanedDraftThreads,
+  clearPromotedDraftThreads,
+  settleDraftThreadPromotion,
   resetComposerDraftBaseStorageForTesting,
   setComposerDraftBaseStorageForTesting,
   useComposerDraftStore,
@@ -1137,6 +1139,54 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[otherThreadId]?.prompt).toBe(
       "retry this prompt",
     );
+  });
+
+  it("preserves an unresolved bootstrap across server sync so rollback can rekey it", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setDraftThreadContext(threadId, { promoting: true });
+    clearPromotedDraftThreads(new Set([threadId]));
+    expect(store.getDraftThread(threadId)?.promoting).toBe(true);
+    store.setProjectDraftThreadId(projectId, otherThreadId);
+    store.setPrompt(threadId, "retry after bootstrap rollback");
+    settleDraftThreadPromotion(threadId, "restored");
+    expect(store.rekeyDraftThread(threadId, ThreadId.makeUnsafe("rollback-retry"))).toBe(true);
+    pruneOrphanedDraftThreads(new Set([projectId]));
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[ThreadId.makeUnsafe("rollback-retry")]
+        ?.prompt,
+    ).toBe("retry after bootstrap rollback");
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      otherThreadId,
+    );
+  });
+
+  it.each([true, false])(
+    "finishes accepted promotion when server sync already arrived: %s",
+    (serverSeen) => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(projectId, threadId);
+      store.setDraftThreadContext(threadId, { promoting: true });
+      if (serverSeen) clearPromotedDraftThreads(new Set([threadId]));
+      settleDraftThreadPromotion(threadId, "accepted", serverSeen);
+      expect(store.getDraftThreadByProjectId(projectId)).toBeNull();
+      if (!serverSeen) {
+        expect(store.getDraftThread(threadId)?.promoting).toBe("accepted");
+        clearPromotedDraftThreads(new Set([threadId]));
+      }
+      expect(store.getDraftThread(threadId)).toBeNull();
+    },
+  );
+
+  it("releases a restored transport-failed draft without replacing a newer project's draft", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setDraftThreadContext(threadId, { promoting: true });
+    store.setProjectDraftThreadId(projectId, otherThreadId);
+    store.setPrompt(threadId, "restored");
+    settleDraftThreadPromotion(threadId, "restored");
+    expect(store.getDraftThread(threadId)?.promoting).toBe(false);
+    expect(store.getDraftThreadByProjectId(projectId)?.threadId).toBe(otherThreadId);
   });
 
   it("does not persist promotion or churn unchanged draft context", async () => {

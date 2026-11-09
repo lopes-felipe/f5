@@ -4,7 +4,10 @@ import { AttachmentImage } from "./AttachmentImage";
 import { decodeHeicPreview } from "../lib/heicPreview";
 
 vi.mock("../lib/heicPreview", () => ({ decodeHeicPreview: vi.fn() }));
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.mocked(decodeHeicPreview).mockReset();
+});
 
 it("decodes failed HEIC images lazily and revokes the converted URL", async () => {
   const converted = new Blob(["jpeg"], { type: "image/jpeg" });
@@ -89,7 +92,13 @@ it("discards conversion results after unmounting", async () => {
     <AttachmentImage src="blob:pending" sourceBlob={sourceBlob} name="photo.heic" />,
   );
   document.querySelector("img")!.dispatchEvent(new Event("error"));
-  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  await vi.waitFor(() =>
+    expect(decodeHeicPreview).toHaveBeenCalledWith(
+      sourceBlob,
+      "photo.heic",
+      expect.any(AbortSignal),
+    ),
+  );
   const signal = vi.mocked(decodeHeicPreview).mock.calls.at(-1)![2];
   await view.unmount();
   expect(signal.aborted).toBe(true);

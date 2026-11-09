@@ -8,7 +8,10 @@ import {
 import { fetchImageAttachmentBlob } from "./chat/imageAttachmentActions";
 import { decodeHeicPreview } from "../lib/heicPreview";
 import { MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES } from "../lib/imageCompression.core";
-import { processComposerImageTaskBounded } from "../lib/imageCompression";
+import {
+  processComposerImageTaskBounded,
+  withImageCompressionTimeout,
+} from "../lib/imageCompression";
 
 export type AttachmentImageProps = ComponentProps<"img"> & {
   name: string;
@@ -45,14 +48,18 @@ function HeicImage({
     let url: string | undefined;
     void (async () => {
       try {
-        const result = await processComposerImageTaskBounded(async () => {
-          const blob = await fetchImageAttachmentBlob(
-            { src, name, mimeType: "image/heic", ...(sourceBlob ? { sourceBlob } : {}) },
-            { signal: controller.signal, maxBytes: MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES },
-          );
-          if (controller.signal.aborted) return { ok: false, reason: "cancelled" };
-          return decodeHeicPreview(blob, name, controller.signal);
-        }, controller.signal);
+        const result = await processComposerImageTaskBounded(
+          () =>
+            withImageCompressionTimeout(async (signal) => {
+              const blob = await fetchImageAttachmentBlob(
+                { src, name, mimeType: "image/heic", ...(sourceBlob ? { sourceBlob } : {}) },
+                { signal, maxBytes: MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES },
+              );
+              if (signal.aborted) return { ok: false, reason: "cancelled" };
+              return decodeHeicPreview(blob, name, signal);
+            }, controller.signal),
+          controller.signal,
+        );
         if (controller.signal.aborted) return;
         if (!result.ok) throw new Error("HEIC conversion failed.");
         url = URL.createObjectURL(result.file);
