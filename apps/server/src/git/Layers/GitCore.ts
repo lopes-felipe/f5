@@ -2422,7 +2422,7 @@ const makeGitCore = Effect.gen(function* () {
             a.name.localeCompare(b.name)
           );
         });
-      return { branches, isRepo: true, hasOriginRemote: metadata.remoteNames.includes("origin") };
+      return { branches, isRepo: true, hasOriginRemote: metadata.remoteNames.length > 0 };
     }).pipe(
       // Without Git installed no folder can be a repository; other spawn failures still surface.
       Effect.catchIf(isMissingGitExecutable, () =>

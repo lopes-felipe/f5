@@ -19,6 +19,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
 - Stored HEIC images render in attachment previews, and pasted folders become workspace references without discarding question-answer mentions.
+- Uncommitted Git reviews preserve staged deletions paired into renames. Repositories with a non-origin remote offer Push and Create PR, and branches behind upstream offer Commit for local changes without pushing.
 - Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.
 - GitLab merge requests show failed child pipelines in PR Hub checks and watches, retain them across discovery polls, and avoid reporting incomplete check reads as passed.
 - Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
