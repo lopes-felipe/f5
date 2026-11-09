@@ -31,12 +31,15 @@ let computerSecureAuditSecureCapableRoles: Set<String> = [
 ]
 
 extension ComputerSecureAuditNode {
-  /// True when this element is, or cannot be ruled out as, a secure text field.
-  var mayBeSecureField: Bool {
-    if role == "AXSecureTextField" || subrole == "AXSecureTextField" { return true }
+  /// The role or subrole reads as a secure text field.
+  var isSecureField: Bool { role == "AXSecureTextField" || subrole == "AXSecureTextField" }
+  /// The subrole could not be read and the role can carry the secure subrole.
+  var isSuspectedSecureField: Bool {
     guard !subroleReadable, let role else { return false }
     return computerSecureAuditSecureCapableRoles.contains(role)
   }
+  /// True when this element is, or cannot be ruled out as, a secure text field.
+  var mayBeSecureField: Bool { isSecureField || isSuspectedSecureField }
 }
 
 /// Rects to mask in one window: secure fields plus any region the audit could not establish
@@ -130,6 +133,11 @@ public func computerSecureAuditDeadline(
 /// or a secure field without a usable frame) masks its nearest clipping ancestor and marks the
 /// audit incomplete. Returns nil, meaning mask the whole window, when the root is unreadable or
 /// no clipping ancestor sits below the window.
+///
+/// An element whose role reads but whose subrole does not is still audited. A role that can
+/// carry the secure subrole is masked at its own frame as a suspected field, and its children
+/// are still walked, since AX frames need not contain their descendants. Any other childless
+/// element is masked at its own frame; other roles walk on as usual.
 public func computerSecureAudit<Handle>(
   root: Handle, read: (Handle) -> ComputerSecureAuditNode<Handle>?, maxDepth: Int,
   maxNodes: Int, expired: () -> Bool, search: ((Handle) -> [Handle]?)? = nil,
@@ -179,9 +187,7 @@ public func computerSecureAudit<Handle>(
       continue
     }
     let own = node.frame.flatMap { computerSecureAuditRectIsValid($0) ? $0 : nil }
-    // Diagnostic only: the subrole matters solely for secure-capable roles, handled below.
-    if !node.subroleReadable { diagnostics?.stop(.unreadableSubrole) }
-    if node.mayBeSecureField {
+    if node.isSecureField {
       if let own {
         append(own)
       } else {
@@ -189,6 +195,18 @@ public func computerSecureAudit<Handle>(
         if !unaudited(entry) { return nil }
       }
       continue
+    }
+    if !node.subroleReadable { diagnostics?.stop(.unreadableSubrole) }
+    if node.isSuspectedSecureField {
+      if let own {
+        // Fall through: the field's children are still walked.
+        append(own)
+      } else {
+        diagnostics?.stop(.secureFieldWithoutFrame)
+        if !unaudited(entry) { return nil }
+        // The masked clip covers this element's subtree.
+        continue
+      }
     }
     if computerSecureAuditLeafRoles.contains(role) { continue }
     let clip = computerSecureAuditClippingRoles.contains(role) ? own ?? entry.clip : entry.clip
@@ -247,6 +265,11 @@ public func computerSecureAudit<Handle>(
       diagnostics?.stop(!node.childrenReadable ? .unreadableChildren : .depthLimit)
       guard unaudited(entry, region: clip) else { return nil }
       continue
+    }
+    // A childless element of another role whose subrole cannot be read fails closed at its
+    // own frame; without a usable frame it has no on-screen area to mask.
+    if !node.subroleReadable, !node.isSuspectedSecureField, descendants.isEmpty, let own {
+      append(own)
     }
     for child in descendants {
       let next = Entry(handle: child, depth: entry.depth + 1, clip: entry.depth == 0 ? nil : clip)

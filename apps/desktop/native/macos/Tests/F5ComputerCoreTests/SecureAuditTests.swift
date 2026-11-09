@@ -296,16 +296,53 @@ final class SecureAuditTests: XCTestCase {
     ]
   }
 
-  func testUnreadableSubroleOnNativeChromeDoesNotMaskTheWindow() {
+  func testUnreadableSubroleOnChildlessChromeMasksOnlyThatElement() {
+    let element = rect(10, 0)
     let tree = unreadableSubroleTree(
-      Node(role: "AXGroup", frame: rect(10, 0), children: [], subroleReadable: false))
+      Node(role: "AXGroup", frame: element, children: [], subroleReadable: false))
     let diagnostics = ComputerSecureAuditDiagnostics()
     let result = computerSecureAudit(
       root: 0, read: { tree[$0] }, maxDepth: 256, maxNodes: 20000, expired: { false },
       diagnostics: diagnostics)
-    XCTAssertEqual(result, ComputerSecureAudit(rects: [], complete: true))
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [element], complete: true))
     XCTAssertEqual(diagnostics.stopReasons, [.unreadableSubrole])
     XCTAssertEqual(diagnostics.visitedNodes, tree.count)
+  }
+
+  func testUnreadableSubroleOnContainerStillAuditsItsChildren() {
+    let password = CGRect(x: 600, y: 400, width: 100, height: 30)
+    var tree = unreadableSubroleTree(
+      Node(role: "AXGroup", frame: rect(10, 0), children: [7], subroleReadable: false))
+    tree[7] = Node(role: "AXSecureTextField", frame: password)
+    XCTAssertEqual(audit(tree), ComputerSecureAudit(rects: [password], complete: true))
+  }
+
+  func testSuspectedFieldStillAuditsChildrenOutsideItsFrame() {
+    let field = rect(10, 0)
+    let password = CGRect(x: 600, y: 400, width: 100, height: 30)
+    for role in ["AXComboBox", "AXTextField", "AXTextArea"] {
+      var tree = unreadableSubroleTree(
+        Node(role: role, frame: field, children: [7], subroleReadable: false))
+      tree[7] = Node(role: "AXSecureTextField", frame: password)
+      let reads = Reads()
+      XCTAssertEqual(
+        audit(tree, reads: reads), ComputerSecureAudit(rects: [field, password], complete: true),
+        role)
+      XCTAssertTrue(reads.ids.contains(7), role)
+    }
+  }
+
+  func testSuspectedFieldWithUnreadableChildrenMasksItsClippingAncestor() {
+    let field = rect(10, 100)
+    let tree: [Int: Node] = [
+      0: Node(role: "AXWindow", frame: window, children: [1]),
+      1: Node(role: "AXScrollArea", frame: web, children: [2]),
+      2: Node(
+        role: "AXComboBox", frame: field, childrenReadable: false, subroleReadable: false),
+    ]
+    let result = audit(tree)
+    XCTAssertEqual(result?.complete, false)
+    XCTAssertEqual(result?.rects, [field, web])
   }
 
   func testUnreadableSubroleOnTextFieldMasksOnlyThatField() {
