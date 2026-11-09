@@ -50,6 +50,12 @@ public func computerElementDispatchOutcome(
 /// dispatched-but-unverified, as when the press itself returns `invalidUIElement`. A write
 /// (`setValue`, `focus`) or an element that is still there stays an unknown outcome: the
 /// action may still apply, and retrying could repeat it.
+///
+/// Ordering assumption: the probe goes to the same app after the timed-out press, so any
+/// answer means the app handled the press request first. The press either happened or can
+/// no longer apply to the destroyed element, so it cannot be repeated (its ref is stale).
+/// If the app rebuilt the UI on its own and dropped the press, the report is wrong but
+/// harmless: `verified: false` requires a fresh observation before the next action.
 public func computerElementTimeoutOutcome(
   action: String, elementGone: Bool
 ) -> ComputerElementDispatchOutcome {

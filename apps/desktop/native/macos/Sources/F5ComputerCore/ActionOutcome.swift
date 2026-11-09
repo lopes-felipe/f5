@@ -24,6 +24,12 @@ public func computerActionFailure(
   return payload
 }
 
+/// The error as the agent sees it: log-only fields never leave the helper inside it, on the
+/// tracked and the untracked path alike (`computerActionFailure` passes untracked payloads on).
+public func computerAgentFacingError(_ error: [String: Any]) -> [String: Any] {
+  error.filter { $0.key != "axError" }
+}
+
 /// Log-only facts for an `OutcomeUnknown` response, sent beside (never inside) the error so
 /// the agent-facing result is unchanged. Main logs them; they name no screen content.
 public func computerOutcomeUnknownDiagnostic(

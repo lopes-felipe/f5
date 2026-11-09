@@ -15,7 +15,9 @@ export interface ComputerPauseDeps {
 /**
  * Trusted local Pause/Resume from the renderer. Resuming native or Chrome control needs the
  * native confirmation; both latches then change together, so a thread holding the Chrome
- * lease also leaves native recovery.
+ * lease also leaves native recovery. Sends one `pauseChanged` of its own; pausing a thread
+ * with an active native lease also reports that lease's pause, which the server applies
+ * idempotently.
  */
 export async function applyComputerPause(
   deps: ComputerPauseDeps,

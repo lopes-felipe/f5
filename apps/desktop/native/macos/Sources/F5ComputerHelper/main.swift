@@ -2180,6 +2180,8 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   }
   return result
 }
+/// Runs one request and emits exactly one response; failures carry the agent-facing error
+/// and, for `OutcomeUnknown`, a separate log-only diagnostic.
 func execute(_ message: [String: Any]) {
   let request = message["request"] as? [String: Any] ?? [:]
   let host = message["hostAuthorization"] as? [String: Any] ?? [:]
@@ -2245,7 +2247,7 @@ func execute(_ message: [String: Any]) {
       let error = computerActionFailure(
         failure.payload, tracked: tracked, background: isBackground(request), posted: started)
       var response: [String: Any] = [
-        "type": "response", "requestId": id, "error": error.filter { $0.key != "axError" },
+        "type": "response", "requestId": id, "error": computerAgentFacingError(error),
       ]
       if let diagnostic = computerOutcomeUnknownDiagnostic(
         error: error, failure: failure.payload, op: op, appId: string(request, "appId"),

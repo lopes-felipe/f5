@@ -29,7 +29,11 @@ final class ActionOutcomeTests: XCTestCase {
   func testOutcomeUnknownDiagnosticIsLogOnly() {
     let failure: [String: Any] = ["_tag": "OutcomeUnknown", "axError": -25204]
     let error = computerActionFailure(failure, tracked: true, background: false, posted: true)
-    XCTAssertEqual(error.keys.sorted(), ["_tag"])
+    XCTAssertEqual(computerAgentFacingError(error).keys.sorted(), ["_tag"])
+    // Untracked failures pass through computerActionFailure unchanged; the filter still strips.
+    let untracked = computerActionFailure(failure, tracked: false, background: false, posted: false)
+    XCTAssertEqual(untracked["axError"] as? Int, -25204)
+    XCTAssertEqual(computerAgentFacingError(untracked).keys.sorted(), ["_tag"])
     let diagnostic = computerOutcomeUnknownDiagnostic(
       error: error, failure: failure, op: "elementAction", appId: "com.apple.Preview",
       background: false)

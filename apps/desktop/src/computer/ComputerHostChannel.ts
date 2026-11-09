@@ -1104,12 +1104,20 @@ export class ComputerHostChannel {
   /**
    * Pauses or resumes native control and the Chrome lease together. A thread can hold
    * both, and each keeps its own latch, so resuming only one would leave the other
-   * paused (or in recovery). Native goes first: its resume can refuse (helper
-   * unavailable, user still in the target), and then Chrome must stay paused as well.
+   * paused (or in recovery). Native goes first: a refusal about this thread's target
+   * (user still in the app) keeps Chrome paused as well. An unavailable helper only
+   * concerns native control, which admission already refuses, so a Chrome holder still
+   * resumes Chrome and native stays latched until a later Resume.
    * Returns whether the thread held the Chrome lease.
    */
   setThreadPaused(profileId: string, threadId: string, paused: boolean): boolean {
-    this.controller.setPaused(profileId, threadId, paused);
+    try {
+      this.controller.setPaused(profileId, threadId, paused);
+    } catch (error) {
+      const holder = this.chrome.current();
+      const holdsChrome = holder?.profileId === profileId && holder.threadId === threadId;
+      if (paused || !holdsChrome || computerError(error)._tag !== "Unavailable") throw error;
+    }
     return this.pauseChrome(profileId, threadId, paused);
   }
   send(profileId: string, message: DesktopComputerHostMessage): void {

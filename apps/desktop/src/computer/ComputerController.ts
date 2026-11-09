@@ -597,6 +597,7 @@ export class ComputerController {
       }
     this.cooperation.release(matches);
   }
+  /** Applies one helper push (kill switch, input, confirmations, state) and logs diagnostics. */
   private helperEvent(message: Record<string, unknown>): void {
     this.admission.changed();
     for (const changed of this.availabilityListeners) changed();
