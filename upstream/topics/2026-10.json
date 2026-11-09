@@ -5361,14 +5361,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T19:25:58.189Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-13608",
+      "reason": "F5 has no proactive PR panel opening or linked-PR retargeting; PR tabs open only through explicit user actions, so returning to a thread cannot trigger this bug.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-14705"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
