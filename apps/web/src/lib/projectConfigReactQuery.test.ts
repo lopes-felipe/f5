@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   DEFAULT_SERVER_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
@@ -12,14 +13,45 @@ import {
   resolveProjectThreadEnvMode,
 } from "./projectConfigReactQuery";
 import { rememberDraftSettings, defaultDraftRuntimeMode } from "./draftSettingsDefaults";
-import { resetWsConnectionStateForTests } from "../wsConnectionState";
+import { noteWsConnectionOpened, resetWsConnectionStateForTests } from "../wsConnectionState";
 import { projectSettingsQueryOptions } from "./projectSettingsQuery";
 const id = ProjectId.makeUnsafe("cached-project");
+const settingsApi = vi.hoisted(() => ({ getProjectSettings: vi.fn() }));
+vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ server: settingsApi }) }));
 afterEach(() => {
+  vi.restoreAllMocks();
+  settingsApi.getProjectSettings.mockReset();
   resetWsConnectionStateForTests();
   rememberDraftSettings(DEFAULT_SERVER_SETTINGS);
 });
 describe("cached draft defaults", () => {
+  it("fetches server settings over a stale cache when connected", async () => {
+    noteWsConnectionOpened();
+    const queryClient = new QueryClient();
+    const query = projectSettingsQueryOptions(id);
+    queryClient.setQueryData(
+      query.queryKey,
+      resolveProjectSettings({
+        projectId: id,
+        global: { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "local" },
+      }),
+      { updatedAt: 0 },
+    );
+    const serverResult = resolveProjectSettings({
+      projectId: id,
+      global: { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" },
+    });
+    settingsApi.getProjectSettings.mockResolvedValue(serverResult);
+    const fetch = vi.spyOn(queryClient, "fetchQuery");
+
+    await expect(resolveProjectThreadEnvMode(queryClient, id)).resolves.toBe("worktree");
+
+    expect(settingsApi.getProjectSettings).toHaveBeenCalledExactlyOnceWith({ projectId: id });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(queryClient.getQueryData(query.queryKey)).toEqual(serverResult);
+    queryClient.clear();
+  });
+
   it("uses cached resolved settings offline without starting a query", async () => {
     resetWsConnectionStateForTests();
     const queryClient = new QueryClient();
