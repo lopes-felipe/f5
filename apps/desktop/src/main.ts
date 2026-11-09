@@ -551,6 +551,7 @@ function initializeComputerSystem(): void {
       ),
     executionState: (profileId, update) =>
       computerSystem?.channel.sendExecutionState(profileId, update),
+    log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
     takeoverValid: (holder) =>
       computerSystem?.channel.execution.validTakeover(
         holder,

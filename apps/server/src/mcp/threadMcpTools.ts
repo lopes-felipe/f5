@@ -5,7 +5,17 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
-import { Cause, Data, Effect, Exit, Layer, Option, Schema, ServiceMap } from "effect";
+import {
+  Cause,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schema,
+  SchemaTransformation,
+  ServiceMap,
+} from "effect";
 import { z } from "zod";
 import { HTML_RENDER_COLUMN_WIDTH } from "@t3tools/shared/htmlRender";
 import {
@@ -36,7 +46,17 @@ const THREAD_READ_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const ThreadReadInput = Schema.Struct({
   threadId: Schema.String.check(Schema.isPattern(THREAD_READ_ID_PATTERN)),
   before: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
-  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+  limit: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).pipe(
+      Schema.decodeTo(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })),
+        SchemaTransformation.transform({
+          decode: (value) => Math.min(value, 50),
+          encode: (value) => value,
+        }),
+      ),
+    ),
+  ),
   item: Schema.optional(
     Schema.Struct({
       kind: Schema.Literals(["message", "plan"]),
@@ -159,9 +179,10 @@ export const THREAD_TOOL_DEFINITIONS = [
         .number()
         .int()
         .min(1)
-        .max(50)
         .optional()
-        .describe("Most messages to return. Defaults to 20."),
+        .describe(
+          "Most messages to return, from 1 to 50. Larger values clamp to 50. Defaults to 20.",
+        ),
       item: z
         .object({
           kind: z.enum(["message", "plan"]),

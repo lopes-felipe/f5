@@ -2601,6 +2601,33 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
       };
     }
 
+    case "thread.command-execution.output.reconcile": {
+      // Output is not in the read model: the projection applies the
+      // replacement only while the row's last update is the expected one.
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.command-execution-output-reconciled",
+        payload: {
+          threadId: command.threadId,
+          commandExecutionId: command.commandExecutionId,
+          expectedLastUpdatedSequence: command.expectedLastUpdatedSequence,
+          output: command.output,
+          outputTruncated: command.outputTruncated,
+          updatedAt: command.updatedAt,
+        },
+      };
+    }
+
     case "thread.file-change.record": {
       yield* requireThread({
         readModel,

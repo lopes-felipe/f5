@@ -1869,6 +1869,7 @@ function reduceDomainEvent(
     }
 
     case "thread.command-execution-output-appended":
+    case "thread.command-execution-output-reconciled":
     case "thread.file-change-recorded":
     case "thread.usage-recorded":
       return state;

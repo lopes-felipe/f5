@@ -299,8 +299,13 @@ export class DesktopComputerHost {
       this.send(message);
     });
   }
-  /** Cancel a correlated exchange locally and on the desktop; late replies are ignored. */
-  abandon(requestId: string, error: ComputerControlError): void {
+  /**
+   * Cancel a correlated exchange locally and on the desktop; late replies are ignored. The
+   * rejection is usually a `ComputerControlError`, but abort-driven callers pass their signal's
+   * reason as-is (e.g. a wait's deadline sentinel), so their own handlers can tell the causes
+   * apart. Consumers must not assume an error shape.
+   */
+  abandon(requestId: string, error: unknown): void {
     const pending = this.pending.get(requestId);
     if (!pending) return;
     this.pending.delete(requestId);
