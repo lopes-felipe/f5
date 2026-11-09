@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
-import type { Thread } from "../types";
+import type { Project, Thread } from "../types";
 import {
   buildCommandPaletteRows,
   buildFileSearchActionItems,
   buildNestedSearchItems,
+  buildNewThreadInProjectItems,
   buildThreadActionItems,
   filterCommandPaletteGroups,
   findHighlightedCommandPaletteItem,
@@ -13,6 +14,80 @@ import {
 } from "./CommandPalette.logic";
 
 const PROJECT_ID = ProjectId.makeUnsafe("project-1");
+
+describe("buildNewThreadInProjectItems", () => {
+  const project = (name: string, kind?: Project["kind"]): Project => ({
+    id: ProjectId.makeUnsafe(name),
+    name,
+    kind,
+    cwd: "/" + name,
+    model: "gpt-5",
+    createdAt: "2026-03-01T00:00:00.000Z",
+    expanded: true,
+    scripts: [],
+    memories: [],
+  });
+  const first = project("first");
+  const current = project("current");
+  const last = project("last");
+  const scratch = project("scratch", "scratch");
+
+  function build(projects: Project[], currentProjectId: Project["id"] | null) {
+    const runProject = vi.fn(async (_project: Project) => undefined);
+    const runScratch = vi.fn(async () => undefined);
+    const items = buildNewThreadInProjectItems({
+      projects,
+      currentProjectId,
+      noProjectItem: {
+        kind: "action",
+        value: "new-thread-in:no-project",
+        title: "No project",
+        searchTerms: ["scratch"],
+        icon: null,
+        run: runScratch,
+      },
+      icon: () => null,
+      runProject,
+    });
+    return { items, runProject, runScratch };
+  }
+
+  it("puts the current project first, labels it, and runs it on selection", async () => {
+    const projects = [first, current, last, scratch];
+    const { items, runProject } = build(projects, current.id);
+    expect(items.map((item) => item.title)).toEqual(["current", "No project", "first", "last"]);
+    expect(items.map((item) => item.description)).toEqual([
+      "Current · /current",
+      undefined,
+      "/first",
+      "/last",
+    ]);
+    await items[0]!.run();
+    expect(runProject).toHaveBeenCalledExactlyOnceWith(current);
+    expect(projects).toEqual([first, current, last, scratch]);
+  });
+
+  it("keeps the current scratch target first and labels it", async () => {
+    const { items, runScratch } = build([first, scratch, last], scratch.id);
+    expect(items.map((item) => item.title)).toEqual(["No project", "first", "last"]);
+    expect(items[0]?.description).toBe("Current");
+    await items[0]!.run();
+    expect(runScratch).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, ProjectId.makeUnsafe("missing")])(
+    "preserves project order without a current project (%s)",
+    (id) => {
+      const { items } = build([first, last, scratch], id);
+      expect(items.map((item) => item.title)).toEqual(["first", "No project", "last"]);
+      expect(items.every((item) => !item.description?.includes("Current"))).toBe(true);
+    },
+  );
+
+  it("offers scratch when there are no real projects", () => {
+    expect(build([], null).items.map((item) => item.title)).toEqual(["No project"]);
+  });
+});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
