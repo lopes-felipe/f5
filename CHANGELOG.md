@@ -19,7 +19,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Userless SSH remotes resolve to their forge, and profile-authenticated Git refuses them instead of using the machine's SSH identity. GitHub Enterprise PR links can be pasted for checkout.
 - PR Hub renders edited and pure file renames, PR watches report conflicts after pushes, and large terminal selections respect attached-file and linked-thread input budgets without dropping context.
 - ACP Always allow falls back to the agent's allow-once option. Archived Codex threads can be forked, and late provider refreshes cannot replace status from changed settings.
-
+- PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
