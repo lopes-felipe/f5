@@ -23092,11 +23092,22 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T19:43:58.517Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/settings/categories/StorageSettings.tsx:1395",
+          "apps/server/src/storage/StorageMaintenance.ts:883",
+          "apps/server/src/storage/StorageMaintenance.ts:4773"
+        ],
+        "f5Refs": [
+          "668d81904fcc2ba6a6a712786007979efbada234"
+        ]
+      },
       "id": "pr-32941",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "settings",
