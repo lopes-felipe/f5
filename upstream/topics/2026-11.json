@@ -10285,11 +10285,21 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T20:16:08.657Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/project/ProjectCloneTracker.ts:186",
+          "apps/server/src/git/Layers/GitCore.ts:3996"
+        ],
+        "f5Refs": [
+          "e7c157b81d5c30cddf4b3edc9b841d4d7d6edb8f"
+        ]
+      },
       "id": "pr-28365",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
@@ -10666,11 +10676,22 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T20:16:08.657Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/Layers/GitService.ts:39",
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:270",
+          "apps/server/src/orchestration/Layers/CheckpointReactor.ts:506"
+        ],
+        "f5Refs": [
+          "e7c157b81d5c30cddf4b3edc9b841d4d7d6edb8f"
+        ]
+      },
       "id": "pr-28431",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
@@ -10692,14 +10713,16 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T20:16:08.657Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-28439",
+      "reason": "F5 has no upstream Changes badge or branch totals that could hide working-tree edits.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-28600"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
