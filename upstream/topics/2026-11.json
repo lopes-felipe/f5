@@ -4641,6 +4641,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-25835",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "timeline"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Desktop bug fix for videos in chat messages.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The preload reports when the app document enters HTML fullscreen. The main process then sets OS fullscreen, while preview guests stay confined to the window.",
+      "title": "Chat videos go fullscreen across the whole screen again on desktop",
+      "upstreamPrs": [
+        25835
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "llm",
@@ -5793,6 +5815,28 @@
       "title": "Terminal output skips parsing styles that are already cached",
       "upstreamPrs": [
         27041
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-27046",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a desktop preview browser recording bug.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Desktop preview recording cursors become manual popovers in the top layer, so modal dialogs and their backdrops no longer hide them.",
+      "title": "Recording cursor stays above modal dialogs and popovers",
+      "upstreamPrs": [
+        27046
       ]
     },
     {
@@ -11212,6 +11256,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-28571",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "git",
+          "performance"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable render performance improvement in the chat view.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "ChatView reads a narrowed git-status atom with only isRepo, refName, hasWorkingTreeChanges and pr, compared by value, so working-tree edits no longer re-render the chat.",
+      "title": "Changing file counts no longer re-render the chat view",
+      "upstreamPrs": [
+        28571
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28572",
@@ -11589,6 +11656,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-28638",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Small desktop bug fix.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "windowFitsWithinDisplay allows 1px of overhang on each edge, so windows snapped to an edge restore their saved bounds.",
+      "title": "Window saved 1px past a display edge reopens where it was",
+      "upstreamPrs": [
+        28638
+      ]
+    },
+    {
       "createdAt": "2026-11-04T11:12:56.883Z",
       "epoch": 1,
       "id": "pr-28643",
@@ -11725,6 +11813,28 @@
       "title": "Codex app-server request spans name the RPC method and request id",
       "upstreamPrs": [
         28666
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-28667",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "timeline"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Small composer UX fix, if f5 has citation chips.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Editing a citation chip's comment puts the caret after the last character and scrolls a long comment to it.",
+      "title": "Citation comments open with the caret at the end",
+      "upstreamPrs": [
+        28667
       ]
     },
     {
@@ -11896,6 +12006,28 @@
       "title": "test(mobile): drop two deleted tests from the React test list (#28800)",
       "upstreamPrs": [
         28800
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-28814",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a desktop preview browser bug.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Desktop preview navigation accepts superseded ERR_ABORTED loads. Blocked unloads and real load failures are still reported.",
+      "title": "Page redirects during loading no longer show a navigation error",
+      "upstreamPrs": [
+        28814
       ]
     },
     {
@@ -12356,6 +12488,49 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29018",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Small visual fix in the composer.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The composer banner's last-button corner radius follows the card's real corners, so hover highlights are no longer lopsided.",
+      "title": "Banner button hover follows the banner's rounded corners",
+      "upstreamPrs": [
+        29018
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29025",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "threads"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Clearer labels for an existing thread setting. Port the web part only.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Renames the thread menu's auto-settle choices from Enabled/Disabled to Follow settings/Never, so the menu matches what actually happens.",
+      "title": "Per-thread auto-settle menu says Follow settings / Never",
+      "upstreamPrs": [
+        29025
+      ]
+    },
+    {
       "createdAt": "2026-11-02T10:32:38.196Z",
       "epoch": 1,
       "id": "pr-29026",
@@ -12675,6 +12850,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29150",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "performance"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Sidebar performance improvement that grows with thread count.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "attemptSnooze is wrapped in useStableCallback, so memoized sidebar rows skip re-rendering on a thread switch.",
+      "title": "Switching threads no longer re-renders every sidebar row",
+      "upstreamPrs": [
+        29150
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "epoch": 1,
       "id": "pr-29161",
@@ -12695,6 +12892,32 @@
       "title": "Checking out a PR refreshes cached branch lists",
       "upstreamPrs": [
         29161
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29164",
+      "relatedTopics": [
+        "pr-22160"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "composer",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes leaked local state and pending uploads after archive delete, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The archived-thread delete path also releases draft uploads and clears the composer draft and terminal UI state.",
+      "title": "Deleting an archived thread clears its draft, staged uploads and terminal state",
+      "upstreamPrs": [
+        29164
       ]
     },
     {
@@ -12843,6 +13066,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29171",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "performance"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable settings performance improvement.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Default font labels are resolved once per session after fonts load, which removes about 24 forced layouts each time Appearance opens.",
+      "title": "Appearance settings no longer re-probe fonts on every open",
+      "upstreamPrs": [
+        29171
+      ]
+    },
+    {
       "createdAt": "2026-11-03T10:28:38.430Z",
       "decidedAt": "2026-11-03T10:30:22.437Z",
       "decidedBy": "user",
@@ -12954,6 +13199,28 @@
       "title": "Installer resolves a relative T3CODE_HOME so t3 works",
       "upstreamPrs": [
         29241
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29243",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a Linux desktop preview browser import bug.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Linux Chromium and Zen profile discovery uses XDG_CONFIG_HOME. Chrome keeps the CHROME_CONFIG_HOME override.",
+      "title": "Browser profile import finds profiles in XDG_CONFIG_HOME",
+      "upstreamPrs": [
+        29243
       ]
     },
     {
@@ -13094,6 +13361,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29287",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a desktop preview annotation bug.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The preview annotation overlay stops pointer, focus and wheel events from reaching page listeners, so Radix-style dialogs and popovers stay open while annotating.",
+      "title": "Annotating inside a page's dialog no longer closes it",
+      "upstreamPrs": [
+        29287
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:17.708Z",
       "decidedBy": "user",
@@ -13147,6 +13436,28 @@
       "title": "Claude usage limits hit through OpenCode keep their reset time",
       "upstreamPrs": [
         29301
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29308",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Prevents download data loss in the desktop preview browser.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Preview downloads copy with COPYFILE_EXCL and move to the next numbered name on EEXIST.",
+      "title": "Concurrent downloads with the same name no longer overwrite each other",
+      "upstreamPrs": [
+        29308
       ]
     },
     {
@@ -14247,6 +14558,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29601",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes silent loss of a user edit in the composer queue.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Queued-message edit recovery treats a removed attachment as a change, and reports discarded when there is nothing to put back in the composer.",
+      "title": "Removing a queued message's attachment counts as an edit",
+      "upstreamPrs": [
+        29601
+      ]
+    },
+    {
       "createdAt": "2026-11-04T11:12:56.883Z",
       "epoch": 1,
       "id": "pr-29602",
@@ -14600,6 +14932,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29642",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "keybindings"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Small settings fix, as long as f5 provides the previewOpen context key.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Adds previewOpen to the core when-variables, so the editor stops flagging it as unknown and the condition picker offers it.",
+      "title": "Keybinding settings recognize the previewOpen condition",
+      "upstreamPrs": [
+        29642
+      ]
+    },
+    {
       "createdAt": "2026-11-03T20:57:03.039Z",
       "decidedAt": "2026-11-06T08:58:17.708Z",
       "decidedBy": "user",
@@ -14933,6 +15287,29 @@
       "title": "docs: keybindings guide lists the rightPanelOpen when key (#29677)",
       "upstreamPrs": [
         29677
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29678",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "keybindings",
+          "preview"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a keybinding bug in f5's sidebar and preview surfaces. When reimplementing, map previewOpen to f5's desktop-hosted preview panel.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The sidebar's keydown listener now passes previewFocus and previewOpen to resolveShortcutCommand. Custom thread.next, thread.previous and thread.jump rules with when-clauses on those conditions now work.",
+      "title": "Thread navigation shortcuts honor previewFocus and previewOpen conditions",
+      "upstreamPrs": [
+        29678
       ]
     },
     {
@@ -15991,6 +16368,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29832",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "side chats",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes orphaned draft and upload leaks in f5's side chats. Reimplement without client-runtime.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "After a thread is deleted, its side chats' composer drafts are cleared and their staged uploads are released. Deleting a side chat directly does the same.",
+      "title": "Deleting a thread clears its side chats' drafts and uploads",
+      "upstreamPrs": [
+        29832
+      ]
+    },
+    {
       "createdAt": "2026-11-05T11:02:07.777Z",
       "epoch": 1,
       "id": "pr-29838",
@@ -16116,6 +16516,31 @@
       "title": "An environment link card the user moved past no longer blocks auto-settle",
       "upstreamPrs": [
         29847
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-29851",
+      "relatedTopics": [
+        "pr-31379"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "scheduled tasks",
+          "settings"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has its own scheduler. If an f5 fixed-time task can store an unpadded hour, its edit form has the same blank-field symptom.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "taskToDraft pads a stored fixed time such as 9:05 to 09:05, so the native time input shows it instead of a blank field that silently saves 09:00.",
+      "title": "Editing a scheduled task shows its saved time when the hour has one digit",
+      "upstreamPrs": [
+        29851
       ]
     },
     {
@@ -17017,6 +17442,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30038",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "performance"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable main-thread performance fix in the timeline that f5 shares.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "remarkThoughtPreview collects text runs and collapses whitespace once per run, instead of on the whole accumulated string for every fragment. A 150 KB reasoning entry drops from about 600 ms to 1.3 ms.",
+      "title": "Long reasoning previews format in linear time",
+      "upstreamPrs": [
+        30038
+      ]
+    },
+    {
       "createdAt": "2026-11-04T11:12:56.883Z",
       "decidedAt": "2026-11-06T08:58:17.708Z",
       "decidedBy": "user",
@@ -17194,6 +17641,31 @@
       "title": "npm launcher checks the runtime before caching it",
       "upstreamPrs": [
         30099
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30115",
+      "relatedTopics": [
+        "pr-31337"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes data loss while typing in f5's provider settings card.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "In the provider instance Environment section, rows the user typed but never published are kept when an external settings write reseeds the draft. Before, they vanished mid-typing.",
+      "title": "Typed but unpublished provider variable rows survive settings re-deliveries",
+      "upstreamPrs": [
+        30115
       ]
     },
     {
@@ -18014,6 +18486,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30370",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "threads"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes thread navigation after delete in f5's sidebar logic, which exists in the fork.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "getFallbackThreadIdAfterDelete skips threads hidden from the sidebar (side chats and subagents), as it already skips snoozed and settled ones.",
+      "title": "Deleting the open thread no longer opens a side chat or subagent",
+      "upstreamPrs": [
+        30370
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:00.915Z",
       "decidedBy": "rule",
@@ -18163,6 +18657,28 @@
       "title": "Untitled subagent titles no longer end in a broken character",
       "upstreamPrs": [
         30390
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30392",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub",
+          "composer"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A small correctness fix in the PR hub's fix-findings handoff, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The bounded() helper steps back one code unit when the 997-unit cut would split a surrogate pair, so long findings with emoji no longer end in a replacement character.",
+      "title": "Review findings handed to a thread no longer end in a broken character",
+      "upstreamPrs": [
+        30392
       ]
     },
     {
@@ -18414,6 +18930,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30448",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "search",
+          "command palette"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes input-method bugs for CJK users in search surfaces that f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Content search ignores keydown events while an IME composes (isComposing or keyCode 229). The palette's Escape handler ignores keyCode 229, so Safari's composition-ending Escape no longer sends the overlay back to the palette.",
+      "title": "IME Enter, arrow and Escape keys stay in project search and file picker inputs",
+      "upstreamPrs": [
+        30448,
+        30467
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "decidedAt": "2026-11-06T08:58:17.708Z",
       "decidedBy": "user",
@@ -18436,6 +18975,32 @@
       "title": "Closed or merged GitLab merge requests can delete their source branch",
       "upstreamPrs": [
         30453
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-30456",
+      "reason": "A refactor with no behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "A refactor with no behavior change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Replaces a candidate-building helper with a direct local-name lookup. Behavior is unchanged.",
+      "title": "Simplify remote branch filtering",
+      "upstreamPrs": [
+        30456
       ]
     },
     {
@@ -19328,6 +19893,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30714",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes @-mentions of long paths in f5's composer. Only the web part applies.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The composer path search query is cut to 256 characters, without splitting a surrogate pair. Paths longer than 256 characters now return suggestions instead of an invalid request.",
+      "title": "Long @ file path searches stay within the 256-character request limit",
+      "upstreamPrs": [
+        30714
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "epoch": 1,
       "id": "pr-30717",
@@ -19640,6 +20226,31 @@
       "title": "request_secret asks for one value per card",
       "upstreamPrs": [
         30805
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-30812",
+      "relatedTopics": [
+        "pr-30848"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files",
+          "preview"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes the RTF rendering bug in the web file preview panel. This is the client-side counterpart of the agent extractor fix in pr-30848.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "openRtf treats a backslash before a line break as \\par, so TextEdit documents preview with their paragraphs instead of one run-on line.",
+      "title": "RTF file previews keep paragraphs that end with a backslash",
+      "upstreamPrs": [
+        30812
       ]
     },
     {
@@ -23074,6 +23685,58 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-33196",
+      "reason": "Built on T3 Connect, pairing grants and outside-agent OAuth.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "auth",
+          "settings"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Built on T3 Connect, pairing grants and outside-agent OAuth.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds a Cmd-K and Settings wizard that checks T3 Connect and issues pairing codes carrying the chosen MCP access level, for outside assistant apps.",
+      "title": "Use T3 Code in another app (MCP) wizard",
+      "upstreamPrs": [
+        33196
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-33209",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "onboarding",
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 want an upstream-style first-run Welcome page (agent detection and project import), without the phone or QR parts?",
+        "reason": "f5 has no WelcomeWizard, and this redesign is tied to mobile and pairing promotion (close to the declined mobile-app nag) and marketing redirects. Whether f5 wants a first-run page is a product choice.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Replaces the onboarding wizard with one Welcome page that lists agents and their actions, imports projects and offers phone setup with a QR code. Also adds marketing redirects.",
+      "title": "First run is one Welcome page instead of a 3-step wizard",
+      "upstreamPrs": [
+        33209
+      ]
+    },
+    {
       "createdAt": "2026-11-09T11:09:57.237Z",
       "decidedAt": "2026-11-09T11:09:57.237Z",
       "decidedBy": "rule",
@@ -23112,6 +23775,34 @@
       ]
     },
     {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-33228",
+      "reason": "Mobile app only.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Mobile app only.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Updates mobile native dependencies and patches, and fixes the iOS thread feed layout when the column resizes.",
+      "title": "Mobile: Expo SDK 58 and gesture/keyboard updates; iOS feed re-wraps once on resize",
+      "upstreamPrs": [
+        33228,
+        33229,
+        33459
+      ]
+    },
+    {
       "createdAt": "2026-11-09T11:09:57.237Z",
       "epoch": 1,
       "id": "pr-33260",
@@ -23131,6 +23822,33 @@
       "title": "Codex /goal no longer tries to create the goal twice",
       "upstreamPrs": [
         33260
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-33268",
+      "relatedTopics": [
+        "pr-33260"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "codex",
+          "orchestration",
+          "threads"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes notices that waited hours during goal runs. Upstream implements it in orchestration-v2, so the port must be rebuilt in f5's orchestrator, reusing its steering and Stop checks.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "During an active Codex /goal, a server-created background command notice with its own text steers into the running turn instead of queueing until the goal run ends. Outside a goal, notices still queue.",
+      "title": "Background command results steer into a running Codex goal",
+      "upstreamPrs": [
+        33268
       ]
     },
     {
@@ -23154,6 +23872,110 @@
       "title": "Steering during a Claude compaction shows it stopped, not failed",
       "upstreamPrs": [
         33291
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-33306",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Mobile-focused change in client-runtime, which f5 does not have.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "In client-runtime, a cold thread open uses the socket snapshot, and connects reuse a recently checked environment descriptor.",
+      "title": "Mobile threads open over the socket without an extra HTTP round trip",
+      "upstreamPrs": [
+        33306
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-33447",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): thread row timers no longer reflow the title every second (#33447)",
+      "upstreamPrs": [
+        33447
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-33449",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): smooth expand/collapse when the feed is at the bottom (#33449)",
+      "upstreamPrs": [
+        33449
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-33456",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): keep project and environment pickers reachable with the keyboard up (#33456)",
+      "upstreamPrs": [
+        33456
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:21:12.112Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-33478",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "ci: give Release Smoke 15 minutes (#33478)",
+      "upstreamPrs": [
+        33478
+      ]
+    },
+    {
+      "createdAt": "2026-11-09T19:21:12.112Z",
+      "epoch": 1,
+      "id": "pr-33500",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "models"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "A new model for f5's Claude provider.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Adds claude-fable-5-2 with the fable-5 profile and minVersion 2.1.290. The fable alias moves to 5.2, and Fable 5.1 becomes legacy.",
+      "title": "Add Claude Fable 5.2 to the model manifest",
+      "upstreamPrs": [
+        33500
       ]
     },
     {

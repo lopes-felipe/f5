@@ -1,0 +1,264 @@
+{
+  "baseSha": "2b65ffb641f152fadf443096bad7f4a0677caae4",
+  "commits": [
+    {
+      "pr": 33500,
+      "sha": "12f3244e059321f32b9865d7f6c4ad15e2cbc3ab",
+      "subject": "feat(models): add Claude Fable 5.2 (#33500)",
+      "topic": "pr-33500"
+    },
+    {
+      "pr": 31956,
+      "sha": "6b02cbff3a0cd9a0f2c97007562a1ce74fd35aa0",
+      "subject": "fix(speech): match reference benchmarks to transcription hardware (#31956)",
+      "topic": "pr-30625"
+    },
+    {
+      "pr": 33459,
+      "sha": "d7c52f9f86a63f023f5b84b182ffcd497bd7cd2c",
+      "subject": "fix(mobile): the thread feed re-wraps once when an iOS column resizes (#33459)",
+      "topic": "pr-33228"
+    },
+    {
+      "pr": 33483,
+      "sha": "dc7270581800518b9d7d4db6c8e13852067c8c2d",
+      "subject": "fix(source-control): nightly CLI builds again without Cursor Origin's undici import (#33483)",
+      "topic": "pr-33093"
+    },
+    {
+      "pr": 33229,
+      "sha": "d4111100c0528db68c1e499184c4ac74b9bd98b1",
+      "subject": "chore(mobile): update gesture handler and keyboard controller (#33229)",
+      "topic": "pr-33228"
+    },
+    {
+      "pr": 33478,
+      "sha": "5067b8865ada2c682cdc1f42552a860c6ea18a5f",
+      "subject": "ci: give Release Smoke 15 minutes (#33478)",
+      "topic": "pr-33478"
+    },
+    {
+      "pr": 33228,
+      "sha": "4bfa2c1c8044c5b853d937d516fa74cf91d39b0b",
+      "subject": "chore(mobile): update Expo SDK 58 and React Native native modules (#33228)",
+      "topic": "pr-33228"
+    },
+    {
+      "pr": 33456,
+      "sha": "33db45effd176c01a27b3f2976192e77ad82b301",
+      "subject": "fix(mobile): keep project and environment pickers reachable with the keyboard up (#33456)",
+      "topic": "pr-33456"
+    },
+    {
+      "pr": 33449,
+      "sha": "7b248349bdc066b1488f52083662597ab22d6fe3",
+      "subject": "fix(mobile): smooth expand/collapse when the feed is at the bottom (#33449)",
+      "topic": "pr-33449"
+    },
+    {
+      "pr": 33447,
+      "sha": "7a328c47ca67e6d9a44a44d01bb9d5fff1496157",
+      "subject": "fix(mobile): thread row timers no longer reflow the title every second (#33447)",
+      "topic": "pr-33447"
+    },
+    {
+      "pr": 29832,
+      "sha": "b8c2cfad6b3363c4da144a859073b41ec77579ab",
+      "subject": "fix(web): deleting a thread clears its side chats' drafts (#29832)",
+      "topic": "pr-29832"
+    },
+    {
+      "pr": 30812,
+      "sha": "6647b0a761ff7a1287047a9bb5fd5b63772f456b",
+      "subject": "fix(web): rich text previews keep paragraphs that end with a backslash (#30812)",
+      "topic": "pr-30812"
+    },
+    {
+      "pr": 30714,
+      "sha": "cddfc8db210b7abd05083e401c11fc5038a9d53f",
+      "subject": "fix(composer): bound long path search requests on web and mobile (#30714)",
+      "topic": "pr-30714"
+    },
+    {
+      "pr": 30467,
+      "sha": "69c217fb15a79607bf2ab74a9d996c322db97100",
+      "subject": "fix(web): an IME Escape no longer sends the file picker or content search back to the palette (#30467)",
+      "topic": "pr-30448"
+    },
+    {
+      "pr": 30456,
+      "sha": "d3e0e8b8ab6114274bd07c0f58cbc03edb1d2759",
+      "subject": "refactor(shared): simplify remote branch filtering (#30456)",
+      "topic": "pr-30456"
+    },
+    {
+      "pr": 30448,
+      "sha": "a4c2684a0feb1013af615da6a76fd3fd50f09334",
+      "subject": "fix(web): project content search no longer opens a result on an IME Enter (#30448)",
+      "topic": "pr-30448"
+    },
+    {
+      "pr": 30392,
+      "sha": "daa6984fd6379307130239965a13c9eae3344516",
+      "subject": "fix(web): review findings handed to a thread no longer end in a broken character (#30392)",
+      "topic": "pr-30392"
+    },
+    {
+      "pr": 30370,
+      "sha": "915676ee6a55f795905f8d2ebf611a40f4f11368",
+      "subject": "fix(web): deleting the open thread no longer opens a side chat or subagent (#30370)",
+      "topic": "pr-30370"
+    },
+    {
+      "pr": 30115,
+      "sha": "8913a4a25467b23804115205c4701865538198aa",
+      "subject": "fix(web): keep typed unpublished variable rows across settings re-deliveries (#30115)",
+      "topic": "pr-30115"
+    },
+    {
+      "pr": 30038,
+      "sha": "2dc07510e211573f1ca6a1385c5e09c3476bd504",
+      "subject": "perf(web): long reasoning previews format in linear time (600 ms → 1.3 ms median) (#30038)",
+      "topic": "pr-30038"
+    },
+    {
+      "pr": 29851,
+      "sha": "8395f20124488c3bcd4daced642e1dce6641e28c",
+      "subject": "fix(web): editing a scheduled task shows its saved time when the hour has one digit (#29851)",
+      "topic": "pr-29851"
+    },
+    {
+      "pr": 29678,
+      "sha": "75200f45c6bb17dda18f589ef71db341af9a3e08",
+      "subject": "fix(web): thread navigation shortcuts honor previewFocus and previewOpen conditions (#29678)",
+      "topic": "pr-29678"
+    },
+    {
+      "pr": 29642,
+      "sha": "e74b410e29bb95c7f34bebb9d61168c9194a8edb",
+      "subject": "fix(web): keybinding settings recognize the previewOpen condition (#29642)",
+      "topic": "pr-29642"
+    },
+    {
+      "pr": 29601,
+      "sha": "ceed427d792c72b9c682e341c29ed17a8737680a",
+      "subject": "fix(web): removing a queued message's attachment counts as an edit when its run starts (#29601)",
+      "topic": "pr-29601"
+    },
+    {
+      "pr": 29308,
+      "sha": "a72481fb4c3e056357b308e05e2865460cdf38df",
+      "subject": "fix(desktop): preserve concurrent downloads with the same name (#29308)",
+      "topic": "pr-29308"
+    },
+    {
+      "pr": 29287,
+      "sha": "e26decde28b73193af30bbea6b12c6add756d81f",
+      "subject": "fix(desktop): annotating inside a page's dialog no longer closes it (#29287)",
+      "topic": "pr-29287"
+    },
+    {
+      "pr": 29243,
+      "sha": "220a7439b683aaa409c0613809b6e5001215c327",
+      "subject": "fix(desktop): discover browser profiles in XDG config home (#29243)",
+      "topic": "pr-29243"
+    },
+    {
+      "pr": 29171,
+      "sha": "dca297cd1aefabb8258ad737a1dd0d91198a8179",
+      "subject": "perf(web): Appearance settings no longer re-probe fonts on every open (#29171)",
+      "topic": "pr-29171"
+    },
+    {
+      "pr": 29164,
+      "sha": "a3cd0aa8233c1bd4d67a8df423649ca08dc29aea",
+      "subject": "fix(web): deleting an archived thread also clears its draft, staged uploads and terminal state (#29164)",
+      "topic": "pr-29164"
+    },
+    {
+      "pr": 29150,
+      "sha": "a0056dddb15fb6295dcbd2cbfd583c289e264c19",
+      "subject": "perf(web): switching threads no longer re-renders every sidebar row (#29150)",
+      "topic": "pr-29150"
+    },
+    {
+      "pr": 29025,
+      "sha": "739aba73b72261b9d696aa7a7ee050e1f90d2faa",
+      "subject": "fix(web,mobile): per-thread auto-settle menu says what it does (#29025)",
+      "topic": "pr-29025"
+    },
+    {
+      "pr": 29018,
+      "sha": "50e176dba51c1b2c736966cf39490ccf151b5030",
+      "subject": "fix(web): banner button hover follows the banner's rounded corners (#29018)",
+      "topic": "pr-29018"
+    },
+    {
+      "pr": 28814,
+      "sha": "0e65e6332408db1841f6664e6b76df4959e7b26a",
+      "subject": "fix(desktop): page redirects during loading no longer show a navigation error (#28814)",
+      "topic": "pr-28814"
+    },
+    {
+      "pr": 28667,
+      "sha": "2b1db482d0d4bac7b994ac2def1df7e220edbb11",
+      "subject": "fix(web): open citation comments with the caret at the end (#28667)",
+      "topic": "pr-28667"
+    },
+    {
+      "pr": 28638,
+      "sha": "9c7750dc16acc3ccae5f26cb94182954f69182ec",
+      "subject": "fix(desktop): a window saved 1px past a display edge reopens where it was (#28638)",
+      "topic": "pr-28638"
+    },
+    {
+      "pr": 28571,
+      "sha": "c1463af2055457c0d80978b6e32af2c9c84cf73d",
+      "subject": "perf(web): changing file counts no longer re-render the chat view (#28571)",
+      "topic": "pr-28571"
+    },
+    {
+      "pr": 27046,
+      "sha": "062b33275da0c0acc91e57cb1577d42807ab3002",
+      "subject": "fix(desktop): recording cursor stays above modal dialogs and popovers (#27046)",
+      "topic": "pr-27046"
+    },
+    {
+      "pr": 25835,
+      "sha": "c5b869f29ef71c08c1754bc9b500223e448a0f42",
+      "subject": "fix(desktop): chat videos go fullscreen across the whole screen again (#25835)",
+      "topic": "pr-25835"
+    },
+    {
+      "pr": 33209,
+      "sha": "4f0b74e190261c8233ae52af17b0fd1734e99e50",
+      "subject": "feat(web): first run is one Welcome page instead of a 3-step wizard (#33209)",
+      "topic": "pr-33209"
+    },
+    {
+      "pr": 33196,
+      "sha": "965ddc1d6caec14ad5adead211fcb4e3f1f6b030",
+      "subject": "feat(web,server): use T3 Code in another app (MCP) (#33196)",
+      "topic": "pr-33196"
+    },
+    {
+      "pr": 33306,
+      "sha": "dc3fdc6a3eb6e7fd4db28585ac5f2c8632bdfcf9",
+      "subject": "perf(mobile): threads open over the socket without an extra HTTP round trip (#33306)",
+      "topic": "pr-33306"
+    },
+    {
+      "pr": 33268,
+      "sha": "4c8eb1dfd503fa94986c51b84532604c2abe54bb",
+      "subject": "fix(server): background command results reach a running Codex goal (#33268)",
+      "topic": "pr-33268"
+    }
+  ],
+  "count": 42,
+  "createdAt": "2026-11-09T19:21:12.112Z",
+  "digest": "c4b676ca93d4f51dfec5ffbbcb08a6604e2490bc420efe0ad312c69b789c16f8",
+  "interval": 23,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "12f3244e059321f32b9865d7f6c4ad15e2cbc3ab"
+}
