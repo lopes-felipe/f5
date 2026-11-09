@@ -81,7 +81,7 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
-import { truncateMiddleByBytes } from "../outputTruncation.ts";
+import { truncateCommandTranscriptOutput } from "../outputTruncation.ts";
 import { canRepairErroredTurnFromSuccessfulSettlement } from "../turnStateTransitions.ts";
 import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { REASONING_STATUS_ACTIVITY_KIND } from "@t3tools/shared/orchestrationActivityPayload";
@@ -162,11 +162,6 @@ const makeAttachmentSideEffects = (): AttachmentSideEffects => ({
 const BOOTSTRAP_BATCH_SIZE = 500;
 /** Log catch-up progress every this many batches. */
 const BOOTSTRAP_PROGRESS_LOG_EVERY_BATCHES = 20;
-
-const MAX_COMMAND_TRANSCRIPT_BYTES = 256 * 1024;
-const COMMAND_TRANSCRIPT_HEAD_BYTES = 96 * 1024;
-const COMMAND_TRANSCRIPT_TRUNCATION_MARKER =
-  "\n\n[... transcript truncated; middle output omitted ...]\n\n";
 
 const materializeAttachmentsForProjection = Effect.fn(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
@@ -430,18 +425,6 @@ function retainProjectionProposedPlansAfterRevert(
   return proposedPlans.filter(
     (proposedPlan) => proposedPlan.turnId === null || retainedTurnIds.has(proposedPlan.turnId),
   );
-}
-
-function truncateCommandTranscriptOutput(output: string): {
-  output: string;
-  outputTruncated: boolean;
-} {
-  const result = truncateMiddleByBytes(output, {
-    maxBytes: MAX_COMMAND_TRANSCRIPT_BYTES,
-    headBytes: COMMAND_TRANSCRIPT_HEAD_BYTES,
-    marker: COMMAND_TRANSCRIPT_TRUNCATION_MARKER,
-  });
-  return { output: result.output, outputTruncated: result.truncated };
 }
 
 const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSideEffects) {
@@ -1784,6 +1767,29 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           return;
         }
 
+        case "thread.command-execution-output-reconciled": {
+          const existingRow = yield* projectionThreadCommandExecutionRepository.getById({
+            commandExecutionId: event.payload.commandExecutionId,
+          });
+          // A row changed since verification keeps its newer output.
+          if (
+            !existingRow ||
+            existingRow.threadId !== event.payload.threadId ||
+            existingRow.lastUpdatedSequence !== event.payload.expectedLastUpdatedSequence
+          ) {
+            return;
+          }
+          const nextOutput = truncateCommandTranscriptOutput(event.payload.output);
+          yield* projectionThreadCommandExecutionRepository.upsert({
+            ...existingRow,
+            output: nextOutput.output,
+            outputTruncated: nextOutput.outputTruncated || event.payload.outputTruncated,
+            updatedAt: event.payload.updatedAt,
+            lastUpdatedSequence: event.sequence,
+          });
+          return;
+        }
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadCommandExecutionRepository.listByThreadId({
             threadId: event.payload.threadId,
@@ -2692,6 +2698,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       name: ORCHESTRATION_PROJECTOR_NAMES.threadCommandExecutions,
       eventTypes: [
         "thread.command-execution-output-appended",
+        "thread.command-execution-output-reconciled",
         "thread.command-execution-recorded",
         "thread.deleted",
         "thread.reverted",

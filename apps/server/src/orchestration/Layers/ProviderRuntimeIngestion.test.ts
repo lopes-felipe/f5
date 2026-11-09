@@ -3143,6 +3143,79 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastErrorOccurredAt).toBeNull();
   });
 
+  it("keeps the incomplete-history error visible while its marker fences sends", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1"),
+      turnId = asTurnId("overflowed-turn");
+    const marker = {
+      eventId: "incomplete:lost-delta",
+      turnId,
+      historyIdentity: "native-thread",
+    };
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        runtimePayload: { historyReconciliationRequired: marker },
+      }),
+    );
+    const base = { provider: "codex" as const, threadId, createdAt: new Date().toISOString() };
+    harness.emit({ ...base, type: "turn.started", eventId: asEventId("overflow-start"), turnId });
+    const message =
+      "Provider output is incomplete because notification admission was exhausted. Native history must be reconciled before continuing.";
+    harness.emit({
+      ...base,
+      type: "runtime.error",
+      eventId: asEventId(marker.eventId),
+      turnId,
+      payload: { class: "transport_error", historyReconciliationRequired: true, message },
+    });
+    harness.emit({
+      ...base,
+      type: "turn.completed",
+      eventId: asEventId("overflow-completed"),
+      turnId,
+      payload: { state: "interrupted" },
+    });
+    let thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session).toMatchObject({ lastError: message, lastErrorId: marker.eventId });
+
+    harness.emit({
+      ...base,
+      type: "session.state.changed",
+      eventId: asEventId("overflow-ready"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "ready" },
+    });
+    await harness.drain();
+    thread = await waitForThread(harness.engine, (entry) => entry.session?.status === "ready");
+    expect(thread.session).toMatchObject({ lastError: message, lastErrorId: marker.eventId });
+
+    // Without a marker (recovered or accepted), ready clears the error as before.
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        runtimePayload: { historyReconciliationRequired: null },
+      }),
+    );
+    harness.emit({
+      ...base,
+      type: "session.state.changed",
+      eventId: asEventId("recovered-ready"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "ready" },
+    });
+    thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.lastError === null,
+    );
+    expect(thread.session?.lastErrorId).toBeNull();
+  });
+
   it("does not settle an active turn when a provider reports generic ready", async () => {
     const harness = await createHarness();
     const turnId = asTurnId("turn-ready-after-resume");

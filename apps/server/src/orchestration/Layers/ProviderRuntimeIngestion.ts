@@ -90,6 +90,7 @@ import {
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeState.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 import {
   makeOrphanedSessionExitedEvent,
   PROVIDER_SHUTDOWN_RUNTIME_EVENTS,
@@ -97,7 +98,10 @@ import {
   readPersistedLastRuntimeEvent,
   readPersistedLastRuntimeEventAt,
 } from "../../provider/orphanedTurnRecovery.ts";
-import { readPersistedInstructionContext } from "../../provider/runtimePayload.ts";
+import {
+  readIncompleteHistory,
+  readPersistedInstructionContext,
+} from "../../provider/runtimePayload.ts";
 import {
   INSTRUCTION_PROFILE_CONFIG_KEY,
   readInstructionProfile,
@@ -121,6 +125,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
+import { commandExecutionIdForRuntimeItem } from "../commandExecutionIds.ts";
 import { isSupersedableToolUpdate, makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import {
@@ -146,6 +151,7 @@ import {
   makeTurnCompletedSessionSetCommand,
   mergeProviderReportedContextTokens,
   providerCommandId,
+  retainIncompleteHistoryError,
   runtimeTurnErrorMessage,
   runtimeTurnState,
 } from "../providerTerminalLifecycle.ts";
@@ -849,13 +855,6 @@ function commandExecutionStatusFromLifecycleEvent(
           : "completed"
         : "running";
   }
-}
-
-function commandExecutionIdForRuntimeItem(
-  threadId: ThreadId,
-  itemId: string,
-): OrchestrationCommandExecutionId {
-  return OrchestrationCommandExecutionId.makeUnsafe(`cmdexec:${threadId}:${itemId}`);
 }
 
 function fileChangeIdForRuntimeItem(threadId: ThreadId, itemId: string): OrchestrationFileChangeId {
@@ -2542,6 +2541,7 @@ const make = Effect.gen(function* () {
   let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
     Effect.void;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
+  const threadCommandExecutionQuery = yield* ThreadCommandExecutionQuery;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
@@ -4280,6 +4280,7 @@ const make = Effect.gen(function* () {
         orchestrationEngine,
         providerService,
         providerSessionDirectory,
+        threadCommandExecutionQuery,
       },
       {
         threadIds: [input.threadId],
@@ -4748,6 +4749,7 @@ const make = Effect.gen(function* () {
             orchestrationEngine,
             providerService,
             providerSessionDirectory,
+            threadCommandExecutionQuery,
           },
           {
             threadIds: [event.threadId],
@@ -5041,6 +5043,17 @@ const make = Effect.gen(function* () {
             : isNewFailure
               ? now
               : (thread.session?.lastErrorOccurredAt ?? now);
+        // Settling a turn must not hide that sends are still fenced by an
+        // incomplete-history marker.
+        const incompleteHistory =
+          shouldApplyThreadLifecycle && lastError === null
+            ? yield* providerSessionDirectory.getBinding(thread.id).pipe(
+                Effect.map((binding) =>
+                  readIncompleteHistory(Option.getOrUndefined(binding)?.runtimePayload),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              )
+            : undefined;
 
         if (shouldApplyThreadLifecycle) {
           // Reset the live thinking-token estimate at turn boundaries so each turn
@@ -5087,9 +5100,16 @@ const make = Effect.gen(function* () {
           }
 
           if (event.type === "turn.completed") {
-            yield* orchestrationEngine.dispatch(
-              makeTurnCompletedSessionSetCommand({ event, thread, createdAt: now }),
-            );
+            const command = makeTurnCompletedSessionSetCommand({ event, thread, createdAt: now });
+            yield* orchestrationEngine.dispatch({
+              ...command,
+              session: retainIncompleteHistoryError(
+                command.session,
+                thread.session,
+                incompleteHistory,
+                now,
+              ),
+            });
           } else {
             yield* orchestrationEngine.dispatch({
               type: "thread.session.set",
@@ -5098,25 +5118,30 @@ const make = Effect.gen(function* () {
               ...(event.type === "session.exited" && activeTurnId !== null
                 ? { settledTurnId: activeTurnId }
                 : {}),
-              session: {
-                threadId: thread.id,
-                status,
-                providerName: event.provider,
-                providerInstanceId:
-                  event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
-                runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-                ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
-                activeTurnId: nextActiveTurnId,
-                lastError,
-                lastErrorId,
-                lastErrorOccurredAt,
-                ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
-                ...(estimatedContextTokens !== undefined
-                  ? { estimatedContextTokens, tokenUsageSource }
-                  : {}),
-                ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
-                updatedAt: now,
-              },
+              session: retainIncompleteHistoryError(
+                {
+                  threadId: thread.id,
+                  status,
+                  providerName: event.provider,
+                  providerInstanceId:
+                    event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
+                  runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+                  ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
+                  activeTurnId: nextActiveTurnId,
+                  lastError,
+                  lastErrorId,
+                  lastErrorOccurredAt,
+                  ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
+                  ...(estimatedContextTokens !== undefined
+                    ? { estimatedContextTokens, tokenUsageSource }
+                    : {}),
+                  ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
+                  updatedAt: now,
+                },
+                thread.session,
+                incompleteHistory,
+                now,
+              ),
               createdAt: now,
             });
           }

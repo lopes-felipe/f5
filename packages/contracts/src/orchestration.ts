@@ -1960,6 +1960,23 @@ const ThreadCommandExecutionOutputAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Replaces a command's projected output with output verified against provider
+ * history. Applies only while the row's last update is still
+ * `expectedLastUpdatedSequence`, so newer streamed output always wins.
+ */
+const ThreadCommandExecutionOutputReconcileCommand = Schema.Struct({
+  type: Schema.Literal("thread.command-execution.output.reconcile"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  commandExecutionId: OrchestrationCommandExecutionId,
+  expectedLastUpdatedSequence: NonNegativeInt,
+  output: Schema.String,
+  outputTruncated: Schema.Boolean,
+  updatedAt: IsoDateTime,
+  createdAt: IsoDateTime,
+});
+
 const ThreadFileChangeRecordCommand = Schema.Struct({
   type: Schema.Literal("thread.file-change.record"),
   commandId: CommandId,
@@ -2026,6 +2043,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTitleRegenerationFailCommand,
   ThreadCommandExecutionRecordCommand,
   ThreadCommandExecutionOutputAppendCommand,
+  ThreadCommandExecutionOutputReconcileCommand,
   ThreadFileChangeRecordCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -2098,6 +2116,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-notes-recorded",
   "thread.command-execution-recorded",
   "thread.command-execution-output-appended",
+  "thread.command-execution-output-reconciled",
   "thread.file-change-recorded",
   "thread.usage-recorded",
 ]);
@@ -2561,6 +2580,16 @@ export const ThreadCommandExecutionOutputAppendedPayload = Schema.Struct({
   outputTruncated: Schema.optional(Schema.Boolean),
 });
 
+export const ThreadCommandExecutionOutputReconciledPayload = Schema.Struct({
+  threadId: ThreadId,
+  commandExecutionId: OrchestrationCommandExecutionId,
+  /** The projection ignores this event unless the row's last update is still this one. */
+  expectedLastUpdatedSequence: NonNegativeInt,
+  output: Schema.String,
+  outputTruncated: Schema.Boolean,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadFileChangeRecordedPayload = Schema.Struct({
   threadId: ThreadId,
   fileChange: Schema.Struct({
@@ -2902,6 +2931,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.command-execution-output-appended"),
     payload: ThreadCommandExecutionOutputAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-execution-output-reconciled"),
+    payload: ThreadCommandExecutionOutputReconciledPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
