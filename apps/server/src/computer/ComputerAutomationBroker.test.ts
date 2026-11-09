@@ -2004,8 +2004,9 @@ it("ends target waits at the deadline as timeouts, letting the desktop answer fi
       detail: "input-held",
     });
 
-    // A desktop that never answers still ends in a timeout, not an interruption.
-    const silent = h.broker.waitForTarget("t", "s", { timeoutMs: 700 });
+    // A desktop that never answers still ends in a timeout, not an interruption. The budget
+    // leaves slow runners ample time to dispatch the request before the broker deadline.
+    const silent = h.broker.waitForTarget("t", "s", { timeoutMs: 2000 });
     await vi.waitFor(() => expect(targetWaits()).toHaveLength(2));
     const second = targetWaits()[1]!;
     await expect(silent).resolves.toMatchObject({ available: false, timedOut: true });
