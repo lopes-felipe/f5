@@ -282,13 +282,53 @@ function makeWorkingTreePatch(
         );
         const stagedAdditionsFailure = commandFailure(stagedAdditions);
         if (stagedAdditionsFailure) return stagedAdditionsFailure;
+        // Disable rename detection: a staged addition can otherwise hide its deleted source.
+        const stagedDeletions = yield* runGit(
+          cwd,
+          [
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "--diff-filter=D",
+            "-z",
+            "HEAD",
+            "--",
+          ],
+          { stdoutLimit: UNTRACKED_LIMIT_BYTES },
+          execution,
+        );
+        const stagedDeletionsFailure = commandFailure(stagedDeletions);
+        if (stagedDeletionsFailure) return stagedDeletionsFailure;
+        if (stagedDeletions.stdoutTruncated) {
+          return failure(
+            "git_failed",
+            "The staged deletions list exceeded the review limit.",
+            true,
+          );
+        }
+        const deletedPaths = stagedDeletions.stdout.split("\0").filter(Boolean);
+        const deletedPathSet = new Set(deletedPaths);
+        // Start from HEAD, but preserve index deletions even if their files remain on disk.
+        for (let offset = 0; offset < deletedPaths.length; offset += 64) {
+          const remove = yield* runGit(
+            cwd,
+            ["update-index", "--force-remove", "--", ...deletedPaths.slice(offset, offset + 64)],
+            { env },
+            execution,
+          );
+          const removeFailure = commandFailure(remove);
+          if (removeFailure) return removeFailure;
+        }
         const untrackedOutput = untracked.stdoutTruncated
           ? untracked.stdout.slice(0, untracked.stdout.lastIndexOf("\0") + 1)
           : untracked.stdout;
         const stagedAdditionsOutput = stagedAdditions.stdoutTruncated
           ? stagedAdditions.stdout.slice(0, stagedAdditions.stdout.lastIndexOf("\0") + 1)
           : stagedAdditions.stdout;
-        const allPaths = untrackedOutput.split("\0").filter(Boolean);
+        const allPaths = untrackedOutput
+          .split("\0")
+          .filter((candidate) => candidate.length > 0 && !deletedPathSet.has(candidate));
         const untrackedTruncated =
           untracked.stdoutTruncated === true || allPaths.length > UNTRACKED_LIMIT_PATHS;
         const stagedAdditionPaths = stagedAdditionsOutput.split("\0").filter(Boolean);

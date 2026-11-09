@@ -188,6 +188,37 @@ describe("getReviewPreviewDiff", () => {
     expect(git(cwd, ["status", "--porcelain=v1"])).toBe(statusBefore);
   });
 
+  it.each([false, true])(
+    "preserves a staged deletion left on disk (staged copy: %s)",
+    async (stagedCopy) => {
+      const cwd = makeRepository();
+      write(cwd, "removed.txt", "remove me\n");
+      git(cwd, ["add", "removed.txt"]);
+      git(cwd, ["commit", "-m", "add removable file"]);
+      git(cwd, ["rm", "--cached", "removed.txt"]);
+      if (stagedCopy) {
+        write(cwd, "copy.txt", "remove me\n");
+        git(cwd, ["add", "copy.txt"]);
+      }
+      const indexBefore = fs.readFileSync(path.join(cwd, ".git", "index"));
+      const statusBefore = git(cwd, ["status", "--porcelain=v1"]);
+
+      const result = await preview(cwd, "working-tree");
+
+      expect(result.kind).toBe("success");
+      if (result.kind !== "success") return;
+      for (const text of stagedCopy
+        ? ["rename from removed.txt", "rename to copy.txt"]
+        : ["deleted file mode", "-remove me"]) {
+        expect(result.patch).toContain(text);
+      }
+      expect(result.patch).not.toContain("new file mode");
+      expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
+      expect(git(cwd, ["status", "--porcelain=v1"])).toBe(statusBefore);
+      expect(fs.readFileSync(path.join(cwd, "removed.txt"), "utf8")).toBe("remove me\n");
+    },
+  );
+
   it("uses merge-base three-dot semantics for branch-range patches", async () => {
     const cwd = makeRepository();
     git(cwd, ["switch", "-c", "feature"]);

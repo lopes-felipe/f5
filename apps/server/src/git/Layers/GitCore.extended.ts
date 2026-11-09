@@ -1306,6 +1306,27 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── listGitBranches ──
 
   describe("listGitBranches", () => {
+    it.effect.each(["origin", "github"])(
+      "recognizes %s after adding a remote through the driver",
+      (remoteName) =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const remote = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
+          yield* git(remote, ["init", "--bare"]);
+          const core = yield* GitCore;
+          expect((yield* core.listBranches({ cwd: tmp })).hasOriginRemote).toBe(false);
+
+          yield* core.ensureRemote({ cwd: tmp, preferredName: remoteName, url: remote });
+
+          expect((yield* core.listBranches({ cwd: tmp })).hasOriginRemote).toBe(true);
+          yield* core.pushCurrentBranch(tmp, null);
+          expect(yield* git(tmp, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toMatch(
+            new RegExp("^" + remoteName + "/"),
+          );
+        }),
+    );
+
     it.effect("returns isRepo: false for non-git directory", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
