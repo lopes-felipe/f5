@@ -124,6 +124,27 @@ export function describeHeldInputs(value: unknown): string {
     : [];
   return `computer held input: ${entries.slice(0, 8).join(", ") || "none"}`;
 }
+/**
+ * One log line for a helper response whose outcome is unknown, from the helper's log-only
+ * `diagnostic` (never part of the agent-facing error). Fields are pattern-checked, so nothing
+ * else from the helper reaches the log.
+ */
+export function describeOutcomeUnknown(message: Record<string, unknown>): string | undefined {
+  const error = message.error as { _tag?: unknown } | undefined;
+  if (message.type !== "response" || error?._tag !== "OutcomeUnknown") return undefined;
+  const diagnostic =
+    message.diagnostic && typeof message.diagnostic === "object"
+      ? (message.diagnostic as Record<string, unknown>)
+      : {};
+  const field = (value: unknown, pattern: RegExp) =>
+    typeof value === "string" && pattern.test(value) ? value : "?";
+  const op = field(diagnostic.op, /^[A-Za-z]{1,32}$/);
+  const app = field(diagnostic.appId, /^[A-Za-z0-9._-]{1,128}$/);
+  const delivery =
+    diagnostic.delivery === "background" ? "bg" : diagnostic.delivery === "foreground" ? "fg" : "?";
+  const axError = Number.isSafeInteger(diagnostic.axError) ? String(diagnostic.axError) : "none";
+  return `computer outcome-unknown: op=${op} app=${app} axError=${axError} delivery=${delivery}`;
+}
 export class ComputerController {
   readonly cooperation: ComputerCooperation;
   readonly admission: ComputerAdmissionQueue;
@@ -585,7 +606,10 @@ export class ComputerController {
     if (message.type === "killSwitch") this.stop("kill-switch");
     else if (message.type === "heldInput")
       this.options.log?.(describeHeldInputs(message.heldInputs));
-    else if (message.type === "actionConfirmed") {
+    else if (message.type === "response") {
+      const unknown = describeOutcomeUnknown(message);
+      if (unknown) this.options.log?.(unknown);
+    } else if (message.type === "actionConfirmed") {
       if (
         typeof message.requestId === "string" &&
         [...this.activeMutations.values()].some(

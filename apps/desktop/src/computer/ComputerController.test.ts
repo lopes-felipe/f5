@@ -125,6 +125,36 @@ describe("main computer controller", () => {
       ["computer held input: none"],
     ]);
   });
+  it("logs the helper's outcome-unknown diagnostic, pattern-checked", () => {
+    const h = make();
+    h.event({
+      type: "response",
+      requestId: "unknown",
+      error: { _tag: "OutcomeUnknown" },
+      diagnostic: {
+        op: "elementAction",
+        appId: "com.apple.Preview",
+        axError: -25204,
+        delivery: "foreground",
+      },
+    });
+    h.event({
+      type: "response",
+      requestId: "odd",
+      error: { _tag: "OutcomeUnknown" },
+      diagnostic: { op: "type text", appId: "a b", axError: "x", delivery: "elsewhere" },
+    });
+    h.event({ type: "response", requestId: "bare", error: { _tag: "OutcomeUnknown" } });
+    h.event({ type: "response", requestId: "stale", error: { _tag: "StaleElement" } });
+    h.event({ type: "response", requestId: "ok", result: {} });
+    expect(h.log.mock.calls).toEqual([
+      [
+        "computer outcome-unknown: op=elementAction app=com.apple.Preview axError=-25204 delivery=fg",
+      ],
+      ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
+      ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
+    ]);
+  });
   it("keeps control active when a foreground action succeeds unverified", async () => {
     const h = make();
     // A shortcut that opens a window, or a press that closes its own popover, comes back

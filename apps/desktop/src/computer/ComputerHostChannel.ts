@@ -1037,8 +1037,13 @@ export class ComputerHostChannel {
           // Backend clients can narrow access. Only trusted local renderer IPC can resume.
           if (message.paused) {
             this.takeovers.cancelThread(profileId, message.threadId);
-            if (!this.pauseChrome(profileId, message.threadId, true))
-              this.controller.setPaused(profileId, message.threadId, true);
+            // The Chrome holder's echo marks the pause as host-authoritative on the server.
+            if (this.setThreadPaused(profileId, message.threadId, true))
+              this.send(profileId, {
+                type: "pauseChanged",
+                threadId: message.threadId,
+                paused: true,
+              });
           }
           break;
         case "resumeRequested":
@@ -1089,12 +1094,23 @@ export class ComputerHostChannel {
     for (const profileId of this.backends.keys())
       this.sendChromeLease(profileId, this.chrome.current());
   }
+  /** Sets only the Chrome lease's latch; callers send `pauseChanged`. */
   pauseChrome(profileId: string, threadId: string, paused: boolean): boolean {
     const holder = this.chrome.current();
     if (!holder || holder.profileId !== profileId || holder.threadId !== threadId) return false;
     this.chrome.setPaused(holder, paused);
-    this.send(profileId, { type: "pauseChanged", threadId, paused });
     return true;
+  }
+  /**
+   * Pauses or resumes native control and the Chrome lease together. A thread can hold
+   * both, and each keeps its own latch, so resuming only one would leave the other
+   * paused (or in recovery). Native goes first: its resume can refuse (helper
+   * unavailable, user still in the target), and then Chrome must stay paused as well.
+   * Returns whether the thread held the Chrome lease.
+   */
+  setThreadPaused(profileId: string, threadId: string, paused: boolean): boolean {
+    this.controller.setPaused(profileId, threadId, paused);
+    return this.pauseChrome(profileId, threadId, paused);
   }
   send(profileId: string, message: DesktopComputerHostMessage): void {
     const backend = this.backends.get(profileId);

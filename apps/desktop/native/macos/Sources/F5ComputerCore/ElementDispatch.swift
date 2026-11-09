@@ -43,6 +43,21 @@ public func computerElementDispatchOutcome(
   return .failed(tag: "OutcomeUnknown", reason: nil, started: true)
 }
 
+/// Classifies a foreground action whose dispatch hit the messaging timeout (`cannotComplete`),
+/// given one bounded probe of the element afterwards.
+///
+/// A press that removed its own element (a swatch closing its popover) was received, so it is
+/// dispatched-but-unverified, as when the press itself returns `invalidUIElement`. A write
+/// (`setValue`, `focus`) or an element that is still there stays an unknown outcome: the
+/// action may still apply, and retrying could repeat it.
+public func computerElementTimeoutOutcome(
+  action: String, elementGone: Bool
+) -> ComputerElementDispatchOutcome {
+  let write = action == "setValue" || action == "focus"
+  return elementGone && !write
+    ? .unverified : .failed(tag: "OutcomeUnknown", reason: nil, started: true)
+}
+
 public enum ComputerChordStep: Equatable {
   case send
   /// Focus moved before any chord was delivered: nothing happened yet.
