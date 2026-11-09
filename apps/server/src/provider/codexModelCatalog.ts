@@ -162,7 +162,7 @@ export async function probeCodexInstanceCatalog(
   const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
   let client: CodexControlClient | undefined;
   try {
-    client = await CodexControlClient.create(environment, signal);
+    client = await CodexControlClient.create(environment, signal, { probeConfigRead: false });
     const opened = client;
     const listed = (async () => {
       const [pages, serviceTier] = await Promise.all([

@@ -1404,7 +1404,7 @@ describe("sendTurn", () => {
       expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
     });
 
-    it("clears the tier only after F5 applied fast to the thread", async () => {
+    it("preserves native project/profile tiers and clears any tier F5 explicitly applied", async () => {
       const { manager, context, sendRequest } = createSendTurnHarness();
       const tierSent = () => {
         const params = sendRequest.mock.calls.at(-1)?.[2] as Record<string, unknown>;
@@ -1412,6 +1412,14 @@ describe("sendTurn", () => {
       };
       // Fast never enabled: a tier from the user's config.toml is left alone.
       await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBe("omitted");
+      // Native config (including a project Standard override of global Fast)
+      // is authoritative when F5 has not applied a tier.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Continue",
+        model: "gpt-test",
+      });
       expect(tierSent()).toBe("omitted");
 
       // Explicit Standard must override an inherited global Fast tier immediately.
@@ -1421,6 +1429,17 @@ describe("sendTurn", () => {
         serviceTier: "default",
       });
       expect(tierSent()).toBe("default");
+      // A native continuation without Codex options keeps that explicit Standard.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Continue",
+        model: "gpt-test",
+      });
+      expect(tierSent()).toBe("omitted");
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBeNull();
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBe("omitted");
 
       await manager.sendTurn({
         threadId: asThreadId("thread_1"),
@@ -1434,7 +1453,7 @@ describe("sendTurn", () => {
       expect(tierSent()).toBe("omitted");
 
       // A thread started with fast is cleared by the first fast-off turn.
-      (context as { fastTierApplied?: boolean }).fastTierApplied = true;
+      (context as { serviceTierApplied?: boolean }).serviceTierApplied = true;
       await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
       expect(tierSent()).toBeNull();
     });

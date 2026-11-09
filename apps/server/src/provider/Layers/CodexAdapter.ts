@@ -162,8 +162,15 @@ import { codexChromeInstructions } from "../../computer/codexNativeIntegrations.
 
 const PROVIDER = "codex" as const;
 
-function codexServiceTierOptions(fastMode: boolean | undefined): { readonly serviceTier?: "fast" } {
-  return fastMode ? { serviceTier: "fast" } : {};
+function codexServiceTierOptions(
+  fastMode: boolean | undefined,
+  inheritedFastMode = false,
+): { readonly serviceTier?: "fast" | "default" } {
+  return fastMode === true
+    ? { serviceTier: "fast" }
+    : fastMode === false && inheritedFastMode
+      ? { serviceTier: "default" }
+      : {};
 }
 
 /**
@@ -2448,6 +2455,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    const inheritsFastMode = (model: string | undefined) =>
+      resolveCodexFastMode(
+        undefined,
+        model ? options?.getEffectiveModelCapabilities?.().get(model) : undefined,
+      );
     const computerDecisions = new Map<
       ThreadId,
       Effect.Success<ReturnType<typeof resolveComputerBackendSelection>>
@@ -2852,6 +2864,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               modelSelection: input.modelSelection,
               boundInstanceId,
             }).fastMode,
+            inheritsFastMode(input.model ?? input.modelSelection?.model),
           ),
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
@@ -2952,10 +2965,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           (input.modelSelection?.instanceId === boundInstanceId
             ? input.modelSelection.model
             : undefined);
-        const inheritedFastMode = resolveCodexFastMode(
-          undefined,
-          model ? options?.getEffectiveModelCapabilities?.().get(model) : undefined,
-        );
+        const inheritedFastMode = inheritsFastMode(model);
         // Only a turn that states Codex options can turn fast mode off; turns
         // without any (some internal callers) keep the thread's tier.
         const statesCodexOptions =
@@ -2980,8 +2990,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(selectionOptions.reasoningEffort !== undefined
                 ? { effort: selectionOptions.reasoningEffort }
                 : {}),
-              // An explicit off clears a previous tier; omission inherits the catalog default.
-              ...((selectionOptions.fastMode ?? inheritedFastMode)
+              // Cached global config is display-only. Null asks the manager to undo
+              // F5's previous override; otherwise it omits the native tier entirely.
+              ...(selectionOptions.fastMode === true
                 ? { serviceTier: "fast" as const }
                 : selectionOptions.fastMode === false && inheritedFastMode
                   ? { serviceTier: "default" as const }
@@ -3105,7 +3116,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   return {
                     model: input.modelSelection.model,
                     effort: selectionOptions.reasoningEffort,
-                    ...codexServiceTierOptions(selectionOptions.fastMode),
+                    ...codexServiceTierOptions(
+                      selectionOptions.fastMode,
+                      inheritsFastMode(input.modelSelection.model),
+                    ),
                   };
                 })()
               : input.model !== undefined

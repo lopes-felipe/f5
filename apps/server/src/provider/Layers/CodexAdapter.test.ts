@@ -322,34 +322,37 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   listBindingsByProject: () => Effect.succeed([]),
 });
 const validationManager = new FakeCodexManager();
-it.effect("inherits the catalog Fast tier on turns and honors explicit off", () => {
-  const manager = new FakeCodexManager();
-  const layer = makeCodexAdapterLive({
-    manager,
-    getEffectiveModelCapabilities: () =>
-      new Map([
-        [
-          "gpt-test",
-          {
-            source: "reported" as const,
-            supportsFastMode: true,
-            defaultServiceTier: "priority",
-          },
-        ],
-      ]),
-  }).pipe(
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-    Layer.provideMerge(providerSessionDirectoryTestLayer),
-    Layer.provideMerge(NodeServices.layer),
-  );
-  return Effect.gen(function* () {
-    const adapter = yield* CodexAdapter;
-    for (const [options, expected] of [
-      [[], "fast"],
-      [[{ id: "fastMode", value: false }], "default"],
-    ] as const) {
-      yield* adapter
-        .sendTurn({
+it.effect(
+  "leaves inherited tiers to Codex and honors explicit choices on every prompt path",
+  () => {
+    const manager = new FakeCodexManager();
+    const layer = makeCodexAdapterLive({
+      manager,
+      getEffectiveModelCapabilities: () =>
+        new Map([
+          [
+            "gpt-test",
+            {
+              source: "reported" as const,
+              supportsFastMode: true,
+              defaultServiceTier: "priority",
+            },
+          ],
+        ]),
+    }).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      for (const [options, expected] of [
+        [[], null],
+        [[{ id: "fastMode", value: false }], "default"],
+        [[{ id: "fastMode", value: true }], "fast"],
+      ] as const) {
+        manager.sendTurnImpl.mockClear();
+        yield* adapter.sendTurn({
           threadId: asThreadId("inherited-tier"),
           input: "Go",
           model: "gpt-test",
@@ -358,12 +361,47 @@ it.effect("inherits the catalog Fast tier on turns and honors explicit off", () 
             model: "gpt-test",
             options,
           },
-        })
-        .pipe(Effect.ignore);
-      assert.equal(manager.sendTurnImpl.mock.calls.at(-1)?.[0].serviceTier, expected);
-    }
-  }).pipe(Effect.provide(layer), Effect.scoped);
-});
+        });
+        assert.equal(manager.sendTurnImpl.mock.calls.length, 1);
+        assert.equal(manager.sendTurnImpl.mock.calls.at(-1)?.[0].serviceTier, expected);
+      }
+      yield* adapter.sendTurn({
+        threadId: asThreadId("inherited-tier"),
+        input: "Continue",
+        model: "gpt-test",
+      });
+      assert.equal(manager.sendTurnImpl.mock.calls.length, 2);
+      assert.equal(Object.hasOwn(manager.sendTurnImpl.mock.calls.at(-1)![0], "serviceTier"), false);
+      for (const [fastMode, expected] of [
+        [undefined, undefined],
+        [false, "default"],
+        [true, "fast"],
+      ] as const) {
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-test",
+          options: fastMode === undefined ? [] : [{ id: "fastMode", value: fastMode }],
+        };
+        yield* adapter.runOneOffPrompt!({
+          threadId: asThreadId("inherited-tier"),
+          provider: "codex",
+          prompt: "Summarize",
+          modelSelection,
+        });
+        assert.equal(manager.runOneOffPromptImpl.mock.calls.at(-1)![0].serviceTier, expected);
+        yield* adapter.startSession({
+          threadId: asThreadId("inherited-tier"),
+          runtimeMode: "full-access",
+          model: "gpt-test",
+          modelSelection,
+        });
+        assert.equal(manager.startSessionImpl.mock.calls.at(-1)![0].serviceTier, expected);
+      }
+      assert.equal(manager.runOneOffPromptImpl.mock.calls.length, 3);
+      assert.equal(manager.startSessionImpl.mock.calls.length, 3);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
 
 const validationLayer = it.layer(
   makeCodexAdapterLive({ manager: validationManager }).pipe(
