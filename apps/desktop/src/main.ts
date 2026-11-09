@@ -509,6 +509,7 @@ function initializeComputerSystem(): void {
         ? Path.resolve(Path.dirname(process.execPath), "../..")
         : Path.dirname(process.execPath),
     platform: process.platform === "win32" ? "win32" : "darwin",
+    log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
     activity: (profileId, activity) =>
       computerSystem?.channel.send(profileId, { type: "activity", activity }),
     thumbnail: computerScreenshotThumbnail,

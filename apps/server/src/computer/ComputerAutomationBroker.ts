@@ -53,6 +53,8 @@ import { PerformanceStageProbe } from "../observability/Metrics";
 export const COMPUTER_WAIT_POLL_MS = 250;
 export const COMPUTER_WAIT_POLL_MAX_MS = 500;
 export const COMPUTER_SETTLE_STABLE_MS = 500;
+/** The desktop ends a target wait this much before the broker, so its timeout carries a reason. */
+export const COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS = 500;
 
 export function computerInspectFingerprint(nodes: ComputerInspectResult["nodes"]): string {
   return JSON.stringify(
@@ -2492,16 +2494,20 @@ export class ComputerAutomationBrokerRuntime {
         }
         await validate();
         const requestId = randomUUID();
-        const cancel = () =>
-          this.host.abandon(
-            requestId,
-            new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }),
-          );
+        // Abandon with the real cause: the deadline sentinel becomes a timeout below, while a
+        // turn end, pause or batch abort keeps its own interruption.
+        const cancel = () => this.host.abandon(requestId, controller.signal.reason);
         controller.signal.addEventListener("abort", cancel, { once: true });
         try {
+          // The desktop owns the deadline: it answers first with the condition that held.
           const remaining = Math.max(
             100,
-            Math.min(30_000, Math.floor(input.deadlineMs - performance.now())),
+            Math.min(
+              30_000,
+              Math.floor(
+                input.deadlineMs - performance.now() - COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS,
+              ),
+            ),
           );
           const outcome = Schema.decodeUnknownSync(ComputerTargetAvailability)(
             await race(

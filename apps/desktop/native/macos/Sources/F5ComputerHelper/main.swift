@@ -262,6 +262,8 @@ var frontmostBundleId: String?
 var lastInputUptime: TimeInterval = 0
 var inputSequence = 0
 var targetWatches: [String: ComputerTargetWatch] = [:]
+var heldInputTracker = HeldInputTracker()
+var reportedHeldInputs: [HeldInput] = []
 var postedRequests = Set<String>()
 var pendingSettleDeadline: TimeInterval = 0
 var pendingInputs: [ActionableInput] = []
@@ -413,23 +415,42 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
-/// Keys, modifiers and buttons the hardware currently holds. The HID system state excludes
-/// posted events, so a synthetic keydown whose keyup never arrived (ours or another process's)
-/// cannot block a foreground takeover while nobody touches the keyboard or mouse. Agent events
-/// come from a private-state source. Side effect: input that arrives as software events (Screen
-/// Sharing, Universal Control, accessibility drivers) no longer counts as held, so a remote user
-/// holding a drag still for longer than the idle dwell does not block a takeover.
-func physicalInputHeld() -> Bool {
+/// Keys, modifiers and buttons the user is holding, oldest first (diagnostic codes only).
+/// A hold counts only when the session tap saw it go down from the HID system and the HID
+/// system still reports it (see `HeldInputTracker`). HID state alone cannot tell who pressed a
+/// key or when: a lost key-up, a virtual device, another tool's posts or Caps Lock's key code
+/// would otherwise block a foreground takeover forever while nobody touches the keyboard or
+/// mouse. Input that arrives as software events (Screen Sharing, Universal Control,
+/// accessibility drivers) does not count as held, so a remote user holding a drag still does
+/// not block a takeover.
+func heldPhysicalInputs() -> [HeldInput] {
+  let sampled = locked { heldInputTracker.downs.mapValues(\.revision) }
   let state = CGEventSourceStateID.hidSystemState
-  if !CGEventSource.flagsState(state).intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]).isEmpty {
-    return true
+  let flags = CGEventSource.flagsState(state).rawValue
+  // HID queries stay outside the state lock. Only entries unchanged since this sample are
+  // dropped, so a release and re-press in between keeps the new hold.
+  let released = sampled.filter { input, _ in
+    !input.systemReportsDown(
+      flags: flags, keyDown: { CGEventSource.keyState(state, key: $0) },
+      buttonDown: { CGEventSource.buttonState(state, button: $0) })
   }
-  return (0..<256).contains { CGEventSource.keyState(state, key: CGKeyCode($0)) }
-    || (0..<32).contains { CGEventSource.buttonState(state, button: CGMouseButton(rawValue: UInt32($0))!) }
+  let now = ProcessInfo.processInfo.systemUptime
+  let (held, changed) = locked {
+    () -> ([HeldInput], Bool) in
+    let held = heldInputTracker.held(now: now, released: released)
+    defer { reportedHeldInputs = held }
+    return (held, held != reportedHeldInputs)
+  }
+  // One diagnostic per transition, so a stuck input can be named without per-beat noise.
+  if changed {
+    telemetryQueue.async { emit(["type": "heldInput", "heldInputs": held.map(\.diagnostic)]) }
+  }
+  return held
 }
 func targetReadiness(_ appId: String?) -> [String: Any] {
   let healthy = monitorHealthy
-  let held = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  let held = !heldInputs.isEmpty
   return locked {
     let now = ProcessInfo.processInfo.systemUptime
     let watch = appId.flatMap { targetWatches[$0] }
@@ -440,6 +461,7 @@ func targetReadiness(_ appId: String?) -> [String: Any] {
       "inputSequence": inputSequence,
       "lastUserInputAgeMs": lastInputUptime > 0 ? Int((now - lastInputUptime) * 1000) : -1,
       "inputHeld": held,
+      "heldInputs": heldInputs.map(\.diagnostic),
     ]
   }
 }
@@ -518,9 +540,10 @@ func installMonitor() {
   let types: [CGEventType] = [
     .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
     .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged, .rightMouseDragged,
-    .scrollWheel,
+    .otherMouseDragged, .scrollWheel,
   ]
   let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+  locked { heldInputTracker.reset() }
   eventTap = CGEvent.tapCreate(
     tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
     eventsOfInterest: mask,
@@ -530,11 +553,24 @@ func installMonitor() {
         // Never auto-resume: everything stays suspended until Electron re-arms it.
         suspendAllReporting()
         monitorHealthy = false
+        // Edges were missed while the tap was off; tracked holds restart from the next press.
+        locked { heldInputTracker.reset() }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
       }
       if event.getIntegerValueField(.eventSourceUserData) == 0xF5C0 {
         return Unmanaged.passUnretained(event)
+      }
+      if HeldInputTracker.physical(
+        userData: event.getIntegerValueField(.eventSourceUserData),
+        sourceStateID: event.getIntegerValueField(.eventSourceStateID))
+      {
+        let held = HeldInputEvent(
+          type: type, keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)),
+          buttonNumber: Int(event.getIntegerValueField(.mouseEventButtonNumber)),
+          flags: event.flags.rawValue)
+        let now = ProcessInfo.processInfo.systemUptime
+        locked { heldInputTracker.observe(held, now: now) }
       }
       let flags = event.flags
       if type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 53
@@ -560,12 +596,18 @@ func installMonitor() {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: .pointerDown
         case .keyDown: .keyDown
         case .scrollWheel: .scroll
-        case .leftMouseDragged, .rightMouseDragged: .dragStart
-        case .leftMouseUp, .rightMouseUp: dragging ? .drop : nil
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: .dragStart
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp: dragging ? .drop : nil
         default: nil
         }
-      if type == .leftMouseDragged || type == .rightMouseDragged { dragging = true }
-      if type == .leftMouseUp || type == .rightMouseUp || type == .leftMouseDown { dragging = false }
+      let dragged = type == .leftMouseDragged || type == .rightMouseDragged
+        || type == .otherMouseDragged
+      if dragged { dragging = true }
+      if type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp
+        || type == .leftMouseDown
+      {
+        dragging = false
+      }
       var overflow = false
       let queued: Bool = locked {
         if significant {
@@ -602,7 +644,7 @@ func installMonitor() {
         let cause = type == .mouseMoved ? "move"
           : type == .scrollWheel ? "scroll"
           : type == .keyDown || type == .keyUp || type == .flagsChanged ? "key"
-          : type == .leftMouseDragged || type == .rightMouseDragged ? "drag" : "pointer"
+          : dragged ? "drag" : "pointer"
         let foreground = permits.suspendForeground(cause: cause)
         for generation in foreground {
           interrupt(generation, ["type": "physicalInput", "cause": cause])
@@ -2278,7 +2320,9 @@ heartbeat.setEventHandler {
   ]
   if inputAge >= 0 { beat["lastUserInputAgeMs"] = Int(inputAge) }
   if let front { beat["frontmostAppId"] = front }
-  beat["inputHeld"] = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  beat["inputHeld"] = !heldInputs.isEmpty
+  beat["heldInputs"] = heldInputs.map(\.diagnostic)
   beat["targets"] = locked {
     targetWatches.map { appId, watch in
       ["appId": appId, "activityEpoch": watch.activityEpoch,
