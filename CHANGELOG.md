@@ -16,8 +16,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Long OpenCode sessions process assistant updates without rescanning old message parts, and questions preserve their multi-select and custom-answer settings.
+- Codex's model picker shows an inherited global Fast tier without overriding project or profile settings when no tier is selected. Explicit Standard choices also apply to one-off prompts.
+- Oversized thread-read page requests are clamped to the supported maximum, and registry connections tolerate slower IPv4 handshakes when IPv6 is unreachable.
 - Uncommitted Git reviews preserve staged deletions paired into renames. Repositories with a non-origin remote offer Push and Create PR, and branches behind upstream offer Commit for local changes without pushing.
-
 - Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.
 - GitLab merge requests show failed child pipelines in PR Hub checks and watches, retain them across discovery polls, and avoid reporting incomplete check reads as passed.
 - Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.

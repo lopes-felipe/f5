@@ -817,6 +817,17 @@ export function resolveCodexReasoningEffortForModel(
   return getDefaultReasoningEffort("codex", model);
 }
 
+/** An omitted choice inherits Codex's global service tier. Explicit off remains off. */
+export function resolveCodexFastMode(
+  options: CodexModelOptions | null | undefined,
+  reported?: ModelCapabilities | null,
+): boolean {
+  return (
+    options?.fastMode ??
+    (reported?.defaultServiceTier === "fast" || reported?.defaultServiceTier === "priority")
+  );
+}
+
 export function normalizeCodexModelOptions(
   model: string | null | undefined,
   modelOptions: CodexModelOptions | null | undefined,
@@ -832,8 +843,10 @@ export function normalizeCodexModelOptions(
       : undefined;
     const reportedOptions: CodexModelOptions = {
       ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
-      ...(modelOptions?.fastMode === true && capabilities.supportsFastMode
-        ? { fastMode: true }
+      ...(modelOptions?.fastMode !== undefined &&
+      capabilities.supportsFastMode &&
+      (modelOptions.fastMode || resolveCodexFastMode(undefined, reported))
+        ? { fastMode: modelOptions.fastMode }
         : {}),
     };
     return Object.keys(reportedOptions).length > 0 ? reportedOptions : undefined;

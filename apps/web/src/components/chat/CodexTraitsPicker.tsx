@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import {
   normalizeCodexModelOptions,
+  resolveCodexFastMode,
   resolveCodexEffectiveReasoningEffort,
   resolveCodexReasoningEffortForModel,
   resolveModelCapabilities,
@@ -65,7 +66,7 @@ function getSelectedCodexTraits(
   const effort = resolveCodexEffectiveReasoningEffort(model, requested, reported);
   return {
     effort: effort ?? resolveCodexReasoningEffortForModel(model, requested),
-    fastModeEnabled: modelOptions?.fastMode === true && capabilities.supportsFastMode,
+    fastModeEnabled: resolveCodexFastMode(modelOptions, reported) && capabilities.supportsFastMode,
   };
 }
 
