@@ -81,6 +81,7 @@ import { validateProposedPlanOutput } from "@t3tools/shared/proposedPlan";
 import {
   getModelSelectionStringOptionValue,
   getProviderOptionBooleanSelectionValue,
+  resolveCodexFastMode,
 } from "@t3tools/shared/model";
 import {
   filterEnabledMcpServers,
@@ -2946,6 +2947,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           modelSelection: input.modelSelection,
           boundInstanceId,
         });
+        const model =
+          input.model ??
+          (input.modelSelection?.instanceId === boundInstanceId
+            ? input.modelSelection.model
+            : undefined);
+        const inheritedFastMode = resolveCodexFastMode(
+          undefined,
+          model ? options?.getEffectiveModelCapabilities?.().get(model) : undefined,
+        );
         // Only a turn that states Codex options can turn fast mode off; turns
         // without any (some internal callers) keep the thread's tier.
         const statesCodexOptions =
@@ -2970,13 +2980,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(selectionOptions.reasoningEffort !== undefined
                 ? { effort: selectionOptions.reasoningEffort }
                 : {}),
-              // The composer omits fast mode when it is off, so an absent value
-              // must clear a tier an earlier turn set on this thread.
-              ...(selectionOptions.fastMode === true
+              // An explicit off clears a previous tier; omission inherits the catalog default.
+              ...((selectionOptions.fastMode ?? inheritedFastMode)
                 ? { serviceTier: "fast" as const }
-                : statesCodexOptions
-                  ? { serviceTier: null }
-                  : {}),
+                : selectionOptions.fastMode === false && inheritedFastMode
+                  ? { serviceTier: "default" as const }
+                  : statesCodexOptions
+                    ? { serviceTier: null }
+                    : {}),
               ...(input.interactionMode !== undefined
                 ? { interactionMode: input.interactionMode }
                 : {}),

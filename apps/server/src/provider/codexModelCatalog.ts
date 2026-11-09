@@ -59,6 +59,40 @@ export function parseCodexModelList(entries: ReadonlyArray<unknown>): {
   return { models: [...bySlug.values()], presentSlugs: [...presentSlugs] };
 }
 
+export function applyConfiguredCodexServiceTier(
+  models: ReadonlyArray<ReportedProviderModel>,
+  serviceTier: unknown,
+): ReadonlyArray<ReportedProviderModel> {
+  if (typeof serviceTier !== "string") return models;
+  return models.map((model) => {
+    const tier = model.capabilities.serviceTiers?.find(
+      (tier) => tier.id === serviceTier || (serviceTier === "fast" && tier.id === "priority"),
+    );
+    return tier
+      ? { ...model, capabilities: { ...model.capabilities, defaultServiceTier: tier.id } }
+      : model;
+  });
+}
+
+async function readConfiguredServiceTier(client: CodexControlClient): Promise<unknown> {
+  let cancelTimeout: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      // No cwd: the shared catalog must not inherit launch-project configuration.
+      Promise.resolve()
+        .then(() => client.readConfig(false))
+        .then((result) => result.config.service_tier)
+        .catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        const timer = setTimeout(() => resolve(undefined), 3_000);
+        cancelTimeout = () => clearTimeout(timer);
+      }),
+    ]);
+  } finally {
+    cancelTimeout?.();
+  }
+}
+
 /** Session-scoped lookup built from the session's own `model/list` response. */
 export function readCodexReportedModelCapabilities(
   response: unknown,
@@ -131,7 +165,10 @@ export async function probeCodexInstanceCatalog(
     client = await CodexControlClient.create(environment, signal);
     const opened = client;
     const listed = (async () => {
-      const pages = await opened.listModelPages();
+      const [pages, serviceTier] = await Promise.all([
+        opened.listModelPages(),
+        readConfiguredServiceTier(opened),
+      ]);
       const { models, presentSlugs } = parseCodexModelList(pages.entries);
       if (models.length === 0) throw new Error("Empty Codex model catalog");
       const skills = await opened
@@ -139,7 +176,7 @@ export async function probeCodexInstanceCatalog(
         .then(parseCodexInstanceSkills)
         .catch(() => undefined);
       return {
-        models,
+        models: applyConfiguredCodexServiceTier(models, serviceTier),
         ...(skills ? { skills } : {}),
         presentSlugs,
         complete: pages.complete,

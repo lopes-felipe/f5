@@ -14,7 +14,7 @@ import {
   Scope,
   Stream,
 } from "effect";
-import { beforeEach } from "vitest";
+import { beforeEach, vi } from "vitest";
 
 import {
   ApprovalRequestId,
@@ -620,6 +620,128 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       assert.deepEqual(updates.get("ses_grandchild"), parentRules);
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect("indexes editable text by message and forgets removed snapshots", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const sessionID = "http://127.0.0.1:9999/session";
+      const threadId = asThreadId("indexed-text");
+      const metadata = (id: string) => ({
+        type: "message.updated",
+        properties: { sessionID, info: { id, role: "assistant" } },
+      });
+      const snapshot = (messageID: string, text: string, type = "text") => ({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: { id: messageID, messageID, sessionID, type, text, time: { start: 1, end: 2 } },
+        },
+      });
+      runtimeMock.state.subscribedEvents = [
+        ...Array.from({ length: 24 }, (_, index) => [
+          snapshot("history-" + index, "Old"),
+          metadata("history-" + index),
+        ]).flat(),
+        snapshot("current", "Hello world"),
+        metadata("current"),
+        snapshot("current", "Hello"),
+        snapshot("current", "Hello there"),
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: "current",
+              messageID: "current",
+              sessionID,
+              type: "file",
+              mime: "text/plain",
+              url: "file:///result.txt",
+            },
+          },
+        },
+        {
+          type: "message.part.delta",
+          properties: {
+            sessionID,
+            messageID: "current",
+            partID: "current",
+            field: "text",
+            delta: "ignored",
+          },
+        },
+        snapshot("current", "Hello there!"),
+        {
+          type: "message.part.removed",
+          properties: { sessionID, messageID: "current", partID: "current" },
+        },
+        snapshot("current", "Fresh"),
+        { type: "message.removed", properties: { sessionID, messageID: "current" } },
+        snapshot("current", "New"),
+        metadata("current"),
+        {
+          type: "question.asked",
+          properties: {
+            id: "flags",
+            sessionID,
+            questions: [
+              {
+                header: "Drinks",
+                question: "Which drinks?",
+                multiple: true,
+                custom: false,
+                options: [
+                  { label: "Tea", description: "Hot" },
+                  { label: "Water", description: "Cold" },
+                ],
+              },
+            ],
+          },
+        },
+      ];
+      let historyVisits = 0;
+      const values = Map.prototype.values;
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi
+            .spyOn(Map.prototype, "values")
+            .mockImplementation(function (this: Map<unknown, unknown>) {
+              const iterator = values.call(this);
+              const next = iterator.next.bind(iterator);
+              iterator.next = () => {
+                const result = next();
+                const value = result.value as { id?: string } | undefined;
+                if (value?.id?.startsWith("history-")) historyVisits++;
+                return result;
+              };
+              return iterator;
+            }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const received = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "user-input.requested"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+      const events = Array.from(yield* Fiber.join(received));
+      assert.equal(historyVisits, 24);
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "content.delta")
+          .slice(24)
+          .map((event) => event.payload.delta),
+        ["Hello world", "there", "!", "Fresh", "New"],
+      );
+      assert.equal(events.filter((event) => event.type === "item.completed").length, 27);
+      const question = events.find((event) => event.type === "user-input.requested");
+      assert.equal(question?.payload.questions[0]?.multiSelect, true);
+      assert.equal(question?.payload.questions[0]?.allowCustomAnswer, false);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("reports an actionable resume error when permission refresh fails", () =>

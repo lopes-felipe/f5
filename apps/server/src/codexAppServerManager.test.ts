@@ -1414,6 +1414,14 @@ describe("sendTurn", () => {
       await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
       expect(tierSent()).toBe("omitted");
 
+      // Explicit Standard must override an inherited global Fast tier immediately.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Go",
+        serviceTier: "default",
+      });
+      expect(tierSent()).toBe("default");
+
       await manager.sendTurn({
         threadId: asThreadId("thread_1"),
         input: "Go",

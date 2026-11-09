@@ -322,6 +322,49 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   listBindingsByProject: () => Effect.succeed([]),
 });
 const validationManager = new FakeCodexManager();
+it.effect("inherits the catalog Fast tier on turns and honors explicit off", () => {
+  const manager = new FakeCodexManager();
+  const layer = makeCodexAdapterLive({
+    manager,
+    getEffectiveModelCapabilities: () =>
+      new Map([
+        [
+          "gpt-test",
+          {
+            source: "reported" as const,
+            supportsFastMode: true,
+            defaultServiceTier: "priority",
+          },
+        ],
+      ]),
+  }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    for (const [options, expected] of [
+      [[], "fast"],
+      [[{ id: "fastMode", value: false }], "default"],
+    ] as const) {
+      yield* adapter
+        .sendTurn({
+          threadId: asThreadId("inherited-tier"),
+          input: "Go",
+          model: "gpt-test",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-test",
+            options,
+          },
+        })
+        .pipe(Effect.ignore);
+      assert.equal(manager.sendTurnImpl.mock.calls.at(-1)?.[0].serviceTier, expected);
+    }
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 const validationLayer = it.layer(
   makeCodexAdapterLive({ manager: validationManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),

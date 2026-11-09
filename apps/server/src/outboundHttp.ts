@@ -61,6 +61,13 @@ export function installHttp1FetchDispatcher(): void {
 }
 
 let installed = false;
+/** Give slow IPv4 connects a chance when advertised IPv6 is unreachable. */
+export function extendConnectionAttemptTimeout(): void {
+  NodeNet.setDefaultAutoSelectFamilyAttemptTimeout(
+    Math.max(NodeNet.getDefaultAutoSelectFamilyAttemptTimeout(), 1_000),
+  );
+}
+
 export function keepOutboundFetchOnHttp1(): void {
   if (!installed && builtinFetchUsesHttp2(process.versions.undici)) {
     installHttp1FetchDispatcher();

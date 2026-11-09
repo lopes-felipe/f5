@@ -350,7 +350,7 @@ export interface CodexAppServerSendTurnInput {
     { type: "image"; url: string } | { type: "localImage"; path: string }
   >;
   readonly model?: string;
-  readonly serviceTier?: "fast" | null;
+  readonly serviceTier?: "fast" | "default" | null;
   readonly effort?: string;
   readonly interactionMode?: ProviderInteractionMode;
 }

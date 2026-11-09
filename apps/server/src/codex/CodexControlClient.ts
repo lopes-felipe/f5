@@ -511,13 +511,13 @@ export class CodexControlClient extends EventEmitter<{
     });
   }
 
-  async readConfig(): Promise<CodexControlConfigReadResult> {
+  async readConfig(includeLayers = true): Promise<CodexControlConfigReadResult> {
     if (!this.capabilities.configRead) {
       throw new Error("Codex control config/read is unsupported.");
     }
 
     const result = await this.sendRequest<Record<string, unknown>>("config/read", {
-      includeLayers: true,
+      includeLayers,
     });
     const config = isObject(result.config) ? result.config : {};
     return {

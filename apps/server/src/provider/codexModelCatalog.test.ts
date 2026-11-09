@@ -4,11 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { buildCodexTurnStartParams, readCodexAccountSnapshot } from "../codexAppServerManager.ts";
 import {
+  applyConfiguredCodexServiceTier,
   probeCodexInstanceCatalog,
   parseCodexInstanceSkills,
   parseCodexModelList,
   readCodexReportedModelCapabilities,
 } from "./codexModelCatalog.ts";
+import { normalizeCodexModelOptions, resolveCodexFastMode } from "@t3tools/shared/model";
 
 const MODEL_LIST = {
   data: [
@@ -30,7 +32,66 @@ const MODEL_LIST = {
   ],
 };
 
+it("bounds global config reads and keeps the catalog on missing, failed or stalled config", async () => {
+  const readConfig = vi.fn();
+  const closeAndWait = vi.fn(async () => {});
+  const fake = {
+    readConfig,
+    listModelPages: async () => ({ entries: MODEL_LIST.data, complete: true }),
+    listSkills: async () => [],
+    closeAndWait,
+  };
+  const create = vi
+    .spyOn(CodexControlClient, "create")
+    .mockResolvedValue(fake as unknown as CodexControlClient);
+  try {
+    for (const tier of ["fast", undefined, "unsupported", "error", "hang"]) {
+      readConfig
+        .mockReset()
+        .mockImplementation(() =>
+          tier === "hang"
+            ? new Promise(() => {})
+            : tier === "error"
+              ? Promise.reject(new Error("unsupported"))
+              : Promise.resolve({ config: { service_tier: tier } }),
+        );
+      const catalog = await probeCodexInstanceCatalog({ cwd: process.cwd() });
+      expect(catalog.models[0]?.capabilities.defaultServiceTier).toBe(
+        tier === "fast" ? "fast" : undefined,
+      );
+      expect(catalog.complete).toBe(true);
+      expect(readConfig).toHaveBeenCalledWith(false);
+    }
+    expect(closeAndWait).toHaveBeenCalledTimes(5);
+  } finally {
+    create.mockRestore();
+  }
+}, 6_000);
+
 describe("parseCodexModelList", () => {
+  it("inherits only advertised global tiers across models and preserves explicit off", () => {
+    const { models } = parseCodexModelList([
+      ...MODEL_LIST.data,
+      { model: "priority-model", serviceTiers: [{ id: "priority" }] },
+      { model: "no-fast", serviceTiers: [] },
+    ]);
+    const inherited = applyConfiguredCodexServiceTier(models, "fast");
+    expect(inherited.map((model) => model.capabilities.defaultServiceTier)).toEqual([
+      "fast",
+      "priority",
+      undefined,
+    ]);
+    for (const model of inherited.slice(0, 2)) {
+      expect(resolveCodexFastMode(undefined, model.capabilities)).toBe(true);
+      expect(resolveCodexFastMode({ fastMode: false }, model.capabilities)).toBe(false);
+      expect(
+        normalizeCodexModelOptions(model.slug, { fastMode: false }, model.capabilities)?.fastMode,
+      ).toBe(false);
+    }
+    for (const tier of [undefined, "unknown", "default"]) {
+      expect(applyConfiguredCodexServiceTier(models, tier)).toEqual(models);
+    }
+  });
   it("drops hidden models and keeps reported capabilities", () => {
     const { models, presentSlugs } = parseCodexModelList(MODEL_LIST.data);
     expect(presentSlugs).toEqual(["gpt-cli-only", "gpt-hidden"]);
