@@ -1312,7 +1312,15 @@ export const makeGitManager = Effect.gen(function* () {
         })
         .pipe(Effect.ensuring(fileSystem.remove(bodyFile).pipe(Effect.catch(() => Effect.void))));
 
-      const created = yield* findOpenPr(cwd, headContext, sourceControlProvider);
+      // Creation has succeeded; a failed lookup only loses the PR's metadata.
+      const created = yield* findOpenPr(cwd, headContext, sourceControlProvider).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("GitManager.runPrStep lookup after create failed", {
+            provider: sourceControlProvider.kind,
+            errorTag: error._tag,
+          }).pipe(Effect.as(null)),
+        ),
+      );
       if (!created) {
         return {
           status: "created" as const,
