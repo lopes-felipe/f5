@@ -248,6 +248,7 @@ export function ThreadStatusNotificationControllerContent({
           silent: soundEnabled,
           focusWindow: () => {
             window.focus();
+            void window.desktopBridge?.revealWindow?.().catch(() => undefined);
           },
           navigateToThread,
         });

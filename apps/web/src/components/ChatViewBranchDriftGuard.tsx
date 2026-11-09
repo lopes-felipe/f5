@@ -19,6 +19,7 @@ import {
 import { toastManager } from "./ui/toast";
 
 interface BranchDriftRequest extends BranchDrift {
+  readonly worktreePath?: string | null;
   readonly cwd: string;
   readonly threadId: ThreadId;
 }
@@ -36,6 +37,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
     readonly cwd: string;
     readonly threadId: ThreadId;
     readonly recordedBranch: string | null;
+    readonly worktreePath?: string | null;
   }) => Promise<boolean>;
   readonly branchDriftDialog: ReactNode;
 } {
@@ -67,6 +69,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
       readonly cwd: string;
       readonly threadId: ThreadId;
       readonly recordedBranch: string | null;
+      readonly worktreePath?: string | null;
     }): Promise<boolean> => {
       if (input.recordedBranch === null) return true;
       const api = readNativeApi();
@@ -113,7 +116,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
       setPendingDecision(decision);
       setDecisionError(null);
       try {
-        if (decision === "switch") {
+        if (decision === "switch" && !request.worktreePath) {
           await switchConversationWorkspace(request.threadId, {
             intent: "checkout_branch",
             branch: request.recordedBranch,
@@ -157,8 +160,9 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
         </DialogHeader>
         <DialogPanel className="space-y-3 text-sm">
           <p>
-            Switch back if this turn belongs on the recorded branch. Git will refuse the switch if
-            local changes cannot be preserved safely.
+            {request.worktreePath
+              ? "Continue on the current branch. Switching a shared worktree could affect other threads."
+              : "Switch back if this turn belongs on the recorded branch. Git will refuse the switch if local changes cannot be preserved safely."}
           </p>
           {decisionError ? <p className="text-destructive-foreground">{decisionError}</p> : null}
         </DialogPanel>
@@ -177,9 +181,11 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
           >
             Continue on {currentBranchLabel}
           </Button>
-          <Button disabled={pendingDecision !== null} onClick={() => void decide("switch")}>
-            Switch to {request.recordedBranch}
-          </Button>
+          {!request.worktreePath && (
+            <Button disabled={pendingDecision !== null} onClick={() => void decide("switch")}>
+              Switch to {request.recordedBranch}
+            </Button>
+          )}
         </DialogFooter>
       </DialogPopup>
     </Dialog>

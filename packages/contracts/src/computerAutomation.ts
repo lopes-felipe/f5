@@ -378,6 +378,7 @@ const ComputerSecureAuditDiagnostics = Schema.Struct({
           "depth-limit",
           "unreadable-node",
           "unreadable-children",
+          "unreadable-subrole",
           "secure-field-without-frame",
           "search-limit",
           "search-incomplete",

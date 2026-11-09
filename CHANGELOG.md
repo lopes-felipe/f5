@@ -17,6 +17,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Codex can hand off Chrome control to native apps without asking the user to stop Chrome. The handoff waits for the browser runtime to exit. New Codex threads can return to Chrome in the same turn with the host's `browser_resume` tool; older provider threads retain next-message restart behavior.
+- Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
+- Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
+- Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
+- Stored HEIC images render in attachment previews, and pasted folders become workspace references without discarding question-answer mentions.
 - Resuming computer control after "Needs recovery" works for threads that also hold the Chrome lease: Resume now clears native control and Chrome together. A slow foreground press, such as a color swatch closing its popover, no longer counts as an unknown outcome, and unknown outcomes reported by the helper are logged with their AX error code.
 - Long OpenCode sessions process assistant updates without rescanning old message parts, and questions preserve their multi-select and custom-answer settings.
 - Codex's model picker shows an inherited global Fast tier without overriding project or profile settings when no tier is selected. Explicit Standard choices also apply to one-off prompts.
@@ -35,6 +39,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Planning workflows no longer fail a branch or the merge while its plan-format repair turn is starting. If that repair turn cannot start, the stage shows an error with Retry instead of staying in progress with no turn.
 - Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down; on macOS, Caps Lock's lock state never counts. A hold stuck in system state stops counting after two minutes without any input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)", and a pause or policy change during the wait reports its own cause.
 - Codex turns that stream bursts of small output chunks are no longer interrupted by notification overflow. Interrupted Codex history with commands, MCP calls or empty reasoning can now be recovered automatically, and the recovery warning stays visible until it is, or until the history is accepted.
+- On macOS, computer-control screenshots of apps like Preview are no longer fully masked when one element's accessibility subrole can't be read. Only that element is masked: text fields, text areas and combo boxes are treated as possible password fields, and the elements inside them are still checked.
 
 ## [0.1.6] - 2026-11-08
 

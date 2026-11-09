@@ -152,10 +152,55 @@ export const compressImageForComposer: ComposerImageProcessor = async (file, opt
 
 const conversionQueue: Array<() => void> = [];
 let activeConversions = 0;
+
+/** Run inside a conversion slot. Both cancellation and a stalled request release the slot;
+ * the task receives a child signal so any late decoder result can still clean up its bitmap. */
+export function withImageCompressionTimeout(
+  task: (signal: AbortSignal) => Promise<CompressComposerImageResult>,
+  parentSignal: AbortSignal,
+  timeoutMs = IMAGE_COMPRESSION_TIMEOUT_MS,
+): Promise<CompressComposerImageResult> {
+  const controller = new AbortController();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: CompressComposerImageResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      parentSignal.removeEventListener("abort", cancel);
+      resolve(result);
+    };
+    const cancel = () => {
+      controller.abort();
+      finish({ ok: false, reason: "cancelled" });
+    };
+    const timer = setTimeout(() => {
+      controller.abort();
+      finish({ ok: false, reason: "timed-out" });
+    }, timeoutMs);
+    if (parentSignal.aborted) {
+      cancel();
+      return;
+    }
+    parentSignal.addEventListener("abort", cancel, { once: true });
+    void Promise.resolve()
+      .then(() => task(controller.signal))
+      .then(finish, () => finish({ ok: false, reason: "unreadable" }));
+  });
+}
+
 /** Bound both worker count and waiting work across all composers. */
 export function processComposerImageBounded(
   processor: ComposerImageProcessor,
   file: File,
+  signal: AbortSignal,
+): Promise<CompressComposerImageResult> {
+  return processComposerImageTaskBounded(() => processor(file, { signal }), signal);
+}
+
+/** Keep source fetching inside the same budget as decoding to bound retained bytes. */
+export function processComposerImageTaskBounded(
+  task: () => Promise<CompressComposerImageResult>,
   signal: AbortSignal,
 ): Promise<CompressComposerImageResult> {
   if (signal.aborted) return Promise.resolve({ ok: false, reason: "cancelled" });
@@ -172,7 +217,7 @@ export function processComposerImageBounded(
       // the slot is always released and the queue keeps moving.
       let conversion: Promise<CompressComposerImageResult>;
       try {
-        conversion = processor(file, { signal });
+        conversion = task();
       } catch (error) {
         conversion = Promise.reject(error);
       }

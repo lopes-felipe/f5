@@ -27,6 +27,8 @@ import {
   flushComposerDraftPersistence,
   mergePersistedRecords,
   pruneOrphanedDraftThreads,
+  clearPromotedDraftThreads,
+  settleDraftThreadPromotion,
   resetComposerDraftBaseStorageForTesting,
   setComposerDraftBaseStorageForTesting,
   useComposerDraftStore,
@@ -1099,6 +1101,136 @@ describe("composerDraftStore project draft thread mapping", () => {
       });
     },
   );
+
+  it("reserves sending drafts without deleting them or replacing a newer draft on failure", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId, { envMode: "worktree", branch: "main" });
+    store.setPrompt(threadId, "sent prompt");
+    store.setDraftThreadContext(threadId, { promoting: true });
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
+    store.setProjectDraftThreadId(projectId, otherThreadId, {
+      envMode: "worktree",
+      branch: "main",
+    });
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).not.toBeNull();
+    pruneOrphanedDraftThreads(new Set([projectId]));
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)?.promoting).toBe(true);
+    store.setDraftThreadContext(threadId, { promoting: false });
+    pruneOrphanedDraftThreads(new Set([projectId]));
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      otherThreadId,
+    );
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe("sent prompt");
+  });
+
+  it("clears promotion when rekeying a rolled-back bootstrap draft", async () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setPrompt(threadId, "retry this prompt");
+    store.setDraftThreadContext(threadId, { promoting: true });
+    expect(store.rekeyDraftThread(threadId, otherThreadId)).toBe(true);
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      otherThreadId,
+    );
+    expect(useComposerDraftStore.getState().getDraftThread(otherThreadId)?.promoting).toBe(false);
+    await flushComposerDraftPersistence();
+    await useComposerDraftStore.persist.rehydrate();
+    pruneOrphanedDraftThreads(new Set([projectId]));
+    expect(useComposerDraftStore.getState().draftsByThreadId[otherThreadId]?.prompt).toBe(
+      "retry this prompt",
+    );
+  });
+
+  it("preserves an unresolved bootstrap across server sync so rollback can rekey it", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setDraftThreadContext(threadId, { promoting: true });
+    clearPromotedDraftThreads(new Set([threadId]));
+    expect(store.getDraftThread(threadId)?.promoting).toBe(true);
+    store.setProjectDraftThreadId(projectId, otherThreadId);
+    store.setPrompt(threadId, "retry after bootstrap rollback");
+    settleDraftThreadPromotion(threadId, "restored");
+    expect(store.rekeyDraftThread(threadId, ThreadId.makeUnsafe("rollback-retry"))).toBe(true);
+    pruneOrphanedDraftThreads(new Set([projectId]));
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[ThreadId.makeUnsafe("rollback-retry")]
+        ?.prompt,
+    ).toBe("retry after bootstrap rollback");
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      otherThreadId,
+    );
+  });
+
+  it.each([true, false])(
+    "finishes accepted promotion when server sync already arrived: %s",
+    (serverSeen) => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(projectId, threadId);
+      store.setDraftThreadContext(threadId, { promoting: true });
+      if (serverSeen) clearPromotedDraftThreads(new Set([threadId]));
+      settleDraftThreadPromotion(threadId, "accepted", serverSeen);
+      expect(store.getDraftThreadByProjectId(projectId)).toBeNull();
+      if (!serverSeen) {
+        expect(store.getDraftThread(threadId)?.promoting).toBe("accepted");
+        clearPromotedDraftThreads(new Set([threadId]));
+      }
+      expect(store.getDraftThread(threadId)).toBeNull();
+    },
+  );
+
+  it("releases a restored transport-failed draft without replacing a newer project's draft", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setDraftThreadContext(threadId, { promoting: true });
+    store.setProjectDraftThreadId(projectId, otherThreadId);
+    store.setPrompt(threadId, "restored");
+    settleDraftThreadPromotion(threadId, "restored");
+    expect(store.getDraftThread(threadId)?.promoting).toBe(false);
+    expect(store.getDraftThreadByProjectId(projectId)?.threadId).toBe(otherThreadId);
+  });
+
+  it("does not persist promotion or churn unchanged draft context", async () => {
+    const storage = createMockStorage();
+    setComposerDraftBaseStorageForTesting(storage);
+    try {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(projectId, threadId, { branch: "main" });
+      const before = useComposerDraftStore.getState();
+      store.setDraftThreadContext(threadId, { branch: "main" });
+      expect(useComposerDraftStore.getState()).toBe(before);
+      store.setDraftThreadContext(threadId, { promoting: true });
+      await flushComposerDraftPersistence();
+      const written = storage.setItem.mock.calls.at(-1)?.[1];
+      expect(written).toBeDefined();
+      expect(written).not.toContain('"promoting"');
+    } finally {
+      resetComposerDraftBaseStorageForTesting();
+    }
+  });
+
+  it("retains an unmapped failed send through persistence and reconnect", async () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setDraftThreadContext(threadId, { promoting: true });
+    store.setProjectDraftThreadId(projectId, otherThreadId);
+    store.setPrompt(otherThreadId, "new edits");
+    store.setPrompt(threadId, "failed send");
+    store.setFilePaths(threadId, ["/repo/retry-file"]);
+    store.setDraftThreadContext(threadId, { promoting: false });
+    await flushComposerDraftPersistence();
+    await useComposerDraftStore.persist.rehydrate();
+    pruneOrphanedDraftThreads(new Set([projectId]));
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe("failed send");
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.filePaths).toEqual([
+      "/repo/retry-file",
+    ]);
+    expect(useComposerDraftStore.getState().draftsByThreadId[otherThreadId]?.prompt).toBe(
+      "new edits",
+    );
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      otherThreadId,
+    );
+  });
 
   it("persists creation options without a version bump and keeps them across context changes", async () => {
     const store = useComposerDraftStore.getState();

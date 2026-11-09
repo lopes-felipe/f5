@@ -2,17 +2,20 @@ import { MinusIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
 import { useEffect, useRef, useState, type MouseEventHandler } from "react";
 import { isSvgPreview } from "@t3tools/shared/filePreview";
 import { Button } from "../ui/button";
+import { AttachmentImage } from "../AttachmentImage";
 
 /** The unscaled image stays fitted; panning never moves it entirely out of view. */
 export function ZoomableImage({
   src,
   name,
   mimeType,
+  sourceBlob,
   onContextMenu,
 }: {
   src: string;
   name: string;
   mimeType?: string | undefined;
+  sourceBlob?: Blob | undefined;
   onContextMenu: MouseEventHandler<HTMLImageElement>;
 }) {
   const [zoom, setZoom] = useState(1);
@@ -52,7 +55,10 @@ export function ZoomableImage({
         className="overflow-hidden rounded-lg border border-border/70 bg-white shadow-2xl"
         style={{ touchAction: "none" }}
       >
-        <img
+        <AttachmentImage
+          name={name}
+          mimeType={mimeType}
+          sourceBlob={sourceBlob}
           ref={imageRef}
           src={src}
           alt={name}

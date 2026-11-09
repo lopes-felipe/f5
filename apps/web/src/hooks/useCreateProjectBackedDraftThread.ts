@@ -131,6 +131,7 @@ export async function createProjectBackedDraftThread({
     : null;
   const latestActiveDraftThreadMatchesRequest =
     latestActiveDraftThread !== null &&
+    !latestActiveDraftThread.promoting &&
     latestActiveDraftThread.projectId === projectId &&
     latestActiveDraftThread.envMode === requestedEnvMode &&
     latestActiveDraftThread.worktreePath === requestedWorktreePath;

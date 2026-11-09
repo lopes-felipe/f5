@@ -237,6 +237,8 @@ describe("ThreadStatusNotificationController", () => {
   });
 
   it("dispatches a notification for a status transition while the app is hidden", async () => {
+    const revealWindow = vi.fn(async () => undefined);
+    vi.stubGlobal("desktopBridge", { revealWindow });
     MockNotification.permission = "granted";
     hasFocus = false;
     visibilityState = "hidden";
@@ -284,6 +286,9 @@ describe("ThreadStatusNotificationController", () => {
           "Repo · Audit status transitions",
         );
       });
+      MockNotification.instances[0]?.clickListener?.(new Event("click"));
+      expect(revealWindow).toHaveBeenCalledTimes(1);
+      expect(mounted.navigateToThread).toHaveBeenCalledWith(THREAD_ID);
     } finally {
       await mounted.cleanup();
     }

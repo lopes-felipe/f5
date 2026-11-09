@@ -224,6 +224,7 @@ import {
   derivePendingUserInputProgress,
   seedPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
+  appendPendingUserInputFileReferences,
   togglePendingUserInputOption,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
@@ -354,6 +355,8 @@ import {
   type PersistedComposerImageAttachment,
   type PromptStashDraftSelection,
   useComposerDraftStore,
+  hasSendableComposerDraftContent,
+  settleDraftThreadPromotion,
 } from "../composerDraftStore";
 import {
   providerModelOptionsToSelections,
@@ -4131,7 +4134,10 @@ export default memo(function ChatView({
       setComposerDraftTerminalContexts(threadId, rollback.terminalContexts);
       setComposerDraftInteractionMode(threadId, rollback.interactionMode);
       if (draftThread) {
-        setDraftThreadContext(threadId, { interactionMode: rollback.interactionMode });
+        setDraftThreadContext(threadId, {
+          interactionMode: rollback.interactionMode,
+          promoting: false,
+        });
       }
       setComposerHighlightedItemId(null);
       window.requestAnimationFrame(() => {
@@ -4149,6 +4155,36 @@ export default memo(function ChatView({
       setPrompt,
       threadId,
     ],
+  );
+
+  /** Keep rollback/retry recovery on the same path, even after navigating to another draft. */
+  const restoreFailedBootstrapDraft = useCallback(
+    (failedThreadId: ThreadId, message: string, error: unknown) => {
+      const isCurrentRoute = router.state.location.pathname === "/" + failedThreadId;
+      settleDraftThreadPromotion(failedThreadId, "restored");
+      let retryThreadId = failedThreadId;
+      if (wasBootstrapThreadRolledBack(error)) {
+        const freshThreadId = newThreadId();
+        if (useComposerDraftStore.getState().rekeyDraftThread(failedThreadId, freshThreadId)) {
+          retryThreadId = freshThreadId;
+          if (isCurrentRoute) {
+            void navigate({ to: "/$threadId", params: { threadId: freshThreadId }, replace: true });
+          }
+        }
+      }
+      toastManager.add({
+        type: "error",
+        title: message,
+        actionProps: {
+          children: "Open draft",
+          onClick: () => {
+            void navigate({ to: "/$threadId", params: { threadId: retryThreadId } });
+          },
+        },
+      });
+      return retryThreadId;
+    },
+    [navigate, router],
   );
 
   const clearPendingTurnDispatchArtifacts = useCallback(
@@ -4308,6 +4344,11 @@ export default memo(function ChatView({
                     })
                   : submission.snapshot;
               useNextTurnQueueStore.getState().applySnapshot(snapshot);
+              settleDraftThreadPromotion(
+                input.command.threadId,
+                "accepted",
+                useStore.getState().threads.some((thread) => thread.id === input.command.threadId),
+              );
               rememberAcceptedTurnMentions(input.command.commandId);
               clearPendingTurnDispatch({ commandId: input.command.commandId });
               input.onQueued?.();
@@ -4325,6 +4366,11 @@ export default memo(function ChatView({
           .getState()
           .removeOptimistic(input.command.threadId, input.command.commandId);
         rememberAcceptedTurnMentions(input.command.commandId);
+        settleDraftThreadPromotion(
+          input.command.threadId,
+          "accepted",
+          useStore.getState().threads.some((thread) => thread.id === input.command.threadId),
+        );
         input.onStarted?.(result.disposition);
         updateStorePendingTurnDispatch(input.command.threadId, (current) => {
           if (!current || current.commandId !== input.command.commandId) {
@@ -4358,6 +4404,7 @@ export default memo(function ChatView({
         }
 
         clearPendingTurnDispatch({ commandId: input.command.commandId });
+        settleDraftThreadPromotion(input.command.threadId, "restored");
         useNextTurnQueueStore
           .getState()
           .removeOptimistic(input.command.threadId, input.command.commandId);
@@ -4382,6 +4429,13 @@ export default memo(function ChatView({
     if (!pendingTurnDispatch) {
       return;
     }
+    // A temporary bootstrap thread can still roll back until admission resolves.
+    if (
+      pendingTurnDispatch.status === "dispatching" &&
+      pendingTurnDispatch.acceptedSequence === null &&
+      getPendingTurnDispatchArtifacts(pendingTurnDispatch.commandId)?.command.bootstrap
+    )
+      return;
     const messageAccepted = activeThread?.messages.some(
       (message) => message.id === pendingTurnDispatch.messageId,
     );
@@ -4390,6 +4444,11 @@ export default memo(function ChatView({
     }
 
     rememberAcceptedTurnMentions(pendingTurnDispatch.commandId);
+    settleDraftThreadPromotion(
+      threadId,
+      "accepted",
+      useStore.getState().threads.some((thread) => thread.id === threadId),
+    );
     clearPendingTurnDispatch();
     const activeThreadError = activeThread?.error ?? localDraftErrorsByThreadId[threadId] ?? null;
     if (isTransportConnectionErrorMessage(activeThreadError)) {
@@ -4422,6 +4481,11 @@ export default memo(function ChatView({
     );
     if (messageAccepted || serverAcknowledgedPendingTurnDispatch) {
       rememberAcceptedTurnMentions(pendingTurnDispatch.commandId);
+      settleDraftThreadPromotion(
+        threadId,
+        "accepted",
+        useStore.getState().threads.some((thread) => thread.id === threadId),
+      );
       clearPendingTurnDispatch();
       const activeThreadError = activeThread?.error ?? localDraftErrorsByThreadId[threadId] ?? null;
       if (isTransportConnectionErrorMessage(activeThreadError)) {
@@ -4924,7 +4988,11 @@ export default memo(function ChatView({
     if (!activeThreadId || !activeProject || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
 
-    if (blockingUserInputs.length > 0) {
+    if (
+      blockingUserInputs.length > 0 &&
+      (!activePendingProgress?.activeQuestion ||
+        activePendingProgress.activeQuestion.allowCustomAnswer === false)
+    ) {
       toastManager.add({
         type: "error",
         title: "Attach files after answering plan questions.",
@@ -4949,7 +5017,26 @@ export default memo(function ChatView({
     });
 
     if (paths.length > 0) {
-      addComposerFilePathsToDraft(paths);
+      if (activePendingProgress?.activeQuestion) {
+        const next = appendPendingUserInputFileReferences(
+          {
+            ...activePendingProgress.activeDraft,
+            customAnswer: activePendingProgress.customAnswer,
+          },
+          paths,
+        );
+        const text = next.customAnswer ?? "";
+        onChangeActivePendingUserInputCustomAnswer(
+          activePendingProgress.activeQuestion.id,
+          text,
+          text.length,
+          text.length,
+          false,
+          next.mentions ?? [],
+        );
+      } else {
+        addComposerFilePathsToDraft(paths);
+      }
     }
 
     for (const warning of attachedFileReferenceWarnings({ missingPathCount, invalidPathCount })) {
@@ -4982,8 +5069,14 @@ export default memo(function ChatView({
       pasteAsTextUntilRef.current = 0;
       return;
     }
-    const files = Array.from(event.clipboardData.files);
+    const { files, folders } = partitionDroppedAttachments(event.clipboardData);
+    if (folders.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      addComposerFileAttachments(folders);
+    }
     if (files.length === 0) {
+      if (folders.length > 0) return;
       if (isConnecting) return;
       const text = event.clipboardData.getData("text/plain");
       const folded = foldedPasteFile(
@@ -5684,6 +5777,7 @@ export default memo(function ChatView({
           cwd: gitCwd,
           threadId: threadIdForSend,
           recordedBranch: activeThread.branch,
+          worktreePath: activeThread.worktreePath,
         });
       } catch (error) {
         toastManager.add({
@@ -5837,6 +5931,9 @@ export default memo(function ChatView({
         (context, index) =>
           context.id === composerTerminalContextsSnapshotBeforePreflight[index]?.id,
       );
+    if (isLocalDraftThread) {
+      setDraftThreadContext(threadIdForSend, { promoting: true });
+    }
     if (composerStillMatchesCapturedDraft) {
       promptRef.current = "";
       clearComposerDraftContent(threadIdForSend);
@@ -5864,6 +5961,7 @@ export default memo(function ChatView({
           rollback,
         });
       } finally {
+        setDraftThreadContext(threadIdForSend, { promoting: false });
         sendInFlightRef.current = false;
       }
       return;
@@ -5875,18 +5973,15 @@ export default memo(function ChatView({
       error?: unknown,
     ) => {
       removeOptimisticMessage(messageIdForSend);
-      if (composerMatchesClearedState()) {
+      const liveDraft = useComposerDraftStore.getState().draftsByThreadId[threadIdForSend];
+      if (
+        (!liveDraft || !hasSendableComposerDraftContent(liveDraft)) &&
+        composerMatchesClearedState()
+      ) {
         restoreComposerRollback(failureRollback);
       }
-      toastManager.add({ type: "error", title: message });
-      // The server keeps a rolled-back thread id as deleted, so the draft moves
-      // to a fresh id and the user can simply send again.
-      if (isLocalDraftThread && wasBootstrapThreadRolledBack(error)) {
-        const freshThreadId = newThreadId();
-        if (useComposerDraftStore.getState().rekeyDraftThread(threadIdForSend, freshThreadId)) {
-          void navigate({ to: "/$threadId", params: { threadId: freshThreadId }, replace: true });
-        }
-      }
+      if (isLocalDraftThread) restoreFailedBootstrapDraft(threadIdForSend, message, error);
+      else toastManager.add({ type: "error", title: message });
     };
 
     try {
@@ -5997,7 +6092,7 @@ export default memo(function ChatView({
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to send message.";
-      restoreDraftAfterFailure(message, rollback);
+      restoreDraftAfterFailure(message, rollback, error);
     } finally {
       sendInFlightRef.current = false;
     }
@@ -6264,6 +6359,7 @@ export default memo(function ChatView({
           cwd: gitCwd,
           threadId: threadIdForSend,
           recordedBranch: activeThread.branch,
+          worktreePath: activeThread.worktreePath,
         });
         if (!proceed) return;
         // Branch-drift confirmation is asynchronous. Another submit may have
@@ -6619,6 +6715,7 @@ export default memo(function ChatView({
     const artifacts = getPendingTurnDispatchArtifacts(pending.commandId);
     if (!artifacts) {
       clearPendingTurnDispatch({ commandId: pending.commandId });
+      settleDraftThreadPromotion(threadId, "restored");
       return;
     }
 
@@ -6640,7 +6737,7 @@ export default memo(function ChatView({
           removeOptimisticMessage(pending.optimisticMessageId);
           toastManager.add({ type: "success", title: "Turn recovered in the queue." });
         },
-        onNonTransportFailure: (message, failureRollback) => {
+        onNonTransportFailure: (message, failureRollback, error) => {
           removeOptimisticMessage(pending.optimisticMessageId);
           if (composerMatchesClearedState()) {
             restoreComposerRollback(failureRollback);
@@ -6649,11 +6746,17 @@ export default memo(function ChatView({
             if (draftThread) {
               setDraftThreadContext(threadId, {
                 interactionMode: failureRollback.interactionMode,
+                promoting: false,
               });
             }
           }
           if (artifacts.command.bootstrap) {
-            setThreadError(artifacts.command.threadId, message);
+            const retryThreadId = restoreFailedBootstrapDraft(
+              artifacts.command.threadId,
+              message,
+              error,
+            );
+            setThreadError(retryThreadId, message);
           } else {
             toastManager.add({ type: "error", title: message });
           }
@@ -6670,6 +6773,7 @@ export default memo(function ChatView({
     draftThread,
     removeOptimisticMessage,
     restoreComposerRollback,
+    restoreFailedBootstrapDraft,
     setComposerDraftInteractionMode,
     setDraftThreadContext,
     setThreadError,
@@ -6684,6 +6788,7 @@ export default memo(function ChatView({
     const artifacts = getPendingTurnDispatchArtifacts(pending.commandId);
     removeOptimisticMessage(pending.optimisticMessageId);
     clearPendingTurnDispatch({ commandId: pending.commandId });
+    settleDraftThreadPromotion(threadId, "restored");
     if (artifacts) {
       restoreComposerRollback(artifacts.rollback);
       setThreadError(artifacts.command.threadId, null);

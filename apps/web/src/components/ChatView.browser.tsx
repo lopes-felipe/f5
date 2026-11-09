@@ -10,6 +10,7 @@ import "../index.css";
 
 import {
   AGENTS_WS_METHODS,
+  BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
@@ -74,6 +75,7 @@ import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelSt
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
+import { reconcileDraftThreadsAfterStartupSnapshot } from "../orchestration/syncController";
 import { createTestServerProvider } from "../testServerProvider";
 import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workflowFixtures";
 import {
@@ -193,7 +195,7 @@ interface TestWsClient {
 
 type WsRequestResolution =
   | { type: "result"; result: unknown }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string }
   | { type: "close" };
 
 type MaybePromise<T> = T | Promise<T>;
@@ -1570,6 +1572,7 @@ const worker = setupWorker(
               id: request.id,
               error: {
                 message: resolution.message,
+                ...(resolution.code ? { code: resolution.code } : {}),
               },
             }),
           );
@@ -8376,89 +8379,185 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("shows recovery actions after reconnect, retries with the original command id, and avoids duplicate optimistic rows", async () => {
-    const sentText = "Retry this pending send";
-    let firstCommandId: string | null = null;
-    let firstMessageId: MessageId | null = null;
-
-    useComposerDraftStore.setState({
-      draftThreadsByThreadId: {
-        [THREAD_ID]: {
-          projectId: PROJECT_ID,
-          createdAt: NOW_ISO,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          envMode: "local",
+  it.each(["accepted", "rolled-back"] as const)(
+    "retains first-send context when server sync precedes admission: %s",
+    async (outcome) => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+      store.setPrompt(THREAD_ID, "Preserve this first send");
+      let admit!: (result: WsRequestResolution) => void;
+      let submissionId = "";
+      let currentFixture!: TestFixture;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          currentFixture = next;
+          next.resolveWsRequest = (body) => {
+            const command = getSubmittedTurnCommand(body);
+            if (!command) return null;
+            submissionId = command.commandId!;
+            return new Promise((resolve) => {
+              admit = resolve;
+            });
+          };
         },
-      },
-      projectDraftThreadIdByProjectId: {
-        [PROJECT_ID]: THREAD_ID,
-      },
-    });
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createDraftOnlySnapshot(),
-      configureFixture: (nextFixture) => {
-        nextFixture.resolveWsRequest = (body) => {
-          const command = getSubmittedTurnCommand(body);
-          if (!command) return null;
-          firstCommandId ??= command.commandId ?? null;
-          firstMessageId ??= command.message?.messageId ?? null;
-          return { type: "close" };
-        };
-      },
-    });
-
-    try {
-      useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
-
-      const sendButton = await waitForSendButton();
-      await vi.waitFor(
-        () => {
-          expect(sendButton.disabled).toBe(false);
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-      sendButton.click();
-
-      const retryButton = await waitForButtonByText("Retry send");
-      await vi.waitFor(
-        () => {
-          expect(firstMessageId).not.toBeNull();
-          expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
-            1,
+      });
+      try {
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        send.click();
+        await vi.waitFor(() => expect(admit).toBeTypeOf("function"));
+        const temporary = createSnapshotForTargetUser({
+          targetMessageId: "temporary-bootstrap-message" as MessageId,
+          targetText: "Temporary server shell",
+          fillerPairCount: 0,
+        });
+        currentFixture.snapshot = temporary;
+        useStore.getState().syncStartupSnapshot(temporary);
+        reconcileDraftThreadsAfterStartupSnapshot(temporary);
+        await vi.waitFor(() => {
+          expect(store.getDraftThread(THREAD_ID)?.promoting).toBe(true);
+          expect(usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID]?.status).toBe(
+            "dispatching",
           );
-        },
-        { timeout: 12_000, interval: 16 },
-      );
+        });
+        if (outcome === "accepted") {
+          admit({ type: "result", result: { disposition: "started", submissionId, sequence: 1 } });
+          await vi.waitFor(() => expect(store.getDraftThread(THREAD_ID)).toBeNull());
+        } else {
+          currentFixture.snapshot = createDraftOnlySnapshot();
+          useStore.getState().syncStartupSnapshot(currentFixture.snapshot);
+          reconcileDraftThreadsAfterStartupSnapshot(currentFixture.snapshot);
+          expect(store.getDraftThread(THREAD_ID)?.promoting).toBe(true);
+          admit({
+            type: "error",
+            code: BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
+            message: "Bootstrap rolled back",
+          });
+          await vi.waitFor(() => {
+            expect(mounted.router.state.location.pathname).toMatch(UUID_ROUTE_RE);
+            const retryId = mounted.router.state.location.pathname.slice(1) as ThreadId;
+            expect(retryId).not.toBe(THREAD_ID);
+            expect(store.getDraftThread(retryId)?.promoting).toBe(false);
+            expect(useComposerDraftStore.getState().draftsByThreadId[retryId]?.prompt).toBe(
+              "Preserve this first send",
+            );
+          });
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
-      retryButton.click();
+  it.each(["transport", "rejected"] as const)(
+    "shows recovery actions after reconnect and retries the original command: %s",
+    async (outcome) => {
+      const sentText = "Retry this pending send";
+      let firstCommandId: string | null = null;
+      let firstMessageId: MessageId | null = null;
 
-      await vi.waitFor(
-        () => {
-          const dispatchRequests = getDispatchCommandRequests("thread.turn.start");
-          expect(dispatchRequests).toHaveLength(2);
-          const retriedCommand = dispatchRequests[1]?.command as
-            | {
-                commandId?: string;
-                message?: { messageId?: MessageId };
-              }
-            | undefined;
-          expect(retriedCommand?.commandId).toBe(firstCommandId);
-          expect(retriedCommand?.message?.messageId).toBe(firstMessageId);
-          expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
-            1,
-          );
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
         },
-        { timeout: 12_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+        projectDraftThreadIdByProjectId: {
+          [PROJECT_ID]: THREAD_ID,
+        },
+      });
+
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (nextFixture) => {
+          nextFixture.resolveWsRequest = (body) => {
+            const command = getSubmittedTurnCommand(body);
+            if (!command) return null;
+            firstCommandId ??= command.commandId ?? null;
+            firstMessageId ??= command.message?.messageId ?? null;
+            if (
+              outcome === "rejected" &&
+              getDispatchCommandRequests("thread.turn.start").length > 1
+            ) {
+              return { type: "error", message: "Admission rejected" };
+            }
+            return { type: "close" };
+          };
+        },
+      });
+
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
+
+        const sendButton = await waitForSendButton();
+        await vi.waitFor(
+          () => {
+            expect(sendButton.disabled).toBe(false);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        sendButton.click();
+
+        const retryButton = await waitForButtonByText("Retry send");
+        await vi.waitFor(
+          () => {
+            expect(firstMessageId).not.toBeNull();
+            expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
+              1,
+            );
+          },
+          { timeout: 12_000, interval: 16 },
+        );
+
+        retryButton.click();
+
+        await vi.waitFor(
+          () => {
+            const dispatchRequests = getDispatchCommandRequests("thread.turn.start");
+            expect(dispatchRequests).toHaveLength(2);
+            const retriedCommand = dispatchRequests[1]?.command as
+              | {
+                  commandId?: string;
+                  message?: { messageId?: MessageId };
+                }
+              | undefined;
+            expect(retriedCommand?.commandId).toBe(firstCommandId);
+            expect(retriedCommand?.message?.messageId).toBe(firstMessageId);
+            if (outcome === "rejected") {
+              expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(
+                false,
+              );
+              expect(
+                useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)?.threadId,
+              ).toBe(THREAD_ID);
+              expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+                sentText,
+              );
+              return;
+            }
+            expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(
+              true,
+            );
+            expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
+              1,
+            );
+          },
+          { timeout: 12_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("restores the draft prompt, image, and terminal context after an unresolved send", async () => {
     const otherThreadId = "thread-recovery-navigation" as ThreadId;
@@ -8547,6 +8646,10 @@ describe("ChatView timeline (full app)", () => {
         () => {
           const draft = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
           expect(draft?.prompt).toBe(prompt);
+          expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(false);
+          expect(
+            useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)?.threadId,
+          ).toBe(THREAD_ID);
           expect(draft?.mentions).toEqual(mentions);
           expect(useComposerMentionHistoryStore.getState().entries).toEqual([]);
           expect(draft?.images).toHaveLength(1);

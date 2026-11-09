@@ -117,6 +117,7 @@
         "culori": "^4.0.2",
         "effect": "catalog:",
         "fflate": "^0.8.2",
+        "heic-to": "^1.6.7",
         "jsonc-parser": "^3.3.1",
         "lexical": "^0.41.0",
         "lucide-react": "^0.564.0",
@@ -1663,6 +1664,8 @@
     "hastscript": ["hastscript@9.0.1", "", { "dependencies": { "@types/hast": "^3.0.0", "comma-separated-tokens": "^2.0.0", "hast-util-parse-selector": "^4.0.0", "property-information": "^7.0.0", "space-separated-tokens": "^2.0.0" } }, "sha512-g7df9rMFX/SPi34tyGCyUBREQoKkapwdY/T04Qn9TDWfHhAYt4/I0gMVirzK5wEzeUqIjEB+LXC/ypb7Aqno5w=="],
 
     "headers-polyfill": ["headers-polyfill@4.0.3", "", {}, "sha512-IScLbePpkvO846sIwOtOTDjutRMWdXdJmXdMvk6gCBHxFO8d+QKOQedyZSxFTTFYRSmlgSTDtXqqq4pcenBXLQ=="],
+
+    "heic-to": ["heic-to@1.6.7", "", {}, "sha512-GCPYNl86u6eZ7mr2aa+uQB+PrQOVKSBYfH8esovr8kh2c6EYQSDYIJ6uhXSmM2hPC8PdBVJ/Trn0jnfM9H9gvg=="],
 
     "hexy": ["hexy@0.2.11", "", { "bin": { "hexy": "./bin/hexy_cmd.js" } }, "sha512-ciq6hFsSG/Bpt2DmrZJtv+56zpPdnq+NQ4ijEFrveKN0ZG1mhl/LdT1NQZ9se6ty1fACcI4d4vYqC9v8EYpH2A=="],
 
