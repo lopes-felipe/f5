@@ -2922,10 +2922,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     try {
       let response: unknown;
       try {
-        response = await this.forkWithArchivedRecovery(context, forkParams);
+        response = await this.forkWithArchivedRecovery(
+          context,
+          forkParams,
+          async (method, params) => {
+            try {
+              return await this.sendRequest(context, method, params);
+            } catch (error) {
+              if (method === "thread/fork" && !(error instanceof CodexJsonRpcError)) {
+                context.unsettledFork = true;
+              }
+              throw error;
+            }
+          },
+        );
       } catch (error) {
-        if (!(error instanceof CodexJsonRpcError)) {
-          context.unsettledFork = true;
+        if (context.unsettledFork) {
           await this.runPromise(
             Effect.logWarning("Codex rewind fork response lost; possible orphan", {
               threadId,

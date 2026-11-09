@@ -476,14 +476,17 @@ export const ProviderRegistryLive = Layer.effect(
         Effect.andThen(providerSource.getSnapshot),
         Effect.exit,
       );
-      // A settings rebuild can retire a probe while it is still running.
-      if ((yield* instanceRegistry.getInstance(instance.instanceId)) !== instance) {
-        return yield* Ref.get(providersRef);
-      }
-      const nextProvider = yield* probe;
-      return yield* correlateSnapshotWithSource(providerSource, nextProvider).pipe(
-        Effect.flatMap(syncProvider),
-      );
+      return yield* Effect.gen(function* () {
+        // Check after acquiring the publication lock: a rebuild may have retired
+        // this instance while its probe or a preceding publication was running.
+        if ((yield* instanceRegistry.getInstance(instance.instanceId)) !== instance) {
+          return yield* Ref.get(providersRef);
+        }
+        const nextProvider = yield* probe;
+        return yield* correlateSnapshotWithSource(providerSource, nextProvider).pipe(
+          Effect.flatMap((provider) => upsertProvidersUnlocked([provider])),
+        );
+      }).pipe(catalogUpdateLock.withPermits(1));
     });
 
     const refreshAll = Effect.fn("refreshAll")(function* () {

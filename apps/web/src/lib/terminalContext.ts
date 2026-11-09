@@ -1,5 +1,6 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, type ThreadId } from "@t3tools/contracts";
 import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
+import { getMessageTextMaxChars } from "@t3tools/shared/providerInput";
 import { extractTrailingAttachedFiles } from "./attachedFiles";
 
 export interface TerminalContextSelection {
@@ -207,14 +208,17 @@ export function appendTerminalContextsToPrompt(
 ): string {
   const trimmedPrompt = materializeInlineTerminalContextPrompt(prompt, contexts).trim();
   let contextBlock = buildTerminalContextBlock(contexts);
-  const suffix = "\n… truncated …\n</terminal_context>";
-  const budget = Math.max(0, maxChars - trimmedPrompt.length - (trimmedPrompt ? 2 : 0));
+  const suffix = "\n  … truncated …\n</terminal_context>";
+  const limit = getMessageTextMaxChars(trimmedPrompt + "\n" + contextBlock, maxChars);
+  const budget = Math.max(0, limit - trimmedPrompt.length - (trimmedPrompt ? 2 : 0));
   if (contextBlock.length > budget) {
-    if (budget <= suffix.length) return trimmedPrompt;
-    let end = budget - suffix.length;
-    const last = contextBlock.charCodeAt(end - 1);
-    if (last >= 0xd800 && last <= 0xdbff) end--;
-    contextBlock = contextBlock.slice(0, end) + suffix;
+    const firstHeaderEnd = contextBlock.indexOf("\n", contextBlock.indexOf("\n") + 1);
+    const end = contextBlock.lastIndexOf("\n", budget - suffix.length);
+    // Preserve a complete opening tag and header. If those cannot fit, keep the
+    // original block so send validation reports a length error instead of losing context.
+    if (end >= firstHeaderEnd && firstHeaderEnd >= 0) {
+      contextBlock = contextBlock.slice(0, end) + suffix;
+    }
   }
   if (contextBlock.length === 0) {
     return trimmedPrompt;

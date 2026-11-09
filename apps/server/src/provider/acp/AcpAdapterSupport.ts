@@ -71,6 +71,8 @@ export function acpPermissionOutcome(
     options.find((entry) => entry.kind === kind)?.optionId.trim() || undefined;
   switch (decision) {
     case "acceptForSession":
+      // Grok remembers the approved operation for the session even when the
+      // agent can only acknowledge this particular request with allow_once.
       return option("allow_always") ?? option("allow_once");
     case "accept":
       return option("allow_once");
