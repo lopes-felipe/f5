@@ -860,26 +860,36 @@ function TerminalViewport({
     const api = readNativeApi();
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!api || !terminal || !fitAddon) return;
-    const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
-    const frame = window.requestAnimationFrame(() => {
-      fitAddon.fit();
-      if (wasAtBottom) {
-        terminal.scrollToBottom();
-      }
-      void api.terminal
-        .resize({
-          threadId,
-          terminalId,
-          cols: terminal.cols,
-          rows: terminal.rows,
-        })
-        .catch(() => undefined);
-    });
+    const mount = containerRef.current;
+    if (!api || !terminal || !fitAddon || !mount) return;
+    let frame = 0;
+    const scheduleFit = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+        fitAddon.fit();
+        if (wasAtBottom) {
+          terminal.scrollToBottom();
+        }
+        void api.terminal
+          .resize({
+            threadId,
+            terminalId,
+            cols: terminal.cols,
+            rows: terminal.rows,
+          })
+          .catch(() => undefined);
+      });
+    };
+    // Kept panes can change width without a window resize or drawer drag.
+    const observer = new ResizeObserver(scheduleFit);
+    observer.observe(mount);
+    scheduleFit();
     return () => {
+      observer.disconnect();
       window.cancelAnimationFrame(frame);
     };
-  }, [drawerHeight, resizeEpoch, terminalId, threadId]);
+  }, [cwd, drawerHeight, resizeEpoch, runtimeEnv, terminalId, threadId]);
   return <div ref={containerRef} className="relative h-full w-full overflow-hidden rounded" />;
 }
 

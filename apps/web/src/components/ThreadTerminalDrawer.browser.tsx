@@ -70,35 +70,63 @@ async function mountDrawer(height: number) {
   };
 }
 
-it("preserves the original terminal, input, and selection through split and unsplit", async () => {
-  const opened = vi.spyOn(Terminal.prototype, "open");
-  const disposed = vi.spyOn(Terminal.prototype, "dispose");
-  const mounted = await mountDrawer(300);
-  try {
-    const original = opened.mock.contexts[0] as Terminal;
-    const input = original.textarea;
-    await new Promise<void>((resolve) => original.write("preserved", resolve));
-    original.select(0, 0, 9);
-    expect(original.getSelection()).toBe("preserved");
-
-    await mounted.setTerminalIds(["default", "split"]);
-    expect(opened).toHaveBeenCalledTimes(2);
-    const split = opened.mock.contexts[1] as Terminal;
-    expect(mounted.drawer().querySelector("textarea")).toBe(input);
-    expect(disposed.mock.contexts).not.toContain(original);
-    expect(original.getSelection()).toBe("preserved");
-
-    await mounted.setTerminalIds(["default"]);
-    expect(opened).toHaveBeenCalledTimes(2);
-    expect(disposed.mock.contexts).toEqual([split]);
-    expect(mounted.drawer().querySelector("textarea")).toBe(input);
-    expect(original.getSelection()).toBe("preserved");
-    original.focus();
-    expect(document.activeElement).toBe(input);
-  } finally {
-    await mounted.cleanup();
+describe("ThreadTerminalDrawer layout", () => {
+  afterEach(() => {
     vi.restoreAllMocks();
-  }
+  });
+
+  it("preserves and refits the original terminal through split and unsplit", async () => {
+    const opened = vi.spyOn(Terminal.prototype, "open");
+    const disposed = vi.spyOn(Terminal.prototype, "dispose");
+    const mounted = await mountDrawer(300);
+    try {
+      const original = opened.mock.contexts[0] as Terminal;
+      const input = original.textarea;
+      await vi.waitFor(() => expect(api.terminal.resize).toHaveBeenCalled());
+      const originalCols = original.cols;
+      await new Promise<void>((resolve) => original.write("preserved", resolve));
+      original.select(0, 0, 9);
+      expect(original.getSelection()).toBe("preserved");
+
+      api.terminal.resize.mockClear();
+      await mounted.setTerminalIds(["default", "split"]);
+      await vi.waitFor(() => {
+        expect(original.cols).toBeLessThan(originalCols);
+        expect(api.terminal.resize).toHaveBeenCalledWith({
+          threadId: "thread-drawer-test",
+          terminalId: "default",
+          cols: original.cols,
+          rows: original.rows,
+        });
+      });
+      expect(opened).toHaveBeenCalledTimes(2);
+      const split = opened.mock.contexts[1] as Terminal;
+      expect(mounted.drawer().querySelector("textarea")).toBe(input);
+      expect(disposed.mock.contexts).not.toContain(original);
+      expect(original.getSelection()).toBe("preserved");
+
+      api.terminal.resize.mockClear();
+      await mounted.setTerminalIds(["default"]);
+      await vi.waitFor(() => {
+        expect(original.cols).toBe(originalCols);
+        expect(api.terminal.resize).toHaveBeenCalledWith({
+          threadId: "thread-drawer-test",
+          terminalId: "default",
+          cols: original.cols,
+          rows: original.rows,
+        });
+      });
+      expect(opened).toHaveBeenCalledTimes(2);
+      expect(disposed.mock.contexts).toHaveLength(1);
+      expect(disposed.mock.contexts[0]).toBe(split);
+      expect(mounted.drawer().querySelector("textarea")).toBe(input);
+      expect(original.getSelection()).toBe("preserved");
+      original.focus();
+      expect(document.activeElement).toBe(input);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 });
 
 function pointer(target: HTMLElement, type: string, clientY: number) {
