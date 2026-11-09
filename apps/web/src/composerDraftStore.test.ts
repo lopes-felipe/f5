@@ -1100,6 +1100,24 @@ describe("composerDraftStore project draft thread mapping", () => {
     },
   );
 
+  it("reserves sending drafts without deleting them or replacing a newer draft on failure", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId, { envMode: "worktree", branch: "main" });
+    store.setPrompt(threadId, "sent prompt");
+    store.setDraftThreadContext(threadId, { promoting: true });
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
+    store.setProjectDraftThreadId(projectId, otherThreadId, {
+      envMode: "worktree",
+      branch: "main",
+    });
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).not.toBeNull();
+    store.setDraftThreadContext(threadId, { promoting: false });
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      otherThreadId,
+    );
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe("sent prompt");
+  });
+
   it("persists creation options without a version bump and keeps them across context changes", async () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectId, threadId, { envMode: "worktree", branch: "main" });

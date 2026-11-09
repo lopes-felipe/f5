@@ -4924,7 +4924,7 @@ export default memo(function ChatView({
     if (!activeThreadId || !activeProject || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
 
-    if (blockingUserInputs.length > 0) {
+    if (blockingUserInputs.length > 0 && !activePendingProgress?.activeQuestion) {
       toastManager.add({
         type: "error",
         title: "Attach files after answering plan questions.",
@@ -4949,7 +4949,20 @@ export default memo(function ChatView({
     });
 
     if (paths.length > 0) {
-      addComposerFilePathsToDraft(paths);
+      if (activePendingProgress?.activeQuestion) {
+        if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
+        const text = [activePendingProgress.customAnswer, ...paths].filter(Boolean).join("\n");
+        onChangeActivePendingUserInputCustomAnswer(
+          activePendingProgress.activeQuestion.id,
+          text,
+          text.length,
+          text.length,
+          false,
+          [],
+        );
+      } else {
+        addComposerFilePathsToDraft(paths);
+      }
     }
 
     for (const warning of attachedFileReferenceWarnings({ missingPathCount, invalidPathCount })) {
@@ -4982,8 +4995,14 @@ export default memo(function ChatView({
       pasteAsTextUntilRef.current = 0;
       return;
     }
-    const files = Array.from(event.clipboardData.files);
+    const { files, folders } = partitionDroppedAttachments(event.clipboardData);
+    if (folders.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      addComposerFileAttachments(folders);
+    }
     if (files.length === 0) {
+      if (folders.length > 0) return;
       if (isConnecting) return;
       const text = event.clipboardData.getData("text/plain");
       const folded = foldedPasteFile(
@@ -5684,6 +5703,7 @@ export default memo(function ChatView({
           cwd: gitCwd,
           threadId: threadIdForSend,
           recordedBranch: activeThread.branch,
+          worktreePath: activeThread.worktreePath,
         });
       } catch (error) {
         toastManager.add({
@@ -5837,6 +5857,9 @@ export default memo(function ChatView({
         (context, index) =>
           context.id === composerTerminalContextsSnapshotBeforePreflight[index]?.id,
       );
+    if (isLocalDraftThread) {
+      setDraftThreadContext(threadIdForSend, { promoting: true });
+    }
     if (composerStillMatchesCapturedDraft) {
       promptRef.current = "";
       clearComposerDraftContent(threadIdForSend);
@@ -5864,6 +5887,7 @@ export default memo(function ChatView({
           rollback,
         });
       } finally {
+        setDraftThreadContext(threadIdForSend, { promoting: false });
         sendInFlightRef.current = false;
       }
       return;
@@ -5999,6 +6023,7 @@ export default memo(function ChatView({
       const message = error instanceof Error ? error.message : "Failed to send message.";
       restoreDraftAfterFailure(message, rollback);
     } finally {
+      setDraftThreadContext(threadIdForSend, { promoting: false });
       sendInFlightRef.current = false;
     }
   };
@@ -6264,6 +6289,7 @@ export default memo(function ChatView({
           cwd: gitCwd,
           threadId: threadIdForSend,
           recordedBranch: activeThread.branch,
+          worktreePath: activeThread.worktreePath,
         });
         if (!proceed) return;
         // Branch-drift confirmation is asynchronous. Another submit may have

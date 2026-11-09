@@ -582,6 +582,8 @@ export type PromptStashRestoreResult =
   | { readonly status: "failed"; readonly message: string };
 
 export interface DraftThreadState extends WorktreeCreationOptions {
+  /** Reserves a draft during first send. Never persisted. */
+  promoting?: boolean;
   projectId: ProjectId;
   createdAt: string;
   runtimeMode: RuntimeMode;
@@ -689,7 +691,7 @@ export function selectProjectDraftThread(
       return null;
     }
     const draftThread = state.draftThreadsByThreadId[threadId];
-    if (!draftThread || draftThread.projectId !== projectId) {
+    if (!draftThread || draftThread.promoting || draftThread.projectId !== projectId) {
       return null;
     }
     return {
@@ -704,7 +706,7 @@ export function selectProjectDraftThread(
       continue;
     }
     const draftThread = state.draftThreadsByThreadId[threadId];
-    if (!draftThread || draftThread.projectId !== projectId) {
+    if (!draftThread || draftThread.promoting || draftThread.projectId !== projectId) {
       continue;
     }
     const draftThreadCreatedAtMs = Date.parse(draftThread.createdAt);
@@ -763,6 +765,7 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     options: {
       sharedFilesystemConfirmed?: boolean;
+      promoting?: boolean;
       branch?: string | null;
       worktreePath?: string | null;
       projectId?: ProjectId;
@@ -1975,6 +1978,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           if (
             previousThreadIdForProjectKey &&
             previousThreadIdForProjectKey !== threadId &&
+            !state.draftThreadsByThreadId[previousThreadIdForProjectKey]?.promoting &&
             !Object.values(nextProjectDraftThreadIdByProjectId).includes(
               previousThreadIdForProjectKey,
             )
@@ -2046,6 +2050,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextWorktreePath = workspace.worktreePath;
           const nextDraftThread: DraftThreadState = {
             projectId: nextProjectId,
+            promoting: options.promoting ?? existing.promoting ?? false,
             createdAt:
               options.createdAt === undefined
                 ? existing.createdAt
@@ -2063,6 +2068,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               : {}),
           };
           const isUnchanged =
+            nextDraftThread.promoting === existing.promoting &&
             nextDraftThread.projectId === existing.projectId &&
             nextDraftThread.createdAt === existing.createdAt &&
             nextDraftThread.runtimeMode === existing.runtimeMode &&
@@ -2086,7 +2092,13 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             }
             nextProjectDraftThreadIdByProjectId[key] = existingThreadId;
           }
-          nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] = threadId;
+          if (
+            options.promoting === undefined ||
+            !nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] ||
+            nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] === threadId
+          ) {
+            nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] = threadId;
+          }
           return {
             draftThreadsByThreadId: {
               ...state.draftThreadsByThreadId,

@@ -1,4 +1,5 @@
 import { useComposerScrollCollapse } from "./useComposerScrollCollapse";
+import { AttachmentImage } from "../../AttachmentImage";
 import { useComposerExpandBudget } from "./useComposerExpandBudget";
 import { composerAttachmentStatus } from "~/lib/attachmentValidation";
 import { getAttachmentUploadState, subscribeAttachmentUploads } from "~/lib/attachmentUploadQueue";
@@ -653,7 +654,9 @@ export function ChatComposer({
                                 attachments.setExpandedImage(preview);
                               }}
                             >
-                              <img
+                              <AttachmentImage
+                                name={name}
+                                mimeType={image?.mimeType}
                                 src={previewUrl}
                                 alt={name}
                                 className="h-full w-full object-cover"

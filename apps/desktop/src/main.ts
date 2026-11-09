@@ -30,6 +30,7 @@ import { recoverUpdateSession, restoreUpdateWindows } from "./updateRecovery";
 import { createUpdaterInstallerAdapter } from "./updateInstallerAdapter";
 import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
+import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
@@ -3583,6 +3584,14 @@ function reopenApplication(): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle("desktop:reveal-window", (event) => {
+    revealSenderWindow(
+      () => {
+        authorizeAppMainFrame(event, "Window reveal");
+      },
+      () => BrowserWindow.fromWebContents(event.sender),
+    );
+  });
   const assertFileCaller = (event: Electron.IpcMainInvokeEvent) => {
     assertFileActionCaller({
       registered: appRendererWebContentsIds.has(event.sender.id),

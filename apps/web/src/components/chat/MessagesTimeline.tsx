@@ -1,4 +1,5 @@
 import { McpAppFrame } from "./McpAppFrame";
+import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
 import { highlightThreadFind } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
@@ -4647,7 +4648,9 @@ function UserMessageRowContent(props: {
                             actions.onImageExpand(preview);
                           }}
                         >
-                          <img
+                          <AttachmentImage
+                            name={image.name}
+                            mimeType={image.mimeType}
                             src={previewUrl}
                             alt={image.name}
                             className={cn(

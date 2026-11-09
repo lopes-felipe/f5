@@ -793,6 +793,7 @@ export interface DesktopBridge {
   }>;
   onPromptLinksAvailable?: (listener: () => void) => () => void;
   getWsUrl: () => string | null;
+  revealWindow?: () => Promise<void>;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
   pickFolder: () => Promise<string | null>;

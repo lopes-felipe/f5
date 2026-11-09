@@ -1,3 +1,4 @@
+import { normalizeUserInputOptions } from "../userInputOptions.ts";
 import { resolveClaudeSubagentFile } from "../agentTranscript/claudeSubagentTranscript.ts";
 import {
   classifyToolItemType,
@@ -7541,12 +7542,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   typeof q.question === "string" && q.question.length > 0 ? q.question : `q-${idx}`,
                 header: typeof q.header === "string" ? q.header : `Question ${idx + 1}`,
                 question: typeof q.question === "string" ? q.question : "",
-                options: Array.isArray(q.options)
-                  ? q.options.map((opt: Record<string, unknown>) => ({
-                      label: typeof opt.label === "string" ? opt.label : "",
-                      description: typeof opt.description === "string" ? opt.description : "",
-                    }))
-                  : [],
+                options: Array.isArray(q.options) ? normalizeUserInputOptions(q.options) : [],
                 multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
               }),
             );
@@ -7905,11 +7901,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                         : `Question ${index + 1}`,
                     question: typeof question.question === "string" ? question.question : "",
                     options: Array.isArray(question.options)
-                      ? question.options.map((option: Record<string, unknown>) => ({
-                          label: typeof option.label === "string" ? option.label : "",
-                          description:
-                            typeof option.description === "string" ? option.description : "",
-                        }))
+                      ? normalizeUserInputOptions(question.options)
                       : [],
                     multiSelect:
                       typeof question.multiSelect === "boolean" ? question.multiSelect : false,
