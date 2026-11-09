@@ -13812,11 +13812,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T19:44:51.685Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16941",
-      "status": "port",
+      "reason": "This change targets upstream’s server headless-Chrome preview, which F5’s porting policy excludes in favor of its desktop-hosted preview.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
