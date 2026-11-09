@@ -1,13 +1,15 @@
 import {
   FileDiff,
+  disposeHighlighter,
   getSharedHighlighter,
   parsePatchFiles,
+  registerCustomTheme,
   VirtualizedFileDiff,
   Virtualizer,
 } from "@pierre/diffs";
 import { WorkerPoolManager } from "@pierre/diffs/worker";
 import DiffsWorker from "@pierre/diffs/worker/worker.js?worker";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const patch = [
   "diff --git a/before.ts b/after.ts",
@@ -27,6 +29,10 @@ let pool: WorkerPoolManager | undefined;
 let virtualizer: Virtualizer | undefined;
 let container: HTMLDivElement;
 
+beforeEach(async () => {
+  await disposeHighlighter();
+});
+
 afterEach(() => {
   viewer?.cleanUp();
   viewer = undefined;
@@ -45,6 +51,12 @@ describe("collapsed diff highlighting", () => {
       container = document.createElement("div");
       container.style.cssText = "height: 400px; width: 800px; overflow: auto";
       document.body.append(container);
+      const highlighter = await getSharedHighlighter({
+        themes: ["pierre-dark", "pierre-light"],
+        langs: ["typescript"],
+        preferredHighlighter: "shiki-wasm",
+      });
+      const tokenize = vi.spyOn(highlighter, "codeToHast");
       if (mode !== "main thread") {
         pool = new WorkerPoolManager(
           { workerFactory: () => new DiffsWorker(), poolSize: 1 },
@@ -86,13 +98,7 @@ describe("collapsed diff highlighting", () => {
       expect(code()).toBe("");
       expect(highlight?.mock.calls.length ?? 0).toBe(0);
       expect(plain?.mock.calls.length ?? 0).toBe(0);
-      // The main-thread path must not tokenize either, even with its language loaded.
-      const highlighter = await getSharedHighlighter({
-        themes: ["pierre-dark", "pierre-light"],
-        langs: ["typescript"],
-        preferredHighlighter: "shiki-wasm",
-      });
-      const tokenize = vi.spyOn(highlighter, "codeToTokens");
+      expect(tokenize).not.toHaveBeenCalled();
       // This Pierre version binds a virtualized instance to its initial file metadata.
       const updated =
         mode === "virtualized worker"
@@ -109,6 +115,7 @@ describe("collapsed diff highlighting", () => {
       viewer.render({ fileDiff: updated, forceRender: true });
       await vi.waitFor(() => expect(code()).toContain("const after = 3;"));
       expect(code()).toContain("const before = 2;");
+      if (mode === "main thread") expect(tokenize).toHaveBeenCalled();
       viewer.setOptions({ ...options, collapsed: true });
       viewer.render({ fileDiff: updated, forceRender: true });
       await vi.waitFor(() => expect(code()).toBe(""));
@@ -123,4 +130,60 @@ describe("collapsed diff highlighting", () => {
       );
     },
   );
+
+  it("themes a cold collapsed header and updates it after a cold theme switch", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    const options = { collapsed: true, theme: "pierre-dark", disableErrorHandling: true } as const;
+    viewer = new FileDiff(options);
+    const fileDiff = parsePatchFiles(patch, "cold-theme")[0]!.files[0]!;
+    const header = () =>
+      container
+        .querySelector("diffs-container")
+        ?.shadowRoot?.querySelector<HTMLElement>("[data-diffs-header]");
+    viewer.render({ fileDiff, containerWrapper: container });
+    // These assertions must precede the asynchronous theme load.
+    expect(header()?.style.color).toBe("");
+    expect(header()?.dataset.themeType).toBeUndefined();
+    await vi.waitFor(() => {
+      expect(header()?.dataset.themeType).toBe("dark");
+      expect(header()?.style.color).not.toBe("");
+      expect(header()?.style.backgroundColor).not.toBe("");
+    });
+    const darkColor = header()!.style.color;
+    viewer.setOptions({ ...options, theme: "pierre-light" });
+    viewer.render({ fileDiff, forceRender: true });
+    expect(header()?.style.color).toBe("");
+    await vi.waitFor(() => {
+      expect(header()?.dataset.themeType).toBe("light");
+      expect(header()?.style.color).not.toBe("");
+      expect(header()?.style.color).not.toBe(darkColor);
+    });
+  });
+
+  it("does not load a theme for a collapsed file with no header", async () => {
+    await getSharedHighlighter({ themes: [], langs: [], preferredHighlighter: "shiki-wasm" });
+    const loadTheme = vi.fn(async () => ({
+      name: "collapsed-no-header",
+      type: "dark" as const,
+      colors: { "editor.foreground": "#ffffff", "editor.background": "#000000" },
+      tokenColors: [],
+    }));
+    registerCustomTheme("collapsed-no-header", loadTheme);
+    container = document.createElement("div");
+    document.body.append(container);
+    viewer = new FileDiff({
+      collapsed: true,
+      disableFileHeader: true,
+      theme: "collapsed-no-header",
+      disableErrorHandling: true,
+    });
+    const fileDiff = parsePatchFiles(patch, "no-header")[0]!.files[0]!;
+    viewer.render({ fileDiff, containerWrapper: container });
+    viewer.render({ fileDiff, forceRender: true });
+    expect(loadTheme).not.toHaveBeenCalled();
+    expect(
+      container.querySelector("diffs-container")?.shadowRoot?.querySelector("[data-diffs-header]"),
+    ).toBeNull();
+  });
 });

@@ -22,6 +22,8 @@ loading only theme data instead of building a plain or highlighted diff AST.
 Expansion uses the normal renderer. `CollapsedDiff.browser.ts` covers worker
 and main-thread rendering, updates, theme changes, and expansion. Drop this
 patch when the installed Pierre release includes equivalent behavior.
+The published Pierre package has no `src/` tree; regenerate its shipped JavaScript
+patch with `git diff --no-index` and keep the surrounding context.
 
 ## Regenerating a patch
 
