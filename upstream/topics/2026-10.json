@@ -28976,11 +28976,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T09:31:06.536Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/Layers/GitManager.ts:895",
+          "apps/server/src/git/Layers/GitManager.extended.ts:1045"
+        ],
+        "f5Refs": [
+          "23e4bb9f291934c7d160b8b1fb17c50debef6f16"
+        ]
+      },
       "id": "pr-20412",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
