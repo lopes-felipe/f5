@@ -262,6 +262,8 @@ var frontmostBundleId: String?
 var lastInputUptime: TimeInterval = 0
 var inputSequence = 0
 var targetWatches: [String: ComputerTargetWatch] = [:]
+var heldInputTracker = HeldInputTracker()
+var reportedHeldInputs: [HeldInput] = []
 var postedRequests = Set<String>()
 var pendingSettleDeadline: TimeInterval = 0
 var pendingInputs: [ActionableInput] = []
@@ -413,23 +415,50 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
-/// Keys, modifiers and buttons the hardware currently holds. The HID system state excludes
-/// posted events, so a synthetic keydown whose keyup never arrived (ours or another process's)
-/// cannot block a foreground takeover while nobody touches the keyboard or mouse. Agent events
-/// come from a private-state source. Side effect: input that arrives as software events (Screen
-/// Sharing, Universal Control, accessibility drivers) no longer counts as held, so a remote user
-/// holding a drag still for longer than the idle dwell does not block a takeover.
-func physicalInputHeld() -> Bool {
+/// The flag a modifier key code sets while down. Caps Lock is a toggle and is never a hold.
+/// Keys, modifiers and buttons the user is holding, oldest first (diagnostic codes only).
+/// A hold counts only when the session tap saw it go down from a HID-system source and the
+/// HID system still reports it; see `HeldInputTracker`. HID state alone cannot tell who pressed
+/// a key or when: a lost key-up, a virtual device, another tool's posts or Caps Lock's key code
+/// would otherwise block a foreground takeover forever while nobody touches the keyboard or
+/// mouse. Input that arrives as software events (Screen Sharing, Universal Control,
+/// accessibility drivers) does not count as held.
+func heldPhysicalInputs() -> [HeldInput] {
+  let sampled = locked { heldInputTracker.sample() }
   let state = CGEventSourceStateID.hidSystemState
-  if !CGEventSource.flagsState(state).intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]).isEmpty {
-    return true
+  let flags = CGEventSource.flagsState(state)
+  // HID queries stay outside the state lock. Reconciliation drops an entry only if it was not
+  // pressed again after this sample.
+  let system = Set(sampled.keys.filter { input in
+    switch input.kind {
+    case .key: CGEventSource.keyState(state, key: CGKeyCode(input.code))
+    case .button:
+      CGMouseButton(rawValue: UInt32(input.code)).map {
+        CGEventSource.buttonState(state, button: $0)
+      } ?? false
+    // Per-key state separates left from right; Fn has no reliable key state, so its flag.
+    case .modifier:
+      CGEventSource.keyState(state, key: CGKeyCode(input.code))
+        || (input.code == HeldInputTracker.fnKeyCode && flags.contains(.maskSecondaryFn))
+    }
+  })
+  let now = ProcessInfo.processInfo.systemUptime
+  let (held, changed) = locked {
+    () -> ([HeldInput], Bool) in
+    let held = heldInputTracker.held(now: now, sampled: sampled, systemHeld: system)
+    defer { reportedHeldInputs = held }
+    return (held, held != reportedHeldInputs)
   }
-  return (0..<256).contains { CGEventSource.keyState(state, key: CGKeyCode($0)) }
-    || (0..<32).contains { CGEventSource.buttonState(state, button: CGMouseButton(rawValue: UInt32($0))!) }
+  // One diagnostic per transition, so a stuck input can be named without per-beat noise.
+  if changed {
+    telemetryQueue.async { emit(["type": "heldInput", "heldInputs": held.map(\.diagnostic)]) }
+  }
+  return held
 }
 func targetReadiness(_ appId: String?) -> [String: Any] {
   let healthy = monitorHealthy
-  let held = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  let held = !heldInputs.isEmpty
   return locked {
     let now = ProcessInfo.processInfo.systemUptime
     let watch = appId.flatMap { targetWatches[$0] }
@@ -440,6 +469,7 @@ func targetReadiness(_ appId: String?) -> [String: Any] {
       "inputSequence": inputSequence,
       "lastUserInputAgeMs": lastInputUptime > 0 ? Int((now - lastInputUptime) * 1000) : -1,
       "inputHeld": held,
+      "heldInputs": heldInputs.map(\.diagnostic),
     ]
   }
 }
@@ -518,9 +548,10 @@ func installMonitor() {
   let types: [CGEventType] = [
     .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
     .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged, .rightMouseDragged,
-    .scrollWheel,
+    .otherMouseDragged, .scrollWheel,
   ]
   let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+  locked { heldInputTracker.reset() }
   eventTap = CGEvent.tapCreate(
     tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
     eventsOfInterest: mask,
@@ -530,11 +561,24 @@ func installMonitor() {
         // Never auto-resume: everything stays suspended until Electron re-arms it.
         suspendAllReporting()
         monitorHealthy = false
+        // Edges were missed while the tap was off; tracked holds restart from the next press.
+        locked { heldInputTracker.reset() }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
       }
       if event.getIntegerValueField(.eventSourceUserData) == 0xF5C0 {
         return Unmanaged.passUnretained(event)
+      }
+      if HeldInputTracker.physical(
+        userData: event.getIntegerValueField(.eventSourceUserData),
+        sourceStateID: event.getIntegerValueField(.eventSourceStateID))
+      {
+        let held = HeldInputEvent.from(
+          type: type, keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)),
+          flags: event.flags,
+          buttonNumber: Int(event.getIntegerValueField(.mouseEventButtonNumber)))
+        let now = ProcessInfo.processInfo.systemUptime
+        locked { heldInputTracker.observe(held, now: now) }
       }
       let flags = event.flags
       if type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 53
@@ -602,7 +646,8 @@ func installMonitor() {
         let cause = type == .mouseMoved ? "move"
           : type == .scrollWheel ? "scroll"
           : type == .keyDown || type == .keyUp || type == .flagsChanged ? "key"
-          : type == .leftMouseDragged || type == .rightMouseDragged ? "drag" : "pointer"
+          : type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged
+            ? "drag" : "pointer"
         let foreground = permits.suspendForeground(cause: cause)
         for generation in foreground {
           interrupt(generation, ["type": "physicalInput", "cause": cause])
@@ -1165,9 +1210,10 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     throw Failure("StaleElement", "reason", "element-gone")
   }
   try checkPermit(request)
-  // A slow app may take longer than the process-wide ceiling to act; only this element.
-  if background { _ = AXUIElementSetMessagingTimeout(element, 2) }
-  defer { if background { _ = AXUIElementSetMessagingTimeout(element, 0.25) } }
+  // A slow app may take longer than the process-wide ceiling to act (in the foreground too:
+  // a swatch applies its color, closes its popover and re-renders); only this element.
+  _ = AXUIElementSetMessagingTimeout(element, 2)
+  defer { _ = AXUIElementSetMessagingTimeout(element, 0.25) }
   let result: AXError
   if action == "setValue" || action == "focus" {
     var settable = DarwinBoolean(false)
@@ -1199,7 +1245,16 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     result = AXUIElementPerformAction(element, native as CFString)
     if let dispatch { try endBackgroundAction(dispatch, succeeded: result == .success) }
   }
-  switch computerElementDispatchOutcome(action: action, error: result, background: background) {
+  var outcome = computerElementDispatchOutcome(
+    action: action, error: result, background: background)
+  if !background && result == .cannotComplete {
+    // One bounded probe: a press that already removed its own element was received.
+    _ = AXUIElementSetMessagingTimeout(element, 0.25)
+    var probed: CFTypeRef?
+    let probe = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &probed)
+    outcome = computerElementTimeoutOutcome(action: action, elementGone: probe == .invalidUIElement)
+  }
+  switch outcome {
   case .success: break
   case .unverified:
     // A foreground press that removed its own element (a swatch closing its popover) worked
@@ -1209,6 +1264,8 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     // Errors proving nothing happened stay typed instead of escalating to OutcomeUnknown.
     if !started { locked { _ = postedRequests.remove(string(request, "requestId")) } }
     if let reason { throw Failure(tag, "reason", reason) }
+    // The AX code is diagnostic only: the response's error stays a bare OutcomeUnknown.
+    if tag == "OutcomeUnknown" { throw Failure(tag, "axError", Int(result.rawValue)) }
     throw Failure(tag)
   }
   if action == "focus" {
@@ -2123,6 +2180,8 @@ func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: ino
   }
   return result
 }
+/// Runs one request and emits exactly one response; failures carry the agent-facing error
+/// and, for `OutcomeUnknown`, a separate log-only diagnostic.
 func execute(_ message: [String: Any]) {
   let request = message["request"] as? [String: Any] ?? [:]
   let host = message["hostAuthorization"] as? [String: Any] ?? [:]
@@ -2187,7 +2246,16 @@ func execute(_ message: [String: Any]) {
       }
       let error = computerActionFailure(
         failure.payload, tracked: tracked, background: isBackground(request), posted: started)
-      emit(["type": "response", "requestId": id, "error": error])
+      var response: [String: Any] = [
+        "type": "response", "requestId": id, "error": computerAgentFacingError(error),
+      ]
+      if let diagnostic = computerOutcomeUnknownDiagnostic(
+        error: error, failure: failure.payload, op: op, appId: string(request, "appId"),
+        background: isBackground(request))
+      {
+        response["diagnostic"] = diagnostic
+      }
+      emit(response)
     } catch {
       let started = tracked && locked { postedRequests.contains(id) }
       if started && !isBackground(request) {
@@ -2278,7 +2346,9 @@ heartbeat.setEventHandler {
   ]
   if inputAge >= 0 { beat["lastUserInputAgeMs"] = Int(inputAge) }
   if let front { beat["frontmostAppId"] = front }
-  beat["inputHeld"] = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  beat["inputHeld"] = !heldInputs.isEmpty
+  beat["heldInputs"] = heldInputs.map(\.diagnostic)
   beat["targets"] = locked {
     targetWatches.map { appId, watch in
       ["appId": appId, "activityEpoch": watch.activityEpoch,

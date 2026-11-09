@@ -1875,6 +1875,14 @@ export const makeWorkflowService = Effect.gen(function* () {
           : workflow.merge.status !== "in_progress"
       )
         return;
+      // A turn this stage already rejected has its repair outstanding. A later
+      // evaluation of it (a session update while the repair turn starts, with
+      // the same logical timestamp) must neither repair nor fail it again.
+      if (
+        input.turnId ===
+        (branch ? branch.rejectedDocumentTurnId : workflow.merge.rejectedDocumentTurnId)
+      )
+        return;
       const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
       const validation = validateCapturedPlanForTurn({
         workflow: workflow,
@@ -1883,16 +1891,43 @@ export const makeWorkflowService = Effect.gen(function* () {
         turnId: input.turnId,
       });
       if (validation.valid) return;
-      if (isDocumentWorkflow(workflow)) {
-        if (branch && input.branchId) {
-          branch = { ...branch, rejectedDocumentTurnId: input.turnId };
-          workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
-        } else {
-          workflow = {
-            ...workflow,
-            merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
-          };
-        }
+      // Every workflow kind records the rejected turn, so the stage evaluates it once. Planning
+      // workflows record it only once the repair turn was dispatched: until then a repeated
+      // evaluation must still be able to fail the stage visibly (dispatch failure, restart),
+      // instead of skipping the turn with no repair running. Events are handled one at a
+      // time, so the record lands before any event the dispatch itself causes.
+      const deferRejection = !isDocumentWorkflow(workflow);
+      const beforeRejection = { workflow, branch };
+      // A repair turn that cannot be dispatched fails its stage visibly (with Retry) instead
+      // of leaving it running with no turn. Returns whether the turn was dispatched.
+      const dispatchRepair = <E, R>(
+        start: Effect.Effect<unknown, E, R>,
+        failed: (message: string) => PlanningWorkflow,
+      ) =>
+        start.pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("workflow format repair turn could not be dispatched", {
+                  workflowId: workflow.id,
+                  cause: Cause.pretty(cause),
+                }).pipe(
+                  Effect.andThen(
+                    upsertWorkflow(failed("The format repair turn could not be started.")),
+                  ),
+                  Effect.as(false),
+                ),
+          ),
+        );
+      if (branch && input.branchId) {
+        branch = { ...branch, rejectedDocumentTurnId: input.turnId };
+        workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
+      } else {
+        workflow = {
+          ...workflow,
+          merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
+        };
       }
 
       const error = `${isDocumentWorkflow(workflow) ? "Invalid document" : "Invalid proposed-plan capture"}: ${validation.error}`;
@@ -1934,17 +1969,18 @@ export const makeWorkflowService = Effect.gen(function* () {
           return;
         }
 
+        const retryBase = deferRejection ? beforeRejection : { workflow, branch };
         const repairedBranch: PlanningWorkflow["branchA"] = {
-          ...branch,
+          ...retryBase.branch!,
           ...(stage === "revision"
             ? { revisionFormatRepairAttempts: formatRepairAttempts + 1 }
             : { authorFormatRepairAttempts: formatRepairAttempts + 1 }),
           updatedAt: input.createdAt,
         };
         const retryWorkflow: PlanningWorkflow = {
-          ...workflow,
-          branchA: input.branchId === "a" ? repairedBranch : workflow.branchA,
-          branchB: input.branchId === "b" ? repairedBranch : workflow.branchB,
+          ...retryBase.workflow,
+          branchA: input.branchId === "a" ? repairedBranch : retryBase.workflow.branchA,
+          branchB: input.branchId === "b" ? repairedBranch : retryBase.workflow.branchB,
           updatedAt: input.createdAt,
         };
         const retryBranch = input.branchId === "a" ? retryWorkflow.branchA : retryWorkflow.branchB;
@@ -1955,14 +1991,26 @@ export const makeWorkflowService = Effect.gen(function* () {
           reusedThread: true,
           priorFailure: error,
         };
-        if (stage === "authoring") {
-          yield* startAuthoringTurn({
-            orchestrationEngine,
-            workflow: retryWorkflow,
-            branch: retryBranch,
-            createdAt: input.createdAt,
-            retry,
+        const branchId = input.branchId;
+        const failBranch = (message: string) =>
+          markBranchError(retryWorkflow, branchId, {
+            error: `${error} ${message}`,
+            stage,
+            updatedAt: input.createdAt,
           });
+        if (stage === "authoring") {
+          const started = yield* dispatchRepair(
+            startAuthoringTurn({
+              orchestrationEngine,
+              workflow: retryWorkflow,
+              branch: retryBranch,
+              createdAt: input.createdAt,
+              retry,
+            }),
+            failBranch,
+          );
+          if (started && deferRejection)
+            yield* recordRejectedPlanTurn(workflow.id, branchId, input.turnId);
           return;
         }
 
@@ -1983,16 +2031,21 @@ export const makeWorkflowService = Effect.gen(function* () {
           );
           return;
         }
-        yield* startRevisionTurn({
-          orchestrationEngine,
-          workflow: retryWorkflow,
-          branch: retryBranch,
-          originalPlanMarkdown: originalPlan,
-          reviews,
-          thread: input.thread,
-          createdAt: input.createdAt,
-          retry,
-        });
+        const started = yield* dispatchRepair(
+          startRevisionTurn({
+            orchestrationEngine,
+            workflow: retryWorkflow,
+            branch: retryBranch,
+            originalPlanMarkdown: originalPlan,
+            reviews,
+            thread: input.thread,
+            createdAt: input.createdAt,
+            retry,
+          }),
+          failBranch,
+        );
+        if (started && deferRejection)
+          yield* recordRejectedPlanTurn(workflow.id, branchId, input.turnId);
         return;
       }
 
@@ -2022,30 +2075,70 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
         return;
       }
+      const mergeBase = deferRejection ? beforeRejection.workflow : workflow;
       const retryWorkflow: PlanningWorkflow = {
-        ...workflow,
+        ...mergeBase,
         merge: {
-          ...workflow.merge,
+          ...mergeBase.merge,
           status: "in_progress",
           error: null,
-          formatRepairAttempts: (workflow.merge.formatRepairAttempts ?? 0) + 1,
+          formatRepairAttempts: (mergeBase.merge.formatRepairAttempts ?? 0) + 1,
           updatedAt: input.createdAt,
         },
         updatedAt: input.createdAt,
       };
       yield* upsertWorkflow(retryWorkflow);
-      yield* startMergeTurn({
-        orchestrationEngine,
-        workflow: retryWorkflow,
-        threadId: workflow.merge.threadId,
-        planA,
-        planB,
-        reviews: [
-          ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, input.snapshot)),
-          ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, input.snapshot)),
-        ],
-        createdAt: input.createdAt,
-        retry: { kind: "retry", formatRepair: true, reusedThread: true, priorFailure: error },
+      const reviews = [
+        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, input.snapshot)),
+        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, input.snapshot)),
+      ];
+      const started = yield* dispatchRepair(
+        startMergeTurn({
+          orchestrationEngine,
+          workflow: retryWorkflow,
+          threadId: workflow.merge.threadId,
+          planA,
+          planB,
+          reviews,
+          createdAt: input.createdAt,
+          retry: { kind: "retry", formatRepair: true, reusedThread: true, priorFailure: error },
+        }),
+        (message) => markMergeError(retryWorkflow, `${error} ${message}`, input.createdAt),
+      );
+      if (started && deferRejection)
+        yield* recordRejectedPlanTurn(workflow.id, undefined, input.turnId);
+    });
+
+  /**
+   * Records a planning stage's rejected turn once its repair turn was dispatched, on the
+   * workflow as it is now: dispatching may itself have updated it.
+   */
+  const recordRejectedPlanTurn = (
+    workflowId: PlanningWorkflow["id"],
+    branchId: "a" | "b" | undefined,
+    turnId: TurnId,
+  ) =>
+    Effect.gen(function* () {
+      const current = (yield* orchestrationEngine.getReadModel()).planningWorkflows.find(
+        (entry) => entry.id === workflowId,
+      );
+      if (!current) return;
+      if (branchId) {
+        const key = branchId === "a" ? "branchA" : "branchB";
+        const branch = current[key];
+        if (
+          (branch.status !== "authoring" && branch.status !== "revising") ||
+          branch.rejectedDocumentTurnId === turnId
+        )
+          return;
+        yield* upsertWorkflow({ ...current, [key]: { ...branch, rejectedDocumentTurnId: turnId } });
+        return;
+      }
+      if (current.merge.status !== "in_progress" || current.merge.rejectedDocumentTurnId === turnId)
+        return;
+      yield* upsertWorkflow({
+        ...current,
+        merge: { ...current.merge, rejectedDocumentTurnId: turnId },
       });
     });
 
@@ -2957,7 +3050,14 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (isRevisionCompletion && turnId === branch.planTurnId) {
           return workflow;
         }
-        if (isDocumentWorkflow(workflow) && turnId === branch.rejectedDocumentTurnId) {
+        // A rejected turn is not evaluated again while its stage still runs.
+        // Planning branches in error may still accept a late valid capture.
+        if (
+          turnId === branch.rejectedDocumentTurnId &&
+          (isDocumentWorkflow(workflow) ||
+            branch.status === "authoring" ||
+            branch.status === "revising")
+        ) {
           return workflow;
         }
         const completionEvidenceAt =
@@ -3053,7 +3153,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
       const mergeCompletionEvidenceAt =
         thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? null;
-      if (isDocumentWorkflow(workflow) && turnId === workflow.merge.rejectedDocumentTurnId)
+      if (
+        turnId === workflow.merge.rejectedDocumentTurnId &&
+        (isDocumentWorkflow(workflow) || workflow.merge.status === "in_progress")
+      )
         return workflow;
       if (
         workflow.merge.status === "error" &&

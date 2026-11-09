@@ -17,7 +17,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Codex can hand off Chrome control to native apps without asking the user to stop Chrome. The handoff waits for the browser runtime to exit. New Codex threads can return to Chrome in the same turn with the host's `browser_resume` tool; older provider threads retain next-message restart behavior.
-
+- Resuming computer control after "Needs recovery" works for threads that also hold the Chrome lease: Resume now clears native control and Chrome together. A slow foreground press, such as a color swatch closing its popover, no longer counts as an unknown outcome, and unknown outcomes reported by the helper are logged with their AX error code.
+- Long OpenCode sessions process assistant updates without rescanning old message parts, and questions preserve their multi-select and custom-answer settings.
+- Codex's model picker shows an inherited global Fast tier without overriding project or profile settings when no tier is selected. Explicit Standard choices also apply to one-off prompts.
+- Oversized thread-read page requests are clamped to the supported maximum, and registry connections tolerate slower IPv4 handshakes when IPv6 is unreachable.
+- Uncommitted Git reviews preserve staged deletions paired into renames. Repositories with a non-origin remote offer Push and Create PR, and branches behind upstream offer Commit for local changes without pushing.
 - Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.
 - GitLab merge requests show failed child pipelines in PR Hub checks and watches, retain them across discovery polls, and avoid reporting incomplete check reads as passed.
 - Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
@@ -28,6 +32,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Popovers overlapping the desktop window header respond to hover and clicks.
 - A Claude thread with Claude in Chrome on can take foreground control of other apps while none of its Chrome calls is running, instead of failing with "Chrome is held by another thread". Once it does, its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it). Foreground takeover refusals name the thread holding control, and the desktop log records Chrome lease events.
 - Queued upstream ports no longer wait indefinitely on files held by an equivalent topic once the port PR that included it has merged. Outcome recovery stops re-reading merged port PRs from GitHub.
+- Planning workflows no longer fail a branch or the merge while its plan-format repair turn is starting. If that repair turn cannot start, the stage shows an error with Retry instead of staying in progress with no turn.
+- Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down; on macOS, Caps Lock's lock state never counts. A hold stuck in system state stops counting after two minutes without any input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)", and a pause or policy change during the wait reports its own cause.
+- Codex turns that stream bursts of small output chunks are no longer interrupted by notification overflow. Interrupted Codex history with commands, MCP calls or empty reasoning can now be recovered automatically, and the recovery warning stays visible until it is, or until the history is accepted.
 
 ## [0.1.6] - 2026-11-08
 

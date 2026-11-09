@@ -1623,6 +1623,7 @@ export function projectEvent(
       return Effect.succeed(nextBase);
 
     case "thread.command-execution-output-appended":
+    case "thread.command-execution-output-reconciled":
       return Effect.succeed(nextBase);
 
     case "thread.file-change-recorded":

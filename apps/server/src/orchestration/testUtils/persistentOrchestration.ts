@@ -11,6 +11,9 @@ import { OrchestrationProjectionPipelineLive } from "../Layers/ProjectionPipelin
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { ProjectionThreadCommandExecutionRepositoryLive } from "../../persistence/Layers/ProjectionThreadCommandExecutions.ts";
+import { ThreadCommandExecutionQueryLive } from "../Layers/ThreadCommandExecutionQuery.ts";
+import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 
 export async function createPersistentOrchestrationSystem(input: {
   readonly dbPath: string;
@@ -26,6 +29,11 @@ export async function createPersistentOrchestrationSystem(input: {
   );
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provideMerge(
+      ThreadCommandExecutionQueryLive.pipe(
+        Layer.provide(ProjectionThreadCommandExecutionRepositoryLive),
+      ),
+    ),
+    Layer.provideMerge(
       input.projectionSnapshotQueryLayer ?? OrchestrationProjectionSnapshotQueryLive,
     ),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -40,6 +48,9 @@ export async function createPersistentOrchestrationSystem(input: {
   return {
     engine,
     snapshotQuery: await runtime.runPromise(Effect.service(ProjectionSnapshotQuery)),
+    threadCommandExecutionQuery: await runtime.runPromise(
+      Effect.service(ThreadCommandExecutionQuery),
+    ),
     sql: await runtime.runPromise(Effect.service(SqlClient.SqlClient)),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),

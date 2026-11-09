@@ -1,12 +1,24 @@
 import { readIncompleteHistory } from "../provider/runtimePayload.ts";
 import { readPersistedSessionGeneration } from "../provider/sessionCapabilities.ts";
-import { CommandId, MessageId, type ThreadId, type TurnId } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  type OrchestrationCommandExecution,
+  type OrchestrationThread,
+  type ThreadId,
+  type TurnId,
+} from "@t3tools/contracts";
+import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import { Effect, Option } from "effect";
 
 import type { ProviderThreadTurnSnapshot } from "../provider/Services/ProviderAdapter.ts";
 import type { ProviderServiceShape } from "../provider/Services/ProviderService.ts";
 import type { ProviderSessionDirectoryShape } from "../provider/Services/ProviderSessionDirectory.ts";
+import { commandExecutionIdForRuntimeItem } from "./commandExecutionIds.ts";
+import { truncateCommandTranscriptOutput } from "./outputTruncation.ts";
+import { makeHistoryRecoveredSessionSet } from "./providerTerminalLifecycle.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
+import type { ThreadCommandExecutionQueryShape } from "./Services/ThreadCommandExecutionQuery.ts";
 
 function sameId(left: string | null | undefined, right: string | null | undefined): boolean {
   if (left === null || left === undefined || right === null || right === undefined) {
@@ -146,6 +158,195 @@ function assistantMessagesFromProviderSnapshotTurn(
   return messages;
 }
 
+/** Codex keeps only a head and a tail of large command output in its saved history. */
+export const CODEX_PERSISTENCE_TRUNCATION_MARKER =
+  "\n... command output truncated for persistence ...\n";
+
+const TERMINAL_COMMAND_STATUSES: ReadonlySet<string> = new Set([
+  "completed",
+  "failed",
+  "declined",
+  "interrupted",
+]);
+const ASSISTANT_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "agent message",
+  "assistant message",
+  "assistant",
+]);
+
+function isPlainTextContent(value: unknown): boolean {
+  if (value == null || typeof value === "string") return true;
+  if (Array.isArray(value)) return value.every(isPlainTextContent);
+  const record = asRecord(value);
+  if (!record) return false;
+  const type = normalizeProviderSnapshotItemType(record.type);
+  return ["text", "input text", "output text"].includes(type) && typeof record.text === "string";
+}
+
+interface SnapshotCommandItem {
+  readonly itemId: string;
+  readonly output: string;
+}
+
+type IncompleteTurnClassification =
+  | {
+      readonly kind: "verifiable";
+      /** Agent message, command and MCP items: what recovery actually confirms. */
+      readonly recoverableItems: number;
+      readonly commands: ReadonlyArray<SnapshotCommandItem>;
+    }
+  | { readonly kind: "unsupported"; readonly itemType: string; readonly itemId?: string };
+
+/**
+ * Decides, without writing, whether every item of an interrupted turn can be
+ * verified against what F5 already holds. Tool results F5 cannot compare stay
+ * unsupported, and so keep the incomplete-history marker.
+ */
+function classifyIncompleteTurnItems(
+  turn: ProviderThreadTurnSnapshot,
+  thread: Pick<OrchestrationThread, "activities">,
+  turnId: string,
+): IncompleteTurnClassification {
+  let recoverableItems = 0;
+  const commands: SnapshotCommandItem[] = [];
+  for (const raw of turn.items) {
+    const item = asRecord(raw);
+    if (!item) return { kind: "unsupported", itemType: typeof raw };
+    const itemType = normalizeProviderSnapshotItemType(item.type ?? item.itemType ?? item.kind);
+    const itemId = asTrimmedNonEmptyString(item.id ?? item.itemId);
+    const unsupported = {
+      kind: "unsupported",
+      itemType,
+      ...(itemId ? { itemId } : {}),
+    } as const;
+    if (itemType === "user message" || itemType === "user") continue;
+    if (ASSISTANT_ITEM_TYPES.has(itemType)) {
+      if (
+        !itemId ||
+        !isPlainTextContent(item.content) ||
+        item.attachments !== undefined ||
+        item.reasoningText !== undefined
+      )
+        return unsupported;
+      recoverableItems++;
+      continue;
+    }
+    if (itemType === "reasoning") {
+      // Empty reasoning carries nothing to recover.
+      if (
+        extractTextFromProviderSnapshotContent(item.summary) !== "" ||
+        extractTextFromProviderSnapshotContent(item.content) !== ""
+      )
+        return unsupported;
+      continue;
+    }
+    if (itemType === "command execution") {
+      const status = asString(item.status)?.toLowerCase();
+      if (
+        !itemId ||
+        typeof item.aggregatedOutput !== "string" ||
+        status === undefined ||
+        !TERMINAL_COMMAND_STATUSES.has(status)
+      )
+        return unsupported;
+      commands.push({ itemId, output: item.aggregatedOutput });
+      recoverableItems++;
+      continue;
+    }
+    if (itemType === "mcp tool call") {
+      // Only verified when F5 already recorded the call's completion.
+      if (
+        !itemId ||
+        !thread.activities.some(
+          (activity) =>
+            activity.kind === "tool.completed" &&
+            activity.turnId === turnId &&
+            readToolActivityPayload(activity.payload)?.providerItemId === itemId,
+        )
+      )
+        return unsupported;
+      recoverableItems++;
+      continue;
+    }
+    return unsupported;
+  }
+  return { kind: "verifiable", recoverableItems, commands };
+}
+
+interface CommandOutputRepair {
+  readonly commandExecutionId: OrchestrationCommandExecution["id"];
+  readonly expectedLastUpdatedSequence: number;
+  /**
+   * The output the row holds once repaired, already capped like the projection caps it, so
+   * the event log and every client receive at most the projected size.
+   */
+  readonly expected: { readonly output: string; readonly outputTruncated: boolean };
+}
+
+/**
+ * The repair of a command's projected output from provider history, `"current"`
+ * when the row already holds it, or undefined when the history cannot be shown
+ * to extend what F5 streamed for this exact command.
+ *
+ * Codex saves large output as a head, a marker and a tail. When F5 streamed less than that
+ * head, the repair stores Codex's copy. When F5 streamed more, it keeps everything F5 has and
+ * appends the marker and Codex's tail, so no streamed text is replaced: the marker stands for
+ * output neither copy holds, whose size is unknown.
+ *
+ * A row F5 itself already capped (streamed past the projection's 256 KiB limit) lost its
+ * middle, so it cannot be compared and is never repaired automatically.
+ */
+export function planCommandOutputRepair(
+  row: OrchestrationCommandExecution | null,
+  item: SnapshotCommandItem,
+  turnId: string,
+): CommandOutputRepair | "current" | undefined {
+  if (
+    !row ||
+    row.turnId !== turnId ||
+    row.providerItemId !== item.itemId ||
+    row.status === "running"
+  )
+    return undefined;
+  const markerIndex = item.output.indexOf(CODEX_PERSISTENCE_TRUNCATION_MARKER);
+  const codexTruncated = markerIndex >= 0;
+  const head = codexTruncated ? item.output.slice(0, markerIndex) : item.output;
+  const savedTail = codexTruncated ? item.output.slice(markerIndex) : "";
+  const capped = (output: string) => {
+    const projected = truncateCommandTranscriptOutput(output);
+    return {
+      output: projected.output,
+      outputTruncated: projected.outputTruncated || codexTruncated,
+    };
+  };
+  const matches = (expected: CommandOutputRepair["expected"]) =>
+    row.output === expected.output && row.outputTruncated === expected.outputTruncated;
+  if (matches(capped(item.output))) return "current";
+  // A spliced repair already applied: F5's prefix, then Codex's marker and tail.
+  if (
+    codexTruncated &&
+    row.outputTruncated &&
+    row.output.startsWith(head) &&
+    row.output.endsWith(savedTail)
+  )
+    return "current";
+  if (row.outputTruncated) return undefined;
+  let target: string;
+  if (!codexTruncated) {
+    if (!item.output.startsWith(row.output)) return undefined;
+    target = item.output;
+  } else if (head.startsWith(row.output)) {
+    target = item.output;
+  } else if (row.output.startsWith(head)) {
+    target = `${row.output}${savedTail}`;
+  } else return undefined;
+  return {
+    commandExecutionId: row.id,
+    expectedLastUpdatedSequence: row.lastUpdatedSequence,
+    expected: capped(target),
+  };
+}
+
 function buildSnapshotCommandId(
   source: string,
   threadId: ThreadId,
@@ -189,6 +390,11 @@ export interface CodexSnapshotReconciliationDependencies {
     "readThread" | "acknowledgeHistoryReconciliation"
   >;
   readonly providerSessionDirectory: Pick<ProviderSessionDirectoryShape, "getBinding">;
+  /** Reads the projected command output that recovery verifies against provider history. */
+  readonly threadCommandExecutionQuery: Pick<
+    ThreadCommandExecutionQueryShape,
+    "getThreadCommandExecution"
+  >;
 }
 
 export const reconcileCodexThreadSnapshots = (
@@ -255,42 +461,50 @@ export const reconcileCodexThreadSnapshots = (
               return;
             const turn = snapshot.turns.find((entry) => entry.id === incomplete.turnId);
             if (!turn) return;
-            const isPlainTextContent = (value: unknown): boolean => {
-              if (value == null || typeof value === "string") return true;
-              if (Array.isArray(value)) return value.every(isPlainTextContent);
-              const record = asRecord(value);
-              if (!record) return false;
-              const type = normalizeProviderSnapshotItemType(record.type);
-              return (
-                ["text", "input text", "output text"].includes(type) &&
-                typeof record.text === "string"
-              );
-            };
-            if (
-              turn.items.some((raw) => {
-                const item = asRecord(raw);
-                if (!item) return true;
-                const type = normalizeProviderSnapshotItemType(
-                  item.type ?? item.itemType ?? item.kind,
-                );
-                if (["user message", "user"].includes(type)) return false;
-                return (
-                  !["agent message", "assistant message", "assistant"].includes(type) ||
-                  !asTrimmedNonEmptyString(item.id ?? item.itemId) ||
-                  !isPlainTextContent(item.content) ||
-                  item.attachments !== undefined ||
-                  item.reasoningText !== undefined
-                );
-              })
-            ) {
+            // Every item must be verifiable before anything is written: partial
+            // repair is never proof that the whole stream was recovered.
+            const classification = classifyIncompleteTurnItems(
+              turn,
+              currentThread,
+              incomplete.turnId,
+            );
+            if (classification.kind === "unsupported") {
               yield* Effect.logWarning(
-                "incomplete Codex history requires repair of non-text items",
-                { threadId, markerId: incomplete.eventId },
+                "incomplete Codex history contains an item that cannot be verified",
+                {
+                  threadId,
+                  markerId: incomplete.eventId,
+                  itemType: classification.itemType,
+                  itemId: classification.itemId,
+                },
               );
               return;
             }
+            if (classification.recoverableItems === 0) return;
+            const commandRepairs: CommandOutputRepair[] = [];
+            for (const command of classification.commands) {
+              const commandExecutionId = commandExecutionIdForRuntimeItem(threadId, command.itemId);
+              const row =
+                (yield* dependencies.threadCommandExecutionQuery.getThreadCommandExecution({
+                  threadId,
+                  commandExecutionId,
+                })).commandExecution;
+              const repair = planCommandOutputRepair(row, command, incomplete.turnId);
+              if (repair === undefined) {
+                yield* Effect.logWarning(
+                  "incomplete Codex history contains an item that cannot be verified",
+                  {
+                    threadId,
+                    markerId: incomplete.eventId,
+                    itemType: "command execution",
+                    itemId: command.itemId,
+                  },
+                );
+                return;
+              }
+              if (repair !== "current") commandRepairs.push(repair);
+            }
             const messages = assistantMessagesFromProviderSnapshotTurn(turn);
-            if (messages.length === 0) return;
             const ids = new Set(messages.map((message) => message.messageId));
             const currentMessages = currentThread.messages.filter(
               (message) => message.role === "assistant" && message.turnId === incomplete.turnId,
@@ -346,8 +560,40 @@ export const reconcileCodexThreadSnapshots = (
               if (!repaired || repaired.text !== message.text || repaired.streaming) return;
               backfilledMessageCount++;
             }
+            for (const repair of commandRepairs) {
+              if (!(yield* stillCurrent)) return;
+              yield* dependencies.orchestrationEngine.dispatch({
+                type: "thread.command-execution.output.reconcile",
+                commandId: buildSnapshotCommandId(
+                  input.reason,
+                  threadId,
+                  turn.id,
+                  "verified-command-output",
+                ),
+                threadId,
+                commandExecutionId: repair.commandExecutionId,
+                expectedLastUpdatedSequence: repair.expectedLastUpdatedSequence,
+                output: repair.expected.output,
+                outputTruncated: repair.expected.outputTruncated,
+                updatedAt: input.createdAt,
+                createdAt: input.createdAt,
+              });
+              // The projection ignores a reconcile whose row moved on since the
+              // preflight; that output is then not verified.
+              const repaired =
+                (yield* dependencies.threadCommandExecutionQuery.getThreadCommandExecution({
+                  threadId,
+                  commandExecutionId: repair.commandExecutionId,
+                })).commandExecution;
+              if (
+                repaired?.output !== repair.expected.output ||
+                repaired.outputTruncated !== repair.expected.outputTruncated
+              )
+                return;
+            }
             if (!(yield* stillCurrent)) return;
-            if (dependencies.providerService.acknowledgeHistoryReconciliation)
+            if (!dependencies.providerService.acknowledgeHistoryReconciliation) return;
+            const acknowledged =
               yield* dependencies.providerService.acknowledgeHistoryReconciliation({
                 threadId,
                 markerId: incomplete.eventId,
@@ -355,6 +601,20 @@ export const reconcileCodexThreadSnapshots = (
                 instanceId: history.origin.instanceId,
                 generation: history.origin.generation,
               });
+            if (!acknowledged) return;
+            // The recovery warning was kept visible only for this marker.
+            const recovered = makeHistoryRecoveredSessionSet({
+              thread: yield* getCurrentThread(threadId),
+              markerId: incomplete.eventId,
+              commandId: buildSnapshotCommandId(
+                input.reason,
+                threadId,
+                turn.id,
+                "history-recovered",
+              ),
+              createdAt: input.createdAt,
+            });
+            if (recovered) yield* dependencies.orchestrationEngine.dispatch(recovered);
             return;
           }
 

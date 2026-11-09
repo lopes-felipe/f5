@@ -1178,6 +1178,54 @@ describe("private computer host channel", () => {
     expect(() => h.channel.chrome.validate(holder)).toThrow();
     expect(h.controller.setPaused).not.toHaveBeenCalled();
   });
+  it("pauses native control and the Chrome lease together for a backend pause", async () => {
+    const h = setup(true);
+    h.hello();
+    const holder = {
+      profileId: "profile",
+      threadId: "chrome-thread",
+      sessionGeneration: "s",
+      provider: "claude" as const,
+    };
+    h.channel.chrome.acquire(holder, null);
+    h.process.send.mockClear();
+    h.process.emit("message", { type: "pauseChanged", threadId: "chrome-thread", paused: true });
+    expect(h.controller.setPaused).toHaveBeenCalledWith("profile", "chrome-thread", true);
+    expect(() => h.channel.chrome.validate(holder)).toThrow(
+      expect.objectContaining({ error: { _tag: "Interrupted", cause: "paused" } }),
+    );
+    const echoes = h.process.send.mock.calls.filter(
+      ([message]) => (message as { type?: string }).type === "pauseChanged",
+    );
+    expect(echoes).toEqual([
+      [{ type: "pauseChanged", threadId: "chrome-thread", paused: true }, expect.any(Function)],
+    ]);
+  });
+  it("resumes native control before the Chrome lease and keeps both paused on refusal", () => {
+    const h = setup(true);
+    h.hello();
+    const holder = {
+      profileId: "profile",
+      threadId: "chrome-thread",
+      sessionGeneration: "s",
+      provider: "claude" as const,
+    };
+    h.channel.chrome.acquire(holder, null);
+    expect(h.channel.setThreadPaused("profile", "chrome-thread", true)).toBe(true);
+    h.controller.setPaused.mockImplementationOnce(() => {
+      throw new Error("monitor-unhealthy");
+    });
+    expect(() => h.channel.setThreadPaused("profile", "chrome-thread", false)).toThrow(
+      "monitor-unhealthy",
+    );
+    expect(() => h.channel.chrome.validate(holder)).toThrow();
+    expect(h.channel.setThreadPaused("profile", "chrome-thread", false)).toBe(true);
+    expect(h.controller.setPaused).toHaveBeenLastCalledWith("profile", "chrome-thread", false);
+    expect(() => h.channel.chrome.validate(holder)).not.toThrow();
+    // A thread without the Chrome lease still changes native control.
+    expect(h.channel.setThreadPaused("profile", "native-thread", false)).toBe(false);
+    expect(h.controller.setPaused).toHaveBeenLastCalledWith("profile", "native-thread", false);
+  });
   it("redacts Chrome session ownership for another profile", () => {
     const h = setup(true);
     h.hello();

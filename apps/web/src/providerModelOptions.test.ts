@@ -12,6 +12,12 @@ import {
 } from "@t3tools/shared/model";
 
 describe("providerModelOptions", () => {
+  it("preserves explicit Codex fast-mode off through draft and selection conversion", () => {
+    const options = { codex: { fastMode: false } };
+    expect(normalizeProviderModelOptions(options)).toEqual(options);
+    const selections = providerModelOptionsToSelections("codex", options);
+    expect(selections).toEqual([{ id: "fastMode", value: false }]);
+  });
   it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max"])(
     "round-trips Pi's native thinking level without changing its meaning: %s",
     (thinking) => {

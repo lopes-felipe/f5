@@ -16,7 +16,11 @@ import {
   registerNotificationQueueResources,
   providerNotificationOverflows,
 } from "../../observability/Metrics.ts";
-import { NotificationAdmission } from "../notificationAdmission.ts";
+import {
+  NotificationAdmission,
+  type AdmissionLease,
+  type NotificationAdmissionLimits,
+} from "../notificationAdmission.ts";
 import { ServerShutdown } from "../../shutdown.ts";
 import { observeCodexMcpServers } from "../codexMcpObservation.ts";
 import { mcpProviderReads, mcpContextKey } from "../../mcp/McpReadCoordinator.ts";
@@ -81,6 +85,7 @@ import { validateProposedPlanOutput } from "@t3tools/shared/proposedPlan";
 import {
   getModelSelectionStringOptionValue,
   getProviderOptionBooleanSelectionValue,
+  resolveCodexFastMode,
 } from "@t3tools/shared/model";
 import {
   filterEnabledMcpServers,
@@ -161,8 +166,15 @@ import { codexChromeInstructions } from "../../computer/codexNativeIntegrations.
 
 const PROVIDER = "codex" as const;
 
-function codexServiceTierOptions(fastMode: boolean | undefined): { readonly serviceTier?: "fast" } {
-  return fastMode ? { serviceTier: "fast" } : {};
+function codexServiceTierOptions(
+  fastMode: boolean | undefined,
+  inheritedFastMode = false,
+): { readonly serviceTier?: "fast" | "default" } {
+  return fastMode === true
+    ? { serviceTier: "fast" }
+    : fastMode === false && inheritedFastMode
+      ? { serviceTier: "default" }
+      : {};
 }
 
 /**
@@ -199,7 +211,7 @@ export function resolveCodexSelectionOptions(input: {
 export interface CodexAdapterLiveOptions {
   readonly getEffectiveModelCapabilities?: () => ReadonlyMap<string, ModelCapabilities>;
   readonly manager?: CodexAppServerManager;
-  readonly notificationLimits?: { entries: number; bytes: number; controls: number };
+  readonly notificationLimits?: NotificationAdmissionLimits;
   readonly makeManager?: (services?: ServiceMap.ServiceMap<never>) => CodexAppServerManager;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -641,6 +653,76 @@ function contentStreamKindFromMethod(
     default:
       return "assistant_text";
   }
+}
+
+const CONTENT_DELTA_METHODS: ReadonlySet<string> = new Set([
+  "item/agentMessage/delta",
+  "item/commandExecution/outputDelta",
+  "item/fileChange/outputDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+]);
+
+/** Text one queued notification may hold after waiting deltas merge into it. */
+const MAX_MERGED_DELTA_BYTES = 64 * 1024;
+
+/** Ordered preparation, admission quotas and delta merging are scoped per context. */
+function notificationContextKey(event: ProviderEvent): string {
+  return `${event.threadId}:${event.providerInstanceId ?? "legacy"}:${event.sessionGeneration ?? 0}`;
+}
+
+/**
+ * Content deltas of one item that are still waiting for preparation can merge
+ * into one queued notification. The identity covers everything the mapped
+ * runtime event depends on, so merging only ever concatenates text.
+ */
+function mergeableContentDelta(
+  event: ProviderEvent,
+): { readonly identity: string; readonly delta: string } | undefined {
+  if (
+    event.kind !== "notification" ||
+    !CONTENT_DELTA_METHODS.has(event.method) ||
+    event.turnId === undefined ||
+    event.itemId === undefined
+  )
+    return undefined;
+  const payload = asObject(event.payload);
+  const delta = asString(payload?.delta);
+  if (!delta) return undefined;
+  if (event.textDelta !== undefined && event.textDelta !== delta) return undefined;
+  return {
+    identity: JSON.stringify([
+      event.method,
+      event.turnId,
+      event.itemId,
+      payload?.contentIndex ?? "",
+      payload?.summaryIndex ?? "",
+      event.textDelta !== undefined,
+    ]),
+    delta,
+  };
+}
+
+/** A waiting delta notification that later deltas of the same item may join. */
+interface PendingDeltaSlot {
+  readonly first: ProviderEvent;
+  readonly parts: string[];
+  textBytes: number;
+  readonly lease: AdmissionLease;
+  next?: Promise<void>;
+  /** The last native delta merged in, recorded in the native log. */
+  last?: { readonly id: string; readonly createdAt: string };
+}
+
+/** The first delta's identity and timestamp, carrying every merged part in order. */
+function mergeContentDeltas(first: ProviderEvent, parts: ReadonlyArray<string>): ProviderEvent {
+  if (parts.length === 1) return first;
+  const delta = parts.join("");
+  return {
+    ...first,
+    payload: { ...asObject(first.payload), delta },
+    ...(first.textDelta !== undefined ? { textDelta: delta } : {}),
+  };
 }
 
 function asRuntimeItemId(itemId: ProviderItemId): RuntimeItemId {
@@ -1682,13 +1764,7 @@ function mapToRuntimeEvents(
     ];
   }
 
-  if (
-    event.method === "item/agentMessage/delta" ||
-    event.method === "item/commandExecution/outputDelta" ||
-    event.method === "item/fileChange/outputDelta" ||
-    event.method === "item/reasoning/summaryTextDelta" ||
-    event.method === "item/reasoning/textDelta"
-  ) {
+  if (CONTENT_DELTA_METHODS.has(event.method)) {
     const delta =
       event.textDelta ??
       asString(payload?.delta) ??
@@ -2447,6 +2523,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    const inheritsFastMode = (model: string | undefined) =>
+      resolveCodexFastMode(
+        undefined,
+        model ? options?.getEffectiveModelCapabilities?.().get(model) : undefined,
+      );
     const computerDecisions = new Map<
       ThreadId,
       Effect.Success<ReturnType<typeof resolveComputerBackendSelection>>
@@ -2861,6 +2942,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               modelSelection: input.modelSelection,
               boundInstanceId,
             }).fastMode,
+            inheritsFastMode(input.model ?? input.modelSelection?.model),
           ),
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
@@ -2956,6 +3038,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           modelSelection: input.modelSelection,
           boundInstanceId,
         });
+        const model =
+          input.model ??
+          (input.modelSelection?.instanceId === boundInstanceId
+            ? input.modelSelection.model
+            : undefined);
+        const inheritedFastMode = inheritsFastMode(model);
         // Only a turn that states Codex options can turn fast mode off; turns
         // without any (some internal callers) keep the thread's tier.
         const statesCodexOptions =
@@ -2980,13 +3068,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(selectionOptions.reasoningEffort !== undefined
                 ? { effort: selectionOptions.reasoningEffort }
                 : {}),
-              // The composer omits fast mode when it is off, so an absent value
-              // must clear a tier an earlier turn set on this thread.
+              // Cached global config is display-only. Null asks the manager to undo
+              // F5's previous override; otherwise it omits the native tier entirely.
               ...(selectionOptions.fastMode === true
                 ? { serviceTier: "fast" as const }
-                : statesCodexOptions
-                  ? { serviceTier: null }
-                  : {}),
+                : selectionOptions.fastMode === false && inheritedFastMode
+                  ? { serviceTier: "default" as const }
+                  : statesCodexOptions
+                    ? { serviceTier: null }
+                    : {}),
               ...(input.interactionMode !== undefined
                 ? { interactionMode: input.interactionMode }
                 : {}),
@@ -3104,7 +3194,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   return {
                     model: input.modelSelection.model,
                     effort: selectionOptions.reasoningEffort,
-                    ...codexServiceTierOptions(selectionOptions.fastMode),
+                    ...codexServiceTierOptions(
+                      selectionOptions.fastMode,
+                      inheritsFastMode(input.modelSelection.model),
+                    ),
                   };
                 })()
               : input.model !== undefined
@@ -3379,21 +3472,37 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     yield* Effect.acquireRelease(
       Effect.gen(function* () {
-        const writeNativeEvent = (event: ProviderEvent) =>
+        const writeNativeEvent = (event: ProviderEvent, merged?: PendingDeltaSlot) =>
           Effect.gen(function* () {
             if (!nativeEventLogger) {
               return;
             }
+            const sanitized = automationEventSanitizer.sanitize(event.threadId, event);
+            // A merged notification names how many native deltas it carries and the last
+            // one, so a log taken during a burst still shows the real notification sequence.
             yield* writeProviderEventLog(
               nativeEventLogger,
-              automationEventSanitizer.sanitize(event.threadId, event),
+              merged && merged.parts.length > 1
+                ? {
+                    ...(sanitized as Record<string, unknown>),
+                    coalesced: {
+                      count: merged.parts.length,
+                      lastEventId: merged.last?.id,
+                      lastCreatedAt: merged.last?.createdAt,
+                    },
+                  }
+                : sanitized,
               event.threadId,
             );
           });
 
         const services = yield* Effect.services<never>();
+        // Per context, the one waiting (unprepared) notification of each item
+        // that later deltas of the same item may still merge into.
+        const openDeltaSlots = new Map<string, Map<string, PendingDeltaSlot>>();
         const markIncomplete = (event: ProviderEvent) => {
-          const key = `${event.threadId}:${event.providerInstanceId ?? "legacy"}:${event.sessionGeneration ?? 0}`;
+          const key = notificationContextKey(event);
+          openDeltaSlots.delete(key);
           if (incompleteContexts.has(key)) return;
           incompleteContexts.add(key);
           Effect.runSync(Metric.update(providerNotificationOverflows, 1));
@@ -3460,15 +3569,50 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             /(?:completed|closed|exited|started|requestApproval|requestUserInput)$/.test(
               event.method,
             );
-          const contextKey = `${event.threadId}:${event.providerInstanceId ?? "legacy"}:${event.sessionGeneration ?? 0}`;
-          if (incompleteContexts.has(contextKey) && !control) return;
-          const releaseAdmission = notificationAdmission.reserve(
-            Buffer.byteLength(JSON.stringify(event)),
-            control,
-          );
-          if (!releaseAdmission) {
+          const key = notificationContextKey(event);
+          if (incompleteContexts.has(key) && !control) return;
+          const bytes = Buffer.byteLength(JSON.stringify(event));
+          const mergeable = mergeableContentDelta(event);
+          const contextSlots = openDeltaSlots.get(key);
+          if (mergeable) {
+            // A delta joins its item's notification while that one still waits.
+            // Only deltas of other items can pass it; anything else seals it.
+            const slot = contextSlots?.get(mergeable.identity);
+            if (slot) {
+              const deltaBytes = Buffer.byteLength(mergeable.delta);
+              // Only the text is kept, so only the text is charged: the event envelope
+              // (hundreds of bytes per tiny chunk) is dropped when it merges.
+              if (
+                slot.textBytes + deltaBytes <= MAX_MERGED_DELTA_BYTES &&
+                slot.lease.extend(deltaBytes)
+              ) {
+                slot.parts.push(mergeable.delta);
+                slot.textBytes += deltaBytes;
+                slot.last = { id: event.id, createdAt: event.createdAt };
+                return slot.next;
+              }
+              contextSlots!.delete(mergeable.identity);
+            }
+          } else {
+            openDeltaSlots.delete(key);
+          }
+          const lease = notificationAdmission.reserve(key, bytes, control);
+          if (!lease) {
             markIncomplete(event);
             return;
+          }
+          const slot: PendingDeltaSlot | undefined = mergeable
+            ? {
+                first: event,
+                parts: [mergeable.delta],
+                textBytes: Buffer.byteLength(mergeable.delta),
+                lease,
+              }
+            : undefined;
+          if (slot && mergeable) {
+            const slots = openDeltaSlots.get(key) ?? new Map();
+            slots.set(mergeable.identity, slot);
+            openDeltaSlots.set(key, slots);
           }
           // Retain synchronously at admission: asynchronous logging/image storage
           // can still be running when a replacement retires this provider process.
@@ -3522,14 +3666,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           const releaseProvenance = automationEventSanitizer.retain(event.threadId);
           const controller = new AbortController();
           preparationControllers.add(controller);
-          const key = `${event.threadId}:${event.providerInstanceId ?? "legacy"}:${event.sessionGeneration ?? 0}`;
           const previous = eventPreparation.get(key) ?? Promise.resolve();
-          const prepare = () =>
+          // `event` is shadowed so the body prepares the merged notification.
+          const prepareEvent = (event: ProviderEvent) =>
             Effect.gen(function* () {
               if (isSyntheticOneOffThreadId(event.threadId)) {
                 return;
               }
-              yield* writeNativeEvent(event);
+              yield* writeNativeEvent(event, slot);
               if (event.method === "turn/started") {
                 turnStartedAtByThread.set(key, event.createdAt);
                 terminalFailureByThread.delete(key);
@@ -3755,11 +3899,22 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ),
               (effect) => Effect.runPromiseWith(services)(effect, { signal: controller.signal }),
             );
+          const prepare = () => {
+            if (!slot) return prepareEvent(event);
+            // Seal at preparation start: later deltas form a new notification.
+            const slots = openDeltaSlots.get(key);
+            if (slots && mergeable && slots.get(mergeable.identity) === slot) {
+              slots.delete(mergeable.identity);
+              if (slots.size === 0) openDeltaSlots.delete(key);
+            }
+            return prepareEvent(mergeContentDeltas(slot.first, slot.parts));
+          };
           const next = previous.then(prepare, prepare);
+          if (slot) slot.next = next;
           eventPreparation.set(key, next);
           void next
             .finally(() => {
-              releaseAdmission();
+              lease.release();
               releaseProvenance();
               releaseAppCapture?.();
               preparationControllers.delete(controller);
