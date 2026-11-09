@@ -63,6 +63,16 @@ impl HeldInputTracker {
     }
 }
 
+/// The async key codes that can confirm a hooked code. `GetAsyncKeyState` reads physical mouse
+/// buttons, while hook messages may name logical ones; with swapped buttons either primary
+/// physical button confirms a primary-button hold, so a real hold is never dropped.
+pub fn system_codes(code: u16, swapped_buttons: bool) -> Vec<u16> {
+    match (swapped_buttons, code) {
+        (true, 0x01 | 0x02) => vec![0x01, 0x02],
+        _ => vec![code],
+    }
+}
+
 /// Diagnostic only: virtual-key codes, never characters.
 pub fn diagnostic(code: u16) -> Value {
     let kind = match code {
@@ -127,6 +137,15 @@ mod tests {
         tracker.reset();
         assert!(tracker.candidates().is_empty());
         assert!(tracker.held(1, |_| true).is_empty());
+    }
+
+    #[test]
+    fn swapped_primary_buttons_are_confirmed_by_either_physical_button() {
+        assert_eq!(system_codes(0x01, true), vec![0x01, 0x02]);
+        assert_eq!(system_codes(0x02, true), vec![0x01, 0x02]);
+        assert_eq!(system_codes(0x01, false), vec![0x01]);
+        assert_eq!(system_codes(0x04, true), vec![0x04]);
+        assert_eq!(system_codes(0xA0, true), vec![0xA0]);
     }
 
     #[test]

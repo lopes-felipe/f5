@@ -138,10 +138,15 @@ pub(super) fn held_inputs() -> Vec<u16> {
     let state = STATE.get().unwrap();
     let candidates = state.physical_held.lock().unwrap().candidates();
     // Async key queries stay outside the lock; entries hooked meanwhile are kept until next time.
+    let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
     let system: HashSet<u16> = candidates
         .iter()
         .copied()
-        .filter(|code| unsafe { GetAsyncKeyState(i32::from(*code)) } < 0)
+        .filter(|code| {
+            crate::held::system_codes(*code, swapped)
+                .iter()
+                .any(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
+        })
         .collect();
     let held = state.physical_held.lock().unwrap().held(now_ms(), |code| {
         !candidates.contains(&code) || system.contains(&code)
