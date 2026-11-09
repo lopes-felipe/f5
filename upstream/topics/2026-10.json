@@ -16959,9 +16959,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17848",
-      "status": "inbox",
+      "reason": "Valuable for Pi users, but it builds on upstream's native history scanner framework (t3code#10409), which f5 does not have yet.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "usage",
@@ -21703,9 +21707,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-09T20:01:58.644Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18923",
-      "status": "inbox",
+      "reason": "Upstream has changed this heuristic several times already (added, reverted, re-added narrower). It's built on orchestration-v2, and f5's reasoning pipeline differs. Wait until it settles, then validate against real transcripts.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers",
@@ -35356,9 +35364,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21511",
-      "status": "inbox",
+      "reason": "Changes no behavior by itself. It depends on the unfinished adapter layer upstream.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers",
@@ -35451,9 +35463,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21531",
-      "status": "inbox",
+      "reason": "This is the foundation layer of a series replacing #15637. The user-visible OpenCode agent picker comes in later layers.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers",
@@ -35563,12 +35579,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21575",
+      "reason": "This is a contract layer in orchestration-v2. Its value arrives with the dependent GitLab fix, #21576.",
       "relatedTopics": [
         "pr-10987"
       ],
-      "status": "inbox",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -35655,9 +35675,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21614",
-      "status": "inbox",
+      "reason": "First of five dependent layers fixing Claude background-work lifecycle; upstream still requires approval of the later layers.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers",
@@ -36671,9 +36695,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21898",
-      "status": "inbox",
+      "reason": "Valuable for usage pricing, but this is a foundation layer built on V2 events, and #21899 hasn't landed.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "usage",
@@ -42814,9 +42842,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22907",
-      "status": "inbox",
+      "reason": "Depends on how upstream's release channels publish to GitHub; f5 distributes its own releases.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "install"
@@ -49986,9 +50018,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24356",
-      "status": "inbox",
+      "reason": "Both fixes target upstream's server headless-Chrome preview. f5 keeps its desktop-hosted preview, so they do not apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -50539,9 +50575,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24542",
-      "status": "inbox",
+      "reason": "Both fixes target upstream's server headless-Chrome preview. f5 keeps its desktop-hosted preview, so they do not apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -51126,9 +51166,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24618",
-      "status": "inbox",
+      "reason": "f5 keeps its desktop-hosted html_preview. Upstream's server headless-Chrome preview does not apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -53578,9 +53622,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25004",
-      "status": "inbox",
+      "reason": "Refactors that remove effects but keep behavior. The preview tab sync is built on upstream's server-browser sessions, which f5 does not have.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web",
@@ -53624,9 +53672,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25006",
-      "status": "inbox",
+      "reason": "Refactors that remove effects but keep behavior. The preview tab sync is built on upstream's server-browser sessions, which f5 does not have.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web",
@@ -53648,9 +53700,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25007",
-      "status": "inbox",
+      "reason": "Refactors that remove effects but keep behavior. The preview tab sync is built on upstream's server-browser sessions, which f5 does not have.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web",
@@ -53754,9 +53810,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25016",
-      "status": "inbox",
+      "reason": "Refactors that remove effects but keep behavior. The preview tab sync is built on upstream's server-browser sessions, which f5 does not have.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web",
@@ -53778,9 +53838,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25020",
-      "status": "inbox",
+      "reason": "Refactors that remove effects but keep behavior. The preview tab sync is built on upstream's server-browser sessions, which f5 does not have.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web",
@@ -54367,9 +54431,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25072",
-      "status": "inbox",
+      "reason": "Mostly refactors that remove effects. Any behavior change is incidental.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
@@ -54390,9 +54458,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25073",
-      "status": "inbox",
+      "reason": "Mostly refactors that remove effects. Any behavior change is incidental.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
@@ -55831,9 +55903,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25152",
-      "status": "inbox",
+      "reason": "Effect-elimination refactors with little or no user-visible behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -56161,9 +56237,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25196",
-      "status": "inbox",
+      "reason": "Refactors that remove effects but keep behavior. The preview tab sync is built on upstream's server-browser sessions, which f5 does not have.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web",
@@ -56771,9 +56851,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25233",
-      "status": "inbox",
+      "reason": "Effect-elimination refactors with little or no user-visible behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -56794,9 +56878,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25234",
-      "status": "inbox",
+      "reason": "Effect-elimination refactors with little or no user-visible behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -57693,9 +57781,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25355",
-      "status": "inbox",
+      "reason": "The lineage control is an upstream subsystem f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "thread-details"
@@ -57810,9 +57902,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25365",
-      "status": "inbox",
+      "reason": "Developer tooling only. Users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dev tooling"
@@ -58394,9 +58490,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25456",
-      "status": "inbox",
+      "reason": "A refactor with no behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -58551,9 +58651,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25464",
-      "status": "inbox",
+      "reason": "Mostly a refactor with negligible user-visible change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
@@ -59884,9 +59988,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25709",
-      "status": "inbox",
+      "reason": "Moving credentials into a vault is valuable, but this first slice is flag-gated and does not resolve secrets yet. Revisit once the series lands.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "settings",
@@ -62961,12 +63069,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26239",
+      "reason": "Mostly serves the unfinished linked-environments series and changes the agent-facing link format. Revisit once that series settles.",
       "relatedTopics": [
         "pr-16653"
       ],
-      "status": "inbox",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "timeline",
@@ -63223,9 +63335,13 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26288",
-      "status": "inbox",
+      "reason": "The value is coordinating remote servers and desktops, which is multi-environment fleet management.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -64586,9 +64702,13 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-11-09T20:01:38.773Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26642",
-      "status": "inbox",
+      "reason": "Only affects outside-agent OAuth MCP clients, which policy classes as relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp"
@@ -65900,9 +66020,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27044",
-      "status": "inbox",
+      "reason": "Hardens the secret providers foundation, which upstream is still building in slices. f5 does not appear to have the Secrets settings UI yet.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "settings"

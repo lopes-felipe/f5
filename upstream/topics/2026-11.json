@@ -90,9 +90,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "c-aee76a8b4736",
-      "status": "inbox",
+      "reason": "Connection routing inside upstream orchestration-v2 ProjectionStore and peer links, with no measured user-visible effect.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "persistence"
@@ -687,9 +691,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
+      "decidedAt": "2026-11-09T20:01:58.645Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21460",
-      "status": "inbox",
+      "reason": "This is the producer half of a series. The consumer, #21461, is not merged, so there is no user-visible behavior yet.",
+      "revisitAfter": "2026-12-09",
+      "status": "watch",
       "suggestion": {
         "areas": [
           "providers",
@@ -2820,9 +2828,13 @@
     },
     {
       "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23821",
-      "status": "inbox",
+      "reason": "Upstream's provider-core handoff budget, part of the context-handoff subsystem, which f5 does not have.",
+      "reasonKey": "upstream-only:context-handoff",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -2865,9 +2877,13 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23878",
-      "status": "inbox",
+      "reason": "Changes upstream's background service and cloud boot-service CLI. The fork has neither.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -3174,9 +3190,13 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24186",
-      "status": "inbox",
+      "reason": "This is upstream's PreviewBrowser and server browser tab budget. Policy says those topics don't apply because f5 keeps its desktop-hosted html_preview.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -5200,9 +5220,13 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26464",
-      "status": "inbox",
+      "reason": "Depends on running without a local environment against several saved services and on T3 Connect link state.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -7293,9 +7317,13 @@
     },
     {
       "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27582",
-      "status": "inbox",
+      "reason": "The fix is for upstream's lineage details card. The component does not exist in f5, and f5 keeps its own Agents panel.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "agents panel"
@@ -7669,12 +7697,16 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27748",
+      "reason": "Depends on the request_secret card, which f5 policy declines.",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-30256"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -8868,9 +8900,13 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28060",
-      "status": "inbox",
+      "reason": "Peer links belong to upstream's linked-environment subsystem.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "environments"
@@ -9144,9 +9180,13 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28125",
-      "status": "inbox",
+      "reason": "A dependency upgrade and refactor meant to keep behavior the same. Most of the change is mobile.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -9479,9 +9519,13 @@
     },
     {
       "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28255",
-      "status": "inbox",
+      "reason": "The change depends on upstream's server ServerBrowser preview. Policy says f5 keeps its desktop-hosted preview and that the server preview topics don't apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser"
@@ -12332,9 +12376,13 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29000",
-      "status": "inbox",
+      "reason": "The Lineage control is upstream-only.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -13291,12 +13339,16 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29280",
+      "reason": "Part of upstream's managed ChatGPT OAuth connection (CodexChatGptAuth), which the fork does not have.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-25341"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -15028,9 +15080,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29646",
-      "status": "inbox",
+      "reason": "f5 keeps its desktop-hosted html_preview. Upstream's server headless-Chrome preview does not apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser"
@@ -15318,9 +15374,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29684",
-      "status": "inbox",
+      "reason": "Concerns the device pairing setup flow for T3 Connect and LAN, which the policy files under relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -15875,9 +15935,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29779",
-      "status": "inbox",
+      "reason": "Peer environment links are a multi-environment feature.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "environments"
@@ -16477,9 +16541,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29844",
-      "status": "inbox",
+      "reason": "f5 keeps its desktop-hosted html_preview. Upstream's server headless-Chrome preview does not apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -16499,12 +16567,16 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29847",
+      "reason": "Environment link cards belong to multi-environment linking. A related topic (pr-28491) was skipped.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-28491"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -16575,9 +16647,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29853",
-      "status": "inbox",
+      "reason": "Preview recordings seem to come from upstream's server headless-browser preview, which policy says doesn't apply. Port it if f5 stores preview recordings itself.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview",
@@ -17424,9 +17500,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30033",
-      "status": "inbox",
+      "reason": "The fix is inside upstream's AnalyticsService, which doesn't exist in the fork. If f5 has its own telemetry flush on shutdown, the same timeout idea is worth checking there.",
+      "reasonKey": "upstream-only:analytics-feedback",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -17629,9 +17709,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30099",
-      "status": "inbox",
+      "reason": "This is upstream's npm distribution launcher, which isn't in the fork's tree.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli"
@@ -17900,9 +17984,13 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30256",
-      "status": "inbox",
+      "reason": "f5 declined the secret-request card. These commits only add guidance and evals for that tool.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -18072,9 +18160,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30306",
-      "status": "inbox",
+      "reason": "Policy: f5 keeps its desktop-hosted html_preview, and upstream's server headless-Chrome preview doesn't apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -18109,12 +18201,16 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30318",
+      "reason": "f5 keeps its desktop-hosted html_preview. Upstream's server headless-Chrome preview does not apply.",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-29844"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -18134,12 +18230,16 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30322",
+      "reason": "Concerns upstream's managed ChatGPT sharing connection. The fork does not have its UI.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-25341"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -18801,9 +18901,13 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30420",
-      "status": "inbox",
+      "reason": "Only affects installing the web app from a mobile browser. The fork does not have upstream's web manifest.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "web"
@@ -19057,9 +19161,13 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30474",
-      "status": "inbox",
+      "reason": "A refactor series that keeps behavior the same. Much of it is relay and DPoP code, and it depends on the Effect 4.1 upgrade.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth",
@@ -19135,12 +19243,16 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30498",
+      "reason": "Policy classes pairing grants and links as relay-cloud.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-29382"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -20215,12 +20327,16 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30805",
+      "reason": "f5 declined the secret-request card.",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-30256"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp"
@@ -20306,9 +20422,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30820",
-      "status": "inbox",
+      "reason": "f5 keeps its desktop-hosted preview. Policy says upstream's server headless-Chrome preview does not apply.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -20328,9 +20448,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30830",
-      "status": "inbox",
+      "reason": "The race comes from orchestration-v2's per-run root checkpoint scope. f5's checkpoint layer does not have that structure.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "checkpoints"
@@ -20397,9 +20521,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30860",
-      "status": "inbox",
+      "reason": "This optimizes orchestration-v2's EventSink and WireProjection, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -20591,9 +20719,13 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31012",
-      "status": "inbox",
+      "reason": "The SQL change targets upstream's orchestration-v2 projection tables, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -21438,9 +21570,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31656",
-      "status": "inbox",
+      "reason": "Built on orchestration-v2's EventSink, RunExecutionService and provider-core, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -21557,9 +21693,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31741",
-      "status": "inbox",
+      "reason": "Targets GitCafe forge attachments. f5 has no GitCafe forge.",
+      "reasonKey": "upstream-only:source-control-gitcafe",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr-hub"
@@ -21579,12 +21719,16 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31754",
+      "reason": "Simlock device hosts belong to the devices subsystem.",
+      "reasonKey": "devices",
       "relatedTopics": [
         "pr-31651"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -21641,9 +21785,13 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31778",
-      "status": "inbox",
+      "reason": "Only affects relay (DPoP) environment connections.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "voice"
@@ -21739,9 +21887,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31807",
-      "status": "inbox",
+      "reason": "These are query changes in orchestration-v2's ProjectionStore and recovery services, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -21929,9 +22081,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31864",
-      "status": "inbox",
+      "reason": "Fixes only upstream's release packaging pipeline. Users see no behavior change.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -22840,9 +22996,13 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-32573",
-      "status": "inbox",
+      "reason": "The fix is in orchestration-v2's delegated completion delivery, part of upstream's lineage and delegation system, which f5 doesn't have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "agents"
@@ -23150,9 +23310,13 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-32987",
-      "status": "inbox",
+      "reason": "This extends upstream's prepared-bytecode packaging pipeline. Its scripts don't exist in f5, so it only changes upstream release builds.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -23286,9 +23450,13 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33133",
-      "status": "inbox",
+      "reason": "The symptom only appears with the compact-before-send button, which f5 declined.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -23734,9 +23902,13 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33209",
-      "status": "inbox",
+      "reason": "f5 has no WelcomeWizard, and this redesign is tied to mobile and pairing promotion (close to the declined mobile-app nag) and marketing redirects. Whether f5 wants a first-run page is a product choice.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "onboarding",
@@ -23897,9 +24069,13 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T20:01:38.774Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33306",
-      "status": "inbox",
+      "reason": "Mobile-focused change in client-runtime, which f5 does not have.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile"
