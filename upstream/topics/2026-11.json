@@ -11257,9 +11257,11 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:23:49.892Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28571",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -12010,9 +12012,11 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:23:49.892Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28814",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "preview browser",
@@ -17443,9 +17447,11 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:23:49.892Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30038",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -18487,9 +18493,11 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
+      "decidedAt": "2026-11-09T19:23:49.892Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30370",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "sidebar",
