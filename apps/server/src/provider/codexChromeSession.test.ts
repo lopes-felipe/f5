@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import { AgentControlPause } from "../mcp/agentControlPause";
+import type { CodexHandoff } from "../computer/CodexControlHandoff";
 import { toolInventorySha256 } from "../mcp/IntegrationProxyCatalog";
 import {
   CODEX_CHROME_IDLE_MS,
@@ -55,6 +56,11 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
     send: vi.fn(),
   };
   const broker = {
+    registerCodexHandoff: vi.fn(
+      (_threadId: string, _generation: string, _handoff: CodexHandoff) => () => undefined,
+    ),
+    waitForChromeRelease: vi.fn(async (): Promise<void> => undefined),
+    prepareCodexBrowser: vi.fn(async () => undefined),
     host,
     // The broker's preemption is tested on its own; here it is main's plain acquire.
     acquireChromeLease: vi.fn(async (holder: unknown, timeoutMs?: number) => {
@@ -123,6 +129,7 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
       .launchToken;
   return {
     session,
+    handoff: () => broker.registerCodexHandoff.mock.calls[0]![2],
     broker,
     codex,
     pause,
@@ -149,6 +156,152 @@ async function ready(h: ReturnType<typeof harness>) {
 }
 
 describe("CodexChromeSession", () => {
+  it("parks an unused browser for native work, waits for exit, and stays parked across turns", async () => {
+    const h = harness();
+    await ready(h);
+    await h.session.beforeTurn();
+    let exited!: () => void;
+    h.broker.waitForChromeRelease.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          exited = resolve;
+        }),
+    );
+    let admitted = false;
+    const parked = h
+      .handoff()
+      .native(performance.now() + 1000, async () => {})
+      .then(() => {
+        admitted = true;
+      });
+    await vi.waitFor(() => expect(h.broker.waitForChromeRelease).toHaveBeenCalled());
+    expect(h.stopped()).toHaveLength(1);
+    expect(admitted).toBe(false);
+    exited();
+    await parked;
+    h.session.turnEnded("turn-1");
+    await h.session.beforeTurn();
+    expect(h.codex.reload).not.toHaveBeenCalled();
+    expect(h.handoff().status()).toMatchObject({ state: "parked-for-native" });
+  });
+
+  it("waits for a browser call before stopping its runtime", async () => {
+    const h = harness();
+    await ready(h);
+    h.session.toolCall("call", true);
+    const parked = h.handoff().native(performance.now() + 1000, async () => {});
+    await flush();
+    expect(h.stopped()).toEqual([]);
+    h.session.toolCall("call", false);
+    await parked;
+    expect(h.stopped()).toHaveLength(1);
+  });
+
+  it("does not kill an active browser call when its handoff deadline expires", async () => {
+    const h = harness();
+    await ready(h);
+    h.session.toolCall("call", true);
+    await expect(h.handoff().native(performance.now() + 5, async () => {})).rejects.toThrow(
+      "timed out",
+    );
+    expect(h.stopped()).toEqual([]);
+    h.session.toolCall("call", false);
+  });
+
+  it("reserves Chrome and drains other MCP work before a same-turn restart", async () => {
+    const waitForMcpIdle = vi.fn(async () => {});
+    const h = harness({ waitForMcpIdle });
+    await ready(h);
+    await h.session.beforeTurn();
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    h.codex.reload.mockImplementation(async () => {
+      h.session.startupStatus("ready");
+    });
+    await h.handoff().browser(performance.now() + 1000, async () => {});
+    expect(waitForMcpIdle).toHaveBeenCalledOnce();
+    expect(h.broker.prepareCodexBrowser).toHaveBeenCalledOnce();
+    expect(h.codex.reload).toHaveBeenCalledOnce();
+    expect(h.session.state).toBe("ready");
+    expect(h.handoff().status()).toEqual({ state: "ready" });
+  });
+
+  it("keeps a failed restart parked and releases its reservation", async () => {
+    const h = harness();
+    await ready(h);
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    h.codex.reload.mockRejectedValueOnce(new Error("reload failed"));
+    await expect(h.handoff().browser(performance.now() + 1000, async () => {})).rejects.toThrow(
+      "did not become ready",
+    );
+    expect(h.handoff().status().state).toBe("parked-for-native");
+    expect(h.broker.host.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "chromeLeaseRelease" }),
+    );
+    await h.session.beforeTurn();
+    expect(h.codex.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("still permits native handoff when Chrome was turned off", async () => {
+    const h = harness();
+    await ready(h);
+    h.policy.enabled = false;
+    h.disable();
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    expect(h.handoff().status()).toMatchObject({
+      state: "off",
+      nextAction: expect.stringContaining("Enable Chrome"),
+    });
+    await expect(h.handoff().browser(performance.now() + 1000, async () => {})).rejects.toThrow(
+      "Turned off",
+    );
+  });
+
+  it("keeps native handoff parked after Pause and Resume", async () => {
+    const h = harness();
+    await ready(h);
+    h.pause.set("thread-1", true);
+    h.pause.set("thread-1", false);
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    await h.session.beforeTurn();
+    expect(h.codex.reload).not.toHaveBeenCalled();
+  });
+  it("retains actionable browser failures while still permitting native work", async () => {
+    const h = harness();
+    h.codex.listServer.mockResolvedValueOnce(undefined);
+    await ready(h);
+    expect(h.session.state).toBe("unavailable");
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    expect(h.handoff().status()).toEqual({
+      state: "unavailable",
+      nextAction: "Codex didn't list the ChatGPT browser runtime's tools.",
+    });
+  });
+
+  it("does not resume an old generation or bypass a paused checkpoint", async () => {
+    const h = harness();
+    await ready(h);
+    h.setGeneration("replacement");
+    await expect(h.handoff().native(performance.now() + 1000, async () => {})).rejects.toThrow(
+      "ended",
+    );
+    await expect(h.handoff().browser(performance.now() + 1000, async () => {})).rejects.toThrow(
+      "ended",
+    );
+    expect(h.codex.reload).not.toHaveBeenCalled();
+  });
+
+  it("preserves next-message Chrome restart for legacy threads without the host tool", async () => {
+    const h = harness({ supportsBrowserResume: () => false });
+    await ready(h);
+    await h.handoff().native(performance.now() + 1000, async () => {});
+    expect(h.handoff().status().nextAction).toContain("next message");
+    h.codex.reload.mockImplementation(async () => {
+      h.session.startupStatus("ready");
+    });
+    await h.session.beforeTurn();
+    expect(h.session.state).toBe("ready");
+  });
+
   it("adopts Codex's runtime, verifies it and holds the lease before it's connected", async () => {
     const h = harness();
     expect(h.states).toEqual([["pending", undefined]]);

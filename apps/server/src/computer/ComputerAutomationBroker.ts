@@ -48,6 +48,7 @@ import {
 } from "@t3tools/shared/computerExecution";
 import { ServerConfig } from "../config";
 import { computerRemainingBudget, computerWithinDeadline } from "./computerDeadline";
+import { waitForControl, handoffError, type CodexHandoff } from "./CodexControlHandoff";
 import { PerformanceStageProbe } from "../observability/Metrics";
 
 export const COMPUTER_WAIT_POLL_MS = 250;
@@ -106,6 +107,8 @@ interface ComputerBinding {
   endedTurnId?: string;
   /** Monotonic; every policy transition bumps it before any async work. */
   policyRevision: number;
+  /** Pause remains a cancellation even if the user resumes before an await returns. */
+  pauseRevision?: number;
   /** The policy last applied to this binding, compared on settings changes. */
   appliedPolicy?: string;
   takeover?: { acquireId: string; approvalId: string; appId: string };
@@ -294,6 +297,7 @@ export class ComputerAutomationBrokerRuntime {
   private readonly chromeCalls = new Map<string, boolean>();
   /** How each Chrome-holding session gives the lease up, per thread and generation. */
   private readonly chromeReleasers = new Map<string, ChromeReleaser>();
+  private readonly codexHandoffs = new Map<string, CodexHandoff>();
   /** Preemptions waiting for main to report the lease gone. */
   private readonly chromeReleaseWaiters = new Set<() => void>();
   private readonly setupConsents = new Map<
@@ -337,6 +341,7 @@ export class ComputerAutomationBrokerRuntime {
     this.offPause = this.pause.subscribe((threadId, paused) => {
       const binding = this.bindings.get(threadId);
       if (paused && binding) {
+        binding.pauseRevision = (binding.pauseRevision ?? 0) + 1;
         this.host.send({ type: "pauseChanged", threadId, paused });
         this.invalidateObservations(threadId);
         this.cancelTurn(threadId, binding.generation, binding.turnId, "paused");
@@ -946,6 +951,134 @@ export class ComputerAutomationBrokerRuntime {
       if (this.chromeReleasers.get(key) === releaser) this.chromeReleasers.delete(key);
     };
   }
+  registerCodexHandoff(threadId: string, generation: string, handoff: CodexHandoff): () => void {
+    const key = chromeCallsKey(threadId, generation);
+    this.codexHandoffs.set(key, handoff);
+    return () => {
+      if (this.codexHandoffs.get(key) === handoff) this.codexHandoffs.delete(key);
+    };
+  }
+
+  private async handoffCheckpoint(
+    threadId: string,
+    generation: string,
+  ): Promise<() => Promise<void>> {
+    const binding = this.bindings.get(threadId);
+    if (!binding || binding.generation !== generation)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    const revision = binding.policyRevision;
+    const turnRevision = binding.turnRevision;
+    const pauseRevision = binding.pauseRevision;
+    const check = async () => {
+      const ctx = await this.context(threadId, generation);
+      this.assertRevision(binding, revision, turnRevision);
+      if (
+        this.bindings.get(threadId) !== binding ||
+        ctx.turnId === "observation" ||
+        binding.endedTurnId === ctx.turnId
+      )
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+      if (this.pause.has(threadId) || binding.pauseRevision !== pauseRevision)
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+      if (ctx.interactionMode === "plan")
+        throw handoffError("Control handoff is unavailable in plan mode.");
+      if (this.chromeRecoveryRequired())
+        throw handoffError("Browser control requires recovery on the computer running F5.");
+    };
+    await check();
+    return check;
+  }
+
+  /** Main confirms the process group exit by removing this exact generation's lease. */
+  async waitForChromeRelease(
+    threadId: string,
+    generation: string,
+    deadline: number,
+    check: () => Promise<void>,
+  ): Promise<void> {
+    await waitForControl(
+      () =>
+        !this.chromeHolder ||
+        this.chromeHolder.threadId !== threadId ||
+        this.chromeHolder.sessionGeneration !== generation,
+      deadline,
+      check,
+    );
+  }
+
+  /** Called outside MCP, since restarting Chrome reloads every MCP connection. */
+  async resumeCodexBrowser(threadId: string, generation: string): Promise<unknown> {
+    const handoff = this.codexHandoffs.get(chromeCallsKey(threadId, generation));
+    if (!handoff) throw handoffError("Chrome control is unavailable for this session.");
+    const check = await this.handoffCheckpoint(threadId, generation);
+    await handoff.browser(performance.now() + 20_000, check);
+    await check();
+    return {
+      state: "ready",
+      resetRequired: true,
+      message:
+        "Chrome is ready. Recreate browser variables and tab handles; native observations are stale.",
+    };
+  }
+
+  /** Drain our native calls, release takeover, then reserve Chrome through main's authority. */
+  async prepareCodexBrowser(
+    threadId: string,
+    generation: string,
+    deadline: number,
+    check: () => Promise<void>,
+  ): Promise<void> {
+    await waitForControl(
+      () =>
+        ![...this.inFlight.values()].some(
+          (p) => p.threadId === threadId && p.generation === generation,
+        ),
+      deadline,
+      check,
+    );
+    const binding = this.bindings.get(threadId);
+    if (!binding || binding.generation !== generation)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (binding.acquiring || binding.takeover)
+      throw handoffError(
+        "A native control request is still pending; finish it before resuming Chrome.",
+      );
+    this.endTakeover(threadId, binding);
+    if (binding.holder) {
+      this.host.send({ type: "leaseRelease", requestId: randomUUID(), holder: binding.holder });
+      delete binding.holder;
+    }
+    this.invalidateObservations(threadId);
+    const holder = {
+      profileId: this.host.profileId,
+      threadId,
+      sessionGeneration: generation,
+      provider: "codex" as const,
+    };
+    let reserved = false;
+    try {
+      await waitForControl(
+        async () => {
+          try {
+            await this.acquireChromeLease(
+              holder,
+              Math.min(5000, computerRemainingBudget(deadline)),
+            );
+            reserved = true;
+            return true;
+          } catch (error) {
+            if (computerError(error)._tag !== "Busy") throw error;
+            return false;
+          }
+        },
+        deadline,
+        check,
+      );
+    } catch (error) {
+      if (reserved) this.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder });
+      throw error;
+    }
+  }
   /**
    * Between turns, no Chrome call running, not paused, not recovering, and idle by the
    * session's own account when it registered one.
@@ -1078,11 +1211,22 @@ export class ComputerAutomationBrokerRuntime {
    * registered browser in background), asks an idle Chrome holder in this profile to
    * release. A working holder keeps Chrome and main queues the request behind it.
    *
-   * The requesting thread's own lease is never released here: a Claude holder could only
-   * stop its CLI, which it refuses mid-turn. Main lets the same thread hold both leases while
-   * its Chrome calls are idle (`ChromeLeaseAuthority.assertNativeAvailable`).
+   * Codex parks its own runtime through its generation's handoff queue. A Claude holder
+   * cannot stop its CLI mid-turn: main admits its own native work while Chrome calls are idle.
    */
-  async preemptChromeFor(threadId: string, scope: ComputerLeaseScope): Promise<void> {
+  async preemptChromeFor(
+    threadId: string,
+    scope: ComputerLeaseScope,
+    deadline = performance.now() + CHROME_PREEMPT_WAIT_MS,
+  ): Promise<void> {
+    if (scope.kind === "app" && !COMPUTER_CHROME_APP_IDS.includes(scope.appId)) return;
+    const generation = this.bindings.get(threadId)?.generation;
+    const handoff = generation && this.codexHandoffs.get(chromeCallsKey(threadId, generation));
+    if (handoff && generation) {
+      const check = await this.handoffCheckpoint(threadId, generation);
+      await handoff.native(Math.min(deadline, performance.now() + CHROME_PREEMPT_WAIT_MS), check);
+      await check();
+    }
     const holder = this.chromeHolder;
     if (!holder || holder.threadId === threadId || holder.profileId !== this.host.profileId) return;
     if (scope.kind === "app" && !COMPUTER_CHROME_APP_IDS.includes(scope.appId)) return;
@@ -1412,10 +1556,17 @@ export class ComputerAutomationBrokerRuntime {
         ...(status.missing ? { missing: status.missing } : {}),
       });
     }
-    if (input.op === "status")
+    if (input.op === "status") {
+      const handoff = this.codexHandoffs.get(chromeCallsKey(threadId, generation));
+      const control = {
+        paused: this.pause.has(threadId),
+        recoveryRequired: this.chromeRecoveryRequired(),
+        ...(handoff ? { chrome: handoff.status() } : {}),
+      };
       return ctx.policy.computerUseExecutionMode === "background"
-        ? { ...status, background: this.backgroundStatus(), executionMode: "background" }
-        : status;
+        ? { ...status, background: this.backgroundStatus(), executionMode: "background", control }
+        : { ...status, control };
+    }
     const mutation = isComputerMutation(input.op);
     const binding = this.bindings.get(threadId);
     if (!binding || binding.generation !== generation)
@@ -1571,7 +1722,8 @@ export class ComputerAutomationBrokerRuntime {
               : 0;
             // Main queues this behind a Chrome holder for up to the wait; an idle one in this
             // profile gives way first, so the queue admits as soon as the lease is gone.
-            await this.preemptChromeFor(threadId, scope);
+            await bounded(() => this.preemptChromeFor(threadId, scope, invokeDeadline));
+            this.assertRevision(binding, revision, turnRevision);
             binding.acquiring = { requestId: acquisitionId, turnId: ctx.turnId };
             let holder: ComputerLeaseHolder;
             const abortAcquire = () => this.host.abandon(acquisitionId, options!.signal!.reason);

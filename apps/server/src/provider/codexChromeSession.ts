@@ -12,6 +12,8 @@ import {
   type CodexChromeInstallation,
 } from "../computer/codexNativeIntegrations";
 import { toolInventorySha256, type IntegrationTool } from "../mcp/IntegrationProxyCatalog";
+import { CodexControlHandoff, waitForControl, handoffError } from "../computer/CodexControlHandoff";
+import { computerRemainingBudget, computerWithinDeadline } from "../computer/computerDeadline";
 
 export { CODEX_CHROME_IDLE_MS };
 /** How long a turn waits for its runtime to be supervised before stopping it for the turn. */
@@ -64,6 +66,9 @@ export type CodexChromeBroker = Pick<
   | "onChromeDisabled"
   | "acquireChromeLease"
   | "registerChromeReleaser"
+  | "registerCodexHandoff"
+  | "waitForChromeRelease"
+  | "prepareCodexBrowser"
 >;
 
 export interface CodexChromeSessionDeps {
@@ -81,6 +86,9 @@ export interface CodexChromeSessionDeps {
   readonly startWaitMs?: number;
   readonly setTimeout?: (run: () => void, ms: number) => unknown;
   readonly clearTimeout?: (handle: unknown) => void;
+  /** Older provider threads cannot acquire new dynamic tools on resume. */
+  readonly supportsBrowserResume?: () => boolean;
+  readonly waitForMcpIdle?: (deadline: number, check: () => Promise<void>) => Promise<void>;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -119,6 +127,10 @@ export function listedTools(row: unknown): IntegrationTool[] | undefined {
  * stopped rather than left reachable.
  */
 export class CodexChromeSession {
+  private readonly handoff = new CodexControlHandoff();
+  private parked = false;
+  private unavailableDetail?: string;
+  private disabled = false;
   private phase: "starting" | "ready" | "stopped" | "unavailable" | "disposed" = "starting";
   /** Bumped by every stop, so an adoption that finishes after one is undone. */
   private epoch = 0;
@@ -143,8 +155,10 @@ export class CodexChromeSession {
         if (paused && threadId === deps.threadId) this.stop("pending", CODEX_CHROME_STOPPED_PAUSED);
       }),
       deps.broker.onChromeDisabled((threadId, generation) => {
-        if (threadId === deps.threadId && generation === deps.generation)
+        if (threadId === deps.threadId && generation === deps.generation) {
+          this.disabled = true;
           this.stop("off", CODEX_CHROME_STOPPED_OFF);
+        }
       }),
       // Another thread needs Chrome (or the user pressed Release): give way only while idle.
       deps.broker.registerChromeReleaser(deps.threadId, deps.generation, {
@@ -154,6 +168,38 @@ export class CodexChromeSession {
           this.stop("pending", CODEX_CHROME_STOPPED_RELEASED, "release");
           return true;
         },
+      }),
+      deps.broker.registerCodexHandoff(deps.threadId, deps.generation, {
+        native: (deadline, check) =>
+          this.handoff.run("native", () => this.parkForNative(deadline, check)),
+        browser: (deadline, check) =>
+          this.handoff.run("browser", () => this.resumeBrowser(deadline, check)),
+        status: () =>
+          this.disabled
+            ? {
+                state: "off",
+                nextAction: "Enable Chrome control for this thread before resuming it.",
+              }
+            : this.phase === "unavailable"
+              ? {
+                  state: "unavailable",
+                  nextAction: this.unavailableDetail ?? "Start a new Chrome session.",
+                }
+              : {
+                  state: this.handoff.transition
+                    ? "switching-to-" + this.handoff.transition
+                    : this.parked
+                      ? "parked-for-native"
+                      : this.phase,
+                  ...(this.parked
+                    ? {
+                        nextAction:
+                          deps.supportsBrowserResume?.() === false
+                            ? "Chrome restarts on the next message; same-turn browser_resume requires a new provider thread."
+                            : "Call browser_resume to return to Chrome; browser variables and handles must be recreated.",
+                      }
+                    : {}),
+                },
       }),
     );
     deps.stateChanged("pending");
@@ -216,12 +262,16 @@ export class CodexChromeSession {
    * gates allow it) and adopted before the model can reach it, within a bounded wait. One
    * that isn't supervised by then is stopped for this turn; the next one starts it again.
    */
-  async beforeTurn(): Promise<void> {
+  async beforeTurn(
+    deadline = performance.now() + (this.deps.startWaitMs ?? CODEX_CHROME_RESTART_WAIT_MS),
+  ): Promise<void> {
     this.clearIdle();
     this.turnActive = true;
+    if (this.parked && this.deps.supportsBrowserResume?.() !== false) return;
+    this.parked = false;
     if (this.phase === "starting") {
       // The first turn can start before Codex reports the runtime; wait for its adoption.
-      await this.bounded(this.adoption ?? this.startSettled());
+      await this.bounded(this.adoption ?? this.startSettled(), deadline);
       if (this.phase === "starting") this.startTimedOut();
       return;
     }
@@ -238,13 +288,79 @@ export class CodexChromeSession {
     // Codex reports the new runtime's startup; adoption starts from that notification.
     const settled = this.startSettled();
     try {
-      await this.deps.codex.reload();
+      await computerWithinDeadline(deadline, () => this.deps.codex.reload());
     } catch (error) {
-      this.fail(`Codex couldn't restart the ChatGPT browser runtime: ${message(error)}`);
+      this.stop("pending", `Codex couldn't restart the ChatGPT browser runtime: ${message(error)}`);
       return;
     }
-    await this.bounded(settled);
+    await this.bounded(settled, deadline);
     if (this.phase === "starting") this.startTimedOut();
+  }
+
+  private async checkHandoff(check: () => Promise<void>): Promise<void> {
+    await check();
+    if (this.phase === "disposed" || this.phase === "unavailable")
+      throw handoffError("Chrome control is unavailable for this session.");
+    const refusal = await this.gate();
+    if (refusal) throw handoffError(refusal.detail);
+  }
+
+  private async parkForNative(deadline: number, check: () => Promise<void>): Promise<void> {
+    // Turning Chrome off or a failed browser preflight must never disable native apps.
+    const live = async () => {
+      await check();
+      if (
+        this.phase === "disposed" ||
+        this.deps.broker.generation(this.deps.threadId) !== this.deps.generation
+      )
+        throw handoffError("This Chrome session ended.");
+    };
+    await waitForControl(
+      () => this.phase !== "starting" && !this.readoption && !this.callRunning,
+      deadline,
+      live,
+    );
+    this.parked = true;
+    this.stop(
+      "pending",
+      "Chrome is parked for native work. Call browser_resume to return to Chrome.",
+      "release",
+    );
+    await this.deps.broker.waitForChromeRelease(
+      this.deps.threadId,
+      this.deps.generation,
+      deadline,
+      live,
+    );
+  }
+
+  private async resumeBrowser(deadline: number, check: () => Promise<void>): Promise<void> {
+    const live = () => this.checkHandoff(check);
+    await live();
+    if (this.phase === "ready") return;
+    await this.deps.waitForMcpIdle?.(deadline, live);
+    // Mark first: cancellation after main reserves Chrome must release the reservation too.
+    this.leaseHeld = true;
+    try {
+      await this.deps.broker.prepareCodexBrowser(
+        this.deps.threadId,
+        this.deps.generation,
+        deadline,
+        live,
+      );
+      await live();
+      this.parked = false;
+      await this.beforeTurn(deadline);
+      computerRemainingBudget(deadline);
+      await live();
+      if (this.state !== "ready")
+        throw handoffError("Chrome did not become ready; retry browser_resume.");
+    } catch (error) {
+      this.parked = true;
+      if (this.phase !== "disposed")
+        this.stop("pending", "Chrome restart did not complete. Call browser_resume to retry.");
+      throw error;
+    }
   }
 
   /** `beforeTurn` ran but no turn started: nothing will end it. */
@@ -460,6 +576,7 @@ export class CodexChromeSession {
     if (deps.broker.generation(deps.threadId) !== deps.generation)
       return { state: "unavailable", detail: "This session ended." };
     const enabled = await deps.policyEnabled().catch(() => false);
+    this.disabled = !enabled;
     if (!enabled) return { state: "off", detail: CODEX_CHROME_STOPPED_OFF };
     return undefined;
   }
@@ -482,6 +599,7 @@ export class CodexChromeSession {
   /** Stops the runtime for the rest of this session. */
   private fail(reason: string): void {
     if (this.phase === "disposed") return;
+    this.unavailableDetail = reason;
     this.epoch += 1;
     this.clearIdle();
     this.release();
@@ -553,13 +671,13 @@ export class CodexChromeSession {
     });
   }
 
-  private async bounded(work: Promise<void> | undefined): Promise<void> {
+  private async bounded(work: Promise<void> | undefined, deadline: number): Promise<void> {
     if (!work) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       work,
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, this.deps.startWaitMs ?? CODEX_CHROME_RESTART_WAIT_MS);
+        timer = setTimeout(resolve, Math.max(0, deadline - performance.now()));
       }),
     ]);
     if (timer) clearTimeout(timer);
