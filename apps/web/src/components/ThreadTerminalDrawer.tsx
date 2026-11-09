@@ -1140,7 +1140,6 @@ export default function ThreadTerminalDrawer({
     const nextId = orderedIds[nextIndex];
     if (nextId) document.getElementById(terminalTabId(nextId))?.focus();
   };
-  const isSplitView = visibleTerminalIds.length > 1;
   const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
   const terminalLabelById = useMemo(
     () =>
@@ -1431,69 +1430,48 @@ export default function ThreadTerminalDrawer({
       >
         <div className="flex h-full min-h-0">
           <div className="min-w-0 flex-1">
-            {isSplitView ? (
-              <div
-                className="grid h-full w-full min-w-0 gap-0 overflow-hidden"
-                style={{
-                  gridTemplateColumns: `repeat(${visibleTerminalIds.length}, minmax(0, 1fr))`,
-                }}
-              >
-                {visibleTerminalIds.map((terminalId) => (
-                  <div
-                    key={terminalId}
-                    className={`min-h-0 min-w-0 border-l first:border-l-0 ${
-                      terminalId === resolvedActiveTerminalId ? "border-border" : "border-border/70"
-                    }`}
-                    onMouseDown={() => {
-                      if (terminalId !== resolvedActiveTerminalId) {
-                        onActiveTerminalChange(terminalId);
-                      }
-                    }}
-                  >
-                    <div className="h-full p-1">
-                      <TerminalViewport
-                        threadId={threadId}
-                        terminalId={terminalId}
-                        terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
-                        cwd={cwd}
-                        {...(runtimeEnv ? { runtimeEnv } : {})}
-                        onSessionExited={() => onCloseTerminal(terminalId)}
-                        onAddTerminalContext={onAddTerminalContext}
-                        focusRequestId={focusRequestId}
-                        autoFocus={terminalId === resolvedActiveTerminalId}
-                        resizeEpoch={resizeEpoch}
-                        drawerHeight={drawerHeight}
-                        resolvedTheme={resolvedTheme}
-                        themePaletteRevision={themePaletteRevision}
-                        monoFontFamily={appearance.monoFontFamily}
-                        terminalFontSize={appearance.terminalFontSize}
-                      />
-                    </div>
+            {/* Keep the same keyed pane tree for one or many terminals so splitting
+                and unsplitting preserve the original terminal and its input state. */}
+            <div
+              className="grid h-full w-full min-w-0 gap-0 overflow-hidden"
+              style={{
+                gridTemplateColumns: `repeat(${visibleTerminalIds.length}, minmax(0, 1fr))`,
+              }}
+            >
+              {visibleTerminalIds.map((terminalId) => (
+                <div
+                  key={terminalId}
+                  className={`min-h-0 min-w-0 border-l first:border-l-0 ${
+                    terminalId === resolvedActiveTerminalId ? "border-border" : "border-border/70"
+                  }`}
+                  onMouseDown={() => {
+                    if (terminalId !== resolvedActiveTerminalId) {
+                      onActiveTerminalChange(terminalId);
+                    }
+                  }}
+                >
+                  <div className="h-full p-1">
+                    <TerminalViewport
+                      threadId={threadId}
+                      terminalId={terminalId}
+                      terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
+                      cwd={cwd}
+                      {...(runtimeEnv ? { runtimeEnv } : {})}
+                      onSessionExited={() => onCloseTerminal(terminalId)}
+                      onAddTerminalContext={onAddTerminalContext}
+                      focusRequestId={focusRequestId}
+                      autoFocus={terminalId === resolvedActiveTerminalId}
+                      resizeEpoch={resizeEpoch}
+                      drawerHeight={drawerHeight}
+                      resolvedTheme={resolvedTheme}
+                      themePaletteRevision={themePaletteRevision}
+                      monoFontFamily={appearance.monoFontFamily}
+                      terminalFontSize={appearance.terminalFontSize}
+                    />
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="h-full p-1">
-                <TerminalViewport
-                  key={resolvedActiveTerminalId}
-                  threadId={threadId}
-                  terminalId={resolvedActiveTerminalId}
-                  terminalLabel={terminalLabelById.get(resolvedActiveTerminalId) ?? "Terminal"}
-                  cwd={cwd}
-                  {...(runtimeEnv ? { runtimeEnv } : {})}
-                  onSessionExited={() => onCloseTerminal(resolvedActiveTerminalId)}
-                  onAddTerminalContext={onAddTerminalContext}
-                  focusRequestId={focusRequestId}
-                  autoFocus
-                  resizeEpoch={resizeEpoch}
-                  drawerHeight={drawerHeight}
-                  resolvedTheme={resolvedTheme}
-                  themePaletteRevision={themePaletteRevision}
-                  monoFontFamily={appearance.monoFontFamily}
-                  terminalFontSize={appearance.terminalFontSize}
-                />
-              </div>
-            )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
