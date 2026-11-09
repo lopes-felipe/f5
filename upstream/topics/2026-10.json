@@ -19176,11 +19176,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-09T19:46:40.304Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18430",
-      "status": "port",
+      "reason": "F5 has no shared inline diff-comment draft that blocks commenting on other files.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "diff",
