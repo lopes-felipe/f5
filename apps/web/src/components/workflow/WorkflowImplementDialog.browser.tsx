@@ -22,6 +22,7 @@ import { render } from "vitest-browser-react";
 
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { useStore } from "../../store";
+import { noteWsConnectionOpened, resetWsConnectionStateForTests } from "../../wsConnectionState";
 
 const nativeApiMocks = vi.hoisted(() => ({
   startImplementation: vi.fn<(input: OrchestrationStartImplementationInput) => Promise<void>>(
@@ -222,6 +223,8 @@ function codexProviderWithReportedSol(): ServerProvider {
 
 describe("WorkflowImplementDialog", () => {
   beforeEach(() => {
+    resetWsConnectionStateForTests();
+    noteWsConnectionOpened();
     useStore.setState({
       projects: [
         {
@@ -244,6 +247,7 @@ describe("WorkflowImplementDialog", () => {
   });
 
   afterEach(() => {
+    resetWsConnectionStateForTests();
     document.body.innerHTML = "";
     nativeApiMocks.startImplementation.mockClear();
     nativeApiMocks.listBranches.mockClear();
