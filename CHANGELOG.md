@@ -26,7 +26,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Popovers overlapping the desktop window header respond to hover and clicks.
 - A Claude thread with Claude in Chrome on can take foreground control of other apps while none of its Chrome calls is running, instead of failing with "Chrome is held by another thread". Once it does, its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it). Foreground takeover refusals name the thread holding control, and the desktop log records Chrome lease events.
 - Queued upstream ports no longer wait indefinitely on files held by an equivalent topic once the port PR that included it has merged. Outcome recovery stops re-reading merged port PRs from GitHub.
-- Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down, Caps Lock never counts, and a hold stops counting after 10 seconds without input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)".
+- Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down; on macOS, Caps Lock's lock state never counts. A hold stuck in system state stops counting after two minutes without any input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)", and a pause or policy change during the wait reports its own cause.
 
 ## [0.1.6] - 2026-11-08
 

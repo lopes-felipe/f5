@@ -136,11 +136,12 @@ pub(super) fn observe_physical(event: crate::held::HeldEvent) {
 /// physical input arrived within `STALE_AFTER_MS`.
 pub(super) fn held_inputs() -> Vec<u16> {
     let state = STATE.get().unwrap();
-    let candidates = state.physical_held.lock().unwrap().candidates();
-    // Async key queries stay outside the lock; entries hooked meanwhile are kept until next time.
+    let sampled = state.physical_held.lock().unwrap().sample();
+    // Async key queries stay outside the lock. Reconciliation drops an entry only if it was not
+    // pressed again after this sample.
     let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
-    let system: HashSet<u16> = candidates
-        .iter()
+    let system: HashSet<u16> = sampled
+        .keys()
         .copied()
         .filter(|code| {
             crate::held::system_codes(*code, swapped)
@@ -148,9 +149,11 @@ pub(super) fn held_inputs() -> Vec<u16> {
                 .any(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
         })
         .collect();
-    let held = state.physical_held.lock().unwrap().held(now_ms(), |code| {
-        !candidates.contains(&code) || system.contains(&code)
-    });
+    let held = state
+        .physical_held
+        .lock()
+        .unwrap()
+        .held(now_ms(), &sampled, &system);
     let mut reported = state.reported_held.lock().unwrap();
     if *reported != held {
         // One diagnostic per transition, so a stuck input can be named without per-beat noise.

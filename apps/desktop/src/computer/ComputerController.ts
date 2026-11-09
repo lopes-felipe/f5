@@ -106,6 +106,24 @@ const STOP_CAUSE: Record<
   "access-changed": "access-changed",
 };
 const isForegroundHolder = (holder: ComputerLeaseHolder) => holder.scope.kind !== "app";
+/**
+ * The helper's held-input transition as one log line, e.g. "modifier:56, button:0". Only
+ * well-formed kind/code pairs pass, so nothing else from the helper reaches the log.
+ */
+export function describeHeldInputs(value: unknown): string {
+  const entries = Array.isArray(value)
+    ? value.flatMap((entry: unknown) => {
+        if (!entry || typeof entry !== "object") return [];
+        const { kind, code } = entry as { kind?: unknown; code?: unknown };
+        return ["key", "modifier", "button"].includes(kind as string) &&
+          Number.isSafeInteger(code) &&
+          (code as number) >= 0
+          ? [`${kind as string}:${code as number}`]
+          : [];
+      })
+    : [];
+  return `computer held input: ${entries.slice(0, 8).join(", ") || "none"}`;
+}
 export class ComputerController {
   readonly cooperation: ComputerCooperation;
   readonly admission: ComputerAdmissionQueue;
@@ -189,6 +207,8 @@ export class ComputerController {
       cooperationEnabled?: (profileId: string) => boolean;
       targetYielded?: (holder: ComputerLeaseHolder, appId?: string) => void;
       foregroundContinued?: (previous: ComputerLeaseHolder, next: ComputerLeaseHolder) => void;
+      /** One line per diagnostic event, for the desktop log. Codes only, never characters. */
+      log?: (message: string) => void;
       now?: () => number;
     },
   ) {
@@ -563,6 +583,8 @@ export class ComputerController {
       typeof message.executionGeneration === "number" ? message.executionGeneration : undefined;
     const tagged = generation !== undefined ? this.permitted.get(generation) : undefined;
     if (message.type === "killSwitch") this.stop("kill-switch");
+    else if (message.type === "heldInput")
+      this.options.log?.(describeHeldInputs(message.heldInputs));
     else if (message.type === "actionConfirmed") {
       if (
         typeof message.requestId === "string" &&

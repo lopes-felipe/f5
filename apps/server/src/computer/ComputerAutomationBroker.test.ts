@@ -2012,9 +2012,18 @@ it("ends target waits at the deadline as timeouts, letting the desktop answer fi
     await expect(silent).resolves.toMatchObject({ available: false, timedOut: true });
     expect(h.ipc.messages).toContainEqual({ type: "cancel", requestId: second.requestId });
 
+    // A pause keeps its own cause instead of reading as a turn end.
+    const paused = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(3));
+    h.broker.setPaused("t", true);
+    await expect(paused).rejects.toMatchObject({
+      error: { _tag: "Interrupted", cause: "paused" },
+    });
+    h.broker.setPaused("t", false);
+
     // A turn that really ends still interrupts the wait.
     const ended = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
-    await vi.waitFor(() => expect(targetWaits()).toHaveLength(3));
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(4));
     h.broker.endTurn("t", "turn", "s");
     await expect(ended).rejects.toMatchObject({
       error: { _tag: "Interrupted", cause: "turn-ended" },
