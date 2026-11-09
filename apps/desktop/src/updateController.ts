@@ -92,6 +92,7 @@ export function createUpdateController(options: {
           }, options.timeoutMs ?? 30_000);
         }),
       ]);
+      clearTimeout(timer);
       const now = new Date().toISOString();
       options.emit(
         info
@@ -103,15 +104,20 @@ export function createUpdateController(options: {
             )
           : reduceDesktopUpdateStateOnNoUpdate(options.getState(), now),
       );
-      // The native check has finished, so electron-updater can now validate its
-      // cached installer and emit update-downloaded on this launch.
-      if (
-        info?.cachedDownload &&
-        !options.isQuitting?.() &&
-        options.getState().status === "available" &&
-        options.getState().availableVersion === info.version
-      ) {
-        await download();
+      if (info?.cachedDownload) {
+        // Release the check slot first. Previously queued channel changes take
+        // precedence, and a slow cache validation/download cannot hold pendingCheck.
+        void enqueue(async () => {
+          const current = options.getState();
+          if (
+            current.channel !== state.channel ||
+            current.status !== "available" ||
+            current.availableVersion !== info.version ||
+            current.downloadedVersion === info.version
+          )
+            return;
+          await download();
+        });
       }
     } catch (error) {
       options.emit(

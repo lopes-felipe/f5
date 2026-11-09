@@ -2,6 +2,8 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 import { createHash } from "node:crypto";
+// Private boundaries below are checked against electron-updater 6.8.3.
+// Keep real selection and disk validation; replace only network/OS boundaries.
 import { AppImageUpdater } from "electron-updater/out/AppImageUpdater.js";
 import { GenericProvider } from "electron-updater/out/providers/GenericProvider.js";
 import { describe, expect, it, vi } from "vitest";
@@ -87,7 +89,14 @@ describe("cached installer recovery", () => {
     ["linux", "x64", "x64", true, "x64.deb"],
     ["linux", "x64", "x64", false, "x64.AppImage"],
   ] as const)("selects the native package for %s %s %s", (platform, host, app, deb, selected) => {
-    expect(selectCachedUpdateFile(files, platform, host, deb)?.sha512).toBe(selected);
+    expect(selectCachedUpdateFile(files, platform, host, app, deb)?.sha512).toBe(selected);
+  });
+  it("prefers the app architecture over a universal or other-architecture package listed first", () => {
+    const mixed = ["universal.zip", "x64.zip", "arm64.zip"].map((url) => ({ url, sha512: url }));
+    expect(selectCachedUpdateFile(mixed, "darwin", "x64", "x64", false)?.url).toBe("x64.zip");
+    expect(selectCachedUpdateFile(mixed, "darwin", "arm64", "x64", false)?.url).toBe("arm64.zip");
+    const windows = ["arm64.exe", "x64.exe"].map((url) => ({ url, sha512: url }));
+    expect(selectCachedUpdateFile(windows, "win32", "x64", "x64", false)?.url).toBe("x64.exe");
   });
 
   it("uses the configured cache and ignores missing, incomplete and unrelated artifacts", async () => {

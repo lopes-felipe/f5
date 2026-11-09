@@ -12,6 +12,7 @@ export function selectCachedUpdateFile(
   files: readonly ReleaseFile[],
   platform: NodeJS.Platform,
   hostArch: string,
+  appArch: string,
   isDebPackage: boolean,
 ): ReleaseFile | undefined {
   let candidates = files;
@@ -28,7 +29,7 @@ export function selectCachedUpdateFile(
           ? ".deb"
           : ".appimage";
   const packages = candidates.filter((file) => file.url.toLowerCase().endsWith(extension));
-  return packages[0];
+  return packages.find((file) => file.url.includes(appArch)) ?? packages[0];
 }
 
 export async function hasCachedUpdate(
@@ -43,7 +44,13 @@ export async function hasCachedUpdate(
       platform === "linux" &&
       (await readFile(Path.join(resourcesPath, "package-type"), "utf8").catch(() => "")).trim() ===
         "deb";
-    const selected = selectCachedUpdateFile(files, platform, runtime.hostArch, isDebPackage);
+    const selected = selectCachedUpdateFile(
+      files,
+      platform,
+      runtime.hostArch,
+      runtime.appArch,
+      isDebPackage,
+    );
     if (!selected) return false;
     // Use the configured updater cache, including custom updaterCacheDirName.
     const helper = await (

@@ -42,7 +42,7 @@ import {
   resolveAcceptedThreadSidebarWidth,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
   THREAD_SIDEBAR_MIN_WIDTH_PX,
-  THREAD_MAIN_PANEL_MIN_WIDTH_PX,
+  threadSidebarMobileBreakpoint,
   THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
@@ -130,7 +130,7 @@ function ChatRouteLayout() {
   return (
     <SidebarProvider
       defaultOpen
-      mobileBreakpoint={THREAD_SIDEBAR_MIN_WIDTH_PX + THREAD_MAIN_PANEL_MIN_WIDTH_PX}
+      mobileBreakpoint={threadSidebarMobileBreakpoint(initialThreadSidebarWidth)}
       keyboardShortcut
       className="bg-sidebar"
       data-thread-sidebar-layout="true"
@@ -150,6 +150,7 @@ function ChatRouteLayout() {
             minWidth: THREAD_SIDEBAR_MIN_WIDTH_PX,
             maxWidth: THREAD_SIDEBAR_MAX_WIDTH_PX,
             shouldAcceptWidth: canAcceptThreadSidebarWidth,
+            onResize: setInitialThreadSidebarWidth,
           }}
         >
           <ThreadSidebar />

@@ -16,6 +16,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Downloaded desktop updates restore the restart prompt after relaunch. Desktop windows support 600px widths, with a sidebar sheet that preserves the content pane's minimum width.
+
 - New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
