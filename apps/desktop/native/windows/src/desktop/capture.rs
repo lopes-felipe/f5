@@ -275,13 +275,14 @@ pub(super) unsafe fn capture(request: &Value, host: &Value) -> Result<Value, Val
 }
 
 /// Fast mode asks the provider for password elements directly. Conservative mode
-/// audits the complete control tree. Failure in either path masks the window.
+/// audits the control tree, skipping item-container rows scrolled out of view since
+/// they are not drawn. Failure in either path masks the window.
 pub(super) unsafe fn secure_elements(
     root: &IUIAutomationElement,
     mode: &str,
 ) -> (Vec<IUIAutomationElement>, bool) {
     if mode != "fast" {
-        return walk_checked(root, 4000);
+        return walk_rendered_checked(root, 4000);
     }
     let found = (|| -> windows::core::Result<Vec<IUIAutomationElement>> {
         let uia = automation().map_err(|_| windows::core::Error::from_thread())?;

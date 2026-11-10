@@ -363,6 +363,8 @@ const ComputerSecureAuditDiagnostics = Schema.Struct({
       complete: Schema.Boolean,
       elapsedMs: NonNegative,
       visitedNodes: NonNegative,
+      /** Row-container children skipped as scrolled out of view; absent on older helpers. */
+      prunedRows: Schema.optional(NonNegative),
       nodeReadElapsedMs: NonNegative,
       maxChildren: NonNegative,
       textFieldQueries: NonNegative,
