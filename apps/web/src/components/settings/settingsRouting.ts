@@ -468,6 +468,12 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "notifications.pr-attention": {
     category: "notifications",
   },
+  "notifications.do-not-disturb": {
+    category: "notifications",
+  },
+  "notifications.toast-position": {
+    category: "notifications",
+  },
   "project.providers": {
     category: "project",
     scope: "project",

@@ -39,6 +39,13 @@ import {
 } from "./appearanceSettings";
 import { DEFAULT_THEME_ID } from "./themePalette";
 import {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  deriveNotificationPreferences,
+  normalizeNotificationPreferences,
+  NotificationPreferencesSchema,
+  TOAST_POSITIONS,
+} from "./notificationCenter/preferences";
+import {
   DEFAULT_SNOOZE_PRESETS,
   MAX_SNOOZE_PRESETS,
   normalizeSnoozePresets,
@@ -490,6 +497,26 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
   ),
+  // Per-source delivery. Replaces notificationMode, inAppThreadNotifications and
+  // enablePrAttentionNotifications, which stay readable for the migration only.
+  notificationPreferences: NotificationPreferencesSchema.pipe(
+    Schema.withConstructorDefault(() => Option.some(DEFAULT_NOTIFICATION_PREFERENCES)),
+    Schema.withDecodingDefault(() => DEFAULT_NOTIFICATION_PREFERENCES),
+  ),
+  /** An ISO time, "forever", or null when Do Not Disturb is off. */
+  doNotDisturbUntil: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+    Schema.withDecodingDefault(() => null),
+  ),
+  /** Approvals and input requests still come through during Do Not Disturb. */
+  dndAllowUrgent: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
+  toastPosition: Schema.Literals(TOAST_POSITIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some("top-right" as const)),
+    Schema.withDecodingDefault(() => "top-right" as const),
+  ),
   showAgentCommandTranscripts: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
@@ -864,6 +891,14 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
       notificationMode:
         runtimeMetadataMigrated.notificationMode ??
         (runtimeMetadataMigrated.enableThreadStatusNotifications === false ? "off" : "system"),
+      notificationPreferences:
+        normalizeNotificationPreferences(runtimeMetadataMigrated.notificationPreferences) ??
+        deriveNotificationPreferences(runtimeMetadataMigrated),
+      toastPosition: TOAST_POSITIONS.includes(
+        runtimeMetadataMigrated.toastPosition as (typeof TOAST_POSITIONS)[number],
+      )
+        ? runtimeMetadataMigrated.toastPosition
+        : "top-right",
       composerRichTextEnabled: runtimeMetadataMigrated.composerRichTextEnabled ?? false,
       // The first palette release used `f5-default` for the blue palette.
       // Move that implicit default to the restored black palette exactly once;

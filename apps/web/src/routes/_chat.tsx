@@ -11,6 +11,7 @@ import { ProjectCloneController } from "../components/ProjectCloneController";
 import { ProjectCreateNewController } from "../components/ProjectCreateNewController";
 import { DesktopPromptLinkController } from "../components/promptLinks/DesktopPromptLinkController";
 import { NotificationActivationRouter } from "../notificationCenter/NotificationActivationRouter";
+import { NotificationCenterHost } from "../notificationCenter/NotificationCenterHost";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
 import { HistorySwipeNavigation } from "../components/HistorySwipeNavigation";
 import { isElectron } from "../env";
@@ -165,6 +166,7 @@ function ChatRouteLayout() {
         <ProjectCreateNewController />
         <DesktopPromptLinkController />
         <NotificationActivationRouter />
+        <NotificationCenterHost />
         <ModelRecencyController />
         <ScheduledNotificationController />
         <ThreadStatusNotificationController />

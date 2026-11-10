@@ -65,6 +65,7 @@ function RootRouteView() {
   usePreviewArtifactRetentionSync();
   const { resolvedTheme } = useTheme();
   const { palette } = useThemePaletteSync(resolvedTheme);
+  const toastPosition = useAppSettingsSelector((settings) => settings.toastPosition);
 
   useEffect(() => {
     const showPersistenceError = () => {
@@ -97,7 +98,7 @@ function RootRouteView() {
       settings={appearanceSettings}
       appearance={resolvedTheme}
     >
-      <ToastProvider>
+      <ToastProvider position={toastPosition}>
         <AnchoredToastProvider>
           <EventRouter />
           <DesktopProjectBootstrap />

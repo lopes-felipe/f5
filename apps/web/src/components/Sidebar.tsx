@@ -103,6 +103,7 @@ import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjec
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
 import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
+import { useNotificationInboxPopover } from "../notificationCenter/inboxStore";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
 import type { SidebarIndicatorsForThread } from "./sidebar/SidebarWorkflowItem";
@@ -965,6 +966,13 @@ export default function Sidebar() {
         return;
       }
 
+      if (command === "notifications.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        useNotificationInboxPopover.getState().toggle();
+        return;
+      }
+
       if (command === "chat.newScratch") {
         if (scratchDisabled) return;
         event.preventDefault();
@@ -1067,6 +1075,10 @@ export default function Sidebar() {
   );
   const pullRequestsShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
+    [keybindings],
+  );
+  const notificationsShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "notifications.toggle"),
     [keybindings],
   );
   const handleOpenCommandPalette = useStableCallback(() => {
@@ -1247,6 +1259,7 @@ export default function Sidebar() {
           onOpenCommandPalette={handleOpenCommandPalette}
           commandPaletteShortcutLabel={commandPaletteShortcutLabel}
           pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+          notificationsShortcutLabel={notificationsShortcutLabel}
           view={sidebarView}
           onViewChange={setSidebarView}
         />

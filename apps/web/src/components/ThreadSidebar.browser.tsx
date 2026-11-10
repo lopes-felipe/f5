@@ -2325,6 +2325,7 @@ describe("Thread sidebar", () => {
         "Search threads",
         "Pull requests",
         "Scheduled",
+        "Notifications",
         "Usage",
         "Projects",
         "Recent",

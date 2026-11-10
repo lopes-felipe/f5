@@ -469,9 +469,16 @@ describe("Keybindings update toast", () => {
       sendServerConfigUpdatedPush([]);
       await waitForToast("Keybindings updated", 1);
 
-      // Each server push represents a distinct file change, so it should produce its own toast.
+      // Each server push is a distinct file change; identical toasts collapse into one with a
+      // count, so the second update shows as "×2" on the same toast.
       sendServerConfigUpdatedPush([]);
-      await waitForToast("Keybindings updated", 2);
+      await vi.waitFor(
+        () => {
+          expect(queryToastTitles().filter((t) => t === "Keybindings updated")).toHaveLength(1);
+          expect(document.querySelector('[data-slot="toast-count"]')?.textContent).toBe("×2");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

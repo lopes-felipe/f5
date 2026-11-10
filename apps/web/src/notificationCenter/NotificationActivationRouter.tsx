@@ -3,6 +3,7 @@ import { useEffect } from "react";
 
 import { useStartupReady } from "~/lib/startupReady";
 
+import { useNotificationInbox } from "./inboxStore";
 import { useOpenNotificationTarget, type NotificationTarget } from "./openTarget";
 
 /** The user clicked these in order, so the last one is where they want to be. */
@@ -33,6 +34,8 @@ export function NotificationActivationRouter() {
         .takeActivations()
         .then((activations) => {
           if (disposed || activations.length === 0) return;
+          const inbox = useNotificationInbox.getState();
+          for (const activation of activations) inbox.markRead(activation.id);
           const target = selectActivationTarget(activations);
           // The main process already brought the window forward.
           if (target) void openTarget(target, { focus: false });
