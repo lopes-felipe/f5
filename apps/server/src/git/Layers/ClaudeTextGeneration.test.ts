@@ -239,11 +239,11 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
 
   for (const effort of ["high", "xhigh", "ultrathink"] as const) {
     for (const prefixed of [false, true]) {
-      it.effect(`forwards Fable 5.1 ${effort} with prefixed=${prefixed}`, () =>
+      it.effect(`forwards Fable 5.2 ${effort} with prefixed=${prefixed}`, () =>
         withFakeClaudeEnv(
           {
             output: JSON.stringify({ structured_output: { ok: true } }),
-            argsMustContain: `--model claude-fable-5-1${effort === "ultrathink" ? "" : ` --effort ${effort}`}`,
+            argsMustContain: `--model claude-fable-5-2${effort === "ultrathink" ? "" : ` --effort ${effort}`}`,
             argsMustNotContain: effort === "ultrathink" ? "--effort" : [],
             stdinMustContain: `${effort === "ultrathink" || prefixed ? "Ultrathink:\n" : ""}Return JSON`,
           },
