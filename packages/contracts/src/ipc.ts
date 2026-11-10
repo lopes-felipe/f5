@@ -781,6 +781,8 @@ export interface DesktopNotificationShowInput {
   /** A later notification with the same tag replaces the earlier one. */
   readonly tag?: string;
   readonly silent?: boolean;
+  /** A PNG data URL. Shown on Windows and Linux; macOS always shows the app icon. */
+  readonly icon?: string;
   readonly target: DesktopNotificationTarget;
 }
 
@@ -795,8 +797,10 @@ export interface DesktopNotificationActivation {
  */
 export interface DesktopNotificationsBridge {
   show(input: DesktopNotificationShowInput): Promise<boolean>;
-  close(tag: string): Promise<void>;
-  /** Takes the clicked notifications not yet handled by this profile's renderer, oldest first. */
+  /**
+   * Takes the clicked notifications meant for this window that it hasn't handled yet, oldest
+   * first. Unclaimed clicks expire after a minute.
+   */
   takeActivations(): Promise<readonly DesktopNotificationActivation[]>;
   onActivationsAvailable(listener: () => void): () => void;
 }

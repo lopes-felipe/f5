@@ -189,7 +189,6 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   notifications: {
     show: (input) => ipcRenderer.invoke("desktop:notification-show", input),
-    close: (tag) => ipcRenderer.invoke("desktop:notification-close", tag),
     takeActivations: () => ipcRenderer.invoke("desktop:take-notification-activations"),
     onActivationsAvailable: (listener) => {
       const wrapped = () => listener();

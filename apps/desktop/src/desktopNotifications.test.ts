@@ -10,7 +10,7 @@ class FakeNotification implements DesktopNotificationLike {
   readonly listeners = new Map<string, Array<() => void>>();
   shown = false;
   closed = false;
-  constructor(readonly input: { title: string; body?: string; silent?: boolean }) {}
+  constructor(readonly input: { title: string; body?: string; silent?: boolean; icon?: string }) {}
   on(event: string, listener: () => void) {
     this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
     return this;
@@ -26,24 +26,43 @@ class FakeNotification implements DesktopNotificationLike {
   }
 }
 
-function setup(maxEntries?: number) {
+function setup(
+  options: {
+    maxEntries?: number;
+    openProfile?: (profileId: string) => Promise<unknown>;
+    selectWindow?: (profileId: string) => number | null;
+  } = {},
+) {
   const created: FakeNotification[] = [];
   const calls: string[] = [];
+  let now = 1_000;
   const registry = new DesktopNotificationRegistry({
     create: (input) => {
       const notice = new FakeNotification(input);
       created.push(notice);
       return notice;
     },
-    openProfile: vi.fn(async (profileId: string) => {
-      calls.push(`open:${profileId}`);
-    }),
-    announce: (profileId) => {
-      calls.push(`announce:${profileId}`);
+    openProfile:
+      options.openProfile ??
+      (async (profileId: string) => {
+        calls.push(`open:${profileId}`);
+        return true;
+      }),
+    selectWindow: options.selectWindow ?? (() => 7),
+    announce: (profileId, webContentsId) => {
+      calls.push(`announce:${profileId}:${webContentsId}`);
     },
-    ...(maxEntries ? { maxEntries } : {}),
+    now: () => now,
+    ...(options.maxEntries ? { maxEntries: options.maxEntries } : {}),
   });
-  return { registry, created, calls };
+  return {
+    registry,
+    created,
+    calls,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
 }
 
 const threadTarget = { kind: "thread", threadId: "thread-1" } as const;
@@ -56,29 +75,50 @@ describe("DesktopNotificationRegistry", () => {
     expect(registry.size).toBe(1);
 
     created[0]!.emit("click");
-    await vi.waitFor(() => expect(calls).toEqual(["open:p1", "announce:p1"]));
-    expect(registry.take("p1")).toEqual([{ id: "n1", target: threadTarget }]);
+    await vi.waitFor(() => expect(calls).toEqual(["open:p1", "announce:p1:7"]));
+    expect(registry.size).toBe(0);
+    expect(registry.take("p1", 7)).toEqual([{ id: "n1", target: threadTarget }]);
+    expect(registry.take("p1", 7)).toEqual([]);
   });
 
-  it("queues the activation before opening the profile and removes the entry", async () => {
-    const { registry, created } = setup();
-    let queuedAtOpen: unknown;
-    const opening = new DesktopNotificationRegistry({
-      create: (input) => {
-        const notice = new FakeNotification(input);
-        created.push(notice);
-        return notice;
-      },
-      openProfile: async (profileId) => {
-        queuedAtOpen = opening.take(profileId);
-      },
-      announce: () => undefined,
-    });
-    opening.show("p1", { id: "n1", title: "Needs input", target: threadTarget });
-    created.at(-1)!.emit("click");
-    await vi.waitFor(() => expect(queuedAtOpen).toEqual([{ id: "n1", target: threadTarget }]));
-    expect(opening.size).toBe(0);
-    expect(registry.take("p1")).toEqual([]);
+  it("gives the activation only to the window that was brought forward", async () => {
+    const { registry, created, calls } = setup({ selectWindow: () => 7 });
+    registry.show("p1", { id: "n1", title: "Completed", target: threadTarget });
+    created[0]!.emit("click");
+    await vi.waitFor(() => expect(calls).toContain("announce:p1:7"));
+    // A background pop-out of the same profile asks first and gets nothing.
+    expect(registry.take("p1", 8)).toEqual([]);
+    expect(registry.take("p1", 7)).toEqual([{ id: "n1", target: threadTarget }]);
+  });
+
+  it("lets any window of the profile take it when no window could be chosen", async () => {
+    const { registry, created, calls } = setup({ selectWindow: () => null });
+    registry.show("p1", { id: "n1", title: "Completed", target: threadTarget });
+    created[0]!.emit("click");
+    await vi.waitFor(() => expect(calls).toContain("announce:p1:null"));
+    expect(registry.take("p1", 3)).toEqual([{ id: "n1", target: threadTarget }]);
+  });
+
+  it("queues nothing when the profile can't be opened", async () => {
+    const failing = setup({ openProfile: async () => Promise.reject(new Error("not ready")) });
+    failing.registry.show("p1", { id: "n1", title: "Completed", target: threadTarget });
+    failing.created[0]!.emit("click");
+    const quitting = setup({ openProfile: async () => false });
+    quitting.registry.show("p1", { id: "n2", title: "Completed", target: threadTarget });
+    quitting.created[0]!.emit("click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(failing.registry.take("p1", 7)).toEqual([]);
+    expect(quitting.registry.take("p1", 7)).toEqual([]);
+    expect(failing.calls).toEqual([]);
+  });
+
+  it("drops an activation nobody took within a minute", async () => {
+    const { registry, created, calls, advance } = setup();
+    registry.show("p1", { id: "n1", title: "Completed", target: threadTarget });
+    created[0]!.emit("click");
+    await vi.waitFor(() => expect(calls).toContain("announce:p1:7"));
+    advance(60_001);
+    expect(registry.take("p1", 7)).toEqual([]);
   });
 
   it("replaces an entry with the same tag and closes the old banner", () => {
@@ -97,20 +137,28 @@ describe("DesktopNotificationRegistry", () => {
     expect(registry.size).toBe(2);
   });
 
-  it("evicts the oldest entry without closing it", () => {
-    const { registry, created } = setup(200);
+  it("evicts the oldest entry of the same profile without closing it", async () => {
+    const { registry, created, calls } = setup({ maxEntries: 200 });
+    registry.show("p2", { id: "other", title: "Other", target: threadTarget });
     for (let index = 0; index < 201; index += 1)
       registry.show("p1", { id: `n${index}`, title: `N${index}`, target: { kind: "none" } });
-    expect(registry.size).toBe(200);
-    expect(created[0]!.closed).toBe(false);
+    expect(registry.size).toBe(201);
+    expect(created[1]!.closed).toBe(false);
+    // The other profile's notification is still held, so its click still opens its target.
+    created[0]!.emit("click");
+    await vi.waitFor(() => expect(calls).toContain("announce:p2:7"));
+    expect(registry.take("p2", 7)).toEqual([{ id: "other", target: threadTarget }]);
   });
 
-  it("closes an entry on request", () => {
+  it("passes the icon through to the notification", () => {
     const { registry, created } = setup();
-    registry.show("p1", { id: "a", tag: "t", title: "One", target: threadTarget });
-    registry.close("p1", "t");
-    expect(created[0]!.closed).toBe(true);
-    expect(registry.size).toBe(0);
+    registry.show("p1", {
+      id: "a",
+      title: "One",
+      icon: "data:image/png;base64,AAAA",
+      target: threadTarget,
+    });
+    expect(created[0]!.input).toMatchObject({ icon: "data:image/png;base64,AAAA" });
   });
 });
 
@@ -150,5 +198,23 @@ describe("parseDesktopNotificationInput", () => {
     });
     expect(parsed?.title).toHaveLength(256);
     expect(parsed?.body).toHaveLength(1024);
+  });
+});
+
+describe("notification icons and tags", () => {
+  it("keeps small PNG icons and drops anything else", () => {
+    const base = { id: "n", title: "T", target: threadTarget };
+    expect(
+      parseDesktopNotificationInput({ ...base, icon: "data:image/png;base64,AAAA" })?.icon,
+    ).toBe("data:image/png;base64,AAAA");
+    expect(
+      parseDesktopNotificationInput({ ...base, icon: "data:image/svg+xml,<svg/>" }),
+    ).not.toHaveProperty("icon");
+    expect(
+      parseDesktopNotificationInput({
+        ...base,
+        icon: `data:image/png;base64,${"A".repeat(70_000)}`,
+      }),
+    ).not.toHaveProperty("icon");
   });
 });

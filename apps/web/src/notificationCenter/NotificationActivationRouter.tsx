@@ -17,16 +17,13 @@ export function selectActivationTarget(
 }
 
 /**
- * Opens what a clicked desktop notification points to. Clicks wait in the main process until
- * this window takes them: once startup is ready (a window the click created), when told, and
- * whenever the window gains focus.
+ * Opens what a clicked desktop notification points to. The main process queues each click for
+ * the window it brought forward, so only that window gets it. This window takes its clicks
+ * once startup is ready (a window the click created), when told, and when it gains focus.
  */
-export function NotificationActivationRouter(props: {
-  onActivated?: (activations: readonly DesktopNotificationActivation[]) => void;
-}) {
+export function NotificationActivationRouter() {
   const openTarget = useOpenNotificationTarget();
   const startupReady = useStartupReady();
-  const { onActivated } = props;
   useEffect(() => {
     const bridge = window.desktopBridge?.notifications;
     if (!startupReady || !bridge) return;
@@ -36,7 +33,6 @@ export function NotificationActivationRouter(props: {
         .takeActivations()
         .then((activations) => {
           if (disposed || activations.length === 0) return;
-          onActivated?.(activations);
           const target = selectActivationTarget(activations);
           // The main process already brought the window forward.
           if (target) void openTarget(target, { focus: false });
@@ -51,6 +47,6 @@ export function NotificationActivationRouter(props: {
       unsubscribe();
       window.removeEventListener("focus", take);
     };
-  }, [onActivated, openTarget, startupReady]);
+  }, [openTarget, startupReady]);
   return null;
 }

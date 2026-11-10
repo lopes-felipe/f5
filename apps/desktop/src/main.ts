@@ -226,7 +226,6 @@ import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendere
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
 import {
   DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL,
-  DESKTOP_NOTIFICATION_CLOSE_CHANNEL,
   DESKTOP_NOTIFICATION_SHOW_CHANNEL,
   DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL,
   DesktopNotificationRegistry,
@@ -374,13 +373,34 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
+function profileWindows(profileId: string): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter(
+    (window) =>
+      !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+  );
+}
 const desktopNotifications = new DesktopNotificationRegistry({
-  create: (input) => new Notification(input),
+  create: ({ icon, ...input }) =>
+    new Notification({
+      ...input,
+      // macOS always shows the app icon; Windows and Linux show the status glyph.
+      ...(icon && process.platform !== "darwin"
+        ? { icon: nativeImage.createFromDataURL(icon) }
+        : {}),
+    }),
   // Resolved at click time; `openProfile` is declared further down.
   openProfile: (profileId) => openProfile(profileId),
-  announce: (profileId) => {
-    for (const window of BrowserWindow.getAllWindows())
-      if (!window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId)
+  // `openProfile` focuses the profile's first window or creates one, so after it resolves the
+  // focused window of the profile is the one it brought forward.
+  selectWindow: (profileId) => {
+    const windows = profileWindows(profileId);
+    const focused = BrowserWindow.getFocusedWindow();
+    const chosen = windows.find((window) => window === focused) ?? windows[0];
+    return chosen ? chosen.webContents.id : null;
+  },
+  announce: (profileId, webContentsId) => {
+    for (const window of profileWindows(profileId))
+      if (webContentsId === null || window.webContents.id === webContentsId)
         window.webContents.send(DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL);
   },
   log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
@@ -3699,14 +3719,9 @@ function registerIpcHandlers(): void {
     if (!input) throw new Error("Invalid notification.");
     return desktopNotifications.show(profileId, input);
   });
-  ipcMain.handle(DESKTOP_NOTIFICATION_CLOSE_CHANNEL, (event, tag: unknown) => {
-    const profileId = authorizeAppMainFrame(event, "Notification close");
-    if (typeof tag !== "string" || tag.length === 0) return;
-    desktopNotifications.close(profileId, tag);
-  });
   ipcMain.handle(DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL, (event) => {
     const profileId = authorizeAppMainFrame(event, "Notification activation");
-    return desktopNotifications.take(profileId);
+    return desktopNotifications.take(profileId, event.sender.id);
   });
   ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
     runtimeForRenderer(event.sender.id);

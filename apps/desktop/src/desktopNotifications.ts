@@ -5,7 +5,6 @@ import type {
 } from "@t3tools/contracts";
 
 export const DESKTOP_NOTIFICATION_SHOW_CHANNEL = "desktop:notification-show";
-export const DESKTOP_NOTIFICATION_CLOSE_CHANNEL = "desktop:notification-close";
 export const DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL =
   "desktop:take-notification-activations";
 export const DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL =
@@ -14,8 +13,14 @@ export const DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL =
 const MAX_TITLE_LENGTH = 256;
 const MAX_BODY_LENGTH = 1024;
 const MAX_ID_LENGTH = 256;
+/** Only PNG data URLs, which Electron's `nativeImage` decodes; small enough for an icon. */
+const MAX_ICON_LENGTH = 64 * 1024;
+const ICON_PREFIX = "data:image/png;base64,";
+/** Held per profile, so a busy profile cannot evict another profile's notifications. */
 const DEFAULT_MAX_ENTRIES = 200;
 const MAX_PENDING_PER_PROFILE = 20;
+/** A click nobody took by then is dropped instead of replayed on a later focus. */
+const DEFAULT_ACTIVATION_TTL_MS = 60_000;
 
 /** The slice of Electron's `Notification` the registry uses. */
 export interface DesktopNotificationLike {
@@ -25,13 +30,25 @@ export interface DesktopNotificationLike {
 }
 
 export interface DesktopNotificationRegistryOptions {
-  create(input: { title: string; body?: string; silent?: boolean }): DesktopNotificationLike;
-  /** Shows, restores, focuses or creates the profile's window. */
+  create(input: {
+    title: string;
+    body?: string;
+    silent?: boolean;
+    icon?: string;
+  }): DesktopNotificationLike;
+  /**
+   * Shows, restores, focuses or creates the profile's window. Resolving `false` means no window
+   * was opened (the app is quitting).
+   */
   openProfile(profileId: string): Promise<unknown>;
-  /** Tells the profile's renderer that activations are waiting. */
-  announce(profileId: string): void;
+  /** The webContents id of the window `openProfile` brought forward, if any. */
+  selectWindow(profileId: string): number | null;
+  /** Tells that window, or every window of the profile when null, that activations wait. */
+  announce(profileId: string, webContentsId: number | null): void;
   log?(message: string): void;
   maxEntries?: number;
+  activationTtlMs?: number;
+  now?(): number;
 }
 
 type Entry = {
@@ -39,6 +56,12 @@ type Entry = {
   readonly id: string;
   readonly target: DesktopNotificationTarget;
   readonly notice: DesktopNotificationLike;
+};
+
+type PendingActivation = DesktopNotificationActivation & {
+  /** Only this window takes it, so a background window cannot navigate in its place. */
+  readonly webContentsId: number | null;
+  readonly expiresAt: number;
 };
 
 function boundedString(value: unknown, max: number): string | null {
@@ -95,6 +118,13 @@ export function parseDesktopNotificationInput(raw: unknown): DesktopNotification
   const body = value.body === undefined ? null : boundedString(value.body, MAX_BODY_LENGTH);
   const tag = value.tag === undefined ? null : exactId(value.tag);
   if (value.tag !== undefined && !tag) return null;
+  // An icon that isn't a small PNG is dropped rather than failing the notification.
+  const icon =
+    typeof value.icon === "string" &&
+    value.icon.startsWith(ICON_PREFIX) &&
+    value.icon.length <= MAX_ICON_LENGTH
+      ? value.icon
+      : null;
   return {
     id,
     title,
@@ -102,6 +132,7 @@ export function parseDesktopNotificationInput(raw: unknown): DesktopNotification
     ...(body ? { body } : {}),
     ...(tag ? { tag } : {}),
     ...(value.silent === true ? { silent: true } : {}),
+    ...(icon ? { icon } : {}),
   };
 }
 
@@ -112,11 +143,15 @@ export function parseDesktopNotificationInput(raw: unknown): DesktopNotification
  */
 export class DesktopNotificationRegistry {
   private readonly entries = new Map<string, Entry>();
-  private readonly pending = new Map<string, DesktopNotificationActivation[]>();
+  private readonly pending = new Map<string, PendingActivation[]>();
   private readonly maxEntries: number;
+  private readonly ttlMs: number;
+  private readonly now: () => number;
 
   constructor(private readonly options: DesktopNotificationRegistryOptions) {
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
+    this.ttlMs = options.activationTtlMs ?? DEFAULT_ACTIVATION_TTL_MS;
+    this.now = options.now ?? Date.now;
   }
 
   get size(): number {
@@ -136,6 +171,7 @@ export class DesktopNotificationRegistry {
         title: input.title,
         ...(input.body ? { body: input.body } : {}),
         ...(input.silent ? { silent: true } : {}),
+        ...(input.icon ? { icon: input.icon } : {}),
       });
     } catch (error) {
       this.options.log?.(`notification create failed: ${String(error)}`);
@@ -144,12 +180,7 @@ export class DesktopNotificationRegistry {
     const entry: Entry = { profileId, id: input.id, target: input.target, notice };
     notice.on("click", () => this.activate(key, entry));
     this.entries.set(key, entry);
-    while (this.entries.size > this.maxEntries) {
-      // Evicted entries stay on screen; only their click falls back to activating the app.
-      const oldest = this.entries.keys().next().value;
-      if (oldest === undefined) break;
-      this.entries.delete(oldest);
-    }
+    this.evictOldest(profileId);
     try {
       notice.show();
     } catch (error) {
@@ -160,34 +191,61 @@ export class DesktopNotificationRegistry {
     return true;
   }
 
-  close(profileId: string, tag: string): void {
-    const key = this.key(profileId, tag);
-    const entry = this.entries.get(key);
-    if (!entry) return;
-    this.entries.delete(key);
-    this.safeClose(entry.notice);
-  }
-
-  take(profileId: string): DesktopNotificationActivation[] {
-    const queued = this.pending.get(profileId) ?? [];
-    this.pending.delete(profileId);
-    return queued;
+  /**
+   * Takes the unexpired activations meant for this window, oldest first. Activations bound to
+   * another window of the profile stay queued for it.
+   */
+  take(profileId: string, webContentsId: number): DesktopNotificationActivation[] {
+    const now = this.now();
+    const queued = (this.pending.get(profileId) ?? []).filter((item) => item.expiresAt > now);
+    const taken: DesktopNotificationActivation[] = [];
+    const kept: PendingActivation[] = [];
+    for (const item of queued) {
+      if (item.webContentsId === null || item.webContentsId === webContentsId)
+        taken.push({ id: item.id, target: item.target });
+      else kept.push(item);
+    }
+    if (kept.length > 0) this.pending.set(profileId, kept);
+    else this.pending.delete(profileId);
+    return taken;
   }
 
   private activate(key: string, entry: Entry): void {
     if (this.entries.get(key) === entry) this.entries.delete(key);
-    const queue = this.pending.get(entry.profileId) ?? [];
-    queue.push({ id: entry.id, target: entry.target });
-    if (queue.length > MAX_PENDING_PER_PROFILE)
-      queue.splice(0, queue.length - MAX_PENDING_PER_PROFILE);
-    this.pending.set(entry.profileId, queue);
-    // Queue first: a window created by `openProfile` drains the queue as soon as it loads.
+    // Queued only once a window is open, and bound to it. A window that `openProfile` created
+    // takes it when its renderer starts; nothing is queued when opening fails.
     void this.options
       .openProfile(entry.profileId)
-      .then(() => this.options.announce(entry.profileId))
+      .then((opened) => {
+        if (opened === false) return;
+        const webContentsId = this.options.selectWindow(entry.profileId);
+        const queue = this.pending.get(entry.profileId) ?? [];
+        queue.push({
+          id: entry.id,
+          target: entry.target,
+          webContentsId,
+          expiresAt: this.now() + this.ttlMs,
+        });
+        if (queue.length > MAX_PENDING_PER_PROFILE)
+          queue.splice(0, queue.length - MAX_PENDING_PER_PROFILE);
+        this.pending.set(entry.profileId, queue);
+        this.options.announce(entry.profileId, webContentsId);
+      })
       .catch((error: unknown) => {
         this.options.log?.(`notification activation failed: ${String(error)}`);
       });
+  }
+
+  /** Evicted entries stay on screen; only their click falls back to activating the app. */
+  private evictOldest(profileId: string): void {
+    let count = 0;
+    for (const entry of this.entries.values()) if (entry.profileId === profileId) count += 1;
+    for (const [key, entry] of this.entries) {
+      if (count <= this.maxEntries) break;
+      if (entry.profileId !== profileId) continue;
+      this.entries.delete(key);
+      count -= 1;
+    }
   }
 
   private safeClose(notice: DesktopNotificationLike): void {
