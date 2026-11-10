@@ -4253,7 +4253,7 @@ describe("MessagesTimeline HTML renders", () => {
           makeUserEntry("anchor-user", "Show the chart", 0),
           makeHtmlRenderEntry(
             "html-grows",
-            "<div id=g style=\"height:200px\">Chart</div><script>setTimeout(()=>{document.getElementById('g').style.height='3200px'},1500)</script>",
+            "<div id=g style=\"height:200px\">Chart</div><script>addEventListener('message',e=>{if(e.data==='grow-test-page')document.getElementById('g').style.height='3200px'})</script>",
             1,
           ),
           // More than the growth below the viewport: LegendList applies its anchor
@@ -4286,17 +4286,20 @@ describe("MessagesTimeline HTML renders", () => {
         host
           .querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!
           .getBoundingClientRect().top;
-      // The page grows 1.5s after loading, while it sits above the viewport. Scrolling
-      // may recycle its row and reload the frame; it reconnects and still reports.
+      // Grow only after capturing the anchor. Scrolling may recycle and reload
+      // the frame, so retry the idempotent request until its listener is ready.
+      // Frame height and the virtual list's scroll correction settle separately.
       await vi.waitFor(
-        () =>
+        () => {
+          frameFor(host, "html-grows")?.contentWindow?.postMessage("grow-test-page", "*");
           expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBeGreaterThan(
             3000,
-          ),
+          );
+          expect(Math.abs(anchorTop() - before)).toBeLessThan(4);
+          expect(node.scrollTop).toBeGreaterThan(3000);
+        },
         { timeout: 5000 },
       );
-      await vi.waitFor(() => expect(Math.abs(anchorTop() - before)).toBeLessThan(4));
-      expect(node.scrollTop).toBeGreaterThan(3000);
     } finally {
       await screen.unmount();
       host.remove();
