@@ -7,11 +7,34 @@ import {
   hasThreadPullRequestLink,
   parseSourceControlPullRequestKey,
   parseSourceControlRemoteUrl,
+  isSshRemoteUrl,
   resolveChangeRequestWebUrl,
   sourceControlPullRequestKeysEqual,
   toThreadPullRequestLink,
   updateThreadPullRequestLinks,
 } from "./sourceControl";
+
+it.each(["github.com", "gitlab.com", "bitbucket.org", "code.example.test"])(
+  "resolves userless SSH remotes on %s",
+  (host) => {
+    const remote = host + ":team/project.git";
+    expect(isSshRemoteUrl(remote)).toBe(true);
+    expect(parseSourceControlRemoteUrl(remote)).toMatchObject({
+      host,
+      owner: "team",
+      repository: "project",
+      webUrl: "https://" + host + "/team/project",
+    });
+  },
+);
+
+it.each([
+  "C:/repos/project",
+  "C:\\repos\\project",
+  "./team:group/repo",
+  "hg::team/repo",
+  "file:///srv/git/repo",
+])("does not treat %s as SSH", (remote) => expect(isSshRemoteUrl(remote)).toBe(false));
 
 describe("source-control pull-request keys", () => {
   it("formats provider-qualified keys and parses legacy GitHub keys", () => {

@@ -438,6 +438,31 @@ describe("forge adapters", () => {
       (await Effect.runPromiseExit(provider.writeComment({ ref, body: "disabled" })))._tag,
     ).toBe("Failure");
   });
+
+  it.each([true, false])("Azure preserves rename metadata (unchanged: %s)", async (unchanged) => {
+    const { provider, ref } = fixture("azure-devops", [
+      {
+        value: [
+          { id: 1, sourceRefCommit: { commitId: "new" }, targetRefCommit: { commitId: "old" } },
+        ],
+      },
+      {
+        changeEntries: [
+          { changeType: "rename", originalPath: "/old.txt", item: { path: "/new.txt" } },
+        ],
+      },
+      { content: "old\n" },
+      { content: unchanged ? "old\n" : "new\n" },
+    ]);
+    const files = await Effect.runPromise(provider.getFiles(ref));
+    expect(files[0]?.patch).toContain(
+      "similarity index " +
+        (unchanged ? "100" : "0") +
+        "%\nrename from old.txt\nrename to new.txt\n",
+    );
+    expect(files[0]?.patch).toContain("diff --git a/old.txt b/new.txt\n");
+    if (!unchanged) expect(files[0]?.patch).toContain("-old\n+new");
+  });
   it("Forgejo replaces reviewers without silently keeping removed reviewers", async () => {
     const { provider, ref, calls } = fixture("forgejo", [
       { number: 7, requested_reviewers: [{ login: "old" }] },

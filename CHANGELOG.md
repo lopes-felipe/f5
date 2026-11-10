@@ -4,8 +4,20 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- New worktree threads based on a branch that isn't on the remote no longer finish with a "Fetch base branch" warning. A local base branch with unpushed commits is used as is, instead of starting from the older remote copy; the setup card warns when the local branch has diverged from the remote or the remote can't be reached.
+- Preview navigations blocked by a page's leave-page prompt now report a failure, while redirects during loading continue without a navigation error.
+- Saving duplicate provider environment variable rows no longer deletes a stored secret that a sensitive row still uses.
+- The “New thread in...” palette lists the current project first and labels it “Current”, so pressing Enter starts a thread in the project being viewed.
+- Downloaded desktop updates restore the restart prompt after relaunch. Desktop windows support 600px widths, with a sidebar sheet that preserves the content pane's minimum width.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
+
+## [0.1.7] - 2026-11-10
+
 ### Added
 
+- Claude Fable 5.2 is available in Claude model pickers with Claude Code v2.1.290 or newer. Bare `fable` and `claude-fable` aliases now select 5.2; `fable-5.1` still selects Fable 5.1.
 - The Usage page has a Pricing tab for model prices, model mappings and a monthly budget. Activity shows budget meters with a month-end forecast and warns when you're on pace to exceed it.
 - Usage tables sort by any column, Projects and threads can be filtered by name, and Activity breakdowns export as CSV.
 - Activity can compare usage with the previous period: stat tiles show the change, and the chart marks each bar's previous value.
@@ -13,12 +25,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Changed
 
 - The Usage page uses one consistent design across its Limits, Activity and Pricing tabs. Limits at a glance is the first block on Activity, and `p` opens Pricing.
+- A thread that holds Chrome while idle shows a one-line "Chrome idle" strip with Release instead of the full computer-control card, and the global computer-use pill no longer shows idle Chrome reservations. Release also appears on the full card whenever Chrome is at rest.
 
 ### Fixed
 
-- Downloaded desktop updates restore the restart prompt after relaunch. Desktop windows support 600px widths, with a sidebar sheet that preserves the content pane's minimum width.
-
-- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
 - Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
 - Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
 - Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
@@ -44,6 +54,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down; on macOS, Caps Lock's lock state never counts. A hold stuck in system state stops counting after two minutes without any input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)", and a pause or policy change during the wait reports its own cause.
 - Codex turns that stream bursts of small output chunks are no longer interrupted by notification overflow. Interrupted Codex history with commands, MCP calls or empty reasoning can now be recovered automatically, and the recovery warning stays visible until it is, or until the history is accepted.
 - On macOS, computer-control screenshots of apps like Preview are no longer fully masked when one element's accessibility subrole can't be read. Only that element is masked: text fields, text areas and combo boxes are treated as possible password fields, and the elements inside them are still checked.
+- The sidebar's nav strip and Projects | Recent toggle stay pinned above the thread list instead of scrolling away with it; the search field stays with them while its results scroll.
 
 ## [0.1.6] - 2026-11-08
 

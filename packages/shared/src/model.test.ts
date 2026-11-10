@@ -73,19 +73,49 @@ describe("Claude Opus 5.5", () => {
   });
 });
 
-describe("Claude Fable 5.1", () => {
+describe("Claude Fable 5.2", () => {
   it.each([
     "fable",
     "claude-fable",
-    "fable-5.1",
-    "fable-5-1",
-    "claude-fable-5.1",
-    "claude-fable-5-1",
+    "fable-5.2",
+    "fable-5-2",
+    "claude-fable-5.2",
+    "claude-fable-5-2",
   ])("normalizes %s with stale context suffixes", (alias) => {
     for (const suffix of ["", "[1m]", "[200k]"]) {
-      expect(normalizeModelSlug(` ${alias}${suffix} `, "claudeAgent")).toBe("claude-fable-5-1");
+      expect(normalizeModelSlug(` ${alias}${suffix} `, "claudeAgent")).toBe("claude-fable-5-2");
     }
   });
+
+  it("uses native 1M and six efforts without unsupported controls", () => {
+    const model = "claude-fable-5-2";
+    expect(estimateModelContextWindowTokens(model, "claudeAgent")).toBe(1_000_000);
+    expect(getReasoningEffortOptions("claudeAgent", model)).toEqual(CLAUDE_CODE_EFFORT_OPTIONS);
+    expect(getDefaultReasoningEffort("claudeAgent", model)).toBe("high");
+    expect(supportsClaudeFastMode(model)).toBe(false);
+    expect(supportsClaudeContextWindow(model)).toBe(false);
+    expect(supportsClaudeThinkingToggle(model)).toBe(false);
+    expect(
+      normalizeClaudeModelOptions(model, {
+        effort: "xhigh",
+        contextWindow: "200k",
+        fastMode: true,
+        thinking: false,
+      }),
+    ).toEqual({ effort: "xhigh" });
+    expect(normalizeClaudeModelOptions(model, { effort: "high" })).toBeUndefined();
+  });
+});
+
+describe("Claude Fable 5.1", () => {
+  it.each(["fable-5.1", "fable-5-1", "claude-fable-5.1", "claude-fable-5-1"])(
+    "normalizes %s with stale context suffixes",
+    (alias) => {
+      for (const suffix of ["", "[1m]", "[200k]"]) {
+        expect(normalizeModelSlug(` ${alias}${suffix} `, "claudeAgent")).toBe("claude-fable-5-1");
+      }
+    },
+  );
 
   it("uses native 1M and six efforts without unsupported controls", () => {
     const model = "claude-fable-5-1";
@@ -125,9 +155,9 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("5.5")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
-    expect(normalizeModelSlug("fable", "claudeAgent")).toBe("claude-fable-5-1");
+    expect(normalizeModelSlug("fable", "claudeAgent")).toBe("claude-fable-5-2");
     expect(normalizeModelSlug("fable-5", "claudeAgent")).toBe("claude-fable-5");
-    expect(normalizeModelSlug("claude-fable", "claudeAgent")).toBe("claude-fable-5-1");
+    expect(normalizeModelSlug("claude-fable", "claudeAgent")).toBe("claude-fable-5-2");
     expect(normalizeModelSlug("sonnet", "claudeAgent")).toBe("claude-sonnet-5-5");
     expect(normalizeModelSlug("sonnet-5", "claudeAgent")).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("claude-sonnet-5.0", "claudeAgent")).toBe("claude-sonnet-5");
@@ -196,6 +226,7 @@ describe("resolveModelSlug", () => {
     expect(getModelOptions("claudeAgent").map((option) => option.slug)).toEqual([
       "claude-opus-5-5",
       "claude-opus-5",
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
       "claude-sonnet-5-5",

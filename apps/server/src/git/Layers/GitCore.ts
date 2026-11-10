@@ -1,4 +1,4 @@
-import { gitConfigArgs, literalGitPathspec } from "@t3tools/shared/git";
+import { gitConfigArgs, topLiteralGitPathspec } from "@t3tools/shared/git";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { Option } from "effect";
 import {
@@ -1287,39 +1287,52 @@ const makeGitCore = Effect.gen(function* () {
 
       // Porcelain diff can refresh the real index even with optional locks
       // disabled. Plumbing preserves status totals without that side effect.
-      const [statusStdout, unstagedNumstatStdout, stagedNumstatStdout, headNumstatResult] =
-        yield* Effect.all(
-          [
-            executeGit(
-              "GitCore.statusDetails.status",
-              cwd,
-              ["status", "--porcelain=2", "--branch", "-z"],
-              {
-                env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-                maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES,
-              },
-            ).pipe(Effect.map((result) => result.stdout)),
-            executeGit(
-              "GitCore.statusDetails.unstagedNumstat",
-              cwd,
-              ["diff-files", "-M", "--numstat", "-z"],
-              { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
-            ).pipe(Effect.map((result) => result.stdout)),
-            executeGit(
-              "GitCore.statusDetails.stagedNumstat",
-              cwd,
-              ["diff", "--cached", "--numstat", "-z"],
-              { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
-            ).pipe(Effect.map((result) => result.stdout)),
-            executeGit(
-              "GitCore.statusDetails.headNumstat",
-              cwd,
-              ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"],
-              { allowNonZeroExit: true, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
-            ),
-          ],
-          { concurrency: "unbounded" },
-        );
+      const [
+        statusStdout,
+        unstagedNumstatStdout,
+        stagedNumstatStdout,
+        headNumstatResult,
+        rootPath,
+      ] = yield* Effect.all(
+        [
+          executeGit(
+            "GitCore.statusDetails.status",
+            cwd,
+            ["status", "--porcelain=2", "--branch", "-z"],
+            {
+              env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+              maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES,
+            },
+          ).pipe(Effect.map((result) => result.stdout)),
+          executeGit(
+            "GitCore.statusDetails.unstagedNumstat",
+            cwd,
+            ["diff-files", "-M", "--numstat", "-z"],
+            { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+          ).pipe(Effect.map((result) => result.stdout)),
+          executeGit(
+            "GitCore.statusDetails.stagedNumstat",
+            cwd,
+            ["diff", "--cached", "--numstat", "-z"],
+            { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+          ).pipe(Effect.map((result) => result.stdout)),
+          executeGit(
+            "GitCore.statusDetails.headNumstat",
+            cwd,
+            ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"],
+            { allowNonZeroExit: true, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+          ),
+          runGitStdout("GitCore.statusDetails.root", cwd, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+          ]).pipe(
+            Effect.map(stripPathTerminator),
+            Effect.catch(() => Effect.succeed("")),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
 
       let branch: string | null = null;
       let upstreamRef: string | null = null;
@@ -1357,7 +1370,10 @@ const makeGitCore = Effect.gen(function* () {
           hasWorkingTreeChanges = true;
           const pathValue = parsePorcelainPath(line);
           if (pathValue) changedFilesWithoutNumstat.add(pathValue);
-          if (line.startsWith("2 ")) index += 1;
+          if (line.startsWith("2 ")) {
+            const originalPath = statusRecords[++index];
+            if (originalPath) changedFilesWithoutNumstat.add(originalPath);
+          }
         }
       }
 
@@ -1424,6 +1440,7 @@ const makeGitCore = Effect.gen(function* () {
         upstreamRef,
         hasWorkingTreeChanges,
         workingTree: {
+          ...(rootPath ? { rootPath } : {}),
           files,
           insertions,
           deletions,
@@ -1767,6 +1784,67 @@ const makeGitCore = Effect.gen(function* () {
       return hash.digest("hex");
     });
 
+  const stageSelectedFiles = (
+    execute: (
+      args: readonly string[],
+      options?: Pick<ExecuteGitOptions, "onStdoutChunk">,
+    ) => Effect.Effect<{ readonly stdout: string }, GitCommandError>,
+    filePaths: readonly string[] | undefined,
+  ) =>
+    Effect.gen(function* () {
+      // A staged rename's source is absent from the index and worktree. Keep
+      // it selectable for commit, while excluding it from add's pathspecs.
+      let stagePaths: readonly string[] | undefined;
+      if (filePaths?.length) {
+        const selections = new Set(filePaths.map((file) => file.replace(/\/$/, "")));
+        const matched = new Set<string>();
+        const matchPath = (file: string) => {
+          if (selections.has(".")) matched.add(".");
+          if (selections.has(file)) matched.add(file);
+          for (let end = file.indexOf("/"); end >= 0; end = file.indexOf("/", end + 1)) {
+            const directory = file.slice(0, end);
+            if (selections.has(directory)) matched.add(directory);
+          }
+        };
+        const decoder = new TextDecoder();
+        let pending = "";
+        let streamed = false;
+        const result = yield* execute(
+          [
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+            "--",
+            ...filePaths.map(topLiteralGitPathspec),
+          ],
+          {
+            onStdoutChunk: (chunk) => {
+              streamed = true;
+              pending += decoder.decode(chunk, { stream: true });
+              let end: number;
+              while ((end = pending.indexOf("\0")) >= 0) {
+                matchPath(pending.slice(0, end));
+                pending = pending.slice(end + 1);
+              }
+            },
+          },
+        );
+        // Scripted Git services can return buffered output instead of invoking the consumer.
+        if (!streamed) for (const file of result.stdout.split("\0")) matchPath(file);
+        stagePaths = filePaths.filter((file) => matched.has(file.replace(/\/$/, "")));
+      }
+      if (stagePaths === undefined || stagePaths.length > 0) {
+        yield* execute([
+          "add",
+          "-A",
+          ...(stagePaths ? ["--", ...stagePaths.map(topLiteralGitPathspec)] : []),
+        ]);
+      }
+    });
+
   // Temporary indexes live beside the real index so split-index dependencies can
   // be resolved and materialized before staging. No repository lock spans generation.
   const withPreparedIndex = <A>(
@@ -1790,7 +1868,10 @@ const makeGitCore = Effect.gen(function* () {
         (temporaryIndex) =>
           Effect.gen(function* () {
             const env = { GIT_INDEX_FILE: temporaryIndex, GIT_OPTIONAL_LOCKS: "0" };
-            const temporaryGit = (args: readonly string[]) =>
+            const temporaryGit = (
+              args: readonly string[],
+              options?: Pick<ExecuteGitOptions, "onStdoutChunk">,
+            ) =>
               executeGit(
                 "GitCore.commitIndex",
                 cwd,
@@ -1801,7 +1882,7 @@ const makeGitCore = Effect.gen(function* () {
                   ]),
                   ...args,
                 ],
-                { env },
+                { ...options, env },
               );
             if (originalIndex !== null) {
               yield* Effect.tryPromise({
@@ -1827,11 +1908,7 @@ const makeGitCore = Effect.gen(function* () {
             } else {
               yield* temporaryGit(head ? ["read-tree", head] : ["read-tree", "--empty"]);
             }
-            yield* temporaryGit([
-              "add",
-              "-A",
-              ...(filePaths?.length ? ["--", ...filePaths.map(literalGitPathspec)] : []),
-            ]);
+            yield* stageSelectedFiles(temporaryGit, filePaths);
             const includedTree = (yield* temporaryGit(["write-tree"])).stdout.trim();
             const result = yield* use(env);
             const stable =
@@ -1863,7 +1940,7 @@ const makeGitCore = Effect.gen(function* () {
     Effect.gen(function* () {
       const prepared = yield* withPreparedIndex(cwd, filePaths, (env) =>
         Effect.gen(function* () {
-          const paths = filePaths?.length ? ["--", ...filePaths.map(literalGitPathspec)] : [];
+          const paths = filePaths?.length ? ["--", ...filePaths.map(topLiteralGitPathspec)] : [];
           const stagedSummary = (yield* executeGit(
             "GitCore.prepareCommitContext.stagedSummary",
             cwd,
@@ -1957,13 +2034,10 @@ const makeGitCore = Effect.gen(function* () {
           yield* createBranch({ cwd, branch: options.newBranch });
           yield* Effect.scoped(checkoutBranch({ cwd, branch: options.newBranch }));
         }
-        yield* runGit("GitCore.commitPrepared.stage", cwd, [
-          "add",
-          "-A",
-          ...(expected.filePaths?.length
-            ? ["--", ...expected.filePaths.map(literalGitPathspec)]
-            : []),
-        ]);
+        yield* stageSelectedFiles(
+          (args, options) => executeGit("GitCore.commitPrepared.stage", cwd, args, options),
+          expected.filePaths,
+        );
         const result = yield* commit(cwd, subject, body, expected.filePaths);
         preparedContexts.delete(context);
         return { status: "created" as const, commitSha: result.commitSha };
@@ -1988,7 +2062,7 @@ const makeGitCore = Effect.gen(function* () {
           .exists(isAbsolutePath(mergeHeadPath) ? mergeHeadPath : resolvePath(cwd, mergeHeadPath))
           .pipe(Effect.catch(() => Effect.succeed(false)));
         if (!mergeInProgress) {
-          args.push("--only", "--", ...filePaths.map(literalGitPathspec));
+          args.push("--only", "--", ...filePaths.map(topLiteralGitPathspec));
         }
       }
       // The summary lists every created or deleted path.

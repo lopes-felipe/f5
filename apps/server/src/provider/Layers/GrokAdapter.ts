@@ -70,7 +70,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
-import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
+import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import {
   type AcpSessionRuntimeShape,
   type AcpSessionRuntimeStartResult,
@@ -222,17 +222,7 @@ function selectPermissionOptionId(
   request: EffectAcpSchema.RequestPermissionRequest,
   decision: Exclude<ProviderApprovalDecision, "cancel">,
 ): string | undefined {
-  const kind =
-    decision === "acceptForSession"
-      ? "allow_always"
-      : decision === "accept"
-        ? "allow_once"
-        : "reject_once";
-  const optionId = (entryKind: string) =>
-    request.options.find((entry) => entry.kind === entryKind)?.optionId.trim() || undefined;
-  // Grok often omits allow_always. "Always allow this session" then approves this request once,
-  // and the adapter remembers the operation for the rest of the session.
-  return optionId(kind) ?? (decision === "acceptForSession" ? optionId("allow_once") : undefined);
+  return acpPermissionOutcome(decision, request.options);
 }
 
 /**
