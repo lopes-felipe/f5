@@ -99,38 +99,59 @@ export function describeComputerAction(
   }
 }
 
-export interface IdleChromeReservationState {
+export interface ChromeReleaseState {
   /** This thread's lease holder, if any. */
   readonly holder?:
     | { readonly browser?: "idle" | "working" | "unknown" | undefined; readonly state: string }
     | undefined;
-  readonly pendingTakeover?: boolean | undefined;
-  readonly activityStatus?: ComputerActivity["status"] | undefined;
-  readonly paused?: boolean | undefined;
-  readonly stopUnconfirmed?: boolean | undefined;
-  readonly grantCount: number;
-  readonly heldBy?: boolean | undefined;
-  readonly outcomeUnknown?: boolean | undefined;
+  /**
+   * The thread's turn is running. `browser: "idle"` only means no Chrome call is running
+   * right now, so mid-turn the agent may call Chrome again at any moment.
+   */
+  readonly turnRunning?: boolean | undefined;
   /** A Chrome call ended moments ago, so the runtime still reads as in use. */
   readonly lingering?: boolean | undefined;
 }
 
 /**
- * The thread only holds an idle Chrome lease with nothing to act on or warn about, so the
- * live card can shrink to a one-line strip.
+ * The thread holds Chrome at rest: no Chrome call, no turn, past the linger. Release can
+ * free it now, so every surface that offers Release uses this one check.
  */
-export function isIdleChromeReservation(state: IdleChromeReservationState): boolean {
+export function canReleaseChrome(state: ChromeReleaseState): boolean {
   return (
     state.holder?.browser === "idle" &&
     state.holder.state === "active" &&
+    !state.turnRunning &&
+    !state.lingering
+  );
+}
+
+export interface IdleChromeReservationState extends ChromeReleaseState {
+  readonly pendingTakeover?: boolean | undefined;
+  /**
+   * Status of the thread's last computer action while it is still relevant: started, or
+   * finished within `AGENT_ACTIVITY_WINDOW_MS`. The store keeps the last action forever,
+   * and Chrome calls don't record one, so an older action must not hold the full card.
+   */
+  readonly recentActivityStatus?: ComputerActivity["status"] | undefined;
+  readonly paused?: boolean | undefined;
+  readonly stopUnconfirmed?: boolean | undefined;
+  readonly grantCount: number;
+}
+
+/**
+ * The thread only holds Chrome at rest with nothing to act on or warn about, so the live
+ * card can shrink to a one-line strip. A recent failure (a Busy refusal, an unknown outcome
+ * or any other) or interruption keeps the full card so it stays visible.
+ */
+export function isIdleChromeReservation(state: IdleChromeReservationState): boolean {
+  return (
+    canReleaseChrome(state) &&
     !state.pendingTakeover &&
-    state.activityStatus !== "started" &&
+    (state.recentActivityStatus === undefined || state.recentActivityStatus === "completed") &&
     !state.paused &&
     !state.stopUnconfirmed &&
-    state.grantCount === 0 &&
-    !state.heldBy &&
-    !state.outcomeUnknown &&
-    !state.lingering
+    state.grantCount === 0
   );
 }
 

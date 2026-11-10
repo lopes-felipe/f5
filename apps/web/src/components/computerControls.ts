@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
 import type { ThreadId } from "@t3tools/contracts";
@@ -89,25 +90,45 @@ export async function pausePreviewThread(threadId: ThreadId, paused: boolean): P
   if (!paused) useAgentBrowserActivityStore.getState().setPaused(threadId, false);
 }
 
-/** Why Release didn't free Chrome, from the server's outcome (older servers send none). */
+/** How long Chrome keeps reading as in use after its last call ends. */
+export const CHROME_BANNER_LINGER_MS = 3000;
+
+/** True while `active` and for `ms` after it last was, so back-to-back calls don't flicker. */
+export function useLinger(active: boolean, ms = CHROME_BANNER_LINGER_MS): boolean {
+  const [linger, setLinger] = useState(active);
+  useEffect(() => {
+    if (active) {
+      setLinger(true);
+      return;
+    }
+    const timer = setTimeout(() => setLinger(false), ms);
+    return () => clearTimeout(timer);
+  }, [active, ms]);
+  return active || linger;
+}
+
+/**
+ * Why Release didn't free Chrome, from the server's outcome (older servers send none).
+ * Release lives on the holding thread's own card, so the text speaks of "this thread".
+ */
 export function chromeReleaseFailureText(
   outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
 ): string {
   switch (outcome) {
     case "not-holder":
-      return "That thread no longer holds Chrome.";
+      return "This thread no longer holds Chrome.";
     case "timeout":
-      return "That thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
+      return "This thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
     case "working":
-      return "That thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
+      return "This thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
     default:
       return "Chrome wasn't released. Try again.";
   }
 }
 
-/** Tooltip for every Release button on an idle Chrome reservation. */
+/** Tooltip for the holding thread's Release button. */
 export const CHROME_RELEASE_TITLE =
-  "Stops that thread's idle session; its next message restarts Chrome control";
+  "Stops this thread's idle Chrome session; its next message restarts Chrome control";
 
 /** Releases a thread's idle Chrome lease: "" on success, otherwise the text to show. */
 export async function releaseChromeReservation(threadId: ThreadId): Promise<string> {

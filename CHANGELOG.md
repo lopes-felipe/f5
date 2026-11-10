@@ -14,6 +14,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Changed
 
 - The Usage page uses one consistent design across its Limits, Activity and Pricing tabs. Limits at a glance is the first block on Activity, and `p` opens Pricing.
+- A thread that holds Chrome while idle shows a one-line "Chrome idle" strip with Release instead of the full computer-control card, and the global computer-use pill no longer shows idle Chrome reservations. Release also appears on the full card whenever Chrome is at rest.
 
 ### Fixed
 

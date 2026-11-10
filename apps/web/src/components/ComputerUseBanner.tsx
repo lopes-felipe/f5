@@ -1,14 +1,16 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useStore } from "../store";
+import { canReleaseChrome } from "./AgentComputerLiveCard.logic";
 import { Button } from "./ui/button";
 import {
   pauseComputerThread,
   stopComputerTurn,
   computerStopShortcutLabel,
+  useLinger,
 } from "./computerControls";
 
 const PAUSE_CAUSE_LABEL: Record<NonNullable<AgentComputerUseHolder["pauseCause"]>, string> = {
@@ -50,33 +52,38 @@ export function computerUseBannerTargets(
     .map((entry) => entry.threadId);
 }
 /**
- * A Chrome runtime that only holds its lease: idle, past the linger after its last call,
- * with nothing else to report. Another thread in this profile that needs Chrome or
- * foreground control preempts it, and main hides it from other profiles, so the banner
- * stays out of the way; the holding thread's card shows it with Release.
+ * A Chrome runtime that only holds its lease at rest (`canReleaseChrome`: idle, no turn,
+ * past the linger). Another thread in this profile that needs Chrome or foreground control
+ * preempts it, and main hides it from other profiles, so the banner stays out of the way;
+ * the holding thread's card shows it with Release. Mid-turn, between Chrome calls, the
+ * agent may call Chrome again at any moment, so the banner keeps Pause and Stop.
  */
 export function chromeIdleReservation(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
   chromeLinger = false,
+  turnRunning = false,
 ): boolean {
-  const holder = primaryComputerHolder(leases);
   return (
     !leases.pendingTakeover &&
-    holder?.browser === "idle" &&
-    holder.state === "active" &&
     !pausedLocally &&
-    !chromeLinger
+    canReleaseChrome({
+      holder: primaryComputerHolder(leases),
+      turnRunning,
+      lingering: chromeLinger,
+    })
   );
 }
 /**
  * `chromeLinger`: a Chrome call ended moments ago, so an idle runtime still reads as in use
- * and the banner doesn't flicker between back-to-back calls.
+ * and the banner doesn't flicker between back-to-back calls. `turnRunning`: the primary
+ * holder's turn is running.
  */
 export function computerUseBannerText(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
   chromeLinger = false,
+  turnRunning = false,
 ): string | null {
   const pending = leases.pendingTakeover;
   if (pending) {
@@ -87,7 +94,7 @@ export function computerUseBannerText(
   }
   const holder = primaryComputerHolder(leases);
   // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
-  const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger);
+  const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger, turnRunning);
   // An idle reservation says nothing; another profile's control still shows.
   if (!holder || reserved)
     return leases.otherProfile
@@ -154,23 +161,6 @@ export function computerUseBannerAmbient(
   );
 }
 
-/** How long Chrome keeps reading as in use after its last call ends. */
-export const CHROME_BANNER_LINGER_MS = 3000;
-
-/** True while `active` and for `ms` after it last was, so back-to-back calls don't flicker. */
-export function useLinger(active: boolean, ms = CHROME_BANNER_LINGER_MS): boolean {
-  const [linger, setLinger] = useState(active);
-  useEffect(() => {
-    if (active) {
-      setLinger(true);
-      return;
-    }
-    const timer = setTimeout(() => setLinger(false), ms);
-    return () => clearTimeout(timer);
-  }, [active, ms]);
-  return active || linger;
-}
-
 export function ComputerUseBanner() {
   const [error, setError] = useState("");
   const stopUnconfirmed = useAgentComputerActivityStore((state) => state.stopUnconfirmed);
@@ -185,8 +175,13 @@ export function ComputerUseBanner() {
   const title = useStore((store) =>
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
+  const holderTurnRunning = useStore((store) =>
+    holder
+      ? store.threads.find((thread) => thread.id === holder.threadId)?.session?.status === "running"
+      : false,
+  );
   const chromeLinger = useLinger(leases.holders.some((entry) => entry.browser === "working"));
-  const text = computerUseBannerText(leases, paused, chromeLinger);
+  const text = computerUseBannerText(leases, paused, chromeLinger, holderTurnRunning);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);

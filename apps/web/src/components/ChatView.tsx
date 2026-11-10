@@ -8503,7 +8503,8 @@ export default memo(function ChatView({
               />
             </div>
           ) : null}
-          <AgentComputerLiveCard threadId={activeThread.id} />
+          {/* Keyed so a pending Release or error never lands on another thread's card. */}
+          <AgentComputerLiveCard key={activeThread.id} threadId={activeThread.id} />
           <AgentBrowserLiveCard threadId={activeThread.id} />
           {/* Main content area with optional plan sidebar */}
           <div className="flex min-h-0 min-w-0 flex-1">
