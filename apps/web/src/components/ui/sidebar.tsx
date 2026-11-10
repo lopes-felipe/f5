@@ -17,7 +17,7 @@ import {
 } from "~/components/ui/sheet";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { useIsMobile } from "~/hooks/useMediaQuery";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
 import { Schema } from "effect";
 import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
@@ -96,6 +96,7 @@ function useOptionalSidebar(): SidebarContextProps | null {
 
 function SidebarProvider({
   defaultOpen = true,
+  mobileBreakpoint,
   open: openProp,
   onOpenChange: setOpenProp,
   keyboardShortcut = false,
@@ -105,12 +106,16 @@ function SidebarProvider({
   ...props
 }: React.ComponentProps<"div"> & {
   defaultOpen?: boolean;
+  mobileBreakpoint?: number;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   keyboardShortcut?: boolean;
 }) {
-  const isMobile = useIsMobile();
+  const isMobile = useMediaQuery(
+    mobileBreakpoint === undefined ? "max-md" : { max: mobileBreakpoint },
+  );
   const [openMobile, setOpenMobile] = React.useState(false);
+  if (!isMobile && openMobile) setOpenMobile(false);
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -317,7 +322,7 @@ function Sidebar({
   return (
     <SidebarInstanceContext.Provider value={instanceContextValue}>
       <div
-        className="group peer hidden text-sidebar-foreground md:block"
+        className="group peer text-sidebar-foreground"
         data-collapsible={state === "collapsed" ? collapsible : ""}
         data-side={side}
         data-slot="sidebar"
@@ -338,7 +343,7 @@ function Sidebar({
         />
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex",
+            "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",

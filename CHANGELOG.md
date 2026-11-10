@@ -10,6 +10,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Preview navigations blocked by a page's leave-page prompt now report a failure, while redirects during loading continue without a navigation error.
 - Saving duplicate provider environment variable rows no longer deletes a stored secret that a sensitive row still uses.
 - The “New thread in...” palette lists the current project first and labels it “Current”, so pressing Enter starts a thread in the project being viewed.
+- Downloaded desktop updates restore the restart prompt after relaunch. Desktop windows support 600px widths, with a sidebar sheet that preserves the content pane's minimum width.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
 
 ## [0.1.7] - 2026-11-10
 
