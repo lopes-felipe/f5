@@ -192,6 +192,17 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener("desktop:prompt-links-available", wrapped);
     };
   },
+  notifications: {
+    show: (input) => ipcRenderer.invoke("desktop:notification-show", input),
+    takeActivations: () => ipcRenderer.invoke("desktop:take-notification-activations"),
+    onActivationsAvailable: (listener) => {
+      const wrapped = () => listener();
+      ipcRenderer.on("desktop:notification-activations-available", wrapped);
+      return () => {
+        ipcRenderer.removeListener("desktop:notification-activations-available", wrapped);
+      };
+    },
+  },
   revealWindow: () => ipcRenderer.invoke("desktop:reveal-window"),
   getPathForFile: (file) => {
     const resolvedPath = webUtils.getPathForFile(file);
