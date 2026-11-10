@@ -322,6 +322,51 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     );
   });
 
+  it("names each call to main and reports the end of one refused after admission", async () => {
+    const validate = vi.fn(async (_holder: unknown, _callId?: string) => {});
+    const callEnded = vi.fn();
+    const h = await setup({ validate, callEnded });
+    await connected(h);
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "use-1" }), "t")).toBe(
+      undefined,
+    );
+    expect(validate).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: "t" }), "use-1");
+    // Admitted calls run; their end comes from the session's own call tracking.
+    expect(callEnded).not.toHaveBeenCalled();
+    // A call without a tool use id still gets an id main can track.
+    await h.runtime.admit(call("read_page"), "t");
+    expect(validate.mock.calls.at(-1)?.[1]).toMatch(/^[0-9a-f-]{36}$/);
+    // Refused after main admitted it: the registration changed, so it never runs.
+    await writeFile(manifestPath, manifest("/elsewhere/claude/chrome/chrome-native-host-long"));
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "use-2" }), "t")).toBe(
+      CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+    );
+    expect(callEnded).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), "use-2");
+  });
+
+  it("reports the end of a call abandoned at the admission deadline", async () => {
+    let finish!: () => void;
+    let hang = false;
+    const validate = vi.fn(async (_holder: unknown, _callId?: string) => {
+      if (hang)
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+    });
+    const callEnded = vi.fn();
+    const h = await setup({ validate, callEnded });
+    await connected(h);
+    hang = true;
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "late" }), "t")).toContain(
+      "could not be verified in time",
+    );
+    expect(callEnded).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() =>
+      expect(callEnded).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), "late"),
+    );
+  });
+
   it("keeps the restart fingerprint stable across connection health changes", async () => {
     const h = await setup();
     await h.runtime.prepare(session());

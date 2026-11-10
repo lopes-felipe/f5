@@ -14,6 +14,8 @@ import {
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
+  COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
+  COMPUTER_CHROME_RELEASE_CAPABILITY,
   DesktopComputerHostMessage,
   type ComputerAutomationBackendStatus,
   type ComputerAutomationRequest,
@@ -83,6 +85,8 @@ export class DesktopComputerHost {
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
+        COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
+        COMPUTER_CHROME_RELEASE_CAPABILITY,
       ],
     });
   }
@@ -178,6 +182,14 @@ export class DesktopComputerHost {
   /** Main understands `chromeCallsChanged`; older mains disconnect on unknown messages. */
   chromeCallsCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_CALLS_CAPABILITY);
+  }
+  /** Main admits each Chrome call (`callId`) and understands `chromeCallEnded`. */
+  chromeCallAdmissionCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY);
+  }
+  /** Main routes Chrome release requests across profiles and sends waiting blockers. */
+  chromeReleaseCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_RELEASE_CAPABILITY);
   }
   notificationsCapable(): boolean {
     return this.connected && this.hostCapabilities.has(SCHEDULED_NOTIFICATIONS_CAPABILITY);

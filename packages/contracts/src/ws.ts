@@ -14,6 +14,7 @@ import {
   ComputerConsentPersistence,
   ComputerActivity,
   ComputerBackendKind,
+  ComputerBlocker,
   ComputerDelivery,
   ComputerExecutionState,
   ComputerGrant,
@@ -318,6 +319,8 @@ export const AgentComputerUseHolder = Schema.Struct({
    * use. "unknown" when the session doesn't report its calls.
    */
   browser: Schema.optional(Schema.Literals(["idle", "working", "unknown"])),
+  /** `waiting-agent` only: who this thread waits for, as main described it. */
+  blockedBy: Schema.optional(ComputerBlocker),
 });
 export type AgentComputerUseHolder = typeof AgentComputerUseHolder.Type;
 /**

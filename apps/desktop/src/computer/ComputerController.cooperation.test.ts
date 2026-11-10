@@ -497,14 +497,60 @@ describe("cooperative computer control", () => {
       h.controller.close();
     }
   });
-  it("still reports foreground-busy ahead of user activity for a takeover wait", async () => {
+  it("waits out another agent's foreground, reported ahead of user activity", async () => {
     const h = fixture({ kind: "foreground" });
     try {
       h.lease.acquire({ ...h.holder, threadId: "other", scope: { kind: "foreground" } });
       h.ready.inputHeld = true;
       await expect(
         h.controller.waitForTarget("busy", h.holder, undefined, 300),
-      ).resolves.toMatchObject({ available: false, timedOut: false, reason: "foreground-busy" });
+      ).resolves.toMatchObject({ available: false, timedOut: true, reason: "foreground-busy" });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("resolves a takeover wait once another agent's foreground ends", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      const other = h.lease.acquire({
+        ...h.holder,
+        threadId: "other",
+        scope: { kind: "foreground" },
+      });
+      h.ready.lastUserInputAgeMs = 5000;
+      const waiting = h.controller.waitForTarget("busy", h.holder, undefined, 5000);
+      setTimeout(() => h.lease.release(other), 50);
+      await expect(waiting).resolves.toEqual({
+        available: true,
+        timedOut: false,
+        requiresFreshObservation: true,
+      });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("waits out a refusal from outside the lease, waking on availabilityChanged", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      let chromeBusy = true;
+      h.controller.setAdmissionCheck(() => {
+        if (chromeBusy)
+          throw new ComputerControlError({
+            _tag: "Busy",
+            holder: "other-profile",
+            resource: "chrome",
+          });
+      });
+      h.ready.lastUserInputAgeMs = 5000;
+      await expect(
+        h.controller.waitForTarget("short", h.holder, undefined, 200),
+      ).resolves.toMatchObject({ available: false, timedOut: true, reason: "agent-busy" });
+      const waiting = h.controller.waitForTarget("long", h.holder, undefined, 5000);
+      setTimeout(() => {
+        chromeBusy = false;
+        h.controller.availabilityChanged();
+      }, 50);
+      await expect(waiting).resolves.toMatchObject({ available: true });
     } finally {
       h.controller.close();
     }
@@ -559,4 +605,41 @@ describe("cooperative computer control", () => {
       h.controller.close();
     }
   });
+});
+it("publishes who a queued thread waits for, again only when that changes", async () => {
+  const h = fixture();
+  try {
+    await h.acquire();
+    let token = "first";
+    h.controller.setBlockerLookup(() => ({ token, activity: "computer", profileName: "Dev" }));
+    const queued = { ...h.holder, threadId: "waiting", executionGeneration: 1 };
+    h.controller.updateGrants(queued);
+    await h.controller.prepareAcquisition(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "queued",
+      waitMs: 20_000,
+      admit: () => h.controller.acquire(queued),
+    });
+    const waitingStates = () =>
+      h.state.mock.calls.filter(
+        ([, update]) => update.threadId === "waiting" && update.state === "waiting-agent",
+      );
+    expect(waitingStates().at(-1)?.[1]).toMatchObject({
+      blockedBy: { token: "first", activity: "computer", profileName: "Dev" },
+    });
+    h.controller.availabilityChanged();
+    expect(waitingStates()).toHaveLength(1);
+    token = "second";
+    h.controller.availabilityChanged();
+    expect(waitingStates()).toHaveLength(2);
+    expect(waitingStates().at(-1)?.[1]).toMatchObject({ blockedBy: { token: "second" } });
+    const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+    h.controller.setPaused("p", "waiting", true);
+    await rejected;
+  } finally {
+    h.controller.close();
+  }
 });

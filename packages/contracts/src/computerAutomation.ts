@@ -185,6 +185,27 @@ export const COMPUTER_AGENT_IDENTITY_CAPABILITY = "computer-agent-identity-v1";
 export const COMPUTER_ACTIVITY_CORRELATION_CAPABILITY = "computer-activity-correlation-v1";
 /** The backend reports whether its Chrome holder runs a browser call (`chromeCallsChanged`). */
 export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
+/**
+ * The backend names each Chrome call when main validates it (`chromeLeaseValidate.callId`)
+ * and reports its end (`chromeCallEnded`). Main marks the call running before it answers,
+ * so another thread's native lease and the call can never both be admitted. Only holders
+ * whose backend negotiated this stop blocking other threads' native control while idle.
+ */
+export const COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY = "chrome-call-admission-v1";
+/**
+ * Main routes a request to release an idle Chrome holder across profiles
+ * (`chromeHolderRelease` → `chromeReleaseRequest` → `chromeReleaseResult`).
+ */
+export const COMPUTER_CHROME_RELEASE_CAPABILITY = "chrome-release-v1";
+/** How long main waits for another profile's Chrome holder to answer a release request. */
+export const COMPUTER_CHROME_RELEASE_WAIT_MS = 8_000;
+export const ChromeReleaseOutcome = Schema.Literals([
+  "released",
+  "working",
+  "not-holder",
+  "timeout",
+]);
+export type ChromeReleaseOutcome = typeof ChromeReleaseOutcome.Type;
 export const COMPUTER_COOPERATION_CAPABILITY = "computer-cooperation-v1";
 export const COMPUTER_TAKEOVER_RESERVATION_CAPABILITY = "takeover-reservation-v1";
 export const COMPUTER_LEASE_WAIT_MAX_MS = 20_000;
@@ -503,6 +524,10 @@ export const ComputerAutomationError = Schema.Union([
     holderThreadId: Schema.optional(Schema.String),
     /** Whether the holder is between turns with no call running (server-side enrichment). */
     holderIdle: Schema.optional(Schema.Boolean),
+    /** The holding profile's display name, other-profile holders only (never its threads). */
+    holderProfileName: Schema.optional(Schema.String.check(Schema.isMaxLength(100))),
+    /** What the holder is doing: running a Chrome call, holding an idle Chrome session, or native control. */
+    activity: Schema.optional(Schema.Literals(["chrome-call", "chrome-session", "computer"])),
   }),
   Schema.Struct({
     _tag: Schema.Literal("Interrupted"),
@@ -674,6 +699,18 @@ export const ComputerPauseCause = Schema.Literals([
   "access-changed",
 ]);
 export type ComputerPauseCause = typeof ComputerPauseCause.Type;
+/**
+ * Who a waiting thread waits for. `token` is minted by main for this recipient profile and
+ * holder generation, and names the holder only to main (`stop-holder`). Other profiles'
+ * holders carry their profile's name; same-profile holders may carry their thread title.
+ */
+export const ComputerBlocker = Schema.Struct({
+  token: Id,
+  activity: Schema.Literals(["chrome-call", "chrome-session", "computer"]),
+  profileName: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100))),
+  threadTitle: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
+});
+export type ComputerBlocker = typeof ComputerBlocker.Type;
 export const ChromeLeaseHolder = Schema.Struct({
   profileId: Id,
   threadId: Id,
@@ -852,14 +889,47 @@ export const DesktopComputerHostMessage = Schema.Union([
      * skips the launch certification gate, so history stays restorable after an SDK
      * upgrade or a withdrawn record.
      */
-    type: Schema.Literals([
-      "chromeLeaseAcquire",
-      "chromeRestoreAcquire",
-      "chromeLeaseRelease",
-      "chromeLeaseValidate",
-    ]),
+    type: Schema.Literals(["chromeLeaseAcquire", "chromeRestoreAcquire", "chromeLeaseRelease"]),
     requestId: Id,
     holder: ChromeLeaseHolder,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("chromeLeaseValidate"),
+    requestId: Id,
+    holder: ChromeLeaseHolder,
+    /** The Chrome call this validation admits (`COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY`). */
+    callId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    /**
+     * Backend to main (`COMPUTER_CHROME_RELEASE_CAPABILITY`): ask the Chrome holder in another
+     * profile to release if it is idle. With `scope`, only when that holder blocks this
+     * thread's native control of `scope`. Answered with a `ChromeReleaseOutcome`.
+     */
+    type: Schema.Literal("chromeHolderRelease"),
+    requestId: Id,
+    threadId: Id,
+    scope: Schema.optionalKey(ComputerLeaseScope),
+  }),
+  Schema.Struct({
+    /** Main to the holder's backend: release this Chrome lease if its session is idle. */
+    type: Schema.Literal("chromeReleaseRequest"),
+    requestId: Id,
+    threadId: Id,
+    sessionGeneration: Id,
+  }),
+  Schema.Struct({
+    /** The holder's backend answers a `chromeReleaseRequest`. */
+    type: Schema.Literal("chromeReleaseResult"),
+    requestId: Id,
+    outcome: ChromeReleaseOutcome,
+  }),
+  Schema.Struct({
+    /** Backend to main: a call admitted with `callId` finished or was refused after admission. */
+    type: Schema.Literal("chromeCallEnded"),
+    threadId: Id,
+    sessionGeneration: Id,
+    callId: Id,
   }),
   Schema.Struct({
     type: Schema.Literal("chromeLeaseChanged"),
@@ -1008,6 +1078,8 @@ export const DesktopComputerHostMessage = Schema.Union([
     appId: Schema.optionalKey(Id),
     delivery: Schema.optionalKey(ComputerDelivery),
     pauseCause: Schema.optionalKey(ComputerPauseCause),
+    /** `waiting-agent` only: the holder this thread waits for. */
+    blockedBy: Schema.optionalKey(ComputerBlocker),
   }),
   Schema.Struct({
     type: Schema.Literal("takeoverReserved"),
@@ -1061,6 +1133,11 @@ export interface DesktopComputerAutomationBridge {
   readonly retryHelper: () => Promise<void>;
   readonly answerAccess: (answer: ComputerAccessAnswer) => Promise<void>;
   readonly setPaused: (threadId: string, paused: boolean) => Promise<void>;
+  /**
+   * Pauses the holder a waiting thread is blocked by (`ComputerBlocker.token`), even in
+   * another profile. Resolves false when the token is stale. Needs a trusted click.
+   */
+  readonly stopHolder?: (token: string) => Promise<boolean>;
   readonly onStatus: (callback: (status: ComputerAutomationBackendStatus) => void) => () => void;
   /** Integrations this profile always allows; only main's consent dialog adds one. */
   readonly integrationConsents?: () => Promise<ReadonlyArray<AlwaysAllowedIntegration>>;

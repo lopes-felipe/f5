@@ -453,6 +453,7 @@ function initializeComputerSystem(): void {
   );
   const lease = new ComputerLeaseAuthority(Date.now, {
     shareApps: () => helper.capabilities().includes(COMPUTER_SHARED_APP_CAPABILITY),
+    profileName: (profileId) => backends.get(profileId)?.profile.name,
   });
   const overlay = new ComputerOverlay();
   const nativeStatus = () => {
@@ -701,6 +702,7 @@ function initializeComputerSystem(): void {
     computerGrants,
     {
       consents: computerConsents,
+      profileName: (profileId) => backends.get(profileId)?.profile.name,
       grantForgetFailed: (_profileId, message) =>
         dialog.showErrorBox("Could not forget this app", message),
       ...(process.platform === "darwin"
@@ -814,6 +816,24 @@ function initializeComputerSystem(): void {
     answer: (profile, answer) => consent.review(profile, answer),
     pause: (profileId, threadId, paused) =>
       applyComputerPause({ controller, channel, consent, supervisor }, profileId, threadId, paused),
+    // A waiting thread's Stop pauses only the holder it waits for, even in another profile.
+    // Pausing only removes agent power; resuming stays with the holder's own profile.
+    stopHolder: async (profileId, token) => {
+      const target = channel.resolveBlocker(profileId, token);
+      if (!target) return false;
+      writeDesktopLogHeader(
+        sanitizeLogValue(
+          `computer: profile=${profileId} stopped the holder profile=${target.profileId} thread=${target.threadId}`,
+        ),
+      );
+      await applyComputerPause(
+        { controller, channel, consent, supervisor },
+        target.profileId,
+        target.threadId,
+        true,
+      );
+      return true;
+    },
   });
   if (
     computerCertificationStatus(

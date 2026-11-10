@@ -8997,6 +8997,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           context.chromeActivity = new ClaudeChromeActivity({
             reportCalls: (running) =>
               broker.reportChromeCalls(threadId, chromeLeaseGeneration, running),
+            reportCallEnded: (toolUseId) =>
+              broker.reportChromeCallEnded(threadId, chromeLeaseGeneration, toolUseId),
             // Compaction, background tasks and scheduled wake-ups die with the CLI.
             busy: () => claudeSessionBackgroundBusy(context),
             // Re-checked under the thread lock: a turn or background work that started

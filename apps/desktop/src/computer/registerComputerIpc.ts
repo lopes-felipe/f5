@@ -21,6 +21,8 @@ export function registerComputerIpc(
     retry: () => void | Promise<void>;
     answer: (profileId: string, answer: ComputerAccessAnswer) => void | Promise<void>;
     pause: (profileId: string, threadId: string, paused: boolean) => void | Promise<void>;
+    /** Pauses the holder a waiting thread's `ComputerBlocker.token` names; false when stale. */
+    stopHolder?: (profileId: string, token: string) => boolean | Promise<boolean>;
     /** Listing and revoking only: only main's native dialog grants "always allow". */
     integrationConsents?: {
       list: (profileId: string) => ReadonlyArray<AlwaysAllowableIntegration>;
@@ -59,6 +61,14 @@ export function registerComputerIpc(
     if (!args[1] && args[2] !== true)
       throw new Error("Resuming computer control requires a trusted user gesture.");
     return input.pause(profile, args[0], args[1]);
+  });
+  register("stop-holder", (profile, args) => {
+    if (typeof args[0] !== "string" || args[0].length === 0 || args[0].length > 1024)
+      throw new Error("Invalid stop request.");
+    // Stopping another agent, possibly in another profile, needs a real click.
+    if (args[1] !== true)
+      throw new Error("Stopping another agent requires a trusted user gesture.");
+    return input.stopHolder?.(profile, args[0]) ?? false;
   });
   register("integration-consents", (profile) => [
     ...(input.integrationConsents?.list(profile) ?? []),

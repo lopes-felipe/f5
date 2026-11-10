@@ -8,7 +8,7 @@ import {
   computerUseBannerText,
   primaryComputerHolder,
 } from "./components/ComputerUseBanner";
-import { chromeReleaseFailureText } from "./components/computerControls";
+import { chromeReleaseFailureText, waitingForAgentText } from "./components/computerControls";
 const threadId = ThreadId.makeUnsafe("computer-thread");
 beforeEach(() => useAgentComputerActivityStore.getState().resetConnection());
 describe("Chrome release failures", () => {
@@ -258,6 +258,29 @@ describe("computer use banner text", () => {
       "An agent in another F5 profile is controlling this computer",
     );
     expect(computerUseBannerText({ holders: [] }, false)).toBeNull();
+  });
+  it("names who a waiting thread waits for, by profile across profiles", () => {
+    const waiting = { ...holder, state: "waiting-agent" as const };
+    expect(computerUseBannerText({ holders: [waiting] }, false)).toBe("Waiting for another agent");
+    expect(
+      computerUseBannerText(
+        {
+          holders: [
+            {
+              ...waiting,
+              blockedBy: { token: "t", activity: "chrome-call", profileName: "Dev" },
+            },
+          ],
+        },
+        false,
+      ),
+    ).toBe("Waiting for an agent in “Dev” · using Chrome");
+    expect(waitingForAgentText({ token: "t", activity: "computer", threadTitle: "Refactor" })).toBe(
+      "Waiting for “Refactor” · controlling the computer",
+    );
+    expect(waitingForAgentText({ token: "t", activity: "chrome-session" })).toBe(
+      "Waiting for another agent · holding Chrome",
+    );
   });
   it("says whether an agent is using Chrome, not that it controls the computer", () => {
     const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };

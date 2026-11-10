@@ -49,7 +49,11 @@ export class ComputerLeaseAuthority {
   private readonly listeners = new Set<(holders: ReadonlyArray<ComputerLeaseHolder>) => void>();
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly options: { shareApps?: () => boolean } = {},
+    private readonly options: {
+      shareApps?: () => boolean;
+      /** A profile's display name, for other-profile refusals. */
+      profileName?: (profileId: string) => string | undefined;
+    } = {},
   ) {}
   holders(): ReadonlyArray<ComputerLeaseHolder> {
     return this.entries.map((entry) => entry.holder);
@@ -58,15 +62,18 @@ export class ComputerLeaseAuthority {
     return this.pending;
   }
   conflictsFor(input: ComputerLeaseHolder): boolean {
-    return (
-      this.entries.some(
-        ({ holder }) =>
-          !sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope),
-      ) ||
-      (!!this.pending &&
-        !sameThread(this.pending.holder, input) &&
-        this.scopesConflict(input.scope, this.pending.holder.scope))
-    );
+    return this.conflictFor(input) !== undefined;
+  }
+  /** The holder or pending takeover of another thread whose scope `input` collides with. */
+  conflictFor(input: ComputerLeaseHolder): ComputerLeaseHolder | undefined {
+    const held = this.entries.find(
+      ({ holder }) => !sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope),
+    )?.holder;
+    if (held) return held;
+    const pending = this.pending?.holder;
+    return pending && !sameThread(pending, input) && this.scopesConflict(input.scope, pending.scope)
+      ? pending
+      : undefined;
   }
   scopesConflict(a: ComputerLeaseScope, b: ComputerLeaseScope): boolean {
     return computerScopesConflict(a, b, { shareApps: this.options.shareApps?.() ?? false });
@@ -265,17 +272,25 @@ export class ComputerLeaseAuthority {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-  private busy(
+  /** The refusal naming `holder` as `profileId` may see it: other profiles by name only. */
+  busy(
     holder: Pick<ComputerLeaseHolder, "profileId" | "threadId" | "threadTitle">,
     profileId: string,
   ): ComputerControlError {
+    const name =
+      holder.profileId === profileId
+        ? undefined
+        : this.options.profileName?.(holder.profileId)?.trim();
     return new ComputerControlError({
       _tag: "Busy",
       holder: holder.profileId === profileId ? "same-profile" : "other-profile",
       resource: "computer",
+      activity: "computer",
       ...(holder.profileId === profileId
         ? { threadTitle: holder.threadTitle, holderThreadId: holder.threadId }
-        : {}),
+        : name
+          ? { holderProfileName: name.slice(0, 100) }
+          : {}),
     });
   }
   private notify(): void {

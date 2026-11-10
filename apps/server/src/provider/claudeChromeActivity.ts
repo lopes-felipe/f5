@@ -34,6 +34,8 @@ export function claudeSessionBackgroundBusy(state: {
 export interface ClaudeChromeActivityDeps {
   /** Whether a Claude in Chrome call is running, for the banner and for preemption. */
   readonly reportCalls: (running: boolean) => void;
+  /** One call ended (or ended with its turn), so main stops counting it as running. */
+  readonly reportCallEnded?: (toolUseId: string) => void;
   /**
    * Stops the session, which releases the lease once main sees the CLI exit. Answers
    * whether the stop went ahead: the session re-checks under its lock and may refuse.
@@ -87,6 +89,7 @@ export class ClaudeChromeActivity {
   turnEnded(): void {
     this.turnActive = false;
     if (this.calls.size > 0) {
+      for (const toolUseId of this.calls) this.deps.reportCallEnded?.(toolUseId);
       this.calls.clear();
       if (!this.disposed) this.deps.reportCalls(false);
     }
@@ -103,6 +106,7 @@ export class ClaudeChromeActivity {
 
   callEnded(toolUseId: string): void {
     if (!this.calls.delete(toolUseId)) return;
+    if (!this.disposed) this.deps.reportCallEnded?.(toolUseId);
     if (this.calls.size === 0 && !this.disposed) this.deps.reportCalls(false);
     this.arm();
   }

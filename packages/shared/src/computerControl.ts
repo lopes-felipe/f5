@@ -27,8 +27,24 @@ type BusyError = Extract<ComputerAutomationError, { _tag: "Busy" }>;
 export function describeComputerBusy(error: BusyError): string {
   if (error.reason === "observation-backlog")
     return "Observation backlog is full; wait before requesting another screenshot or inspection.";
-  if (error.holder === "other-profile")
-    return "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.";
+  if (error.holder === "other-profile") {
+    const who = error.holderProfileName
+      ? `an agent in profile "${error.holderProfileName}"`
+      : "an agent in another F5 profile";
+    const doing =
+      error.activity === "chrome-call"
+        ? "is using Chrome"
+        : error.activity === "chrome-session"
+          ? "holds a Chrome session"
+          : error.activity === "computer"
+            ? "is controlling the computer"
+            : error.resource === "chrome"
+              ? "holds Chrome control"
+              : error.resource === "computer"
+                ? "holds computer control"
+                : "holds computer or Chrome control";
+    return `Busy: ${who} ${doing}. Wait for it with computer_wait_for_target; ask the user only if that times out.`;
+  }
   const what =
     error.resource === "chrome"
       ? "Chrome"
