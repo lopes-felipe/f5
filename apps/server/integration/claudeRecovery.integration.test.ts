@@ -32,8 +32,8 @@ createInterface({ input: process.stdin }).on("line", line => {
   } else if (m.type === "user") {
     const subagent = process.env.CLAUDE_CODE_SUBAGENT_MODEL;
     appendFileSync(join(process.cwd(), "invocations.jsonl"), JSON.stringify({ model, subagent, pid: process.pid }) + "\\n");
-    if (model === "claude-fable-5-1" || subagent === "claude-fable-5-1") {
-      process.stderr.write("Unsupported model claude-fable-5-1\\n", () => process.exit(1));
+    if (model === "claude-fable-5-2" || subagent === "claude-fable-5-2") {
+      process.stderr.write("Unsupported model claude-fable-5-2\\n", () => process.exit(1));
       return;
     }
     emit({ type: "assistant", uuid: "answer", session_id: "fixture-session", parent_tool_use_id: null,
@@ -142,7 +142,7 @@ describe("Claude executable rejection recovery", () => {
           .map((line) => JSON.parse(line) as { model: string; subagent?: string; pid: number });
         expect(invocations).toHaveLength(2);
         expect(invocations[0]?.[scenario === "parent" ? "model" : "subagent"]).toBe(
-          "claude-fable-5-1",
+          "claude-fable-5-2",
         );
         expect(invocations[1]?.model).toBe("claude-fable-5");
         expect(invocations[1]?.subagent).toBe(scenario === "parent" ? undefined : "claude-fable-5");

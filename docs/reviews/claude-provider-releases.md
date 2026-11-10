@@ -5,8 +5,9 @@ Release 0–5 behavior and live-verification records. The user guide is [provide
 
 ## Bundled runtime and models
 
-F5 pins Claude Agent SDK 0.3.317, which bundles Claude Code v2.1.317. Claude Fable 5.1
-requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
+F5 pins Claude Agent SDK 0.3.317, which bundles Claude Code v2.1.317. Claude Fable 5.2
+requires v2.1.290+ and provides native 1M context; Fable 5.1 remains available with v2.1.257+.
+Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
 F5 defaults `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, which
 exposes the native Task tools (`TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`). In SDK
@@ -17,9 +18,10 @@ operator values for either variable are preserved. See [Native Task tools](#nati
 
 With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
 advisory. Known versions below v2.1.280 also omit Opus 5.5 and show the upgrade advisory.
+Known versions below v2.1.290 omit Fable 5.2 and show an upgrade advisory.
 Bare `opus` and `claude-opus` resolve to Opus 5.5; explicit `opus-5` stays on Opus 5.
 Unknown versions remain permissive. Bare `fable` and `claude-fable` aliases now
-resolve to Fable 5.1; explicit `fable-5` stays on Fable 5. Unavailable picker selections
+resolve to Fable 5.2; explicit `fable-5.1` stays on Fable 5.1 and `fable-5` stays on Fable 5. Unavailable picker selections
 fall back to a supported option. Persisted thread models and sub-agent overrides are forwarded
 without silent substitution, so an older executable can reject them. Select a supported model
 or upgrade the custom executable to recover.

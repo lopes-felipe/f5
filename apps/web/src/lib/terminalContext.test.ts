@@ -1,5 +1,6 @@
 import { ThreadId } from "@t3tools/contracts";
 import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
+import { getMessageTextLengthIssue } from "@t3tools/shared/providerInput";
 import { describe, expect, it } from "vitest";
 
 import { appendAttachedFilesToPrompt } from "./attachedFiles";
@@ -37,6 +38,42 @@ function makeContext(overrides?: Partial<TerminalContextDraft>): TerminalContext
     ...overrides,
   };
 }
+
+it("bounds combined terminal context without splitting a surrogate pair", () => {
+  const result = appendTerminalContextsToPrompt(
+    "Investigate",
+    [makeContext({ text: "😀".repeat(100_000) }), makeContext({ text: "more".repeat(100_000) })],
+    1_001,
+  );
+  expect(result.length).toBeLessThanOrEqual(1_001);
+  expect(result).toContain("… truncated …");
+  expect(result.endsWith("</terminal_context>")).toBe(true);
+  expect(result).not.toMatch(/[\ud800-\udfff]/u);
+});
+
+it("reserves linked-thread context before clamping terminal selections", () => {
+  const result = appendTerminalContextsToPrompt(
+    "[Source](f5://thread/source-1)",
+    [makeContext({ text: "output\n".repeat(30_000) })],
+    10_000,
+  );
+  expect(result.length).toBeLessThanOrEqual(4_000);
+  expect(getMessageTextLengthIssue(result, 10_000)).toBeNull();
+  const extracted = extractTrailingTerminalContexts(result);
+  expect(extracted.contextCount).toBe(1);
+  expect(extracted.contexts[0]?.body).toContain("… truncated …");
+});
+
+it.each([0, 10, 35, 55])(
+  "keeps unsendable context intact with only %s characters left",
+  (remaining) => {
+    const prompt = "x".repeat(1_000 - remaining);
+    const result = appendTerminalContextsToPrompt(prompt, [makeContext()], 1_000);
+    expect(getMessageTextLengthIssue(result, 1_000)).not.toBeNull();
+    expect(extractTrailingTerminalContexts(result).contextCount).toBe(1);
+    expect(result).toContain("git status");
+  },
+);
 
 describe("terminalContext", () => {
   it("formats terminal labels with line ranges", () => {

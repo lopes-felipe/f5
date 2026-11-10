@@ -1,5 +1,6 @@
 import { OrchestrationOverloadError } from "../orchestration/Errors.ts";
 import { dispatchVerifiedWorkspace } from "../project/workspaceTransitionContext.ts";
+import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../project/worktreeBase.ts";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { CommandId, type OrchestrationCommand } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
@@ -46,7 +47,6 @@ type BootstrapFailureStage =
 type BootstrapObservedStage =
   | BootstrapFailureStage
   | "worktree-base-fetch"
-  | "worktree-base-probe"
   | "setup-script-launch"
   | "cleanup";
 interface BootstrapCreatedWorktree {
@@ -79,6 +79,7 @@ interface BootstrapTurnStartBaseDependencies {
     | "createWorktree"
     | "fetchRemoteBranchCommit"
     | "hasRemote"
+    | "isAncestor"
     | "removeWorktree"
     | "resolveCommit"
     | "resolveCommonDir"
@@ -540,27 +541,33 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
         const newBranch = bootstrap.prepareWorktree.branch ?? buildTemporaryWorktreeBranchName();
-        const hasRemote = yield* observeBootstrapStage(
-          "worktree-base-probe",
-          input.git.hasRemote(bootstrap.prepareWorktree.projectCwd),
-        );
-        const remoteBase = hasRemote
-          ? yield* observeBootstrapStage(
-              "worktree-base-fetch",
-              input.git.fetchRemoteBranchCommit({
-                allowMissingBranch: true,
-                cwd: bootstrap.prepareWorktree.projectCwd,
-                branch: bootstrap.prepareWorktree.baseBranch,
+        const { baseSha } = yield* observeBootstrapStage(
+          "worktree-base-fetch",
+          resolveWorktreeBase(input.git, {
+            projectCwd: bootstrap.prepareWorktree.projectCwd,
+            baseBranch: bootstrap.prepareWorktree.baseBranch,
+            logAnnotations: { threadId: input.command.threadId },
+          }).pipe(
+            // This path has no setup card, so record how the base was chosen.
+            Effect.tap((base) =>
+              Effect.annotateCurrentSpan({
+                "worktree.base.outcome": base.outcome,
+                "worktree.base.detail": base.detail,
               }),
-            )
-          : null;
+            ),
+            Effect.tap((base) =>
+              isPossiblyStaleWorktreeBase(base.outcome)
+                ? Effect.logWarning("bootstrap created a worktree from a possibly stale base", {
+                    threadId: input.command.threadId,
+                    baseBranch: bootstrap.prepareWorktree!.baseBranch,
+                    outcome: base.outcome,
+                    detail: base.detail,
+                  })
+                : Effect.void,
+            ),
+          ),
+        );
         const commonDir = yield* input.git.resolveCommonDir(bootstrap.prepareWorktree.projectCwd);
-        const baseSha =
-          remoteBase?.commit ??
-          (yield* input.git.resolveCommit(
-            bootstrap.prepareWorktree.projectCwd,
-            bootstrap.prepareWorktree.baseBranch,
-          ));
         if (!baseSha)
           return yield* new GitCommandError({
             operation: "bootstrap",

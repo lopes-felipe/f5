@@ -113,11 +113,82 @@ let computerSecureAuditLeafRoles: Set<String> = ["AXStaticText", "AXImage"]
 /// transformed, top-layer or aria-owns web content renders outside its ancestors' boxes.
 let computerSecureAuditClippingRoles: Set<String> = ["AXScrollArea", "AXWebArea"]
 
+/// Row containers whose items AppKit can report as visible (`AXVisibleRows` for tables and
+/// outlines, `AXVisibleChildren` for lists).
+public let computerSecureAuditRowContainerRoles: Set<String> = ["AXTable", "AXOutline", "AXList"]
+
+/// Below this many children a row container is walked in full, exactly as before.
+public let computerSecureAuditLargeContainerChildren = 200
+
+/// A row container's items as accessibility reports them: every item in order, the items it
+/// reports as visible, its non-item children (columns, headers), and its header view, which is
+/// drawn over the rows scrolled beneath it.
+public struct ComputerSecureAuditRowItems<Handle> {
+  public var all: [Handle]
+  public var visible: [Handle]
+  public var others: [Handle]
+  public var header: Handle?
+  public init(all: [Handle], visible: [Handle], others: [Handle], header: Handle? = nil) {
+    self.all = all
+    self.visible = visible
+    self.others = others
+    self.header = header
+  }
+}
+
+/// `region` without the band an opaque header covers at its top, else `region` unchanged.
+func computerSecureAuditRegionBelowHeader(_ region: CGRect, header: CGRect?) -> CGRect {
+  guard let header, computerSecureAuditRectIsValid(header),
+    header.minY <= region.minY + 1, header.maxY > region.minY, header.maxY < region.maxY,
+    header.minX <= region.minX + 1, header.maxX >= region.maxX - 1
+  else { return region }
+  return CGRect(
+    x: region.minX, y: header.maxY, width: region.width, height: region.maxY - header.maxY)
+}
+
+/// The visible items when they can stand in for every item of a row container clipped to
+/// `region`, else nil. Items scrolled out of a clipping scroll area are never drawn, so only the
+/// reported visible items need auditing, provided that report is current: the visible items
+/// must be one contiguous run of `all`, and the items on either side of that run must have a
+/// usable frame lying outside `region` (touching it by at most 1 pt). `neighborFrame` returns
+/// nil when an item cannot be read or has no usable frame.
+func computerSecureAuditVisibleRun<Handle: Hashable>(
+  _ items: ComputerSecureAuditRowItems<Handle>, region: CGRect,
+  neighborFrame: (Handle) -> CGRect?
+) -> [Handle]? {
+  guard !items.visible.isEmpty else { return nil }
+  var index: [Handle: Int] = [:]
+  for (position, item) in items.all.enumerated() {
+    guard index.updateValue(position, forKey: item) == nil else { return nil }
+  }
+  var positions: [Int] = []
+  for item in items.visible {
+    guard let position = index[item] else { return nil }
+    positions.append(position)
+  }
+  positions.sort()
+  guard let first = positions.first, let last = positions.last,
+    Set(positions).count == positions.count, last - first + 1 == positions.count
+  else { return nil }
+  for neighbor in [first - 1, last + 1] where items.all.indices.contains(neighbor) {
+    guard let frame = neighborFrame(items.all[neighbor]), computerSecureAuditRectIsValid(frame)
+    else { return nil }
+    let overlap = frame.intersection(region)
+    if !overlap.isNull && overlap.width > 1 && overlap.height > 1 { return nil }
+  }
+  return items.visible
+}
+
 struct SecureAuditEntry<Handle> {
   let handle: Handle
   let depth: Int
   /// Frame of the nearest clipping ancestor below the window root; nil means the window.
   let clip: CGRect?
+  /// At or below an `AXWebArea`, where a row is no clipping boundary: positioned, top-layer
+  /// or aria-owns content inside an off-screen row can still render on screen.
+  var inWeb = false
+  /// A non-row child (a column, typically) of a row container whose rows were pruned.
+  var besidePrunedRows = false
 }
 
 /// This window's share of what remains of a capture's audit budget, taken once the window's
@@ -138,10 +209,17 @@ public func computerSecureAuditDeadline(
 /// carry the secure subrole is masked at its own frame as a suspected field, and its children
 /// are still walked, since AX frames need not contain their descendants. Any other childless
 /// element is masked at its own frame; other roles walk on as usual.
-public func computerSecureAudit<Handle>(
+///
+/// A large native row container under a clipping ancestor walks only its reported visible
+/// items and its non-item children when `rowItems` supplies them and the report passes
+/// `computerSecureAuditVisibleRun`; otherwise every child is walked as usual. Containers in web
+/// content are never pruned. A column of a pruned container skips its per-row cells: visible
+/// cells are walked through their rows, and off-screen cells are not drawn.
+public func computerSecureAudit<Handle: Hashable>(
   root: Handle, read: (Handle) -> ComputerSecureAuditNode<Handle>?, maxDepth: Int,
   maxNodes: Int, expired: () -> Bool, search: ((Handle) -> [Handle]?)? = nil,
   children: ((Handle) -> [Handle]?)? = nil,
+  rowItems: ((Handle, String) -> ComputerSecureAuditRowItems<Handle>?)? = nil,
   diagnostics: ComputerSecureAuditDiagnostics? = nil
 ) -> ComputerSecureAudit? {
   typealias Entry = SecureAuditEntry<Handle>
@@ -212,7 +290,7 @@ public func computerSecureAudit<Handle>(
     let clip = computerSecureAuditClippingRoles.contains(role) ? own ?? entry.clip : entry.clip
     // Searching a web area can consume the budget too; finish native chrome first.
     if role == "AXWebArea", entry.clip == nil, entry.depth > 0, let clip {
-      clipped.append(Entry(handle: entry.handle, depth: entry.depth, clip: clip))
+      clipped.append(Entry(handle: entry.handle, depth: entry.depth, clip: clip, inWeb: true))
       continue
     }
     if role == "AXWebArea", let results = search?(entry.handle) {
@@ -254,9 +332,9 @@ public func computerSecureAudit<Handle>(
       if !safe && !unaudited(entry, region: clip) { return nil }
       continue
     }
-    let descendants: [Handle]?
-    if let children { descendants = children(entry.handle) } else { descendants = node.children }
-    guard let descendants else {
+    let listed: [Handle]?
+    if let children { listed = children(entry.handle) } else { listed = node.children }
+    guard var descendants = listed else {
       diagnostics?.stop(.unreadableChildren)
       guard unaudited(entry, region: clip) else { return nil }
       continue
@@ -271,8 +349,36 @@ public func computerSecureAudit<Handle>(
     if !node.subroleReadable, !node.isSuspectedSecureField, descendants.isEmpty, let own {
       append(own)
     }
+    let large = descendants.count >= computerSecureAuditLargeContainerChildren
+    // A column beside pruned rows lists per-row cells; visible ones are walked via their rows.
+    if role == "AXColumn", entry.besidePrunedRows, large {
+      diagnostics?.pruneRows(descendants.count)
+      descendants = []
+    }
+    var prunedOthers: Set<Handle> = []
+    // Reading the row lists, the header and both neighbors must fit the remaining budget.
+    if let rowItems, let entryClip = entry.clip, !entry.inWeb,
+      computerSecureAuditRowContainerRoles.contains(role), large,
+      visited + 3 <= maxNodes, !expired(), let items = rowItems(entry.handle, role)
+    {
+      func frame(_ handle: Handle) -> CGRect? {
+        visited += 1
+        diagnostics?.visitNode()
+        return read(handle)?.frame
+      }
+      let region = computerSecureAuditRegionBelowHeader(
+        own.map { $0.intersection(entryClip) } ?? entryClip, header: items.header.flatMap(frame))
+      if let visible = computerSecureAuditVisibleRun(items, region: region, neighborFrame: frame) {
+        let kept = items.others + visible
+        diagnostics?.pruneRows(max(0, descendants.count - kept.count))
+        descendants = kept
+        prunedOthers = Set(items.others)
+      }
+    }
     for child in descendants {
-      let next = Entry(handle: child, depth: entry.depth + 1, clip: entry.depth == 0 ? nil : clip)
+      let next = Entry(
+        handle: child, depth: entry.depth + 1, clip: entry.depth == 0 ? nil : clip,
+        inWeb: entry.inWeb || role == "AXWebArea", besidePrunedRows: prunedOthers.contains(child))
       if next.clip == nil { open.append(next) } else { clipped.append(next) }
     }
   }

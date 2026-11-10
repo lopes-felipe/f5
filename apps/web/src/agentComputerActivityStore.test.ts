@@ -3,17 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isAgentComputerActive, useAgentComputerActivityStore } from "./agentComputerActivityStore";
 import {
   chromeIdleReservation,
-  chromeReleaseFailureText,
   computerUseBannerAmbient,
   computerUseBannerTargets,
   computerUseBannerText,
   primaryComputerHolder,
 } from "./components/ComputerUseBanner";
+import { chromeReleaseFailureText } from "./components/computerControls";
 const threadId = ThreadId.makeUnsafe("computer-thread");
 beforeEach(() => useAgentComputerActivityStore.getState().resetConnection());
 describe("Chrome release failures", () => {
   it("says why Release didn't free Chrome", () => {
-    expect(chromeReleaseFailureText("not-holder")).toBe("That thread no longer holds Chrome.");
+    expect(chromeReleaseFailureText("not-holder")).toBe("This thread no longer holds Chrome.");
     expect(chromeReleaseFailureText("working")).toContain("busy now");
     expect(chromeReleaseFailureText("timeout")).toContain("hasn't let go");
     expect(chromeReleaseFailureText(undefined)).toBe("Chrome wasn't released. Try again.");
@@ -59,6 +59,23 @@ describe("computer activity", () => {
     store.record(captured);
     store.resetConnection();
     expect(useAgentComputerActivityStore.getState().lastCapture).toEqual({});
+  });
+  it("opens no recent-lease window when an idle Chrome lease ends", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
+    try {
+      const store = useAgentComputerActivityStore.getState();
+      const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
+      store.setLeases({ holders: [{ ...chrome, browser: "idle" }] });
+      store.setLeases({ holders: [] });
+      expect(useAgentComputerActivityStore.getState().lastLeaseAt[threadId]).toBeUndefined();
+      // A lease that ends mid-call still keeps controls up briefly.
+      store.setLeases({ holders: [{ ...chrome, browser: "working" }] });
+      clock.mockReturnValue(130000);
+      store.setLeases({ holders: [] });
+      expect(useAgentComputerActivityStore.getState().lastLeaseAt[threadId]).toBe(130000);
+    } finally {
+      clock.mockRestore();
+    }
   });
   it("keeps controls visible for 15 seconds after lease release even when the last action is older", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
@@ -244,15 +261,20 @@ describe("computer use banner text", () => {
   });
   it("says whether an agent is using Chrome, not that it controls the computer", () => {
     const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
-    // An idle runtime still holds Chrome, so it shows as a quiet reservation, except just
-    // after a call ended.
-    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(
-      "Chrome reserved · idle",
-    );
+    // An idle runtime only reserves Chrome, which another thread preempts, so the banner
+    // says nothing, except just after a call ended.
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBeNull();
     expect(chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(true);
     expect(chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false, true)).toBe(
       false,
     );
+    // Mid-turn, between Chrome calls, the banner keeps Pause and Stop.
+    expect(
+      chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false, false, true),
+    ).toBe(false);
+    expect(
+      computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false, false, true),
+    ).toBe("An agent is using Chrome");
     expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false, true)).toBe(
       "An agent is using Chrome",
     );
@@ -276,12 +298,10 @@ describe("computer use banner text", () => {
         false,
       ),
     ).toBe("An agent in another F5 profile is controlling this computer");
-    // Chrome in use never gets the quieter style; an idle reservation and background
-    // control do.
-    const ambient = (browser: "idle" | "working" | "unknown", linger = false) =>
-      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, false, linger);
-    expect(ambient("idle")).toBe(true);
-    expect(ambient("idle", true)).toBe(false);
+    // Chrome in use never gets the quieter style; background control does.
+    const ambient = (browser: "idle" | "working" | "unknown") =>
+      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, false);
+    expect(ambient("idle")).toBe(false);
     expect(ambient("working")).toBe(false);
     expect(ambient("unknown")).toBe(false);
     expect(computerUseBannerAmbient({ holders: [holder] }, false)).toBe(true);
