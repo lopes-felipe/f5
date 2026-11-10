@@ -99,6 +99,41 @@ export function describeComputerAction(
   }
 }
 
+export interface IdleChromeReservationState {
+  /** This thread's lease holder, if any. */
+  readonly holder?:
+    | { readonly browser?: "idle" | "working" | "unknown" | undefined; readonly state: string }
+    | undefined;
+  readonly pendingTakeover?: boolean | undefined;
+  readonly activityStatus?: ComputerActivity["status"] | undefined;
+  readonly paused?: boolean | undefined;
+  readonly stopUnconfirmed?: boolean | undefined;
+  readonly grantCount: number;
+  readonly heldBy?: boolean | undefined;
+  readonly outcomeUnknown?: boolean | undefined;
+  /** A Chrome call ended moments ago, so the runtime still reads as in use. */
+  readonly lingering?: boolean | undefined;
+}
+
+/**
+ * The thread only holds an idle Chrome lease with nothing to act on or warn about, so the
+ * live card can shrink to a one-line strip.
+ */
+export function isIdleChromeReservation(state: IdleChromeReservationState): boolean {
+  return (
+    state.holder?.browser === "idle" &&
+    state.holder.state === "active" &&
+    !state.pendingTakeover &&
+    state.activityStatus !== "started" &&
+    !state.paused &&
+    !state.stopUnconfirmed &&
+    state.grantCount === 0 &&
+    !state.heldBy &&
+    !state.outcomeUnknown &&
+    !state.lingering
+  );
+}
+
 export function computerStatusTone(
   activity: ActivitySummary | undefined,
   state: ComputerCardState,

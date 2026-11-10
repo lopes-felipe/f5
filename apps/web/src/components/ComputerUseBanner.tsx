@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
-import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import { Button } from "./ui/button";
 import {
+  CHROME_RELEASE_TITLE,
+  chromeReleaseFailureText,
   pauseComputerThread,
+  releaseChromeReservation,
   stopComputerTurn,
   computerStopShortcutLabel,
 } from "./computerControls";
@@ -158,38 +160,23 @@ export function computerUseBannerAmbient(
   );
 }
 
-/** Why Release didn't free Chrome, from the server's outcome (older servers send none). */
-export function chromeReleaseFailureText(
-  outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
-): string {
-  switch (outcome) {
-    case "not-holder":
-      return "That thread no longer holds Chrome.";
-    case "timeout":
-      return "That thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
-    case "working":
-      return "That thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
-    default:
-      return "Chrome wasn't released. Try again.";
-  }
-}
+export { chromeReleaseFailureText };
 
-/** How long the banner keeps saying Chrome is in use after its last call ends. */
+/** How long Chrome keeps reading as in use after its last call ends. */
 export const CHROME_BANNER_LINGER_MS = 3000;
 
-/** True while any Chrome call runs and for `CHROME_BANNER_LINGER_MS` after the last one. */
-function useChromeLinger(leases: typeof AgentComputerUseChanged.Type): boolean {
-  const working = leases.holders.some((holder) => holder.browser === "working");
-  const [linger, setLinger] = useState(working);
+/** True while `active` and for `ms` after it last was, so back-to-back calls don't flicker. */
+export function useLinger(active: boolean, ms = CHROME_BANNER_LINGER_MS): boolean {
+  const [linger, setLinger] = useState(active);
   useEffect(() => {
-    if (working) {
+    if (active) {
       setLinger(true);
       return;
     }
-    const timer = setTimeout(() => setLinger(false), CHROME_BANNER_LINGER_MS);
+    const timer = setTimeout(() => setLinger(false), ms);
     return () => clearTimeout(timer);
-  }, [working]);
-  return working || linger;
+  }, [active, ms]);
+  return active || linger;
 }
 
 export function ComputerUseBanner() {
@@ -206,7 +193,11 @@ export function ComputerUseBanner() {
   const title = useStore((store) =>
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
-  const chromeLinger = useChromeLinger(leases);
+  const routeThreadId = useParams({
+    strict: false,
+    select: (params) => (params as { threadId?: string }).threadId ?? null,
+  });
+  const chromeLinger = useLinger(leases.holders.some((entry) => entry.browser === "working"));
   const text = computerUseBannerText(leases, paused, chromeLinger);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
@@ -217,6 +208,8 @@ export function ComputerUseBanner() {
     !retryTargets.length &&
     !leases.otherProfile &&
     chromeIdleReservation(leases, paused, chromeLinger);
+  // The holding thread's own card already shows the idle reservation with Release.
+  if (reserved && threadId && routeThreadId === threadId) return null;
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
@@ -263,20 +256,10 @@ export function ComputerUseBanner() {
           <Button
             size="xs"
             variant="ghost"
-            title="Stops that thread's idle session; its next message restarts Chrome control"
+            title={CHROME_RELEASE_TITLE}
             onClick={() => {
               setError("");
-              const api = readNativeApi();
-              if (!api?.computer) {
-                setError("The host is disconnected.");
-                return;
-              }
-              void api.computer.releaseChrome({ threadId }).then(
-                ({ released, outcome }) => {
-                  if (!released) setError(chromeReleaseFailureText(outcome));
-                },
-                () => setError("Chrome could not be released. Try again."),
-              );
+              void releaseChromeReservation(threadId).then(setError);
             }}
           >
             Release

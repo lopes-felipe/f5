@@ -20,8 +20,10 @@ vi.mock("../nativeApi", () => ({ readNativeApi: () => nativeMock.api }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useNavigate: () => async () => {},
-  useParams: () => ({}),
+  useParams: (options?: { select?: (params: Record<string, string>) => unknown }) =>
+    options?.select ? options.select(routeMock.params) : routeMock.params,
 }));
+const routeMock = vi.hoisted(() => ({ params: {} as Record<string, string> }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
 it.each(["paused", "recovery"] as const)(
   "uses server-only %s state after a renderer reload",
@@ -129,6 +131,7 @@ it("shows session-only persistence after the native request closes", async () =>
 });
 beforeEach(() => {
   nativeMock.api = undefined;
+  routeMock.params = {};
   useAgentComputerActivityStore.getState().resetConnection();
 });
 afterEach(() => {
@@ -783,6 +786,105 @@ it("releases an idle Chrome reservation from the banner and says when the holder
     await expect.element(page.getByText(/so it keeps Chrome/)).not.toBeInTheDocument();
   } finally {
     await screen.unmount();
+  }
+});
+
+it("collapses an idle Chrome reservation to a strip whose Release reports refusals", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const releaseChrome = vi
+    .fn(
+      async (_input: { threadId: string }): Promise<{ released: boolean; outcome?: string }> => ({
+        released: true,
+        outcome: "released",
+      }),
+    )
+    .mockResolvedValueOnce({ released: false, outcome: "working" });
+  nativeMock.api = { computer: { releaseChrome } } as never;
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    const strip = page.getByTestId("computer-idle-strip");
+    await expect.element(strip).toBeVisible();
+    await expect.element(strip.getByText("Chrome idle")).toBeVisible();
+    await expect.element(page.getByTestId("computer-live-card")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Release" }).click();
+    expect(releaseChrome).toHaveBeenCalledWith({ threadId });
+    await expect.element(page.getByText(/is busy now .* so it keeps Chrome/)).toBeVisible();
+    await page.getByRole("button", { name: "Release" }).click();
+    expect(releaseChrome).toHaveBeenCalledTimes(2);
+    await expect.element(page.getByText(/so it keeps Chrome/)).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("keeps the full card during the Chrome linger and collapses once it passes", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
+  const strip = () => document.querySelector('[data-testid="computer-idle-strip"]');
+  const card = () => document.querySelector('[data-testid="computer-live-card"]');
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  store.setLeases({ holders: [{ ...chrome, browser: "working" }] });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await vi.waitFor(() => expect(card()?.textContent).toContain("Agent is using Chrome"));
+    store.setLeases({ holders: [{ ...chrome, browser: "idle" }] });
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0));
+    await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS - 500);
+    expect(card()).not.toBeNull();
+    expect(strip()).toBeNull();
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(strip()).not.toBeNull());
+    expect(card()).toBeNull();
+  } finally {
+    await screen.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  ["an app is granted", { grant: true, paused: false }],
+  ["the thread is paused", { grant: false, paused: true }],
+])("keeps the full card for idle Chrome when %s", async (_label, options) => {
+  const store = useAgentComputerActivityStore.getState();
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  if (options.grant)
+    store.setGrants(threadId, [{ appId: "fixture", tier: "full", allowTyping: false }]);
+  if (options.paused) store.setPaused(threadId, true);
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await expect.element(page.getByTestId("computer-live-card")).toBeVisible();
+    await expect.element(page.getByTestId("computer-idle-strip")).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("hides the idle Chrome pill in the holding thread only", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const holder = { threadId, delivery: "foreground" as const, state: "active" as const };
+  store.setLeases({ holders: [{ ...holder, browser: "idle" }] });
+  routeMock.params = { threadId: "another-thread" };
+  const elsewhere = await render(<ComputerUseBanner />);
+  try {
+    await expect.element(page.getByText(/Chrome reserved · idle/)).toBeVisible();
+  } finally {
+    await elsewhere.unmount();
+  }
+  routeMock.params = { threadId };
+  const inHolder = await render(<ComputerUseBanner />);
+  try {
+    await expect.element(page.getByTestId("computer-use-banner")).not.toBeInTheDocument();
+    store.setLeases({ holders: [{ ...holder, browser: "working" }] });
+    await expect.element(page.getByText(/An agent is using Chrome/)).toBeVisible();
+  } finally {
+    await inHolder.unmount();
   }
 });
 

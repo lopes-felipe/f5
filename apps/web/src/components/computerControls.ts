@@ -88,3 +88,35 @@ export async function pausePreviewThread(threadId: ThreadId, paused: boolean): P
   }
   if (!paused) useAgentBrowserActivityStore.getState().setPaused(threadId, false);
 }
+
+/** Why Release didn't free Chrome, from the server's outcome (older servers send none). */
+export function chromeReleaseFailureText(
+  outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
+): string {
+  switch (outcome) {
+    case "not-holder":
+      return "That thread no longer holds Chrome.";
+    case "timeout":
+      return "That thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
+    case "working":
+      return "That thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
+    default:
+      return "Chrome wasn't released. Try again.";
+  }
+}
+
+/** Tooltip for every Release button on an idle Chrome reservation. */
+export const CHROME_RELEASE_TITLE =
+  "Stops that thread's idle session; its next message restarts Chrome control";
+
+/** Releases a thread's idle Chrome lease: "" on success, otherwise the text to show. */
+export async function releaseChromeReservation(threadId: ThreadId): Promise<string> {
+  const api = readNativeApi();
+  if (!api?.computer) return "The host is disconnected.";
+  try {
+    const { released, outcome } = await api.computer.releaseChrome({ threadId });
+    return released ? "" : chromeReleaseFailureText(outcome);
+  } catch {
+    return "Chrome could not be released. Try again.";
+  }
+}

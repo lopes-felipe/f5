@@ -28,12 +28,19 @@ import {
   computerGrantLabel,
   computerStatusTone,
   describeComputerAction,
+  isIdleChromeReservation,
   COMPUTER_STATUS_TONE_CLASS,
 } from "./AgentComputerLiveCard.logic";
+import { useLinger } from "./ComputerUseBanner";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
-import { pauseComputerThread, stopComputerTurn } from "./computerControls";
+import {
+  CHROME_RELEASE_TITLE,
+  pauseComputerThread,
+  releaseChromeReservation,
+  stopComputerTurn,
+} from "./computerControls";
 const EMPTY_GRANTS: ReadonlyArray<ComputerGrant> = [];
 type AccessRequest = typeof ComputerAccessPush.Type & { settled?: boolean; allowed?: boolean };
 const KIND_LABEL: Record<AccessRequest["kind"], string> = {
@@ -81,6 +88,10 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
             : "Waiting while you use the computer"
           : undefined;
   const paused = pausedLocally || execution?.state === "paused" || execution?.state === "recovery";
+  const pendingTakeover = useAgentComputerActivityStore(
+    (state) => state.leases.pendingTakeover?.threadId === threadId,
+  );
+  const chromeLinger = useLinger(execution?.browser === "working");
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
   // The last call was refused because another thread in this profile holds control.
   const heldBy =
@@ -142,6 +153,49 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
     );
   }
   const shown = cardActivity(activity, chrome);
+  const idleChrome = isIdleChromeReservation({
+    holder: execution,
+    pendingTakeover,
+    activityStatus: activity?.status,
+    paused,
+    stopUnconfirmed,
+    grantCount: grants.length,
+    heldBy: !!heldBy,
+    outcomeUnknown: shown?.outcome === "OutcomeUnknown",
+    lingering: chromeLinger,
+  });
+  if (idleChrome) {
+    return (
+      <div
+        className="mx-auto mt-2 flex w-full max-w-3xl flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1 text-muted-foreground text-xs shadow-xs"
+        data-testid="computer-idle-strip"
+      >
+        <MonitorIcon className="size-3.5 shrink-0" />
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate" aria-live="polite">
+          <span className={cn("size-1.5 shrink-0 rounded-full", COMPUTER_STATUS_TONE_CLASS.ok)} />
+          Chrome idle
+        </span>
+        {actions?.length ? <ComputerActionsHistory history={actions} /> : null}
+        {history.length ? <ComputerAccessHistory history={history} /> : null}
+        <Button
+          size="xs"
+          variant="ghost"
+          title={CHROME_RELEASE_TITLE}
+          onClick={() => {
+            setError("");
+            void releaseChromeReservation(threadId).then(setError);
+          }}
+        >
+          Release
+        </Button>
+        {error ? (
+          <span role="alert" className="w-full text-destructive-foreground">
+            {error}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
   const native = shown?.backend === "native";
   const backendLabel = computerBackendLabel(shown?.backend);
   const tone = paused

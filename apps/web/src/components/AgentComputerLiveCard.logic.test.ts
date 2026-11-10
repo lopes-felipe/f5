@@ -7,6 +7,7 @@ import {
   computerGrantLabel,
   computerStatusTone,
   describeComputerAction,
+  isIdleChromeReservation,
 } from "./AgentComputerLiveCard.logic";
 
 const done = (op: string) => ({ op, status: "completed" as const });
@@ -160,5 +161,37 @@ describe("computer status tone", () => {
     expect(computerStatusTone(undefined, { held: true })).toBe("pending");
     expect(computerStatusTone(done("click"), {})).toBe("ok");
     expect(computerStatusTone(undefined, {})).toBe("off");
+  });
+});
+
+describe("isIdleChromeReservation", () => {
+  const base = {
+    holder: { browser: "idle" as const, state: "active" },
+    grantCount: 0,
+    activityStatus: "completed" as const,
+  };
+
+  it("is true when the thread only holds an idle Chrome lease", () => {
+    expect(isIdleChromeReservation(base)).toBe(true);
+    expect(isIdleChromeReservation({ ...base, activityStatus: undefined })).toBe(true);
+  });
+
+  it.each([
+    ["no holder", { holder: undefined }],
+    ["working Chrome", { holder: { browser: "working" as const, state: "active" } }],
+    ["unknown Chrome", { holder: { browser: "unknown" as const, state: "active" } }],
+    ["native holder", { holder: { state: "active" } }],
+    ["paused holder", { holder: { browser: "idle" as const, state: "paused" } }],
+    ["recovery holder", { holder: { browser: "idle" as const, state: "recovery" } }],
+    ["linger", { lingering: true }],
+    ["local pause", { paused: true }],
+    ["grants", { grantCount: 1 }],
+    ["stop unconfirmed", { stopUnconfirmed: true }],
+    ["held by another thread", { heldBy: true }],
+    ["unknown outcome", { outcomeUnknown: true }],
+    ["pending takeover", { pendingTakeover: true }],
+    ["started activity", { activityStatus: "started" as const }],
+  ])("is false with %s", (_label, override) => {
+    expect(isIdleChromeReservation({ ...base, ...override })).toBe(false);
   });
 });
