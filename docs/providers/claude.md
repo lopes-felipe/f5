@@ -98,7 +98,7 @@ arguments**.
 | Topic                | Detail                                                                                                                           |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | Bundled runtime      | Claude Code v2.1.317 (Agent SDK 0.3.317)                                                                                         |
-| Model requirements   | Fable 5.1 needs v2.1.257+; Opus 5.5 needs v2.1.280+; Sonnet 5.5 and Haiku 5.5 need v2.1.299+                                     |
+| Model requirements   | Fable 5.2 needs v2.1.290+; Fable 5.1 needs v2.1.257+; Opus 5.5 needs v2.1.280+; Sonnet 5.5 and Haiku 5.5 need v2.1.299+          |
 | Default model        | Opus 5.5 with `medium` effort                                                                                                    |
 | Custom executables   | Known older versions hide models they can't run and show an upgrade notice; unknown versions list all models                     |
 | Auto-compact window  | `0` for the CLI default, or 100,000–1,000,000 tokens                                                                             |

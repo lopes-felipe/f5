@@ -77,6 +77,7 @@ const BUILT_IN_MODELS = MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((model) => ({
 export const VERSION_GATED_CLAUDE_MODELS = [
   { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", minVersion: "2.1.299" },
   { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5", minVersion: "2.1.299" },
+  { slug: "claude-fable-5-2", name: "Claude Fable 5.2", minVersion: "2.1.290" },
   { slug: "claude-opus-5-5", name: "Claude Opus 5.5", minVersion: "2.1.280" },
   { slug: "claude-fable-5-1", name: "Claude Fable 5.1", minVersion: "2.1.257" },
   { slug: "claude-opus-5", name: "Claude Opus 5", minVersion: "2.1.220" },
