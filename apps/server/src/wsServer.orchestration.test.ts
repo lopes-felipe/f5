@@ -1723,6 +1723,22 @@ describe("WebSocket Server", () => {
           expect(head).toBe(remoteSha);
         });
 
+        it("uses the remote rather than a same-named tag when there is no local branch", async () => {
+          const repo = makeGitRepo("f5-ws-base-remote-tag-");
+          addOriginRemote(repo);
+          git(repo, "switch", "-c", "release");
+          const remoteSha = commitFile(repo, "release.txt");
+          git(repo, "push", "origin", "release");
+          git(repo, "switch", "main");
+          git(repo, "branch", "-D", "release");
+          commitFile(repo, "tagged.txt");
+          git(repo, "tag", "release");
+
+          const { fetch, head } = await runSetup(repo, "base-remote-tag", "release");
+          expect(fetch?.status).toBe("done");
+          expect(head).toBe(remoteSha);
+        });
+
         it("warns and uses the local base when the remote is unreachable", async () => {
           const repo = makeGitRepo("f5-ws-base-unreachable-");
           addOriginRemote(repo);

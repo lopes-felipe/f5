@@ -146,6 +146,14 @@ describe("resolveWorktreeBase", () => {
     ).toMatchObject({ baseSha: REMOTE, outcome: "remote" });
   });
 
+  it("uses the remote, not a same-named tag, when there is no local branch", async () => {
+    const TAG = "3333333333333333333333333333333333333333";
+    expect(await resolve(makeGit({ remote: REMOTE, local: null, bareName: TAG }))).toMatchObject({
+      baseSha: REMOTE,
+      outcome: "remote",
+    });
+  });
+
   it("falls back to the bare name for remote-qualified selections", async () => {
     expect(await resolve(makeGit({ remote: null, local: null, bareName: LOCAL }))).toMatchObject({
       baseSha: LOCAL,

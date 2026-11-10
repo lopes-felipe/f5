@@ -53,8 +53,9 @@ export const resolveWorktreeBase = (
 ): Effect.Effect<WorktreeBase, GitCommandError> =>
   Effect.gen(function* () {
     const { projectCwd, baseBranch } = input;
-    // Prefer the local branch: a bare name resolves a same-named tag first. Fall
-    // back to the bare name for remote-qualified selections such as `origin/foo`.
+    // Without a usable remote, prefer the local branch: a bare name resolves a
+    // same-named tag first. Fall back to the bare name for remote-qualified
+    // selections such as `origin/foo`.
     const resolveLocal = Effect.gen(function* () {
       const branchSha = yield* git.resolveCommit(projectCwd, `refs/heads/${baseBranch}`);
       return branchSha ?? (yield* git.resolveCommit(projectCwd, baseBranch));
@@ -100,7 +101,10 @@ export const resolveWorktreeBase = (
       outcome: "remote",
       detail: `${remote.refName} at ${remote.commit.slice(0, 7)}`,
     };
-    const localSha = yield* resolveLocal;
+    // Compare only against a real local branch. Without one, the remote wins: a
+    // bare-name fallback could pick a same-named tag, and a remote-qualified
+    // selection like `origin/foo` resolves to the commit just fetched anyway.
+    const localSha = yield* git.resolveCommit(projectCwd, `refs/heads/${baseBranch}`);
     if (localSha === null || localSha === remote.commit) return useRemote;
 
     const useLocal = (outcome: WorktreeBaseOutcome, detail: string): WorktreeBase => ({
