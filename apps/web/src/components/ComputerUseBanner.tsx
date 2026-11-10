@@ -8,7 +8,9 @@ import { canReleaseChrome } from "./AgentComputerLiveCard.logic";
 import { Button } from "./ui/button";
 import {
   pauseComputerThread,
+  stopBlockingAgent,
   stopComputerTurn,
+  waitingForAgentText,
   computerStopShortcutLabel,
   useLinger,
 } from "./computerControls";
@@ -120,7 +122,7 @@ export function computerUseBannerText(
     case "waiting-user":
       return app ? `Waiting for you to finish in ${app}` : "Waiting while you use the computer";
     case "waiting-agent":
-      return "Waiting for another agent";
+      return waitingForAgentText(holder.blockedBy);
     case "active":
       break;
   }
@@ -187,6 +189,7 @@ export function ComputerUseBanner() {
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
   const ambient = computerUseBannerAmbient(leases, paused);
+  const blocker = holder?.state === "waiting-agent" ? holder.blockedBy : undefined;
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
@@ -265,6 +268,24 @@ export function ComputerUseBanner() {
           onClick={() => void run(stopComputerTurn, [...retryTargets])}
         >
           Retry Stop
+        </Button>
+      ) : null}
+      {blocker && window.desktopBridge?.computerAutomation?.stopHolder ? (
+        <Button
+          size="xs"
+          variant="outline"
+          title="Pauses only that agent's computer and Chrome control. Resume it from its own thread."
+          onClick={() => {
+            setError("");
+            void stopBlockingAgent(blocker.token).then(
+              (stopped) => {
+                if (!stopped) setError("That agent no longer holds control.");
+              },
+              () => setError("That agent could not be stopped. Use the stop shortcut."),
+            );
+          }}
+        >
+          Stop that agent
         </Button>
       ) : null}
       {holder?.pauseCause === "outcome-unknown" ? (

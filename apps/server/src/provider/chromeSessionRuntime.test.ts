@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComputerControlError } from "@t3tools/shared/computerControl";
+import {
+  CHROME_WAITING_FOR_NATIVE_MESSAGE,
+  ComputerControlError,
+} from "@t3tools/shared/computerControl";
 import {
   PROVIDER_INTEGRATION_RECORDS,
   type ClaudeChromeRecord,
@@ -319,6 +322,85 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     validate.mockImplementationOnce(() => new Promise(() => {}));
     expect(await h.runtime.admit(call("read_page"), "t")).toContain(
       "could not be verified in time",
+    );
+  });
+
+  it("names each call to main and reports the end of one refused after admission", async () => {
+    const validate = vi.fn(async (_holder: unknown, _callId?: string) => {});
+    const callEnded = vi.fn();
+    const h = await setup({ validate, callEnded });
+    await connected(h);
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "use-1" }), "t")).toBe(
+      undefined,
+    );
+    expect(validate).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: "t" }), "use-1");
+    // Admitted calls run; their end comes from the session's own call tracking.
+    expect(callEnded).not.toHaveBeenCalled();
+    // Without a tool-use id nothing could report the end, so main isn't asked to admit it.
+    await h.runtime.admit(call("read_page"), "t");
+    expect(validate.mock.calls.at(-1)?.[1]).toBeUndefined();
+    // Refused after main admitted it: the registration changed, so it never runs.
+    await writeFile(manifestPath, manifest("/elsewhere/claude/chrome/chrome-native-host-long"));
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "use-2" }), "t")).toBe(
+      CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+    );
+    expect(callEnded).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), "use-2");
+  });
+
+  it("waits through another agent's native control, bounded, before refusing", async () => {
+    // Setup validates too, so each refusal is armed once the session is connected.
+    const refusing = (message: string, times: number) => {
+      const state = { left: 0 };
+      const validate = vi.fn(async () => {
+        if (state.left === 0) return;
+        state.left -= 1;
+        throw new ComputerControlError({ _tag: "Execution", message });
+      });
+      return { validate, arm: () => (state.left = times) };
+    };
+    const waiting = refusing(CHROME_WAITING_FOR_NATIVE_MESSAGE, 3);
+    const h = await setup({ validate: waiting.validate });
+    await connected(h);
+    waiting.validate.mockClear();
+    waiting.arm();
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "w" }), "t")).toBeUndefined();
+    expect(waiting.validate).toHaveBeenCalledTimes(4);
+    // Past its budget the refusal reaches the agent.
+    const stuck = refusing(CHROME_WAITING_FOR_NATIVE_MESSAGE, Number.POSITIVE_INFINITY);
+    const s = await setup({ nativeWaitMs: 600, validate: stuck.validate });
+    await connected(s);
+    stuck.arm();
+    expect(await s.runtime.admit(call("read_page"), "t")).toBe(CHROME_WAITING_FOR_NATIVE_MESSAGE);
+    // Other refusals are not retried.
+    const own = refusing("own native control", Number.POSITIVE_INFINITY);
+    const o = await setup({ validate: own.validate });
+    await connected(o);
+    own.validate.mockClear();
+    own.arm();
+    expect(await o.runtime.admit(call("read_page"), "t")).toBe("own native control");
+    expect(own.validate).toHaveBeenCalledOnce();
+  });
+
+  it("reports the end of a call abandoned at the admission deadline", async () => {
+    let finish!: () => void;
+    let hang = false;
+    const validate = vi.fn(async (_holder: unknown, _callId?: string) => {
+      if (hang)
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+    });
+    const callEnded = vi.fn();
+    const h = await setup({ validate, callEnded });
+    await connected(h);
+    hang = true;
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "late" }), "t")).toContain(
+      "could not be verified in time",
+    );
+    expect(callEnded).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() =>
+      expect(callEnded).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), "late"),
     );
   });
 

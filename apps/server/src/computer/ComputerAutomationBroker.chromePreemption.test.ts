@@ -256,3 +256,143 @@ describe("Chrome lease preemption", () => {
     });
   });
 });
+
+/** Main with another profile holding Chrome, which lets go when asked while idle. */
+class CrossProfileIpc extends Ipc {
+  otherHeld = true;
+  otherAnswer: "released" | "working" = "released";
+  override send(raw: unknown, callback: (error: Error | null) => void) {
+    const message = raw as DesktopComputerHostMessage;
+    if (message.type === "hello") {
+      this.messages.push(message);
+      callback(null);
+      queueMicrotask(() => {
+        this.emit("message", { type: "hostCapabilities", capabilities: ["chrome-release-v1"] });
+        this.emit("message", { type: "status", status: { available: true } });
+      });
+      return true;
+    }
+    if (message.type === "chromeLeaseAcquire" && this.otherHeld) {
+      this.messages.push(message);
+      callback(null);
+      queueMicrotask(() =>
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          error: {
+            _tag: "Busy",
+            holder: "other-profile",
+            resource: "chrome",
+            activity: "chrome-session",
+          },
+        }),
+      );
+      return true;
+    }
+    if (message.type === "chromeHolderRelease") {
+      this.messages.push(message);
+      callback(null);
+      queueMicrotask(() => {
+        if (this.otherAnswer === "released") this.otherHeld = false;
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          result: this.otherAnswer,
+        });
+      });
+      return true;
+    }
+    return super.send(raw, callback);
+  }
+}
+
+describe("Chrome lease preemption across profiles", () => {
+  async function crossHarness() {
+    const ipc = new CrossProfileIpc();
+    const host = new DesktopComputerHost("p", "backend", ipc, true);
+    const broker = new ComputerAutomationBrokerRuntime(host, {
+      resolve: async () => {
+        throw new Error("unused");
+      },
+      platform: "darwin",
+      storage: { load: async () => [], save: async () => {} },
+    });
+    await broker.initialize();
+    return { ipc, broker };
+  }
+
+  it("asks main to release another profile's idle holder and retries once", async () => {
+    const { ipc, broker } = await crossHarness();
+    await broker.acquireChromeLease(holderB);
+    expect(ipc.messages.filter((message) => message.type === "chromeHolderRelease")).toHaveLength(
+      1,
+    );
+    expect(ipc.acquires()).toBe(2);
+    expect(ipc.chrome?.threadId).toBe("b");
+    broker.close();
+  });
+
+  it("keeps the refusal when the other profile's holder is working", async () => {
+    const { ipc, broker } = await crossHarness();
+    ipc.otherAnswer = "working";
+    const error = await refusal(broker.acquireChromeLease(holderB));
+    expect(error.error).toMatchObject({ _tag: "Busy", holder: "other-profile" });
+    expect(ipc.acquires()).toBe(1);
+    broker.close();
+  });
+
+  it("asks another profile's holder before native control only when main says it blocks", async () => {
+    const { ipc, broker } = await crossHarness();
+    const requests = () =>
+      ipc.messages.filter((message) => message.type === "chromeHolderRelease").length;
+    // An idle Claude holder elsewhere doesn't block: no round trip on acquisition.
+    await broker.preemptChromeFor("t", { kind: "foreground" });
+    expect(requests()).toBe(0);
+    ipc.emit("message", {
+      type: "chromeLeaseChanged",
+      holder: null,
+      otherProfile: false,
+      otherProfileBlocksNative: true,
+    });
+    // A deadline already spent sends nothing.
+    await broker.preemptChromeFor("t", { kind: "foreground" }, performance.now() - 1);
+    expect(requests()).toBe(0);
+    await broker.preemptChromeFor("t", { kind: "foreground" });
+    expect(requests()).toBe(1);
+    // A background lease on an app that isn't a browser never collides with Chrome.
+    await broker.preemptChromeFor("t", { kind: "app", appId: "com.apple.TextEdit" });
+    expect(requests()).toBe(1);
+    broker.close();
+  });
+
+  it("answers main's release request for this profile's idle holder", async () => {
+    const { ipc, broker } = await harness();
+    const a = releaser(async () => {
+      setTimeout(() => ipc.setChrome(null), 10);
+      return true;
+    });
+    broker.registerChromeReleaser("a", "gen-a", a);
+    const results = () => ipc.messages.filter((message) => message.type === "chromeReleaseResult");
+    ipc.emit("message", {
+      type: "chromeReleaseRequest",
+      requestId: "stale",
+      threadId: "a",
+      sessionGeneration: "old",
+    });
+    ipc.emit("message", {
+      type: "chromeReleaseRequest",
+      requestId: "live",
+      threadId: "a",
+      sessionGeneration: "gen-a",
+    });
+    await expect.poll(() => results().length).toBe(2);
+    expect(results()).toEqual(
+      expect.arrayContaining([
+        { type: "chromeReleaseResult", requestId: "stale", outcome: "not-holder" },
+        { type: "chromeReleaseResult", requestId: "live", outcome: "released" },
+      ]),
+    );
+    expect(a.asked()).toBe(1);
+    broker.close();
+  });
+});

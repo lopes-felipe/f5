@@ -46,18 +46,21 @@ describe("Chrome device lease", () => {
     expect(refusal(() => lease.acquire({ ...holder, threadId: "other" }, null))).toEqual({
       _tag: "Busy",
       resource: "chrome",
+      activity: "chrome-call",
       holder: "same-profile",
       holderThreadId: "thread",
     });
     expect(refusal(() => lease.assertNativeAvailable("profile-a"))).toEqual({
       _tag: "Busy",
       resource: "chrome",
+      activity: "chrome-call",
       holder: "same-profile",
       holderThreadId: "thread",
     });
     expect(refusal(() => lease.acquire({ ...holder, profileId: "profile-b" }, null))).toEqual({
       _tag: "Busy",
       resource: "chrome",
+      activity: "chrome-call",
       holder: "other-profile",
     });
     // Native control blocks a Chrome acquisition: named with its title in the same profile.
@@ -70,6 +73,7 @@ describe("Chrome device lease", () => {
     expect(refusal(() => fresh.acquire({ ...holder, profileId: "profile-b" }, native))).toEqual({
       _tag: "Busy",
       resource: "computer",
+      activity: "computer",
       holder: "same-profile",
       holderThreadId: "native-thread",
       threadTitle: "Native work",
@@ -77,6 +81,7 @@ describe("Chrome device lease", () => {
     expect(refusal(() => fresh.acquire(holder, native))).toEqual({
       _tag: "Busy",
       resource: "computer",
+      activity: "computer",
       holder: "other-profile",
     });
   });
@@ -170,7 +175,7 @@ describe("native control for the Chrome holder's own thread", () => {
     });
   });
 
-  it("keeps other threads, other profiles and Codex holders exclusive", () => {
+  it("keeps other threads and profiles exclusive when the backend can't admit calls", () => {
     const lease = new ChromeLeaseAuthority(vi.fn(), undefined, { callsIdle: () => true });
     lease.acquire(holder, null);
     expect(
@@ -178,12 +183,14 @@ describe("native control for the Chrome holder's own thread", () => {
     ).toEqual({
       _tag: "Busy",
       resource: "chrome",
+      activity: "chrome-session",
       holder: "same-profile",
       holderThreadId: "thread",
     });
     expect(refusal(() => lease.assertNativeAvailable("profile-b", undefined, self))).toEqual({
       _tag: "Busy",
       resource: "chrome",
+      activity: "chrome-session",
       holder: "other-profile",
     });
     // No requester (Sky's builtin path) is never exempt.
@@ -197,6 +204,65 @@ describe("native control for the Chrome holder's own thread", () => {
       _tag: "Execution",
       message: CHROME_OWN_CODEX_MESSAGE,
     });
+  });
+
+  it("lets any thread or profile take native control beside an idle Claude holder", () => {
+    let idle = true;
+    const lease = new ChromeLeaseAuthority(vi.fn(), undefined, {
+      callsIdle: () => idle,
+      callAdmission: () => true,
+      profileName: (profileId) => (profileId === "profile-a" ? "Dev" : undefined),
+    });
+    lease.acquire(holder, null);
+    const other = { threadId: "other" };
+    expect(
+      refusal(() => lease.assertNativeAvailable("profile-a", undefined, other)),
+    ).toBeUndefined();
+    expect(
+      refusal(() => lease.assertNativeAvailable("profile-b", undefined, other)),
+    ).toBeUndefined();
+    expect(
+      refusal(() =>
+        lease.assertNativeAvailable(
+          "profile-b",
+          { kind: "app", appId: "com.google.Chrome" },
+          other,
+        ),
+      ),
+    ).toBeUndefined();
+    // Sky's builtin path names no requester; an idle holder doesn't block it either.
+    expect(refusal(() => lease.assertNativeAvailable("profile-b"))).toBeUndefined();
+    // A running call blocks every other thread, named by profile only across profiles.
+    idle = false;
+    expect(refusal(() => lease.assertNativeAvailable("profile-b", undefined, other))).toEqual({
+      _tag: "Busy",
+      resource: "chrome",
+      activity: "chrome-call",
+      holder: "other-profile",
+      holderProfileName: "Dev",
+    });
+    expect(refusal(() => lease.assertNativeAvailable("profile-a", undefined, other))).toMatchObject(
+      { _tag: "Busy", holder: "same-profile", holderThreadId: "thread" },
+    );
+  });
+
+  it("keeps an idle holder exclusive while it stops, and Codex holders always", () => {
+    const options = { callsIdle: () => true, callAdmission: () => true };
+    const stopping = new ChromeLeaseAuthority(
+      vi.fn(),
+      { alive: () => true, stop: vi.fn(), recoveryRequired: () => false },
+      options,
+    );
+    stopping.acquire(holder, null);
+    stopping.release(holder);
+    expect(
+      refusal(() => stopping.assertNativeAvailable("profile-b", undefined, { threadId: "other" })),
+    ).toMatchObject({ _tag: "Busy", holder: "other-profile" });
+    const codex = new ChromeLeaseAuthority(vi.fn(), undefined, options);
+    codex.acquire({ ...holder, provider: "codex" }, null);
+    expect(
+      refusal(() => codex.assertNativeAvailable("profile-b", undefined, { threadId: "other" })),
+    ).toMatchObject({ _tag: "Busy", resource: "chrome" });
   });
 
   it("marks only refusals that clear by themselves as waitable", () => {

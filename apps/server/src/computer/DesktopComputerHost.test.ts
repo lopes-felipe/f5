@@ -46,6 +46,8 @@ describe("private desktop host", () => {
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",
         "chrome-call-activity-v1",
+        "chrome-call-admission-v1",
+        "chrome-release-v1",
       ],
     });
     expect(host.backgroundCapable()).toBe(false);
@@ -56,6 +58,12 @@ describe("private desktop host", () => {
     expect(host.chromeCallsCapable()).toBe(false);
     ipc.emit("message", { type: "hostCapabilities", capabilities: ["chrome-call-activity-v1"] });
     expect(host.chromeCallsCapable()).toBe(true);
+    expect(host.chromeCallAdmissionCapable()).toBe(false);
+    ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["chrome-call-activity-v1", "chrome-call-admission-v1"],
+    });
+    expect(host.chromeCallAdmissionCapable()).toBe(true);
     ipc.emit("message", {
       type: "hostCapabilities",
       capabilities: ["computer-session-lifecycle-v1"],

@@ -894,8 +894,37 @@ describe("computer broker safety boundaries", () => {
   });
   it("says why another profile's control refuses an agent", () => {
     expect(new ComputerControlError({ _tag: "Busy", holder: "other-profile" }).message).toBe(
-      "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.",
+      "Busy: an agent in another F5 profile holds computer or Chrome control. Wait for it with computer_wait_for_target; ask the user only if that times out.",
     );
+    // Main names the profile (never its threads) and what the holder is doing.
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "other-profile",
+        resource: "chrome",
+        activity: "chrome-call",
+        holderProfileName: "Dev",
+      }).message,
+    ).toBe(
+      'Busy: an agent in profile "Dev" is using Chrome. Wait for it with computer_wait_for_target; ask the user only if that times out.',
+    );
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "other-profile",
+        resource: "chrome",
+        activity: "chrome-session",
+      }).message,
+    ).toContain("an agent in another F5 profile holds a Chrome session.");
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "other-profile",
+        resource: "computer",
+        activity: "computer",
+        holderProfileName: "Work",
+      }).message,
+    ).toContain('an agent in profile "Work" is controlling the computer.');
     expect(new ComputerControlError({ _tag: "Busy", holder: "same-profile" }).message).toBe(
       "Busy: Computer or Chrome control is in use in this F5 profile; wait and retry.",
     );
@@ -1600,6 +1629,33 @@ describe("background delivery", () => {
       ]);
       h.broker.releaseSession("t", "s");
       expect(h.broker.computerUse().holders).toEqual([]);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("shows who a waiting thread waits for, only while it waits for an agent", async () => {
+    const h = await backgroundHarness();
+    try {
+      const blockedBy = { token: "tok", activity: "chrome-call" as const, profileName: "Dev" };
+      h.ipc.emit("message", {
+        type: "executionStateChanged",
+        threadId: "t",
+        sessionGeneration: "s",
+        state: "waiting-agent",
+        delivery: "foreground",
+        blockedBy,
+      });
+      expect(h.broker.computerUse().holders).toMatchObject([
+        { threadId: "t", state: "waiting-agent", leaseHeld: false, blockedBy },
+      ]);
+      h.ipc.emit("message", {
+        type: "executionStateChanged",
+        threadId: "t",
+        sessionGeneration: "s",
+        state: "paused",
+        blockedBy,
+      });
+      expect(h.broker.computerUse().holders[0]).not.toHaveProperty("blockedBy");
     } finally {
       h.broker.close();
     }

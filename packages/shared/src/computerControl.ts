@@ -10,6 +10,20 @@ export const CHROME_OWN_CALL_RUNNING_MESSAGE =
   "A Chrome call from this thread is still running; retry once it finishes.";
 export const CHROME_OWN_STOPPING_MESSAGE =
   "Chrome control from this thread is stopping; retry once it has stopped.";
+/**
+ * Chrome validation refusals that clear once another thread's native control ends. The
+ * backend's Chrome admission waits through them (bounded) before telling the agent.
+ */
+export const CHROME_WAITING_FOR_NATIVE_MESSAGE =
+  "Another agent is controlling the computer; retry this Chrome call in a few seconds.";
+export const CHROME_NATIVE_WORK_FINISHING_MESSAGE =
+  "Native computer input is still finishing; retry the Chrome call shortly.";
+export function isChromeNativeWait(message: string): boolean {
+  return (
+    message === CHROME_WAITING_FOR_NATIVE_MESSAGE ||
+    message === CHROME_NATIVE_WORK_FINISHING_MESSAGE
+  );
+}
 
 const OBSERVATIONS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "status",
@@ -27,8 +41,24 @@ type BusyError = Extract<ComputerAutomationError, { _tag: "Busy" }>;
 export function describeComputerBusy(error: BusyError): string {
   if (error.reason === "observation-backlog")
     return "Observation backlog is full; wait before requesting another screenshot or inspection.";
-  if (error.holder === "other-profile")
-    return "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.";
+  if (error.holder === "other-profile") {
+    const who = error.holderProfileName
+      ? `an agent in profile "${error.holderProfileName}"`
+      : "an agent in another F5 profile";
+    const doing =
+      error.activity === "chrome-call"
+        ? "is using Chrome"
+        : error.activity === "chrome-session"
+          ? "holds a Chrome session"
+          : error.activity === "computer"
+            ? "is controlling the computer"
+            : error.resource === "chrome"
+              ? "holds Chrome control"
+              : error.resource === "computer"
+                ? "holds computer control"
+                : "holds computer or Chrome control";
+    return `Busy: ${who} ${doing}. Wait for it with computer_wait_for_target; ask the user only if that times out.`;
+  }
   const what =
     error.resource === "chrome"
       ? "Chrome"

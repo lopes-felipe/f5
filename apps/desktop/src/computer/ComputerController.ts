@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   ComputerAutomationRequest,
   ComputerAuthorization,
+  ComputerBlocker,
   ComputerDelivery,
   ComputerDisplay,
   ComputerExecutionState,
@@ -91,6 +92,19 @@ export interface ComputerExecutionStateUpdate {
   appId?: string;
   delivery?: ComputerDelivery;
   pauseCause?: ComputerPauseCause;
+  /** `waiting-agent` only: who the thread waits for (see `setBlockerLookup`). */
+  blockedBy?: ComputerBlocker;
+}
+/** Everything the waiting banner shows about a blocker; any change re-publishes. */
+function blockerSignature(blocker: ComputerBlocker | undefined): string {
+  return blocker
+    ? JSON.stringify([
+        blocker.token,
+        blocker.activity,
+        blocker.profileName ?? "",
+        blocker.threadTitle ?? "",
+      ])
+    : "";
 }
 const STOP_CAUSE: Record<
   ComputerPauseCause,
@@ -149,6 +163,13 @@ export class ComputerController {
   readonly cooperation: ComputerCooperation;
   readonly admission: ComputerAdmissionQueue;
   private admissionCheck: ((holder: ComputerLeaseHolder) => void) | undefined;
+  /** Describes who a queued holder waits for; main's host channel knows Chrome and names. */
+  private blockerLookup: ((holder: ComputerLeaseHolder) => ComputerBlocker | undefined) | undefined;
+  /**
+   * What was last published for each waiting thread (token, activity and labels), so any
+   * change re-publishes once. The token alone stays the same while the activity changes.
+   */
+  private readonly publishedBlockers = new Map<string, string>();
   private readonly availabilityListeners = new Set<() => void>();
   private readonly endedTurns = new Map<string, { sessionGeneration: string; turnId: string }>();
   private readonly availabilityWaiters = new Map<
@@ -237,33 +258,23 @@ export class ComputerController {
     this.admission = new ComputerAdmissionQueue({
       conflicts: (a, b) => lease.scopesConflict(a, b),
       renewal: (holder) => lease.renewal(holder),
-      sweep: (head) => {
-        for (const holder of lease.idleConflicts(head.scope, 10_000)) {
-          if (holder.backend !== "native" || this.cooperation.yielded.has(this.key(holder)))
-            continue;
-          if (this.key(holder) === this.key(head)) continue;
-          const key = this.key(holder);
-          const jobs = [
-            ...this.activeMutations.values(),
-            ...this.activeObservations,
-            ...this.observationQueue,
-            ...[...this.mutationQueues.values()].flat(),
-          ];
-          if (
-            jobs.some((job) => this.key(job.request.authorization) === key) ||
-            [...this.nativeWork].some((entry) => entry.key === key)
-          )
-            continue;
-          lease.release(holder);
-          this.options.holderStopped?.(holder);
+      sweep: (head) => this.releaseIdleConflicts(head.scope, 10_000, this.key(head)),
+      state: (holder, waiting) => {
+        if (!waiting) {
+          this.publishedBlockers.delete(this.key(holder));
+          this.publishState(holder, null);
+          return;
         }
+        const blocker = this.blockerLookup?.(holder);
+        this.publishedBlockers.set(this.key(holder), blockerSignature(blocker));
+        this.publishState(holder, "waiting-agent", undefined, blocker);
       },
-      state: (holder, waiting) => this.publishState(holder, waiting ? "waiting-agent" : null),
     });
     this.offEvent = helper.onEvent((message) => this.helperEvent(message));
     this.offLease = lease.subscribe((holders) => {
       this.holdersChanged(holders);
       this.admission.changed();
+      this.refreshBlockers();
       for (const changed of this.availabilityListeners) changed();
     });
     this.permitTimer = setInterval(() => {
@@ -315,6 +326,59 @@ export class ComputerController {
   }
   setAdmissionCheck(check: (holder: ComputerLeaseHolder) => void): void {
     this.admissionCheck = check;
+  }
+  /**
+   * Releases native leases colliding with `scope` that made no mutation for `idleMs` and run
+   * no queued or active work. Yielded holders, `exceptKey`'s thread and holders `include`
+   * rejects are kept.
+   */
+  releaseIdleConflicts(
+    scope: ComputerLeaseScope,
+    idleMs: number,
+    exceptKey?: string,
+    include: (holder: ComputerLeaseHolder) => boolean = () => true,
+  ): void {
+    for (const holder of this.lease.idleConflicts(scope, idleMs)) {
+      if (holder.backend !== "native" || this.cooperation.yielded.has(this.key(holder))) continue;
+      if (!include(holder)) continue;
+      const key = this.key(holder);
+      if (key === exceptKey) continue;
+      const jobs = [
+        ...this.activeMutations.values(),
+        ...this.activeObservations,
+        ...this.observationQueue,
+        ...[...this.mutationQueues.values()].flat(),
+      ];
+      if (
+        jobs.some((job) => this.key(job.request.authorization) === key) ||
+        [...this.nativeWork].some((entry) => entry.key === key)
+      )
+        continue;
+      this.lease.release(holder);
+      this.options.holderStopped?.(holder);
+    }
+  }
+  /** An input to admission outside the lease (Chrome ownership or calls) changed. */
+  availabilityChanged(): void {
+    this.admission.changed();
+    this.refreshBlockers();
+    for (const changed of this.availabilityListeners) changed();
+  }
+  setBlockerLookup(lookup: (holder: ComputerLeaseHolder) => ComputerBlocker | undefined): void {
+    this.blockerLookup = lookup;
+  }
+  /** Re-publishes `waiting-agent` for queued threads whose blocker changed. */
+  private refreshBlockers(): void {
+    if (!this.blockerLookup) return;
+    for (const holder of this.admission.holders()) {
+      const key = this.key(holder);
+      if (!this.publishedBlockers.has(key)) continue;
+      const blocker = this.blockerLookup(holder);
+      const signature = blockerSignature(blocker);
+      if (signature === this.publishedBlockers.get(key)) continue;
+      this.publishedBlockers.set(key, signature);
+      this.publishState(holder, "waiting-agent", undefined, blocker);
+    }
   }
   admitWhenFree<T>(entry: ComputerAdmission<T>): Promise<T> {
     this.controlled.set(this.key(entry.holder), entry.holder);
@@ -401,7 +465,15 @@ export class ComputerController {
     };
     void retire();
   }
-  /** One predicate for acquisition, dispatch and advisory waiting. No cross-profile labels escape. */
+  /** Another thread's lease or reservation collides: refuse naming it as this profile may see it. */
+  private assertNoLeaseConflict(holder: ComputerLeaseHolder): void {
+    const conflict = this.lease.conflictFor(holder);
+    if (conflict) throw this.lease.busy(conflict, holder.profileId);
+  }
+  /**
+   * One predicate for acquisition, dispatch and advisory waiting. Other profiles' holders are
+   * named by profile only; their threads never escape.
+   */
   private assertAdmission(
     holder: ComputerLeaseHolder,
     phase: "execute" | "foreground-ownership" | "reservation" = "execute",
@@ -424,8 +496,7 @@ export class ComputerController {
         throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
       return;
     }
-    if (this.lease.conflictsFor(holder))
-      throw new ComputerControlError({ _tag: "Busy", holder: "other-profile" });
+    this.assertNoLeaseConflict(holder);
     if (
       phase !== "reservation" &&
       this.cooperates(holder) &&
@@ -440,8 +511,7 @@ export class ComputerController {
         : this.inputIdleMs() < 1500)
     )
       throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
-    if (this.lease.conflictsFor(holder))
-      throw new ComputerControlError({ _tag: "Busy", holder: "other-profile" });
+    this.assertNoLeaseConflict(holder);
     if (
       this.takeoverDraining ||
       (holder.scope.kind === "app" &&
@@ -500,22 +570,10 @@ export class ComputerController {
           // needs foreground ownership and the same idle condition the takeover arms on.
           const yielded = this.cooperation.yielded.get(this.key(holder));
           if (!appId && (!yielded || yielded.appId || !this.lease.find(yielded.holder))) {
-            try {
-              this.assertAdmission(holder, "foreground-ownership");
-            } catch (error) {
-              const failure = computerError(error);
-              if (
-                failure._tag !== "Busy" &&
-                !(failure._tag === "TargetBlocked" && failure.kind === "foreground-busy")
-              )
-                throw error;
-              return {
-                available: false,
-                timedOut: false,
-                reason: "foreground-busy",
-                requiresFreshObservation: true,
-              };
-            }
+            // Another agent's control (`Busy` / `foreground-busy`) is waited out like user
+            // activity: the catch below records the reason and the loop retries until the
+            // deadline, waking on every lease, Chrome or helper change.
+            this.assertAdmission(holder, "foreground-ownership");
             const idle = this.takeoverIdle({ ...holder, cooperative: takeoverCooperative });
             if (!idle.idle)
               throw new ComputerControlError({
@@ -1809,6 +1867,7 @@ export class ComputerController {
     holder: ComputerLeaseHolder,
     state: ComputerExecutionState | null,
     pauseCause?: ComputerPauseCause,
+    blockedBy?: ComputerBlocker,
   ): void {
     this.options.executionState?.(holder.profileId, {
       threadId: holder.threadId,
@@ -1817,6 +1876,7 @@ export class ComputerController {
       delivery: computerScopeDelivery(holder.scope),
       ...(holder.scope.kind !== "foreground" ? { appId: holder.scope.appId } : {}),
       ...(pauseCause ? { pauseCause } : {}),
+      ...(blockedBy ? { blockedBy } : {}),
     });
   }
   /** Stop one thread's generation; other threads' background work keeps running. */

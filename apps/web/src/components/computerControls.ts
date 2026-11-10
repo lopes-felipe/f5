@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
-import type { ThreadId } from "@t3tools/contracts";
+import type { AgentComputerUseHolder, ThreadId } from "@t3tools/contracts";
 import { readNativeApi } from "../nativeApi";
 import { newCommandId } from "../lib/utils";
 export function computerStopShortcutLabel(host?: {
@@ -38,6 +38,35 @@ export async function stopComputerTurn(threadId: ThreadId): Promise<void> {
   if (failures.length)
     throw new AggregateError(failures, "Stop unconfirmed. Check the app and retry Stop.");
   useAgentComputerActivityStore.getState().confirmStopIfReleased(threadId);
+}
+/**
+ * Names who a waiting thread waits for, as main described it: another profile by name
+ * only, a thread in this profile by title.
+ */
+export function waitingForAgentText(blocker: AgentComputerUseHolder["blockedBy"]): string {
+  if (!blocker) return "Waiting for another agent";
+  const who = blocker.profileName
+    ? `an agent in “${blocker.profileName}”`
+    : blocker.threadTitle
+      ? `“${blocker.threadTitle}”`
+      : "another agent";
+  const doing =
+    blocker.activity === "chrome-call"
+      ? "using Chrome"
+      : blocker.activity === "chrome-session"
+        ? "holding Chrome"
+        : "controlling the computer";
+  return `Waiting for ${who} · ${doing}`;
+}
+
+/**
+ * Pauses the agent a waiting thread is blocked by, named only by main's opaque token.
+ * Resolves false when that agent no longer holds control.
+ */
+export async function stopBlockingAgent(token: string): Promise<boolean> {
+  const stopHolder = window.desktopBridge?.computerAutomation?.stopHolder;
+  if (!stopHolder) throw new Error("Stop it on the computer running F5.");
+  return stopHolder(token);
 }
 export async function pauseComputerThread(threadId: ThreadId, paused: boolean): Promise<void> {
   const bridge = window.desktopBridge?.computerAutomation;

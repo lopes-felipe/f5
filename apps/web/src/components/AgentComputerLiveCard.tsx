@@ -41,6 +41,7 @@ import {
   releaseChromeReservation,
   stopComputerTurn,
   useLinger,
+  waitingForAgentText,
 } from "./computerControls";
 const EMPTY_GRANTS: ReadonlyArray<ComputerGrant> = [];
 type AccessRequest = typeof ComputerAccessPush.Type & { settled?: boolean; allowed?: boolean };
@@ -82,7 +83,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
     execution?.state === "paused" || execution?.state === "recovery"
       ? undefined
       : execution?.state === "waiting-agent"
-        ? "Waiting for another agent"
+        ? waitingForAgentText(execution.blockedBy)
         : execution?.state === "waiting-user"
           ? execution.appName
             ? "Waiting for you to finish in " + execution.appName

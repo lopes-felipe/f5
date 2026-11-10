@@ -675,6 +675,44 @@ it("Pause all always pauses its snapshot and a partial failure never resumes ano
     await screen.unmount();
   }
 });
+it("names the agent a waiting thread waits for and stops only that agent", async () => {
+  const stopHolder = vi.fn(async (token: string) => token === "live");
+  window.desktopBridge = { computerAutomation: { setPaused: vi.fn(), stopHolder } } as never;
+  useAgentComputerActivityStore.getState().setLeases({
+    holders: [
+      {
+        threadId,
+        delivery: "foreground",
+        state: "waiting-agent",
+        leaseHeld: false,
+        blockedBy: { token: "live", activity: "chrome-call", profileName: "Dev" },
+      },
+    ],
+  });
+  const screen = await render(<ComputerUseBanner />);
+  try {
+    await expect
+      .element(page.getByText(/Waiting for an agent in “Dev” · using Chrome/))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Stop that agent" }).click();
+    await vi.waitFor(() => expect(stopHolder).toHaveBeenCalledWith("live"));
+    useAgentComputerActivityStore.getState().setLeases({
+      holders: [
+        {
+          threadId,
+          delivery: "foreground",
+          state: "waiting-agent",
+          leaseHeld: false,
+          blockedBy: { token: "stale", activity: "computer", profileName: "Dev" },
+        },
+      ],
+    });
+    await page.getByRole("button", { name: "Stop that agent" }).click();
+    await expect.element(page.getByText("That agent no longer holds control.")).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
+});
 it("keeps a failed suspension unconfirmed after successful interruption and exposes an explicit retry", async () => {
   const store = useAgentComputerActivityStore.getState();
   const dispatch = vi.fn(async () => {});

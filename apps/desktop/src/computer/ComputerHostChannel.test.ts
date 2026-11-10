@@ -8,6 +8,7 @@ import {
   CHROME_NATIVE_WORK_FINISHING_MESSAGE,
   CHROME_OWN_CALL_RUNNING_MESSAGE,
   CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+  CHROME_WAITING_FOR_NATIVE_MESSAGE,
 } from "./ChromeLeaseAuthority";
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
 import { ComputerConsentStore } from "./ComputerConsentStore";
@@ -34,6 +35,7 @@ function setup(
     consents?: ComputerConsentStore;
     cooperation?: boolean;
     grantForgetFailed?: (profileId: string, message: string) => void;
+    profileName?: (profileId: string) => string | undefined;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
@@ -80,6 +82,7 @@ function setup(
       ...(notification ? { notification } : {}),
       ...(options.grantForgetFailed ? { grantForgetFailed: options.grantForgetFailed } : {}),
       ...(options.consents ? { consents: options.consents } : {}),
+      ...(options.profileName ? { profileName: options.profileName } : {}),
       background: () => ({ available: true }),
       ...(advertiseBackground !== undefined ? { advertiseBackground } : {}),
     },
@@ -1985,6 +1988,318 @@ describe("background capability negotiation", () => {
       const h = await chromeHeld();
       h.controller.lease.acquire(appHolder);
       expect(await h.validate("background")).toMatchObject({ result: true });
+    });
+  });
+  describe("another profile's Chrome holder: release requests, blockers and stop tokens", () => {
+    const full = [
+      "background-ax-v1",
+      "computer-cooperation-v1",
+      "chrome-call-activity-v1",
+      "chrome-call-admission-v1",
+      "chrome-release-v1",
+    ];
+    const holderB = {
+      profileId: "profile-b",
+      threadId: "b-thread",
+      sessionGeneration: "b-gen",
+      provider: "claude" as const,
+    };
+    async function twoProfiles(capabilitiesB = full) {
+      const h = setup(true, undefined, {
+        cooperation: true,
+        profileName: (id) => (id === "profile-b" ? "Dev" : "Work"),
+      });
+      h.hello(full);
+      const b = Object.assign(new EventEmitter(), {
+        pid: 51,
+        connected: true,
+        send: vi.fn(),
+        disconnect: vi.fn(),
+      });
+      h.channel.register("profile-b", "incarnation-b", b as unknown as ChildProcess);
+      b.emit("message", {
+        type: "hello",
+        profileId: "profile-b",
+        backendIncarnation: "incarnation-b",
+        protocolVersion: 1,
+        capabilities: capabilitiesB,
+      });
+      b.emit("message", { type: "chromeLeaseAcquire", requestId: "chrome", holder: holderB });
+      await vi.waitFor(() => expect(h.channel.chrome.current()).toEqual(holderB));
+      const sentB = () => b.send.mock.calls.map(([message]) => message as Record<string, unknown>);
+      const response = (requestId: string) =>
+        sent(h).find((message) => message.type === "response" && message.requestId === requestId);
+      return { ...h, b, sentB, response };
+    }
+
+    it("forwards a release request to the holder's backend and relays its answer", async () => {
+      const h = await twoProfiles();
+      h.process.emit("message", { type: "chromeHolderRelease", requestId: "r1", threadId: "t" });
+      const forwarded = h.sentB().find((message) => message.type === "chromeReleaseRequest");
+      expect(forwarded).toMatchObject({ threadId: "b-thread", sessionGeneration: "b-gen" });
+      // Only the backend that was asked may answer.
+      h.process.emit("message", {
+        type: "chromeReleaseResult",
+        requestId: forwarded!.requestId,
+        outcome: "released",
+      });
+      expect(h.response("r1")).toBeUndefined();
+      h.b.emit("message", {
+        type: "chromeReleaseResult",
+        requestId: forwarded!.requestId,
+        outcome: "working",
+      });
+      await vi.waitFor(() => expect(h.response("r1")).toMatchObject({ result: "working" }));
+    });
+
+    it("tells other profiles whether the holder refuses their foreground control", async () => {
+      const h = await twoProfiles();
+      const lastLease = () =>
+        sent(h)
+          .filter((message) => message.type === "chromeLeaseChanged")
+          .at(-1);
+      // No call report yet: unknown reads as running, so it blocks.
+      expect(lastLease()).toMatchObject({ holder: null, otherProfileBlocksNative: true });
+      h.b.emit("message", {
+        type: "chromeCallsChanged",
+        threadId: "b-thread",
+        sessionGeneration: "b-gen",
+        running: false,
+      });
+      expect(lastLease()).toMatchObject({ holder: null, otherProfile: false });
+      expect(lastLease()).not.toHaveProperty("otherProfileBlocksNative");
+    });
+
+    it("doesn't ask an idle Claude holder that already lets native control through", async () => {
+      const h = await twoProfiles();
+      h.b.emit("message", {
+        type: "chromeCallsChanged",
+        threadId: "b-thread",
+        sessionGeneration: "b-gen",
+        running: false,
+      });
+      h.process.emit("message", {
+        type: "chromeHolderRelease",
+        requestId: "native",
+        threadId: "t",
+        scope: { kind: "foreground" },
+      });
+      await vi.waitFor(() => expect(h.response("native")).toMatchObject({ result: "not-holder" }));
+      expect(h.sentB().some((message) => message.type === "chromeReleaseRequest")).toBe(false);
+    });
+
+    it("answers not-holder for a holder backend without the capability, timeout when silent", async () => {
+      const legacy = await twoProfiles(["background-ax-v1", "chrome-call-activity-v1"]);
+      legacy.process.emit("message", {
+        type: "chromeHolderRelease",
+        requestId: "r",
+        threadId: "t",
+      });
+      await vi.waitFor(() => expect(legacy.response("r")).toMatchObject({ result: "not-holder" }));
+      const silent = await twoProfiles();
+      vi.useFakeTimers();
+      try {
+        silent.process.emit("message", {
+          type: "chromeHolderRelease",
+          requestId: "slow",
+          threadId: "t",
+        });
+        await vi.advanceTimersByTimeAsync(8_000);
+        expect(silent.response("slow")).toMatchObject({ result: "timeout" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("names the blocking holder by profile and resolves its token only for the recipient", async () => {
+      const h = await twoProfiles();
+      const waiting = { ...appHolder, scope: { kind: "foreground" as const } };
+      const blocker = h.channel.blockerFor(waiting);
+      expect(blocker).toEqual({
+        token: expect.any(String),
+        activity: "chrome-call",
+        profileName: "Dev",
+      });
+      // Stable while the same holder blocks, so the banner doesn't churn.
+      expect(h.channel.blockerFor(waiting)?.token).toBe(blocker!.token);
+      expect(h.channel.resolveBlocker("profile-b", blocker!.token)).toBeUndefined();
+      expect(h.channel.resolveBlocker("profile", "forged")).toBeUndefined();
+      expect(h.channel.resolveBlocker("profile", blocker!.token)).toEqual({
+        profileId: "profile-b",
+        threadId: "b-thread",
+      });
+      // Published only to peers that understand it, and only while waiting for an agent.
+      h.channel.sendExecutionState("profile", {
+        threadId: "t",
+        sessionGeneration: "s",
+        state: "waiting-agent",
+        blockedBy: blocker!,
+      });
+      expect(sent(h).at(-1)).toMatchObject({ type: "executionStateChanged", blockedBy: blocker });
+      h.channel.sendExecutionState("profile", {
+        threadId: "t",
+        sessionGeneration: "s",
+        state: "active",
+        blockedBy: blocker!,
+      });
+      expect(sent(h).at(-1)).not.toHaveProperty("blockedBy");
+      // Once the holder lets go, its token resolves to nothing.
+      h.b.emit("message", { type: "chromeLeaseRelease", requestId: "rel", holder: holderB });
+      await vi.waitFor(() => expect(h.channel.chrome.current()).toBeNull());
+      expect(h.channel.resolveBlocker("profile", blocker!.token)).toBeUndefined();
+    });
+  });
+  describe("an idle Claude Chrome holder and other threads' native control", () => {
+    const chromeHolder = {
+      profileId: "profile",
+      threadId: "t",
+      sessionGeneration: "chrome-s",
+      provider: "claude" as const,
+    };
+    const otherForeground = {
+      ...appHolder,
+      threadId: "other",
+      threadTitle: "Other",
+      scope: { kind: "foreground" as const },
+    };
+    async function held(
+      capabilities = ["background-ax-v1", "chrome-call-activity-v1", "chrome-call-admission-v1"],
+    ) {
+      const h = setup(true);
+      const controller = Object.assign(h.controller, {
+        availabilityChanged: vi.fn(),
+        releaseIdleConflicts: vi.fn(),
+      });
+      h.hello(capabilities);
+      controller.acquire.mockImplementation((holder) => controller.lease.acquire(holder));
+      h.process.emit("message", {
+        type: "chromeLeaseAcquire",
+        requestId: "chrome",
+        holder: chromeHolder,
+      });
+      await vi.waitFor(() => expect(h.channel.chrome.current()).toEqual(chromeHolder));
+      const calls = (running: boolean | null) =>
+        h.process.emit("message", {
+          type: "chromeCallsChanged",
+          threadId: "t",
+          sessionGeneration: "chrome-s",
+          running,
+        });
+      const response = (requestId: string) =>
+        sent(h).find((message) => message.type === "response" && message.requestId === requestId);
+      const settled = async (requestId: string) => {
+        await vi.waitFor(() => expect(response(requestId)).toBeDefined());
+        return response(requestId);
+      };
+      const validate = (requestId: string, callId?: string) => {
+        h.process.emit("message", {
+          type: "chromeLeaseValidate",
+          requestId,
+          holder: chromeHolder,
+          ...(callId ? { callId } : {}),
+        });
+        return settled(requestId);
+      };
+      const acquireOther = (requestId: string) => {
+        h.process.emit("message", { type: "leaseAcquire", requestId, holder: otherForeground });
+        return settled(requestId);
+      };
+      return { ...h, controller, calls, settled, validate, acquireOther };
+    }
+
+    it("grants another thread the foreground and holds Chrome calls until it ends", async () => {
+      const h = await held();
+      h.calls(false);
+      expect(await h.acquireOther("native")).toMatchObject({
+        result: { threadId: "other", scope: { kind: "foreground" } },
+      });
+      expect(await h.validate("chrome-wait", "call-1")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_WAITING_FOR_NATIVE_MESSAGE },
+      });
+      // An idle native lease would have been released first; this one isn't idle.
+      expect(h.controller.releaseIdleConflicts).toHaveBeenCalledWith(
+        { kind: "foreground" },
+        10_000,
+        undefined,
+        expect.any(Function),
+      );
+      // The refused validation admitted nothing: the holder still reads idle.
+      expect(h.channel.chrome.current()).toEqual(chromeHolder);
+      h.process.emit("message", {
+        type: "leaseRelease",
+        requestId: "release",
+        holder: h.controller.lease.holders()[0]!,
+      });
+      expect(await h.validate("chrome-after", "call-2")).toMatchObject({ result: true });
+    });
+
+    it("marks an admitted call running before answering, until its end or the turn's", async () => {
+      const h = await held();
+      h.calls(false);
+      expect(await h.validate("call", "call-1")).toMatchObject({ result: true });
+      expect(h.controller.availabilityChanged).toHaveBeenCalled();
+      expect(await h.acquireOther("during")).toMatchObject({
+        error: { _tag: "Busy", resource: "chrome", activity: "chrome-call" },
+      });
+      h.process.emit("message", {
+        type: "chromeCallEnded",
+        threadId: "t",
+        sessionGeneration: "chrome-s",
+        callId: "call-1",
+      });
+      expect(await h.acquireOther("after")).toMatchObject({ result: { threadId: "other" } });
+    });
+
+    it("keeps an admitted call past an idle report, until its own end or the turn's", async () => {
+      const h = await held();
+      h.calls(false);
+      expect(await h.validate("call-a", "a")).toMatchObject({ result: true });
+      // The backend's idle report can precede its tracking of a call main just admitted.
+      h.calls(false);
+      expect(await h.acquireOther("after-report")).toMatchObject({
+        error: { _tag: "Busy", activity: "chrome-call" },
+      });
+      // A withdrawn report ends every admitted call.
+      h.calls(null);
+      h.calls(false);
+      expect(await h.acquireOther("after-withdraw")).toMatchObject({
+        result: { threadId: "other" },
+      });
+      h.process.emit("message", {
+        type: "leaseRelease",
+        requestId: "release",
+        holder: h.controller.lease.holders()[0]!,
+      });
+      expect(await h.validate("call-b", "b")).toMatchObject({ result: true });
+      h.process.emit("message", {
+        type: "computerTurnEnded",
+        threadId: "t",
+        sessionGeneration: "chrome-s",
+      });
+      expect(await h.acquireOther("after-turn")).toMatchObject({ result: { threadId: "other" } });
+    });
+
+    it("keeps other threads blocked when the backend can't admit calls", async () => {
+      const h = await held(["background-ax-v1", "chrome-call-activity-v1"]);
+      h.calls(false);
+      expect(await h.acquireOther("legacy")).toMatchObject({
+        error: { _tag: "Busy", resource: "chrome", holderThreadId: "t" },
+      });
+      // Without the capability a callId is ignored rather than tracked.
+      expect(await h.validate("legacy-call", "c")).toMatchObject({ result: true });
+    });
+
+    it("never admits call tracking without call reports", async () => {
+      const h = await held(["background-ax-v1", "chrome-call-admission-v1"]);
+      h.process.emit("message", {
+        type: "chromeCallsChanged",
+        threadId: "t",
+        sessionGeneration: "chrome-s",
+        running: false,
+      });
+      expect(await h.acquireOther("unreported")).toMatchObject({
+        error: { _tag: "Busy", resource: "chrome" },
+      });
     });
   });
   it("cancels a pending takeover on denial and on cancel without arming", async () => {

@@ -2497,19 +2497,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.agentBrowser?.chrome?.verified !== true
           )
             return context?.agentBrowser?.chrome?.detail ?? claudeInChromeUnavailableDetail();
-          // Reported running before admission: the report and main's lease validation share
-          // one ordered channel, so main sees this call before it validates it and refuses a
-          // native request from this thread that would otherwise slip in between. The cost: a
-          // refused call sends a running/idle pair, which briefly re-announces the lease to
-          // other profiles' banners.
-          if (call.toolUseId) context.chromeActivity?.callStarted(call.toolUseId);
+          // Every call gets an id the activity tracks, so its end always reaches main: by its
+          // result, or with the turn when the SDK gave no tool-use id to match a result to.
+          const callId = call.toolUseId ?? randomUUID();
+          // Main admits named calls at validation and counts them running from there, so the
+          // call is tracked only once admitted: waiting for another agent's native control
+          // never reads as Chrome in use. Without that, the report goes first: it shares one
+          // ordered channel with validation, so main sees the call before validating it.
+          const admittedByMain = context.chromeRuntime.admitsCalls();
+          if (!admittedByMain) context.chromeActivity?.callStarted(callId);
           const denial = yield* Effect.promise(() =>
             context.chromeRuntime!.admit(
               {
                 toolName,
                 input: call.input,
                 provenance: call.mcpServer,
-                toolUseId: call.toolUseId,
+                toolUseId: callId,
                 signal: call.signal,
                 generation: context.chromeGeneration!,
                 ...(call.fresh ? { fresh: true } : {}),
@@ -2517,12 +2520,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               threadId,
             ),
           ).pipe(
-            // Admitted: Chrome is in use until the call's result (or the turn's end). A denial,
-            // failure or interruption means it never runs.
+            // Admitted: Chrome is in use until the call's result (or the turn's end). A denial
+            // means it never runs. An interruption may race main's admission, so it stays
+            // tracked until the turn ends.
             Effect.onExit((exit) =>
               Effect.sync(() => {
-                if (call.toolUseId && (Exit.isFailure(exit) || exit.value !== undefined))
-                  context.chromeActivity?.callEnded(call.toolUseId);
+                const denied = Exit.isSuccess(exit) && exit.value !== undefined;
+                if (admittedByMain) {
+                  if (!denied) context.chromeActivity?.callStarted(callId);
+                } else if (denied || Exit.isFailure(exit))
+                  context.chromeActivity?.callEnded(callId);
               }),
             ),
           );
@@ -8997,6 +9004,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           context.chromeActivity = new ClaudeChromeActivity({
             reportCalls: (running) =>
               broker.reportChromeCalls(threadId, chromeLeaseGeneration, running),
+            reportCallEnded: (toolUseId) =>
+              broker.reportChromeCallEnded(threadId, chromeLeaseGeneration, toolUseId),
             // Compaction, background tasks and scheduled wake-ups die with the CLI.
             busy: () => claudeSessionBackgroundBusy(context),
             // Re-checked under the thread lock: a turn or background work that started

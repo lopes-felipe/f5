@@ -9,6 +9,8 @@ import {
   ComputerControlError,
   CHROME_OWN_CALL_RUNNING_MESSAGE,
   CHROME_OWN_STOPPING_MESSAGE,
+  CHROME_NATIVE_WORK_FINISHING_MESSAGE,
+  CHROME_WAITING_FOR_NATIVE_MESSAGE,
 } from "@t3tools/shared/computerControl";
 export { CHROME_OWN_CALL_RUNNING_MESSAGE, CHROME_OWN_STOPPING_MESSAGE };
 import { COMPUTER_CHROME_APP_IDS } from "@t3tools/shared/computerExecution";
@@ -34,8 +36,7 @@ export const CHROME_OWN_CODEX_MESSAGE =
   "This thread's Codex Chrome session blocks native computer control until it stops; Codex threads can't use both at once.";
 export const CHROME_OWN_NATIVE_CONTROL_MESSAGE =
   "This thread holds foreground computer control, so its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it).";
-export const CHROME_NATIVE_WORK_FINISHING_MESSAGE =
-  "Native computer input is still finishing; retry the Chrome call shortly.";
+export { CHROME_NATIVE_WORK_FINISHING_MESSAGE, CHROME_WAITING_FOR_NATIVE_MESSAGE };
 
 /**
  * Refusals of the holder's own thread that clear by themselves (its Chrome call ends, or its
@@ -61,6 +62,14 @@ export interface ChromeLeaseAuthorityOptions {
    * so the same-thread exemption never applies to a session that can't say.
    */
   readonly callsIdle?: (holder: ChromeLeaseHolder) => boolean;
+  /**
+   * Whether the holder's backend admits every Chrome call through main
+   * (`COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY`). Only then can another thread's native
+   * control start while the holder is idle: main sees each call before it runs.
+   */
+  readonly callAdmission?: (holder: ChromeLeaseHolder) => boolean;
+  /** A profile's display name, for other-profile refusals. */
+  readonly profileName?: (profileId: string) => string | undefined;
   /** One line per lease event, for the desktop log. Never tool inputs or titles. */
   readonly log?: (message: string) => void;
   readonly now?: () => number;
@@ -77,11 +86,12 @@ const describeHolder = (holder: ChromeLeaseHolder) =>
  * registered browser; background leases on other apps coexist with it. The lease is
  * released only after main observes the provider's registered process group exit.
  *
- * One exception: a Claude session holds the lease for its CLI's whole life and can only
- * give it up by stopping, so the holder's own thread may take native control while none of
- * its Chrome calls runs. Chrome calls are then refused at validation while that thread holds
- * or has reserved such control, and while released native work is still finishing (see
- * `ComputerHostChannel`), so the two never act at once. */
+ * A Claude session holds the lease for its CLI's whole life and can only give it up by
+ * stopping, so the lease alone must not lock the machine. While none of its Chrome calls
+ * runs, native control may start: always for the holder's own thread, and for any other
+ * thread or profile when its backend admits each call through main. Chrome calls are then
+ * refused at validation while such native control is held or reserved, and while released
+ * native work is still finishing (see `ComputerHostChannel`), so the two never act at once. */
 export class ChromeLeaseAuthority {
   private holder: ChromeLeaseHolder | null = null;
   private paused = false;
@@ -138,11 +148,40 @@ export class ChromeLeaseAuthority {
       );
       return;
     }
+    // An idle Claude session reserves Chrome but acts on nothing: other threads' native
+    // control proceeds, and the holder's next call waits for it at validation.
+    if (this.sharesWhileIdle(holder)) {
+      this.log(
+        `native allowed for profile=${profileId} thread=${requester?.threadId ?? "unknown"}: Chrome holder idle (${describeHolder(holder)})`,
+        true,
+      );
+      return;
+    }
     this.log(
       `native refused for profile=${profileId} thread=${requester?.threadId ?? "unknown"}: held by ${describeHolder(holder)}${this.draining ? " (draining)" : ""}${this.invalidated ? " (invalidated)" : ""}`,
       true,
     );
     this.busy(profileId);
+  }
+  /** A Claude holder, not stopping, whose backend admits calls through main and runs none. */
+  private sharesWhileIdle(holder: ChromeLeaseHolder): boolean {
+    return (
+      holder.provider === "claude" &&
+      !this.draining &&
+      !this.invalidated &&
+      this.options.callAdmission?.(holder) === true &&
+      this.options.callsIdle?.(holder) === true
+    );
+  }
+  /** Whether the current holder refuses other threads' foreground control. */
+  blocksOthersNative(): boolean {
+    return this.holder !== null && !this.sharesWhileIdle(this.holder);
+  }
+  /** Whether the current holder runs (or may run) a Chrome call right now. */
+  private activity(): "chrome-call" | "chrome-session" {
+    return this.holder && this.options.callsIdle?.(this.holder) === true
+      ? "chrome-session"
+      : "chrome-call";
   }
   acquire(holder: ChromeLeaseHolder, native: ComputerLeaseHolder | null): void {
     if (this.recoveryRequired()) {
@@ -157,13 +196,14 @@ export class ChromeLeaseAuthority {
       throw new ComputerControlError({
         _tag: "Busy",
         resource: "computer",
+        activity: "computer",
         ...(native.profileId === holder.profileId
           ? {
               holder: "same-profile" as const,
               holderThreadId: native.threadId,
               threadTitle: native.threadTitle,
             }
-          : { holder: "other-profile" as const }),
+          : { holder: "other-profile" as const, ...this.profileLabel(native.profileId) }),
       });
     }
     if (this.holder) {
@@ -273,9 +313,17 @@ export class ChromeLeaseAuthority {
     throw new ComputerControlError({
       _tag: "Busy",
       resource: "chrome",
+      activity: this.activity(),
       ...(holder?.profileId === profileId
         ? { holder: "same-profile" as const, holderThreadId: holder.threadId }
-        : { holder: "other-profile" as const }),
+        : {
+            holder: "other-profile" as const,
+            ...(holder ? this.profileLabel(holder.profileId) : {}),
+          }),
     });
+  }
+  private profileLabel(profileId: string): { holderProfileName?: string } {
+    const name = this.options.profileName?.(profileId)?.trim();
+    return name ? { holderProfileName: name.slice(0, 100) } : {};
   }
 }

@@ -10,9 +10,11 @@ import {
 function harness(options: { busy?: () => boolean; accept?: () => boolean } = {}) {
   let timer: (() => void) | undefined;
   const reports: boolean[] = [];
+  const ended: string[] = [];
   const stops: string[] = [];
   const activity = new ClaudeChromeActivity({
     reportCalls: (running) => reports.push(running),
+    reportCallEnded: (toolUseId) => ended.push(toolUseId),
     stop: async (reason) => {
       stops.push(reason);
       return options.accept?.() ?? true;
@@ -30,6 +32,7 @@ function harness(options: { busy?: () => boolean; accept?: () => boolean } = {})
   return {
     activity,
     reports,
+    ended,
     stops,
     armed: () => timer !== undefined,
     fire: async () => {
@@ -71,6 +74,8 @@ describe("ClaudeChromeActivity", () => {
     expect(h.reports.at(-1)).toBe(false);
     expect(h.armed()).toBe(true);
     expect(h.stops).toEqual([]);
+    // Each tracked call's end reaches main by id, including those ended with the turn.
+    expect(h.ended).toEqual(["call-1", "call-2"]);
   });
 
   it("is never idle while background work runs, and looks again after another window", async () => {
