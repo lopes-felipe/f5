@@ -18,6 +18,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Computer-use screenshots of apps with very large native lists, such as Mail with thousands of messages, no longer come back almost fully greyed out: password masking checks only the rows on screen. `computer_inspect` reaches the rest of the window instead of stopping in the list, and reports `truncated` when it leaves rows out. Lists in web content are still checked in full.
 - Userless SSH remotes resolve to their forge, and profile-authenticated Git refuses them instead of using the machine's SSH identity. GitHub Enterprise PR links can be pasted for checkout.
 - PR Hub renders edited and pure file renames, PR watches report conflicts after pushes, and large terminal selections respect attached-file and linked-thread input budgets without dropping context.
 - ACP Always allow falls back to the agent's allow-once option. Archived Codex threads can be forked, and late provider refreshes cannot replace status from changed settings.

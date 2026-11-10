@@ -384,4 +384,217 @@ final class SecureAuditTests: XCTestCase {
       expired: { false }, search: { _ in [3, 4, 5] })
     XCTAssertEqual(result, ComputerSecureAudit(rects: [tree[3]!.frame!, field], complete: true))
   }
+
+  // MARK: Large row containers
+
+  typealias Items = ComputerSecureAuditRowItems<Int>
+  let messages = CGRect(x: 0, y: 100, width: 400, height: 600)
+  let preview = CGRect(x: 500, y: 100, width: 400, height: 600)
+  let previewField = CGRect(x: 600, y: 200, width: 100, height: 30)
+  let firstRow = 1000
+  let column = 50
+
+  /// Window > [message scroll area > table of 30 pt rows, preview scroll area > group > password].
+  /// Rows 0..<20 fill the 600 pt message clip; the rest are scrolled out below it.
+  func mailTree(rows: Int = 12000) -> [Int: Node] {
+    let rowIds = Array(firstRow..<(firstRow + rows))
+    var tree: [Int: Node] = [
+      0: Node(role: "AXWindow", frame: window, children: [1, 2]),
+      1: Node(role: "AXScrollArea", frame: messages, children: [3]),
+      2: Node(role: "AXScrollArea", frame: preview, children: [4]),
+      3: Node(
+        role: "AXTable",
+        frame: CGRect(x: 0, y: 100, width: 400, height: Double(rows) * 30),
+        children: rowIds + [column]),
+      4: Node(role: "AXGroup", frame: preview, children: [5]),
+      5: Node(role: "AXSecureTextField", frame: previewField),
+      column: Node(role: "AXColumn", frame: CGRect(x: 0, y: 100, width: 400, height: 600)),
+    ]
+    for (index, id) in rowIds.enumerated() {
+      tree[id] = Node(
+        role: "AXRow", frame: CGRect(x: 0, y: 100 + Double(index) * 30, width: 400, height: 30))
+    }
+    return tree
+  }
+  func rows(_ range: Range<Int>) -> [Int] { range.map { firstRow + $0 } }
+  /// Order-insensitive; `CGRect` is only `Hashable` from macOS 15.
+  func assertSameRects(
+    _ actual: [CGRect]?, _ expected: [CGRect], file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let actual = actual ?? []
+    XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+    for rect in expected {
+      XCTAssertTrue(actual.contains(rect), "missing \(rect)", file: file, line: line)
+    }
+  }
+  func mailItems(_ tree: [Int: Node], visible: [Int]? = nil) -> Items {
+    let all = tree[3]!.children.filter { $0 != column }
+    return Items(all: all, visible: visible ?? rows(0..<20), others: [column])
+  }
+  func auditRows(
+    _ tree: [Int: Node], items: Items?, maxNodes: Int = 20000,
+    diagnostics: ComputerSecureAuditDiagnostics = ComputerSecureAuditDiagnostics(),
+    reads: Reads = Reads()
+  ) -> ComputerSecureAudit? {
+    computerSecureAudit(
+      root: 0,
+      read: { id in
+        reads.ids.append(id)
+        return tree[id]
+      }, maxDepth: 80, maxNodes: maxNodes, expired: { false },
+      rowItems: { id, role in
+        XCTAssertEqual(id, 3)
+        XCTAssertEqual(role, "AXTable")
+        return items
+      }, diagnostics: diagnostics)
+  }
+
+  func testLargeClippedTableAuditsOnlyItsVisibleRows() {
+    let tree = mailTree()
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let reads = Reads()
+    let result = auditRows(
+      tree, items: mailItems(tree), maxNodes: 5000, diagnostics: diagnostics, reads: reads)
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true))
+    XCTAssertLessThan(diagnostics.visitedNodes, 100)
+    XCTAssertEqual(diagnostics.prunedRows, 11980)
+    XCTAssertFalse(reads.ids.contains(firstRow + 500))
+    XCTAssertTrue(reads.ids.contains(firstRow + 20), "the row after the visible run is checked")
+    // The same budget walking every row is what greyed out Mail: both scroll areas masked.
+    XCTAssertEqual(
+      audit(tree, maxNodes: 5000), ComputerSecureAudit(rects: [messages, preview], complete: false))
+  }
+
+  func testSecureFieldsInVisibleRowsAndNonRowChildrenAreMasked() {
+    var tree = mailTree()
+    let rowField = CGRect(x: 10, y: 255, width: 100, height: 20)
+    let headerField = CGRect(x: 10, y: 102, width: 100, height: 20)
+    tree[firstRow + 5]?.children = [70]
+    tree[70] = Node(role: "AXTextField", subrole: "AXSecureTextField", frame: rowField)
+    tree[column]?.children = [71]
+    tree[71] = Node(role: "AXSecureTextField", frame: headerField)
+    let result = auditRows(tree, items: mailItems(tree))
+    XCTAssertEqual(result?.complete, true)
+    assertSameRects(result?.rects, [previewField, rowField, headerField])
+  }
+
+  func testUntrustworthyVisibleRowReportsFallBackToTheFullWalk() {
+    var invalidNeighbor = mailTree()
+    invalidNeighbor[firstRow + 20]?.frame = nil
+    let tree = mailTree()
+    let cases: [(String, [Int: Node], Items?)] = [
+      ("reader returned nil", tree, nil),
+      ("no visible rows", tree, mailItems(tree, visible: [])),
+      ("non-contiguous", tree, mailItems(tree, visible: rows(0..<5) + rows(6..<20))),
+      ("duplicate", tree, mailItems(tree, visible: rows(0..<20) + [firstRow])),
+      ("not an item", tree, mailItems(tree, visible: rows(0..<19) + [column])),
+      ("stale: next row is on screen", tree, mailItems(tree, visible: rows(0..<10))),
+      ("stale: previous row is on screen", tree, mailItems(tree, visible: rows(1..<20))),
+      ("neighbor without a frame", invalidNeighbor, mailItems(invalidNeighbor)),
+    ]
+    for (name, tree, items) in cases {
+      let diagnostics = ComputerSecureAuditDiagnostics()
+      let reads = Reads()
+      let result = auditRows(tree, items: items, diagnostics: diagnostics, reads: reads)
+      XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true), name)
+      XCTAssertEqual(diagnostics.prunedRows, 0, name)
+      XCTAssertTrue(reads.ids.contains(firstRow + 11999), name)
+    }
+  }
+
+  func testNeighborTouchingTheClipEdgeStillCountsAsOffscreen() {
+    var tree = mailTree()
+    // Row 20 starts 1 pt inside the clip's bottom edge.
+    tree[firstRow + 20]?.frame = CGRect(x: 0, y: 699, width: 400, height: 30)
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    _ = auditRows(tree, items: mailItems(tree), diagnostics: diagnostics)
+    XCTAssertEqual(diagnostics.prunedRows, 11980)
+  }
+
+  func testRowContainersInWebContentAreNeverPruned() {
+    // A positioned modal inside an off-screen list item still renders in the viewport.
+    var tree = mailTree()
+    tree[1] = Node(role: "AXWebArea", frame: messages, children: [3])
+    let modalField = CGRect(x: 100, y: 300, width: 100, height: 30)
+    tree[firstRow + 500]?.children = [72]
+    tree[72] = Node(role: "AXSecureTextField", frame: modalField)
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let result = auditRows(tree, items: mailItems(tree), diagnostics: diagnostics)
+    XCTAssertEqual(result?.complete, true)
+    assertSameRects(result?.rects, [previewField, modalField])
+    XCTAssertEqual(diagnostics.prunedRows, 0)
+  }
+
+  func testColumnListingEveryRowsCellsIsNotWalkedBesidePrunedRows() {
+    var tree = mailTree()
+    // Cells 20000... are never read: an unreadable one would mask the scroll area.
+    tree[column]?.children = Array(20000..<32000)
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let reads = Reads()
+    let result = auditRows(
+      tree, items: mailItems(tree), maxNodes: 5000, diagnostics: diagnostics, reads: reads)
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true))
+    XCTAssertEqual(diagnostics.prunedRows, 11980 + 12000)
+    XCTAssertFalse(reads.ids.contains(20000))
+  }
+
+  /// Scrolled so row 50 sits just below a 20 pt header; row 49 lies under the header.
+  func headedTree() -> [Int: Node] {
+    var tree = mailTree()
+    let top = 120.0
+    tree[3]?.frame = CGRect(x: 0, y: top - 50 * 30, width: 400, height: 12000 * 30)
+    for index in 0..<12000 {
+      tree[firstRow + index]?.frame = CGRect(
+        x: 0, y: top + Double(index - 50) * 30, width: 400, height: 30)
+    }
+    tree[60] = Node(role: "AXGroup", frame: CGRect(x: 0, y: 100, width: 400, height: 20))
+    return tree
+  }
+
+  func testRowsScrolledUnderAnOpaqueHeaderCountAsOffscreen() {
+    let tree = headedTree()
+    var items = mailItems(tree, visible: rows(50..<70))
+    let withoutHeader = ComputerSecureAuditDiagnostics()
+    _ = auditRows(tree, items: items, diagnostics: withoutHeader)
+    XCTAssertEqual(withoutHeader.prunedRows, 0, "row 49 overlaps the clip under the header")
+    items.header = 60
+    let withHeader = ComputerSecureAuditDiagnostics()
+    let result = auditRows(tree, items: items, diagnostics: withHeader)
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true))
+    XCTAssertEqual(withHeader.prunedRows, 11980)
+  }
+
+  func testHeaderTrimsOnlyABandAcrossTheRegionTop() {
+    let region = CGRect(x: 0, y: 100, width: 400, height: 600)
+    XCTAssertEqual(
+      computerSecureAuditRegionBelowHeader(
+        region, header: CGRect(x: 0, y: 100, width: 400, height: 20)),
+      CGRect(x: 0, y: 120, width: 400, height: 580))
+    for header in [
+      CGRect(x: 0, y: 300, width: 400, height: 20),  // not at the top
+      CGRect(x: 0, y: 100, width: 200, height: 20),  // not full width
+      CGRect(x: 0, y: 100, width: 400, height: 700),  // covers everything
+      CGRect(x: 0, y: 0, width: 400, height: Double.infinity),
+    ] {
+      XCTAssertEqual(computerSecureAuditRegionBelowHeader(region, header: header), region)
+    }
+    XCTAssertEqual(computerSecureAuditRegionBelowHeader(region, header: nil), region)
+  }
+
+  func testSmallOrUnclippedRowContainersAreWalkedInFull() {
+    let small = mailTree(rows: 150)
+    let smallReads = Reads()
+    _ = auditRows(small, items: mailItems(small), reads: smallReads)
+    XCTAssertTrue(smallReads.ids.contains(firstRow + 149))
+
+    var unclipped = mailTree()
+    unclipped[0]?.children = [3, 2]
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let reads = Reads()
+    let result = auditRows(
+      unclipped, items: mailItems(unclipped), diagnostics: diagnostics, reads: reads)
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true))
+    XCTAssertEqual(diagnostics.prunedRows, 0)
+    XCTAssertTrue(reads.ids.contains(firstRow + 11999))
+  }
 }
