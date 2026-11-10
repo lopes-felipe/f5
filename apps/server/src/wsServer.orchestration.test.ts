@@ -1624,6 +1624,134 @@ describe("WebSocket Server", () => {
         await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
       });
 
+      describe("base branch resolution", () => {
+        const git = (cwd: string, ...args: string[]) =>
+          execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+        const commitFile = (repo: string, name: string) => {
+          fs.writeFileSync(path.join(repo, name), `${name}\n`);
+          git(repo, "add", name);
+          git(repo, "commit", "-m", name);
+          return git(repo, "rev-parse", "HEAD");
+        };
+        async function runSetup(repo: string, threadId: string, baseBranch: string) {
+          const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+          const ws = await startServer({ repo, sentTurns });
+          await createProject(ws, repo);
+          const response = await sendRequest(
+            ws,
+            WS_METHODS.nextTurnQueueSubmit,
+            firstSend({ repo, threadId, baseBranch }),
+          );
+          expect(response.error).toBeUndefined();
+          const done = await waitForSetup(ws, threadId, (snapshot) => snapshot?.phase === "done");
+          return {
+            done: done!,
+            fetch: done!.stages.find((stage) => stage.id === "fetch"),
+            head: git(done!.worktreePath!, "rev-parse", "HEAD"),
+          };
+        }
+
+        it("treats a base branch missing on the remote as a normal local base", async () => {
+          const repo = makeGitRepo("f5-ws-base-local-only-");
+          addOriginRemote(repo);
+          git(repo, "switch", "-c", "local-feature");
+          const localSha = commitFile(repo, "feature.txt");
+          git(repo, "switch", "main");
+
+          const { done, fetch, head } = await runSetup(repo, "base-local-only", "local-feature");
+          expect(fetch?.status).toBe("done");
+          expect(fetch?.detail).toBe("Using local local-feature (not on the remote)");
+          expect(done.stages.some((stage) => stage.status === "warning")).toBe(false);
+          expect(head).toBe(localSha);
+        });
+
+        it("keeps unpushed commits when the local base is ahead of the remote", async () => {
+          const repo = makeGitRepo("f5-ws-base-ahead-");
+          addOriginRemote(repo);
+          const localSha = commitFile(repo, "unpushed.txt");
+
+          const { fetch, head } = await runSetup(repo, "base-ahead", "main");
+          expect(fetch?.status).toBe("done");
+          expect(fetch?.detail).toBe("Using local main (ahead of origin/main)");
+          expect(head).toBe(localSha);
+        });
+
+        /** Pushes a commit to origin, then rewinds local main so it is behind. */
+        const pushThenRewind = (repo: string) => {
+          const remoteSha = commitFile(repo, "upstream.txt");
+          git(repo, "push", "origin", "main");
+          git(repo, "reset", "--hard", "HEAD~1");
+          return remoteSha;
+        };
+
+        it("picks up the remote when the local base is behind", async () => {
+          const repo = makeGitRepo("f5-ws-base-behind-");
+          addOriginRemote(repo);
+          const remoteSha = pushThenRewind(repo);
+
+          const { done, fetch, head } = await runSetup(repo, "base-behind", "main");
+          expect(fetch?.status).toBe("done");
+          expect(fetch?.detail).toBe(`origin/main at ${remoteSha.slice(0, 7)}`);
+          expect(done.stages.some((stage) => stage.status === "warning")).toBe(false);
+          expect(head).toBe(remoteSha);
+        });
+
+        it("warns and keeps the local base when it has diverged from the remote", async () => {
+          const repo = makeGitRepo("f5-ws-base-diverged-");
+          addOriginRemote(repo);
+          pushThenRewind(repo);
+          const localSha = commitFile(repo, "local-only.txt");
+
+          const { fetch, head } = await runSetup(repo, "base-diverged", "main");
+          expect(fetch?.status).toBe("warning");
+          expect(fetch?.detail).toBe("Using local main (diverged from origin/main)");
+          expect(head).toBe(localSha);
+        });
+
+        it("compares the local branch rather than a same-named tag", async () => {
+          const repo = makeGitRepo("f5-ws-base-tag-");
+          addOriginRemote(repo);
+          const remoteSha = pushThenRewind(repo);
+          git(repo, "switch", "-c", "tag-source");
+          commitFile(repo, "tagged.txt");
+          git(repo, "tag", "main");
+          git(repo, "switch", "main");
+          git(repo, "branch", "-D", "tag-source");
+
+          const { fetch, head } = await runSetup(repo, "base-tag", "main");
+          expect(fetch?.status).toBe("done");
+          expect(head).toBe(remoteSha);
+        });
+
+        it("uses the remote rather than a same-named tag when there is no local branch", async () => {
+          const repo = makeGitRepo("f5-ws-base-remote-tag-");
+          addOriginRemote(repo);
+          git(repo, "switch", "-c", "release");
+          const remoteSha = commitFile(repo, "release.txt");
+          git(repo, "push", "origin", "release");
+          git(repo, "switch", "main");
+          git(repo, "branch", "-D", "release");
+          commitFile(repo, "tagged.txt");
+          git(repo, "tag", "release");
+
+          const { fetch, head } = await runSetup(repo, "base-remote-tag", "release");
+          expect(fetch?.status).toBe("done");
+          expect(head).toBe(remoteSha);
+        });
+
+        it("warns and uses the local base when the remote is unreachable", async () => {
+          const repo = makeGitRepo("f5-ws-base-unreachable-");
+          addOriginRemote(repo);
+          const localSha = git(repo, "rev-parse", "HEAD");
+          git(repo, "remote", "set-url", "origin", path.join(repo, "missing-remote"));
+
+          const { fetch, head } = await runSetup(repo, "base-unreachable", "main");
+          expect(fetch?.status).toBe("warning");
+          expect(fetch?.detail).toBe("Couldn't reach the remote; using local main");
+          expect(head).toBe(localSha);
+        });
+      });
+
       it.each([undefined, true, false])(
         "honors Agent waits for the first send (async: %s)",
         async (async) => {

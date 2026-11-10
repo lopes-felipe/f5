@@ -32,6 +32,7 @@ import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
+import { hasCachedUpdate } from "./updateCache";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
@@ -217,7 +218,7 @@ import {
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
-import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
+import { formatErrorMessage, loadPreviewURL } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { fetchPreviewFaviconDataUrl } from "./preview/previewFavicon";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
@@ -2938,6 +2939,7 @@ function configureAutoUpdater(): void {
   autoUpdater.autoInstallOnAppQuit = false;
   let lastLoggedDownloadMilestone = -1;
   updateController = createUpdateController({
+    isQuitting: () => isQuitting,
     getState: () => updateState,
     emit: (state) => setUpdateState(state),
     writePreferences: (value) => writeUpdatePreferences(preferencesPath, value),
@@ -2952,6 +2954,13 @@ function configureAutoUpdater(): void {
         return result?.isUpdateAvailable
           ? {
               version: result.updateInfo.version,
+              cachedDownload: await hasCachedUpdate(
+                autoUpdater,
+                result.updateInfo.files,
+                desktopRuntimeInfo,
+                process.platform,
+                process.resourcesPath,
+              ),
               releaseNotes: normalizeDesktopUpdateReleaseNotes(result.updateInfo.releaseNotes),
             }
           : null;
@@ -4160,10 +4169,10 @@ function registerIpcHandlers(): void {
         // interrupted rather than report success or a load failure.
         const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
         try {
-          await guest.loadURL(url);
+          await loadPreviewURL(guest, url);
         } catch (error) {
           takeover?.check();
-          if (!isPreviewNavigationAbortError(error)) throw error;
+          throw error;
         }
         takeover?.check();
       },
@@ -4268,7 +4277,7 @@ function createWindow(
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 840,
+    minWidth: 600,
     minHeight: 620,
     show: false,
     autoHideMenuBar: true,
