@@ -224,6 +224,14 @@ import { fetchPreviewFaviconDataUrl } from "./preview/previewFavicon";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
+import {
+  DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL,
+  DESKTOP_NOTIFICATION_CLOSE_CHANNEL,
+  DESKTOP_NOTIFICATION_SHOW_CHANNEL,
+  DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL,
+  DesktopNotificationRegistry,
+  parseDesktopNotificationInput,
+} from "./desktopNotifications";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 
 const shellEnvironmentStartedAt = performance.now();
@@ -366,6 +374,17 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
+const desktopNotifications = new DesktopNotificationRegistry({
+  create: (input) => new Notification(input),
+  // Resolved at click time; `openProfile` is declared further down.
+  openProfile: (profileId) => openProfile(profileId),
+  announce: (profileId) => {
+    for (const window of BrowserWindow.getAllWindows())
+      if (!window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId)
+        window.webContents.send(DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL);
+  },
+  log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
+});
 const browserOpenWindows = {
   window: (profileId: string) =>
     BrowserWindow.getAllWindows().find(
@@ -668,7 +687,12 @@ function initializeComputerSystem(): void {
     status,
     (profileId, request) => {
       if (!Notification.isSupported()) return;
-      const notice = new Notification({
+      // Held by the registry so the click survives garbage collection; the latest request
+      // replaces an older one still on screen.
+      desktopNotifications.show(profileId, {
+        id: `computer-access:${Date.now()}`,
+        tag: "computer-access",
+        target: { kind: "none" },
         title: "Computer access requested",
         body:
           request.kind === "chrome-setup"
@@ -681,10 +705,6 @@ function initializeComputerSystem(): void {
                   ? `An agent wants the foreground in ${request.takeover?.appName ?? "an app"}.`
                   : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
       });
-      notice.on("click", () => {
-        void openProfile(profileId);
-      });
-      notice.show();
     },
     {
       certified: (provider) => chromeControlCertified(provider),
@@ -717,28 +737,16 @@ function initializeComputerSystem(): void {
       notificationAvailable: () => Notification.isSupported(),
       notification: (profileId, payload) => {
         if (!Notification.isSupported()) return false;
-        const notice = new Notification({ title: payload.title, body: payload.body });
-        notice.on("click", () => {
-          void openProfile(profileId)
-            .then(() => {
-              const window = BrowserWindow.getAllWindows().find(
-                (w) => profileByWebContentsId.get(w.webContents.id) === profileId,
-              );
-              if (!window || window.isDestroyed()) return;
-              const base = window.webContents.getURL().split("#")[0]!;
-              const target = payload.threadId
-                ? rendererUrlForThread(base, payload.threadId)
-                : `${base}#/scheduled?taskId=${encodeURIComponent(payload.taskId)}`;
-              void window.loadURL(target);
-            })
-            .catch((error) =>
-              writeDesktopLogHeader(
-                `scheduled notification navigation failed: ${formatErrorMessage(error)}`,
-              ),
-            );
+        // The renderer navigates in place when it takes the activation; no full reload.
+        return desktopNotifications.show(profileId, {
+          id: payload.id,
+          tag: payload.id,
+          title: payload.title,
+          body: payload.body,
+          target: payload.threadId
+            ? { kind: "thread", threadId: payload.threadId }
+            : { kind: "scheduled", taskId: payload.taskId },
         });
-        notice.show();
-        return true;
       },
       background: backgroundStatus,
       advertiseBackground: computerBackgroundGate(
@@ -3683,6 +3691,22 @@ function registerIpcHandlers(): void {
     }
     // With several profiles, the user is told which one the link opened in.
     return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
+    const profileId = authorizeAppMainFrame(event, "Notification");
+    if (!Notification.isSupported()) return false;
+    const input = parseDesktopNotificationInput(raw);
+    if (!input) throw new Error("Invalid notification.");
+    return desktopNotifications.show(profileId, input);
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_CLOSE_CHANNEL, (event, tag: unknown) => {
+    const profileId = authorizeAppMainFrame(event, "Notification close");
+    if (typeof tag !== "string" || tag.length === 0) return;
+    desktopNotifications.close(profileId, tag);
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL, (event) => {
+    const profileId = authorizeAppMainFrame(event, "Notification activation");
+    return desktopNotifications.take(profileId);
   });
   ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
     runtimeForRenderer(event.sender.id);

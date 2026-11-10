@@ -764,8 +764,46 @@ export type DesktopTrackpadScrollEvent =
   // `precise` is false for a mouse wheel, and absent when Chromium did not report it.
   { readonly phase: "begin"; readonly precise?: boolean } | { readonly phase: "end" };
 
+/** Where clicking an OS notification (or its in-app counterpart) takes the user. */
+export type DesktopNotificationTarget =
+  | { readonly kind: "thread"; readonly threadId: string }
+  | { readonly kind: "prHub"; readonly prKey?: string }
+  | { readonly kind: "scheduled"; readonly taskId: string }
+  | { readonly kind: "upstream"; readonly projectId: string }
+  | { readonly kind: "update" }
+  | { readonly kind: "none" };
+
+export interface DesktopNotificationShowInput {
+  /** Echoed back on activation so the renderer can match its own record. */
+  readonly id: string;
+  readonly title: string;
+  readonly body?: string;
+  /** A later notification with the same tag replaces the earlier one. */
+  readonly tag?: string;
+  readonly silent?: boolean;
+  readonly target: DesktopNotificationTarget;
+}
+
+export interface DesktopNotificationActivation {
+  readonly id: string;
+  readonly target: DesktopNotificationTarget;
+}
+
+/**
+ * OS notifications owned by the main process, so a click still reaches the app after the
+ * renderer reloads, its window closes, or the user clicks it in Notification Center.
+ */
+export interface DesktopNotificationsBridge {
+  show(input: DesktopNotificationShowInput): Promise<boolean>;
+  close(tag: string): Promise<void>;
+  /** Takes the clicked notifications not yet handled by this profile's renderer, oldest first. */
+  takeActivations(): Promise<readonly DesktopNotificationActivation[]>;
+  onActivationsAvailable(listener: () => void): () => void;
+}
+
 export interface DesktopBridge {
   readonly keepAwake?: DesktopKeepAwakeBridge;
+  readonly notifications?: DesktopNotificationsBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;

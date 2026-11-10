@@ -10,6 +10,7 @@ import { QuitHoldOverlay } from "../components/QuitHoldOverlay";
 import { ProjectCloneController } from "../components/ProjectCloneController";
 import { ProjectCreateNewController } from "../components/ProjectCreateNewController";
 import { DesktopPromptLinkController } from "../components/promptLinks/DesktopPromptLinkController";
+import { NotificationActivationRouter } from "../notificationCenter/NotificationActivationRouter";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
 import { HistorySwipeNavigation } from "../components/HistorySwipeNavigation";
 import { isElectron } from "../env";
@@ -163,6 +164,7 @@ function ChatRouteLayout() {
         <ProjectCloneController />
         <ProjectCreateNewController />
         <DesktopPromptLinkController />
+        <NotificationActivationRouter />
         <ModelRecencyController />
         <ScheduledNotificationController />
         <ThreadStatusNotificationController />

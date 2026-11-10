@@ -6,6 +6,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Clicking a desktop notification opens its thread, pull request, scheduled task or upstream project instead of only bringing F5 forward, including after a reload, after closing the window, and from Notification Center. Scheduled-run notices open their thread without reloading the app.
 - New worktree threads based on a branch that isn't on the remote no longer finish with a "Fetch base branch" warning. A local base branch with unpushed commits is used as is, instead of starting from the older remote copy; the setup card warns when the local branch has diverged from the remote or the remote can't be reached.
 - Preview navigations blocked by a page's leave-page prompt now report a failure, while redirects during loading continue without a navigation error.
 - Saving duplicate provider environment variable rows no longer deletes a stored secret that a sensitive row still uses.
