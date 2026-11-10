@@ -61,18 +61,26 @@ public func computerInspectIsWrapper(
     && actions.allSatisfy { ["showMenu", "scrollIntoView"].contains($0) }
 }
 
-/// Children inspection walks. A large row container lists only its reported visible items and
-/// its non-item children, so off-screen rows do not spend the visited budget before the rest of
-/// the window. Inspection is not a safety boundary, so the report is used without the audit's
-/// boundary check; an unavailable or empty report keeps every child.
+/// A row container with at least this many children would spend most of the visited budget on
+/// its rows (about four nodes each) before the rest of the window is reached.
+public let computerInspectLargeContainerChildren = 1000
+
+/// Children inspection walks, and whether rows were left out. A large row container lists only
+/// its reported visible items and its non-item children, so off-screen rows do not spend the
+/// visited budget before the rest of the window; callers report the result as truncated. The
+/// inspect root itself is never pruned, so inspecting the container lists its rows. Inspection
+/// is not a safety boundary, so the report is used without the audit's boundary check; an
+/// unavailable or empty report keeps every child.
 public func computerInspectChildren<Handle>(
-  role: String, children: [Handle], rowItems: () -> ComputerSecureAuditRowItems<Handle>?
-) -> [Handle] {
-  guard computerSecureAuditRowContainerRoles.contains(role),
-    children.count >= computerSecureAuditLargeContainerChildren,
+  role: String, children: [Handle], isRoot: Bool,
+  rowItems: () -> ComputerSecureAuditRowItems<Handle>?
+) -> (children: [Handle], omitted: Bool) {
+  guard !isRoot, computerSecureAuditRowContainerRoles.contains(role),
+    children.count >= computerInspectLargeContainerChildren,
     let items = rowItems(), !items.visible.isEmpty
-  else { return children }
-  return items.others + items.visible
+  else { return (children, false) }
+  let kept = items.others + items.visible
+  return (kept, kept.count < children.count)
 }
 
 /// Iterative depth-first traversal. Visited and emitted budgets are independent: pruning a

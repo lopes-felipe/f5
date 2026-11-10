@@ -110,15 +110,18 @@ const LISTED_CONTROL_TYPES: [UIA_CONTROLTYPE_ID; 4] = [
     UIA_TableControlTypeId,
 ];
 /// The control-view walk for the screenshot password audit, where only drawn pixels matter.
-/// List, DataGrid, Tree and Table controls list just their on-screen children in one provider
-/// call, so thousands of scrolled-out rows no longer exhaust the node and time limits and mask
-/// the whole window. Any setup or listing failure falls back to the full walk. Keyboard-focus
-/// checks must keep `walk_checked`: a focused password field can sit in a scrolled-out row.
+/// Native List, DataGrid, Tree and Table controls list their children in one provider call
+/// and skip those the provider reports off-screen whose bounds also miss the container, so
+/// thousands of scrolled-out rows no longer exhaust the node and time limits and mask the
+/// whole window. Web content is never pruned. Any setup or listing failure falls back to the
+/// full walk; the listing call is bounded by the client's 250 ms transaction timeout.
+/// Keyboard-focus checks must keep `walk_checked`: a focused password field can sit in a
+/// scrolled-out row.
 pub(super) unsafe fn walk_rendered_checked(
     root: &IUIAutomationElement,
     max: usize,
 ) -> (Vec<IUIAutomationElement>, bool) {
-    let Some((root, cache, onscreen, walker)) = rendered_walk_parts(root) else {
+    let Some((root, cache, all, walker)) = rendered_walk_parts(root) else {
         return walk_checked(root, max);
     };
     let optional = |value: windows::core::Result<IUIAutomationElement>| {
@@ -130,7 +133,7 @@ pub(super) unsafe fn walk_rendered_checked(
         Duration::from_secs(1),
         |node| optional(walker.GetFirstChildElementBuildCache(node, &cache)),
         |node| optional(walker.GetNextSiblingElementBuildCache(node, &cache)),
-        |node| onscreen_children(node, &onscreen, &cache),
+        |node| rendered_children(node, &all, &cache),
     );
     (output, report.complete)
 }
@@ -148,37 +151,50 @@ unsafe fn rendered_walk_parts(
         .SetAutomationElementMode(AutomationElementMode_Full)
         .ok()?;
     cache.SetTreeScope(TreeScope_Element).ok()?;
-    cache.AddProperty(UIA_ControlTypePropertyId).ok()?;
-    // Raw children, so a non-control wrapper around on-screen items is still walked below.
-    let onscreen = uia
-        .CreatePropertyCondition(
-            UIA_IsOffscreenPropertyId,
-            &windows::Win32::System::Variant::VARIANT::from(false),
-        )
-        .ok()?;
+    for property in [
+        UIA_ControlTypePropertyId,
+        UIA_FrameworkIdPropertyId,
+        UIA_BoundingRectanglePropertyId,
+        UIA_IsOffscreenPropertyId,
+    ] {
+        cache.AddProperty(property).ok()?;
+    }
+    // Raw children, so a non-control wrapper around drawn items is still walked below.
+    let all = uia.CreateTrueCondition().ok()?;
     let walker = uia.ControlViewWalker().ok()?;
     let root = root.BuildUpdatedCache(&cache).ok()?;
-    Some((root, cache, onscreen, walker))
+    Some((root, cache, all, walker))
 }
-/// None keeps the sibling walk: not an item container, or the listing failed.
-unsafe fn onscreen_children(
+/// None keeps the sibling walk: not a native item container, or a read or the listing failed.
+unsafe fn rendered_children(
     node: &IUIAutomationElement,
-    onscreen: &IUIAutomationCondition,
+    all: &IUIAutomationCondition,
     cache: &IUIAutomationCacheRequest,
 ) -> Option<Result<Vec<IUIAutomationElement>, i32>> {
     let kind = node.CachedControlType().ok()?;
-    if !LISTED_CONTROL_TYPES.contains(&kind) {
+    if !LISTED_CONTROL_TYPES.contains(&kind)
+        || !crate::traversal::lists_rendered_children(&node.CachedFrameworkId().ok()?.to_string())
+    {
         return None;
     }
+    let bounds = |rect: RECT| (rect.left, rect.top, rect.right, rect.bottom);
+    let container = bounds(node.CachedBoundingRectangle().ok()?);
     let found = node
-        .FindAllBuildCache(TreeScope_Children, onscreen, cache)
+        .FindAllBuildCache(TreeScope_Children, all, cache)
         .ok()?;
     let length = found.Length().ok()?;
-    (0..length)
-        .map(|index| found.GetElement(index))
-        .collect::<windows::core::Result<Vec<_>>>()
-        .ok()
-        .map(Ok)
+    let mut kept = Vec::new();
+    for index in 0..length {
+        let child = found.GetElement(index).ok()?;
+        if !crate::traversal::offscreen_child_skippable(
+            cached_bool(&child, UIA_IsOffscreenPropertyId),
+            child.CachedBoundingRectangle().ok().map(bounds),
+            container,
+        ) {
+            kept.push(child);
+        }
+    }
+    Some(Ok(kept))
 }
 pub(super) unsafe fn app_window(id: &str) -> Result<HWND, Value> {
     windows()

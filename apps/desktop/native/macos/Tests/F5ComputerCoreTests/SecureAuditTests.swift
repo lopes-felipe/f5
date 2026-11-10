@@ -417,6 +417,16 @@ final class SecureAuditTests: XCTestCase {
     return tree
   }
   func rows(_ range: Range<Int>) -> [Int] { range.map { firstRow + $0 } }
+  /// Order-insensitive; `CGRect` is only `Hashable` from macOS 15.
+  func assertSameRects(
+    _ actual: [CGRect]?, _ expected: [CGRect], file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let actual = actual ?? []
+    XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+    for rect in expected {
+      XCTAssertTrue(actual.contains(rect), "missing \(rect)", file: file, line: line)
+    }
+  }
   func mailItems(_ tree: [Int: Node], visible: [Int]? = nil) -> Items {
     let all = tree[3]!.children.filter { $0 != column }
     return Items(all: all, visible: visible ?? rows(0..<20), others: [column])
@@ -465,7 +475,7 @@ final class SecureAuditTests: XCTestCase {
     tree[71] = Node(role: "AXSecureTextField", frame: headerField)
     let result = auditRows(tree, items: mailItems(tree))
     XCTAssertEqual(result?.complete, true)
-    XCTAssertEqual(Set(result?.rects ?? []), [previewField, rowField, headerField])
+    assertSameRects(result?.rects, [previewField, rowField, headerField])
   }
 
   func testUntrustworthyVisibleRowReportsFallBackToTheFullWalk() {
@@ -499,6 +509,76 @@ final class SecureAuditTests: XCTestCase {
     let diagnostics = ComputerSecureAuditDiagnostics()
     _ = auditRows(tree, items: mailItems(tree), diagnostics: diagnostics)
     XCTAssertEqual(diagnostics.prunedRows, 11980)
+  }
+
+  func testRowContainersInWebContentAreNeverPruned() {
+    // A positioned modal inside an off-screen list item still renders in the viewport.
+    var tree = mailTree()
+    tree[1] = Node(role: "AXWebArea", frame: messages, children: [3])
+    let modalField = CGRect(x: 100, y: 300, width: 100, height: 30)
+    tree[firstRow + 500]?.children = [72]
+    tree[72] = Node(role: "AXSecureTextField", frame: modalField)
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let result = auditRows(tree, items: mailItems(tree), diagnostics: diagnostics)
+    XCTAssertEqual(result?.complete, true)
+    assertSameRects(result?.rects, [previewField, modalField])
+    XCTAssertEqual(diagnostics.prunedRows, 0)
+  }
+
+  func testColumnListingEveryRowsCellsIsNotWalkedBesidePrunedRows() {
+    var tree = mailTree()
+    // Cells 20000... are never read: an unreadable one would mask the scroll area.
+    tree[column]?.children = Array(20000..<32000)
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let reads = Reads()
+    let result = auditRows(
+      tree, items: mailItems(tree), maxNodes: 5000, diagnostics: diagnostics, reads: reads)
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true))
+    XCTAssertEqual(diagnostics.prunedRows, 11980 + 12000)
+    XCTAssertFalse(reads.ids.contains(20000))
+  }
+
+  /// Scrolled so row 50 sits just below a 20 pt header; row 49 lies under the header.
+  func headedTree() -> [Int: Node] {
+    var tree = mailTree()
+    let top = 120.0
+    tree[3]?.frame = CGRect(x: 0, y: top - 50 * 30, width: 400, height: 12000 * 30)
+    for index in 0..<12000 {
+      tree[firstRow + index]?.frame = CGRect(
+        x: 0, y: top + Double(index - 50) * 30, width: 400, height: 30)
+    }
+    tree[60] = Node(role: "AXGroup", frame: CGRect(x: 0, y: 100, width: 400, height: 20))
+    return tree
+  }
+
+  func testRowsScrolledUnderAnOpaqueHeaderCountAsOffscreen() {
+    let tree = headedTree()
+    var items = mailItems(tree, visible: rows(50..<70))
+    let withoutHeader = ComputerSecureAuditDiagnostics()
+    _ = auditRows(tree, items: items, diagnostics: withoutHeader)
+    XCTAssertEqual(withoutHeader.prunedRows, 0, "row 49 overlaps the clip under the header")
+    items.header = 60
+    let withHeader = ComputerSecureAuditDiagnostics()
+    let result = auditRows(tree, items: items, diagnostics: withHeader)
+    XCTAssertEqual(result, ComputerSecureAudit(rects: [previewField], complete: true))
+    XCTAssertEqual(withHeader.prunedRows, 11980)
+  }
+
+  func testHeaderTrimsOnlyABandAcrossTheRegionTop() {
+    let region = CGRect(x: 0, y: 100, width: 400, height: 600)
+    XCTAssertEqual(
+      computerSecureAuditRegionBelowHeader(
+        region, header: CGRect(x: 0, y: 100, width: 400, height: 20)),
+      CGRect(x: 0, y: 120, width: 400, height: 580))
+    for header in [
+      CGRect(x: 0, y: 300, width: 400, height: 20),  // not at the top
+      CGRect(x: 0, y: 100, width: 200, height: 20),  // not full width
+      CGRect(x: 0, y: 100, width: 400, height: 700),  // covers everything
+      CGRect(x: 0, y: 0, width: 400, height: Double.infinity),
+    ] {
+      XCTAssertEqual(computerSecureAuditRegionBelowHeader(region, header: header), region)
+    }
+    XCTAssertEqual(computerSecureAuditRegionBelowHeader(region, header: nil), region)
   }
 
   func testSmallOrUnclippedRowContainersAreWalkedInFull() {

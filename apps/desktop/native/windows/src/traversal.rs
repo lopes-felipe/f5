@@ -14,6 +14,28 @@ pub fn optional<T>(value: Result<T, i32>) -> Result<Option<T>, i32> {
         Err(code) => Err(code),
     }
 }
+/// UI frameworks whose item containers clip their items, so an off-screen item draws
+/// nothing. Web content (Chromium reports "Chrome", Firefox "Gecko") is excluded: a
+/// positioned or top-layer descendant of an off-screen item can still render on screen.
+pub fn lists_rendered_children(framework: &str) -> bool {
+    matches!(framework, "Win32" | "WinForm" | "WPF" | "XAML" | "DirectUI")
+}
+/// An item container's child may be skipped only when the provider reports it off-screen
+/// and its own bounds (left, top, right, bottom) miss the container's by more than 1 px.
+/// An unknown flag or unreadable bounds keep the child, so a stale or wrong `IsOffscreen`
+/// cannot hide a drawn item.
+pub fn offscreen_child_skippable(
+    offscreen: Option<bool>,
+    bounds: Option<(i32, i32, i32, i32)>,
+    container: (i32, i32, i32, i32),
+) -> bool {
+    let (Some(true), Some((left, top, right, bottom))) = (offscreen, bounds) else {
+        return false;
+    };
+    let width = right.min(container.2) - left.max(container.0);
+    let height = bottom.min(container.3) - top.max(container.1);
+    width <= 1 || height <= 1
+}
 /// Provider errors mark the result partial without discarding unrelated sibling
 /// branches. Node/time limits stop the whole walk; depth limits stop one branch.
 pub fn walk<T: Clone>(
@@ -338,6 +360,58 @@ mod tests {
         let (nodes, report) = listed_walk(10, Duration::ZERO, Ok(vec![10, 11, 12]));
         assert!(nodes.is_empty());
         assert!(!report.complete);
+    }
+    #[test]
+    fn only_native_frameworks_list_rendered_children() {
+        for framework in ["Win32", "WinForm", "WPF", "XAML", "DirectUI"] {
+            assert!(lists_rendered_children(framework), "{framework}");
+        }
+        for framework in ["Chrome", "Gecko", "", "win32", "Unknown"] {
+            assert!(!lists_rendered_children(framework), "{framework}");
+        }
+    }
+    #[test]
+    fn a_child_is_skipped_only_when_reported_offscreen_and_outside_the_container() {
+        let list = (0, 100, 400, 700);
+        // Scrolled below, virtualized with empty bounds, or touching the edge by 1 px.
+        assert!(offscreen_child_skippable(
+            Some(true),
+            Some((0, 900, 400, 930)),
+            list
+        ));
+        assert!(offscreen_child_skippable(
+            Some(true),
+            Some((0, 0, 0, 0)),
+            list
+        ));
+        assert!(offscreen_child_skippable(
+            Some(true),
+            Some((0, 699, 400, 729)),
+            list
+        ));
+        // A drawn row the provider wrongly reports off-screen is still walked.
+        assert!(!offscreen_child_skippable(
+            Some(true),
+            Some((0, 300, 400, 330)),
+            list
+        ));
+        assert!(!offscreen_child_skippable(
+            Some(true),
+            Some((0, 690, 400, 720)),
+            list
+        ));
+        // Unknown flag or bounds, or on-screen: always walked.
+        assert!(!offscreen_child_skippable(
+            None,
+            Some((0, 900, 400, 930)),
+            list
+        ));
+        assert!(!offscreen_child_skippable(Some(true), None, list));
+        assert!(!offscreen_child_skippable(
+            Some(false),
+            Some((0, 900, 400, 930)),
+            list
+        ));
     }
     #[test]
     fn unlisted_nodes_keep_the_sibling_walk() {

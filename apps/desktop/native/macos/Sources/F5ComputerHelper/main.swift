@@ -167,7 +167,8 @@ func axRowItems(_ element: AXUIElement, role: String) -> ComputerSecureAuditRowI
     else { return nil }
     let rowSet = Set(rows)
     return ComputerSecureAuditRowItems(
-      all: rows, visible: visible, others: children.filter { !rowSet.contains($0) })
+      all: rows, visible: visible, others: children.filter { !rowSet.contains($0) },
+      header: axElement(attribute(element, kAXHeaderAttribute)))
   case "AXList":
     guard let children = elements(kAXChildrenAttribute),
       let visible = elements(kAXVisibleChildrenAttribute)
@@ -1007,6 +1008,8 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
   let foregroundOnly = background && backgroundForegroundOnly(id, session: session)
   let inspectDeadline = ProcessInfo.processInfo.systemUptime + 6
   var byteBudget = ComputerInspectByteBudget()
+  // Off-screen rows of a large list were left out; inspecting the list itself lists them.
+  var rowsOmitted = false
   func visit(_ element: AXUIElement) throws -> (children: [AXUIElement], emitted: Bool) {
     try checkGrants(request)
     let attributes = computerInspectReadAttributes(
@@ -1017,9 +1020,10 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
         return (status, values as? [AnyObject])
       }, single: { attribute(element, $0) })
     let role = attributes.role ?? "unknown"
-    let children = computerInspectChildren(role: role, children: attributes.children) {
-      axRowItems(element, role: role)
-    }
+    let (children, omitted) = computerInspectChildren(
+      role: role, children: attributes.children, isRoot: CFEqual(element, inspectRoot)
+    ) { axRowItems(element, role: role) }
+    if omitted { rowsOmitted = true }
     let rect = attributes.frame
     if let rect, let windowFrame, !rect.intersects(windowFrame) { return (children, false) }
     let secure =
@@ -1129,7 +1133,7 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
   var result: [String: Any] = [
     "snapshotId": snapshotId, "appId": id, "accessible": true, "nodes": nodes,
   ]
-  if walkTruncated || byteBudget.exceeded { result["truncated"] = true }
+  if walkTruncated || byteBudget.exceeded || rowsOmitted { result["truncated"] = true }
   if foregroundOnly {
     result["executionNote"] =
       "This app needs the foreground; call computer_request_foreground before acting."
@@ -1723,7 +1727,14 @@ func captureScreenshot(_ request: [String: Any], _ host: [String: Any]) async th
       expired: expired,
       search: searchEnabled
         ? { secureAuditSearch($0, expired: expired, diagnostics: diagnostics) } : nil,
-      rowItems: axRowItems, diagnostics: diagnostics)
+      rowItems: { element, role in
+        // The row lists are AX reads too; count their time with the node reads.
+        let started = ProcessInfo.processInfo.systemUptime
+        defer {
+          diagnostics.nodeReadDuration(seconds: ProcessInfo.processInfo.systemUptime - started)
+        }
+        return axRowItems(element, role: role)
+      }, diagnostics: diagnostics)
     complete = audit?.complete ?? false
     if let audit {
       maskOutcomes.append(
