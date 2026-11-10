@@ -166,10 +166,12 @@ function makeDependencies(input?: {
     | "createWorktree"
     | "fetchRemoteBranchCommit"
     | "hasRemote"
+    | "isAncestor"
     | "removeWorktree"
     | "resolveCommit"
     | "resolveCommonDir"
   > = {
+    isAncestor: () => Effect.succeed(true),
     inspectCheckoutIdentity: (cwd) =>
       Effect.succeed({
         canonicalRoot: cwd,
@@ -1176,9 +1178,9 @@ describe("dispatchBootstrapTurnStart", () => {
     ]);
   });
 
-  it("rolls back a bootstrap-created thread when fetching the origin base fails", async () => {
+  it("creates from the local base when fetching the origin base fails", async () => {
     const dispatchedCommands: OrchestrationCommand[] = [];
-    const createWorktree = vi.fn(() =>
+    const createWorktree = vi.fn((_input: Parameters<GitCoreShape["createWorktree"]>[0]) =>
       Effect.succeed({
         worktree: {
           branch: "t3code/bootstrap-branch",
@@ -1206,38 +1208,37 @@ describe("dispatchBootstrapTurnStart", () => {
       removeWorktree,
     });
 
-    await expect(
-      Effect.runPromise(
-        dispatchBootstrapTurnStart({
-          ...dependencies,
-          command: makeTurnStartCommand({
-            bootstrap: {
-              createThread: {
-                projectId: PROJECT_ID,
-                title: "New thread",
-                model: "gpt-5-codex",
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt: "2026-01-01T00:00:00.000Z",
-              },
-              prepareWorktree: {
-                projectCwd: "/repo/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-branch",
-              },
+    await Effect.runPromise(
+      dispatchBootstrapTurnStart({
+        ...dependencies,
+        command: makeTurnStartCommand({
+          bootstrap: {
+            createThread: {
+              projectId: PROJECT_ID,
+              title: "New thread",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: "main",
+              worktreePath: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
             },
-          }),
+            prepareWorktree: {
+              projectCwd: "/repo/project",
+              baseBranch: "main",
+              branch: "t3code/bootstrap-branch",
+            },
+          },
         }),
-      ),
-    ).rejects.toThrow("origin unavailable");
+      }),
+    );
 
-    expect(dispatchedCommands.map((command) => command.type)).toEqual([
-      "thread.create",
-      "thread.delete",
-    ]);
-    expect(createWorktree).not.toHaveBeenCalled();
+    expect(dispatchedCommands.map((command) => command.type)).not.toContain("thread.delete");
+    expect(createWorktree).toHaveBeenCalledTimes(1);
+    expect(createWorktree.mock.calls[0]?.[0]).toHaveProperty(
+      "baseRefName",
+      "0123456789abcdef0123456789abcdef01234567",
+    );
     expect(removeWorktree).not.toHaveBeenCalled();
   });
 
