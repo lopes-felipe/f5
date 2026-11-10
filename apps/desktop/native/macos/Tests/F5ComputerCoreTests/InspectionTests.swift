@@ -98,6 +98,50 @@ final class InspectionTests: XCTestCase {
     XCTAssertEqual(visited, [0, 1, 3, 2])
     XCTAssertFalse(truncated)
   }
+  func testLargeRowContainerListsVisibleRowsSoLaterSiblingsAreReached() {
+    // Window(0) > [table(1) with 12,000 rows, button(2)]; rows 0..<20 are visible.
+    let rows = Array(1000..<13000)
+    let column = 3
+    func walk(items: ComputerSecureAuditRowItems<Int>?) -> (visited: [Int], truncated: Bool) {
+      var visited: [Int] = []
+      let truncated = computerInspectWalk(root: 0, maxNodes: 400, stop: { false }) { id in
+        visited.append(id)
+        switch id {
+        case 0: return ([1, 2], true)
+        case 1:
+          let children = computerInspectChildren(
+            role: "AXTable", children: rows + [column], rowItems: { items })
+          return (children, true)
+        // Like the helper, rows outside the window are visited but not emitted.
+        default: return ([], id < 1020)
+        }
+      }
+      return (visited, truncated)
+    }
+    let pruned = walk(
+      items: ComputerSecureAuditRowItems(
+        all: rows, visible: Array(rows.prefix(20)), others: [column]))
+    XCTAssertFalse(pruned.truncated)
+    XCTAssertTrue(pruned.visited.contains(2))
+    XCTAssertTrue(pruned.visited.contains(column))
+    XCTAssertEqual(pruned.visited.count, 24)
+    // Without a visible-row report the off-screen rows spend the visited cap first.
+    let full = walk(items: nil)
+    XCTAssertTrue(full.truncated)
+    XCTAssertFalse(full.visited.contains(2))
+    let empty = walk(items: ComputerSecureAuditRowItems(all: rows, visible: [], others: [column]))
+    XCTAssertTrue(empty.truncated)
+  }
+  func testInspectChildrenKeepsSmallAndNonRowContainersWhole() {
+    let items = ComputerSecureAuditRowItems(all: [1, 2], visible: [1], others: [Int]())
+    let many = Array(0..<300)
+    XCTAssertEqual(
+      computerInspectChildren(role: "AXTable", children: [1, 2], rowItems: { items }), [1, 2])
+    XCTAssertEqual(
+      computerInspectChildren(role: "AXGroup", children: many, rowItems: { items }), many)
+    XCTAssertEqual(
+      computerInspectChildren(role: "AXList", children: many, rowItems: { items }), [1])
+  }
   func testEmittedAndVisitedCapsAreSoftAndReportTruncation() {
     var visits = 0
     XCTAssertTrue(

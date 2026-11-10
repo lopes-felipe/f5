@@ -61,6 +61,20 @@ public func computerInspectIsWrapper(
     && actions.allSatisfy { ["showMenu", "scrollIntoView"].contains($0) }
 }
 
+/// Children inspection walks. A large row container lists only its reported visible items and
+/// its non-item children, so off-screen rows do not spend the visited budget before the rest of
+/// the window. Inspection is not a safety boundary, so the report is used without the audit's
+/// boundary check; an unavailable or empty report keeps every child.
+public func computerInspectChildren<Handle>(
+  role: String, children: [Handle], rowItems: () -> ComputerSecureAuditRowItems<Handle>?
+) -> [Handle] {
+  guard computerSecureAuditRowContainerRoles.contains(role),
+    children.count >= computerSecureAuditLargeContainerChildren,
+    let items = rowItems(), !items.visible.isEmpty
+  else { return children }
+  return items.others + items.visible
+}
+
 /// Iterative depth-first traversal. Visited and emitted budgets are independent: pruning a
 /// wrapper still visits its descendants. `stop` can throw a request cancellation/deadline or
 /// return true for a soft time cutoff. True means there were nodes left when a cap stopped us.
