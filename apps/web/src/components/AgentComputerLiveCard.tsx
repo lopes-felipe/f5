@@ -1,6 +1,6 @@
 import { useShallow } from "zustand/react/shallow";
 import { useNavigate } from "@tanstack/react-router";
-import { AGENT_ACTIVITY_WINDOW_MS } from "../agentActivityWindow";
+import { AGENT_ACTIVITY_WINDOW_MS, isAgentActivityRecent } from "../agentActivityWindow";
 import { useEffect, useMemo, useState } from "react";
 import type { ComputerAccessPush, ComputerGrant, ThreadId } from "@t3tools/contracts";
 import {
@@ -23,17 +23,25 @@ import { cn } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import {
+  canReleaseChrome,
   cardActivity,
   computerBackendLabel,
   computerGrantLabel,
   computerStatusTone,
   describeComputerAction,
+  isIdleChromeReservation,
   COMPUTER_STATUS_TONE_CLASS,
 } from "./AgentComputerLiveCard.logic";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
-import { pauseComputerThread, stopComputerTurn } from "./computerControls";
+import {
+  CHROME_RELEASE_TITLE,
+  pauseComputerThread,
+  releaseChromeReservation,
+  stopComputerTurn,
+  useLinger,
+} from "./computerControls";
 const EMPTY_GRANTS: ReadonlyArray<ComputerGrant> = [];
 type AccessRequest = typeof ComputerAccessPush.Type & { settled?: boolean; allowed?: boolean };
 const KIND_LABEL: Record<AccessRequest["kind"], string> = {
@@ -81,23 +89,58 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
             : "Waiting while you use the computer"
           : undefined;
   const paused = pausedLocally || execution?.state === "paused" || execution?.state === "recovery";
+  const pendingTakeover = useAgentComputerActivityStore(
+    (state) => state.leases.pendingTakeover?.threadId === threadId,
+  );
+  const chromeLinger = useLinger(execution?.browser === "working");
+  const turnRunning = useStore(
+    (store) =>
+      store.threads.find((thread) => thread.id === threadId)?.session?.status === "running",
+  );
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
+  const navigate = useNavigate();
+  const [now, setNow] = useState(Date.now());
+  const [error, setError] = useState("");
+  const [releasing, setReleasing] = useState(false);
+  // The store keeps the last action forever and Chrome calls record none, so a finished
+  // action only counts while it is recent: an old refusal or failure must not stick.
+  const recentActivity =
+    activity && (activity.status === "started" || isAgentActivityRecent(activity.at, now))
+      ? activity
+      : undefined;
   // The last call was refused because another thread in this profile holds control.
   const heldBy =
-    activity?.status === "failed" && activity.outcome === "Busy"
-      ? (activity.heldByThreadId as ThreadId | undefined)
+    recentActivity?.status === "failed" && recentActivity.outcome === "Busy"
+      ? (recentActivity.heldByThreadId as ThreadId | undefined)
       : undefined;
   const heldByTitle = useStore((store) =>
     heldBy ? store.threads.find((thread) => thread.id === heldBy)?.title : undefined,
   );
-  const navigate = useNavigate();
-  const [now, setNow] = useState(Date.now());
-  const [error, setError] = useState("");
+  const releasable = canReleaseChrome({
+    holder: execution,
+    turnRunning,
+    lingering: chromeLinger,
+  });
+  const idleChrome = isIdleChromeReservation({
+    holder: execution,
+    turnRunning,
+    lingering: chromeLinger,
+    pendingTakeover,
+    recentActivityStatus: recentActivity?.status,
+    paused,
+    stopUnconfirmed,
+    grantCount: grants.length,
+  });
+  // A message belongs to the layout that showed it: a Release refusal must not carry over
+  // into the full card, nor a full-card error into the strip.
+  useEffect(() => {
+    setError("");
+  }, [idleChrome]);
   useEffect(() => {
     setNow(Date.now());
   }, [activity, lastLeaseAt, held]);
+  // Also runs while held: a recent action's expiry decides between the strip and full card.
   useEffect(() => {
-    if (held) return;
     const expiries = [
       activity && activity.status !== "started"
         ? activity.at + AGENT_ACTIVITY_WINDOW_MS
@@ -118,6 +161,26 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
       setError(cause instanceof Error ? cause.message : "Computer control could not be updated."),
     );
   };
+  const releaseButton = (
+    <Button
+      size="xs"
+      variant="ghost"
+      title={CHROME_RELEASE_TITLE}
+      // One request at a time: a second click would report "no longer holds Chrome" after
+      // the first one succeeded.
+      disabled={releasing}
+      onClick={() => {
+        setError("");
+        setReleasing(true);
+        void releaseChromeReservation(threadId).then((message) => {
+          setReleasing(false);
+          setError(message);
+        });
+      }}
+    >
+      Release
+    </Button>
+  );
   const visible =
     stopUnconfirmed ||
     paused ||
@@ -142,6 +205,28 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
     );
   }
   const shown = cardActivity(activity, chrome);
+  if (idleChrome) {
+    return (
+      <div
+        className="mx-auto mt-2 flex w-full max-w-3xl flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1 text-muted-foreground text-xs shadow-xs"
+        data-testid="computer-idle-strip"
+      >
+        <MonitorIcon className="size-3.5 shrink-0" />
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate" aria-live="polite">
+          <span className={cn("size-1.5 shrink-0 rounded-full", COMPUTER_STATUS_TONE_CLASS.ok)} />
+          Chrome idle
+        </span>
+        {actions?.length ? <ComputerActionsHistory history={actions} /> : null}
+        {history.length ? <ComputerAccessHistory history={history} /> : null}
+        {releaseButton}
+        {error ? (
+          <span role="alert" className="w-full text-destructive-foreground">
+            {error}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
   const native = shown?.backend === "native";
   const backendLabel = computerBackendLabel(shown?.backend);
   const tone = paused
@@ -232,7 +317,8 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
             </Button>
           </p>
         ) : null}
-        {shown?.outcome === "OutcomeUnknown" ? (
+        {/* From the recent action, not `shown`: a Chrome holder hides the action it predates. */}
+        {(shown ?? recentActivity)?.outcome === "OutcomeUnknown" ? (
           <p className="text-warning-foreground text-xs">
             Check the app before resuming. Observe the result before another action.
           </p>
@@ -250,6 +336,9 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
       <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
         {actions?.length ? <ComputerActionsHistory history={actions} /> : null}
         {history.length > 0 ? <ComputerAccessHistory history={history} /> : null}
+        {/* Whatever keeps the full card (grants, a recent failure, a pause), Chrome at rest
+            stays releasable from its own thread. */}
+        {releasable ? releaseButton : null}
         <Button
           size="xs"
           variant="outline"
