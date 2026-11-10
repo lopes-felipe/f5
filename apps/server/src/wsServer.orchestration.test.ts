@@ -1676,6 +1676,53 @@ describe("WebSocket Server", () => {
           expect(head).toBe(localSha);
         });
 
+        /** Pushes a commit to origin, then rewinds local main so it is behind. */
+        const pushThenRewind = (repo: string) => {
+          const remoteSha = commitFile(repo, "upstream.txt");
+          git(repo, "push", "origin", "main");
+          git(repo, "reset", "--hard", "HEAD~1");
+          return remoteSha;
+        };
+
+        it("picks up the remote when the local base is behind", async () => {
+          const repo = makeGitRepo("f5-ws-base-behind-");
+          addOriginRemote(repo);
+          const remoteSha = pushThenRewind(repo);
+
+          const { done, fetch, head } = await runSetup(repo, "base-behind", "main");
+          expect(fetch?.status).toBe("done");
+          expect(fetch?.detail).toBe(`origin/main at ${remoteSha.slice(0, 7)}`);
+          expect(done.stages.some((stage) => stage.status === "warning")).toBe(false);
+          expect(head).toBe(remoteSha);
+        });
+
+        it("warns and keeps the local base when it has diverged from the remote", async () => {
+          const repo = makeGitRepo("f5-ws-base-diverged-");
+          addOriginRemote(repo);
+          pushThenRewind(repo);
+          const localSha = commitFile(repo, "local-only.txt");
+
+          const { fetch, head } = await runSetup(repo, "base-diverged", "main");
+          expect(fetch?.status).toBe("warning");
+          expect(fetch?.detail).toBe("Using local main (diverged from origin/main)");
+          expect(head).toBe(localSha);
+        });
+
+        it("compares the local branch rather than a same-named tag", async () => {
+          const repo = makeGitRepo("f5-ws-base-tag-");
+          addOriginRemote(repo);
+          const remoteSha = pushThenRewind(repo);
+          git(repo, "switch", "-c", "tag-source");
+          commitFile(repo, "tagged.txt");
+          git(repo, "tag", "main");
+          git(repo, "switch", "main");
+          git(repo, "branch", "-D", "tag-source");
+
+          const { fetch, head } = await runSetup(repo, "base-tag", "main");
+          expect(fetch?.status).toBe("done");
+          expect(head).toBe(remoteSha);
+        });
+
         it("warns and uses the local base when the remote is unreachable", async () => {
           const repo = makeGitRepo("f5-ws-base-unreachable-");
           addOriginRemote(repo);

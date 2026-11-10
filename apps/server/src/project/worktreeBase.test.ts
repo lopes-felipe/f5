@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import { GitCommandError } from "../git/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { resolveWorktreeBase } from "./worktreeBase.ts";
+import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "./worktreeBase.ts";
 
 const LOCAL = "1111111111111111111111111111111111111111";
 const REMOTE = "2222222222222222222222222222222222222222";
@@ -18,7 +18,10 @@ type FakeGit = Pick<
 const makeGit = (options: {
   hasRemote?: boolean;
   remote?: string | null | "error";
+  /** `refs/heads/feature`. */
   local?: string | null;
+  /** The bare name `feature`, which git resolves to a same-named tag first. Defaults to `local`. */
+  bareName?: string | null;
   /** Pairs of `ancestor>descendant` that are reachable; "error" fails every check. */
   ancestry?: ReadonlyArray<string> | "error";
 }): FakeGit => ({
@@ -37,7 +40,16 @@ const makeGit = (options: {
               },
         ),
   ),
-  resolveCommit: () => Effect.succeed(options.local === undefined ? LOCAL : options.local),
+  resolveCommit: (_cwd, revision) => {
+    const local = options.local === undefined ? LOCAL : options.local;
+    return Effect.succeed(
+      revision.startsWith("refs/heads/")
+        ? local
+        : options.bareName === undefined
+          ? local
+          : options.bareName,
+    );
+  },
   isAncestor: (_cwd, ancestor, descendant) =>
     options.ancestry === "error"
       ? Effect.fail(gitError("merge-base failed"))
@@ -118,11 +130,43 @@ describe("resolveWorktreeBase", () => {
     });
   });
 
-  it("keeps the local branch when ancestry cannot be checked", async () => {
-    expect(await resolve(makeGit({ remote: REMOTE, ancestry: "error" }))).toMatchObject({
+  it("reports unknown ancestry separately and keeps the local branch", async () => {
+    expect(await resolve(makeGit({ remote: REMOTE, ancestry: "error" }))).toEqual({
+      baseRef: "feature",
       baseSha: LOCAL,
-      outcome: "local-diverged",
+      outcome: "ancestry-unknown",
+      detail: "Couldn't compare with origin/feature; using local feature",
     });
+  });
+
+  it("compares the local branch, not a same-named tag", async () => {
+    const TAG = "3333333333333333333333333333333333333333";
+    expect(
+      await resolve(makeGit({ remote: REMOTE, bareName: TAG, ancestry: [`${LOCAL}>${REMOTE}`] })),
+    ).toMatchObject({ baseSha: REMOTE, outcome: "remote" });
+  });
+
+  it("falls back to the bare name for remote-qualified selections", async () => {
+    expect(await resolve(makeGit({ remote: null, local: null, bareName: LOCAL }))).toMatchObject({
+      baseSha: LOCAL,
+      outcome: "local-only",
+    });
+  });
+
+  it("flags only bases that may lack upstream work as stale", () => {
+    expect(
+      (
+        [
+          "remote",
+          "local-only",
+          "local-ahead",
+          "local-diverged",
+          "ancestry-unknown",
+          "no-remote",
+          "unreachable",
+        ] as const
+      ).filter(isPossiblyStaleWorktreeBase),
+    ).toEqual(["local-diverged", "ancestry-unknown", "unreachable"]);
   });
 
   it("reports no commit when the local-only branch does not resolve", async () => {

@@ -59,7 +59,7 @@ import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isDefinitelyUncommittedDispatchError } from "../../wsServer/bootstrapTurnStart.ts";
 import { startOwnedSetupScript, type OwnedSetupScript } from "../ownedSetupScript.ts";
 import { removeWorktreeSafely } from "../worktreeClaims.ts";
-import { resolveWorktreeBase } from "../worktreeBase.ts";
+import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../worktreeBase.ts";
 import {
   WorktreeSetup,
   WorktreeSetupError,
@@ -587,13 +587,13 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             baseBranch: request.baseBranch,
             logAnnotations: { threadId },
           });
-          // Only an unreachable remote is worth a warning: the base may be stale.
-          // A local-only, ahead or diverged branch is the user's selection working as intended.
+          // Warn only when the base may lack upstream work. A local-only or ahead
+          // branch is the user's selection working as intended.
           update(threadId, (snapshot) =>
             stageStatus(
               snapshot,
               "fetch",
-              base.outcome === "unreachable"
+              isPossiblyStaleWorktreeBase(base.outcome)
                 ? "warning"
                 : base.outcome === "no-remote"
                   ? "skipped"

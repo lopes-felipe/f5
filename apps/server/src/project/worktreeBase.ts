@@ -7,7 +7,10 @@ import type { GitCoreShape } from "../git/Services/GitCore.ts";
  * - `remote`: the fetched remote branch, because the local branch is missing, equal or behind.
  * - `local-only`: the branch is not on the remote; the local branch is the only base.
  * - `local-ahead`: the local branch has commits the remote lacks; using the remote would drop them.
- * - `local-diverged`: local and remote both moved (or ancestry is unknown); the selected local branch wins.
+ * - `local-diverged`: local and remote both moved; the selected local branch wins, but it lacks
+ *   upstream work, so callers should surface it.
+ * - `ancestry-unknown`: local and remote differ and could not be compared; the local branch is used
+ *   so no local commits are dropped, but it may be stale.
  * - `no-remote`: the repository has no remote.
  * - `unreachable`: the remote could not be queried; the local branch may be stale.
  */
@@ -16,6 +19,7 @@ export type WorktreeBaseOutcome =
   | "local-only"
   | "local-ahead"
   | "local-diverged"
+  | "ancestry-unknown"
   | "no-remote"
   | "unreachable";
 
@@ -28,6 +32,10 @@ export interface WorktreeBase {
   /** Short human readable explanation of the choice, for the setup card. */
   readonly detail: string;
 }
+
+/** Outcomes where the base may lack upstream work, worth a visible warning. */
+export const isPossiblyStaleWorktreeBase = (outcome: WorktreeBaseOutcome): boolean =>
+  outcome === "unreachable" || outcome === "local-diverged" || outcome === "ancestry-unknown";
 
 /**
  * Picks the commit a new worktree starts from. Refreshes `<remote>/<baseBranch>`
@@ -45,8 +53,14 @@ export const resolveWorktreeBase = (
 ): Effect.Effect<WorktreeBase, GitCommandError> =>
   Effect.gen(function* () {
     const { projectCwd, baseBranch } = input;
+    // Prefer the local branch: a bare name resolves a same-named tag first. Fall
+    // back to the bare name for remote-qualified selections such as `origin/foo`.
+    const resolveLocal = Effect.gen(function* () {
+      const branchSha = yield* git.resolveCommit(projectCwd, `refs/heads/${baseBranch}`);
+      return branchSha ?? (yield* git.resolveCommit(projectCwd, baseBranch));
+    });
     const local = (detail: string, outcome: WorktreeBaseOutcome) =>
-      git.resolveCommit(projectCwd, baseBranch).pipe(
+      resolveLocal.pipe(
         Effect.map(
           (baseSha): WorktreeBase => ({
             baseRef: baseBranch,
@@ -86,19 +100,38 @@ export const resolveWorktreeBase = (
       outcome: "remote",
       detail: `${remote.refName} at ${remote.commit.slice(0, 7)}`,
     };
-    const localSha = yield* git.resolveCommit(projectCwd, baseBranch);
+    const localSha = yield* resolveLocal;
     if (localSha === null || localSha === remote.commit) return useRemote;
 
-    const isAncestor = (ancestor: string, descendant: string) =>
-      git.isAncestor(projectCwd, ancestor, descendant).pipe(Effect.orElseSucceed(() => null));
-    if ((yield* isAncestor(localSha, remote.commit)) === true) return useRemote;
-    const ahead = (yield* isAncestor(remote.commit, localSha)) === true;
-    return {
+    const useLocal = (outcome: WorktreeBaseOutcome, detail: string): WorktreeBase => ({
       baseRef: baseBranch,
       baseSha: localSha,
-      outcome: ahead ? "local-ahead" : "local-diverged",
-      detail: ahead
-        ? `Using local ${baseBranch} (ahead of ${remote.refName})`
-        : `Using local ${baseBranch} (diverged from ${remote.refName})`,
-    };
+      outcome,
+      detail,
+    });
+    const compared = yield* Effect.all([
+      git.isAncestor(projectCwd, localSha, remote.commit),
+      git.isAncestor(projectCwd, remote.commit, localSha),
+    ]).pipe(
+      Effect.map(([behind, ahead]) => ({ ok: true as const, behind, ahead })),
+      Effect.catch((error) =>
+        Effect.logWarning("worktree setup could not compare the local and remote base", {
+          ...input.logAnnotations,
+          baseBranch,
+          error: error.message,
+        }).pipe(Effect.as({ ok: false as const, behind: false, ahead: false })),
+      ),
+    );
+    if (!compared.ok)
+      return useLocal(
+        "ancestry-unknown",
+        `Couldn't compare with ${remote.refName}; using local ${baseBranch}`,
+      );
+    if (compared.behind) return useRemote;
+    if (compared.ahead)
+      return useLocal("local-ahead", `Using local ${baseBranch} (ahead of ${remote.refName})`);
+    return useLocal(
+      "local-diverged",
+      `Using local ${baseBranch} (diverged from ${remote.refName})`,
+    );
   });
