@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { ThreadId } from "@t3tools/contracts";
+import type { DesktopNotificationsBridge, ThreadId } from "@t3tools/contracts";
+import { presentOsNotification } from "./notificationCenter/osNotifications";
 import { isVisibleThreadStatus, threadStatusLabel, type ThreadStatus } from "./threadStatus";
 import {
   getNotificationPermissionState,
@@ -244,35 +245,45 @@ export function threadNotificationIcon(status: ThreadStatus): string | undefined
     : undefined;
 }
 
+/**
+ * Shows the OS notification for a thread status change. On desktop the main process owns it,
+ * so a click opens the thread even after a reload, a closed window, or from Notification Center.
+ */
 export function showThreadStatusNotification(input: {
   NotificationConstructor: ThreadStatusNotificationConstructor;
+  bridge?: DesktopNotificationsBridge | null;
   silent?: boolean;
   transition: ThreadStatusNotificationTransition;
   focusWindow: () => void;
   navigateToThread: (threadId: ThreadId) => void | Promise<void>;
-}): ThreadStatusNotificationInstance {
+}): Promise<boolean> {
   const title = threadStatusLabel(input.transition.status);
   if (!title) {
     throw new Error("Cannot dispatch a notification for a hidden thread status.");
   }
 
-  const icon = threadNotificationIcon(input.transition.status);
-  const notification = new input.NotificationConstructor(title, {
-    body: formatThreadStatusNotificationBody({
-      threadTitle: input.transition.threadTitle,
-      projectName: input.transition.projectName,
-    }),
-    tag: input.transition.threadId,
-    ...(icon ? { icon } : {}),
-    ...(input.silent ? { silent: true } : {}),
-    data: { threadId: input.transition.threadId },
-  });
-
-  notification.addEventListener("click", () => {
-    notification.close();
-    input.focusWindow();
-    void input.navigateToThread(input.transition.threadId);
-  });
-
-  return notification;
+  const { threadId, status } = input.transition;
+  const icon = threadNotificationIcon(status);
+  return presentOsNotification(
+    {
+      id: `thread:${threadId}:${status}:${Date.now()}`,
+      title,
+      body: formatThreadStatusNotificationBody({
+        threadTitle: input.transition.threadTitle,
+        projectName: input.transition.projectName,
+      }),
+      tag: threadId,
+      ...(icon ? { icon } : {}),
+      ...(input.silent ? { silent: true } : {}),
+      target: { kind: "thread", threadId },
+    },
+    {
+      NotificationConstructor: input.NotificationConstructor,
+      ...(input.bridge !== undefined ? { bridge: input.bridge } : {}),
+      onActivate: () => {
+        input.focusWindow();
+        void input.navigateToThread(threadId);
+      },
+    },
+  );
 }

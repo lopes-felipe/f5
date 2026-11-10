@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { readNativeApi } from "../../nativeApi";
 import { subscribeWsConnectionState, getWsConnectionState } from "../../wsConnectionState";
 import { toastManager } from "../ui/toast";
+import { presentOsNotification } from "../../notificationCenter/osNotifications";
 /** Push/reconnect/lease driven. Notification permission is requested only by the page's button. */
 export function ScheduledNotificationController() {
   const navigate = useNavigate();
@@ -36,19 +37,19 @@ export function ScheduledNotificationController() {
           };
           let presented = false;
           if ("Notification" in window && Notification.permission === "granted") {
-            try {
-              const notification = new Notification(notice.title, {
+            // On desktop the main process owns the notification, so its click survives a reload.
+            presented = await presentOsNotification(
+              {
+                id: `scheduled:${notice.id}`,
+                title: notice.title,
                 body: notice.body,
                 tag: notice.id,
-              });
-              notification.onclick = () => {
-                notification.close();
-                open();
-              };
-              presented = true;
-            } catch {
-              /* OS presentation may be unavailable even after permission was granted. */
-            }
+                target: notice.threadId
+                  ? { kind: "thread", threadId: notice.threadId }
+                  : { kind: "scheduled", taskId: notice.taskId },
+              },
+              { onActivate: open },
+            );
           }
           if (!presented)
             toastManager.add({

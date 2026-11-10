@@ -764,8 +764,50 @@ export type DesktopTrackpadScrollEvent =
   // `precise` is false for a mouse wheel, and absent when Chromium did not report it.
   { readonly phase: "begin"; readonly precise?: boolean } | { readonly phase: "end" };
 
+/** Where clicking an OS notification (or its in-app counterpart) takes the user. */
+export type DesktopNotificationTarget =
+  | { readonly kind: "thread"; readonly threadId: string }
+  | { readonly kind: "prHub"; readonly prKey?: string }
+  | { readonly kind: "scheduled"; readonly taskId: string }
+  | { readonly kind: "upstream"; readonly projectId: string }
+  | { readonly kind: "update" }
+  | { readonly kind: "none" };
+
+export interface DesktopNotificationShowInput {
+  /** Echoed back on activation so the renderer can match its own record. */
+  readonly id: string;
+  readonly title: string;
+  readonly body?: string;
+  /** A later notification with the same tag replaces the earlier one. */
+  readonly tag?: string;
+  readonly silent?: boolean;
+  /** A PNG data URL. Shown on Windows and Linux; macOS always shows the app icon. */
+  readonly icon?: string;
+  readonly target: DesktopNotificationTarget;
+}
+
+export interface DesktopNotificationActivation {
+  readonly id: string;
+  readonly target: DesktopNotificationTarget;
+}
+
+/**
+ * OS notifications owned by the main process, so a click still reaches the app after the
+ * renderer reloads, its window closes, or the user clicks it in Notification Center.
+ */
+export interface DesktopNotificationsBridge {
+  show(input: DesktopNotificationShowInput): Promise<boolean>;
+  /**
+   * Takes the clicked notifications meant for this window that it hasn't handled yet, oldest
+   * first. Unclaimed clicks expire after a minute.
+   */
+  takeActivations(): Promise<readonly DesktopNotificationActivation[]>;
+  onActivationsAvailable(listener: () => void): () => void;
+}
+
 export interface DesktopBridge {
   readonly keepAwake?: DesktopKeepAwakeBridge;
+  readonly notifications?: DesktopNotificationsBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;
