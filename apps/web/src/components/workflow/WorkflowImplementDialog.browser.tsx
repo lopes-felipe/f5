@@ -288,7 +288,7 @@ describe("WorkflowImplementDialog", () => {
     }
   });
 
-  it("implements with the canonical persisted Fable 5.1 selection", async () => {
+  it("implements with the canonical persisted Fable 5.2 selection", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const workflow = makeWorkflow({
@@ -297,7 +297,7 @@ describe("WorkflowImplementDialog", () => {
       modelOptions: { claudeAgent: { effort: "xhigh" } },
     });
     const client = makeQueryClient([
-      claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1"]),
+      claudeProvider("2.1.290", ["claude-opus-5", "claude-fable-5-2"]),
     ]);
     const screen = await render(
       <QueryClientProvider client={client}>
@@ -310,7 +310,7 @@ describe("WorkflowImplementDialog", () => {
       await vi.waitFor(() => expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
         provider: "claudeAgent",
-        model: "claude-fable-5-1",
+        model: "claude-fable-5-2",
         modelOptions: { claudeAgent: { effort: "xhigh" } },
       });
     } finally {

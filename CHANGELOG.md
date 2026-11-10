@@ -6,6 +6,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Claude Fable 5.2 is available in Claude model pickers with Claude Code v2.1.290 or newer. Bare `fable` and `claude-fable` aliases now select 5.2; `fable-5.1` still selects Fable 5.1.
 - The Usage page has a Pricing tab for model prices, model mappings and a monthly budget. Activity shows budget meters with a month-end forecast and warns when you're on pace to exceed it.
 - Usage tables sort by any column, Projects and threads can be filtered by name, and Activity breakdowns export as CSV.
 - Activity can compare usage with the previous period: stat tiles show the change, and the chart marks each bar's previous value.
