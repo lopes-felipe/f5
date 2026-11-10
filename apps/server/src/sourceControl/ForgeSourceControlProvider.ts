@@ -804,11 +804,21 @@ export function makeForgeSourceControlProvider(options: {
               return { path, previousPath, status, patch: null, revision: source };
             const oldLines = before ? before.replace(/\n$/, "").split("\n") : [],
               newLines = after ? after.replace(/\n$/, "").split("\n") : [];
+            const renamed = previousPath !== null && previousPath !== path;
+            const renameHeader = renamed
+              ? `similarity index ${before === after ? 100 : 0}%\nrename from ${quoteGitPatchPath(previousPath.replace(/^\//, ""))}\nrename to ${quoteGitPatchPath(path.replace(/^\//, ""))}\n`
+              : "";
             const patch =
               before === after
                 ? ""
                 : `diff --git ${quoteGitPatchPath(`a${previousPath ?? path}`)} ${quoteGitPatchPath(`b${path}`)}\n--- ${quoteGitPatchPath(`a${previousPath ?? path}`)}\n+++ ${quoteGitPatchPath(`b${path}`)}\n@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n${[...oldLines.map((line) => `-${line}`), ...newLines.map((line) => `+${line}`)].join("\n")}\n`;
-            return { path, previousPath, status, patch, revision: source };
+            const renamePatch = renamed
+              ? (
+                  patch ||
+                  `diff --git ${quoteGitPatchPath(`a${previousPath}`)} ${quoteGitPatchPath(`b${path}`)}\n`
+                ).replace(/\n/, "\n" + renameHeader)
+              : patch;
+            return { path, previousPath, status, patch: renamePatch, revision: source };
           }),
         { concurrency: 4 },
       );

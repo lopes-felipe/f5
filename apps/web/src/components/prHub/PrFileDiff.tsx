@@ -14,7 +14,7 @@ import {
   DIFF_PANEL_UNSAFE_CSS,
   resolveFileDiffPath,
 } from "../../lib/diffPatch";
-import { getRenderablePrFilePatch } from "../../lib/prFilePatch";
+import { getRenderablePrFilePatch, isPurePrFileRename } from "../../lib/prFilePatch";
 import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../../lib/diffRendering";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 
@@ -31,10 +31,13 @@ export function PrFileDiff({
 }) {
   const { settings } = useAppSettings();
   const { resolvedTheme } = useTheme();
+  const pureRename = isPurePrFileRename(file);
   const displayPatch = useMemo(
     () =>
-      file.patch && settings.diffIgnoreWhitespace ? substantivePrPatch(file.patch) : file.patch,
-    [file.patch, settings.diffIgnoreWhitespace],
+      file.patch && settings.diffIgnoreWhitespace && !pureRename
+        ? substantivePrPatch(file.patch)
+        : file.patch,
+    [file.patch, settings.diffIgnoreWhitespace, pureRename],
   );
   const patch = useMemo(
     () => getRenderablePrFilePatch(file, displayPatch, scope),
@@ -46,7 +49,7 @@ export function PrFileDiff({
         Only whitespace changes. Turn off whitespace filtering to inspect them.
       </p>
     );
-  if (file.patchStatus !== "available" || !patch || patch.kind !== "files") {
+  if ((file.patchStatus !== "available" && !pureRename) || !patch || patch.kind !== "files") {
     return (
       <p className="p-3 text-sm text-muted-foreground">
         {file.patchStatus === "truncated"

@@ -466,7 +466,7 @@ describe("GitCore unit", () => {
       "--cached",
       "--name-status",
       "--",
-      ":(literal)src/selected.ts",
+      ":(top,literal)src/selected.ts",
     ]);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
       "diff",
@@ -477,7 +477,7 @@ describe("GitCore unit", () => {
       "--dst-prefix=b/",
       "--minimal",
       "--",
-      ":(literal)src/selected.ts",
+      ":(top,literal)src/selected.ts",
     ]);
   });
 
@@ -684,6 +684,7 @@ describe("GitCore unit", () => {
     expect(status.workingTree.files).toEqual([
       { path: "café.txt", insertions: 1, deletions: 0 },
       { path: "dir/new name.txt", insertions: 0, deletions: 0 },
+      { path: "dir/old name.txt", insertions: 0, deletions: 0 },
     ]);
   });
 

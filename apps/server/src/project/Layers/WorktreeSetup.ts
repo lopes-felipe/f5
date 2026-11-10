@@ -59,6 +59,7 @@ import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isDefinitelyUncommittedDispatchError } from "../../wsServer/bootstrapTurnStart.ts";
 import { startOwnedSetupScript, type OwnedSetupScript } from "../ownedSetupScript.ts";
 import { removeWorktreeSafely } from "../worktreeClaims.ts";
+import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../worktreeBase.ts";
 import {
   WorktreeSetup,
   WorktreeSetupError,
@@ -581,70 +582,26 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           );
         } else {
           update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "running"));
-          const hasRemote = yield* git
-            .hasRemote(request.projectCwd)
-            .pipe(Effect.orElseSucceed(() => false));
-          let baseRef: string = request.baseBranch;
-          if (hasRemote) {
-            const remote = yield* git
-              .fetchRemoteBranchCommit({
-                cwd: request.projectCwd,
-                branch: request.baseBranch,
-                allowMissingBranch: true,
-              })
-              .pipe(
-                // The raw git error is internal and unreadable in the card; log it
-                // and show the user what actually happened instead.
-                Effect.catch((error) =>
-                  Effect.logWarning("worktree setup could not fetch the remote base branch", {
-                    threadId,
-                    baseBranch: request.baseBranch,
-                    error: error.message,
-                  }).pipe(
-                    Effect.andThen(
-                      Effect.sync(() => {
-                        update(threadId, (snapshot) =>
-                          stageStatus(
-                            snapshot,
-                            "fetch",
-                            "warning",
-                            `Couldn't reach the remote; using local ${request.baseBranch}`,
-                          ),
-                        );
-                        return null;
-                      }),
-                    ),
-                  ),
-                ),
-              );
-            if (remote) {
-              baseRef = remote.commit;
-              update(threadId, (snapshot) =>
-                stageStatus(
-                  snapshot,
-                  "fetch",
-                  "done",
-                  `${remote.refName} at ${remote.commit.slice(0, 7)}`,
-                ),
-              );
-            } else if (
-              tracked.get(threadId)?.snapshot.stages.find((stage) => stage.id === "fetch")
-                ?.status === "running"
-            ) {
-              update(threadId, (snapshot) =>
-                stageStatus(
-                  snapshot,
-                  "fetch",
-                  "warning",
-                  `${request.baseBranch} is not on the remote; using the local branch`,
-                ),
-              );
-            }
-          } else {
-            update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "skipped", "no remote"));
-          }
-
-          const baseSha = yield* git.resolveCommit(request.projectCwd, baseRef);
+          const base = yield* resolveWorktreeBase(git, {
+            projectCwd: request.projectCwd,
+            baseBranch: request.baseBranch,
+            logAnnotations: { threadId },
+          });
+          // Warn only when the base may lack upstream work. A local-only or ahead
+          // branch is the user's selection working as intended.
+          update(threadId, (snapshot) =>
+            stageStatus(
+              snapshot,
+              "fetch",
+              isPossiblyStaleWorktreeBase(base.outcome)
+                ? "warning"
+                : base.outcome === "no-remote"
+                  ? "skipped"
+                  : "done",
+              base.detail,
+            ),
+          );
+          const { baseRef, baseSha } = base;
           if (baseSha === null) {
             return yield* new WorktreeSetupError({
               message: `Base branch ${request.baseBranch} has no commit to start from.`,
