@@ -3,7 +3,7 @@ import { realpath as fsRealpath } from "node:fs/promises";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
 import type { ChromeLeaseHolder } from "@t3tools/contracts";
 import type { ClaudeChromeRecord } from "@t3tools/shared/providerIntegrationCertification";
-import { ComputerControlError } from "@t3tools/shared/computerControl";
+import { ComputerControlError, isChromeNativeWait } from "@t3tools/shared/computerControl";
 import { ChromeArtifactCache } from "./chromeArtifactCache";
 import {
   chromeLaunchDecision,
@@ -81,6 +81,10 @@ interface Binding {
 
 /** Covers a settings read and one IPC round trip to main under load; still fails closed. */
 export const CHROME_ADMISSION_DEADLINE_MS = 1_000;
+/** How long a Chrome call waits for another agent's native control before it is refused. */
+export const CHROME_NATIVE_WAIT_MS = 20_000;
+/** Pause between admission attempts while another agent's native control blocks Chrome. */
+export const CHROME_NATIVE_RETRY_MS = 250;
 
 export interface ChromeRuntimeDeps {
   readonly descriptor: ChromeNativeHostDescriptor;
@@ -97,6 +101,10 @@ export interface ChromeRuntimeDeps {
   readonly validate: (holder: ChromeLeaseHolder, callId?: string) => Promise<void>;
   /** An admitted call (see `validate`) was refused afterwards and never ran. */
   readonly callEnded?: (holder: ChromeLeaseHolder, callId: string) => void;
+  /** Main admits named calls at validation (see `admitsCalls`). */
+  readonly callAdmission?: () => boolean;
+  /** Overrides `CHROME_NATIVE_WAIT_MS` (tests). */
+  readonly nativeWaitMs?: number;
   readonly consent: (
     session: ChromeRuntimeSession,
     decision: Extract<ChromeLaunchDecision, { kind: "needs-consent" }>,
@@ -497,18 +505,44 @@ export class ChromeSessionRuntime {
   }
 
   /**
+   * Whether main admits each named call (`toolUseId`) at validation and counts it running
+   * until its end is reported. Callers then mark the call started only once admitted, so a
+   * call waiting for another agent never reads as running.
+   */
+  admitsCalls(): boolean {
+    return this.deps.callAdmission?.() ?? false;
+  }
+
+  /**
    * Per-call admission: live policy, the current non-retiring generation, a verified
    * server and registration, healthy desktop ownership, an unchanged registration
-   * snapshot and a recognized operation. Fails closed at a 1 s deadline.
+   * snapshot and a recognized operation. Each attempt fails closed at a 1 s deadline.
+   * While another agent's native control blocks Chrome, attempts repeat for up to
+   * `CHROME_NATIVE_WAIT_MS` before the refusal reaches the agent.
    */
-  admit(invocation: ChromeInvocation, threadId: string): Promise<string | undefined> {
+  async admit(invocation: ChromeInvocation, threadId: string): Promise<string | undefined> {
+    const waitUntil = performance.now() + (this.deps.nativeWaitMs ?? CHROME_NATIVE_WAIT_MS);
+    for (;;) {
+      const denial = await this.admitOnce(invocation, threadId);
+      if (
+        denial === undefined ||
+        !isChromeNativeWait(denial) ||
+        invocation.signal?.aborted ||
+        performance.now() + CHROME_NATIVE_RETRY_MS >= waitUntil
+      )
+        return denial;
+      await new Promise((resolve) => setTimeout(resolve, CHROME_NATIVE_RETRY_MS));
+    }
+  }
+  private admitOnce(invocation: ChromeInvocation, threadId: string): Promise<string | undefined> {
     // Main counts a call it admitted as running until it ends. One refused after admission,
-    // or abandoned at the deadline, never runs, so its end is reported here.
-    const callId = invocation.toolUseId ?? randomUUID();
+    // or abandoned at the deadline, never runs, so its end is reported here. Without a
+    // tool-use id nothing could report the call's end, so main isn't asked to admit it.
+    const callId = invocation.toolUseId;
     let admittedBy: ChromeLeaseHolder | undefined;
     let abandoned = false;
     const ended = () => {
-      if (admittedBy) this.deps.callEnded?.(admittedBy, callId);
+      if (admittedBy && callId !== undefined) this.deps.callEnded?.(admittedBy, callId);
       admittedBy = undefined;
     };
     const work = this.admitNow(invocation, threadId, callId, (holder) => {
@@ -541,7 +575,7 @@ export class ChromeSessionRuntime {
   private async admitNow(
     invocation: ChromeInvocation,
     threadId: string,
-    callId: string,
+    callId: string | undefined,
     admitted: (holder: ChromeLeaseHolder) => void,
   ): Promise<string | undefined> {
     if (invocation.signal?.aborted) return "Chrome call was cancelled.";
@@ -693,6 +727,7 @@ export function chromeRuntimeHost(input: {
         false,
       );
     },
+    callAdmission: () => broker.host.chromeCallAdmissionCapable(),
     callEnded: (holder, callId) =>
       broker.reportChromeCallEnded(holder.threadId, holder.sessionGeneration, callId),
     paused: (threadId) => broker.pause.has(threadId),

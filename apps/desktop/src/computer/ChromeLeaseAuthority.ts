@@ -9,6 +9,8 @@ import {
   ComputerControlError,
   CHROME_OWN_CALL_RUNNING_MESSAGE,
   CHROME_OWN_STOPPING_MESSAGE,
+  CHROME_NATIVE_WORK_FINISHING_MESSAGE,
+  CHROME_WAITING_FOR_NATIVE_MESSAGE,
 } from "@t3tools/shared/computerControl";
 export { CHROME_OWN_CALL_RUNNING_MESSAGE, CHROME_OWN_STOPPING_MESSAGE };
 import { COMPUTER_CHROME_APP_IDS } from "@t3tools/shared/computerExecution";
@@ -34,10 +36,7 @@ export const CHROME_OWN_CODEX_MESSAGE =
   "This thread's Codex Chrome session blocks native computer control until it stops; Codex threads can't use both at once.";
 export const CHROME_OWN_NATIVE_CONTROL_MESSAGE =
   "This thread holds foreground computer control, so its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it).";
-export const CHROME_WAITING_FOR_NATIVE_MESSAGE =
-  "Another agent is controlling the computer; retry this Chrome call in a few seconds.";
-export const CHROME_NATIVE_WORK_FINISHING_MESSAGE =
-  "Native computer input is still finishing; retry the Chrome call shortly.";
+export { CHROME_NATIVE_WORK_FINISHING_MESSAGE, CHROME_WAITING_FOR_NATIVE_MESSAGE };
 
 /**
  * Refusals of the holder's own thread that clear by themselves (its Chrome call ends, or its
@@ -173,6 +172,10 @@ export class ChromeLeaseAuthority {
       this.options.callAdmission?.(holder) === true &&
       this.options.callsIdle?.(holder) === true
     );
+  }
+  /** Whether the current holder refuses other threads' foreground control. */
+  blocksOthersNative(): boolean {
+    return this.holder !== null && !this.sharesWhileIdle(this.holder);
   }
   /** Whether the current holder runs (or may run) a Chrome call right now. */
   private activity(): "chrome-call" | "chrome-session" {

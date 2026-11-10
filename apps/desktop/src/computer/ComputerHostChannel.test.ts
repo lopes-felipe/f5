@@ -2052,6 +2052,24 @@ describe("background capability negotiation", () => {
       await vi.waitFor(() => expect(h.response("r1")).toMatchObject({ result: "working" }));
     });
 
+    it("tells other profiles whether the holder refuses their foreground control", async () => {
+      const h = await twoProfiles();
+      const lastLease = () =>
+        sent(h)
+          .filter((message) => message.type === "chromeLeaseChanged")
+          .at(-1);
+      // No call report yet: unknown reads as running, so it blocks.
+      expect(lastLease()).toMatchObject({ holder: null, otherProfileBlocksNative: true });
+      h.b.emit("message", {
+        type: "chromeCallsChanged",
+        threadId: "b-thread",
+        sessionGeneration: "b-gen",
+        running: false,
+      });
+      expect(lastLease()).toMatchObject({ holder: null, otherProfile: false });
+      expect(lastLease()).not.toHaveProperty("otherProfileBlocksNative");
+    });
+
     it("doesn't ask an idle Claude holder that already lets native control through", async () => {
       const h = await twoProfiles();
       h.b.emit("message", {
@@ -2232,12 +2250,21 @@ describe("background capability negotiation", () => {
       expect(await h.acquireOther("after")).toMatchObject({ result: { threadId: "other" } });
     });
 
-    it("ends admitted calls on an idle report and at the holder's turn end", async () => {
+    it("keeps an admitted call past an idle report, until its own end or the turn's", async () => {
       const h = await held();
       h.calls(false);
       expect(await h.validate("call-a", "a")).toMatchObject({ result: true });
+      // The backend's idle report can precede its tracking of a call main just admitted.
       h.calls(false);
-      expect(await h.acquireOther("after-report")).toMatchObject({ result: { threadId: "other" } });
+      expect(await h.acquireOther("after-report")).toMatchObject({
+        error: { _tag: "Busy", activity: "chrome-call" },
+      });
+      // A withdrawn report ends every admitted call.
+      h.calls(null);
+      h.calls(false);
+      expect(await h.acquireOther("after-withdraw")).toMatchObject({
+        result: { threadId: "other" },
+      });
       h.process.emit("message", {
         type: "leaseRelease",
         requestId: "release",

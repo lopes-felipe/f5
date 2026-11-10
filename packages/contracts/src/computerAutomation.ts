@@ -935,6 +935,12 @@ export const DesktopComputerHostMessage = Schema.Union([
     type: Schema.Literal("chromeLeaseChanged"),
     holder: Schema.NullOr(ChromeLeaseHolder),
     otherProfile: Schema.optionalKey(Schema.Boolean),
+    /**
+     * `COMPUTER_CHROME_RELEASE_CAPABILITY` peers: another profile's Chrome holder refuses this
+     * profile's foreground control (a Codex or older-backend holder, or one running a call),
+     * so asking it to release can help a native request.
+     */
+    otherProfileBlocksNative: Schema.optionalKey(Schema.Boolean),
     /** Main could not observe a registered process exit; Chrome ownership is refused. */
     recoveryRequired: Schema.optionalKey(Schema.Boolean),
   }),

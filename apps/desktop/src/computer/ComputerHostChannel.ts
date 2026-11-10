@@ -758,8 +758,15 @@ export class ComputerHostChannel {
           this.updateChromeCalls(profileId, message.threadId, message.sessionGeneration, (key) => {
             if (message.running === null) this.chromeCalls.delete(key);
             else this.chromeCalls.set(key, message.running);
-            // "No call running" (or a withdrawn report) ends every call main admitted.
-            if (message.running !== true) this.chromeCallsAdmitted.delete(key);
+            // A withdrawn report ends every call main admitted. An idle report does too for a
+            // backend that doesn't name its calls; one that does reports each end itself, and
+            // its idle report can be sent before it tracks a call main just admitted.
+            if (
+              message.running === null ||
+              (message.running === false &&
+                !backend.capabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY))
+            )
+              this.chromeCallsAdmitted.delete(key);
           });
           break;
         }
@@ -949,7 +956,8 @@ export class ComputerHostChannel {
               throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
             this.chrome.validate(message.holder);
             // Any thread may hold native control beside an idle Chrome lease (see
-            // `ChromeLeaseAuthority`); the holder's Chrome calls wait until that control ends.
+            // `ChromeLeaseAuthority`). The holder's Chrome calls are refused until that control
+            // ends; the backend retries them for a bounded time (`CHROME_NATIVE_WAIT_MS`).
             let native = this.nativeExcludingChrome(profileId, message.holder.threadId);
             if (native.own)
               throw new ComputerControlError({
@@ -1214,6 +1222,12 @@ export class ComputerHostChannel {
       holder: holder?.profileId === profileId ? holder : null,
       otherProfile:
         holder !== null && holder.profileId !== profileId && this.chromeBusyForOthers(holder),
+      ...(holder !== null &&
+      holder.profileId !== profileId &&
+      this.chrome.blocksOthersNative() &&
+      this.backends.get(profileId)?.capabilities.has(COMPUTER_CHROME_RELEASE_CAPABILITY)
+        ? { otherProfileBlocksNative: true }
+        : {}),
       ...(this.chrome.recoveryRequired() ? { recoveryRequired: true } : {}),
     });
   }

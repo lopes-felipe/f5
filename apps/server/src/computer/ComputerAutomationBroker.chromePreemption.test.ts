@@ -341,6 +341,30 @@ describe("Chrome lease preemption across profiles", () => {
     broker.close();
   });
 
+  it("asks another profile's holder before native control only when main says it blocks", async () => {
+    const { ipc, broker } = await crossHarness();
+    const requests = () =>
+      ipc.messages.filter((message) => message.type === "chromeHolderRelease").length;
+    // An idle Claude holder elsewhere doesn't block: no round trip on acquisition.
+    await broker.preemptChromeFor("t", { kind: "foreground" });
+    expect(requests()).toBe(0);
+    ipc.emit("message", {
+      type: "chromeLeaseChanged",
+      holder: null,
+      otherProfile: false,
+      otherProfileBlocksNative: true,
+    });
+    // A deadline already spent sends nothing.
+    await broker.preemptChromeFor("t", { kind: "foreground" }, performance.now() - 1);
+    expect(requests()).toBe(0);
+    await broker.preemptChromeFor("t", { kind: "foreground" });
+    expect(requests()).toBe(1);
+    // A background lease on an app that isn't a browser never collides with Chrome.
+    await broker.preemptChromeFor("t", { kind: "app", appId: "com.apple.TextEdit" });
+    expect(requests()).toBe(1);
+    broker.close();
+  });
+
   it("answers main's release request for this profile's idle holder", async () => {
     const { ipc, broker } = await harness();
     const a = releaser(async () => {

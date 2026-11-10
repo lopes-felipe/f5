@@ -643,3 +643,38 @@ it("publishes who a queued thread waits for, again only when that changes", asyn
     h.controller.close();
   }
 });
+it("re-publishes when only the blocker's activity changes", async () => {
+  const h = fixture();
+  try {
+    await h.acquire();
+    let activity: "chrome-call" | "computer" = "chrome-call";
+    h.controller.setBlockerLookup(() => ({ token: "same", activity, profileName: "Dev" }));
+    const queued = { ...h.holder, threadId: "waiting", executionGeneration: 1 };
+    h.controller.updateGrants(queued);
+    await h.controller.prepareAcquisition(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "queued",
+      waitMs: 20_000,
+      admit: () => h.controller.acquire(queued),
+    });
+    const waitingStates = () =>
+      h.state.mock.calls.filter(
+        ([, update]) => update.threadId === "waiting" && update.state === "waiting-agent",
+      );
+    expect(waitingStates()).toHaveLength(1);
+    activity = "computer";
+    h.controller.availabilityChanged();
+    expect(waitingStates()).toHaveLength(2);
+    expect(waitingStates().at(-1)?.[1]).toMatchObject({
+      blockedBy: { token: "same", activity: "computer" },
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+    h.controller.setPaused("p", "waiting", true);
+    await rejected;
+  } finally {
+    h.controller.close();
+  }
+});

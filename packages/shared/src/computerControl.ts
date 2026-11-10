@@ -10,6 +10,20 @@ export const CHROME_OWN_CALL_RUNNING_MESSAGE =
   "A Chrome call from this thread is still running; retry once it finishes.";
 export const CHROME_OWN_STOPPING_MESSAGE =
   "Chrome control from this thread is stopping; retry once it has stopped.";
+/**
+ * Chrome validation refusals that clear once another thread's native control ends. The
+ * backend's Chrome admission waits through them (bounded) before telling the agent.
+ */
+export const CHROME_WAITING_FOR_NATIVE_MESSAGE =
+  "Another agent is controlling the computer; retry this Chrome call in a few seconds.";
+export const CHROME_NATIVE_WORK_FINISHING_MESSAGE =
+  "Native computer input is still finishing; retry the Chrome call shortly.";
+export function isChromeNativeWait(message: string): boolean {
+  return (
+    message === CHROME_WAITING_FOR_NATIVE_MESSAGE ||
+    message === CHROME_NATIVE_WORK_FINISHING_MESSAGE
+  );
+}
 
 const OBSERVATIONS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "status",

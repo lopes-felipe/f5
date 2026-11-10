@@ -126,12 +126,17 @@ there is one cursor and keyboard focus in a desktop session.
 
 A Claude in Chrome session doesn't block other agents just by being open. Other threads and
 profiles can take foreground control, or control Chrome in the background, whenever none of
-its Chrome calls is running. Its next Chrome call then waits until that control ends. While
-a thread waits, its banner and card name who it is waiting for: another profile by name, a
-thread in this profile by title, and whether that agent is using Chrome or controlling the
-computer. **Stop that agent** pauses only that agent, even in another profile. Resume it
-from its own thread. An idle Chrome session in another profile also gives Chrome up when
-a thread here needs it, the same way one in this profile does.
+its Chrome calls is running. Its next Chrome call then waits up to twenty seconds for that
+control to end; after that the agent is told to retry. While a native request waits, its
+banner and card name who it is waiting for: another profile by name, a thread in this
+profile by title, and whether that agent is using Chrome or controlling the computer.
+**Stop that agent** pauses only that agent, even in another profile. Resume it from its own
+thread.
+
+An idle Chrome session in another profile also gives Chrome up when a thread here needs
+Chrome, the same way one in this profile does. A Codex Chrome session, or one from an older
+F5 backend, still blocks foreground control while it is open; when it is idle, a thread here
+that needs foreground control stops it, as one in the same profile would.
 
 Agents sharing an app must inspect again after another agent changes it. If another
 agent changed focus, the next agent presses the intended field before typing or sending

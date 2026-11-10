@@ -95,6 +95,17 @@ export interface ComputerExecutionStateUpdate {
   /** `waiting-agent` only: who the thread waits for (see `setBlockerLookup`). */
   blockedBy?: ComputerBlocker;
 }
+/** Everything the waiting banner shows about a blocker; any change re-publishes. */
+function blockerSignature(blocker: ComputerBlocker | undefined): string {
+  return blocker
+    ? JSON.stringify([
+        blocker.token,
+        blocker.activity,
+        blocker.profileName ?? "",
+        blocker.threadTitle ?? "",
+      ])
+    : "";
+}
 const STOP_CAUSE: Record<
   ComputerPauseCause,
   "paused" | "user-input" | "kill-switch" | "access-changed" | "permit-expired"
@@ -154,8 +165,11 @@ export class ComputerController {
   private admissionCheck: ((holder: ComputerLeaseHolder) => void) | undefined;
   /** Describes who a queued holder waits for; main's host channel knows Chrome and names. */
   private blockerLookup: ((holder: ComputerLeaseHolder) => ComputerBlocker | undefined) | undefined;
-  /** The blocker token last published for each waiting thread, so changes re-publish once. */
-  private readonly publishedBlockers = new Map<string, string | undefined>();
+  /**
+   * What was last published for each waiting thread (token, activity and labels), so any
+   * change re-publishes once. The token alone stays the same while the activity changes.
+   */
+  private readonly publishedBlockers = new Map<string, string>();
   private readonly availabilityListeners = new Set<() => void>();
   private readonly endedTurns = new Map<string, { sessionGeneration: string; turnId: string }>();
   private readonly availabilityWaiters = new Map<
@@ -252,7 +266,7 @@ export class ComputerController {
           return;
         }
         const blocker = this.blockerLookup?.(holder);
-        this.publishedBlockers.set(this.key(holder), blocker?.token);
+        this.publishedBlockers.set(this.key(holder), blockerSignature(blocker));
         this.publishState(holder, "waiting-agent", undefined, blocker);
       },
     });
@@ -360,8 +374,9 @@ export class ComputerController {
       const key = this.key(holder);
       if (!this.publishedBlockers.has(key)) continue;
       const blocker = this.blockerLookup(holder);
-      if (blocker?.token === this.publishedBlockers.get(key)) continue;
-      this.publishedBlockers.set(key, blocker?.token);
+      const signature = blockerSignature(blocker);
+      if (signature === this.publishedBlockers.get(key)) continue;
+      this.publishedBlockers.set(key, signature);
       this.publishState(holder, "waiting-agent", undefined, blocker);
     }
   }
