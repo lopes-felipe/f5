@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useStore } from "../store";
 import { Button } from "./ui/button";
 import {
-  CHROME_RELEASE_TITLE,
-  chromeReleaseFailureText,
   pauseComputerThread,
-  releaseChromeReservation,
   stopComputerTurn,
   computerStopShortcutLabel,
 } from "./computerControls";
@@ -54,8 +51,9 @@ export function computerUseBannerTargets(
 }
 /**
  * A Chrome runtime that only holds its lease: idle, past the linger after its last call,
- * with nothing else to report. It still blocks other threads' Chrome and foreground
- * control, so the banner names it quietly with a way to release it.
+ * with nothing else to report. Another thread in this profile that needs Chrome or
+ * foreground control preempts it, and main hides it from other profiles, so the banner
+ * stays out of the way; the holding thread's card shows it with Release.
  */
 export function chromeIdleReservation(
   leases: typeof AgentComputerUseChanged.Type,
@@ -90,12 +88,11 @@ export function computerUseBannerText(
   const holder = primaryComputerHolder(leases);
   // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
   const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger);
-  // Another profile's control outranks this profile's idle reservation.
-  if (!holder || (reserved && leases.otherProfile))
+  // An idle reservation says nothing; another profile's control still shows.
+  if (!holder || reserved)
     return leases.otherProfile
       ? "An agent in another F5 profile is controlling this computer"
       : null;
-  if (reserved) return "Chrome reserved · idle";
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
   const state =
@@ -147,20 +144,15 @@ export function computerUseBannerText(
 export function computerUseBannerAmbient(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
-  chromeLinger = false,
 ): boolean {
   const holder = primaryComputerHolder(leases);
   if (leases.pendingTakeover || leases.otherProfile || pausedLocally) return false;
-  // An idle Chrome reservation is ambient too: nothing is happening, it just holds Chrome.
-  if (chromeIdleReservation(leases, pausedLocally, chromeLinger)) return true;
   return (
     holder?.state === "waiting-user" ||
     holder?.state === "waiting-agent" ||
     (holder?.delivery === "background" && holder.state === "active")
   );
 }
-
-export { chromeReleaseFailureText };
 
 /** How long Chrome keeps reading as in use after its last call ends. */
 export const CHROME_BANNER_LINGER_MS = 3000;
@@ -193,23 +185,13 @@ export function ComputerUseBanner() {
   const title = useStore((store) =>
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
-  const routeThreadId = useParams({
-    strict: false,
-    select: (params) => (params as { threadId?: string }).threadId ?? null,
-  });
   const chromeLinger = useLinger(leases.holders.some((entry) => entry.browser === "working"));
   const text = computerUseBannerText(leases, paused, chromeLinger);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
-  const ambient = computerUseBannerAmbient(leases, paused, chromeLinger);
-  const reserved =
-    !retryTargets.length &&
-    !leases.otherProfile &&
-    chromeIdleReservation(leases, paused, chromeLinger);
-  // The holding thread's own card already shows the idle reservation with Release.
-  if (reserved && threadId && routeThreadId === threadId) return null;
+  const ambient = computerUseBannerAmbient(leases, paused);
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
@@ -243,29 +225,7 @@ export function ComputerUseBanner() {
         {title ? ` · ${title}` : ""}
         {backend ? ` · ${backend === "native" ? "F5" : backend}` : ""}
       </span>
-      {threadId && reserved ? (
-        <>
-          <Button
-            size="xs"
-            variant="ghost"
-            title="Go to the thread holding Chrome"
-            onClick={() => void navigate({ to: "/$threadId", params: { threadId } })}
-          >
-            View
-          </Button>
-          <Button
-            size="xs"
-            variant="ghost"
-            title={CHROME_RELEASE_TITLE}
-            onClick={() => {
-              setError("");
-              void releaseChromeReservation(threadId).then(setError);
-            }}
-          >
-            Release
-          </Button>
-        </>
-      ) : threadId ? (
+      {threadId ? (
         <>
           <Button
             size="xs"

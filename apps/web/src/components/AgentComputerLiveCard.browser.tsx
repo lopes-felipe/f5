@@ -20,10 +20,8 @@ vi.mock("../nativeApi", () => ({ readNativeApi: () => nativeMock.api }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useNavigate: () => async () => {},
-  useParams: (options?: { select?: (params: Record<string, string>) => unknown }) =>
-    options?.select ? options.select(routeMock.params) : routeMock.params,
+  useParams: () => ({}),
 }));
-const routeMock = vi.hoisted(() => ({ params: {} as Record<string, string> }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
 it.each(["paused", "recovery"] as const)(
   "uses server-only %s state after a renderer reload",
@@ -131,7 +129,6 @@ it("shows session-only persistence after the native request closes", async () =>
 });
 beforeEach(() => {
   nativeMock.api = undefined;
-  routeMock.params = {};
   useAgentComputerActivityStore.getState().resetConnection();
 });
 afterEach(() => {
@@ -730,7 +727,7 @@ it.each([
     await screen.unmount();
   }
 });
-it("keeps the Chrome banner up between calls and quiets it to a reservation once idle", async () => {
+it("keeps the Chrome banner up between calls and hides it once the runtime is idle", async () => {
   const store = useAgentComputerActivityStore.getState();
   const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
   const banner = () => document.querySelector('[data-testid="computer-use-banner"]');
@@ -752,40 +749,11 @@ it("keeps the Chrome banner up between calls and quiets it to a reservation once
     expect(banner()?.textContent).toContain("An agent is using Chrome");
     await settle("idle");
     await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS);
-    await vi.waitFor(() => expect(banner()?.textContent).toContain("Chrome reserved · idle"));
+    // Another thread preempts an idle holder, so only its own card shows it.
+    await vi.waitFor(() => expect(banner()).toBeNull());
   } finally {
     await screen.unmount();
     vi.useRealTimers();
-  }
-});
-
-it("releases an idle Chrome reservation from the banner and says when the holder refuses", async () => {
-  const store = useAgentComputerActivityStore.getState();
-  const releaseChrome = vi
-    .fn(
-      async (_input: { threadId: string }): Promise<{ released: boolean; outcome?: string }> => ({
-        released: true,
-        outcome: "released",
-      }),
-    )
-    .mockResolvedValueOnce({ released: false, outcome: "working" });
-  nativeMock.api = { computer: { releaseChrome } } as never;
-  store.setLeases({
-    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
-  });
-  const screen = await render(<ComputerUseBanner />);
-  try {
-    await expect.element(page.getByText(/Chrome reserved · idle/)).toBeVisible();
-    // An idle reservation offers Release, not Pause/Stop.
-    await expect.element(page.getByRole("button", { name: "Pause" })).not.toBeInTheDocument();
-    await page.getByRole("button", { name: "Release" }).click();
-    expect(releaseChrome).toHaveBeenCalledWith({ threadId });
-    await expect.element(page.getByText(/is busy now .* so it keeps Chrome/)).toBeVisible();
-    await page.getByRole("button", { name: "Release" }).click();
-    expect(releaseChrome).toHaveBeenCalledTimes(2);
-    await expect.element(page.getByText(/so it keeps Chrome/)).not.toBeInTheDocument();
-  } finally {
-    await screen.unmount();
   }
 });
 
@@ -866,25 +834,19 @@ it.each([
   }
 });
 
-it("hides the idle Chrome pill in the holding thread only", async () => {
+it("shows an idle Chrome reservation's unconfirmed Stop as a warning", async () => {
   const store = useAgentComputerActivityStore.getState();
-  const holder = { threadId, delivery: "foreground" as const, state: "active" as const };
-  store.setLeases({ holders: [{ ...holder, browser: "idle" }] });
-  routeMock.params = { threadId: "another-thread" };
-  const elsewhere = await render(<ComputerUseBanner />);
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  store.markStopUnconfirmed(threadId);
+  const screen = await render(<ComputerUseBanner />);
   try {
-    await expect.element(page.getByText(/Chrome reserved · idle/)).toBeVisible();
+    await expect.element(page.getByText(/Stop unconfirmed/)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Retry Stop" })).toBeVisible();
+    expect(page.getByTestId("computer-use-banner").element().className).toContain("border-warning");
   } finally {
-    await elsewhere.unmount();
-  }
-  routeMock.params = { threadId };
-  const inHolder = await render(<ComputerUseBanner />);
-  try {
-    await expect.element(page.getByTestId("computer-use-banner")).not.toBeInTheDocument();
-    store.setLeases({ holders: [{ ...holder, browser: "working" }] });
-    await expect.element(page.getByText(/An agent is using Chrome/)).toBeVisible();
-  } finally {
-    await inHolder.unmount();
+    await screen.unmount();
   }
 });
 

@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isAgentComputerActive, useAgentComputerActivityStore } from "./agentComputerActivityStore";
 import {
   chromeIdleReservation,
-  chromeReleaseFailureText,
   computerUseBannerAmbient,
   computerUseBannerTargets,
   computerUseBannerText,
   primaryComputerHolder,
 } from "./components/ComputerUseBanner";
+import { chromeReleaseFailureText } from "./components/computerControls";
 const threadId = ThreadId.makeUnsafe("computer-thread");
 beforeEach(() => useAgentComputerActivityStore.getState().resetConnection());
 describe("Chrome release failures", () => {
@@ -244,11 +244,9 @@ describe("computer use banner text", () => {
   });
   it("says whether an agent is using Chrome, not that it controls the computer", () => {
     const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
-    // An idle runtime still holds Chrome, so it shows as a quiet reservation, except just
-    // after a call ended.
-    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(
-      "Chrome reserved · idle",
-    );
+    // An idle runtime only reserves Chrome, which another thread preempts, so the banner
+    // says nothing, except just after a call ended.
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBeNull();
     expect(chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(true);
     expect(chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false, true)).toBe(
       false,
@@ -276,12 +274,10 @@ describe("computer use banner text", () => {
         false,
       ),
     ).toBe("An agent in another F5 profile is controlling this computer");
-    // Chrome in use never gets the quieter style; an idle reservation and background
-    // control do.
-    const ambient = (browser: "idle" | "working" | "unknown", linger = false) =>
-      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, false, linger);
-    expect(ambient("idle")).toBe(true);
-    expect(ambient("idle", true)).toBe(false);
+    // Chrome in use never gets the quieter style; background control does.
+    const ambient = (browser: "idle" | "working" | "unknown") =>
+      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, false);
+    expect(ambient("idle")).toBe(false);
     expect(ambient("working")).toBe(false);
     expect(ambient("unknown")).toBe(false);
     expect(computerUseBannerAmbient({ holders: [holder] }, false)).toBe(true);
