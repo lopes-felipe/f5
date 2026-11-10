@@ -1,0 +1,42 @@
+diff --git a/dist/components/FileDiff.js b/dist/components/FileDiff.js
+index 7ecaa0434e..db5d6e753f 100644
+--- a/dist/components/FileDiff.js
++++ b/dist/components/FileDiff.js
+@@ -1,4 +1,10 @@
+-import { DEFAULT_THEMES, DIFFS_TAG_NAME, EMPTY_RENDER_RANGE, HEADER_METADATA_SLOT_ID, HEADER_PREFIX_SLOT_ID, UNSAFE_CSS_ATTRIBUTE } from "../constants.js";
++import { DEFAULT_THEMES, DIFFS_TAG_NAME, HEADER_METADATA_SLOT_ID, HEADER_PREFIX_SLOT_ID, UNSAFE_CSS_ATTRIBUTE } from "../constants.js";
++import { getHighlighterIfLoaded, getSharedHighlighter } from "../highlighter/shared_highlighter.js";
++import { areThemesAttached } from "../highlighter/themes/areThemesAttached.js";
++import { areThemesEqual } from "../utils/areThemesEqual.js";
++import { getHighlighterOptions } from "../utils/getHighlighterOptions.js";
++import { getHighlighterThemeStyles } from "../utils/getHighlighterThemeStyles.js";
++import { getThemes } from "../utils/getThemes.js";
+ import { InteractionManager, pluckInteractionOptions } from "../managers/InteractionManager.js";
+ import { ResizeManager } from "../managers/ResizeManager.js";
+ import { areRenderRangesEqual } from "../utils/areRenderRangesEqual.js";
+@@ -328,8 +334,23 @@ var FileDiff = class {
+ 			this.removeRenderedCode();
+ 			this.clearAuxiliaryNodes();
+ 			try {
+-				const hunksResult = this.hunksRenderer.renderDiff(this.fileDiff, EMPTY_RENDER_RANGE);
+-				if (hunksResult?.headerElement != null) this.applyHeaderToDOM(hunksResult.headerElement, fileContainer);
++				if (!disableFileHeader) {
++					// Empty ranges still build and highlight the full diff. Headers only need themes.
++					const theme = this.options.theme ?? DEFAULT_THEMES;
++					const highlighter = areThemesAttached(theme) ? getHighlighterIfLoaded() : void 0;
++					const themeStyles = highlighter == null ? "" : getHighlighterThemeStyles({ theme, highlighter });
++					const baseThemeType = highlighter != null && typeof theme === "string" ? highlighter.getTheme(theme).type : void 0;
++					if (highlighter == null) getSharedHighlighter({
++						...getHighlighterOptions("text", this.options),
++						themes: getThemes(theme)
++					}).then(() => {
++						if (this.enabled && this.fileContainer === fileContainer && this.options.collapsed && areThemesEqual(theme, this.options.theme ?? DEFAULT_THEMES)) this.rerender();
++					}).catch((error) => console.error(error));
++					this.applyHeaderToDOM(
++						this.hunksRenderer.renderHeader(this.fileDiff, themeStyles, baseThemeType),
++						fileContainer
++					);
++				}
+ 				this.renderSeparators([]);
+ 				this.injectUnsafeCSS();
+ 			} catch (error) {

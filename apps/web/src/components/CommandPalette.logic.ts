@@ -8,6 +8,7 @@ import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { compareThreadsByActivity, isSnoozedThread } from "../lib/threadOrdering";
 import { pillForStatus, type ThreadStatus, type ThreadStatusPill } from "../threadStatus";
 import type { Project, ThreadListItem } from "../types";
+import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-muted-foreground";
@@ -164,6 +165,38 @@ export function buildProjectActionItems(input: {
       await input.runProject(project);
     },
   }));
+}
+
+/** Keep Enter aimed at the current project while preserving the remaining sidebar order. */
+export function buildNewThreadInProjectItems(input: {
+  projects: ReadonlyArray<Project>;
+  currentProjectId: Project["id"] | null;
+  noProjectItem: CommandPaletteActionItem;
+  icon: (project: Project) => ReactNode;
+  runProject: (project: Project) => Promise<void>;
+}): CommandPaletteActionItem[] {
+  const current = input.projects.find((project) => project.id === input.currentProjectId);
+  const projects = withoutScratchProjects(input.projects);
+  const ordered =
+    current && !isScratchProject(current)
+      ? [current, ...projects.filter((project) => project.id !== current.id)]
+      : projects;
+  const items = buildProjectActionItems({
+    projects: ordered,
+    valuePrefix: "new-thread-in",
+    icon: input.icon,
+    runProject: input.runProject,
+  }).map((item, index) =>
+    ordered[index]?.id === input.currentProjectId
+      ? { ...item, description: "Current · " + item.description }
+      : item,
+  );
+  const currentIsScratch = isScratchProject(current);
+  const noProjectItem = currentIsScratch
+    ? { ...input.noProjectItem, description: "Current" }
+    : input.noProjectItem;
+  items.splice(current && !currentIsScratch ? 1 : 0, 0, noProjectItem);
+  return items;
 }
 
 /** A palette thread; summaries carry their status, plain list items show none. */

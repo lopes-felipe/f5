@@ -10,6 +10,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ProviderDriverKind,
+  type ProviderInstanceEnvironment,
   ProviderInstanceId,
   ServerSettings,
   ServerSettingsPatch,
@@ -1034,6 +1035,82 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
       assert.equal(next.textGenerationModelSelection.instanceId, "claudeAgent");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect.each(
+    [false, true].flatMap((inline) =>
+      [false, true].flatMap((redactedLast) =>
+        [
+          { label: "empty sensitive", value: "", sensitive: true },
+          { label: "plain", value: "plain", sensitive: false },
+          { label: "replacement", value: "replacement", sensitive: true },
+        ].map(({ label, ...duplicate }) => ({
+          label: [
+            inline ? "inline" : "stored",
+            redactedLast ? "redacted last" : "redacted first",
+            label,
+          ].join(", "),
+          inline,
+          redactedLast,
+          duplicate,
+        })),
+      ),
+    ),
+  )(
+    "preserves a secret claimed by a redacted duplicate ($label)",
+    ({ inline, redactedLast, duplicate }) =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig;
+        const instanceId = ProviderInstanceId.make("codex");
+        const save = (environment: ProviderInstanceEnvironment) =>
+          service.updateSettings({
+            providerInstances: {
+              [instanceId]: { driver: ProviderDriverKind.make("codex"), config: {}, environment },
+            },
+          });
+        if (inline) {
+          yield* fs.writeFileString(
+            config.settingsPath!,
+            JSON.stringify({
+              providerInstances: {
+                [instanceId]: {
+                  driver: "codex",
+                  config: {},
+                  environment: [
+                    { name: "API_KEY", value: "stored", sensitive: true },
+                    { name: "API_KEY", value: "", sensitive: true },
+                    { name: "API_KEY", value: "plain", sensitive: false },
+                  ],
+                },
+              },
+            }),
+          );
+        } else {
+          yield* save([{ name: "API_KEY", value: "stored", sensitive: true }]);
+        }
+        const redacted = {
+          name: "API_KEY",
+          value: "",
+          sensitive: true,
+          valueRedacted: true,
+        };
+        const copy = { name: "API_KEY", ...duplicate };
+        yield* save(redactedLast ? [copy, redacted] : [redacted, copy]);
+        // Read from disk with a fresh service to detect loss hidden by cached settings.
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsService).getSettings;
+        }).pipe(Effect.provide(Layer.fresh(ServerSettingsLive)));
+        assert.equal(
+          reloaded.providerInstances[instanceId]?.environment?.[redactedLast ? 1 : 0]?.value,
+          duplicate.sensitive && duplicate.value ? "replacement" : "stored",
+        );
+        // Once no row owns the slot, a later redacted row must not recover the old secret.
+        yield* save([]);
+        const removed = yield* save([redacted]);
+        assert.equal(removed.providerInstances[instanceId]?.environment?.[0]?.value, "");
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
   it.effect("preserves the last inline secret when saving a redacted settings form", () =>

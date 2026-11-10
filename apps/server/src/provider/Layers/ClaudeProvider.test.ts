@@ -180,6 +180,7 @@ function modelSlugs(snapshot: Awaited<ReturnType<typeof runStatusForVersion>>) {
 function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
   expect(slugs).toContain("claude-opus-5-5");
   expect(slugs).toContain("claude-opus-5");
+  expect(slugs).toContain("claude-fable-5-2");
   expect(slugs).toContain("claude-fable-5-1");
   expect(slugs).toContain("claude-fable-5");
   expect(slugs).toContain("claude-sonnet-5");
@@ -188,6 +189,26 @@ function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
 }
 
 describe("checkClaudeProviderStatus", () => {
+  it.each(["2.1.289", "2.1.290"])("gates Fable 5.2 and its aliases at %s", async (version) => {
+    const snapshot = await runStatusForVersionWithSettings(version, {
+      ...claudeSettings,
+      customModels: [
+        "fable",
+        "claude-fable",
+        "fable-5.2",
+        "fable-5-2",
+        "claude-fable-5.2",
+        "claude-fable-5-2[1m]",
+        "fable-5.1",
+      ],
+    });
+    const slugs = modelSlugs(snapshot);
+    expect(slugs.filter((slug) => slug === "claude-fable-5-2")).toHaveLength(
+      version === "2.1.290" ? 1 : 0,
+    );
+    expect(slugs.filter((slug) => slug === "claude-fable-5-1")).toHaveLength(1);
+  });
+
   it.each(["2.1.279", "2.1.280"])("gates Opus 5.5 and bare aliases at %s", async (version) => {
     const snapshot = await runStatusForVersionWithSettings(version, {
       ...claudeSettings,
@@ -459,9 +480,10 @@ describe("makePendingClaudeProvider", () => {
     expect(new Set(slugs)).toEqual(
       new Set(MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((model) => model.slug)),
     );
-    expect(slugs.slice(0, 5)).toEqual([
+    expect(slugs.slice(0, 6)).toEqual([
       "claude-opus-5-5",
       "claude-opus-5",
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
       "claude-sonnet-5-5",
@@ -493,7 +515,7 @@ describe("makePendingClaudeProvider", () => {
 });
 
 describe("getClaudeModelCapabilities", () => {
-  it("uses only effort for Fable 5.1 and strips stale context suffixes on the wire", () => {
+  it("uses only effort for Fable 5.2 and strips stale context suffixes on the wire", () => {
     const caps = getClaudeModelCapabilities("fable");
     expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual(["effort"]);
     expect(resolveClaudeEffort(caps, undefined)).toBe("high");
@@ -506,7 +528,7 @@ describe("getClaudeModelCapabilities", () => {
         model: "fable[200k]",
         options: [{ id: "contextWindow", value: "1m" }],
       }),
-    ).toBe("claude-fable-5-1");
+    ).toBe("claude-fable-5-2");
   });
   it("keeps Opus 5 descriptors aligned with shared metadata", () => {
     const caps = getClaudeModelCapabilities("claude-opus-5");
@@ -605,6 +627,17 @@ describe("resolveClaudeApiModelId", () => {
 });
 
 describe("Claude version gates", () => {
+  it.each(["fable", "claude-fable", "fable[200k]"])(
+    "warns saved sessions using %s below the Fable 5.2 version gate",
+    (model) => {
+      expect(claudeSessionModelGateMessage(model, "2.1.289")).toBe(
+        "This session runs Claude Code v2.1.289, which is too old for Claude Fable 5.2. Upgrade to v2.1.290 or newer.",
+      );
+      expect(claudeSessionModelGateMessage(model, "2.1.290")).toBeUndefined();
+      expect(claudeSessionModelGateMessage(model, undefined)).toBeUndefined();
+    },
+  );
+
   it("orders minimum versions descending so the first failing gate recommends a sufficient upgrade", () => {
     for (let i = 1; i < VERSION_GATED_CLAUDE_MODELS.length; i++) {
       expect(

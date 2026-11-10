@@ -739,7 +739,7 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("submits persisted Fable 5.1 aliases with supported effort only", async () => {
+  it("submits persisted Fable 5.2 aliases with supported effort only", async () => {
     await seedModelPreferences({
       lastProvider: "claudeAgent",
       lastModelByProvider: { claudeAgent: "fable[200k]" },
@@ -755,7 +755,7 @@ describe("WorkflowCreateDialog", () => {
       {
         container: host,
         providers: [
-          claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"]),
+          claudeProvider("2.1.290", ["claude-opus-5", "claude-fable-5-2", "claude-fable-5"]),
         ],
       },
     );
@@ -765,7 +765,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
         provider: "claudeAgent",
-        model: "claude-fable-5-1",
+        model: "claude-fable-5-2",
         modelOptions: { claudeAgent: { effort: "xhigh" } },
         providerOptions: { claudeAgent: { subagentsEnabled: true, subagentModel: "inherit" } },
       });

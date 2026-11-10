@@ -16,7 +16,7 @@
     },
     "apps/desktop": {
       "name": "@t3tools/desktop",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "dependencies": {
         "dbus-next": "0.10.2",
         "effect": "catalog:",
@@ -47,7 +47,7 @@
     },
     "apps/server": {
       "name": "t3",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "bin": {
         "f5": "./dist/index.mjs",
         "t3": "./dist/index.mjs",
@@ -94,7 +94,7 @@
     },
     "apps/web": {
       "name": "@t3tools/web",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "dependencies": {
         "@base-ui/react": "^1.2.0",
         "@dnd-kit/core": "^6.3.1",
@@ -154,7 +154,7 @@
     },
     "packages/contracts": {
       "name": "@t3tools/contracts",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "dependencies": {
         "effect": "catalog:",
       },
@@ -223,6 +223,7 @@
     },
   },
   "patchedDependencies": {
+    "@pierre/diffs@1.1.0-beta.19": "patches/@pierre%2Fdiffs@1.1.0-beta.19.patch",
     "@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect-smol/@effect/platform-node-shared@8881a9b606d84a6f5eb6615279138322984f5368": "patches/@effect%2Fplatform-node-shared@8881a9b.patch",
   },
   "overrides": {
