@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- New worktree threads based on a branch that isn't on the remote no longer finish with a "Fetch base branch" warning. A local base branch with unpushed commits is used as is, instead of starting from the older remote copy; the setup card warns when the local branch has diverged from the remote or the remote can't be reached.
+
 ## [0.1.7] - 2026-11-10
 
 ### Added
