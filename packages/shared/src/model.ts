@@ -38,6 +38,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
 
 const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
 const CLAUDE_FABLE_5_1_MODEL = "claude-fable-5-1";
+const CLAUDE_FABLE_5_2_MODEL = "claude-fable-5-2";
 const CLAUDE_SONNET_5_MODEL = "claude-sonnet-5";
 const CLAUDE_OPUS_5_5_MODEL = "claude-opus-5-5";
 const CLAUDE_OPUS_5_MODEL = "claude-opus-5";
@@ -86,6 +87,11 @@ const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata>
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
     defaultEffort: "high",
     supportsFastMode: true,
+  },
+  [CLAUDE_FABLE_5_2_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "high",
   },
   [CLAUDE_FABLE_5_1_MODEL]: {
     contextWindowTokens: 1_000_000,

@@ -224,7 +224,7 @@ describe("ComposerStatusStrip", () => {
       stages: base.stages.map((stage, index) => ({
         ...stage,
         status: index === 0 ? ("warning" as const) : ("done" as const),
-        detail: index === 0 ? "main is not on the remote; using the local branch" : null,
+        detail: index === 0 ? "Couldn't reach the remote; using local main" : null,
       })),
     });
     const screen = await render(
@@ -249,7 +249,7 @@ describe("ComposerStatusStrip", () => {
       await expect.element(chip).toHaveTextContent("Worktree · 1 warning");
       await chip.click();
       await expect
-        .element(page.getByText("main is not on the remote; using the local branch"))
+        .element(page.getByText("Couldn't reach the remote; using local main"))
         .toBeVisible();
       await expect.element(page.getByRole("button", { name: "Hide setup details" })).toBeVisible();
     } finally {

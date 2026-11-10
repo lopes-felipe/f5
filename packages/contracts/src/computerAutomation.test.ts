@@ -315,6 +315,23 @@ describe("computer observation and error metadata", () => {
     expect(Schema.decodeUnknownSync(ComputerScreenshot)(unreadableSubrole)).toEqual(
       unreadableSubrole,
     );
+    const pruned = {
+      ...value,
+      secureAudit: {
+        ...value.secureAudit,
+        windows: [{ ...value.secureAudit.windows[0], complete: true, prunedRows: 11980 }],
+      },
+    };
+    expect(Schema.decodeUnknownSync(ComputerScreenshot)(pruned)).toEqual(pruned);
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerScreenshot)({
+        ...value,
+        secureAudit: {
+          ...value.secureAudit,
+          windows: [{ ...value.secureAudit.windows[0], prunedRows: -1 }],
+        },
+      }),
+    ).toThrow();
     const { secureAudit: _, passwordMasking: _mode, ...legacy } = value;
     expect(Schema.decodeUnknownSync(ComputerScreenshot)(legacy)).toEqual(legacy);
     expect(

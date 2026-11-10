@@ -370,9 +370,9 @@ export const ProviderRegistryLive = Layer.effect(
     // interleave two passes clobbering each other's fiber bookkeeping.
     const syncSemaphore = yield* Semaphore.make(1);
 
-    const getLiveSources: Effect.Effect<ReadonlyArray<ProviderSnapshotSource>> = Ref.get(
+    const getLiveInstances: Effect.Effect<ReadonlyArray<ProviderInstance>> = Ref.get(
       liveSubsRef,
-    ).pipe(Effect.map((map) => Array.from(map.values(), buildSnapshotSource)));
+    ).pipe(Effect.map((map) => Array.from(map.values())));
 
     const persistProvider = (provider: ServerProvider) =>
       Effect.gen(function* () {
@@ -470,22 +470,28 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* upsertProviders([provider], options);
     });
 
-    const refreshOneSource = Effect.fn("refreshOneSource")(function* (
-      providerSource: ProviderSnapshotSource,
-    ) {
-      return yield* providerSource.refresh.pipe(
+    const refreshOneSource = Effect.fn("refreshOneSource")(function* (instance: ProviderInstance) {
+      const providerSource = buildSnapshotSource(instance);
+      const probe = yield* providerSource.refresh.pipe(
         Effect.andThen(providerSource.getSnapshot),
-        Effect.flatMap((nextProvider) =>
-          correlateSnapshotWithSource(providerSource, nextProvider).pipe(
-            Effect.flatMap(syncProvider),
-          ),
-        ),
+        Effect.exit,
       );
+      return yield* Effect.gen(function* () {
+        // Check after acquiring the publication lock: a rebuild may have retired
+        // this instance while its probe or a preceding publication was running.
+        if ((yield* instanceRegistry.getInstance(instance.instanceId)) !== instance) {
+          return yield* Ref.get(providersRef);
+        }
+        const nextProvider = yield* probe;
+        return yield* correlateSnapshotWithSource(providerSource, nextProvider).pipe(
+          Effect.flatMap((provider) => upsertProvidersUnlocked([provider])),
+        );
+      }).pipe(catalogUpdateLock.withPermits(1));
     });
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
-      const sources = yield* getLiveSources;
-      return yield* Effect.forEach(sources, (source) => refreshOneSource(source), {
+      const instances = yield* getLiveInstances;
+      return yield* Effect.forEach(instances, (instance) => refreshOneSource(instance), {
         concurrency: "unbounded",
         discard: true,
       }).pipe(Effect.andThen(Ref.get(providersRef)));
@@ -497,25 +503,23 @@ export const ProviderRegistryLive = Layer.effect(
       }
       // Kind-scoped refreshes target the default instance for that driver.
       const defaultInstanceId = defaultInstanceIdForDriver(provider);
-      const sources = yield* getLiveSources;
-      const providerSource = sources.find(
-        (candidate) => candidate.instanceId === defaultInstanceId,
-      );
-      if (!providerSource) {
+      const instances = yield* getLiveInstances;
+      const instance = instances.find((candidate) => candidate.instanceId === defaultInstanceId);
+      if (!instance) {
         return yield* Ref.get(providersRef);
       }
-      return yield* refreshOneSource(providerSource);
+      return yield* refreshOneSource(instance);
     });
 
     const refreshInstance = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
-      const sources = yield* getLiveSources;
-      const providerSource = sources.find((candidate) => candidate.instanceId === instanceId);
-      if (!providerSource) {
+      const instances = yield* getLiveInstances;
+      const instance = instances.find((candidate) => candidate.instanceId === instanceId);
+      if (!instance) {
         return yield* Ref.get(providersRef);
       }
-      return yield* refreshOneSource(providerSource);
+      return yield* refreshOneSource(instance);
     });
 
     /**
@@ -594,8 +598,7 @@ export const ProviderRegistryLive = Layer.effect(
         // swallowed so one bad driver can't wedge the whole registry.
         yield* Effect.forEach(
           newlyAdded,
-          ([, instance]) =>
-            refreshOneSource(buildSnapshotSource(instance)).pipe(Effect.ignoreCause({ log: true })),
+          ([, instance]) => refreshOneSource(instance).pipe(Effect.ignoreCause({ log: true })),
           { concurrency: "unbounded", discard: true },
         );
         yield* upsertProviders(unavailableProviders, {

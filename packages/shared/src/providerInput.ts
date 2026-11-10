@@ -51,14 +51,23 @@ export function getProviderTurnInputLengthIssue(
  * The length check for a message's own text. A message that references other threads leaves
  * room for the referenced-thread block the server appends before it reaches the provider.
  */
+export function getMessageTextMaxChars(
+  text: string,
+  maxChars = PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+): number {
+  return threadReferenceMatches(text).length === 0
+    ? maxChars
+    : Math.max(0, maxChars - THREAD_REFERENCE_CONTEXT_MAX_CHARS);
+}
+
 export function getMessageTextLengthIssue(
   text: string,
   maxChars = PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 ): ProviderTurnInputLengthIssue | null {
-  if (threadReferenceMatches(text).length === 0) {
+  const limit = getMessageTextMaxChars(text, maxChars);
+  if (limit === maxChars) {
     return getProviderTurnInputLengthIssue(text, maxChars);
   }
-  const limit = Math.max(0, maxChars - THREAD_REFERENCE_CONTEXT_MAX_CHARS);
   const actualChars = text.trim().length;
   if (actualChars <= limit) {
     return null;
