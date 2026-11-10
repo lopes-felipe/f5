@@ -1,6 +1,7 @@
 import type { TrackedPullRequest } from "@t3tools/contracts";
 
 import type { ToastItemTone } from "./components/ui/toast";
+import { useNotificationInbox } from "./notificationCenter/inboxStore";
 import type { NotifyInput } from "./notificationCenter/notify";
 
 export function formatPrNotificationTitle(pr: TrackedPullRequest): string {
@@ -42,12 +43,14 @@ export function buildPrAttentionNotification(
       os,
     };
   }
+  const id = `pr-batch:${batch.batchId}`;
   return {
+    id,
     source: "pr",
     severity: "attention",
     title: `${count} pull requests need you`,
     sourceLabel: "Pull requests",
-    dedupeKey: `pr-batch:${batch.batchId}`,
+    dedupeKey: id,
     items: batch.pullRequests.slice(0, PR_TOAST_ITEM_LIMIT).map((item) => ({
       id: item.key,
       label: `${item.repository.nameWithOwner}#${item.number}`,
@@ -58,7 +61,8 @@ export function buildPrAttentionNotification(
     moreCount: Math.max(0, count - PR_TOAST_ITEM_LIMIT),
     target: { kind: "prHub" },
     actions: [
-      { label: "Mark seen", onClick: () => undefined },
+      // Closes the toast and reads its inbox entry; the hub keeps tracking the PRs themselves.
+      { label: "Mark seen", onClick: () => useNotificationInbox.getState().markRead(id) },
       {
         label: "Open hub",
         variant: "primary",

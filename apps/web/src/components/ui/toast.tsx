@@ -110,15 +110,26 @@ const anchoredToastManager = Toast.createToastManager<AppToastData>();
 type ToastId = ReturnType<typeof baseToastManager.add>;
 const threadToastVisibleTimeoutRemainingMs = new Map<ToastId, number>();
 
-/** Listeners told about every toast added through `toastManager` (the notification inbox). */
-type ToastAddListener = (options: ToastManagerAddOptions<AppToastData>, id: string) => void;
-const toastAddListeners = new Set<ToastAddListener>();
+/**
+ * Decides on plain error toasts (those not sent through `notify`): records them in the inbox,
+ * applies the Errors preferences and Do Not Disturb, and returns whether the toast shows.
+ */
+export type ErrorToastPolicy = (error: { title: string; body?: string }) => boolean;
+let errorToastPolicy: ErrorToastPolicy | null = null;
 
-export function subscribeToastAdds(listener: ToastAddListener): () => void {
-  toastAddListeners.add(listener);
+export function registerErrorToastPolicy(policy: ErrorToastPolicy): () => void {
+  errorToastPolicy = policy;
   return () => {
-    toastAddListeners.delete(listener);
+    if (errorToastPolicy === policy) errorToastPolicy = null;
   };
+}
+
+function errorToastAllowed(options: ToastManagerAddOptions<AppToastData>): boolean {
+  if (options.type !== "error" || options.data?.source || !errorToastPolicy) return true;
+  const title = textOf(options.title);
+  if (!title) return true;
+  const body = textOf(options.description);
+  return errorToastPolicy(body ? { title, body } : { title });
 }
 
 let toastSequence = 0;
@@ -164,6 +175,12 @@ export function createAppToastManager(base: typeof baseToastManager) {
   return {
     " subscribe": base[" subscribe"],
     add(options: ToastManagerAddOptions<AppToastData>): string {
+      if (!errorToastAllowed(options)) {
+        // Held back by preferences or Do Not Disturb (still in the inbox). Callers may close or
+        // update the id they get; with no such toast that does nothing.
+        toastSequence += 1;
+        return options.id ?? `app-toast-${toastSequence}`;
+      }
       const key = toastDedupeKey(options);
       const timeout =
         options.timeout ?? (options.data?.urgent ? 0 : defaultToastTimeout(options.type));
@@ -177,7 +194,6 @@ export function createAppToastManager(base: typeof baseToastManager) {
           timeout,
           data: resolveData(options, createdAt, { count: existing.count, dedupeKey: key! }),
         });
-        for (const listener of toastAddListeners) listener(options, existing.id);
         return existing.id;
       }
       toastSequence += 1;
@@ -200,7 +216,6 @@ export function createAppToastManager(base: typeof baseToastManager) {
           options.onRemove?.();
         },
       });
-      for (const listener of toastAddListeners) listener(options, id);
       return id;
     },
     close(id?: string): void {

@@ -463,6 +463,84 @@ describe("ThreadStatusNotificationController", () => {
     }
   });
 
+  it("drops an approval notice whose request was answered while it was being looked up", async () => {
+    localStorage.setItem(
+      APP_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ notificationMode: "off", inAppThreadNotifications: true }),
+    );
+    const approvalActivity = {
+      id: "approval-activity" as never,
+      tone: "approval" as const,
+      kind: "approval.requested",
+      summary: "Approval",
+      payload: { requestId: "request-stale", requestKind: "command", detail: "bun install" },
+      turnId: null,
+      createdAt: "2026-03-10T12:01:00.000Z",
+    };
+    let finishLookup: (value: { activities: unknown[] }) => void = () => undefined;
+    nativeApi.getThreadTailDetails.mockImplementation(
+      () => new Promise((resolve) => (finishLookup = resolve)),
+    );
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountController();
+    try {
+      setStoreThread(createThread(), true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      setStoreThread(createThread({ activities: [approvalActivity] }), true);
+      await vi.waitFor(() => expect(nativeApi.getThreadTailDetails).toHaveBeenCalled());
+      // Answered in the chat before the lookup returns: the thread is working again.
+      setStoreThread(createThread(), true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      finishLookup({ activities: [approvalActivity] });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(toast).not.toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Pending Approval" }),
+      );
+    } finally {
+      toast.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
+  it("closes an urgent toast without inline buttons when the thread moves on", async () => {
+    localStorage.setItem(
+      APP_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ notificationMode: "off", inAppThreadNotifications: true }),
+    );
+    // Two requests at once: no inline buttons, so only the thread moving on can close it.
+    const activity = (requestId: string) => ({
+      id: `approval-${requestId}` as never,
+      tone: "approval" as const,
+      kind: "approval.requested",
+      summary: "Approval",
+      payload: { requestId, requestKind: "command" },
+      turnId: null,
+      createdAt: "2026-03-10T12:01:00.000Z",
+    });
+    const activities = [activity("one"), activity("two")];
+    nativeApi.getThreadTailDetails.mockResolvedValue({ activities });
+    const close = vi.spyOn(toastManager, "close");
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountController();
+    try {
+      setStoreThread(createThread(), true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      setStoreThread(createThread({ activities }), true);
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Pending Approval" })),
+      );
+      const toastId = toast.mock.results.find(
+        (_result, index) => toast.mock.calls[index]![0].title === "Pending Approval",
+      )!.value as string;
+      setStoreThread(createThread(), true);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledWith(toastId));
+    } finally {
+      toast.mockRestore();
+      close.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
   describe("scheduled runs in a conversation", () => {
     const turnId = "turn-scheduled" as TurnId;
     const scheduledActivity = {

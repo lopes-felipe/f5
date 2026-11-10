@@ -48,34 +48,56 @@ export interface InboxEntry {
   readonly resolved?: { readonly label: string; readonly at: number };
 }
 
-export type InboxRecordInput = Omit<InboxEntry, "count" | "readAt" | "resolved">;
+export type InboxRecordInput = Omit<InboxEntry, "count" | "readAt" | "resolved"> & {
+  /** Already seen, e.g. about the thread on screen in the focused app. */
+  readonly read?: boolean;
+};
 
 /**
- * Adds an entry, newest first. A repeat of an unread entry (same dedupe key) bumps its count
- * and moves it to the top instead of adding a row. Old entries fall off by age and by count.
+ * Adds an entry, newest first. A repeat of an unread entry (same dedupe key) bumps its count,
+ * takes the newest id (so clicking the latest OS notification reads it) and moves to the top
+ * instead of adding a row. A new approval for a thread retires that thread's older ones. Old
+ * entries fall off by age and by count.
  */
 export function recordInboxEntry(
   entries: readonly InboxEntry[],
-  input: InboxRecordInput,
+  { read, ...input }: InboxRecordInput,
   nowMs: number,
 ): InboxEntry[] {
   const index = input.dedupeKey
     ? entries.findIndex((entry) => entry.dedupeKey === input.dedupeKey && entry.readAt === null)
     : -1;
-  let next: InboxEntry[];
+  const readAt = read ? nowMs : null;
+  let rest = entries;
+  let count = 1;
   if (index >= 0) {
-    const existing = entries[index]!;
-    const merged: InboxEntry = {
-      ...input,
-      id: existing.id,
-      count: existing.count + 1,
-      readAt: null,
-    };
-    next = [merged, ...entries.slice(0, index), ...entries.slice(index + 1)];
-  } else {
-    next = [{ ...input, count: 1, readAt: null }, ...entries];
+    count = entries[index]!.count + 1;
+    rest = [...entries.slice(0, index), ...entries.slice(index + 1)];
   }
-  return pruneInboxEntries(next, nowMs);
+  const approval = input.approval;
+  if (approval) {
+    rest = rest.map((entry) =>
+      entry.approval?.threadId === approval.threadId &&
+      entry.approval.requestId !== approval.requestId &&
+      !entry.resolved
+        ? { ...entry, resolved: { label: "Answered", at: nowMs } }
+        : entry,
+    );
+  }
+  return pruneInboxEntries([{ ...input, count, readAt }, ...rest], nowMs);
+}
+
+/**
+ * What is written to localStorage: approval details (commands, file paths) stay in memory only,
+ * since they can hold secrets and are worthless once the request is answered.
+ */
+export function persistableInboxEntries(entries: readonly InboxEntry[]): InboxEntry[] {
+  return entries.map((entry) => {
+    if (!entry.approval) return entry;
+    const { detail: _detail, approval, ...rest } = entry;
+    const { detail: _approvalDetail, ...approvalRest } = approval;
+    return { ...rest, approval: approvalRest };
+  });
 }
 
 export function pruneInboxEntries(entries: readonly InboxEntry[], nowMs: number): InboxEntry[] {
@@ -235,7 +257,7 @@ export const useNotificationInbox = create<InboxState>()(
       name: NOTIFICATION_INBOX_STORAGE_KEY,
       version: 1,
       storage: createJSONStorage(getInboxStorage),
-      partialize: (state) => ({ entries: state.entries }),
+      partialize: (state) => ({ entries: persistableInboxEntries(state.entries) }),
       // One malformed entry must not cost the whole history; old entries fall off on load.
       merge: (persisted, current) => {
         const raw = (persisted as { entries?: unknown } | undefined)?.entries;

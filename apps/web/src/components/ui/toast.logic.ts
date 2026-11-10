@@ -59,17 +59,26 @@ type DedupeCandidate = {
   type?: string | undefined;
   title?: unknown;
   description?: unknown;
-  data?: { dedupeKey?: string | undefined; threadId?: string | null | undefined } | undefined;
+  actionProps?: unknown;
+  data?:
+    | {
+        dedupeKey?: string | undefined;
+        threadId?: string | null | undefined;
+        actions?: readonly unknown[] | undefined;
+      }
+    | undefined;
 };
 
 /**
  * Identical toasts collapse into one with a count. Only plain-text toasts are keyed: a React
  * node cannot be compared, a caller-chosen id means the caller manages the toast itself, and
- * loading toasts are progress that a later update resolves.
+ * loading toasts are progress that a later update resolves. A toast with actions is only merged
+ * under an explicit key: its buttons act on its own payload, which a merge would drop.
  */
 export function toastDedupeKey(options: DedupeCandidate): string | null {
   if (options.data?.dedupeKey) return options.data.dedupeKey;
   if (options.id !== undefined || options.type === "loading") return null;
+  if (options.actionProps !== undefined || (options.data?.actions?.length ?? 0) > 0) return null;
   if (typeof options.title !== "string") return null;
   const description =
     options.description === undefined || options.description === null

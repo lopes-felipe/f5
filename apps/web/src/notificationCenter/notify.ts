@@ -120,7 +120,14 @@ export function registerNotificationHost(next: NotificationHost): () => void {
   };
 }
 
-type NotificationRecorder = (input: NotifyInput & { id: string; createdAt: number }) => void;
+type NotificationRecorder = (
+  input: NotifyInput & {
+    id: string;
+    createdAt: number;
+    /** Already seen: it is about the thread on screen in the focused app. */
+    read: boolean;
+  },
+) => void;
 let recorder: NotificationRecorder | null = null;
 
 /** The inbox records every notification, delivered or not. */
@@ -156,7 +163,11 @@ export function subscribeApprovalResolved(listener: ApprovalResolvedListener): (
   };
 }
 
-const liveApprovalToasts = new Map<ThreadId, { toastId: string; approval: NotificationApproval }>();
+/**
+ * The open urgent toast of each thread (an approval or input request). It stays until the
+ * thread stops waiting, so it is closed explicitly then, with or without inline buttons.
+ */
+const liveThreadToasts = new Map<ThreadId, { toastId: string; approval?: NotificationApproval }>();
 
 function emitApprovalResolved(
   approval: NotificationApproval,
@@ -193,16 +204,14 @@ export async function respondToNotificationApproval(
     });
     throw error;
   }
-  const live = liveApprovalToasts.get(approval.threadId);
-  if (live && live.approval.requestId === approval.requestId) {
-    liveApprovalToasts.delete(approval.threadId);
-  }
+  const live = liveThreadToasts.get(approval.threadId);
+  if (live?.approval?.requestId === approval.requestId) liveThreadToasts.delete(approval.threadId);
   emitApprovalResolved(approval, decision === "accept" ? "Approved" : "Denied");
 }
 
 const threadApprovalsEndedListeners = new Set<(threadId: ThreadId) => void>();
 
-/** Told whenever a thread stops waiting on approval, toast or not (the inbox listens). */
+/** Told whenever a thread stops waiting on the user, toast or not (the inbox listens). */
 export function subscribeThreadApprovalsEnded(listener: (threadId: ThreadId) => void): () => void {
   threadApprovalsEndedListeners.add(listener);
   return () => {
@@ -210,14 +219,17 @@ export function subscribeThreadApprovalsEnded(listener: (threadId: ThreadId) => 
   };
 }
 
-/** The thread no longer waits on its approval; drop any toast still offering to answer it. */
-export function resolveThreadApprovals(threadId: ThreadId): void {
+/**
+ * The thread no longer waits on an approval or input: close its urgent toast, which has no
+ * timeout, and retire any approval it offered to answer.
+ */
+export function resolveThreadAttention(threadId: ThreadId): void {
   for (const listener of threadApprovalsEndedListeners) listener(threadId);
-  const live = liveApprovalToasts.get(threadId);
+  const live = liveThreadToasts.get(threadId);
   if (!live) return;
-  liveApprovalToasts.delete(threadId);
+  liveThreadToasts.delete(threadId);
   toastManager.close(live.toastId);
-  emitApprovalResolved(live.approval, "Answered");
+  if (live.approval) emitApprovalResolved(live.approval, "Answered");
 }
 
 function toastType(input: NotifyInput): string {
@@ -266,21 +278,18 @@ export function readDeliveryEnvironment(): DeliveryEnvironment {
 /**
  * One way to tell the user something happened: records it in the inbox, then shows a toast,
  * an OS notification and/or a sound according to the source's preferences, focus and
- * Do Not Disturb.
+ * Do Not Disturb. When the OS notification can't be shown, a toast takes its place if the
+ * source allows in-app delivery.
  */
 export function notify(input: NotifyInput, env: DeliveryEnvironment = readDeliveryEnvironment()) {
   notificationSequence += 1;
   const id = input.id ?? `notification-${env.nowMs}-${notificationSequence}`;
   const plan = planNotificationDelivery(input, env);
-  recorder?.({ ...input, id, createdAt: env.nowMs });
-  const open = () => void host?.openTarget(input.target);
+  const onScreen =
+    env.appFocused && input.threadId !== undefined && input.threadId === env.activeThreadId;
+  recorder?.({ ...input, id, createdAt: env.nowMs, read: onScreen });
 
-  let soundPlayed = false;
-  if (plan.sound && env.nowMs - lastSoundAtMs >= 2_000) {
-    lastSoundAtMs = env.nowMs;
-    host?.playSound();
-    soundPlayed = true;
-  }
+  if (plan.sound) playThrottledSound(env.nowMs);
 
   if (plan.os) {
     void presentOsNotification(
@@ -290,15 +299,70 @@ export function notify(input: NotifyInput, env: DeliveryEnvironment = readDelive
         ...((input.os?.body ?? input.body) ? { body: input.os?.body ?? input.body } : {}),
         ...(input.os?.tag ? { tag: input.os.tag } : {}),
         ...(input.os?.icon ? { icon: input.os.icon } : {}),
-        // Our own chime replaces the OS sound, never both.
-        ...(soundPlayed ? { silent: true } : {}),
+        // The app's sound preference and throttle decide on audio, never the OS default.
+        silent: true,
         target: input.target,
       },
       { onActivate: (target) => void host?.openTarget(target) },
-    );
+    )
+      .catch(() => false)
+      .then((shown) => {
+        if (!shown && env.preferences[input.source].inApp) showNotificationToast(input);
+      });
   }
 
-  if (!plan.toast) return id;
+  if (plan.toast) showNotificationToast(input);
+  return id;
+}
+
+function playThrottledSound(nowMs: number): void {
+  if (nowMs - lastSoundAtMs < 2_000) return;
+  lastSoundAtMs = nowMs;
+  host?.playSound();
+}
+
+/**
+ * The delivery policy for a plain error toast raised anywhere in the app (not through
+ * `notify`): records it, plays the sound and shows the OS notification when the Errors source
+ * asks for them, and returns whether the caller's own toast should show. Do Not Disturb holds
+ * it back like any other notification. While F5 is in the background the toast also shows when
+ * in-app delivery is on, so the error is still there on return.
+ */
+export function deliverErrorNotification(
+  error: { title: string; body?: string },
+  env: DeliveryEnvironment = readDeliveryEnvironment(),
+): boolean {
+  notificationSequence += 1;
+  const id = `error-${env.nowMs}-${notificationSequence}`;
+  const input: NotifyInput = {
+    id,
+    source: "errors",
+    severity: "error",
+    title: error.title,
+    ...(error.body ? { body: error.body } : {}),
+    dedupeKey: `error:${error.title}\u0000${error.body ?? ""}`,
+    target: { kind: "none" },
+  };
+  const plan = planNotificationDelivery(input, env);
+  recorder?.({ ...input, id, createdAt: env.nowMs, read: false });
+  if (plan.sound) playThrottledSound(env.nowMs);
+  if (plan.os) {
+    void presentOsNotification(
+      {
+        id,
+        title: error.title,
+        ...(error.body ? { body: error.body } : {}),
+        silent: true,
+        target: { kind: "none" },
+      },
+      { onActivate: () => undefined },
+    ).catch(() => false);
+  }
+  return plan.toast || (plan.os && env.preferences.errors.inApp);
+}
+
+function showNotificationToast(input: NotifyInput): void {
+  const open = () => void host?.openTarget(input.target);
   const data: AppToastData = {
     source: input.source,
     ...(input.sourceLabel ? { sourceLabel: input.sourceLabel } : {}),
@@ -326,13 +390,18 @@ export function notify(input: NotifyInput, env: DeliveryEnvironment = readDelive
     ...(input.body ? { description: input.body } : {}),
     data,
   });
-  if (input.approval) {
-    liveApprovalToasts.set(input.approval.threadId, { toastId, approval: input.approval });
+  if (input.urgent && input.threadId) {
+    // One urgent toast per thread: a newer request replaces the older one.
+    const previous = liveThreadToasts.get(input.threadId);
+    if (previous && previous.toastId !== toastId) toastManager.close(previous.toastId);
+    liveThreadToasts.set(input.threadId, {
+      toastId,
+      ...(input.approval ? { approval: input.approval } : {}),
+    });
   }
-  return id;
 }
 
 export function resetNotifyStateForTests(): void {
   lastSoundAtMs = 0;
-  liveApprovalToasts.clear();
+  liveThreadToasts.clear();
 }

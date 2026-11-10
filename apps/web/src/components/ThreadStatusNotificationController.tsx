@@ -24,7 +24,12 @@ import {
 } from "../threadStatusNotifications";
 import { isSnoozedThread } from "../lib/threadOrdering";
 import { loadInlineApproval } from "../notificationCenter/inlineApproval";
-import { notify, resolveThreadApprovals } from "../notificationCenter/notify";
+import { notify, resolveThreadAttention } from "../notificationCenter/notify";
+
+/** Statuses whose toast waits for the user and must be closed once the thread moves on. */
+function isWaitingStatus(status: ThreadStatus | undefined): boolean {
+  return status === "pending-approval" || status === "awaiting-input";
+}
 
 function selectNotificationSettings(settings: AppSettings) {
   return {
@@ -56,6 +61,7 @@ export function ThreadStatusNotificationControllerContent() {
   const permission = useThreadStatusNotificationPermissionState();
   const promptState = useThreadStatusNotificationPromptState();
   const previousStatusByThreadIdRef = useRef<Map<ThreadId, ThreadStatus> | null>(null);
+  const transitionGenerationRef = useRef(new Map<ThreadId, number>());
   const previousNotificationsEnabledRef = useRef(systemEnabled);
   const promptVisibleForSessionRef = useRef(false);
   const [promptVisible, setPromptVisible] = useState(false);
@@ -138,17 +144,24 @@ export function ThreadStatusNotificationControllerContent() {
     );
     previousStatusByThreadIdRef.current = nextStatusByThreadId;
 
-    // An approval answered anywhere (here, the chat, another client) retires its toast.
+    // A request answered anywhere (here, the chat, another client) retires its toast.
     if (previous) {
       for (const [threadId, status] of previous) {
-        if (status === "pending-approval" && nextStatusByThreadId.get(threadId) !== status) {
-          resolveThreadApprovals(threadId);
+        if (isWaitingStatus(status) && nextStatusByThreadId.get(threadId) !== status) {
+          resolveThreadAttention(threadId);
         }
       }
     }
 
     const computerThreads = new Set(computerPending.split(","));
-    for (const transition of transitions)
+    for (const transition of transitions) {
+      const generation = (transitionGenerationRef.current.get(transition.threadId) ?? 0) + 1;
+      transitionGenerationRef.current.set(transition.threadId, generation);
+      // The lookups below take time; a newer transition (or the same status ending) makes this
+      // one stale, and notifying then would leave a toast for a request that is already gone.
+      const isCurrent = () =>
+        transitionGenerationRef.current.get(transition.threadId) === generation &&
+        previousStatusByThreadIdRef.current?.get(transition.threadId) === transition.status;
       void (async () => {
         // Only statuses that need the user notify; "working" and "connecting" never did in-app.
         if (!needsThreadAttention(transition.status)) return;
@@ -173,6 +186,7 @@ export function ThreadStatusNotificationControllerContent() {
           transition.status === "pending-approval" && !computerThreads.has(transition.threadId)
             ? await loadInlineApproval(transition.threadId)
             : null;
+        if (!isCurrent()) return;
         const icon = threadNotificationIcon(transition.status);
         notify({
           source: "thread",
@@ -196,6 +210,7 @@ export function ThreadStatusNotificationControllerContent() {
           },
         });
       })().catch(() => undefined);
+    }
   }, [computerPending, threadStatusSnapshots, threadsHydrated]);
 
   // The permission prompt is a persistent toast so it shares the stack and the look.

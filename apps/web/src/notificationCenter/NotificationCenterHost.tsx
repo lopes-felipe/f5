@@ -3,12 +3,13 @@ import { useParams } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
 import { useAppSettingsSelector } from "../appSettings";
-import { subscribeToastAdds } from "../components/ui/toast";
+import { registerErrorToastPolicy } from "../components/ui/toast";
 import { respondToApproval } from "../lib/respondToApproval";
 import { isAppWindowFocused } from "../notifications";
 import { createNotificationSound } from "../threadAttention";
 import { useNotificationInbox } from "./inboxStore";
 import {
+  deliverErrorNotification,
   registerApprovalResponder,
   registerNotificationHost,
   registerNotificationRecorder,
@@ -87,6 +88,7 @@ export function NotificationCenterHost() {
         title: input.title,
         target: input.target,
         createdAt: input.createdAt,
+        read: input.read,
         ...(input.body ? { body: input.body } : {}),
         ...(input.detail ? { detail: input.detail } : {}),
         ...(input.sourceLabel ? { sourceLabel: input.sourceLabel } : {}),
@@ -108,23 +110,10 @@ export function NotificationCenterHost() {
         ...(input.dedupeKey ? { dedupeKey: input.dedupeKey } : {}),
       }),
     );
-    const unsubscribeToasts = subscribeToastAdds((options, id) => {
-      // `notify` toasts carry a source and are already recorded.
-      if (options.type !== "error" || options.data?.source) return;
-      const title = typeof options.title === "string" ? options.title : null;
-      if (!title) return;
-      const body = typeof options.description === "string" ? options.description : undefined;
-      record({
-        id: `toast:${id}:${Date.now()}`,
-        source: "errors",
-        severity: "error",
-        title,
-        target: { kind: "none" },
-        createdAt: Date.now(),
-        dedupeKey: `error:${title}\u0000${body ?? ""}`,
-        ...(body ? { body } : {}),
-      });
-    });
+    // Plain error toasts go through the Errors preferences and Do Not Disturb, and are recorded.
+    const unregisterErrorPolicy = registerErrorToastPolicy((error) =>
+      deliverErrorNotification(error),
+    );
     const unsubscribeApprovals = subscribeApprovalResolved((approval, label) =>
       useNotificationInbox.getState().resolveApproval(approval.requestId, label),
     );
@@ -133,7 +122,7 @@ export function NotificationCenterHost() {
     );
     return () => {
       unregisterRecorder();
-      unsubscribeToasts();
+      unregisterErrorPolicy();
       unsubscribeApprovals();
       unsubscribeThreadApprovals();
     };

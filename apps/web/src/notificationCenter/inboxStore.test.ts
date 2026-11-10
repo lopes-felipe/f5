@@ -4,6 +4,7 @@ import {
   groupInboxEntries,
   INBOX_MAX_AGE_MS,
   INBOX_MAX_ENTRIES,
+  persistableInboxEntries,
   pruneInboxEntries,
   recordInboxEntry,
   unreadInboxCount,
@@ -27,7 +28,7 @@ function input(overrides: Partial<InboxRecordInput> = {}): InboxRecordInput {
 }
 
 describe("recordInboxEntry", () => {
-  it("bumps an unread repeat instead of adding a row", () => {
+  it("bumps an unread repeat, taking the newest id so its OS click reads it", () => {
     const first = recordInboxEntry([], input({ id: "a", dedupeKey: "k" }), NOW);
     const second = recordInboxEntry(
       first,
@@ -35,7 +36,49 @@ describe("recordInboxEntry", () => {
       NOW,
     );
     expect(second).toHaveLength(1);
-    expect(second[0]).toMatchObject({ id: "a", count: 2, createdAt: NOW + 5, readAt: null });
+    expect(second[0]).toMatchObject({ id: "b", count: 2, createdAt: NOW + 5, readAt: null });
+  });
+
+  it("records an entry already read when it is about the thread on screen", () => {
+    const entries = recordInboxEntry([], input({ id: "a", read: true }), NOW);
+    expect(entries[0]!.readAt).toBe(NOW);
+    expect(unreadInboxCount(entries)).toBe(0);
+  });
+
+  it("retires a thread's older approval when a newer one arrives", () => {
+    const first = recordInboxEntry(
+      [],
+      input({ id: "a", approval: { threadId: "t1", requestId: "r1", requestKind: "command" } }),
+      NOW,
+    );
+    const second = recordInboxEntry(
+      first,
+      input({ id: "b", approval: { threadId: "t1", requestId: "r2", requestKind: "command" } }),
+      NOW,
+    );
+    expect(second.find((entry) => entry.id === "a")?.resolved?.label).toBe("Answered");
+    expect(second.find((entry) => entry.id === "b")?.resolved).toBeUndefined();
+  });
+
+  it("never writes approval details to storage", () => {
+    const entries = recordInboxEntry(
+      [],
+      input({
+        id: "a",
+        detail: "rm -rf build",
+        approval: {
+          threadId: "t1",
+          requestId: "r1",
+          requestKind: "command",
+          detail: "rm -rf build",
+        },
+      }),
+      NOW,
+    );
+    const stored = persistableInboxEntries(entries)[0]!;
+    expect(stored).not.toHaveProperty("detail");
+    expect(stored.approval).toEqual({ threadId: "t1", requestId: "r1", requestKind: "command" });
+    expect(entries[0]!.detail).toBe("rm -rf build");
   });
 
   it("adds a new row once the earlier one was read", () => {

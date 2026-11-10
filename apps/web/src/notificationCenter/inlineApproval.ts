@@ -33,13 +33,13 @@ export function selectInlineApproval(
 const INLINE_APPROVAL_LOOKUP_TIMEOUT_MS = 1_500;
 
 /**
- * Background threads load without activities, so the pending approval is read on demand. A
- * slow or failed read never holds the notification back: it goes out with "Open" only.
+ * Background threads load without activities, so pending approvals are read on demand. Null
+ * when the read fails or takes longer than `timeoutMs`.
  */
-export async function loadInlineApproval(
+async function loadPendingApprovals(
   threadId: ThreadId,
-  timeoutMs = INLINE_APPROVAL_LOOKUP_TIMEOUT_MS,
-): Promise<NotificationApproval | null> {
+  timeoutMs: number,
+): Promise<PendingApproval[] | null> {
   let api: ReturnType<typeof readNativeApi>;
   try {
     api = readNativeApi();
@@ -57,11 +57,32 @@ export async function loadInlineApproval(
     .then(() =>
       orchestration.getThreadTailDetails({ threadId, messageLimit: 0, checkpointLimit: 0 }),
     )
-    .then((details) => selectInlineApproval(threadId, derivePendingApprovals(details.activities)))
+    .then((details) => derivePendingApprovals(details.activities))
     .catch(() => null);
   try {
     return await Promise.race([lookup, timeout]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * The thread's single answerable approval, if any. A slow or failed read never holds the
+ * notification back: it goes out with "Open" only.
+ */
+export async function loadInlineApproval(
+  threadId: ThreadId,
+  timeoutMs = INLINE_APPROVAL_LOOKUP_TIMEOUT_MS,
+): Promise<NotificationApproval | null> {
+  const approvals = await loadPendingApprovals(threadId, timeoutMs);
+  return approvals ? selectInlineApproval(threadId, approvals) : null;
+}
+
+/** The ids of the requests the thread still waits on, or null when they can't be read. */
+export async function loadPendingApprovalRequestIds(
+  threadId: ThreadId,
+  timeoutMs = INLINE_APPROVAL_LOOKUP_TIMEOUT_MS,
+): Promise<ReadonlySet<string> | null> {
+  const approvals = await loadPendingApprovals(threadId, timeoutMs);
+  return approvals ? new Set(approvals.map((approval) => approval.requestId)) : null;
 }

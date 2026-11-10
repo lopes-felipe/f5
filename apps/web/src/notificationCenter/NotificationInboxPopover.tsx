@@ -18,6 +18,7 @@ import {
   useNotificationInboxPopover,
   type InboxEntry,
 } from "./inboxStore";
+import { loadPendingApprovalRequestIds } from "./inlineApproval";
 import { respondToNotificationApproval } from "./notify";
 import { useOpenNotificationTarget } from "./openTarget";
 import {
@@ -235,6 +236,60 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
       ),
     [threads],
   );
+  // A thread can wait on a newer request than the one an entry offers to answer, so the
+  // buttons show only for requests the thread is confirmed to still wait on.
+  const threadsToVerify = useMemo(
+    () =>
+      [
+        ...new Set(
+          entries
+            .filter(
+              (entry) =>
+                entry.approval &&
+                !entry.resolved &&
+                pendingApprovalThreads.has(ThreadId.makeUnsafe(entry.approval.threadId)),
+            )
+            .map((entry) => entry.approval!.threadId),
+        ),
+      ]
+        .sort()
+        .join(","),
+    [entries, pendingApprovalThreads],
+  );
+  const [pendingRequestIds, setPendingRequestIds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!open || threadsToVerify.length === 0) {
+      setPendingRequestIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    const threadIds = threadsToVerify.split(",").map((id) => ThreadId.makeUnsafe(id));
+    void Promise.all(threadIds.map((threadId) => loadPendingApprovalRequestIds(threadId))).then(
+      (results) => {
+        if (cancelled) return;
+        const pending = new Set<string>();
+        const inbox = useNotificationInbox.getState();
+        results.forEach((ids, index) => {
+          if (!ids) return;
+          for (const id of ids) pending.add(id);
+          for (const entry of inbox.entries) {
+            const approval = entry.approval;
+            if (
+              approval &&
+              approval.threadId === threadIds[index] &&
+              !entry.resolved &&
+              !ids.has(approval.requestId)
+            )
+              inbox.resolveApproval(approval.requestId, "Answered");
+          }
+        });
+        setPendingRequestIds(pending);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [open, threadsToVerify]);
   const visible = useMemo(
     () => (filter === "all" ? entries : entries.filter((entry) => entry.source === filter)),
     [entries, filter],
@@ -359,7 +414,7 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
                           entry.approval
                             ? pendingApprovalThreads.has(
                                 ThreadId.makeUnsafe(entry.approval.threadId),
-                              )
+                              ) && pendingRequestIds.has(entry.approval.requestId)
                             : false
                         }
                         onOpen={openEntry}
