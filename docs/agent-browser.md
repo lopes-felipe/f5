@@ -608,8 +608,9 @@ subagents), or a wake-up or cron job it scheduled (`ScheduleWakeup`, `CronCreate
 is re-checked under the thread lock; a refusal (a turn or work started meanwhile) resumes
 idle tracking and the preempting acquisition gives up at once. An unknown holder state
 (main's report still in flight) is left out of the `Busy` message rather than guessed. Both Claude and Codex report their Chrome calls (`reportChromeCalls`), so the
-banner always knows; an idle holder shows as a quiet "Chrome reserved · idle" row with
-**View** and **Release** instead of disappearing.
+banner always knows. An idle holder leaves the global banner, since another thread
+preempts it: only the holding thread's live card shows it, as a one-line "Chrome idle"
+strip with **Release**.
 
 - **Idle release:** a Chrome-enabled Claude session stops `CLAUDE_CHROME_IDLE_MS` (10 min)
   after its last turn or Chrome call, as Codex's runtime does after `CODEX_CHROME_IDLE_MS`.

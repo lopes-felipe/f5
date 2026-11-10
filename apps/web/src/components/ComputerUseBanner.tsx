@@ -1,15 +1,16 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
-import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
+import { canReleaseChrome } from "./AgentComputerLiveCard.logic";
 import { Button } from "./ui/button";
 import {
   pauseComputerThread,
   stopComputerTurn,
   computerStopShortcutLabel,
+  useLinger,
 } from "./computerControls";
 
 const PAUSE_CAUSE_LABEL: Record<NonNullable<AgentComputerUseHolder["pauseCause"]>, string> = {
@@ -51,32 +52,38 @@ export function computerUseBannerTargets(
     .map((entry) => entry.threadId);
 }
 /**
- * A Chrome runtime that only holds its lease: idle, past the linger after its last call,
- * with nothing else to report. It still blocks other threads' Chrome and foreground
- * control, so the banner names it quietly with a way to release it.
+ * A Chrome runtime that only holds its lease at rest (`canReleaseChrome`: idle, no turn,
+ * past the linger). Another thread in this profile that needs Chrome or foreground control
+ * preempts it, and main hides it from other profiles, so the banner stays out of the way;
+ * the holding thread's card shows it with Release. Mid-turn, between Chrome calls, the
+ * agent may call Chrome again at any moment, so the banner keeps Pause and Stop.
  */
 export function chromeIdleReservation(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
   chromeLinger = false,
+  turnRunning = false,
 ): boolean {
-  const holder = primaryComputerHolder(leases);
   return (
     !leases.pendingTakeover &&
-    holder?.browser === "idle" &&
-    holder.state === "active" &&
     !pausedLocally &&
-    !chromeLinger
+    canReleaseChrome({
+      holder: primaryComputerHolder(leases),
+      turnRunning,
+      lingering: chromeLinger,
+    })
   );
 }
 /**
  * `chromeLinger`: a Chrome call ended moments ago, so an idle runtime still reads as in use
- * and the banner doesn't flicker between back-to-back calls.
+ * and the banner doesn't flicker between back-to-back calls. `turnRunning`: the primary
+ * holder's turn is running.
  */
 export function computerUseBannerText(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
   chromeLinger = false,
+  turnRunning = false,
 ): string | null {
   const pending = leases.pendingTakeover;
   if (pending) {
@@ -87,13 +94,12 @@ export function computerUseBannerText(
   }
   const holder = primaryComputerHolder(leases);
   // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
-  const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger);
-  // Another profile's control outranks this profile's idle reservation.
-  if (!holder || (reserved && leases.otherProfile))
+  const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger, turnRunning);
+  // An idle reservation says nothing; another profile's control still shows.
+  if (!holder || reserved)
     return leases.otherProfile
       ? "An agent in another F5 profile is controlling this computer"
       : null;
-  if (reserved) return "Chrome reserved · idle";
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
   const state =
@@ -145,51 +151,14 @@ export function computerUseBannerText(
 export function computerUseBannerAmbient(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
-  chromeLinger = false,
 ): boolean {
   const holder = primaryComputerHolder(leases);
   if (leases.pendingTakeover || leases.otherProfile || pausedLocally) return false;
-  // An idle Chrome reservation is ambient too: nothing is happening, it just holds Chrome.
-  if (chromeIdleReservation(leases, pausedLocally, chromeLinger)) return true;
   return (
     holder?.state === "waiting-user" ||
     holder?.state === "waiting-agent" ||
     (holder?.delivery === "background" && holder.state === "active")
   );
-}
-
-/** Why Release didn't free Chrome, from the server's outcome (older servers send none). */
-export function chromeReleaseFailureText(
-  outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
-): string {
-  switch (outcome) {
-    case "not-holder":
-      return "That thread no longer holds Chrome.";
-    case "timeout":
-      return "That thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
-    case "working":
-      return "That thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
-    default:
-      return "Chrome wasn't released. Try again.";
-  }
-}
-
-/** How long the banner keeps saying Chrome is in use after its last call ends. */
-export const CHROME_BANNER_LINGER_MS = 3000;
-
-/** True while any Chrome call runs and for `CHROME_BANNER_LINGER_MS` after the last one. */
-function useChromeLinger(leases: typeof AgentComputerUseChanged.Type): boolean {
-  const working = leases.holders.some((holder) => holder.browser === "working");
-  const [linger, setLinger] = useState(working);
-  useEffect(() => {
-    if (working) {
-      setLinger(true);
-      return;
-    }
-    const timer = setTimeout(() => setLinger(false), CHROME_BANNER_LINGER_MS);
-    return () => clearTimeout(timer);
-  }, [working]);
-  return working || linger;
 }
 
 export function ComputerUseBanner() {
@@ -206,17 +175,18 @@ export function ComputerUseBanner() {
   const title = useStore((store) =>
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
-  const chromeLinger = useChromeLinger(leases);
-  const text = computerUseBannerText(leases, paused, chromeLinger);
+  const holderTurnRunning = useStore((store) =>
+    holder
+      ? store.threads.find((thread) => thread.id === holder.threadId)?.session?.status === "running"
+      : false,
+  );
+  const chromeLinger = useLinger(leases.holders.some((entry) => entry.browser === "working"));
+  const text = computerUseBannerText(leases, paused, chromeLinger, holderTurnRunning);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
-  const ambient = computerUseBannerAmbient(leases, paused, chromeLinger);
-  const reserved =
-    !retryTargets.length &&
-    !leases.otherProfile &&
-    chromeIdleReservation(leases, paused, chromeLinger);
+  const ambient = computerUseBannerAmbient(leases, paused);
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
@@ -250,39 +220,7 @@ export function ComputerUseBanner() {
         {title ? ` · ${title}` : ""}
         {backend ? ` · ${backend === "native" ? "F5" : backend}` : ""}
       </span>
-      {threadId && reserved ? (
-        <>
-          <Button
-            size="xs"
-            variant="ghost"
-            title="Go to the thread holding Chrome"
-            onClick={() => void navigate({ to: "/$threadId", params: { threadId } })}
-          >
-            View
-          </Button>
-          <Button
-            size="xs"
-            variant="ghost"
-            title="Stops that thread's idle session; its next message restarts Chrome control"
-            onClick={() => {
-              setError("");
-              const api = readNativeApi();
-              if (!api?.computer) {
-                setError("The host is disconnected.");
-                return;
-              }
-              void api.computer.releaseChrome({ threadId }).then(
-                ({ released, outcome }) => {
-                  if (!released) setError(chromeReleaseFailureText(outcome));
-                },
-                () => setError("Chrome could not be released. Try again."),
-              );
-            }}
-          >
-            Release
-          </Button>
-        </>
-      ) : threadId ? (
+      {threadId ? (
         <>
           <Button
             size="xs"

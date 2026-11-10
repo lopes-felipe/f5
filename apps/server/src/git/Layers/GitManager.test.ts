@@ -559,6 +559,61 @@ describe("GitManager unit", () => {
     expect(git.calls.readRangeContext).toEqual([[cwd, "main"]]);
   });
 
+  it("reports a created PR when its follow-up lookup fails", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        prepareCommitContext: () => Effect.succeed(null),
+      },
+    });
+    const lookup = vi
+      .spyOn(github.service, "listOpenPullRequests")
+      .mockReturnValueOnce(Effect.succeed([]))
+      .mockReturnValueOnce(
+        Effect.fail(
+          new GitHubCliError({
+            operation: "listOpenPullRequests",
+            detail: "GitHub API rate limit exceeded.",
+          }),
+        ),
+      );
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit_push_pr" }),
+    );
+
+    expect(github.calls).toContain("createPullRequest:main:feature/test");
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(result.pr).toEqual({
+      status: "created",
+      baseBranch: "main",
+      headBranch: "feature/test",
+      title: "Generated pull request",
+    });
+  });
+
+  it("fails before creating a PR when the initial lookup fails", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        prepareCommitContext: () => Effect.succeed(null),
+      },
+    });
+    vi.spyOn(github.service, "listOpenPullRequests").mockReturnValue(
+      Effect.fail(
+        new GitHubCliError({
+          operation: "listOpenPullRequests",
+          detail: "GitHub API rate limit exceeded.",
+        }),
+      ),
+    );
+
+    await expect(
+      Effect.runPromise(manager.runStackedAction({ cwd, action: "commit_push_pr" })),
+    ).rejects.toThrow("rate limit");
+    expect(github.calls.some((call) => call.startsWith("createPullRequest:"))).toBe(false);
+  });
+
   it("normalizes number references when resolving a pull request", async () => {
     const { manager, github } = await makeManager();
 
