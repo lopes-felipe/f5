@@ -16,6 +16,7 @@ import {
 } from "../../project/worktreeMerge.ts";
 import { GitCoreTestLive as GitCoreLive } from "../testLayers.ts";
 import { GitCommandError } from "../Errors.ts";
+import { runsGitWithoutConsole } from "../../spawn/resolveCommand.ts";
 import { GitServiceLive } from "./GitService.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import {
@@ -439,6 +440,18 @@ describe("GitCore unit", () => {
     expect(scripted.calls.filter((call) => call.args[0] === "worktree")).toHaveLength(1);
   });
 
+  it("classifies actual GitCore metadata reads as console-free on Windows", async () => {
+    const scripted = makeScriptedGitService();
+    const core = await makeCore(scripted.service);
+    await Effect.runPromise(core.readConfigValue(process.cwd(), "branch.main.pushRemote"));
+    await Effect.runPromise(core.listRemotes(process.cwd()));
+    await Effect.runPromise(core.resolveCommonDir(process.cwd()));
+    expect(scripted.calls).toHaveLength(3);
+    for (const call of scripted.calls) {
+      expect(runsGitWithoutConsole("win32", "C:\\Git\\ucrt64\\bin\\git.exe", call.args)).toBe(true);
+    }
+  });
+
   it("limits generated commit context to the selected paths", async () => {
     const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
     const scripted = makeScriptedGitService((input) => {
@@ -462,6 +475,8 @@ describe("GitCore unit", () => {
         .every((call) => call.env?.GIT_INDEX_FILE?.startsWith(`${indexPath}.f5-`)),
     ).toBe(true);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "-c",
+      "diff.relative=false",
       "diff",
       "--cached",
       "--name-status",
@@ -469,6 +484,8 @@ describe("GitCore unit", () => {
       ":(top,literal)src/selected.ts",
     ]);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "-c",
+      "diff.relative=false",
       "diff",
       "--cached",
       "--patch",
@@ -511,7 +528,7 @@ describe("GitCore unit", () => {
     expect(patchInterrupted).toBe(true);
   });
 
-  it("commits the full index during a merge even when selected paths were requested", async () => {
+  it("rejects selected paths during a merge before running any commit", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-git-core-merge-"));
     const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
     fs.writeFileSync(mergeHeadPath, "0123456789abcdef\n");
@@ -527,13 +544,9 @@ describe("GitCore unit", () => {
     try {
       await expect(
         Effect.runPromise(core.commit(cwd, "Resolve merge", "", ["src/selected.ts"])),
-      ).resolves.toEqual({ commitSha: "abc123" });
-      expect(scripted.calls.map((call) => call.args)).toContainEqual([
-        "commit",
-        "-m",
-        "Resolve merge",
-      ]);
-      expect(scripted.calls.some((call) => call.args.includes("--only"))).toBe(false);
+      ).rejects.toThrow("Cannot commit selected files during a merge");
+      expect(scripted.calls.some((call) => call.args[0] === "commit")).toBe(false);
+      expect(fs.readFileSync(mergeHeadPath, "utf8")).toBe("0123456789abcdef\n");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

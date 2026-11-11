@@ -13,6 +13,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Git reviews keep tracked edits when untracked discovery fails and retain partial untracked listings when they are too large. Reviews include new files outside sparse-checkout folders, and commit and PR text includes changes outside nested projects. Selected-file commits during a merge now ask you to commit all files. Desktop startup stops waiting for stuck login shells, and safe Windows Git reads avoid starting a console host.
 - PR descriptions and comments preserve single newlines on GitHub, Forgejo and Azure DevOps.
 - Failed review guides keep retry controls reachable and put provider output in collapsed technical details.
 - Claude instances recognize proxy endpoints set in user or managed settings.
@@ -20,7 +21,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Local Git status appears before slow PR lookups, without losing sidebar PR badges or accepting another branch's metadata.
 - Usage-limit pauses keep tool calls grouped and show the pause separately.
 - ID-only ACP approvals retain the original command title and execution kind without mixing tool calls from different sessions.
-
 - Codex sessions recover from failed app-server writes instead of leaving requests hanging, and exit errors include the stderr reason. Claude restores the selected model after a failed live update while preserving it during effort-only changes.
 - Provider updates allow the package's install scripts on npm 12, including the postinstall script that installs Grok's updated binary.
 - The certification runner's Claude in Chrome check now passes its isolated Claude config to the live run. The live run gains an optional shared-host phase that checks two F5 profiles using Claude in Chrome at once, and its checks now count only calls that actually reach Chrome. The Claude 2.1.317 record is re-certified with that phase passing; F5 doesn't use shared Claude in Chrome yet.
