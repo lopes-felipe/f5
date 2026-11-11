@@ -3,7 +3,7 @@ import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { PrSendToAgent } from "./PrSendToAgent";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrAuthorLink } from "./PrAuthorLink";
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, type SetStateAction } from "react";
 import { LegendList } from "@legendapp/list/react";
 import { useInfiniteQuery, useQueries } from "@tanstack/react-query";
 import {
@@ -46,6 +46,24 @@ function TimelineSeparator() {
   return <div className="h-3" />;
 }
 
+const TimelineState = createContext<{
+  values: ReadonlyMap<string, unknown>;
+  update: (key: string, initial: unknown, value: (previous: unknown) => unknown) => void;
+} | null>(null);
+
+/** State belongs to the tab, so virtual row eviction cannot discard a draft or disclosure. */
+function useTimelineValue<T>(key: string, initial: T): [T, (value: SetStateAction<T>) => void] {
+  const state = useContext(TimelineState)!;
+  const current = state.values.has(key) ? (state.values.get(key) as T) : initial;
+  return [
+    current,
+    (value) =>
+      state.update(key, initial, (previous) =>
+        typeof value === "function" ? (value as (previous: T) => T)(previous as T) : value,
+      ),
+  ];
+}
+
 function TimelineComment({
   pr,
   comment,
@@ -57,8 +75,8 @@ function TimelineComment({
   mutations: ReturnType<typeof usePrDetailMutations>;
   showPath?: boolean;
 }) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState(comment.body);
+  const [isEditing, setIsEditing] = useTimelineValue(pr.key + ":editing:" + comment.id, false);
+  const [draft, setDraft] = useTimelineValue(pr.key + ":draft:" + comment.id, comment.body);
   const editCapability = prDetailCapability(pr, "edit-comment");
   const reactionCapability = prDetailCapability(pr, "react");
   const canEdit =
@@ -197,7 +215,10 @@ function TimelineReviewThread({
   const { thread, root, replies } = row;
   // Resolved and dismissed threads fold as a unit, so a settled finding does not crowd the
   // timeline.
-  const [expanded, setExpanded] = useState(!thread.isResolved && !row.dismissed);
+  const [expanded, setExpanded] = useTimelineValue(
+    [pr.key, "thread", thread.id, thread.isResolved, row.dismissed].join(":"),
+    !thread.isResolved && !row.dismissed,
+  );
   const replyCount = replies.length;
   const line = thread.line ?? thread.originalLine;
   const path = thread.path ?? root.path;
@@ -335,6 +356,14 @@ export function PrTimelineTab({
   active: boolean;
   mutations: ReturnType<typeof usePrDetailMutations>;
 }) {
+  const [values, setValues] = useState<ReadonlyMap<string, unknown>>(() => new Map());
+  const update = (key: string, initial: unknown, value: (previous: unknown) => unknown) => {
+    setValues((previous) => {
+      const before = previous.has(key) ? previous.get(key) : initial;
+      const after = value(before);
+      return Object.is(before, after) ? previous : new Map(previous).set(key, after);
+    });
+  };
   const query = useInfiniteQuery({ ...prHubTimelineQueryOptions(pr.key), enabled: active });
   const pages = query.data?.pages ?? [];
   const entries = pages.flatMap((page) => page.entries);
@@ -369,81 +398,87 @@ export function PrTimelineTab({
   }
 
   return (
-    <div className="space-y-3" role="tabpanel" aria-label="Timeline">
-      {warning ? (
-        <Alert variant="warning">
-          <AlertTriangleIcon />
-          <AlertTitle>Showing a cached timeline</AlertTitle>
-          <AlertDescription>{warning}</AlertDescription>
-        </Alert>
-      ) : null}
-      {truncated ? (
-        <Alert variant="warning">
-          <AlertTriangleIcon />
-          <AlertTitle>Some review comments are omitted</AlertTitle>
-          <AlertDescription>
-            Open the pull request on its forge for the complete thread.
-          </AlertDescription>
-        </Alert>
-      ) : null}
+    <TimelineState value={{ values, update }}>
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+        role="tabpanel"
+        aria-label="Timeline"
+      >
+        {warning ? (
+          <Alert variant="warning">
+            <AlertTriangleIcon />
+            <AlertTitle>Showing a cached timeline</AlertTitle>
+            <AlertDescription>{warning}</AlertDescription>
+          </Alert>
+        ) : null}
+        {truncated ? (
+          <Alert variant="warning">
+            <AlertTriangleIcon />
+            <AlertTitle>Some review comments are omitted</AlertTitle>
+            <AlertDescription>
+              Open the pull request on its forge for the complete thread.
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
-      {entries.length === 0 ? (
-        <p className="py-4 text-sm text-muted-foreground">No timeline activity.</p>
-      ) : (
-        <LegendList<PrTimelineRow>
-          data={[...rows]}
-          keyExtractor={(row) =>
-            row.type === "thread"
-              ? ["thread", row.id, row.thread.isResolved, row.dismissed].join(":")
-              : row.entry.id
-          }
-          estimatedItemSize={160}
-          ItemSeparatorComponent={TimelineSeparator}
-          style={{ height: "65vh" }}
-          renderItem={({ item: row }) => {
-            if (row.type === "thread") {
-              return (
-                <TimelineReviewThread
-                  key={`thread:${row.id}:${row.thread.isResolved}:${row.dismissed}`}
-                  pr={pr}
-                  row={row}
-                  mutations={mutations}
-                />
-              );
+        {entries.length === 0 ? (
+          <p className="py-4 text-sm text-muted-foreground">No timeline activity.</p>
+        ) : (
+          <LegendList<PrTimelineRow>
+            data={[...rows]}
+            keyExtractor={(row) =>
+              row.type === "thread"
+                ? ["thread", row.id, row.thread.isResolved, row.dismissed].join(":")
+                : row.entry.id
             }
-            const entry = row.entry;
-            return entry.type === "comment" ? (
-              <TimelineComment key={entry.id} pr={pr} comment={entry} mutations={mutations} />
-            ) : (
-              <article
-                key={entry.id}
-                className="flex items-start gap-3 rounded-lg border border-border/70 px-3 py-2.5"
-              >
-                <GitCommitHorizontalIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 text-sm">
-                  <p className="break-words font-medium">{entry.messageHeadline}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    <span className="font-mono">{entry.oid.slice(0, 8)}</span>
-                    {entry.authors[0] ? ` · ${entry.authors[0].login}` : ""}
-                    {` · ${formatRelativeTimeLabel(entry.committedAt)}`}
-                  </p>
-                </div>
-              </article>
-            );
-          }}
-        />
-      )}
+            estimatedItemSize={160}
+            ItemSeparatorComponent={TimelineSeparator}
+            style={{ flex: 1, minHeight: 0 }}
+            renderItem={({ item: row }) => {
+              if (row.type === "thread") {
+                return (
+                  <TimelineReviewThread
+                    key={`thread:${row.id}:${row.thread.isResolved}:${row.dismissed}`}
+                    pr={pr}
+                    row={row}
+                    mutations={mutations}
+                  />
+                );
+              }
+              const entry = row.entry;
+              return entry.type === "comment" ? (
+                <TimelineComment key={entry.id} pr={pr} comment={entry} mutations={mutations} />
+              ) : (
+                <article
+                  key={entry.id}
+                  className="flex items-start gap-3 rounded-lg border border-border/70 px-3 py-2.5"
+                >
+                  <GitCommitHorizontalIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 text-sm">
+                    <p className="break-words font-medium">{entry.messageHeadline}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      <span className="font-mono">{entry.oid.slice(0, 8)}</span>
+                      {entry.authors[0] ? ` · ${entry.authors[0].login}` : ""}
+                      {` · ${formatRelativeTimeLabel(entry.committedAt)}`}
+                    </p>
+                  </div>
+                </article>
+              );
+            }}
+          />
+        )}
 
-      {query.hasNextPage ? (
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={query.isFetchingNextPage}
-          onClick={() => void query.fetchNextPage()}
-        >
-          {query.isFetchingNextPage ? "Loading…" : "Load older activity"}
-        </Button>
-      ) : null}
-    </div>
+        {query.hasNextPage ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={query.isFetchingNextPage}
+            onClick={() => void query.fetchNextPage()}
+          >
+            {query.isFetchingNextPage ? "Loading…" : "Load older activity"}
+          </Button>
+        ) : null}
+      </div>
+    </TimelineState>
   );
 }

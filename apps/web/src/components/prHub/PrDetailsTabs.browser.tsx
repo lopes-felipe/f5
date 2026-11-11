@@ -282,7 +282,9 @@ async function renderTabs(timelineOverride?: PrHubTimelinePage) {
   });
   active = await render(
     <QueryClientProvider client={queryClient}>
-      <PrDetailsTabs pr={makePr()} summary={<p>Snapshot summary</p>} />
+      <div style={{ height: 600, display: "flex", flexDirection: "column" }}>
+        <PrDetailsTabs pr={makePr()} summary={<p>Snapshot summary</p>} />
+      </div>
     </QueryClientProvider>,
   );
 }
@@ -299,6 +301,8 @@ describe("PrDetailsTabs", () => {
     await renderTabs({ ...timeline, entries });
     await page.getByRole("tab", { name: "Timeline", exact: true }).click();
     await expect.element(page.getByText("Timeline comment 0", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Edit comment", exact: true }).first().click();
+    await userEvent.fill(page.getByRole("textbox"), "Unsaved draft survives eviction");
     expect(
       document.querySelectorAll(
         'section[aria-label="Timeline"] article, [aria-label="Timeline"] article',
@@ -313,6 +317,11 @@ describe("PrDetailsTabs", () => {
     scroller.scrollTop = scroller.scrollHeight;
     scroller.dispatchEvent(new Event("scroll"));
     await expect.element(page.getByText("Timeline comment 999", { exact: true })).toBeVisible();
+    expect(page.getByRole("textbox").query()).toBeNull();
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event("scroll"));
+    await expect.element(page.getByRole("textbox")).toHaveValue("Unsaved draft survives eviction");
+    expect(panel.getBoundingClientRect().height).toBeLessThan(600);
   });
   it("loads summary, timeline, and file detail without leaving the PR surface", async () => {
     await renderTabs();

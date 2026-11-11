@@ -60,8 +60,8 @@ export function PrDetailsTabs({
   ];
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <div className="flex items-center gap-1 border-b border-border" role="tablist">
+    <div data-pr-detail-tabs className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border" role="tablist">
         {tabs.map((candidate) => (
           <button
             key={candidate.id}
@@ -81,18 +81,22 @@ export function PrDetailsTabs({
         ))}
       </div>
 
-      {tab === "summary" ? (
-        <PrSummaryTab pr={pr} active summary={summary} mutations={mutations} />
-      ) : tab === "timeline" ? (
-        <PrTimelineTab pr={pr} active mutations={mutations} />
-      ) : tab === "review_threads" ? (
-        <PrReviewThreadsTab key={pr.key} pr={pr} />
-      ) : tab === "guide" ? (
-        <Suspense fallback={<p>Loading review guide…</p>}>
-          <PrReviewGuideTab key={pr.key} pr={pr} />
-        </Suspense>
+      {tab === "timeline" ? (
+        <PrTimelineTab key={pr.key} pr={pr} active mutations={mutations} />
       ) : (
-        <PrFilesTab pr={pr} active />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {tab === "summary" ? (
+            <PrSummaryTab pr={pr} active summary={summary} mutations={mutations} />
+          ) : tab === "review_threads" ? (
+            <PrReviewThreadsTab key={pr.key} pr={pr} />
+          ) : tab === "guide" ? (
+            <Suspense fallback={<p>Loading review guide…</p>}>
+              <PrReviewGuideTab key={pr.key} pr={pr} />
+            </Suspense>
+          ) : (
+            <PrFilesTab pr={pr} active />
+          )}
+        </div>
       )}
     </div>
   );

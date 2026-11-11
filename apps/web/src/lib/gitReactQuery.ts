@@ -109,7 +109,10 @@ export function gitStatusQueryOptions({
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git status is unavailable.");
       if (includeRemote) {
-        const local = await api.git.status({ cwd, includeRemote: false }, rpcQueryContext(context));
+        const local = await api.git.status(
+          { cwd, includeRemote: false, includePullRequest: false },
+          rpcQueryContext(context),
+        );
         if (context.signal.aborted) throw context.signal.reason;
         // Publish the fast local scan while the forge lookup is still in flight.
         context.client.setQueryData(context.queryKey, (previous: typeof local | undefined) =>

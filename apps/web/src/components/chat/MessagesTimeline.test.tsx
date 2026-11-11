@@ -283,7 +283,7 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
-  it("keeps paused usage-limit tools collapsed with the pause outside the group", async () => {
+  it("keeps paused usage-limit tools grouped with the pause outside the group", async () => {
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
     const createdAt = "2026-03-17T19:12:28.000Z";
     const turnId = TurnId.makeUnsafe("limited");
@@ -318,8 +318,8 @@ describe("MessagesTimeline", () => {
           collapsed: row.isPriorTurn,
         })),
     ).toEqual([
-      { ids: ["tool-1", "tool-2"], collapsed: true },
-      { ids: ["limit"], collapsed: true },
+      { ids: ["tool-1", "tool-2"], collapsed: false },
+      { ids: ["limit"], collapsed: false },
     ]);
   });
   it("groups computer and preview runs into session rows even when MCP calls expand", async () => {

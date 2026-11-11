@@ -121,6 +121,11 @@ describe("gitStatusQueryOptions", () => {
     const options = gitStatusQueryOptions({ cwd: "/local-first" });
     const pending = client.fetchQuery(options);
     await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(status.mock.calls[0]?.[0]).toEqual({
+      cwd: "/local-first",
+      includeRemote: false,
+      includePullRequest: false,
+    });
     expect(client.getQueryData(options.queryKey)).toEqual(local);
     resolveRemote({ ...local, pr: { number: 7 } });
     await pending;

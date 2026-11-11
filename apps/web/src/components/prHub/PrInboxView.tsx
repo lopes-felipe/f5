@@ -167,7 +167,7 @@ export function PrInboxView({
       <div
         ref={detailRef}
         tabIndex={-1}
-        className="min-h-0 overflow-y-auto p-5 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/35"
+        className="min-h-0 overflow-hidden p-5 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/35"
       >
         {selectedPr ? (
           <PrDetailPanel

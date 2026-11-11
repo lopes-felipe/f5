@@ -5,6 +5,7 @@ import { getServerHttpOrigin } from "../../lib/serverHttpOrigin";
 import { getPrHubSelectedAccountId } from "../../lib/prHubAccount";
 import { PrLinkPreview } from "./PrLinkPreview";
 import type { SourceControlProviderKind } from "@t3tools/contracts";
+import { SOURCE_CONTROL_MARKDOWN } from "@t3tools/shared/sourceControl";
 import { remarkHardLineBreaks } from "./remarkHardLineBreaks";
 
 export function prMediaUrl(src: string, host: string): string {
@@ -47,7 +48,7 @@ export function PrMarkdown({
     <div className="prose prose-sm max-w-none break-words dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={
-          ["github", "forgejo", "azure-devops"].includes(provider)
+          SOURCE_CONTROL_MARKDOWN[provider].hardLineBreaks
             ? [remarkGfm, remarkHardLineBreaks]
             : [remarkGfm]
         }

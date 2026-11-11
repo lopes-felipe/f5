@@ -180,48 +180,57 @@ describe("GitManager unit", () => {
     expect(github.calls).toEqual([]);
   });
 
-  it("adds current pull-request metadata to Git status", async () => {
-    const { manager } = await makeManager({
-      gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
-      gitHub: {
-        pullRequests: [
-          {
-            number: 42,
-            title: "Fast tests",
-            url: "https://github.com/t3tools/f5/pull/42",
-            baseRefName: "main",
-            headRefName: "feature/test",
-            headRefOid: "abc123",
-            state: "open",
-          },
-        ],
-      },
-    });
+  it.each([true, false])(
+    "keeps branch PR metadata with includeRemote=%s",
+    async (includeRemote) => {
+      const { manager, git } = await makeManager({
+        gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+        gitHub: {
+          pullRequests: [
+            {
+              number: 42,
+              title: "Fast tests",
+              url: "https://github.com/t3tools/f5/pull/42",
+              baseRefName: "main",
+              headRefName: "feature/test",
+              headRefOid: "abc123",
+              state: "open",
+            },
+          ],
+        },
+      });
 
-    const status = await Effect.runPromise(manager.status({ cwd }));
+      const status = await Effect.runPromise(manager.status({ cwd, includeRemote }));
+      expect(git.calls.statusDetails).toHaveLength(1);
+      expect(git.calls.inspectCheckoutIdentity).toHaveLength(1);
 
-    expect(status.pr).toEqual({
-      number: 42,
-      title: "Fast tests",
-      url: "https://github.com/t3tools/f5/pull/42",
-      baseBranch: "main",
-      headBranch: "feature/test",
-      headOid: "abc123",
-      state: "open",
-    });
-    expect(status.changeRequest).toMatchObject({
-      id: "42",
-      provider: { kind: "github", remoteName: "origin" },
-    });
-  });
-  it("skips forge lookups for a local-only status read", async () => {
-    const { manager, github } = await makeManager({
+      expect(status.pr).toEqual({
+        number: 42,
+        title: "Fast tests",
+        url: "https://github.com/t3tools/f5/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/test",
+        headOid: "abc123",
+        state: "open",
+      });
+      expect(status.changeRequest).toMatchObject({
+        id: "42",
+        provider: { kind: "github", remoteName: "origin" },
+      });
+    },
+  );
+  it("skips forge lookups only for an explicit interim scan", async () => {
+    const { manager, github, git } = await makeManager({
       gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
     });
-    const result = await Effect.runPromise(manager.status({ cwd, includeRemote: false }));
+    const result = await Effect.runPromise(
+      manager.status({ cwd, includeRemote: false, includePullRequest: false }),
+    );
     expect(result.branch).toBe(cleanStatus.branch);
     expect(result.pr).toBeNull();
     expect(github.calls).toEqual([]);
+    expect(git.calls.statusDetails).toHaveLength(1);
+    expect(git.calls.inspectCheckoutIdentity).toHaveLength(0);
   });
   it("rejects remote metadata when the checked-out branch changes during the lookup", async () => {
     let reads = 0;
@@ -232,6 +241,8 @@ describe("GitManager unit", () => {
             ...cleanStatus,
             branch: reads++ === 0 ? cleanStatus.branch : "next-branch",
           }),
+        inspectCheckoutIdentity: () =>
+          Effect.succeed({ canonicalRoot: cwd, commonDir: cwd, branch: "next-branch" }),
       },
       gitHub: {
         pullRequests: [
