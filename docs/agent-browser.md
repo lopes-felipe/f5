@@ -1290,6 +1290,14 @@ versions (stamped as floors) and `admission: "session"`, and computes:
   its own journal and wrapper. Each session may list tabs (`tabs_context_mcp` with
   `createIfEmpty`, which opens one blank tab in that session's own group) and close only
   the tabs its own listings returned. The phase observes four assertions:
+
+  Every listing in the run, including `read-only-call` and `isolated-read-only-call`,
+  counts only when a tab listing comes back and parses. When several Chrome browsers are
+  connected to the claude.ai account, the CLI answers a session's first browser call with
+  a browser choice instead of reaching Chrome. The harness then lets that session select
+  the first browser listed under "Browsers on this computer", and only that one, and asks
+  again. The report records each listing's outcome under `readOnlyListings` and
+  `shared.listings`, without tab ids or device ids.
   - `shared-host-survives-flip`: the native hosts serving before the second profile's
     launch are still the same ones after that launch rewrote every manifest to its own
     wrapper. The host is a live `<pid>.sock` in `/tmp/claude-mcp-browser-bridge-$USER`.

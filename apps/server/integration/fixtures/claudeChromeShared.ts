@@ -20,7 +20,44 @@ export type ListingOutcome =
   | "unreadable"
   | "tool-error"
   | "denied"
+  | "browser-not-selected"
   | "not-called";
+
+/** The CLI's "choose a browser" answer, which stands in for any browser call's result. */
+export interface BrowserChoice {
+  readonly connected: number;
+  readonly local: number;
+  /** The first browser listed under "Browsers on this computer"; never reported. */
+  readonly localDeviceId?: string;
+}
+
+/**
+ * Reads the CLI's browser-choice answer: when several Chrome browsers are connected to the
+ * account and the session has selected none, every browser call returns it instead of
+ * reaching Chrome. Undefined for anything else.
+ */
+export function parseBrowserChoice(content: unknown): BrowserChoice | undefined {
+  const text = textsOf(content).join(" ");
+  if (!text.includes("none has been selected for this session")) return undefined;
+  const counts =
+    /(\d+) Chrome browsers are connected to this account, (\d+) of them on this computer/.exec(
+      text,
+    );
+  const deviceIds = [...text.matchAll(/deviceId: ([A-Za-z0-9_-]+)/g)];
+  const localStart = text.indexOf("Browsers on this computer:");
+  const localEnd = text.indexOf("Other connected browsers:");
+  const localDeviceId =
+    localStart === -1
+      ? undefined
+      : deviceIds.find(
+          (match) => match.index > localStart && (localEnd === -1 || match.index < localEnd),
+        )?.[1];
+  return {
+    connected: counts ? Number(counts[1]) : deviceIds.length,
+    local: counts ? Number(counts[2]) : 0,
+    ...(localDeviceId ? { localDeviceId } : {}),
+  };
+}
 
 function textsOf(content: unknown): string[] {
   if (typeof content === "string") return [content];
@@ -156,6 +193,7 @@ export function classifyListing(
   readonly context?: TabContext;
   readonly error?: string;
   readonly shape?: Record<string, unknown>;
+  readonly choice?: BrowserChoice;
 } {
   for (const result of results) {
     if (result.isError) continue;
@@ -164,18 +202,34 @@ export function classifyListing(
       return { outcome: context.tabGroupId === undefined ? "ok-no-group-id" : "ok", context };
   }
   if (results.length === 0) return { outcome: "not-called" };
+  // Flagged as an error by the CLI, though a transcript may not carry the flag.
+  for (const result of results) {
+    const choice = parseBrowserChoice(result.content);
+    if (choice) return { outcome: "browser-not-selected", choice };
+  }
   const errors = results.filter((result) => result.isError);
-  if (errors.length === 0)
-    return { outcome: "unreadable", shape: resultShape(results[0]!.content) };
+  if (errors.length === 0) {
+    const text = textsOf(results[0]!.content).join(" ");
+    return {
+      outcome: "unreadable",
+      shape: resultShape(results[0]!.content),
+      error: scrubError(text),
+    };
+  }
   const text = errors.flatMap((result) => textsOf(result.content)).join(" ");
   if (text.includes(denialMessage)) return { outcome: "denied" };
   return { outcome: "tool-error", error: scrubError(text) };
 }
 
-/** An error's first 200 characters with URLs removed, so no page address reaches the report. */
+/**
+ * A message's first 200 characters with URLs, device ids and UUIDs removed, so no page
+ * address or browser identity reaches the report.
+ */
 export function scrubError(text: string): string {
   return text
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url>")
+    .replace(/deviceId: [A-Za-z0-9_-]+/g, "deviceId: <id>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);

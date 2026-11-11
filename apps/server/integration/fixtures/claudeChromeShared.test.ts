@@ -9,6 +9,7 @@ import {
   classifyListing,
   hostSurvivedFlip,
   liveBridgeHosts,
+  parseBrowserChoice,
   parseTabContext,
   processAlive,
   resultShape,
@@ -100,6 +101,28 @@ describe("classifyListing", () => {
     expect(
       classifyListing([err("Extension not connected; see https://claude.ai/x?y=1")], denial),
     ).toEqual({ outcome: "tool-error", error: "Extension not connected; see <url>" });
+  });
+
+  it("recognises the CLI's browser choice, flagged or not, and picks this Mac's browser", () => {
+    const choice =
+      '2 Chrome browsers are connected to this account, 1 of them on this computer, and none has been selected for this session. Ask the user. List the browsers on this computer first, in the order below. Browsers on this computer: 1. "Chrome" (macOS) — deviceId: local-1 Other connected browsers: 2. "Work" (Windows) — deviceId: remote-2';
+    for (const result of [ok(choice), err(choice)])
+      expect(classifyListing([result], denial)).toEqual({
+        outcome: "browser-not-selected",
+        choice: { connected: 2, local: 1, localDeviceId: "local-1" },
+      });
+    expect(
+      parseBrowserChoice(
+        'Multiple Chrome browsers are connected to this account and none has been selected for this session. Connected browsers: 1. "A" (Linux) — deviceId: r-1',
+      ),
+    ).toEqual({ connected: 1, local: 0 });
+    expect(parseBrowserChoice(listing(1, [2]))).toBeUndefined();
+  });
+
+  it("keeps device ids and UUIDs out of scrubbed text", () => {
+    expect(scrubError("deviceId: abc-123 id 0f22c62c-1111-2222-3333-444455556666")).toBe(
+      "deviceId: <id> id <uuid>",
+    );
   });
 
   it("prefers a successful listing over an earlier failed one", () => {

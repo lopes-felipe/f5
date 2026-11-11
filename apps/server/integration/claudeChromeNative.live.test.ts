@@ -134,12 +134,23 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       acceptedForeign: [],
     });
     const cwd = mkdtempSync(join(tmpdir(), "f5-claude-chrome-cwd-"));
+    const TAB_CONTEXT = "mcp__claude-in-chrome__tabs_context_mcp";
+    const SELECT_BROWSER = "mcp__claude-in-chrome__select_browser";
+    /** In every denial message, so a denied call is told apart from a failed one. */
+    const DENIAL_MARK = "allowed in certification";
+    /**
+     * Browsers on this Mac that the CLI offered when several are connected to the account.
+     * A session may select only these, so its calls reach the Chrome this run watches.
+     */
+    const localDevices = new Set<string>();
+    const selectsLocalBrowser = (name: string, toolInput: Record<string, unknown>) =>
+      name === SELECT_BROWSER && localDevices.has(String(toolInput.deviceId));
     const tabListingOnly: CanUseTool = async (name, toolInput) =>
-      name === "mcp__claude-in-chrome__tabs_context_mcp"
+      name === TAB_CONTEXT || selectsLocalBrowser(name, toolInput)
         ? { behavior: "allow", updatedInput: toolInput }
         : {
             behavior: "deny",
-            message: "Only a read-only tab listing is allowed in certification.",
+            message: `Only a read-only tab listing is ${DENIAL_MARK}.`,
           };
     const launch = (
       env: NodeJS.ProcessEnv = { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: providerHome },
@@ -184,7 +195,6 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       Promise.all(
         [...before.keys()].map(async (location) => (await readChromeArtifact(location)).bytes),
       );
-    const TAB_CONTEXT = "mcp__claude-in-chrome__tabs_context_mcp";
     /**
      * Runs one turn and returns its tool results, by tool name. A denied or failed call
      * also comes back as a `tool_result`, flagged `isError`.
@@ -211,12 +221,55 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       }
       return results;
     };
-    /** Asks for one tab listing; only a successful result of the allowed call counts. */
-    const readOnlyCall = async (handle: ReturnType<typeof launch>) =>
-      (
-        await runTurn(handle, "Call tabs_context_mcp once, then reply DONE. Use no other tool.")
-      ).some((result) => result.name === TAB_CONTEXT && !result.isError);
-    const observations: Record<string, unknown> = {};
+    /** How a listing ended, for the report: no tab ids, device ids or page text. */
+    type ListingRecord = {
+      outcome: string;
+      selectedLocalBrowser?: true;
+      choice?: { connected: number; local: number };
+      error?: string;
+      shape?: Record<string, unknown>;
+    };
+    /**
+     * Asks for one tab listing. When several browsers are connected to the account, the CLI
+     * answers with a browser choice instead of reaching Chrome; the session then selects
+     * the first browser on this Mac and asks again. Only a listing that parses counts.
+     */
+    const listTabs = async (handle: ReturnType<typeof launch>, createIfEmpty: boolean) => {
+      const ask = `Call tabs_context_mcp once${createIfEmpty ? " with createIfEmpty set to true" : ""}, then reply DONE. Use no other tool.`;
+      const listing = async (prompt: string) =>
+        classifyListing(
+          (await runTurn(handle, prompt)).filter((result) => result.name === TAB_CONTEXT),
+          DENIAL_MARK,
+        );
+      let result = await listing(ask);
+      let selected = false;
+      const deviceId = result.choice?.localDeviceId;
+      if (result.outcome === "browser-not-selected" && deviceId) {
+        localDevices.add(deviceId);
+        selected = true;
+        result = await listing(
+          `Call select_browser once with deviceId "${deviceId}". Then call tabs_context_mcp once${createIfEmpty ? " with createIfEmpty set to true" : ""}, then reply DONE. Use no other tool.`,
+        );
+      }
+      const record: ListingRecord = {
+        outcome: result.outcome,
+        ...(selected ? { selectedLocalBrowser: true as const } : {}),
+        ...(result.choice
+          ? { choice: { connected: result.choice.connected, local: result.choice.local } }
+          : {}),
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.shape ? { shape: result.shape } : {}),
+      };
+      return { context: result.context, record };
+    };
+    /** Read-only listings of the base and isolated phases, by label. */
+    const readOnlyListings: Record<string, ListingRecord> = {};
+    const readOnlyCall = async (handle: ReturnType<typeof launch>, label: string) => {
+      const { context, record } = await listTabs(handle, false);
+      readOnlyListings[label] = record;
+      return context !== undefined;
+    };
+    const observations: Record<string, unknown> = { readOnlyListings };
     let toolNames: string[] = [];
     let firstLaunchBytes: Array<string | null> | undefined;
     // The real browser folders are restored even when a launch step throws.
@@ -267,7 +320,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             (entry) => JSON.stringify([...(entry.allowedOrigins ?? [])].sort()) === expectedOrigins,
           );
         firstLaunchBytes = await artifactBytes();
-        assertions["read-only-call"] = await readOnlyCall(first);
+        assertions["read-only-call"] = await readOnlyCall(first, "base");
       } finally {
         first.q.close();
         first.input.end();
@@ -506,7 +559,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           };
           assertions["isolated-projection"] =
             launched.launchVerified === true && copies.length > 0 && copies.every(Boolean);
-          assertions["isolated-read-only-call"] = await readOnlyCall(isolatedSession);
+          assertions["isolated-read-only-call"] = await readOnlyCall(isolatedSession, "isolated");
         }
       } catch (error) {
         observations.isolated = { error: String(error) };
@@ -599,34 +652,27 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         verifyWrapper: (bytes: string) => descriptor.verifyWrapper!(bytes, executable, realpath),
         allowedOrigins: descriptor.allowedOrigins,
       };
-      const denial =
-        "Only a tab listing and closing this session's own tabs are allowed in certification.";
-      /** Tab listings, plus closing tabs this session's own listings returned. */
+      /** Tab listings, selecting this Mac's browser, and closing this session's own tabs. */
       const ownTabsOnly =
         (own: Set<number>): CanUseTool =>
         async (name, toolInput) =>
           name === TAB_CONTEXT ||
+          selectsLocalBrowser(name, toolInput) ||
           (name === "mcp__claude-in-chrome__tabs_close_mcp" && own.has(Number(toolInput.tabId)))
             ? { behavior: "allow", updatedInput: toolInput }
-            : { behavior: "deny", message: denial };
+            : {
+                behavior: "deny",
+                message: `Only a tab listing and closing this session's own tabs are ${DENIAL_MARK}.`,
+              };
       /** Each listing's outcome, in order, so a failed assertion says which call and why. */
-      const listings: Record<
-        string,
-        { outcome: string; error?: string; shape?: Record<string, unknown> }
-      > = {};
+      const listings: Record<string, ListingRecord> = {};
       const listOwnTabs = async (
         label: string,
         handle: ReturnType<typeof launch>,
         own: Set<number>,
       ) => {
-        const results = (
-          await runTurn(
-            handle,
-            "Call tabs_context_mcp once with createIfEmpty set to true, then reply DONE. Use no other tool.",
-          )
-        ).filter((result) => result.name === TAB_CONTEXT);
-        const { outcome, context, error, shape } = classifyListing(results, denial);
-        listings[label] = { outcome, ...(error ? { error } : {}), ...(shape ? { shape } : {}) };
+        const { context, record } = await listTabs(handle, true);
+        listings[label] = record;
         for (const tabId of context?.tabIds ?? []) own.add(tabId);
         return context;
       };
