@@ -7,7 +7,7 @@ export function remarkHardLineBreaks() {
       parent.children = parent.children.flatMap((node): RootContent[] => {
         if (node.type === "text") {
           return node.value
-            .split("\n")
+            .split(/\r\n|\r|\n/)
             .flatMap((value, index) =>
               index === 0
                 ? [{ type: "text", value }]

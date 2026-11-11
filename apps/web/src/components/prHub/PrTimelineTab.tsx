@@ -432,6 +432,8 @@ export function PrTimelineTab({
                 : row.entry.id
             }
             estimatedItemSize={160}
+            tabIndex={-1}
+            data-pr-content-scroller
             ItemSeparatorComponent={TimelineSeparator}
             style={{ flex: 1, minHeight: 0 }}
             renderItem={({ item: row }) => {

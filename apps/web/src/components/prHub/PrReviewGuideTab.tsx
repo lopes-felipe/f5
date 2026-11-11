@@ -79,8 +79,9 @@ export function PrReviewGuideTab({ pr }: { pr: Pick<TrackedPullRequest, "key" | 
       {data?.run?._tag === "Failed" && !running ? (
         <div role="alert" className="space-y-2 text-sm">
           <p>
-            {guide ? "Could not rewrite this guide." : "Could not write a review guide."} Check the
-            review guide model in Settings.
+            {guide ? "Could not rewrite this guide." : "Could not write a review guide."} Try again
+            after refreshing the pull request. If it changed while the guide was being written,
+            regenerate for the latest revision.
           </p>
           <details>
             <summary className="cursor-pointer">Technical details</summary>

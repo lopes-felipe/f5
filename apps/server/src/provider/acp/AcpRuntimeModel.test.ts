@@ -15,6 +15,34 @@ import {
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("recovers a title-only command from an actually parsed tracked call", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "title-only",
+        kind: "execute",
+        title: "git status",
+        status: "pending",
+        rawInput: {},
+      },
+    });
+    const event = parsed.events[0];
+    expect(event?._tag).toBe("ToolCallUpdated");
+    if (event?._tag !== "ToolCallUpdated") throw new Error("Expected tracked tool call");
+    expect(
+      parsePermissionRequest(
+        withTrackedPermissionToolCall(
+          {
+            sessionId: "s",
+            toolCall: { toolCallId: "title-only" },
+            options: [],
+          },
+          event.toolCall,
+        ),
+      ),
+    ).toMatchObject({ kind: "execute", detail: "git status" });
+  });
   it("fills ID-only approvals but preserves explicit clears and non-execution kinds", () => {
     const tracked = {
       toolCallId: "tool",
@@ -187,6 +215,7 @@ describe("AcpRuntimeModel", () => {
           detail: "bun run typecheck",
           data: {
             toolCallId: "tool-1",
+            title: "Terminal",
             kind: "execute",
             command: "bun run typecheck",
             rawInput: {

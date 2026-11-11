@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 
+/** Use the hosted Linux image's runtime libraries; install OS dependencies on other machines. */
 export function browserInstallArgs(environment: NodeJS.ProcessEnv): string[] {
   // GitHub's hosted Linux image already provides Chromium's runtime libraries.
   // Developer machines still need the complete OS dependency installation.
@@ -10,7 +10,7 @@ export function browserInstallArgs(environment: NodeJS.ProcessEnv): string[] {
   return ["install", ...(hostedLinux ? [] : ["--with-deps"]), "chromium"];
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   const webRequire = createRequire(new URL("../apps/web/package.json", import.meta.url));
   const cli = join(dirname(webRequire.resolve("playwright/package.json")), "cli.js");
   const result = spawnSync(

@@ -290,6 +290,18 @@ async function renderTabs(timelineOverride?: PrHubTimelinePage) {
 }
 
 describe("PrDetailsTabs", () => {
+  it("keeps trailing tabs reachable in a narrow panel", async () => {
+    await renderTabs();
+    const root = document.querySelector<HTMLElement>("[data-pr-detail-tabs]")!;
+    root.parentElement!.style.width = "260px";
+    const strip = page.getByRole("tablist").element();
+    await expect.poll(() => strip.scrollWidth > strip.clientWidth).toBe(true);
+    await page.getByRole("tab", { name: "Guide · Beta", exact: true }).click();
+    await expect
+      .element(page.getByRole("tab", { name: "Guide · Beta", exact: true }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(strip.scrollLeft).toBeGreaterThan(0);
+  });
   it("mounts only nearby events for a large timeline and reaches distant rows", async () => {
     const timeline = timelinePage();
     const first = timeline.entries[0]!;

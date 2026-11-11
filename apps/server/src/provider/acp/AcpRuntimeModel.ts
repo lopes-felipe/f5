@@ -374,6 +374,7 @@ function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecyc
   }
 }
 
+/** Retain native tool fields separately from the display presentation used by timeline rows. */
 function makeToolCallState(
   input: {
     readonly toolCallId: string;
@@ -402,6 +403,7 @@ function makeToolCallState(
       ? title
       : undefined;
   const data: Record<string, unknown> = { toolCallId };
+  if (title) data.title = title;
   const kind = normalizeToolKind(input.kind);
   if (kind) {
     data.kind = kind;
@@ -623,8 +625,12 @@ export function parsePermissionRequest(
     { fallbackStatus: "pending" },
   );
   const kind = normalizeToolKind(params.toolCall.kind) ?? "unknown";
+  const nativeTitle = params.toolCall.title?.trim();
   const detail =
     toolCall?.command ??
+    (nativeTitle && !["terminal", "tool call"].includes(nativeTitle.toLowerCase())
+      ? nativeTitle
+      : undefined) ??
     toolCall?.title ??
     toolCall?.detail ??
     (typeof params.sessionId === "string" ? `Session ${params.sessionId}` : undefined);

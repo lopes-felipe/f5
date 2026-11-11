@@ -127,7 +127,10 @@ export function PrInboxView({
           // their normal activation.
           if (active?.closest('[role="listbox"]')) {
             event.preventDefault();
-            detailRef.current?.focus();
+            (
+              detailRef.current?.querySelector<HTMLElement>("[data-pr-content-scroller]") ??
+              detailRef.current
+            )?.focus();
           }
           break;
         default:

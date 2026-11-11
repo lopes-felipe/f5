@@ -315,12 +315,32 @@ describe("MessagesTimeline", () => {
         .filter((row) => row.kind === "work")
         .map((row) => ({
           ids: row.groupedEntries.map((entry) => entry.id),
-          collapsed: row.isPriorTurn,
+          collapseEligible: row.isPriorTurn,
         })),
     ).toEqual([
-      { ids: ["tool-1", "tool-2"], collapsed: false },
-      { ids: ["limit"], collapsed: false },
+      { ids: ["tool-1", "tool-2"], collapseEligible: false },
+      { ids: ["limit"], collapseEligible: false },
     ]);
+    setPersistedAppSettings({ collapseCompletedWorkLogs: true });
+    const markup = await renderMcpTimelineMarkup([
+      work("tool-1"),
+      work("tool-2"),
+      work("Usage resets tomorrow", true),
+      {
+        kind: "message",
+        id: "next",
+        createdAt,
+        message: {
+          id: MessageId.makeUnsafe("next"),
+          role: "user",
+          text: "Next",
+          createdAt,
+          streaming: false,
+        },
+      },
+    ]);
+    expect(markup).toContain("Usage resets tomorrow");
+    expect(markup).toContain('data-slot="work-group-summary"');
   });
   it("groups computer and preview runs into session rows even when MCP calls expand", async () => {
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");

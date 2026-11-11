@@ -61,7 +61,10 @@ export function PrDetailsTabs({
 
   return (
     <div data-pr-detail-tabs className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
-      <div className="flex shrink-0 items-center gap-1 border-b border-border" role="tablist">
+      <div
+        className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border"
+        role="tablist"
+      >
         {tabs.map((candidate) => (
           <button
             key={candidate.id}
@@ -84,7 +87,11 @@ export function PrDetailsTabs({
       {tab === "timeline" ? (
         <PrTimelineTab key={pr.key} pr={pr} active mutations={mutations} />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          data-pr-content-scroller
+          tabIndex={-1}
+          className="min-h-0 flex-1 overflow-y-auto outline-none"
+        >
           {tab === "summary" ? (
             <PrSummaryTab pr={pr} active summary={summary} mutations={mutations} />
           ) : tab === "review_threads" ? (

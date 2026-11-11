@@ -16,10 +16,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - PR descriptions and comments preserve single newlines on GitHub, Forgejo and Azure DevOps.
 - Failed review guides keep retry controls reachable and put provider output in collapsed technical details.
 - Claude instances recognize proxy endpoints set in user or managed settings.
-- Large PR timelines mount only nearby events while preserving comment drafts and thread disclosures.
+- Large PR timelines mount only nearby events while preserving comment drafts and thread disclosures. Narrow panels keep every tab reachable, keyboard navigation focuses the content scroller, and oversized inline confirmations retain accessible controls.
 - Local Git status appears before slow PR lookups, without losing sidebar PR badges or accepting another branch's metadata.
 - Usage-limit pauses keep tool calls grouped and show the pause separately.
-- ID-only ACP approvals retain the tracked command and execution kind.
+- ID-only ACP approvals retain the original command title and execution kind without mixing tool calls from different sessions.
 
 - Codex sessions recover from failed app-server writes instead of leaving requests hanging, and exit errors include the stderr reason. Claude restores the selected model after a failed live update while preserving it during effort-only changes.
 - Provider updates allow the package's install scripts on npm 12, including the postinstall script that installs Grok's updated binary.

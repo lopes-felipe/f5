@@ -412,6 +412,22 @@ const program = Effect.gen(function* () {
       }
       if (process.env.ACP_MOCK_ID_ONLY_PERMISSION === "1") {
         yield* agent.client.sessionUpdate({
+          sessionId: "foreign-session",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tracked-command",
+            kind: "execute",
+            title: "foreign command",
+            status: "pending",
+            rawInput: { command: "foreign command" },
+          },
+        });
+        yield* agent.client.requestPermission({
+          sessionId: requestedSessionId,
+          toolCall: { toolCallId: "tracked-command" },
+          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+        });
+        yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,
           update: {
             sessionUpdate: "tool_call",
@@ -419,7 +435,17 @@ const program = Effect.gen(function* () {
             kind: "execute",
             title: "git status",
             status: "pending",
-            rawInput: { command: "git status" },
+            rawInput: {},
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: "foreign-session",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tracked-command",
+            kind: "execute",
+            title: "foreign overwrite",
+            rawInput: { command: "foreign overwrite" },
           },
         });
         for (const permissionSessionId of ["foreign-session", requestedSessionId]) {
