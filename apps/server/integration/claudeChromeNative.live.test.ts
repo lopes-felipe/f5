@@ -5,7 +5,7 @@ import { readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type CanUseTool, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { ProfileId } from "@t3tools/contracts";
@@ -34,6 +34,17 @@ import {
   readChromeArtifact,
 } from "../src/provider/chromeNativeHostStorage";
 import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecutable";
+import {
+  bridgeSocketDir,
+  callsRouted,
+  classifyListing,
+  hostSurvivedFlip,
+  liveBridgeHosts,
+  processAlive,
+  sameGroup,
+  scrubError,
+  sharedTabCount,
+} from "./fixtures/claudeChromeShared";
 import { evidenceSource } from "./fixtures/evidenceSource";
 
 const execFileAsync = promisify(execFile);
@@ -51,6 +62,10 @@ const execFileAsync = promisify(execFile);
  * F5_CLAUDE_CHROME_ISOLATED_STATE_DIR=<dir>, optional, is an isolated F5 profile's folder
  * (`~/.f5/userdata-profiles/<id>`) whose Claude is signed in to the same claude.ai account
  * as the extension; it adds the isolated-profile phase.
+ * F5_CLAUDE_CHROME_SHARED_CONFIG_DIR=<dir>, optional, is a second isolated Claude config
+ * (neither ~/.claude nor F5_CLAUDE_CHROME_CONFIG_DIR) signed in to the same claude.ai
+ * account; it adds the shared-host phase, which plays two F5 profiles holding Chrome at
+ * once. That phase also opens one blank tab per session in its own tab group and closes it.
  */
 const optedIn = process.env.F5_CLAUDE_CHROME_LIVE === "1";
 describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
@@ -119,8 +134,27 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       acceptedForeign: [],
     });
     const cwd = mkdtempSync(join(tmpdir(), "f5-claude-chrome-cwd-"));
+    const TAB_CONTEXT = "mcp__claude-in-chrome__tabs_context_mcp";
+    const SELECT_BROWSER = "mcp__claude-in-chrome__select_browser";
+    /** In every denial message, so a denied call is told apart from a failed one. */
+    const DENIAL_MARK = "allowed in certification";
+    /**
+     * Browsers on this Mac that the CLI offered when several are connected to the account.
+     * A session may select only these, so its calls reach the Chrome this run watches.
+     */
+    const localDevices = new Set<string>();
+    const selectsLocalBrowser = (name: string, toolInput: Record<string, unknown>) =>
+      name === SELECT_BROWSER && localDevices.has(String(toolInput.deviceId));
+    const tabListingOnly: CanUseTool = async (name, toolInput) =>
+      name === TAB_CONTEXT || selectsLocalBrowser(name, toolInput)
+        ? { behavior: "allow", updatedInput: toolInput }
+        : {
+            behavior: "deny",
+            message: `Only a read-only tab listing is ${DENIAL_MARK}.`,
+          };
     const launch = (
       env: NodeJS.ProcessEnv = { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: providerHome },
+      canUseTool: CanUseTool = tabListingOnly,
     ) => {
       const input = createControllableAsyncIterable<SDKUserMessage>();
       const q = query({
@@ -133,13 +167,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           env: buildClaudeQueryEnv({ subagentModel: "inherit" }, env),
           maxTurns: 4,
           extraArgs: { chrome: null },
-          canUseTool: async (name, toolInput) =>
-            name === "mcp__claude-in-chrome__tabs_context_mcp"
-              ? { behavior: "allow", updatedInput: toolInput }
-              : {
-                  behavior: "deny",
-                  message: "Only a read-only tab listing is allowed in certification.",
-                },
+          canUseTool,
         },
       });
       return { q, input };
@@ -168,39 +196,82 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         [...before.keys()].map(async (location) => (await readChromeArtifact(location)).bytes),
       );
     /**
-     * Asks for one tab listing. Only a successful result of the allowed call counts: a
-     * denied or failed call also comes back as a `tool_result`, with `is_error`.
+     * Runs one turn and returns its tool results, by tool name. A denied or failed call
+     * also comes back as a `tool_result`, flagged `isError`.
      */
-    const readOnlyCall = async (handle: ReturnType<typeof launch>) => {
+    const runTurn = async (handle: ReturnType<typeof launch>, prompt: string) => {
       handle.input.push({
         type: "user",
         parent_tool_use_id: null,
-        message: {
-          role: "user",
-          content: "Call tabs_context_mcp once, then reply DONE. Use no other tool.",
-        },
+        message: { role: "user", content: prompt },
       });
-      const tabListingIds = new Set<string>();
-      let succeeded = false;
+      const names = new Map<string, string>();
+      const results: Array<{ name: string; isError: boolean; content: unknown }> = [];
       for (;;) {
         const next = await handle.q.next();
         if (next.done || next.value.type === "result") break;
         const content = (next.value as { message?: { content?: unknown } }).message?.content;
         if (!Array.isArray(content)) continue;
         for (const block of content as Array<Record<string, unknown>>) {
-          if (block.type === "tool_use" && block.name === "mcp__claude-in-chrome__tabs_context_mcp")
-            tabListingIds.add(String(block.id));
-          if (
-            block.type === "tool_result" &&
-            block.is_error !== true &&
-            tabListingIds.has(String(block.tool_use_id))
-          )
-            succeeded = true;
+          if (block.type === "tool_use") names.set(String(block.id), String(block.name));
+          const name = names.get(String(block.tool_use_id));
+          if (block.type === "tool_result" && name)
+            results.push({ name, isError: block.is_error === true, content: block.content });
         }
       }
-      return succeeded;
+      return results;
     };
-    const observations: Record<string, unknown> = {};
+    /** How a listing ended, for the report: no tab ids, device ids or page text. */
+    type ListingRecord = {
+      outcome: string;
+      selectedLocalBrowser?: true;
+      choice?: { connected: number; local: number };
+      error?: string;
+      shape?: Record<string, unknown>;
+    };
+    /**
+     * Asks for one tab listing. When several browsers are connected to the account, the CLI
+     * answers with a browser choice instead of reaching Chrome; the session then selects
+     * the first browser on this Mac and asks again. Only a listing that parses counts.
+     */
+    const listTabs = async (handle: ReturnType<typeof launch>, createIfEmpty: boolean) => {
+      const ask = `Call tabs_context_mcp once${createIfEmpty ? " with createIfEmpty set to true" : ""}, then reply DONE. Use no other tool.`;
+      const listing = async (prompt: string) =>
+        classifyListing(
+          (await runTurn(handle, prompt)).filter((result) => result.name === TAB_CONTEXT),
+          DENIAL_MARK,
+        );
+      let result = await listing(ask);
+      let selected = false;
+      const deviceId = result.choice?.localDeviceId;
+      if (result.outcome === "browser-not-selected" && deviceId) {
+        localDevices.add(deviceId);
+        selected = true;
+        result = await listing(
+          `Call select_browser once with deviceId "${deviceId}". Then call tabs_context_mcp once${createIfEmpty ? " with createIfEmpty set to true" : ""}, then reply DONE. Use no other tool.`,
+        );
+      }
+      const record: ListingRecord = {
+        outcome: result.outcome,
+        ...(selected ? { selectedLocalBrowser: true as const } : {}),
+        ...(result.choice
+          ? { choice: { connected: result.choice.connected, local: result.choice.local } }
+          : {}),
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.shape ? { shape: result.shape } : {}),
+      };
+      return { context: result.context, record };
+    };
+    /** Read-only listings of the base and isolated phases, by label. */
+    const readOnlyListings: Record<string, ListingRecord> = {};
+    const readOnlyCall = async (handle: ReturnType<typeof launch>, label: string) => {
+      const { context, record } = await listTabs(handle, false);
+      readOnlyListings[label] = record;
+      // A listing, or the extension saying this new session has no group yet: either
+      // way the call reached Chrome without opening anything.
+      return context !== undefined || record.outcome === "no-session-group";
+    };
+    const observations: Record<string, unknown> = { readOnlyListings };
     let toolNames: string[] = [];
     let firstLaunchBytes: Array<string | null> | undefined;
     // The real browser folders are restored even when a launch step throws.
@@ -251,7 +322,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             (entry) => JSON.stringify([...(entry.allowedOrigins ?? [])].sort()) === expectedOrigins,
           );
         firstLaunchBytes = await artifactBytes();
-        assertions["read-only-call"] = await readOnlyCall(first);
+        assertions["read-only-call"] = await readOnlyCall(first, "base");
       } finally {
         first.q.close();
         first.input.end();
@@ -490,7 +561,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           };
           assertions["isolated-projection"] =
             launched.launchVerified === true && copies.length > 0 && copies.every(Boolean);
-          assertions["isolated-read-only-call"] = await readOnlyCall(isolatedSession);
+          assertions["isolated-read-only-call"] = await readOnlyCall(isolatedSession, "isolated");
         }
       } catch (error) {
         observations.isolated = { error: String(error) };
@@ -510,6 +581,252 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         else
           console.error(
             `Isolated restore incomplete; the journal is in ${isolatedJournalDir} (transaction ${isolatedApproved.id}).`,
+          );
+      }
+    }
+    // Two F5 profiles holding Chrome at once: the first profile's session is connected
+    // through the running native host when the second profile's CLI rewrites the manifests
+    // to its own wrapper. Each profile keeps its own journal, as F5 does. Optional: without
+    // it the record gets no `shared-native-host` capability and Chrome stays exclusive.
+    const sharedConfigInput = process.env.F5_CLAUDE_CHROME_SHARED_CONFIG_DIR;
+    let sharedRestoreClean = true;
+    if (!sharedConfigInput) {
+      observations.shared = {
+        skipped: "set F5_CLAUDE_CHROME_SHARED_CONFIG_DIR to a second isolated Claude config",
+      };
+    } else if (
+      !assertions["restore-original-bytes"] ||
+      !contestedRestoreClean ||
+      !isolatedRestoreClean
+    ) {
+      observations.shared = { skipped: "an earlier restore was incomplete" };
+    } else {
+      for (const name of INTEGRATION_CAPABILITY_ASSERTIONS["shared-native-host"])
+        assertions[name] = false;
+      const secondHome = await realpath(sharedConfigInput);
+      const secondTarget = descriptor.expectedTarget(secondHome);
+      if (secondTarget === targetPath || secondTarget === terminalTarget)
+        throw new Error(
+          "F5_CLAUDE_CHROME_SHARED_CONFIG_DIR must differ from F5_CLAUDE_CHROME_CONFIG_DIR and ~/.claude.",
+        );
+      const secondLocations = descriptor.locations(secondHome, userHome);
+      const secondJournalDir = mkdtempSync(join(tmpdir(), "f5-claude-chrome-shared-"));
+      const secondStorage = await Effect.runPromise(
+        makeChromeNativeHostStorage({
+          stateDir: secondJournalDir,
+          inspect: () => inspectChromeNativeHosts(secondLocations),
+        }).pipe(Effect.provide(NodeServices.layer)),
+      );
+      const secondTransactions = new ChromeNativeHostTransactions(secondStorage);
+      const sharedBefore = new Map<string, string | null>();
+      for (const location of [...before.keys(), secondTarget])
+        sharedBefore.set(location, (await readChromeArtifact(location)).bytes);
+      /** As consent records it: every registration in place that isn't this profile's. */
+      const foreignOf = (
+        observed: Awaited<ReturnType<typeof storage.inspect>>,
+        ownTarget: string,
+      ) =>
+        observed
+          .filter(
+            (entry) => !entry.shadowed && entry.state === "ok" && entry.targetPath !== ownTarget,
+          )
+          .map((entry) => ({ location: entry.location, sha256: entry.sha256! }));
+      const approveFor = async (
+        journal: ChromeNativeHostTransactions,
+        store: typeof storage,
+        input: { profileId: string; providerHome: string; target: string },
+      ) => {
+        const observed = await store.inspect();
+        return journal.approve({
+          provider: "claude",
+          profileId: input.profileId,
+          providerInstanceId: "claudeAgent",
+          recordId: record.id,
+          providerHome: input.providerHome,
+          userHome,
+          targetPath: input.target,
+          wrapperLocation: input.target,
+          observed,
+          acceptedForeign: foreignOf(observed, input.target),
+        });
+      };
+      const verifyLaunch = {
+        verifyWrapper: (bytes: string) => descriptor.verifyWrapper!(bytes, executable, realpath),
+        allowedOrigins: descriptor.allowedOrigins,
+      };
+      /** Tab listings, selecting this Mac's browser, and closing this session's own tabs. */
+      const ownTabsOnly =
+        (own: Set<number>): CanUseTool =>
+        async (name, toolInput) =>
+          name === TAB_CONTEXT ||
+          selectsLocalBrowser(name, toolInput) ||
+          (name === "mcp__claude-in-chrome__tabs_close_mcp" && own.has(Number(toolInput.tabId)))
+            ? { behavior: "allow", updatedInput: toolInput }
+            : {
+                behavior: "deny",
+                message: `Only a tab listing and closing this session's own tabs are ${DENIAL_MARK}.`,
+              };
+      /** Each listing's outcome, in order, so a failed assertion says which call and why. */
+      const listings: Record<string, ListingRecord> = {};
+      const listOwnTabs = async (
+        label: string,
+        handle: ReturnType<typeof launch>,
+        own: Set<number>,
+      ) => {
+        const { context, record } = await listTabs(handle, true);
+        listings[label] = record;
+        for (const tabId of context?.tabIds ?? []) own.add(tabId);
+        return context;
+      };
+      // Best effort: the CLI also closes a session's blank tab group when it exits.
+      const closeOwnTabs = async (handle: ReturnType<typeof launch>, own: Set<number>) => {
+        if (own.size === 0) return;
+        await runTurn(
+          handle,
+          `Close each of these tabs with tabs_close_mcp: ${[...own].join(", ")}. Then reply DONE. Use no other tool.`,
+        );
+      };
+      const connectedNow = async (handle: ReturnType<typeof launch>) =>
+        (await handle.q.mcpServerStatus()).find(
+          (entry) => entry.name === record.identity.mcpServerName,
+        )?.status === "connected";
+      const manifestsPointAt = async (target: string) => {
+        const entries = (await secondStorage.inspect()).filter((entry) => !entry.shadowed);
+        return (
+          entries.length > 0 &&
+          entries.every((entry) => entry.state === "ok" && entry.targetPath === target)
+        );
+      };
+      const bridge = bridgeSocketDir(userInfo().username);
+      const firstTabs = new Set<number>();
+      const secondTabs = new Set<number>();
+      const firstApproved = await approveFor(transactions, storage, {
+        profileId: "live-certification",
+        providerHome,
+        target: targetPath,
+      });
+      let secondApproved: Awaited<ReturnType<typeof approveFor>> | undefined;
+      let first: ReturnType<typeof launch> | undefined;
+      let second: ReturnType<typeof launch> | undefined;
+      const end = (handle: ReturnType<typeof launch> | undefined) => {
+        handle?.q.close();
+        handle?.input.end();
+      };
+      try {
+        first = launch(
+          { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: providerHome },
+          ownTabsOnly(firstTabs),
+        );
+        await first.q.initializationResult();
+        if (!(await awaitConnected(first.q)))
+          throw new Error("The first profile's session did not connect.");
+        const firstLaunch = await transactions.recordLaunch(firstApproved, verifyLaunch);
+        const firstBeforeFlip = await listOwnTabs("firstBeforeFlip", first, firstTabs);
+        const hostsBefore = await liveBridgeHosts(bridge, processAlive);
+
+        secondApproved = await approveFor(secondTransactions, secondStorage, {
+          profileId: "live-certification-shared",
+          providerHome: secondHome,
+          target: secondTarget,
+        });
+        second = launch(
+          { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: secondHome },
+          ownTabsOnly(secondTabs),
+        );
+        await second.q.initializationResult();
+        if (!(await awaitConnected(second.q)))
+          throw new Error("The second profile's session did not connect.");
+        const secondLaunch = await secondTransactions.recordLaunch(secondApproved, verifyLaunch);
+        const flipDeadline = Date.now() + 10_000;
+        let manifestsFlipped = await manifestsPointAt(secondTarget);
+        while (!manifestsFlipped && Date.now() < flipDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          manifestsFlipped = await manifestsPointAt(secondTarget);
+        }
+        const firstStillConnected = await connectedNow(first);
+        const hostsAfter = await liveBridgeHosts(bridge, processAlive);
+        assertions["shared-host-survives-flip"] =
+          secondLaunch.launchVerified === true &&
+          hostSurvivedFlip({ hostsBefore, hostsAfter, manifestsFlipped, firstStillConnected });
+
+        // Both sessions call at the same time, each through the host the first one reached.
+        const [firstContext, secondContext] = await Promise.all([
+          listOwnTabs("firstConcurrent", first, firstTabs),
+          listOwnTabs("secondConcurrent", second, secondTabs),
+        ]);
+        assertions["shared-calls-routed"] = callsRouted({
+          firstBeforeFlip,
+          first: firstContext,
+          second: secondContext,
+        });
+        // What F5's per-call admission compares today: the flip reads as a conflict for
+        // the first profile until a shared registration ledger accepts it.
+        const current = (await storage.inspect()).filter((entry) => !entry.shadowed);
+        const firstSeesConflict = (firstLaunch.launchSnapshot ?? []).some(
+          (entry) =>
+            !entry.shadowed &&
+            current.find((now) => now.location === entry.location)?.sha256 !== entry.sha256,
+        );
+
+        // The first profile (the one holding the original bytes) leaves first.
+        await closeOwnTabs(first, firstTabs);
+        end(first);
+        first = undefined;
+        const afterExit = await listOwnTabs("secondAfterPeerExit", second, secondTabs);
+        const hostsAfterExit = await liveBridgeHosts(bridge, processAlive);
+        assertions["shared-peer-exit"] =
+          sameGroup(secondContext, afterExit) &&
+          JSON.stringify(hostsAfterExit) === JSON.stringify(hostsAfter);
+        await closeOwnTabs(second, secondTabs);
+        // Outcomes, counts and booleans only: pids and tab ids stay out of the report.
+        observations.shared = {
+          hostsBefore: hostsBefore.length,
+          sameHostsAfterFlip: JSON.stringify(hostsBefore) === JSON.stringify(hostsAfter),
+          sameHostsAfterExit: JSON.stringify(hostsAfterExit) === JSON.stringify(hostsAfter),
+          manifestsFlipped,
+          firstStillConnected,
+          secondLaunchVerified: secondLaunch.launchVerified === true,
+          listings,
+          firstGroupStable: sameGroup(firstBeforeFlip, firstContext),
+          sameGroupId:
+            firstContext?.tabGroupId !== undefined &&
+            firstContext.tabGroupId === secondContext?.tabGroupId,
+          sharedTabs: sharedTabCount(firstContext, secondContext),
+          secondGroupStableAfterPeerExit: sameGroup(secondContext, afterExit),
+          firstSeesConflict,
+        };
+      } catch (error) {
+        observations.shared = {
+          ...(observations.shared as object),
+          listings,
+          error: scrubError(String(error)),
+        };
+      } finally {
+        end(first);
+        end(second);
+        // Newest first: the second journal puts the first profile's registration back,
+        // then the first journal puts back the original bytes.
+        let identical = true;
+        if (secondApproved) {
+          const restored = await secondTransactions.restore(
+            (await secondStorage.loadTransaction("claude", secondApproved.id))!,
+            { stopSessions: async () => {}, validateSlot: async () => true },
+          );
+          identical &&= restored.transaction.state === "restored";
+        }
+        const restored = await transactions.restore(
+          (await storage.loadTransaction("claude", firstApproved.id))!,
+          { stopSessions: async () => {}, validateSlot: async () => true },
+        );
+        identical &&= restored.transaction.state === "restored";
+        for (const [location, bytes] of sharedBefore)
+          identical &&= (await readChromeArtifact(location)).bytes === bytes;
+        assertions["shared-restore"] = identical;
+        sharedRestoreClean = identical;
+        if (identical) await rm(secondJournalDir, { recursive: true, force: true });
+        else
+          console.error(
+            `Shared restore incomplete; the journals are in ${stateDir} (transaction ${firstApproved.id}) and ${secondJournalDir}.`,
           );
       }
     }
@@ -540,6 +857,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             "byte-identical-launches",
             "terminal-claude-unaffected",
             ...INTEGRATION_CAPABILITY_ASSERTIONS["isolated-profiles"],
+            ...INTEGRATION_CAPABILITY_ASSERTIONS["shared-native-host"],
           ].includes(name),
       ),
     };
@@ -547,13 +865,14 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       await writeFile(process.env.F5_CLAUDE_CHROME_REPORT, `${JSON.stringify(report, null, 2)}\n`);
     await rm(cwd, { recursive: true, force: true });
     // An incomplete restore keeps the journal so the original bytes stay recoverable.
-    if (assertions["restore-original-bytes"] && contestedRestoreClean)
+    if (assertions["restore-original-bytes"] && contestedRestoreClean && sharedRestoreClean)
       await rm(stateDir, { recursive: true, force: true });
     expect(assertions["restore-original-bytes"]).toBe(true);
     expect(assertions["manifests-and-wrapper"]).toBe(true);
     expect(isolatedRestoreClean).toBe(true);
+    expect(sharedRestoreClean).toBe(true);
     // Two launches, the read-only call, a contested session with a terminal run (up to 30 s
-    // to connect plus 90 s for the terminal) and the isolated session, with room for a slow
-    // Mac.
-  }, 540_000);
+    // to connect plus 90 s for the terminal), the isolated session and the two shared
+    // sessions (up to 30 s each to connect, five turns), with room for a slow Mac.
+  }, 900_000);
 });
