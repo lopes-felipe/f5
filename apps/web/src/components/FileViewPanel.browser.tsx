@@ -5,10 +5,28 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type { ReactNode } from "react";
 import FileViewPanel from "./FileViewPanel";
+import { OpenInPicker } from "./chat/OpenInPicker";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { resetWorkspaceWatchForTests, startWorkspaceWatchSync } from "../lib/workspaceWatch";
-import type { ProjectWatchedPathsChangedPayload } from "@t3tools/contracts";
+import type {
+  ProjectWatchedPathsChangedPayload,
+  ResolvedKeybindingsConfig,
+} from "@t3tools/contracts";
+
+const editorKeybindings: ResolvedKeybindingsConfig = [
+  {
+    command: "editor.openFavorite",
+    shortcut: {
+      key: "o",
+      modKey: true,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+    },
+  },
+];
 
 const route = vi.hoisted(() => ({ fileViewPath: "app.ts" }));
 const api = vi.hoisted(() => ({
@@ -104,7 +122,76 @@ afterEach(() => {
   vi.clearAllMocks();
   route.fileViewPath = "app.ts";
   localStorage.removeItem("t3code:last-editor");
+  vi.restoreAllMocks();
 });
+
+it.each(["MacIntel", "Linux"])(
+  "opens one target on %s as file previews mount and unmount",
+  async (platform) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    const config = { availableEditors: ["vscode"], keybindings: editorKeybindings };
+    api.getConfig.mockResolvedValue(config);
+    api.readFile.mockResolvedValue({
+      relativePath: "app.ts",
+      contents: "{}",
+      byteLength: 2,
+      truncated: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(serverConfigQueryOptions().queryKey, config as never);
+    const content = (preview: boolean, visible = true) => (
+      <QueryClientProvider client={client}>
+        <OpenInPicker
+          keybindings={editorKeybindings}
+          availableEditors={["vscode"]}
+          openInCwd="/repo"
+        />
+        {/* A second workspace listener must also respect the handled event. */}
+        <OpenInPicker
+          keybindings={editorKeybindings}
+          availableEditors={["vscode"]}
+          openInCwd="/repo"
+        />
+        {preview && <FileViewPanel mode="sheet" openInShortcutEnabled={visible} />}
+      </QueryClientProvider>
+    );
+    const screen = await render(content(false));
+    const pressOpen = (handled = false) => {
+      const event = new KeyboardEvent("keydown", {
+        key: "o",
+        metaKey: platform === "MacIntel",
+        ctrlKey: platform !== "MacIntel",
+        bubbles: true,
+        cancelable: true,
+      });
+      if (handled) event.preventDefault();
+      document.body.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    };
+    try {
+      for (const [preview, visible] of [
+        [false, true],
+        [true, true],
+        [true, false],
+        [true, true],
+        [false, true],
+      ] as const) {
+        await screen.rerender(content(preview, visible));
+        api.openInEditor.mockClear();
+        pressOpen();
+        await expect
+          .poll(() => api.openInEditor.mock.calls)
+          .toEqual([[preview && visible ? "/repo/app.ts" : "/repo", "vscode"]]);
+        api.openInEditor.mockClear();
+        pressOpen(true);
+        expect(api.openInEditor).not.toHaveBeenCalled();
+      }
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);
 
 it("uses the configured preferred editor while retaining an explicit VS Code action", async () => {
   localStorage.setItem("t3code:last-editor", JSON.stringify("zed"));

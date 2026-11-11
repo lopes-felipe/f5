@@ -129,11 +129,17 @@ const LazyFileViewPanel = (props: {
   mode: DiffPanelMode;
   surface: FileRightPanelSurface;
   onClose: () => void;
+  openInShortcutEnabled: boolean;
 }) => {
   return (
     <DiffSurfaceBoundary fallback={<DiffLoadingFallback mode={props.mode} />}>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <FileViewPanel mode={props.mode} surface={props.surface} onClose={props.onClose} />
+        <FileViewPanel
+          mode={props.mode}
+          surface={props.surface}
+          onClose={props.onClose}
+          openInShortcutEnabled={props.openInShortcutEnabled}
+        />
       </Suspense>
     </DiffSurfaceBoundary>
   );
@@ -717,6 +723,7 @@ function ChatThreadRouteView() {
               <LazyFileViewPanel
                 mode={mode}
                 surface={surface}
+                openInShortcutEnabled={rightPanelState.isOpen}
                 onClose={() => closeRightPanelSurface(surface)}
               />
             );

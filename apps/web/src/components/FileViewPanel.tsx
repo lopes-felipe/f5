@@ -13,7 +13,7 @@ import ChatMarkdown from "./ChatMarkdown";
 import { File as FileViewer } from "@pierre/diffs/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { type EditorId, ThreadId } from "@t3tools/contracts";
+import { type EditorId, type ResolvedKeybindingsConfig, ThreadId } from "@t3tools/contracts";
 import {
   AlertTriangleIcon,
   ExternalLinkIcon,
@@ -49,11 +49,13 @@ import { DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel";
 import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
 import { showFileEntryContextMenu } from "./fileEntryActions";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { useOpenFavoriteEditorShortcut } from "./chat/useOpenFavoriteEditorShortcut";
 
 interface FileViewPanelProps {
   mode: DiffPanelMode;
   surface?: Extract<RightPanelSurface, { kind: "file" }> | undefined;
   onClose?: (() => void) | undefined;
+  openInShortcutEnabled?: boolean;
 }
 
 function fileNameFromPath(filePath: string): string {
@@ -79,6 +81,7 @@ export function formatPositionBadge(params: {
 }
 
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
+const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 export function resolveEditorTarget(input: {
   filePath: string;
@@ -105,7 +108,12 @@ export function reconcileDraftContents(input: {
   return input.incomingContents;
 }
 
-export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelProps) {
+export default function FileViewPanel({
+  mode,
+  surface,
+  onClose,
+  openInShortcutEnabled = true,
+}: FileViewPanelProps) {
   const wordWrap = useDiffWordWrap();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -546,6 +554,13 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         "vscode",
       );
   };
+
+  useOpenFavoriteEditorShortcut({
+    enabled: openInShortcutEnabled && mutationsAvailable && canOpenInEditor,
+    keybindings: serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS,
+    onOpen: openInEditor,
+    capture: true,
+  });
 
   const showFileContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
