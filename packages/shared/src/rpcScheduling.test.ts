@@ -134,6 +134,12 @@ describe("RPC method policy", () => {
     expect(rpcLane({ _tag: "storage.getStatus" })).toBe("ordinary");
   });
 
+  it("waits for the server's provider update result without an execution deadline", () => {
+    const deadline = rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" });
+    expect(deadline).toBeNull();
+    expect(isReadOnlyRpc("server.runProviderUpdate")).toBe(false);
+  });
+
   it("moves long operations and their deadlines into the policy", () => {
     const longMethods = Object.entries(RPC_METHOD_POLICY)
       .filter(([, policy]) => policy.lane === "long")
@@ -156,7 +162,7 @@ describe("RPC method policy", () => {
       ].sort(),
     );
     expect(rpcLongRunningTimeoutMs({ _tag: "git.runStackedAction" })).toBeNull();
-    expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBe(660_000);
+    expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBeNull();
     expect(rpcLongRunningTimeoutMs({ _tag: "server.saveProviderFeedback" })).toBe(130_000);
     expect(isReadOnlyRpc("server.saveProviderFeedback")).toBe(false);
     expect(isReadOnlyRpc("nativeOperation.markRead")).toBe(false);

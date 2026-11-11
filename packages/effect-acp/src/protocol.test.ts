@@ -502,6 +502,36 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("fails pending and later requests when stdout closes before process exit", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const termination = yield* Deferred.make<AcpError.AcpError>();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        terminationError: Effect.never,
+        serverRequestMethods: new Set(),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+      const pending = yield* transport
+        .request("x/test", {})
+        .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.end(input);
+      const error = yield* Deferred.await(termination);
+      assert.instanceOf(error, AcpError.AcpTransportError);
+      assert.include(error.message, "input stream ended");
+      assert.strictEqual(yield* Fiber.join(pending), error);
+      assert.strictEqual(
+        yield* transport.request("x/test", {}).pipe(Effect.flip, Effect.orDie),
+        error,
+      );
+      assert.strictEqual(
+        yield* transport.notify("session/cancel", { sessionId: "session-1" }).pipe(Effect.flip),
+        error,
+      );
+    }),
+  );
+
   it.effect("propagates the real child exit code when the input stream ends", () =>
     Effect.gen(function* () {
       const handle = yield* makeHandle({ ACP_MOCK_EXIT_IMMEDIATELY_CODE: "7" });

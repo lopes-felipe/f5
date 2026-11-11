@@ -361,7 +361,9 @@ export const RPC_METHOD_POLICY = {
   "server.repairClaudeTranscript": MUTATION_RT,
   "server.reportClientDiagnostics": MUTATION,
   "server.resetKeybindings": MUTATION,
-  "server.runProviderUpdate": long(false, 660_000),
+  // The queue has its own deadline. After dispatch, wait for server preparation
+  // and its bounded installer result without abandoning an in-flight mutation.
+  "server.runProviderUpdate": long(false, null),
   "server.undoClaudeTranscriptRepair": MUTATION_RT,
   "server.updateKeybinding": MUTATION,
   "server.updateSettings": MUTATION,

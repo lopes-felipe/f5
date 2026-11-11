@@ -67,8 +67,8 @@ export function expandHomePathSync(input: string): string {
 export function resolveCodexHome(input?: {
   readonly homePath?: string | undefined;
 }): string | undefined {
-  const homePath = input?.homePath?.trim();
-  return homePath ? expandHomePathSync(homePath) : undefined;
+  const homePath = input?.homePath;
+  return homePath?.trim() ? expandHomePathSync(homePath) : undefined;
 }
 
 export const expandHomePath = Effect.fn(function* (input: string) {

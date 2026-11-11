@@ -1,4 +1,5 @@
 import type { ServerProvider, ServerProviderUpdateCommand } from "@t3tools/contracts";
+import { PROVIDER_UPDATE_TIMEOUT_MESSAGE } from "@t3tools/shared/providerUpdate";
 import { stripTerminalControls } from "./accountLoginOutput";
 
 /**
@@ -177,10 +178,10 @@ export function getProviderUpdateResultMessage(
     case "unverified":
       return "The update finished, but F5 couldn't confirm the new version. Check the provider status.";
     case "failed": {
-      const summary = `Update failed (${result.timedOut ? "timed out" : result.exitCode === null ? "could not start" : `exit ${result.exitCode}`})`;
+      if (result.timedOut) return PROVIDER_UPDATE_TIMEOUT_MESSAGE;
+      const summary = `Update failed (${result.exitCode === null ? "could not start" : `exit ${result.exitCode}`})`;
       // A spawn failure's output is the server's own explanation, already shown in the panel.
-      const reason =
-        result.timedOut || result.exitCode === null ? null : lastUpdateOutputLine(result.output);
+      const reason = result.exitCode === null ? null : lastUpdateOutputLine(result.output);
       return reason ? `${summary}: ${reason}` : `${summary}.`;
     }
   }

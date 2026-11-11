@@ -184,7 +184,7 @@ describe("installation update presentations", () => {
         "npm",
         "1.1.0",
       ),
-    ).toBe("Update failed (timed out).");
+    ).toBe("Update timed out after 30 minutes.");
   });
 });
 

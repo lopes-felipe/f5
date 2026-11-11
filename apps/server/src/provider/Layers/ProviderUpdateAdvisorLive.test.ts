@@ -740,7 +740,7 @@ describe("provider update advisor", () => {
           expect(opts.env.GITHUB_TOKEN).toBeUndefined();
           expect(opts.env.HTTPS_PROXY).toBe("http://proxy.test");
           expect(opts.outputMode).toBe("tail");
-          expect(opts.timeoutMs).toBe(600_000);
+          expect(opts.timeoutMs).toBe(30 * 60_000);
           return processSuccess;
         };
         const result = yield* advisor.runUpdate(id);
@@ -795,6 +795,7 @@ describe("provider update advisor", () => {
       const result = yield* advisor.runUpdate(id);
       expect(result.outcome).toBe("failed");
       expect(result.output).toContain("failure marker");
+      expect(result.output).toContain("Update timed out after 30 minutes.");
       expect(result.outputTruncated).toBe(true);
       expect(result.timedOut).toBe(true);
       expect(state.refreshed).toEqual([id]);
