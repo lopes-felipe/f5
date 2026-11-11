@@ -6855,11 +6855,20 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.624Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Drivers/AntigravityDriver.ts:131"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-27191",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -9890,11 +9899,21 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.625Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/scheduledTasks/Service.ts:165",
+          "apps/server/src/scheduledTasks/Service.ts:918"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-28104",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "scheduled tasks",
@@ -11718,11 +11737,21 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.625Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/scheduledTasks/Service.ts:1266",
+          "apps/server/src/scheduledTasks/Service.ts:1371"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-28474",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "scheduled tasks"
@@ -12361,11 +12390,20 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.626Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/Layers/GitManager.ts:1370"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-28600",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",

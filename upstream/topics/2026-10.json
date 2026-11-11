@@ -34695,11 +34695,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.626Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ProviderHealth.ts:401",
+          "apps/server/src/provider/Layers/ProviderHealth.ts:457"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-21443",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -35518,11 +35528,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.626Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/project/worktreeClaims.ts:233",
+          "apps/server/src/project/worktreeClaims.ts:260"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-21545",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "worktrees",
@@ -36037,11 +36057,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.626Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-21745",
-      "status": "port",
+      "reason": "F5 uses desktop-hosted preview without upstream’s server-side browser-profile report catalog.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser"
@@ -37466,11 +37488,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:07:30.626Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:222"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-22029",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr hub",
