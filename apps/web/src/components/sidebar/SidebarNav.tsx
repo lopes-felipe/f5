@@ -1,5 +1,7 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
+  BellIcon,
+  BellOffIcon,
   CalendarClockIcon,
   GitMergeIcon,
   GaugeIcon,
@@ -17,6 +19,14 @@ import { upstreamProjectsQueryOptions } from "../../lib/upstreamPortsReactQuery"
 import { cn } from "../../lib/utils";
 
 import { readNativeApi } from "../../nativeApi";
+import { useAppSettingsSelector } from "../../appSettings";
+import {
+  unreadInboxCount,
+  useNotificationInbox,
+  useNotificationInboxPopover,
+} from "../../notificationCenter/inboxStore";
+import { NotificationInboxPopover } from "../../notificationCenter/NotificationInboxPopover";
+import { isDoNotDisturbActive } from "../../notificationCenter/preferences";
 import { SidebarThreadSearchInput } from "../SidebarThreadSearch";
 import { formatCompactCount } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -138,7 +148,45 @@ interface NavBadge {
   count: number;
   /** Screen-reader suffix, as in "432 need you". */
   label: string;
-  tone: "warning" | "outline";
+  tone: "warning" | "outline" | "destructive";
+}
+
+/** Do Not Disturb, re-checked every 30s so a timed snooze ends on its own. */
+function useDoNotDisturbActive(): boolean {
+  const until = useAppSettingsSelector((settings) => settings.doNotDisturbUntil);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!until) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [until]);
+  return isDoNotDisturbActive(until, now);
+}
+
+/** The bell: unread count, Do Not Disturb state, and the inbox popover it anchors. */
+export function NotificationsNavButton(props: { shortcutLabel: string | null }) {
+  const unread = useNotificationInbox((state) => unreadInboxCount(state.entries));
+  const open = useNotificationInboxPopover((state) => state.open);
+  const toggle = useNotificationInboxPopover((state) => state.toggle);
+  const dnd = useDoNotDisturbActive();
+  const bellRef = useRef<HTMLButtonElement | null>(null);
+  return (
+    <>
+      <NavIconButton
+        icon={dnd ? BellOffIcon : BellIcon}
+        label={dnd ? "Notifications (Do Not Disturb)" : "Notifications"}
+        isActive={false}
+        pressed={open}
+        testId="sidebar-notifications"
+        buttonRef={bellRef}
+        shortcutLabel={props.shortcutLabel}
+        badge={{ count: unread, label: "unread", tone: "destructive" }}
+        onSelect={toggle}
+      />
+      <NotificationInboxPopover anchor={bellRef} />
+    </>
+  );
 }
 
 /** One icon button of the nav strip: label and shortcut in its tooltip, optional count badge. */
@@ -179,7 +227,9 @@ function NavIconButton(props: {
               "pointer-events-none absolute -top-1.5 left-[calc(50%+2px)] inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-2xs leading-none font-medium tabular-nums",
               badge.tone === "warning"
                 ? "bg-warning/20 text-warning-foreground"
-                : "border border-input bg-background text-foreground",
+                : badge.tone === "destructive"
+                  ? "bg-destructive text-white"
+                  : "border border-input bg-background text-foreground",
             )}
           >
             <span aria-hidden="true">{formatCompactCount(badge.count)}</span>
@@ -211,6 +261,7 @@ export function SidebarNav(props: {
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
   pullRequestsShortcutLabel: string | null;
+  notificationsShortcutLabel?: string | null;
   view: SidebarView;
   onViewChange: (view: SidebarView) => void;
 }) {
@@ -276,6 +327,7 @@ export function SidebarNav(props: {
           isActive={isOnScheduled}
           onSelect={() => void navigate({ to: "/scheduled" })}
         />
+        <NotificationsNavButton shortcutLabel={props.notificationsShortcutLabel ?? null} />
         <NavIconButton
           icon={GaugeIcon}
           label="Usage"

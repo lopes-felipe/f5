@@ -4,10 +4,11 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 export const NOTIFICATIONS_SETTINGS_DESCRIPTORS = [
   {
     ...SETTINGS_ITEM_ROUTES["notifications.in-app"],
-    label: "In-app thread notifications",
-    description: "Show thread status toasts while F5 is open.",
-    keywords: ["desktop", "preferences", "toast"],
-    targetSelector: '[aria-label="In-app thread notifications"]',
+    label: "Notification sources",
+    description:
+      "Choose in-app toasts, system notifications and sounds for threads, pull requests, scheduled runs, upstream, updates and errors.",
+    keywords: ["desktop", "preferences", "toast", "system", "sound", "in-app"],
+    targetSelector: '[data-settings-search-target="notifications.in-app"]',
   },
   {
     ...SETTINGS_ITEM_ROUTES["notifications.attention-badge"],
@@ -18,16 +19,30 @@ export const NOTIFICATIONS_SETTINGS_DESCRIPTORS = [
   },
   {
     ...SETTINGS_ITEM_ROUTES["notifications.thread-status"],
-    label: "Thread status notifications",
-    description: "Choose system notifications, sounds, both, or off when a thread needs attention.",
+    label: "Thread notifications",
+    description: "Toast, system notification or sound when a thread needs attention or finishes.",
     keywords: ["approval", "input", "completed", "browser", "sound"],
-    targetSelector: '[aria-label="Thread status notifications"]',
+    targetSelector: '[data-settings-search-target="notifications.thread-status"]',
   },
   {
     ...SETTINGS_ITEM_ROUTES["notifications.pr-attention"],
-    label: "PR attention notifications",
+    label: "Pull request notifications",
     description: "Notify when Pull Request Hub finds work needing action.",
     keywords: ["github", "pull request", "review"],
-    targetSelector: '[aria-label="PR attention notifications"]',
+    targetSelector: '[data-settings-search-target="notifications.pr-attention"]',
+  },
+  {
+    ...SETTINGS_ITEM_ROUTES["notifications.do-not-disturb"],
+    label: "Do Not Disturb",
+    description: "Pause toasts, system notifications and sounds for a while.",
+    keywords: ["mute", "snooze", "quiet", "focus", "silence"],
+    targetSelector: '[aria-label="Do Not Disturb"]',
+  },
+  {
+    ...SETTINGS_ITEM_ROUTES["notifications.toast-position"],
+    label: "Toast position",
+    description: "Show in-app notifications at the top or bottom right.",
+    keywords: ["toast", "corner", "placement"],
+    targetSelector: '[aria-label="Toast position"]',
   },
 ] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

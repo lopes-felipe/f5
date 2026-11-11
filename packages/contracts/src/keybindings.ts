@@ -128,6 +128,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "model.switchRecent",
   ...MODEL_FAVORITE_KEYBINDING_COMMANDS,
   "prHub.open",
+  "notifications.toggle",
   "palette.files",
   "projectContentSearch.toggle",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
