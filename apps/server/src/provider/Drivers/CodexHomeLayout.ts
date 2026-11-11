@@ -95,13 +95,15 @@ export function resolveCodexInstanceHomePaths(input: {
   readonly managed: boolean;
   readonly inheritedCodexHome: string | undefined;
 }): ReadonlyArray<string> {
-  const homePath = input.config.homePath.trim();
-  if (input.managed && homePath.length === 0) return [];
-  const inherited = input.inheritedCodexHome?.trim();
+  // Whitespace can be part of a real directory name. Trim only to detect empty values,
+  // matching resolveHomePath and the CODEX_HOME passed to the process.
+  const homePath = input.config.homePath;
+  if (input.managed && homePath.trim().length === 0) return [];
+  const inherited = input.inheritedCodexHome;
   const shared = NodePath.resolve(
-    homePath.length > 0
+    homePath.trim().length > 0
       ? expandHomePath(homePath)
-      : inherited
+      : inherited?.trim()
         ? expandHomePath(inherited)
         : NodePath.join(NodeOS.homedir(), ".codex"),
   );

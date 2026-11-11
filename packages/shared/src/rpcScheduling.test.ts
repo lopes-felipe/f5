@@ -2,6 +2,7 @@ import { WebSocketRequest } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "./codexOAuthTiming";
+import { PROVIDER_UPDATE_TIMEOUT_MS } from "./providerUpdate";
 import {
   ORCHESTRATION_COMMAND_LANES,
   RPC_LANE_LIMITS,
@@ -134,6 +135,12 @@ describe("RPC method policy", () => {
     expect(rpcLane({ _tag: "storage.getStatus" })).toBe("ordinary");
   });
 
+  it("lets provider updates return the server timeout before the client deadline", () => {
+    const deadline = rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" });
+    expect(deadline).toBeGreaterThan(PROVIDER_UPDATE_TIMEOUT_MS);
+    expect(isReadOnlyRpc("server.runProviderUpdate")).toBe(false);
+  });
+
   it("moves long operations and their deadlines into the policy", () => {
     const longMethods = Object.entries(RPC_METHOD_POLICY)
       .filter(([, policy]) => policy.lane === "long")
@@ -156,7 +163,9 @@ describe("RPC method policy", () => {
       ].sort(),
     );
     expect(rpcLongRunningTimeoutMs({ _tag: "git.runStackedAction" })).toBeNull();
-    expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBe(660_000);
+    expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBe(
+      PROVIDER_UPDATE_TIMEOUT_MS + 60_000,
+    );
     expect(rpcLongRunningTimeoutMs({ _tag: "server.saveProviderFeedback" })).toBe(130_000);
     expect(isReadOnlyRpc("server.saveProviderFeedback")).toBe(false);
     expect(isReadOnlyRpc("nativeOperation.markRead")).toBe(false);
