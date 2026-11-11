@@ -50,6 +50,35 @@ async function fixture(copilot = false) {
   return { cwd, log, exitLog, argv, config };
 }
 describe("custom local ACP", () => {
+  it("updates the native mode cache without requiring a mode notification", async () => {
+    const f = await fixture();
+    try {
+      await run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* makeCustomAcpRuntime(f.config, {
+              childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+              grokSettings: null,
+              cwd: f.cwd,
+              environment: {
+                ...process.env,
+                T3_ACP_SUPPRESS_MODE_UPDATE: "1",
+                T3_ACP_URL_MODES: "1",
+              },
+              clientInfo: { name: "test", version: "1" },
+            });
+            yield* runtime.start();
+            const plan = "https://agentclientprotocol.com/protocol/session-modes#architect";
+            yield* runtime.setNativeMode(plan);
+            expect((yield* runtime.getModeState)?.currentModeId).toBe(plan);
+          }),
+        ),
+      );
+    } finally {
+      await rm(f.cwd, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])(
     "keeps Copilot's attributed child text and tools out of the parent stream (hardening: %s)",
     async (hardening) => {

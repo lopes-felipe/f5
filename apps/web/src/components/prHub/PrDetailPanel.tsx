@@ -192,7 +192,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
     !advisory && flags.isOpen && !flags.isIgnored && Boolean(onAnalyzeAdvisory);
 
   return (
-    <div className="flex min-w-0 flex-col gap-5">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-5 [&>*:not([data-pr-detail-tabs]):not([data-pr-inline-confirmation])]:shrink-0">
       <div className="flex min-w-0 items-start gap-3">
         <GitPullRequestIcon className="mt-1 size-5 shrink-0 text-muted-foreground" />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">

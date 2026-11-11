@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useAppSettings } from "../../appSettings";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { prHubOverviewQueryOptions } from "../../lib/prHubReactQuery";
-import { isAppWindowFocused, useNotificationPermissionState } from "../../notifications";
-import { formatPrNotificationTitle, showPrAttentionNotification } from "../../prHubNotifications";
+import { buildPrAttentionNotification } from "../../prHubNotifications";
 import { ensureNativeApi } from "../../nativeApi";
+import { notify } from "../../notificationCenter/notify";
 import { onPrHubChanged, onServerConfigUpdated } from "../../wsNativeApi";
-import { toastManager } from "../ui/toast";
 
 export function PrAttentionNotificationControllerContent({
   navigateToPrHub,
@@ -26,23 +24,11 @@ export function PrAttentionNotificationControllerContent({
     const timer = window.setInterval(() => setLeaseTick((tick) => tick + 1), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  const { settings } = useAppSettings();
-  const permission = useNotificationPermissionState();
-  const [appFocused, setAppFocused] = useState(() => isAppWindowFocused());
-  const delivery = useRef({
-    appFocused,
-    permission,
-    enabled: settings.enablePrAttentionNotifications,
-    navigateToPrHub,
-  });
+  // `notify` decides between toast, OS notification and inbox; only navigation lives here.
+  const delivery = useRef({ navigateToPrHub });
   useEffect(() => {
-    delivery.current = {
-      appFocused,
-      permission,
-      enabled: settings.enablePrAttentionNotifications,
-      navigateToPrHub,
-    };
-  }, [appFocused, permission, settings.enablePrAttentionNotifications, navigateToPrHub]);
+    delivery.current = { navigateToPrHub };
+  }, [navigateToPrHub]);
   const mounted = useRef(false);
   const claimAgain = useRef(false);
   useEffect(() => {
@@ -78,23 +64,6 @@ export function PrAttentionNotificationControllerContent({
   }, [queryClient]);
 
   useEffect(() => {
-    const syncFocusState = () => {
-      setAppFocused(isAppWindowFocused());
-    };
-
-    syncFocusState();
-    window.addEventListener("focus", syncFocusState);
-    window.addEventListener("blur", syncFocusState);
-    document.addEventListener("visibilitychange", syncFocusState);
-
-    return () => {
-      window.removeEventListener("focus", syncFocusState);
-      window.removeEventListener("blur", syncFocusState);
-      document.removeEventListener("visibilitychange", syncFocusState);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!accountGeneration || accountGeneration !== getPrHubAccountGeneration()) return;
     if (claimingRef.current) {
       claimAgain.current = true;
@@ -111,39 +80,7 @@ export function PrAttentionNotificationControllerContent({
           batch.pullRequests.length === 0
         )
           return;
-        const pr = batch.pullRequests[0]!;
-        const grouped = batch.pullRequests.length > 1;
-        toastManager.add({
-          type: "warning",
-          title: grouped
-            ? `${batch.pullRequests.length} pull requests need your attention`
-            : formatPrNotificationTitle(pr),
-          description: grouped
-            ? batch.pullRequests
-                .map((item) => `${item.repository.nameWithOwner}#${item.number}`)
-                .join(", ")
-            : pr.nextAction,
-          actionProps: {
-            children: "View",
-            onClick: () => {
-              void delivery.current.navigateToPrHub(grouped ? undefined : pr.key);
-            },
-          },
-        });
-        if (
-          delivery.current.enabled &&
-          delivery.current.permission === "granted" &&
-          !delivery.current.appFocused &&
-          typeof window.Notification !== "undefined"
-        ) {
-          showPrAttentionNotification({
-            NotificationConstructor: window.Notification,
-            pullRequest: pr,
-            batch: { id: batch.batchId, count: batch.pullRequests.length },
-            focusWindow: () => window.focus(),
-            navigateToPrHub: (key) => delivery.current.navigateToPrHub(key),
-          });
-        }
+        notify(buildPrAttentionNotification(batch, delivery.current.navigateToPrHub));
         await api.acknowledgeNotifications({ accountGeneration, clientId, batchId: batch.batchId });
       })
       .catch(() => {

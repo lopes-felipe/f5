@@ -1,11 +1,11 @@
 import { Schema } from "effect";
 
-import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
+import { FilesystemPath, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { McpProjectServersConfig } from "./mcpServer";
 
 const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
+  homePath: Schema.optional(FilesystemPath.check(Schema.isPattern(/\S/))),
   launchArgs: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 

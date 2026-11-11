@@ -36,6 +36,7 @@ import {
   findModelConfigOption,
   findSessionConfigOption,
   mergeToolCallState,
+  withTrackedPermissionToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
@@ -185,6 +186,7 @@ export interface AcpSessionRuntimeShape {
   readonly setMode: (
     modeId: string,
   ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
+  readonly setNativeMode: (modeId: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setConfigOption: (
     configId: string,
     value: string | boolean,
@@ -992,7 +994,19 @@ const makeAcpSessionRuntime = (
     );
 
     return {
-      handleRequestPermission: acp.handleRequestPermission,
+      handleRequestPermission: (handler) =>
+        acp.handleRequestPermission((params) =>
+          Effect.gen(function* () {
+            const started = yield* Ref.get(startStateRef);
+            const tracked =
+              started._tag === "Started" && params.sessionId === started.result.sessionId
+                ? (yield* Ref.get(toolCallsRef)).get(
+                    trackedToolCallKey(params.sessionId, params.toolCall.toolCallId),
+                  )
+                : undefined;
+            return yield* handler(withTrackedPermissionToolCall(params, tracked));
+          }),
+        ),
       handleElicitation: acp.handleElicitation,
       handleReadTextFile: acp.handleReadTextFile,
       handleWriteTextFile: acp.handleWriteTextFile,
@@ -1058,6 +1072,19 @@ const makeAcpSessionRuntime = (
             );
           }),
         ),
+      setNativeMode: (modeId) =>
+        getStartedState.pipe(
+          Effect.flatMap((started) => {
+            const payload = { sessionId: started.sessionId, modeId };
+            return runLoggedRequest(
+              "session/set_mode",
+              payload,
+              acp.raw.request("session/set_mode", payload),
+            );
+          }),
+          Effect.tap(() => updateCurrentModeId(modeId)),
+          Effect.asVoid,
+        ),
       setConfigOption,
       setModel: (model) =>
         getStartedState.pipe(
@@ -1110,6 +1137,11 @@ function configOptionCurrentValueMatches(
 
 const MAX_SHOWN_TOOL_CALL_IDS = 256;
 
+/** ACP tool call IDs are unique only within a session, including during failed resume replay. */
+function trackedToolCallKey(sessionId: string, toolCallId: string): string {
+  return JSON.stringify([sessionId, toolCallId]);
+}
+
 const handleSessionUpdate = ({
   queue,
   modeStateRef,
@@ -1141,7 +1173,7 @@ const handleSessionUpdate = ({
       if (event._tag === "ToolCallUpdated") {
         // A new tool call is a boundary in the prose. Progress on a call that
         // is already shown, such as a background command finishing, is not.
-        const toolCallId = event.toolCall.toolCallId;
+        const toolCallId = trackedToolCallKey(params.sessionId, event.toolCall.toolCallId);
         if (!shownToolCallIds.has(toolCallId)) {
           shownToolCallIds.add(toolCallId);
           // Only recent calls get late updates; keep a long session bounded.
@@ -1153,17 +1185,17 @@ const handleSessionUpdate = ({
           if (!running) yield* closeActiveAssistantSegment({ queue, assistantSegmentRef });
         }
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
-          const previous = current.get(event.toolCall.toolCallId);
+          const previous = current.get(toolCallId);
           const nextToolCall = mergeToolCallState(previous, event.toolCall);
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
-            next.delete(nextToolCall.toolCallId);
+            next.delete(toolCallId);
           } else {
-            next.set(nextToolCall.toolCallId, nextToolCall);
+            next.set(toolCallId, nextToolCall);
           }
           return [{ previous, merged: nextToolCall }, next] as const;
         });
-        const last = toolEmissions.get(merged.toolCallId);
+        const last = toolEmissions.get(toolCallId);
         const decision = decideToolCallUpdateEmission({
           previous,
           next: merged,
@@ -1171,9 +1203,9 @@ const handleSessionUpdate = ({
           skippedSinceEmit: last?.skipped ?? 0,
         });
         if (merged.status === "completed" || merged.status === "failed")
-          toolEmissions.delete(merged.toolCallId);
+          toolEmissions.delete(toolCallId);
         else
-          toolEmissions.set(merged.toolCallId, {
+          toolEmissions.set(toolCallId, {
             length: decision.emit ? merged.detail?.length : last?.length,
             skipped: decision.skippedSinceEmit,
           });

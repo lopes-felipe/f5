@@ -3,7 +3,8 @@ import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 const listBranches = vi.hoisted(() => vi.fn());
-vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ git: { listBranches } }) }));
+const status = vi.hoisted(() => vi.fn());
+vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ git: { listBranches, status } }) }));
 
 import {
   worktreesListQueryOptions,
@@ -107,6 +108,29 @@ describe("invalidateGitQueries", () => {
 });
 
 describe("gitStatusQueryOptions", () => {
+  it("publishes local status while remote status is pending", async () => {
+    const local = { branch: "feature", pr: null };
+    let resolveRemote!: (value: unknown) => void;
+    status.mockResolvedValueOnce(local).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRemote = resolve;
+        }),
+    );
+    const client = new QueryClient();
+    const options = gitStatusQueryOptions({ cwd: "/local-first" });
+    const pending = client.fetchQuery(options);
+    await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(status.mock.calls[0]?.[0]).toEqual({
+      cwd: "/local-first",
+      includeRemote: false,
+      includePullRequest: false,
+    });
+    expect(client.getQueryData(options.queryKey)).toEqual(local);
+    resolveRemote({ ...local, pr: { number: 7 } });
+    await pending;
+    expect(client.getQueryData(options.queryKey)).toMatchObject({ pr: { number: 7 } });
+  });
   it("keeps local-only status under its own key that cwd invalidation still covers", async () => {
     const local = gitStatusQueryOptions({ cwd: "/repo/a", includeRemote: false });
     const full = gitStatusQueryOptions({ cwd: "/repo/a" });

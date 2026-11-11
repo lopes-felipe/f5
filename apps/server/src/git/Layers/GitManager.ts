@@ -1372,47 +1372,56 @@ export const makeGitManager = Effect.gen(function* () {
     });
     const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
 
-    const latestPr =
+    const shouldLookupPr =
+      input.includePullRequest !== false &&
       details.branch !== null &&
       sourceControlProviders.providers.some(
         (provider) =>
           provider.kind === sourceControlProvider.kind || sourceControlProvider.kind === "unknown",
-      )
-        ? yield* findLatestPr(
-            input.cwd,
-            {
-              branch: details.branch,
-              upstreamRef: details.upstreamRef,
-            },
-            yield* sourceControlProviderForIdentity(sourceControlProvider),
-          ).pipe(
-            Effect.flatMap((latest) => {
-              if (!latest) return Effect.succeed(null);
-              if (latest.state === "open") return Effect.succeed(latest);
+      );
+    const latestPr = shouldLookupPr
+      ? yield* findLatestPr(
+          input.cwd,
+          {
+            branch: details.branch!,
+            upstreamRef: details.upstreamRef,
+          },
+          yield* sourceControlProviderForIdentity(sourceControlProvider),
+        ).pipe(
+          Effect.flatMap((latest) => {
+            if (!latest) return Effect.succeed(null);
+            if (latest.state === "open") return Effect.succeed(latest);
 
-              return sourceControlProviderForIdentity(sourceControlProvider).pipe(
-                Effect.flatMap((provider) => provider.getDefaultBranch({ cwd: input.cwd })),
-                Effect.map((defaultBranch) =>
-                  defaultBranch !== null && details.branch === defaultBranch ? null : latest,
-                ),
-                Effect.catch(() => Effect.succeed(latest)),
-              );
-            }),
-            Effect.tap((latest) =>
-              Effect.sync(() => {
-                const key = statusPullRequestCacheKey(input.cwd, details.branch!);
-                if (latest) setBoundedRecent(lastStatusPullRequests, key, latest);
-                else lastStatusPullRequests.delete(key);
-              }),
-            ),
-            Effect.catch(() =>
-              Effect.succeed(
-                lastStatusPullRequests.get(statusPullRequestCacheKey(input.cwd, details.branch!)) ??
-                  null,
+            return sourceControlProviderForIdentity(sourceControlProvider).pipe(
+              Effect.flatMap((provider) => provider.getDefaultBranch({ cwd: input.cwd })),
+              Effect.map((defaultBranch) =>
+                defaultBranch !== null && details.branch === defaultBranch ? null : latest,
               ),
+              Effect.catch(() => Effect.succeed(latest)),
+            );
+          }),
+          Effect.tap((latest) =>
+            Effect.sync(() => {
+              const key = statusPullRequestCacheKey(input.cwd, details.branch!);
+              if (latest) setBoundedRecent(lastStatusPullRequests, key, latest);
+              else lastStatusPullRequests.delete(key);
+            }),
+          ),
+          Effect.catch(() =>
+            Effect.succeed(
+              lastStatusPullRequests.get(statusPullRequestCacheKey(input.cwd, details.branch!)) ??
+                null,
             ),
-          )
-        : null;
+          ),
+        )
+      : null;
+    // A slow forge lookup must not publish status for a branch that was left meanwhile.
+    if (shouldLookupPr) {
+      const current = yield* gitCore.inspectCheckoutIdentity(input.cwd);
+      if (current.branch !== details.branch) {
+        return yield* status({ ...input, includeRemote: false, includePullRequest: false });
+      }
+    }
     if (latestPr) yield* noteStatusPullRequestState(latestPr);
     const pr = latestPr ? toStatusPr(latestPr) : null;
     const changeRequest = latestPr ? toChangeRequest(latestPr, sourceControlProvider) : null;

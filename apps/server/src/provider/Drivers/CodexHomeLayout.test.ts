@@ -1,4 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
@@ -10,6 +12,8 @@ import {
   normalizeWindowsLinkPath,
   hasKnownFileIdentity,
   resolveCodexHomeLayout,
+  codexResetCreditIdentity,
+  resolveCodexInstanceHomePaths,
 } from "./CodexHomeLayout.ts";
 
 const decodeCodexSettings = (input: {
@@ -64,6 +68,98 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   });
 
   describe("resolveCodexHomeLayout", () => {
+    it.effect("preserves existing reset-credit identities without conflating missing homes", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir("f5-codex-reset-identity-");
+        const legacyIdentity = `codex-home:${createHash("sha256").update(realpathSync(home)).digest("hex")}`;
+        expect(codexResetCreditIdentity(home)).toBe(legacyIdentity);
+        const missingHome = path.join(home, "missing", "work");
+        expect(codexResetCreditIdentity(missingHome)).not.toBe(
+          codexResetCreditIdentity(missingHome + " "),
+        );
+        expect(codexResetCreditIdentity(missingHome + " ")).toBe(
+          `codex-home:${createHash("sha256")
+            .update(missingHome + " ")
+            .digest("hex")}`,
+        );
+      }),
+    );
+
+    it.effect("preserves configured home names through decoding and runtime resolution", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const rawHome = path.join("accounts", " shared ");
+        const rawShadow = path.join("accounts", " private ");
+        const config = decodeCodexSettings({ homePath: rawHome, shadowHomePath: rawShadow });
+        expect(config.homePath).toBe(rawHome);
+        expect(config.shadowHomePath).toBe(rawShadow);
+        const layout = yield* resolveCodexHomeLayout(config);
+        expect(layout.sharedHomePath).toBe(path.resolve(rawHome));
+        expect(layout.effectiveHomePath).toBe(path.resolve(rawShadow));
+        expect(
+          resolveCodexInstanceHomePaths({ config, managed: false, inheritedCodexHome: "/ignored" }),
+        ).toEqual([path.resolve(rawHome), path.resolve(rawShadow)]);
+      }),
+    );
+
+    it.effect("keeps integration home paths aligned with runtime paths containing whitespace", () =>
+      Effect.gen(function* () {
+        for (const fixture of [
+          { config: {}, inherited: "/accounts/environment " },
+          { config: {}, inherited: " /accounts/environment" },
+          { config: { homePath: "/accounts/explicit " }, inherited: "/ignored" },
+          { config: { homePath: " /accounts/explicit" }, inherited: "/ignored" },
+          { config: { homePath: "   " }, inherited: "/accounts/environment " },
+          { config: {}, inherited: "   " },
+          { config: { homePath: "/shared ", shadowHomePath: " /shadow " }, inherited: "/ignored" },
+        ]) {
+          const config = decodeCodexSettings(fixture.config);
+          for (const managed of [false, true]) {
+            const homes = resolveCodexInstanceHomePaths({
+              config,
+              managed,
+              inheritedCodexHome: fixture.inherited,
+            });
+            if (managed && !config.homePath.trim()) {
+              expect(homes).toEqual([]);
+              continue;
+            }
+            const layout = yield* resolveCodexHomeLayout(config, managed, fixture.inherited);
+            expect(homes).toEqual(
+              layout.mode === "authOverlay"
+                ? [layout.sharedHomePath, layout.effectiveHomePath]
+                : [layout.sharedHomePath],
+            );
+          }
+        }
+      }),
+    );
+
+    it.effect("uses the instance environment home for runtime and continuation", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        for (const home of ["/accounts/work", "/accounts/personal", "/accounts/work "]) {
+          const layout = yield* resolveCodexHomeLayout(decodeCodexSettings({}), false, home);
+          expect(layout.effectiveHomePath).toBe(path.resolve(home));
+          expect(layout.continuationKey).toBe(`codex:home:${path.resolve(home)}`);
+        }
+        const explicit = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: "/explicit" }),
+          false,
+          "/environment",
+        );
+        expect(explicit.continuationKey).toBe(`codex:home:${path.resolve("/explicit")}`);
+        const overlay = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: "/shared", shadowHomePath: "/shadow" }),
+          false,
+          "/environment",
+        );
+        expect(overlay.continuationKey).toBe(`codex:home:${path.resolve("/shared")}`);
+        expect(overlay.effectiveHomePath).toBe(path.resolve("/shadow"));
+      }),
+    );
+
     it.effect("uses direct CODEX_HOME when no shadow home is configured", () =>
       Effect.gen(function* () {
         const homePath = yield* makeTempDir("t3code-codex-home-");

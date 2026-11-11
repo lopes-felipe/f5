@@ -1875,6 +1875,7 @@ function shouldRenderWorkEntryAsStandaloneRow(
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
   return (
+    entry.usageLimited === true ||
     entry.activityKind === "user-input.resolved" ||
     !!entry.userInput ||
     !!entry.htmlRender ||
@@ -4421,7 +4422,8 @@ function WorkGroupRowContent(props: {
   const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
-    (row.groupedEntries[0]?.htmlRender ||
+    (row.groupedEntries[0]?.usageLimited ||
+      row.groupedEntries[0]?.htmlRender ||
       row.groupedEntries[0]?.mcpApp ||
       row.groupedEntries[0]?.activityKind === "user-input.resolved" ||
       row.groupedEntries[0]?.userInput)

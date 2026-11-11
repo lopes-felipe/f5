@@ -6,7 +6,7 @@ import type { ComputerHostChannel } from "./ComputerHostChannel";
 export interface ComputerPauseDeps {
   readonly controller: Pick<ComputerController, "resumeTarget" | "requiresLocalResume">;
   readonly channel: Pick<ComputerHostChannel, "setThreadPaused" | "send"> & {
-    readonly chrome: Pick<ComputerHostChannel["chrome"], "current">;
+    readonly chrome: Pick<ComputerHostChannel["chrome"], "holderOf">;
   };
   readonly consent: Pick<ComputerConsentAuthority, "confirmResume">;
   readonly supervisor: Pick<ChromeProcessSupervisor, "resumed">;
@@ -27,17 +27,13 @@ export async function applyComputerPause(
 ): Promise<void> {
   const { controller, channel, consent, supervisor } = deps;
   const target = controller.resumeTarget(profileId, threadId);
-  const chromeHolder = channel.chrome.current();
-  if (
-    !paused &&
-    (controller.requiresLocalResume(profileId, threadId) ||
-      (chromeHolder?.profileId === profileId && chromeHolder.threadId === threadId))
-  ) {
+  const chromeHolder = channel.chrome.holderOf(profileId, threadId);
+  if (!paused && (controller.requiresLocalResume(profileId, threadId) || chromeHolder)) {
     if (!(await consent.confirmResume(profileId, target.title, { recovery: target.recovery })))
       throw new Error("Computer control remains paused.");
     if (
       controller.resumeTarget(profileId, threadId).authorization !== target.authorization ||
-      channel.chrome.current() !== chromeHolder
+      channel.chrome.holderOf(profileId, threadId) !== chromeHolder
     )
       throw new Error("The computer session changed while Resume was being confirmed.");
   }

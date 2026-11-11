@@ -1,8 +1,24 @@
-import { DEFAULT_MODEL_BY_PROVIDER, CodexSettings } from "@t3tools/contracts";
+import { DEFAULT_MODEL_BY_PROVIDER, CodexSettings, ProviderStartOptions } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { codexModels, withCodexIsolationCompatibility } from "./CodexDriver.ts";
+import {
+  codexModels,
+  providerOptionsFromCodexSettings,
+  withCodexIsolationCompatibility,
+} from "./CodexDriver.ts";
+import { resolveCodexHome } from "../../os-jank.ts";
+
+it("preserves a configured Codex home through settings, wire decoding, and process resolution", () => {
+  for (const homePath of ["/accounts/work ", " /accounts/work"]) {
+    const settings = Schema.decodeSync(CodexSettings)({ homePath });
+    const options = Schema.decodeSync(ProviderStartOptions)(
+      providerOptionsFromCodexSettings(settings),
+    );
+    expect(resolveCodexHome({ homePath: options.codex?.homePath })).toBe(homePath);
+  }
+  expect(resolveCodexHome({ homePath: "   " })).toBeUndefined();
+});
 
 describe("codexModels", () => {
   it("keeps the shared Codex default as the first model", () => {

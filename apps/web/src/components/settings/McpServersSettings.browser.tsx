@@ -39,6 +39,7 @@ vi.mock("../../hooks/useCopyToClipboard", () => ({
     copyToClipboard,
     isCopied: false,
   }),
+  writeTextToClipboard: async () => {},
 }));
 
 vi.mock("../../nativeApi", () => ({

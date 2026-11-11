@@ -627,6 +627,8 @@ interface ClaudeSessionContext {
   latestCacheWrites?: { ephemeral5mInputTokens: number; ephemeral1hInputTokens: number };
   lastThreadStartedId: string | undefined;
   configuredBase: Record<string, unknown>;
+  /** A failed live update can leave the CLI running a different model. */
+  modelSelectionUnknown?: boolean;
   /**
    * Turn IDs whose turnState was cleared while interrupt was in-flight. Late
    * SDK output for these turns (result/assistant messages arriving after the
@@ -8157,6 +8159,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 },
               });
 
+              // Nothing runs in Chrome while the user decides. The admission this call got
+              // before the prompt ends here, so a peer's Chrome calls and other agents'
+              // native control don't wait on a person; approval admits it again (`fresh`).
+              if (isClaudeInChromeTool(toolName) && callbackOptions.toolUseID)
+                context.chromeActivity?.callEnded(callbackOptions.toolUseID);
+
               pendingApprovals.set(requestId, pendingApproval);
 
               const onAbort = () => {
@@ -9262,8 +9270,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               autoRejected: context.autoRejectedForModel === runtimeModelSelection.baseModel,
             });
             const shouldSetModel =
+              context.modelSelectionUnknown === true ||
               runtimeModelSelection.baseModel !== previousModel ||
               runtimeModelSelection.contextWindow !== previousContextWindow;
+            context.modelSelectionUnknown = true;
             if (shouldSetModel) {
               yield* controlRequest("turn/setModel", () =>
                 context.query.setModel(runtimeModelSelection.apiModel),
@@ -9279,6 +9289,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             yield* ensureLive;
             appliedFastMode = runtimeTraits.fastMode;
+            context.modelSelectionUnknown = false;
             context.session = {
               ...context.session,
               model: runtimeModelSelection.baseModel,

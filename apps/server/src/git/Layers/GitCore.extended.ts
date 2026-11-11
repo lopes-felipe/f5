@@ -228,6 +228,70 @@ function commitWithDate(
 // ── Tests ──
 
 it.layer(TestLayer)("git integration", (it) => {
+  it.effect("reads commit and PR context outside a nested project with diff.relative", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const base = yield* git(cwd, ["rev-parse", "HEAD"]);
+      const fs = yield* FileSystem.FileSystem;
+      const nested = path.join(cwd, "nested");
+      yield* fs.makeDirectory(nested);
+      yield* git(cwd, ["config", "diff.relative", "true"]);
+      yield* writeTextFile(path.join(cwd, "outside.txt"), "committed line\n");
+      yield* git(cwd, ["add", "."]);
+      yield* git(cwd, ["commit", "-m", "outside"]);
+      const core = yield* GitCore;
+      const range = yield* core.readRangeContext(nested, base);
+      expect(range.diffSummary).toContain("outside.txt");
+      expect(range.diffPatch).toContain("+committed line");
+      yield* writeTextFile(path.join(cwd, "outside.txt"), "updated line\n");
+      const context = yield* core.prepareCommitContext(nested, ["outside.txt"]);
+      expect(context?.stagedSummary).toContain("outside.txt");
+      expect(context?.stagedPatch).toContain("+updated line");
+    }),
+  );
+
+  it.effect.each(["root", "nested", "worktree"] as const)(
+    "rejects selected merge commits without changing the index or merge parents (%s)",
+    (location) =>
+      Effect.gen(function* () {
+        let cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const branch = yield* git(cwd, ["branch", "--show-current"]);
+        yield* git(cwd, ["checkout", "-b", "feature"]);
+        yield* writeTextFile(path.join(cwd, "feature.txt"), "feature\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "feature"]);
+        const feature = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", branch]);
+        yield* writeTextFile(path.join(cwd, "main.txt"), "main\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "main"]);
+        const main = yield* git(cwd, ["rev-parse", "HEAD"]);
+        if (location === "worktree") {
+          const linked = path.join(yield* makeTmpDir(), "linked");
+          yield* git(cwd, ["worktree", "add", "-b", "linked", linked]);
+          cwd = linked;
+        }
+        yield* git(cwd, ["merge", "--no-commit", "--no-ff", "feature"]);
+        const fs = yield* FileSystem.FileSystem;
+        const commitCwd = location === "nested" ? path.join(cwd, "nested") : cwd;
+        yield* fs.makeDirectory(commitCwd, { recursive: true });
+        const gitDir = yield* git(cwd, ["rev-parse", "--absolute-git-dir"]);
+        const index = yield* fs.readFile(path.join(gitDir, "index"));
+        const core = yield* GitCore;
+        const error = yield* core
+          .commit(commitCwd, "partial", "", ["feature.txt"])
+          .pipe(Effect.flip);
+        expect(error.detail).toContain("Cannot commit selected files during a merge");
+        expect(yield* fs.readFile(path.join(gitDir, "index"))).toEqual(index);
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(main);
+        expect(yield* fs.readFileString(path.join(gitDir, "MERGE_HEAD"))).toBe(feature + "\n");
+        yield* core.commit(commitCwd, "complete", "");
+        expect(yield* git(cwd, ["show", "-s", "--format=%P", "HEAD"])).toBe(main + " " + feature);
+      }),
+  );
+
   describe("commit generation isolation", () => {
     it.effect(
       "commits a large selected directory without expanding its staging arguments",

@@ -1033,7 +1033,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
               threadId: reviewer.threadId,
               title: reviewer.label,
               createdAt: workflow.createdAt,
-            }),
+            }).pipe(Effect.asVoid),
       { discard: true },
     );
 

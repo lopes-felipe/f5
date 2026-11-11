@@ -100,6 +100,15 @@ function detailHeading(title: string) {
 }
 
 describe("PrInboxView navigation", () => {
+  it("focuses the content scroller when opening details from the spine", async () => {
+    await renderInbox();
+    const first = page.getByRole("option").first();
+    await first.click();
+    await userEvent.keyboard("{Enter}");
+    expect(document.activeElement?.hasAttribute("data-pr-content-scroller")).toBe(true);
+    await userEvent.keyboard("{ArrowDown}{PageDown}");
+    await expect.element(detailHeading("Alpha PR")).toBeInTheDocument();
+  });
   it("selects the first PR and moves with j/k", async () => {
     await renderInbox();
     await expect.element(detailHeading("Alpha PR")).toBeInTheDocument();

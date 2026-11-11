@@ -1,7 +1,8 @@
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as storageActivity from "./storageActivity.ts";
 import {
   DEPENDENCY_QUARANTINE_PREFIX,
   findDependencyFolders,
@@ -90,6 +91,33 @@ describe("dependency folders", () => {
       reason: expect.stringMatching(/contains a Git checkout/),
     });
     expect(await FS.readFile(Path.join(path, "pkg", ".git", "HEAD"), "utf8")).toBe("x");
+  });
+
+  it("rechecks Git protection after the Windows file-use probe", async () => {
+    const path = Path.join(root, "node_modules");
+    await write(Path.join(path, "pkg", "index.js"));
+    const identity = fileIdentity(await FS.lstat(path));
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const probe = vi
+      .spyOn(storageActivity, "inspectWindowsFileUse")
+      .mockImplementation(async () => {
+        await write(Path.join(path, "pkg", ".git", "HEAD"));
+        return { state: "idle" };
+      });
+    try {
+      Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+      expect(
+        await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
+      ).toMatchObject({
+        outcome: "refused",
+        reason: expect.stringMatching(/contains a Git checkout/),
+      });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(await FS.readFile(Path.join(path, "pkg", ".git", "HEAD"), "utf8")).toBe("x");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      probe.mockRestore();
+    }
   });
 
   it("offers a quarantine an interrupted cleanup left behind", async () => {

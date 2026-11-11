@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./providerUpdate": {
+      "types": "./src/providerUpdate.ts",
+      "import": "./src/providerUpdate.ts"
+    },
     "./providerBinary": {
       "types": "./src/providerBinary.ts",
       "import": "./src/providerBinary.ts"

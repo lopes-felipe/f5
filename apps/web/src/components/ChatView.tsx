@@ -167,6 +167,7 @@ import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
 import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings";
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
+import { respondToApproval } from "~/lib/respondToApproval";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
 import { requestDiffFileReveal } from "../diffFileReveal";
@@ -6117,27 +6118,19 @@ export default memo(function ChatView({
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
-      const api = readNativeApi();
-      if (!api || !activeThreadId) return;
+      if (!readNativeApi() || !activeThreadId) return;
 
       setRespondingRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
-        .dispatchCommand({
-          type: "thread.approval.respond",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          requestId,
-          decision,
-          createdAt: new Date().toISOString(),
-        })
-        .catch((err: unknown) => {
+      await respondToApproval({ threadId: activeThreadId, requestId, decision }).catch(
+        (err: unknown) => {
           setStoreThreadError(
             activeThreadId,
             err instanceof Error ? err.message : "Failed to submit approval decision.",
           );
-        });
+        },
+      );
       setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
     },
     [activeThreadId, setStoreThreadError],
@@ -8494,7 +8487,8 @@ export default memo(function ChatView({
             </div>
           )}
           {latestConfiguredRuntimeActivity?.agentBrowser ? (
-            <div className="flex justify-end px-3 pt-1">
+            // The toast stack starts below this strip instead of covering it.
+            <div className="flex justify-end px-3 pt-1" data-toast-avoid="">
               <BrowserCapabilityChip
                 agentBrowser={latestConfiguredRuntimeActivity.agentBrowser}
                 access={{

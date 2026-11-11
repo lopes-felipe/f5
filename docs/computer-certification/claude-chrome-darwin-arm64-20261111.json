@@ -1,0 +1,102 @@
+{
+  "integration": "claude-chrome",
+  "evidenceId": "claude-chrome-darwin-arm64-20261111",
+  "platform": "darwin",
+  "arch": "arm64",
+  "versions": {
+    "sdkMin": "0.3.317",
+    "cliMin": "2.1.317"
+  },
+  "assertions": {
+    "manifests-and-wrapper": true,
+    "allowed-origins": true,
+    "write-ordering": true,
+    "status-shape": true,
+    "tool-inventory": true,
+    "read-only-call": true,
+    "restore-original-bytes": true,
+    "terminal-claude-unaffected": true,
+    "byte-identical-launches": true,
+    "shared-host-survives-flip": true,
+    "shared-calls-routed": true,
+    "shared-peer-exit": true,
+    "shared-restore": true
+  },
+  "toolNames": [
+    "browser_batch",
+    "computer",
+    "file_upload",
+    "find",
+    "form_input",
+    "get_page_text",
+    "gif_creator",
+    "javascript_tool",
+    "list_connected_browsers",
+    "navigate",
+    "read_console_messages",
+    "read_network_requests",
+    "read_page",
+    "resize_window",
+    "select_browser",
+    "shortcuts_execute",
+    "shortcuts_list",
+    "switch_browser",
+    "tabs_close_mcp",
+    "tabs_context_mcp",
+    "tabs_create_mcp",
+    "upload_image"
+  ],
+  "sourceCommit": "968101c0c889e725ebe8a87a132f31e7044e8a39",
+  "dirty": false,
+  "observations": {
+    "readOnlyListings": {
+      "base": {
+        "outcome": "no-session-group"
+      }
+    },
+    "manifestsMsAfterStart": 406,
+    "connectedMsAfterStart": 345,
+    "terminal": {
+      "exitCode": 0,
+      "terminalRegistered": true,
+      "conflict": true,
+      "untouchedAfterRestore": true
+    },
+    "contestedRestore": {
+      "state": "restored",
+      "skipped": 0,
+      "unresolved": 0
+    },
+    "isolated": {
+      "skipped": "set F5_CLAUDE_CHROME_ISOLATED_STATE_DIR to an isolated F5 profile's folder"
+    },
+    "shared": {
+      "hostsBefore": 2,
+      "sameHostsAfterFlip": true,
+      "sameHostsAfterExit": true,
+      "manifestsFlipped": true,
+      "firstStillConnected": true,
+      "secondLaunchVerified": true,
+      "listings": {
+        "firstBeforeFlip": {
+          "outcome": "ok"
+        },
+        "firstConcurrent": {
+          "outcome": "ok"
+        },
+        "secondConcurrent": {
+          "outcome": "ok"
+        },
+        "secondAfterPeerExit": {
+          "outcome": "ok"
+        }
+      },
+      "firstGroupStable": true,
+      "sameGroupId": false,
+      "sharedTabs": 0,
+      "secondGroupStableAfterPeerExit": true,
+      "firstSeesConflict": true
+    }
+  },
+  "notAutomated": []
+}

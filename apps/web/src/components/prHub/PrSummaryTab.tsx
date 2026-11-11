@@ -108,7 +108,7 @@ export function PrSummaryTab({
               Description
             </h3>
             {detail.body.trim() ? (
-              <PrMarkdown body={detail.body} host={pr.host} />
+              <PrMarkdown body={detail.body} host={pr.host} provider={pr.provider} />
             ) : (
               <p className="text-sm text-muted-foreground">No description provided.</p>
             )}

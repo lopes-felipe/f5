@@ -1,4 +1,9 @@
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
+import {
+  applyAcpPlanMode,
+  makeAcpBuildConfiguration,
+  type AcpBuildConfiguration,
+} from "../acp/AcpPlanMode.ts";
 import { isSyntheticOneOffThreadId } from "../../codexAppServerManager";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import {
@@ -340,6 +345,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       );
 
     const automationCatalogs = new Map<string, AcpAutomationCatalogs>();
+    const buildConfigurations = new Map<
+      string,
+      { sessionId: string; configuration: AcpBuildConfiguration }
+    >();
     const prepareRuntimeEvent = yield* makeAutomationRuntimeEventPreparer;
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) => {
       const release = automationEventSanitizer.retain(event.threadId);
@@ -1319,6 +1328,32 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ctx.promptsInFlight += 1;
 
             return yield* Effect.gen(function* () {
+              if (PROVIDER === "acp" && steeringTurnId === undefined) {
+                let saved = buildConfigurations.get(input.threadId);
+                if (!saved || saved.sessionId !== ctx.acpSessionId) {
+                  saved = {
+                    sessionId: ctx.acpSessionId,
+                    configuration: makeAcpBuildConfiguration(),
+                  };
+                  buildConfigurations.set(input.threadId, saved);
+                }
+                yield* applyAcpPlanMode(
+                  ctx.acp,
+                  input.interactionMode === "plan",
+                  saved.configuration,
+                ).pipe(
+                  Effect.mapError(({ method, cause }) =>
+                    mapAcpToAdapterError(
+                      PROVIDER,
+                      input.threadId,
+                      method,
+                      cause,
+                      automationCatalogs.get(input.threadId)?.scrubDiagnostic,
+                      automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
+                    ),
+                  ),
+                );
+              }
               const turnModelSelection =
                 input.modelSelection?.instanceId === boundInstanceId
                   ? input.modelSelection
@@ -1685,6 +1720,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         Effect.gen(function* () {
           const ctx = yield* requireSession(threadId);
           yield* stopSessionInternal(ctx);
+          buildConfigurations.delete(threadId);
         }),
       );
 
@@ -1700,7 +1736,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const stopAll: GrokAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), (ctx) => stopSessionInternal(ctx), {
         discard: true,
-      });
+      }).pipe(Effect.tap(() => Effect.sync(() => buildConfigurations.clear())));
 
     yield* Effect.addFinalizer(() =>
       Effect.ignore(stopAll()).pipe(
