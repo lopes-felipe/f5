@@ -122,11 +122,23 @@ export const CustomModelSetting = Schema.Union([
 ]);
 export type CustomModelSetting = typeof CustomModelSetting.Type;
 
+// Keep the legacy empty-home sentinel, but never trim a real directory name.
+const CodexHomePathSetting = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(value.trim().length > 0 ? value : ""),
+      encode: (value) => Effect.succeed(value),
+    }),
+  ),
+  Schema.withDecodingDefault(() => ""),
+);
+
 export const CodexSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
-  homePath: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
-  shadowHomePath: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  homePath: CodexHomePathSetting,
+  shadowHomePath: CodexHomePathSetting,
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
