@@ -19,29 +19,38 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   it.effect("reads endpoint settings with managed precedence and isolated home", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const isolatedHome = path.resolve("isolated-home");
+      const userSettings = path.join(isolatedHome, ".claude", "settings.json");
       const files: string[] = [];
-      const result = yield* readClaudeSettingsBaseUrl(
-        { homePath: "/isolated" },
-        { HOME: "/host", ANTHROPIC_BASE_URL: "https://process.example" },
-      ).pipe(
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fs,
-          readFileString: (file) => {
-            files.push(file);
-            return Effect.succeed(
-              JSON.stringify({
-                env: {
-                  ANTHROPIC_BASE_URL: file.includes("/isolated/")
-                    ? "https://user.example"
-                    : "https://managed.example",
-                },
-              }),
-            );
-          },
-        }),
-      );
-      expect(files[0]).toContain("/isolated/.claude/settings.json");
-      expect(result).toBe("https://managed.example");
+      for (const managedOverrides of [false, true]) {
+        files.length = 0;
+        const result = yield* readClaudeSettingsBaseUrl(
+          { homePath: isolatedHome },
+          { ANTHROPIC_BASE_URL: "https://process.example" },
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file) => {
+              files.push(file);
+              return Effect.succeed(
+                JSON.stringify({
+                  env: {
+                    ANTHROPIC_BASE_URL:
+                      file === userSettings
+                        ? "https://user.example"
+                        : managedOverrides
+                          ? "https://managed.example"
+                          : undefined,
+                  },
+                }),
+              );
+            },
+          }),
+        );
+        expect(files[0]).toBe(userSettings);
+        expect(result).toBe(managedOverrides ? "https://managed.example" : "https://user.example");
+      }
     }),
   );
   describe("Claude process entrypoint", () => {
