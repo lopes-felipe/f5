@@ -37,10 +37,13 @@ import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecuta
 import {
   bridgeSocketDir,
   callsRouted,
+  classifyListing,
   hostSurvivedFlip,
   liveBridgeHosts,
-  parseTabContext,
   processAlive,
+  sameGroup,
+  scrubError,
+  sharedTabCount,
 } from "./fixtures/claudeChromeShared";
 import { evidenceSource } from "./fixtures/evidenceSource";
 
@@ -183,8 +186,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       );
     const TAB_CONTEXT = "mcp__claude-in-chrome__tabs_context_mcp";
     /**
-     * Runs one turn and returns the successful tool results, by tool name. A denied or
-     * failed call also comes back as a `tool_result`, with `is_error`, and never counts.
+     * Runs one turn and returns its tool results, by tool name. A denied or failed call
+     * also comes back as a `tool_result`, flagged `isError`.
      */
     const runTurn = async (handle: ReturnType<typeof launch>, prompt: string) => {
       handle.input.push({
@@ -193,7 +196,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         message: { role: "user", content: prompt },
       });
       const names = new Map<string, string>();
-      const results: Array<{ name: string; content: unknown }> = [];
+      const results: Array<{ name: string; isError: boolean; content: unknown }> = [];
       for (;;) {
         const next = await handle.q.next();
         if (next.done || next.value.type === "result") break;
@@ -202,8 +205,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         for (const block of content as Array<Record<string, unknown>>) {
           if (block.type === "tool_use") names.set(String(block.id), String(block.name));
           const name = names.get(String(block.tool_use_id));
-          if (block.type === "tool_result" && block.is_error !== true && name)
-            results.push({ name, content: block.content });
+          if (block.type === "tool_result" && name)
+            results.push({ name, isError: block.is_error === true, content: block.content });
         }
       }
       return results;
@@ -212,7 +215,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
     const readOnlyCall = async (handle: ReturnType<typeof launch>) =>
       (
         await runTurn(handle, "Call tabs_context_mcp once, then reply DONE. Use no other tool.")
-      ).some((result) => result.name === TAB_CONTEXT);
+      ).some((result) => result.name === TAB_CONTEXT && !result.isError);
     const observations: Record<string, unknown> = {};
     let toolNames: string[] = [];
     let firstLaunchBytes: Array<string | null> | undefined;
@@ -596,6 +599,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         verifyWrapper: (bytes: string) => descriptor.verifyWrapper!(bytes, executable, realpath),
         allowedOrigins: descriptor.allowedOrigins,
       };
+      const denial =
+        "Only a tab listing and closing this session's own tabs are allowed in certification.";
       /** Tab listings, plus closing tabs this session's own listings returned. */
       const ownTabsOnly =
         (own: Set<number>): CanUseTool =>
@@ -603,21 +608,22 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           name === TAB_CONTEXT ||
           (name === "mcp__claude-in-chrome__tabs_close_mcp" && own.has(Number(toolInput.tabId)))
             ? { behavior: "allow", updatedInput: toolInput }
-            : {
-                behavior: "deny",
-                message:
-                  "Only a tab listing and closing this session's own tabs are allowed in certification.",
-              };
-      const listOwnTabs = async (handle: ReturnType<typeof launch>, own: Set<number>) => {
-        const context = (
+            : { behavior: "deny", message: denial };
+      /** Each listing's outcome, in order, so a failed assertion says which call and why. */
+      const listings: Record<string, { outcome: string; error?: string }> = {};
+      const listOwnTabs = async (
+        label: string,
+        handle: ReturnType<typeof launch>,
+        own: Set<number>,
+      ) => {
+        const results = (
           await runTurn(
             handle,
             "Call tabs_context_mcp once with createIfEmpty set to true, then reply DONE. Use no other tool.",
           )
-        )
-          .filter((result) => result.name === TAB_CONTEXT)
-          .map((result) => parseTabContext(result.content))
-          .find((entry) => entry !== undefined);
+        ).filter((result) => result.name === TAB_CONTEXT);
+        const { outcome, context, error } = classifyListing(results, denial);
+        listings[label] = { outcome, ...(error ? { error } : {}) };
         for (const tabId of context?.tabIds ?? []) own.add(tabId);
         return context;
       };
@@ -664,7 +670,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         if (!(await awaitConnected(first.q)))
           throw new Error("The first profile's session did not connect.");
         const firstLaunch = await transactions.recordLaunch(firstApproved, verifyLaunch);
-        const firstBeforeFlip = await listOwnTabs(first, firstTabs);
+        const firstBeforeFlip = await listOwnTabs("firstBeforeFlip", first, firstTabs);
         const hostsBefore = await liveBridgeHosts(bridge, processAlive);
 
         secondApproved = await approveFor(secondTransactions, secondStorage, {
@@ -694,8 +700,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
 
         // Both sessions call at the same time, each through the host the first one reached.
         const [firstContext, secondContext] = await Promise.all([
-          listOwnTabs(first, firstTabs),
-          listOwnTabs(second, secondTabs),
+          listOwnTabs("firstConcurrent", first, firstTabs),
+          listOwnTabs("secondConcurrent", second, secondTabs),
         ]);
         assertions["shared-calls-routed"] = callsRouted({
           firstBeforeFlip,
@@ -715,14 +721,13 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
         await closeOwnTabs(first, firstTabs);
         end(first);
         first = undefined;
-        const afterExit = await listOwnTabs(second, secondTabs);
+        const afterExit = await listOwnTabs("secondAfterPeerExit", second, secondTabs);
         const hostsAfterExit = await liveBridgeHosts(bridge, processAlive);
         assertions["shared-peer-exit"] =
-          afterExit !== undefined &&
-          afterExit.tabGroupId === secondContext?.tabGroupId &&
+          sameGroup(secondContext, afterExit) &&
           JSON.stringify(hostsAfterExit) === JSON.stringify(hostsAfter);
         await closeOwnTabs(second, secondTabs);
-        // Counts and booleans only: pids and tab ids stay out of the report.
+        // Outcomes, counts and booleans only: pids and tab ids stay out of the report.
         observations.shared = {
           hostsBefore: hostsBefore.length,
           sameHostsAfterFlip: JSON.stringify(hostsBefore) === JSON.stringify(hostsAfter),
@@ -730,15 +735,21 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           manifestsFlipped,
           firstStillConnected,
           secondLaunchVerified: secondLaunch.launchVerified === true,
-          firstGroupStable: firstContext?.tabGroupId === firstBeforeFlip?.tabGroupId,
-          distinctGroups:
-            firstContext !== undefined &&
-            secondContext !== undefined &&
-            firstContext.tabGroupId !== secondContext.tabGroupId,
+          listings,
+          firstGroupStable: sameGroup(firstBeforeFlip, firstContext),
+          sameGroupId:
+            firstContext?.tabGroupId !== undefined &&
+            firstContext.tabGroupId === secondContext?.tabGroupId,
+          sharedTabs: sharedTabCount(firstContext, secondContext),
+          secondGroupStableAfterPeerExit: sameGroup(secondContext, afterExit),
           firstSeesConflict,
         };
       } catch (error) {
-        observations.shared = { ...(observations.shared as object), error: String(error) };
+        observations.shared = {
+          ...(observations.shared as object),
+          listings,
+          error: scrubError(String(error)),
+        };
       } finally {
         end(first);
         end(second);

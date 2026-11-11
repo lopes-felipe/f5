@@ -6,10 +6,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   callsRouted,
+  classifyListing,
   hostSurvivedFlip,
   liveBridgeHosts,
   parseTabContext,
   processAlive,
+  sameGroup,
+  scrubError,
+  sharedTabCount,
 } from "./claudeChromeShared";
 
 const listing = (tabGroupId: number, tabIds: number[]) =>
@@ -29,11 +33,44 @@ describe("parseTabContext", () => {
     expect(parseTabContext(listing(3, []))).toEqual({ tabGroupId: 3, tabIds: [] });
   });
 
-  it("rejects results without a numeric group or a tab list", () => {
-    expect(parseTabContext([{ type: "text", text: '{"availableTabs":[]}' }])).toBeUndefined();
+  it("accepts a listing without a group id, as the CLI's format allows", () => {
+    expect(
+      parseTabContext([{ type: "text", text: '{"availableTabs":[{"tabId":5,"url":"x"}]}' }]),
+    ).toEqual({ tabIds: [5] });
+  });
+
+  it("rejects results without a tab list", () => {
     expect(parseTabContext([{ type: "text", text: '{"tabGroupId":1}' }])).toBeUndefined();
     expect(parseTabContext([{ type: "image", data: "" }])).toBeUndefined();
     expect(parseTabContext(undefined)).toBeUndefined();
+  });
+});
+
+describe("classifyListing", () => {
+  const denial = "Only a tab listing";
+  const ok = (text: string) => ({ isError: false, content: [{ type: "text", text }] });
+  const err = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
+
+  it("says why a listing turn failed", () => {
+    expect(classifyListing([ok(listing(1, [2]))], denial)).toEqual({
+      outcome: "ok",
+      context: { tabGroupId: 1, tabIds: [2] },
+    });
+    expect(classifyListing([ok('{"availableTabs":[]}')], denial).outcome).toBe("ok-no-group-id");
+    expect(classifyListing([], denial).outcome).toBe("not-called");
+    expect(classifyListing([ok("Tabs: none")], denial).outcome).toBe("unreadable");
+    expect(classifyListing([err(`${denial} is allowed.`)], denial).outcome).toBe("denied");
+    expect(
+      classifyListing([err("Extension not connected; see https://claude.ai/x?y=1")], denial),
+    ).toEqual({ outcome: "tool-error", error: "Extension not connected; see <url>" });
+  });
+
+  it("prefers a successful listing over an earlier failed one", () => {
+    expect(classifyListing([err("timed out"), ok(listing(4, [9]))], denial).outcome).toBe("ok");
+  });
+
+  it("truncates scrubbed errors", () => {
+    expect(scrubError("x".repeat(500))).toHaveLength(200);
   });
 });
 
@@ -100,5 +137,27 @@ describe("callsRouted", () => {
     );
     expect(callsRouted({ firstBeforeFlip: b, first: a, second: b })).toBe(false);
     expect(callsRouted({ firstBeforeFlip: a, first: { ...a, tabIds: [] }, second: b })).toBe(false);
+  });
+
+  it("compares tabs when listings carry no group id", () => {
+    const x = { tabIds: [10] };
+    const y = { tabIds: [20] };
+    expect(callsRouted({ firstBeforeFlip: x, first: x, second: y })).toBe(true);
+    expect(callsRouted({ firstBeforeFlip: x, first: x, second: { tabIds: [10] } })).toBe(false);
+    expect(callsRouted({ firstBeforeFlip: x, first: { tabIds: [11] }, second: y })).toBe(false);
+  });
+});
+
+describe("sameGroup and sharedTabCount", () => {
+  it("matches by group id and tabs, or by tabs alone", () => {
+    expect(sameGroup({ tabGroupId: 1, tabIds: [2, 3] }, { tabGroupId: 1, tabIds: [3, 2] })).toBe(
+      true,
+    );
+    expect(sameGroup({ tabGroupId: 1, tabIds: [2] }, { tabGroupId: 2, tabIds: [2] })).toBe(false);
+    expect(sameGroup({ tabIds: [2] }, { tabGroupId: 5, tabIds: [2] })).toBe(true);
+    expect(sameGroup({ tabIds: [] }, { tabIds: [] })).toBe(false);
+    expect(sameGroup(undefined, undefined)).toBe(false);
+    expect(sharedTabCount({ tabIds: [1, 2, 3] }, { tabIds: [3, 2, 9] })).toBe(2);
+    expect(sharedTabCount(undefined, { tabIds: [1] })).toBe(0);
   });
 });
