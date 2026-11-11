@@ -7,7 +7,9 @@ import {
 } from "./lib/agentTranscriptStore";
 
 import {
+  type ThreadRightPanelState,
   selectSurfaceHeaderState,
+  selectFilePreviewVisible,
   selectThreadRightPanelState,
   useRightPanelStore,
 } from "./rightPanelStore";
@@ -16,6 +18,21 @@ const THREAD_A = ThreadId.makeUnsafe("thread-a");
 const THREAD_B = ThreadId.makeUnsafe("thread-b");
 
 describe("rightPanelStore", () => {
+  it("gives the editor shortcut only to an open active file surface", () => {
+    const state: ThreadRightPanelState = {
+      isOpen: true,
+      activeSurfaceId: "file:app.ts",
+      surfaces: [
+        { id: "file:app.ts", kind: "file" as const, relativePath: "app.ts" },
+        { id: "diff", kind: "diff" as const },
+      ],
+    };
+    expect(selectFilePreviewVisible(state)).toBe(true);
+    expect(selectFilePreviewVisible({ ...state, isOpen: false })).toBe(false);
+    expect(selectFilePreviewVisible({ ...state, activeSurfaceId: "diff" })).toBe(false);
+    expect(selectFilePreviewVisible({ ...state, activeSurfaceId: null })).toBe(false);
+    expect(selectFilePreviewVisible({ ...state, surfaces: [] })).toBe(false);
+  });
   it("deduplicates transcript tabs and evicts their cache on close", () => {
     const input = { nativeWorkItemId: "task", workItemIds: ["task"], title: "Agent" };
     useRightPanelStore.getState().open(THREAD_A, "agents");

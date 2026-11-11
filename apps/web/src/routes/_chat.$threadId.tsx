@@ -69,6 +69,7 @@ import {
 } from "../rightPanelNavigation";
 import {
   selectThreadRightPanelState,
+  selectFilePreviewVisible,
   type RightPanelSurface,
   useRightPanelStore,
 } from "../rightPanelStore";
@@ -387,6 +388,7 @@ function ChatThreadRouteView() {
   const rightPanelState = useRightPanelStore((store) =>
     selectThreadRightPanelState(store.byThreadId, threadId),
   );
+  const filePreviewVisible = selectFilePreviewVisible(rightPanelState);
   const agentsPanelVisible =
     rightPanelState.isOpen &&
     rightPanelState.surfaces.some(
@@ -723,7 +725,7 @@ function ChatThreadRouteView() {
               <LazyFileViewPanel
                 mode={mode}
                 surface={surface}
-                openInShortcutEnabled={rightPanelState.isOpen}
+                openInShortcutEnabled={filePreviewVisible}
                 onClose={() => closeRightPanelSurface(surface)}
               />
             );
@@ -807,6 +809,7 @@ function ChatThreadRouteView() {
       retryAgents,
       rightPanelState.activeSurfaceId,
       rightPanelState.isOpen,
+      filePreviewVisible,
       settings.timestampFormat,
       threadId,
       workspaceBrowserName,
@@ -926,6 +929,7 @@ function ChatThreadRouteView() {
           <ChatView
             key={threadId}
             threadId={threadId}
+            openInShortcutEnabled={!filePreviewVisible}
             liveAgentCount={agentsLiveBadgeCount}
             focusTimelineEntryId={search.timelineEntryId}
             focusTimelineEntryKind={search.timelineEntryKind}
@@ -950,6 +954,7 @@ function ChatThreadRouteView() {
         <ChatView
           key={threadId}
           threadId={threadId}
+          openInShortcutEnabled={!filePreviewVisible}
           liveAgentCount={agentsLiveBadgeCount}
           focusTimelineEntryId={search.timelineEntryId}
           focusTimelineEntryKind={search.timelineEntryKind}

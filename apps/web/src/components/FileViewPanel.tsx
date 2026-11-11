@@ -6,7 +6,11 @@ import {
   type EditorDraft,
 } from "../editorDrafts";
 import { useProfileState } from "../profileState";
-import { useServerMutationsAvailable } from "../wsConnectionState";
+import {
+  isWsInteractionBlocked,
+  useWsConnectionState,
+  useServerMutationsAvailable,
+} from "../wsConnectionState";
 import { FileBreadcrumbs } from "./FileBreadcrumbs";
 import { WorkspaceMediaView, workspaceMediaKind } from "./WorkspaceMediaView";
 import ChatMarkdown from "./ChatMarkdown";
@@ -178,6 +182,7 @@ export default function FileViewPanel({
   const [saveConflict, setSaveConflict] = useState(false);
   const profileId = useProfileState((state) => state.active?.id ?? "default");
   const mutationsAvailable = useServerMutationsAvailable();
+  const wsConnectionState = useWsConnectionState();
   const [draftRecoveryError, setDraftRecoveryError] = useState<string | null>(null);
   const [recoverableDrafts, setRecoverableDrafts] = useState<EditorDraft[]>([]);
   const [draftReady, setDraftReady] = useState(false);
@@ -556,10 +561,10 @@ export default function FileViewPanel({
   };
 
   useOpenFavoriteEditorShortcut({
-    enabled: openInShortcutEnabled && mutationsAvailable && canOpenInEditor,
+    enabled:
+      openInShortcutEnabled && !isWsInteractionBlocked(wsConnectionState.phase) && canOpenInEditor,
     keybindings: serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS,
     onOpen: openInEditor,
-    capture: true,
   });
 
   const showFileContextMenu = useCallback(
