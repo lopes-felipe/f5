@@ -291,7 +291,9 @@ jobs:
       - name: Install Chromium
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          bun run --cwd apps/web test:browser:install
+          # Hosted Ubuntu already supplies Chromium's runtime libraries. Avoid
+          # reinstalling OS packages through an unrelated APT mirror dependency.
+          bun run --cwd apps/web test:browser:install:ci
       - name: Browser tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
