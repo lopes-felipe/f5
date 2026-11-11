@@ -57359,14 +57359,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T15:23:41.542Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25292",
+      "reason": "F5 does not serve Antigravity client text-file reads.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-26910"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -64994,11 +64996,22 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T15:23:41.543Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/session-logic.ts:2389",
+          "apps/web/src/session-logic.ts:2443",
+          "apps/web/src/components/chat/composer/useComposerState.ts:17"
+        ],
+        "f5Refs": [
+          "1545032847b26faa71ba9880beb390e0d26c8513"
+        ]
+      },
       "id": "pr-26727",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
@@ -66974,14 +66987,26 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T15:23:41.543Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/threadTitle.ts:27",
+          "apps/server/src/persistence/Migrations/150_ExcludeImageOnlyPromptFromSearch.ts:1",
+          "apps/web/src/lib/terminalContext.ts:257",
+          "apps/web/src/components/chat/MessagesTimeline.logic.ts:646"
+        ],
+        "f5Refs": [
+          "1545032847b26faa71ba9880beb390e0d26c8513"
+        ]
+      },
       "id": "pr-27383",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-26769"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
