@@ -188,7 +188,7 @@ layer("GitServiceLive", (it) => {
             operation: "test.windowsLongPaths",
             cwd: process.cwd(),
             args: ["config", "--get", "--", "core.longpaths"],
-            stdin,
+            ...(stdin === undefined ? {} : { stdin }),
             allowNonZeroExit: true,
           });
           // The native runner also enforces policy. Assert Git's effective value,
