@@ -37,6 +37,20 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("configures public Ubuntu mirrors before the required browser installation and tests", () => {
+    const steps = workflow.jobs.browser!.steps!;
+    const configure = steps.findIndex((step) => step.run?.includes("configure-browser-apt.ts"));
+    const install = steps.findIndex((step) => step.name === "Install Chromium");
+    const tests = steps.findIndex((step) => step.name === "Browser tests");
+    expect(configure).toBeGreaterThanOrEqual(0);
+    expect(install).toBeGreaterThan(configure);
+    expect(tests).toBeGreaterThan(install);
+    expect(steps[configure]?.if).toBe(steps[install]?.if);
+    expect(steps[install]?.run).toContain("test:browser:install");
+    expect(steps[tests]?.run).toContain("test:browser");
+    expect(workflow.jobs.browser!["continue-on-error"]).toBeUndefined();
+  });
+
   it("keeps push runs per SHA and delegates queue cleanup to an isolated workflow", () => {
     const ci = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
     expect(ci.concurrency).toEqual({

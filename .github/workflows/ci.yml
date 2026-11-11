@@ -288,6 +288,9 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node scripts/ci-test-summary.ts --prepare
+      - name: Configure public Ubuntu mirrors for browser dependencies
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: sudo "$(command -v node)" scripts/configure-browser-apt.ts
       - name: Install Chromium
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
