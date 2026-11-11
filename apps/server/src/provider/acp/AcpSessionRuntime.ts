@@ -185,6 +185,7 @@ export interface AcpSessionRuntimeShape {
   readonly setMode: (
     modeId: string,
   ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
+  readonly setNativeMode: (modeId: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setConfigOption: (
     configId: string,
     value: string | boolean,
@@ -1057,6 +1058,19 @@ const makeAcpSessionRuntime = (
               Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
             );
           }),
+        ),
+      setNativeMode: (modeId) =>
+        getStartedState.pipe(
+          Effect.flatMap((started) => {
+            const payload = { sessionId: started.sessionId, modeId };
+            return runLoggedRequest(
+              "session/set_mode",
+              payload,
+              acp.raw.request("session/set_mode", payload),
+            );
+          }),
+          Effect.tap(() => updateCurrentModeId(modeId)),
+          Effect.asVoid,
         ),
       setConfigOption,
       setModel: (model) =>

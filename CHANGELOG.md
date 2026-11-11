@@ -40,6 +40,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
 - New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
 
+- Custom ACP agents, including Copilot, enter native Plan mode and restore their build mode when leaving Plan, including across reconnects. Steering preserves the active turn's mode. GitHub SSH aliases such as github.com-work resolve to github.com for pull requests.
+
 ## [0.1.7] - 2026-11-10
 
 ### Added

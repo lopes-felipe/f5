@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import * as Effect from "effect/Effect";
 
@@ -44,7 +44,15 @@ const permissionRequestCount = Math.max(
 );
 const sessionId = "mock-session-1";
 
-let currentModeId = "ask";
+const urlModes = process.env.T3_ACP_URL_MODES === "1";
+const modeId = (id: string) =>
+  urlModes ? "https://agentclientprotocol.com/protocol/session-modes#" + id : id;
+let currentModeId = modeId(process.env.T3_ACP_INITIAL_MODE ?? "ask");
+const modePath = process.env.T3_ACP_MODE_PATH;
+if (modePath && existsSync(modePath)) currentModeId = readFileSync(modePath, "utf8");
+const saveMode = () => {
+  if (modePath) writeFileSync(modePath, currentModeId);
+};
 let currentModelId = "default";
 let parameterizedModelPicker = true;
 let currentReasoning = "medium";
@@ -205,7 +213,9 @@ function primaryConfigOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 }
 
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
-  const options = primaryConfigOptions();
+  const options = primaryConfigOptions().filter(
+    (option) => !urlModes || option.category !== "mode",
+  );
   return secondModelOption
     ? [
         ...options,
@@ -223,17 +233,17 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 
 const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [
   {
-    id: "ask",
+    id: modeId("ask"),
     name: "Ask",
     description: "Request permission before making any changes",
   },
   {
-    id: "architect",
+    id: modeId("architect"),
     name: "Architect",
     description: "Design and plan software systems without implementation",
   },
   {
-    id: "code",
+    id: modeId("code"),
     name: "Code",
     description: "Write and modify code with full tool access",
   },
@@ -352,6 +362,7 @@ const program = Effect.gen(function* () {
       }
       if (request.configId === "mode" && typeof request.value === "string") {
         currentModeId = request.value;
+        saveMode();
       }
       if (request.configId === "model" && typeof request.value === "string") {
         currentModelId = request.value;
@@ -461,6 +472,8 @@ const program = Effect.gen(function* () {
           yield* agent.client.sessionUpdate({ sessionId: requestedSessionId, update });
       }
 
+      const promptGate = process.env.T3_ACP_PROMPT_GATE_PATH;
+      while (promptGate && !existsSync(promptGate)) yield* Effect.sleep("5 millis");
       if (promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }
@@ -819,7 +832,7 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
-    if (method !== "session/mode/set") {
+    if (method !== "session/mode/set" && method !== "session/set_mode") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }
 
@@ -845,6 +858,8 @@ const program = Effect.gen(function* () {
 
     if (typeof nextModeId === "string" && nextModeId.trim()) {
       currentModeId = nextModeId.trim();
+      saveMode();
+      if (process.env.T3_ACP_SUPPRESS_MODE_UPDATE === "1") return Effect.succeed({});
       return agent.client
         .sessionUpdate({
           sessionId: requestedSessionId,
