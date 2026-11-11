@@ -103,6 +103,7 @@ import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjec
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
 import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
+import { useNotificationInboxPopover } from "../notificationCenter/inboxStore";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
 import type { SidebarIndicatorsForThread } from "./sidebar/SidebarWorkflowItem";
@@ -962,6 +963,13 @@ export default function Sidebar() {
         event.preventDefault();
         event.stopPropagation();
         void navigate({ to: "/pull-requests" });
+        return;
+      }
+
+      if (command === "notifications.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        useNotificationInboxPopover.getState().toggle();
         return;
       }
 

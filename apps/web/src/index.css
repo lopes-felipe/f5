@@ -169,6 +169,32 @@
   }
 }
 
+/*
+ * Notification material: macOS Notification Center style. Translucent popover with a strong
+ * blur, solid when the user asks for less transparency.
+ */
+@utility surface-notification {
+  background-color: color-mix(in oklab, var(--popover) 78%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  backdrop-filter: blur(28px) saturate(1.7);
+  border: 1px solid color-mix(in oklab, var(--foreground) 10%, transparent);
+  box-shadow:
+    0 2px 6px rgb(0 0 0 / 0.06),
+    0 14px 36px -14px rgb(0 0 0 / 0.28);
+  &:where(.dark, .dark *) {
+    background-color: color-mix(in oklab, var(--popover) 72%, transparent);
+    border-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+    box-shadow:
+      0 2px 6px rgb(0 0 0 / 0.35),
+      0 16px 40px -14px rgb(0 0 0 / 0.65);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 /* Staggered list entry: children rise in 28ms steps (set --i per child). */
 @utility stagger-children {
   & > * {
