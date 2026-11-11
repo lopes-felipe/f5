@@ -114,8 +114,17 @@ export function resolveCodexInstanceHomePaths(input: {
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
   config: CodexSettings,
   managed = false,
+  inheritedCodexHome?: string,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
   const path = yield* Path.Path;
+  // Match the process environment when no explicit home or overlay owns it.
+  if (
+    !managed &&
+    !config.homePath.trim() &&
+    !config.shadowHomePath.trim() &&
+    inheritedCodexHome?.trim()
+  )
+    config = { ...config, homePath: inheritedCodexHome };
   const sharedHomePath = resolveHomePath(path, config.homePath);
   if (managed)
     return {

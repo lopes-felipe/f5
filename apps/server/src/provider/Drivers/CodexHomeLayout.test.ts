@@ -64,6 +64,30 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   });
 
   describe("resolveCodexHomeLayout", () => {
+    it.effect("uses the instance environment home for runtime and continuation", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        for (const home of ["/accounts/work", "/accounts/personal", "/accounts/work "]) {
+          const layout = yield* resolveCodexHomeLayout(decodeCodexSettings({}), false, home);
+          expect(layout.effectiveHomePath).toBe(path.resolve(home));
+          expect(layout.continuationKey).toBe(`codex:home:${path.resolve(home)}`);
+        }
+        const explicit = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: "/explicit" }),
+          false,
+          "/environment",
+        );
+        expect(explicit.continuationKey).toBe(`codex:home:${path.resolve("/explicit")}`);
+        const overlay = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: "/shared", shadowHomePath: "/shadow" }),
+          false,
+          "/environment",
+        );
+        expect(overlay.continuationKey).toBe(`codex:home:${path.resolve("/shared")}`);
+        expect(overlay.effectiveHomePath).toBe(path.resolve("/shadow"));
+      }),
+    );
+
     it.effect("uses direct CODEX_HOME when no shadow home is configured", () =>
       Effect.gen(function* () {
         const homePath = yield* makeTempDir("t3code-codex-home-");

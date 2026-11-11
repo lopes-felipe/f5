@@ -203,9 +203,17 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             cause,
           }),
       });
+      const processEnvironment = buildAccountExecutionEnvironment({
+        purpose: "provider",
+        profile: serverConfig.profile,
+        stateDir: serverConfig.stateDir,
+        baseEnv: process.env,
+        instance: environment,
+      });
       const homeLayout = yield* resolveCodexHomeLayout(
         config,
         serverConfig.profile?.isDefault === false,
+        processEnvironment.CODEX_HOME,
       );
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -226,13 +234,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         homePath: homeLayout.effectiveHomePath ?? config.homePath,
       } satisfies CodexSettings;
-      const processEnvironment = buildAccountExecutionEnvironment({
-        purpose: "provider",
-        profile: serverConfig.profile,
-        stateDir: serverConfig.stateDir,
-        baseEnv: process.env,
-        instance: environment,
-      });
       yield* Effect.tryPromise({
         try: () =>
           validateProviderCompatibility(
