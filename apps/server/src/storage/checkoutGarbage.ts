@@ -393,18 +393,21 @@ export async function removeDependencyFolder(
     return untouched("refused", activity, "Folder changed since review. Rescan before deletion.");
   // Reject protected repositories before probing their files. Windows probes
   // may be unavailable or slow; neither should obscure this definitive refusal.
-  if (await containsGitEntry(input.path))
-    return untouched(
+  const refuseGitCheckout = () =>
+    untouched(
       "refused",
       activity,
       "Folder contains a Git checkout. Rescan after moving or removing it.",
     );
+  if (await containsGitEntry(input.path)) return refuseGitCheckout();
   if (process.platform === "win32") {
     const files = await enumerateFiles(input.path, { maxDepth: 64 });
     if (files.errors.length)
       return untouched("refused", activity, "Could not inspect dependency files for active use.");
     const fileUse = await inspectWindowsFileUse(files.files.map((file) => file.path));
     if (fileUse.state !== "idle") return untouched("busy", fileUse);
+    // A checkout can appear while the native file-use probe is running.
+    if (await containsGitEntry(input.path)) return refuseGitCheckout();
   }
   let quarantine = input.path;
   if (!Path.basename(input.path).startsWith(DEPENDENCY_QUARANTINE_PREFIX)) {
