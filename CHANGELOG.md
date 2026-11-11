@@ -6,8 +6,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Custom ACP agents, including Copilot, enter native Plan mode and restore their build mode when leaving Plan, including across reconnects. Steering preserves the active turn's mode. GitHub SSH aliases such as github.com-work resolve to github.com for pull requests.
-
 - An open Claude in Chrome session no longer blocks computer control for every other thread and profile. Other agents can control the computer while it isn't running a Chrome call, and its next Chrome call waits up to 20 seconds for them. Waiting threads say which agent they're waiting for and offer **Stop that agent**. Busy errors name the profile holding control.
 - Clicking a desktop notification opens its thread, pull request, scheduled task or upstream project instead of only bringing F5 forward, including after a reload, after closing the window, and from Notification Center. Scheduled-run notices open their thread without reloading the app.
 - New worktree threads based on a branch that isn't on the remote no longer finish with a "Fetch base branch" warning. A local base branch with unpushed commits is used as is, instead of starting from the older remote copy; the setup card warns when the local branch has diverged from the remote or the remote can't be reached.
@@ -29,6 +27,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - ACP Always allow falls back to the agent's allow-once option. Archived Codex threads can be forked, and late provider refreshes cannot replace status from changed settings.
 - PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
 - New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
+
+- Custom ACP agents, including Copilot, enter native Plan mode and restore their build mode when leaving Plan, including across reconnects. Steering preserves the active turn's mode. GitHub SSH aliases such as github.com-work resolve to github.com for pull requests.
 
 ## [0.1.7] - 2026-11-10
 
