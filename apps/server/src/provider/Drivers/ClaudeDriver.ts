@@ -122,6 +122,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
       const serverConfig = yield* ServerConfig;
       yield* Effect.tryPromise({
         try: () => validateManagedHome(serverConfig, config.homePath),
@@ -293,6 +294,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
       );
 
       const snapshot = yield* makeManagedServerProvider<ClaudeSettings>({
