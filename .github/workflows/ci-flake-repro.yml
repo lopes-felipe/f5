@@ -57,7 +57,7 @@ jobs:
       - name: Install Chromium
         if: inputs.suite == 'web-browser'
         run: |
-          bun run --cwd apps/web test:browser:install:ci
+          bun run --cwd apps/web test:browser:install
       - name: Configure Electron sandbox
         if: inputs.suite == 'desktop-smoke' && runner.os == 'Linux'
         working-directory: apps/desktop
