@@ -13,7 +13,8 @@ import {
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import { ChromeArtifactCache, defaultChromeArtifactCacheIo } from "./chromeArtifactCache";
-import { claudeChromeDescriptor, parseNativeHostManifest } from "./chromeNativeHost";
+import type { ChromeSharedRegistration } from "@t3tools/contracts";
+import { claudeChromeDescriptor, parseNativeHostManifest, sha256 } from "./chromeNativeHost";
 import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import { ChromeSessionRuntime, type ChromeRuntimeDeps } from "./chromeSessionRuntime";
@@ -256,6 +257,80 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     expect(h.runtime.status("t", "g1")?.state).toBe("external-cli-conflict");
     await writeFile(manifestPath, manifest(wrapperPath));
     expect(await h.runtime.admit(call("read_page"), "t")).toBe(CLAUDE_IN_CHROME_EXTERNAL_CONFLICT);
+  });
+
+  describe("sharing Chrome with another profile's session", () => {
+    const peerWrapperBytes = `${record.identity.wrapperHeader.join("\n")}\nexec /peer/claude --chrome-native-host\n`;
+    /** Another profile's launch: its wrapper, and the manifests pointed at it. */
+    async function peerLaunch() {
+      const peerWrapper = join(root, "peer", "chrome", "chrome-native-host");
+      await mkdir(dirname(peerWrapper), { recursive: true });
+      await writeFile(peerWrapper, peerWrapperBytes, { mode: 0o755 });
+      const registration = {
+        manifests: [{ location: manifestPath, sha256: sha256(manifest(peerWrapper)) }],
+        wrapper: { location: peerWrapper, sha256: sha256(peerWrapperBytes) },
+      };
+      return { peerWrapper, registration };
+    }
+
+    it("acquires as shared and reports its own verified registration", async () => {
+      const registrationVerified = vi.fn();
+      const h = await setup({ shared: () => true, registrationVerified });
+      await connected(h);
+      expect(h.deps.acquire).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), true);
+      expect(h.runtime.shared("t", "g1")).toBe(true);
+      expect(registrationVerified).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "t" }),
+        {
+          manifests: [{ location: manifestPath, sha256: sha256(manifest(wrapperPath)) }],
+          wrapper: { location: wrapperPath, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+        },
+      );
+    });
+
+    it("accepts a peer's verified registration, and only while its wrapper is unchanged", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const h = await setup({ shared: () => true, sharedRegistrations: () => peers });
+      await connected(h);
+      const { peerWrapper, registration } = await peerLaunch();
+      await writeFile(manifestPath, manifest(peerWrapper));
+      // Not relayed yet: an unknown registration is an external change.
+      peers.push(registration);
+      expect(await h.runtime.admit(call("read_page"), "t")).toBeUndefined();
+      // The peer's wrapper changed after its launch: no longer a verified registration.
+      await writeFile(peerWrapper, `${peerWrapperBytes}# edited\n`);
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+    });
+
+    it("still requires this session's own wrapper to match", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const h = await setup({ shared: () => true, sharedRegistrations: () => peers });
+      await connected(h);
+      const { peerWrapper, registration } = await peerLaunch();
+      peers.push(registration);
+      await writeFile(manifestPath, manifest(peerWrapper));
+      await writeFile(wrapperPath, "#!/bin/sh\nexec /tmp/evil --chrome-native-host\n");
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+    });
+
+    it("treats a peer's registration as a conflict for a session that doesn't share", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const registrationVerified = vi.fn();
+      const h = await setup({ sharedRegistrations: () => peers, registrationVerified });
+      await connected(h);
+      expect(h.deps.acquire).toHaveBeenCalledWith(expect.anything(), false);
+      expect(registrationVerified).not.toHaveBeenCalled();
+      const { peerWrapper, registration } = await peerLaunch();
+      peers.push(registration);
+      await writeFile(manifestPath, manifest(peerWrapper));
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+    });
   });
 
   it("re-inspects after an approval wait even for the same tool use", async () => {

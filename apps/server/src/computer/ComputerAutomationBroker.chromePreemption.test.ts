@@ -239,6 +239,50 @@ describe("Chrome lease preemption", () => {
     expect(ipc.chrome).toBeNull();
   });
 
+  it("tracks every shared holder and asks to share only when main negotiated it", async () => {
+    const { ipc, broker } = await harness();
+    ipc.emit("message", {
+      type: "chromeLeaseChanged",
+      holder: holderA,
+      holders: [holderA, holderB],
+    });
+    broker.reportChromeCalls("b", "gen-b", true);
+    expect(broker.snapshot().chromeHolders).toEqual([holderA, holderB]);
+    // Both holders are Claude sessions main admits beside native control: neither is stopped.
+    const a = releaser(() => true);
+    const b = releaser(() => true);
+    broker.registerChromeReleaser("a", "gen-a", a);
+    broker.registerChromeReleaser("b", "gen-b", b);
+    ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["chrome-call-activity-v1", "chrome-call-admission-v1"],
+    });
+    await broker.preemptChromeFor("c", { kind: "foreground" });
+    expect([a.asked(), b.asked()]).toEqual([0, 0]);
+    // Without the shared capability the request says nothing about sharing.
+    await broker.acquireChromeLease(holderA, 1000, true);
+    const plain = ipc.messages.filter((message) => message.type === "chromeLeaseAcquire").at(-1);
+    expect(plain).not.toHaveProperty("shared");
+    ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["chrome-call-activity-v1", "chrome-call-admission-v1", "chrome-shared-v1"],
+    });
+    await broker.acquireChromeLease(holderA, 1000, true);
+    const shared = ipc.messages.filter((message) => message.type === "chromeLeaseAcquire").at(-1);
+    expect(shared).toMatchObject({ shared: true });
+    // A holder that left takes its call report with it.
+    ipc.emit("message", { type: "chromeLeaseChanged", holder: holderA, holders: [holderA] });
+    expect(broker.snapshot().chromeHolders).toEqual([holderA]);
+    ipc.emit("message", {
+      type: "chromeLeaseChanged",
+      holder: holderA,
+      holders: [holderA, holderB],
+    });
+    expect(broker.computerUse().holders.find((holder) => holder.threadId === "b")?.browser).toBe(
+      "unknown",
+    );
+  });
+
   it("leaves other profiles' holders anonymous and alone", async () => {
     const { ipc, broker } = await harness();
     ipc.setChrome({ ...holderA, profileId: "other" });

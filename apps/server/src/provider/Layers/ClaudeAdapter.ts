@@ -8998,7 +8998,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         sessions.set(threadId, context);
         if (context.chromeGeneration && computerBroker) {
           // The Chrome lease lives as long as this CLI: an idle session stops to free it,
-          // after CLAUDE_CHROME_IDLE_MS or when another thread needs Chrome.
+          // after CLAUDE_CHROME_IDLE_MS (unless it shares Chrome) or when another thread
+          // needs Chrome.
           const chromeLeaseGeneration = context.chromeGeneration;
           const broker = computerBroker;
           context.chromeActivity = new ClaudeChromeActivity({
@@ -9008,6 +9009,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               broker.reportChromeCallEnded(threadId, chromeLeaseGeneration, toolUseId),
             // Compaction, background tasks and scheduled wake-ups die with the CLI.
             busy: () => claudeSessionBackgroundBusy(context),
+            stopsWhenIdle: () =>
+              context.chromeRuntime?.shared(threadId, chromeLeaseGeneration) !== true,
             // Re-checked under the thread lock: a turn or background work that started
             // since the idle check refuses the stop, and the tracker resumes.
             stop: (reason) =>

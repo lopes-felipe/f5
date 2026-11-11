@@ -21,7 +21,9 @@ import {
   COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
   COMPUTER_CHROME_RELEASE_CAPABILITY,
   COMPUTER_CHROME_RELEASE_WAIT_MS,
+  COMPUTER_CHROME_SHARED_CAPABILITY,
   DesktopComputerHostMessage,
+  type ChromeSharedRegistration,
   type ChromeReleaseOutcome,
   type ComputerBlocker,
   type ComputerAccessAnswer,
@@ -39,8 +41,10 @@ import type { ComputerController, ComputerExecutionStateUpdate } from "./Compute
 import {
   CHROME_NATIVE_WORK_FINISHING_MESSAGE,
   CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+  CHROME_WAITING_FOR_CHROME_CALL_MESSAGE,
   CHROME_WAITING_FOR_NATIVE_MESSAGE,
   ChromeLeaseAuthority,
+  sameChromeHolder,
   isChromeSelfWait,
   nativeScopeExcludesChrome,
 } from "./ChromeLeaseAuthority";
@@ -75,8 +79,14 @@ export class ComputerHostChannel {
   readonly chrome: ChromeLeaseAuthority;
   /** Whether a backend's Chrome session runs a browser call (`chromeCallsChanged`). */
   private readonly chromeCalls = new Map<string, boolean>();
-  /** The Chrome holder last announced, so its report ends with its lease. */
-  private chromeCallsHolder: ChromeLeaseHolder | null = null;
+  /** The Chrome holders last announced, so each report ends with its lease. */
+  private chromeCallsHolders: ReadonlyArray<ChromeLeaseHolder> = [];
+  /**
+   * The latest verified registration of each profile's shared Chrome sessions
+   * (`chromeRegistrationVerified`), relayed to shared backends as `chromeRegistrations`. Kept
+   * after the session ends: the manifests still point at that wrapper until another launch.
+   */
+  private readonly chromeRegistrations = new Map<string, ChromeSharedRegistration>();
   /**
    * Calls main admitted (`chromeLeaseValidate.callId`) and hasn't seen end, per holder. Marked
    * before the validation answer, so no native admission can slip in ahead of the call.
@@ -157,18 +167,20 @@ export class ComputerHostChannel {
     } = {},
   ) {
     this.chrome = new ChromeLeaseAuthority(
-      (holder) => {
+      (holders) => {
         // A report outlives only its own lease; a later holder starts unknown.
-        const previous = this.chromeCallsHolder;
-        if (previous && (!holder || chromeCallsKey(previous) !== chromeCallsKey(holder))) {
-          this.chromeCalls.delete(chromeCallsKey(previous));
-          this.chromeCallsAdmitted.delete(chromeCallsKey(previous));
+        const live = new Set(holders.map(chromeCallsKey));
+        for (const previous of this.chromeCallsHolders) {
+          const key = chromeCallsKey(previous);
+          if (live.has(key)) continue;
+          this.chromeCalls.delete(key);
+          this.chromeCallsAdmitted.delete(key);
         }
-        this.chromeCallsHolder = holder;
-        for (const profileId of this.backends.keys()) this.sendChromeLease(profileId, holder);
+        this.chromeCallsHolders = holders;
+        for (const profileId of this.backends.keys()) this.sendChromeLease(profileId);
         // Native requests queued behind the lease re-check at once.
         controller.availabilityChanged?.();
-        this.chromeOptions?.changed?.(holder);
+        this.chromeOptions?.changed?.(holders[0] ?? null);
       },
       chromeOptions?.supervisor,
       {
@@ -178,6 +190,14 @@ export class ComputerHostChannel {
           this.backends
             .get(holder.profileId)
             ?.capabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY) === true,
+        // Sharing needs main to admit every call (the router) and the peer to learn holders.
+        sharedCapable: (holder) => {
+          const capabilities = this.backends.get(holder.profileId)?.capabilities;
+          return (
+            capabilities?.has(COMPUTER_CHROME_SHARED_CAPABILITY) === true &&
+            capabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY)
+          );
+        },
         ...(options.profileName ? { profileName: options.profileName } : {}),
         ...(chromeOptions?.log ? { log: chromeOptions.log } : {}),
       },
@@ -228,6 +248,26 @@ export class ComputerHostChannel {
       holder.profileId === profileId && holder.threadId === threadId;
     return { own: holders.some(isOwn), others: holders.filter((holder) => !isOwn(holder)) };
   }
+  /**
+   * Whether another holder sharing Chrome with `holder` has a call main admitted and hasn't
+   * seen end, or reports one running. An unreported holder doesn't count: shared holders
+   * admit every call through main, so their admitted calls are the calls in flight.
+   */
+  private chromeCallRunningElsewhere(holder: ChromeLeaseHolder): boolean {
+    return this.chrome.holders().some((other) => {
+      if (sameChromeHolder(other, holder)) return false;
+      const key = chromeCallsKey(other);
+      return this.chromeCalls.get(key) === true || !!this.chromeCallsAdmitted.get(key)?.size;
+    });
+  }
+  /** Shared peers learn every profile's latest verified shared registration. */
+  private sendChromeRegistrations(profileId: string): void {
+    if (!this.backends.get(profileId)?.capabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY)) return;
+    this.send(profileId, {
+      type: "chromeRegistrations",
+      registrations: [...this.chromeRegistrations.values()],
+    });
+  }
   /** No call running by the backend's report, and none admitted by main still unfinished. */
   private chromeCallsIdle(holder: ChromeLeaseHolder): boolean {
     const key = chromeCallsKey(holder);
@@ -244,11 +284,10 @@ export class ComputerHostChannel {
     change: (key: string) => void,
   ): void {
     const key = chromeCallsKey({ profileId, threadId, sessionGeneration });
-    const holder = this.chrome.current();
+    const holder = this.chrome.holders().find((candidate) => chromeCallsKey(candidate) === key);
     const before = holder ? this.chromeBusyForOthers(holder) : undefined;
     change(key);
-    if (holder && holder.profileId === profileId && before !== this.chromeBusyForOthers(holder))
-      this.sendChromeLeaseToOthers(holder);
+    if (holder && before !== this.chromeBusyForOthers(holder)) this.sendChromeLeaseToOthers(holder);
     this.controller.availabilityChanged?.();
   }
   private capable(backend: Backend | undefined): boolean {
@@ -296,8 +335,8 @@ export class ComputerHostChannel {
     this.chrome.releaseProfile(profileId, "unresponsive");
     // A drain changes no holder, so nothing announced it: other profiles re-learn the lease,
     // now unreported and so busy, while it may still be acting with no backend to gate it.
-    const draining = this.chrome.current();
-    if (draining?.profileId === profileId) this.sendChromeLeaseToOthers(draining);
+    const draining = this.chrome.holders().find((holder) => holder.profileId === profileId);
+    if (draining) this.sendChromeLeaseToOthers(draining);
     this.quarantineBuiltin(profileId, builtin);
   }
   /** A disconnected Sky client may still act: keep its foreground lease until it exits. */
@@ -386,6 +425,10 @@ export class ComputerHostChannel {
               (capability === COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY &&
                 (message.capabilities ?? []).includes(COMPUTER_CHROME_CALLS_CAPABILITY)) ||
               capability === COMPUTER_CHROME_RELEASE_CAPABILITY ||
+              // Sharing relies on main admitting each call: it needs call admission too.
+              (capability === COMPUTER_CHROME_SHARED_CAPABILITY &&
+                (message.capabilities ?? []).includes(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY) &&
+                (message.capabilities ?? []).includes(COMPUTER_CHROME_CALLS_CAPABILITY)) ||
               capability === COMPUTER_SESSION_LIFECYCLE_CAPABILITY ||
               capability === COMPUTER_GRANT_FORGET_CAPABILITY ||
               (capability === COMPUTER_REMEMBERED_CONSENT_CAPABILITY && !!this.options.consents) ||
@@ -410,7 +453,8 @@ export class ComputerHostChannel {
         this.send(profileId, { type: "status", status: this.statusFor(backend) });
         this.sendLeases(profileId);
         if (this.chrome.current() || this.chrome.recoveryRequired())
-          this.sendChromeLease(profileId, this.chrome.current());
+          this.sendChromeLease(profileId);
+        if (this.chromeRegistrations.size) this.sendChromeRegistrations(profileId);
         return;
       }
       const fail = (requestId: string, error: unknown) => {
@@ -730,12 +774,29 @@ export class ComputerHostChannel {
             // Released native holders may still be executing; Chrome waits for their drain.
             if (this.controller.nativeWorkConflicts("chrome"))
               throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
-            this.chrome.acquire(message.holder, this.controller.lease.chromeConflict(profileId));
+            this.chrome.acquire(
+              message.holder,
+              this.controller.lease.chromeConflict(profileId),
+              message.shared === true &&
+                backend.capabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY),
+            );
             this.send(profileId, { type: "response", requestId: message.requestId, result: true });
           } catch (error) {
             fail(message.requestId, error);
           }
           break;
+        case "chromeRegistrationVerified": {
+          if (!backend.capabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY)) break;
+          // Only a shared holder of the sending profile vouches for its own registration.
+          if (message.holder.profileId !== profileId || !this.chrome.sharedHolder(message.holder))
+            break;
+          this.chromeRegistrations.delete(profileId);
+          this.chromeRegistrations.set(profileId, message.registration);
+          while (this.chromeRegistrations.size > 32)
+            this.chromeRegistrations.delete(this.chromeRegistrations.keys().next().value!);
+          for (const peer of this.backends.keys()) this.sendChromeRegistrations(peer);
+          break;
+        }
         case "chromeRestoreAcquire":
           if (message.holder.profileId !== profileId) {
             child.disconnect();
@@ -986,6 +1047,13 @@ export class ComputerHostChannel {
                 _tag: "Execution",
                 message: CHROME_NATIVE_WORK_FINISHING_MESSAGE,
               });
+            // Shared holders drive one Chrome: one call runs at a time across them. Each call
+            // is marked admitted below before the answer, so two can never both pass here.
+            if (this.chromeCallRunningElsewhere(message.holder))
+              throw new ComputerControlError({
+                _tag: "Execution",
+                message: CHROME_WAITING_FOR_CHROME_CALL_MESSAGE,
+              });
             // Marked before the answer: from here on no native admission sees this holder idle.
             if (
               message.callId !== undefined &&
@@ -1216,16 +1284,23 @@ export class ComputerHostChannel {
     child.once("disconnect", disconnected);
     child.once("exit", disconnected);
   }
-  private sendChromeLease(profileId: string, holder: ChromeLeaseHolder | null): void {
+  /**
+   * What `profileId` learns about Chrome: its own holders (all of them for shared peers, the
+   * first for others), whether another profile's holder is using Chrome, and whether one
+   * refuses this profile's foreground control.
+   */
+  private sendChromeLease(profileId: string): void {
+    const holders = this.chrome.holders();
+    const own = holders.filter((holder) => holder.profileId === profileId);
+    const others = holders.filter((holder) => holder.profileId !== profileId);
+    const capabilities = this.backends.get(profileId)?.capabilities;
     this.send(profileId, {
       type: "chromeLeaseChanged",
-      holder: holder?.profileId === profileId ? holder : null,
-      otherProfile:
-        holder !== null && holder.profileId !== profileId && this.chromeBusyForOthers(holder),
-      ...(holder !== null &&
-      holder.profileId !== profileId &&
-      this.chrome.blocksOthersNative() &&
-      this.backends.get(profileId)?.capabilities.has(COMPUTER_CHROME_RELEASE_CAPABILITY)
+      holder: own[0] ?? null,
+      ...(capabilities?.has(COMPUTER_CHROME_SHARED_CAPABILITY) ? { holders: own } : {}),
+      otherProfile: others.some((holder) => this.chromeBusyForOthers(holder)),
+      ...(others.some((holder) => this.chrome.blocksNative(holder)) &&
+      capabilities?.has(COMPUTER_CHROME_RELEASE_CAPABILITY)
         ? { otherProfileBlocksNative: true }
         : {}),
       ...(this.chrome.recoveryRequired() ? { recoveryRequired: true } : {}),
@@ -1242,17 +1317,16 @@ export class ComputerHostChannel {
   /** Re-announces the holder's lease to every profile but its own. */
   private sendChromeLeaseToOthers(holder: ChromeLeaseHolder): void {
     for (const profileId of this.backends.keys())
-      if (profileId !== holder.profileId) this.sendChromeLease(profileId, holder);
+      if (profileId !== holder.profileId) this.sendChromeLease(profileId);
   }
   /** Recovery state changed: every backend re-learns Chrome ownership. */
   publishChrome(): void {
-    for (const profileId of this.backends.keys())
-      this.sendChromeLease(profileId, this.chrome.current());
+    for (const profileId of this.backends.keys()) this.sendChromeLease(profileId);
   }
   /** Sets only the Chrome lease's latch; callers send `pauseChanged`. */
   pauseChrome(profileId: string, threadId: string, paused: boolean): boolean {
-    const holder = this.chrome.current();
-    if (!holder || holder.profileId !== profileId || holder.threadId !== threadId) return false;
+    const holder = this.chrome.holderOf(profileId, threadId);
+    if (!holder) return false;
     this.chrome.setPaused(holder, paused);
     return true;
   }
@@ -1269,8 +1343,7 @@ export class ComputerHostChannel {
     try {
       this.controller.setPaused(profileId, threadId, paused);
     } catch (error) {
-      const holder = this.chrome.current();
-      const holdsChrome = holder?.profileId === profileId && holder.threadId === threadId;
+      const holdsChrome = this.chrome.holderOf(profileId, threadId) !== undefined;
       if (paused || !holdsChrome || computerError(error)._tag !== "Unavailable") throw error;
     }
     return this.pauseChrome(profileId, threadId, paused);
@@ -1353,12 +1426,18 @@ export class ComputerHostChannel {
    * otherwise the conflicting native lease or takeover reservation.
    */
   blockerFor(holder: ComputerLeaseHolder): ComputerBlocker | undefined {
-    const chromeHolder = this.chrome.current();
-    if (chromeHolder) {
+    if (this.chrome.current()) {
       try {
         this.chrome.assertNativeAvailable(holder.profileId, holder.scope, holder);
       } catch (error) {
-        if (computerError(error)._tag === "Busy" && chromeHolder.threadId !== holder.threadId)
+        const chromeHolder = this.chrome
+          .holders()
+          .find(
+            (candidate) =>
+              this.chrome.blocksNative(candidate) &&
+              !(candidate.profileId === holder.profileId && candidate.threadId === holder.threadId),
+          );
+        if (computerError(error)._tag === "Busy" && chromeHolder)
           return this.blocker(
             holder.profileId,
             chromeHolder,
@@ -1425,10 +1504,9 @@ export class ComputerHostChannel {
       holder.profileId === entry.profileId &&
       holder.threadId === entry.threadId &&
       holder.sessionGeneration === entry.sessionGeneration;
-    const chromeHolder = this.chrome.current();
     const pending = this.controller.lease.pendingTakeover()?.holder;
     if (
-      (chromeHolder && same(chromeHolder)) ||
+      this.chrome.holders().some(same) ||
       this.controller.lease.holders().some(same) ||
       (pending && same(pending))
     )
@@ -1441,8 +1519,12 @@ export class ComputerHostChannel {
    * another profile. Resolves with the holder's answer, or `timeout`.
    */
   private requestChromeRelease(requester: string): Promise<ChromeReleaseOutcome> {
-    const holder = this.chrome.current();
-    if (!holder || holder.profileId === requester) return Promise.resolve("not-holder");
+    // A holder that refuses others (Codex, older backends, a running call) is the one to ask;
+    // idle shared sessions already let the requester through.
+    const candidates = this.chrome.holders().filter((holder) => holder.profileId !== requester);
+    const holder =
+      candidates.find((candidate) => this.chrome.blocksNative(candidate)) ?? candidates[0];
+    if (!holder) return Promise.resolve("not-holder");
     const backend = this.backends.get(holder.profileId);
     if (!backend?.capabilities.has(COMPUTER_CHROME_RELEASE_CAPABILITY))
       return Promise.resolve("not-holder");

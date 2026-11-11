@@ -8,7 +8,7 @@ import {
   ChromeLeaseAuthority,
   isChromeSelfWait,
 } from "./ChromeLeaseAuthority";
-import type { ComputerLeaseHolder } from "@t3tools/contracts";
+import type { ChromeLeaseHolder, ComputerLeaseHolder } from "@t3tools/contracts";
 const holder = {
   profileId: "profile-a",
   threadId: "thread",
@@ -86,13 +86,13 @@ describe("Chrome device lease", () => {
     });
   });
   it("rolls back ownership when its emergency shortcut cannot be registered", () => {
-    const changed = vi.fn((current) => {
-      if (current) throw new Error("shortcut unavailable");
+    const changed = vi.fn((holders: ReadonlyArray<unknown>) => {
+      if (holders.length) throw new Error("shortcut unavailable");
     });
     const lease = new ChromeLeaseAuthority(changed);
     expect(() => lease.acquire(holder, null)).toThrow("shortcut unavailable");
     expect(lease.current()).toBeNull();
-    expect(changed).toHaveBeenLastCalledWith(null);
+    expect(changed).toHaveBeenLastCalledWith([]);
   });
   it("does not acquire while native control owns the machine", () => {
     const lease = new ChromeLeaseAuthority(vi.fn());
@@ -346,5 +346,102 @@ describe("native control for the Chrome holder's own thread", () => {
     now = 30_000;
     expect(() => lease.assertNativeAvailable("profile-a", undefined, other)).toThrow();
     expect(log).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("shared Claude in Chrome", () => {
+  const peer = { ...holder, profileId: "profile-b", threadId: "peer" };
+  const make = (
+    options: {
+      sharedCapable?: (h: ChromeLeaseHolder) => boolean;
+      idle?: Set<string>;
+    } = {},
+  ) => {
+    const changed = vi.fn();
+    const idle = options.idle ?? new Set<string>();
+    const lease = new ChromeLeaseAuthority(changed, undefined, {
+      callAdmission: () => true,
+      callsIdle: (h) => idle.has(h.threadId),
+      sharedCapable: options.sharedCapable ?? (() => true),
+    });
+    return { lease, changed, idle };
+  };
+
+  it("lets shared Claude sessions hold Chrome together, across profiles", () => {
+    const { lease, changed } = make();
+    lease.acquire(holder, null, true);
+    lease.acquire(peer, null, true);
+    expect(lease.holders()).toEqual([holder, peer]);
+    expect(changed).toHaveBeenLastCalledWith([holder, peer]);
+    expect(lease.sharedHolder(peer)).toBe(true);
+    expect(() => lease.validate(peer)).not.toThrow();
+    lease.release(holder);
+    expect(lease.holders()).toEqual([peer]);
+    expect(lease.current()).toEqual(peer);
+  });
+
+  it("keeps Chrome exclusive unless both sessions share from shared-capable backends", () => {
+    const codex = { ...peer, provider: "codex" as const };
+    const cases: Array<[() => void, string]> = [];
+    {
+      const { lease } = make();
+      lease.acquire(holder, null, true);
+      cases.push([() => lease.acquire(peer, null, false), "unshared newcomer"]);
+      cases.push([() => lease.acquire(codex, null, true), "Codex newcomer"]);
+    }
+    {
+      const { lease } = make();
+      lease.acquire(holder, null, false);
+      cases.push([() => lease.acquire(peer, null, true), "unshared holder"]);
+    }
+    {
+      const { lease } = make({ sharedCapable: (h) => h.profileId !== "profile-b" });
+      lease.acquire(holder, null, true);
+      cases.push([() => lease.acquire(peer, null, true), "older backend"]);
+    }
+    for (const [run, label] of cases) expect(run, label).toThrow(ComputerControlError);
+  });
+
+  it("releases each shared holder on its own, by holder or by profile", () => {
+    const { lease } = make();
+    lease.acquire(holder, null, true);
+    lease.interrupt("emergency");
+    expect(lease.holders()).toEqual([]);
+    lease.acquire(holder, null, true);
+    lease.acquire(peer, null, true);
+    lease.releaseProfile("profile-a");
+    expect(lease.holders()).toEqual([peer]);
+    expect(() => lease.validate(holder)).toThrow();
+  });
+
+  it("lets native control start only while every shared holder is idle", () => {
+    const { lease, idle } = make();
+    lease.acquire(holder, null, true);
+    lease.acquire(peer, null, true);
+    const requester = { threadId: "someone" };
+    expect(() => lease.assertNativeAvailable("profile-c", undefined, requester)).toThrow();
+    idle.add(holder.threadId);
+    expect(() => lease.assertNativeAvailable("profile-c", undefined, requester)).toThrow();
+    expect(lease.blocksNative(holder)).toBe(false);
+    expect(lease.blocksNative(peer)).toBe(true);
+    idle.add(peer.threadId);
+    expect(() => lease.assertNativeAvailable("profile-c", undefined, requester)).not.toThrow();
+    expect(lease.blocksOthersNative()).toBe(false);
+    // A holder's own thread still needs every other holder idle.
+    idle.delete(peer.threadId);
+    expect(() =>
+      lease.assertNativeAvailable("profile-a", undefined, { threadId: holder.threadId }),
+    ).toThrow();
+  });
+
+  it("pauses one shared holder without touching the other", () => {
+    const { lease } = make();
+    lease.acquire(holder, null, true);
+    lease.acquire(peer, null, true);
+    lease.setPaused(peer, true);
+    expect(() => lease.validate(peer)).toThrow();
+    expect(() => lease.validate(holder)).not.toThrow();
+    expect(lease.holderOf("profile-b", "peer")).toEqual(peer);
+    expect(lease.interrupt("emergency")).toEqual([holder, peer]);
   });
 });

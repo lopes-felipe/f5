@@ -133,8 +133,15 @@ profile by title, and whether that agent is using Chrome or controlling the comp
 **Stop that agent** pauses only that agent, even in another profile. Resume it from its own
 thread.
 
+Claude threads in different profiles share Claude in Chrome when the installed Claude
+version is certified for it. Each keeps its own tab group, and their Chrome calls run one
+at a time: a call waits up to twenty seconds for another agent's call to finish. Each
+profile's Claude must be connected to the browser once: run `claude --chrome` with that
+profile's Claude settings folder, open `/chrome` and choose **Select browser…**. Until
+then its Chrome calls report that the extension isn't connected.
+
 An idle Chrome session in another profile also gives Chrome up when a thread here needs
-Chrome, the same way one in this profile does. A Codex Chrome session, or one from an older
+Chrome and can't share it, the same way one in this profile does. A Codex Chrome session, or one from an older
 F5 backend, still blocks foreground control while it is open; when it is idle, a thread here
 that needs foreground control stops it, as one in the same profile would.
 

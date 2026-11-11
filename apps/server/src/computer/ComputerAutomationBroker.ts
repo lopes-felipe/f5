@@ -32,6 +32,7 @@ import {
   type ComputerApp,
   type DesktopComputerHostMessage,
   type ChromeLeaseHolder,
+  type ChromeSharedRegistration,
   type ChromeProcessAdoption,
   ChromeProcessRegistration,
 } from "@t3tools/contracts";
@@ -298,7 +299,10 @@ export class ComputerAutomationBrokerRuntime {
   private readonly listeners = new Set<(event: ComputerBrokerEvent) => void>();
   private readonly nativePaused = new Set<string>();
   private mainHolders: ReadonlyArray<ComputerLeaseHolder> = [];
-  private chromeHolder: ChromeLeaseHolder | null = null;
+  /** This profile's Chrome holders; more than one only while certified sessions share it. */
+  private chromeHolders: ReadonlyArray<ChromeLeaseHolder> = [];
+  /** Verified registrations of shared sessions in every profile (`chromeRegistrations`). */
+  private chromeSharedRegistrations: ReadonlyArray<ChromeSharedRegistration> = [];
   /** Whether a browser call runs, per thread and session generation (`reportChromeCalls`). */
   private readonly chromeCalls = new Map<string, boolean>();
   /** How each Chrome-holding session gives the lease up, per thread and generation. */
@@ -506,14 +510,15 @@ export class ComputerAutomationBrokerRuntime {
       }
       if (message.type === "chromeLeaseChanged") {
         // A lease that ended takes its call report with it; the session needn't say so.
-        const previous = this.chromeHolder;
-        if (
-          previous &&
-          (previous.threadId !== message.holder?.threadId ||
-            previous.sessionGeneration !== message.holder.sessionGeneration)
-        )
-          this.chromeCalls.delete(chromeCallsKey(previous.threadId, previous.sessionGeneration));
-        this.chromeHolder = message.holder;
+        const next = message.holders ?? (message.holder ? [message.holder] : []);
+        const live = new Set(
+          next.map((holder) => chromeCallsKey(holder.threadId, holder.sessionGeneration)),
+        );
+        for (const previous of this.chromeHolders) {
+          const key = chromeCallsKey(previous.threadId, previous.sessionGeneration);
+          if (!live.has(key)) this.chromeCalls.delete(key);
+        }
+        this.chromeHolders = next;
         this.setChromeOtherProfile(message.otherProfile ?? false);
         this.chromeOtherProfileBlocksNative = message.otherProfileBlocksNative ?? false;
         this.chromeRecovery = message.recoveryRequired ?? false;
@@ -521,12 +526,14 @@ export class ComputerAutomationBrokerRuntime {
         // A waiter that finishes deletes itself; Set iteration tolerates that.
         for (const check of this.chromeReleaseWaiters) check();
       }
+      if (message.type === "chromeRegistrations")
+        this.chromeSharedRegistrations = message.registrations;
       // Main forwards another profile's request to release this profile's idle Chrome holder.
       if (message.type === "chromeReleaseRequest") {
         const { requestId, threadId, sessionGeneration } = message;
-        const holder = this.chromeHolder;
+        const holder = this.chromeHolderOf(threadId);
         const outcome =
-          holder?.threadId === threadId && holder.sessionGeneration === sessionGeneration
+          holder?.sessionGeneration === sessionGeneration
             ? this.releaseChromeHolderOutcome(threadId)
             : Promise.resolve<ChromeReleaseOutcome>("not-holder");
         void outcome
@@ -565,7 +572,9 @@ export class ComputerAutomationBrokerRuntime {
         message.status.reason === "no-host"
       ) {
         this.mainHolders = [];
-        this.chromeHolder = null;
+        this.chromeHolders = [];
+        // Main relays them again to the next host connection.
+        this.chromeSharedRegistrations = [];
         this.chromeCalls.clear();
         for (const check of this.chromeReleaseWaiters) check();
         this.pendingTakeover = undefined;
@@ -729,15 +738,13 @@ export class ComputerAutomationBrokerRuntime {
           ...(execution.pauseCause ? { pauseCause: execution.pauseCause } : {}),
           ...(execution.blockedBy ? { blockedBy: execution.blockedBy } : {}),
         });
-    if (
-      this.chromeHolder &&
-      !holders.some((holder) => holder.threadId === this.chromeHolder!.threadId)
-    ) {
+    for (const chrome of this.chromeHolders) {
+      if (holders.some((holder) => holder.threadId === chrome.threadId)) continue;
       const running = this.chromeCalls.get(
-        chromeCallsKey(this.chromeHolder.threadId, this.chromeHolder.sessionGeneration),
+        chromeCallsKey(chrome.threadId, chrome.sessionGeneration),
       );
       holders.push({
-        threadId: this.chromeHolder.threadId,
+        threadId: chrome.threadId,
         delivery: "foreground",
         state: "active",
         browser: running === undefined ? "unknown" : running ? "working" : "idle",
@@ -849,7 +856,8 @@ export class ComputerAutomationBrokerRuntime {
     return {
       holders: this.mainHolders,
       computerUse: this.computerUse(),
-      chromeHolder: this.chromeHolder,
+      chromeHolder: this.chromeHolders[0] ?? null,
+      chromeHolders: this.chromeHolders,
       otherProfile: this.nativeOtherProfile || this.chromeOtherProfile,
       pausedThreads: this.pause.list(),
       pending: this.access
@@ -1031,10 +1039,7 @@ export class ComputerAutomationBrokerRuntime {
     check: () => Promise<void>,
   ): Promise<void> {
     await waitForControl(
-      () =>
-        !this.chromeHolder ||
-        this.chromeHolder.threadId !== threadId ||
-        this.chromeHolder.sessionGeneration !== generation,
+      () => this.chromeHolderOf(threadId)?.sessionGeneration !== generation,
       deadline,
       check,
       () => CHROME_OWN_STOPPING_MESSAGE,
@@ -1143,18 +1148,15 @@ export class ComputerAutomationBrokerRuntime {
     threadId: string,
     timeoutMs = CHROME_PREEMPT_WAIT_MS,
   ): Promise<ChromeReleaseOutcome> {
-    const holder = this.chromeHolder;
-    if (!holder || holder.threadId !== threadId || holder.profileId !== this.host.profileId)
-      return "not-holder";
+    const holder = this.chromeHolderOf(threadId);
+    if (!holder || holder.profileId !== this.host.profileId) return "not-holder";
     const releaser = this.chromeReleasers.get(
       chromeCallsKey(holder.threadId, holder.sessionGeneration),
     );
     if (!releaser) return "not-holder";
     if (!this.chromeHolderIdle(holder.threadId, holder.sessionGeneration)) return "working";
     const released = () =>
-      !this.chromeHolder ||
-      this.chromeHolder.threadId !== holder.threadId ||
-      this.chromeHolder.sessionGeneration !== holder.sessionGeneration;
+      this.chromeHolderOf(holder.threadId)?.sessionGeneration !== holder.sessionGeneration;
     // Watching starts before the release, so a lease change it causes isn't missed.
     let settle: (outcome: ChromeReleaseOutcome) => void = () => {};
     const outcome = new Promise<ChromeReleaseOutcome>((resolve) => (settle = resolve));
@@ -1197,9 +1199,7 @@ export class ComputerAutomationBrokerRuntime {
     const busy = error.error;
     if (busy.holder !== "same-profile" || !busy.holderThreadId) return error;
     const chrome =
-      busy.resource === "chrome" && this.chromeHolder?.threadId === busy.holderThreadId
-        ? this.chromeHolder
-        : undefined;
+      busy.resource === "chrome" ? this.chromeHolderOf(busy.holderThreadId) : undefined;
     const title =
       busy.threadTitle ??
       (await this.options.threadTitle?.(busy.holderThreadId).catch(() => undefined));
@@ -1267,17 +1267,33 @@ export class ComputerAutomationBrokerRuntime {
       await handoff.native(Math.min(deadline, performance.now() + CHROME_PREEMPT_WAIT_MS), check);
       await check();
     }
-    const holder = this.chromeHolder;
     // Another profile's holder is asked only when main says it refuses this profile's
     // native control (an idle Claude session doesn't), so ordinary acquisitions make no
     // extra round trip.
-    if (!holder) {
-      if (this.chromeOtherProfileBlocksNative)
-        await this.releaseOtherProfileChromeHolder(threadId, scope, deadline);
-      return;
+    if (this.chromeOtherProfileBlocksNative)
+      await this.releaseOtherProfileChromeHolder(threadId, scope, deadline);
+    for (const holder of this.chromeHolders) {
+      if (holder.threadId === threadId || holder.profileId !== this.host.profileId) continue;
+      // Main admits native control beside an idle Claude session and queues it behind a
+      // running call, so stopping one would only end its CLI.
+      if (holder.provider === "claude" && this.host.chromeCallAdmissionCapable()) continue;
+      await this.releaseChromeHolderOutcome(holder.threadId);
     }
-    if (holder.threadId === threadId || holder.profileId !== this.host.profileId) return;
-    await this.releaseChromeHolderOutcome(holder.threadId);
+  }
+  /** This profile's Chrome holder for `threadId`, if it holds Chrome. */
+  private chromeHolderOf(threadId: string | undefined): ChromeLeaseHolder | undefined {
+    return threadId === undefined
+      ? undefined
+      : this.chromeHolders.find((holder) => holder.threadId === threadId);
+  }
+  /** Verified registrations of every profile's shared Chrome sessions, as main relays them. */
+  sharedChromeRegistrations(): ReadonlyArray<ChromeSharedRegistration> {
+    return this.chromeSharedRegistrations;
+  }
+  /** A shared session's launch verified: main relays its registration to shared peers. */
+  reportChromeRegistration(holder: ChromeLeaseHolder, registration: ChromeSharedRegistration) {
+    if (!this.host.chromeSharedCapable()) return;
+    this.host.send({ type: "chromeRegistrationVerified", holder, registration });
   }
   /**
    * Asks main to have another profile's idle Chrome holder release. With `scope`, main asks
@@ -1309,12 +1325,21 @@ export class ComputerAutomationBrokerRuntime {
       return "timeout";
     }
   }
-  /** A session's Chrome lease, taken from an idle holder in this profile when needed. */
-  acquireChromeLease(holder: ChromeLeaseHolder, timeoutMs = 5000): Promise<void> {
+  /**
+   * A session's Chrome lease, taken from an idle holder in this profile when needed. With
+   * `shared` (a Claude session whose certified record claims `shared-native-host`),
+   * main lets it hold Chrome beside other such sessions when it negotiated sharing.
+   */
+  acquireChromeLease(holder: ChromeLeaseHolder, timeoutMs = 5000, shared = false): Promise<void> {
     return this.withChromePreemption(() =>
       this.host
         .correlated(
-          { type: "chromeLeaseAcquire", requestId: randomUUID(), holder },
+          {
+            type: "chromeLeaseAcquire",
+            requestId: randomUUID(),
+            holder,
+            ...(shared && this.host.chromeSharedCapable() ? { shared: true } : {}),
+          },
           timeoutMs,
           false,
         )
@@ -2338,7 +2363,7 @@ export class ComputerAutomationBrokerRuntime {
       this.nativePaused.has(threadId) ||
       this.mainHolders.some((holder) => holder.threadId === threadId) ||
       this.pendingTakeover?.threadId === threadId ||
-      this.chromeHolder?.threadId === threadId
+      this.chromeHolderOf(threadId) !== undefined
     )
       throw new Error("Resume computer control on the computer running F5.");
   }

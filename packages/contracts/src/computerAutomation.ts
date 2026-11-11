@@ -197,6 +197,25 @@ export const COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY = "chrome-call-admission-
  * (`chromeHolderRelease` → `chromeReleaseRequest` → `chromeReleaseResult`).
  */
 export const COMPUTER_CHROME_RELEASE_CAPABILITY = "chrome-release-v1";
+/**
+ * Claude in Chrome sessions whose certified record claims `shared-native-host` hold Chrome
+ * together (`chromeLeaseAcquire.shared`), across profiles. Main runs one of their Chrome
+ * calls at a time and relays each one's verified registration (`chromeRegistrationVerified`
+ * → `chromeRegistrations`), so a peer's launch isn't read as an external change.
+ */
+export const COMPUTER_CHROME_SHARED_CAPABILITY = "chrome-shared-v1";
+/** One manifest or wrapper as a verified launch left it. */
+export const ChromeRegistrationArtifact = Schema.Struct({
+  location: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+});
+export type ChromeRegistrationArtifact = typeof ChromeRegistrationArtifact.Type;
+/** A shared session's registration after its launch verified: manifests and its wrapper. */
+export const ChromeSharedRegistration = Schema.Struct({
+  manifests: Schema.Array(ChromeRegistrationArtifact).check(Schema.isMaxLength(32)),
+  wrapper: ChromeRegistrationArtifact,
+});
+export type ChromeSharedRegistration = typeof ChromeSharedRegistration.Type;
 /** How long main waits for another profile's Chrome holder to answer a release request. */
 export const COMPUTER_CHROME_RELEASE_WAIT_MS = 8_000;
 export const ChromeReleaseOutcome = Schema.Literals([
@@ -892,6 +911,26 @@ export const DesktopComputerHostMessage = Schema.Union([
     type: Schema.Literals(["chromeLeaseAcquire", "chromeRestoreAcquire", "chromeLeaseRelease"]),
     requestId: Id,
     holder: ChromeLeaseHolder,
+    /**
+     * `chromeLeaseAcquire` from a `COMPUTER_CHROME_SHARED_CAPABILITY` backend whose certified
+     * record claims `shared-native-host`: the session may hold Chrome beside other such
+     * sessions.
+     */
+    shared: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    /** Backend to main (`COMPUTER_CHROME_SHARED_CAPABILITY`): a shared holder's launch verified. */
+    type: Schema.Literal("chromeRegistrationVerified"),
+    holder: ChromeLeaseHolder,
+    registration: ChromeSharedRegistration,
+  }),
+  Schema.Struct({
+    /**
+     * Main to `COMPUTER_CHROME_SHARED_CAPABILITY` backends: the latest verified registration
+     * of each profile's shared sessions, so a peer's launch isn't an external change.
+     */
+    type: Schema.Literal("chromeRegistrations"),
+    registrations: Schema.Array(ChromeSharedRegistration).check(Schema.isMaxLength(32)),
   }),
   Schema.Struct({
     type: Schema.Literal("chromeLeaseValidate"),
@@ -933,7 +972,9 @@ export const DesktopComputerHostMessage = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("chromeLeaseChanged"),
+    /** This profile's first Chrome holder; `holders` lists all of them to shared peers. */
     holder: Schema.NullOr(ChromeLeaseHolder),
+    holders: Schema.optionalKey(Schema.Array(ChromeLeaseHolder).check(Schema.isMaxLength(64))),
     otherProfile: Schema.optionalKey(Schema.Boolean),
     /**
      * `COMPUTER_CHROME_RELEASE_CAPABILITY` peers: another profile's Chrome holder refuses this

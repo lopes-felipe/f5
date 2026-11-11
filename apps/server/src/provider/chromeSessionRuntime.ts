@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { realpath as fsRealpath } from "node:fs/promises";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
-import type { ChromeLeaseHolder } from "@t3tools/contracts";
-import type { ClaudeChromeRecord } from "@t3tools/shared/providerIntegrationCertification";
+import type { ChromeLeaseHolder, ChromeSharedRegistration } from "@t3tools/contracts";
+import {
+  claudeChromeSupportsSharedNativeHost,
+  type ClaudeChromeRecord,
+} from "@t3tools/shared/providerIntegrationCertification";
 import { ComputerControlError, isChromeNativeWait } from "@t3tools/shared/computerControl";
 import { ChromeArtifactCache } from "./chromeArtifactCache";
 import {
@@ -73,6 +76,8 @@ interface Binding {
   epoch: number;
   readonly inspected: Map<string, number>;
   leaseHeld: boolean;
+  /** Acquired as shared (see `ChromeRuntimeDeps.shared`). */
+  shared: boolean;
   /** Isolated profiles: cancels an in-flight copy when the session goes away. */
   projectionAbort?: AbortController;
   /** The in-flight copy; finalize waits for it before reconciling and releasing. */
@@ -95,7 +100,21 @@ export interface ChromeRuntimeDeps {
   readonly profileId: string;
   readonly userHome: string;
   readonly executableRealpath: string;
-  readonly acquire: (holder: ChromeLeaseHolder) => Promise<void>;
+  /** With `shared`, main may let the session hold Chrome beside other certified sessions. */
+  readonly acquire: (holder: ChromeLeaseHolder, shared: boolean) => Promise<void>;
+  /**
+   * Whether this session may share Chrome: its record claims `shared-native-host` and main
+   * negotiated sharing. Shared sessions report their verified registration and accept a
+   * peer's (`sharedRegistrations`) in place of their own.
+   */
+  readonly shared?: () => boolean;
+  /** A shared session's launch verified: main relays its registration to its peers. */
+  readonly registrationVerified?: (
+    holder: ChromeLeaseHolder,
+    registration: ChromeSharedRegistration,
+  ) => void;
+  /** Peers' verified registrations, as main relays them. */
+  readonly sharedRegistrations?: () => ReadonlyArray<ChromeSharedRegistration>;
   readonly release: (holder: ChromeLeaseHolder) => void;
   /** With `callId`, main also admits that Chrome call: it counts as running from here on. */
   readonly validate: (holder: ChromeLeaseHolder, callId?: string) => Promise<void>;
@@ -183,11 +202,12 @@ export class ChromeSessionRuntime {
       epoch: 0,
       inspected: new Map(),
       leaseHeld: false,
+      shared: this.deps.shared?.() === true,
     };
     this.sessions.set(session.threadId, binding);
     const live = () => this.sessions.get(session.threadId) === binding;
     try {
-      await this.deps.acquire(holder);
+      await this.deps.acquire(holder, binding.shared);
       binding.leaseHeld = true;
       await this.deps.validate(holder);
       if (!live()) throw new Error("Chrome setup interrupted.");
@@ -391,6 +411,10 @@ export class ChromeSessionRuntime {
     if (this.current(threadId, generation) !== binding || binding.state !== "pending") return false;
     binding.state = "connected";
     binding.epoch += 1;
+    if (binding.shared) {
+      const registration = sharedRegistrationOf(binding.transaction);
+      if (registration) this.deps.registrationVerified?.(binding.holder, registration);
+    }
     return true;
   }
 
@@ -489,19 +513,39 @@ export class ChromeSessionRuntime {
     });
   }
 
-  /** Registration snapshot unchanged since the verified launch; zero reads when unchanged. */
-  private async registrationUnchanged(transaction: ChromeNativeHostTransaction): Promise<boolean> {
-    for (const entry of transaction.launchSnapshot ?? []) {
-      if (entry.shadowed) continue;
-      const current = await this.cache.read(entry.location);
-      if ((current.sha256 ?? undefined) !== entry.sha256) return false;
-    }
+  /**
+   * Registration snapshot unchanged since the verified launch; zero reads when unchanged.
+   * A shared session also accepts a peer's verified registration in the manifests' place:
+   * every manifest matches that registration and the wrapper it names is unchanged. This
+   * session's own wrapper must always still match.
+   */
+  private async registrationUnchanged(binding: Binding): Promise<boolean> {
+    const transaction = binding.transaction!;
     const wrapper = transaction.slots.find((slot) => slot.kind === "wrapper");
     if (wrapper) {
       const current = await this.cache.read(wrapper.location);
       if (!current.sha256 || current.sha256 !== wrapper.postLaunchHash) return false;
     }
-    return true;
+    const manifests = (transaction.launchSnapshot ?? []).filter((entry) => !entry.shadowed);
+    const current = new Map<string, string | undefined>();
+    for (const entry of manifests)
+      current.set(entry.location, (await this.cache.read(entry.location)).sha256 ?? undefined);
+    if (manifests.every((entry) => current.get(entry.location) === entry.sha256)) return true;
+    if (!binding.shared) return false;
+    for (const peer of this.deps.sharedRegistrations?.() ?? []) {
+      const expected = new Map(peer.manifests.map((entry) => [entry.location, entry.sha256]));
+      if (!manifests.every((entry) => expected.get(entry.location) === current.get(entry.location)))
+        continue;
+      const peerWrapper = await this.cache.read(peer.wrapper.location);
+      if (peerWrapper.sha256 === peer.wrapper.sha256) return true;
+    }
+    return false;
+  }
+
+  /** Whether this generation holds Chrome as a shared session (see `ChromeRuntimeDeps.shared`). */
+  shared(threadId: string, generation: string): boolean {
+    const binding = this.current(threadId, generation);
+    return binding !== undefined && binding.shared && binding.leaseHeld;
   }
 
   /**
@@ -616,7 +660,7 @@ export class ChromeSessionRuntime {
     const reuse =
       !invocation.fresh && key !== undefined && binding.inspected.get(key) === binding.epoch;
     if (!reuse) {
-      if (!(await this.registrationUnchanged(binding.transaction))) {
+      if (!(await this.registrationUnchanged(binding))) {
         this.invalidate(
           threadId,
           invocation.generation,
@@ -681,6 +725,26 @@ export class ChromeSessionRuntime {
   }
 }
 
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+/**
+ * What a verified launch left in place, for shared peers: its manifests and wrapper. None
+ * without a verified launch, a wrapper hash, or more manifests than main relays.
+ */
+export function sharedRegistrationOf(
+  transaction: ChromeNativeHostTransaction,
+): ChromeSharedRegistration | undefined {
+  if (!transaction.launchVerified) return undefined;
+  const wrapper = transaction.slots.find((slot) => slot.kind === "wrapper");
+  if (!wrapper?.postLaunchHash || !SHA256_HEX.test(wrapper.postLaunchHash)) return undefined;
+  const manifests = (transaction.launchSnapshot ?? []).filter((entry) => !entry.shadowed);
+  if (!manifests.length || manifests.length > 32) return undefined;
+  if (!manifests.every((entry) => entry.sha256 && SHA256_HEX.test(entry.sha256))) return undefined;
+  return {
+    manifests: manifests.map((entry) => ({ location: entry.location, sha256: entry.sha256! })),
+    wrapper: { location: wrapper.location, sha256: wrapper.postLaunchHash },
+  };
+}
+
 export function chromeRuntimeHost(input: {
   broker: ComputerAutomationBrokerRuntime;
   descriptor: ChromeNativeHostDescriptor;
@@ -707,7 +771,15 @@ export function chromeRuntimeHost(input: {
     profileId: broker.host.profileId,
     currentGeneration: (threadId) => broker.generation(threadId),
     // An idle Chrome holder in this profile gives way; a working one is named in the refusal.
-    acquire: (holder) => broker.acquireChromeLease(holder, 5000),
+    acquire: (holder, shared) => broker.acquireChromeLease(holder, 5000, shared),
+    // Only a record whose live run proved one native host serves several CLIs.
+    shared: () =>
+      input.descriptor.provider === "claude" &&
+      claudeChromeSupportsSharedNativeHost(input.record) &&
+      broker.host.chromeSharedCapable(),
+    registrationVerified: (holder, registration) =>
+      broker.reportChromeRegistration(holder, registration),
+    sharedRegistrations: () => broker.sharedChromeRegistrations(),
     release: (holder) =>
       broker.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder }),
     validate: async (holder, callId) => {

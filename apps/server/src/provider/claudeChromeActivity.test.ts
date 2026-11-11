@@ -7,7 +7,9 @@ import {
   claudeSessionBackgroundBusy,
 } from "./claudeChromeActivity";
 
-function harness(options: { busy?: () => boolean; accept?: () => boolean } = {}) {
+function harness(
+  options: { busy?: () => boolean; accept?: () => boolean; stopsWhenIdle?: () => boolean } = {},
+) {
   let timer: (() => void) | undefined;
   const reports: boolean[] = [];
   const ended: string[] = [];
@@ -20,6 +22,7 @@ function harness(options: { busy?: () => boolean; accept?: () => boolean } = {})
       return options.accept?.() ?? true;
     },
     ...(options.busy ? { busy: options.busy } : {}),
+    ...(options.stopsWhenIdle ? { stopsWhenIdle: options.stopsWhenIdle } : {}),
     setTimeout: (run, ms) => {
       expect(ms).toBe(CLAUDE_CHROME_IDLE_MS);
       timer = run;
@@ -90,6 +93,20 @@ describe("ClaudeChromeActivity", () => {
     busy = false;
     await h.fire();
     expect(h.stops).toEqual([CLAUDE_CHROME_STOPPED_IDLE]);
+  });
+
+  it("doesn't stop on a timer while sharing Chrome, but still releases on request", async () => {
+    let sharing = true;
+    const h = harness({ stopsWhenIdle: () => !sharing });
+    await h.fire();
+    expect(h.stops).toEqual([]);
+    expect(h.armed()).toBe(true);
+    sharing = false;
+    await h.fire();
+    expect(h.stops).toEqual([CLAUDE_CHROME_STOPPED_IDLE]);
+    const shared = harness({ stopsWhenIdle: () => false });
+    expect(await shared.activity.release()).toBe(true);
+    expect(shared.stops).toEqual([CLAUDE_CHROME_RELEASED]);
   });
 
   it("gives Chrome up on request only while idle, once", async () => {

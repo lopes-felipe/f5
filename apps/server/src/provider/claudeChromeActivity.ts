@@ -46,6 +46,12 @@ export interface ClaudeChromeActivityDeps {
    * Stopping the session would kill it, so the session isn't idle while this is true.
    */
   readonly busy?: () => boolean;
+  /**
+   * Whether an idle session still stops on its own after `idleMs`. A session sharing Chrome
+   * blocks no other Claude session, and one that needs Chrome to itself (Codex) still
+   * stops it at once (`release`), so stopping on a timer would only restart its CLI.
+   */
+  readonly stopsWhenIdle?: () => boolean;
   readonly idleMs?: number;
   readonly setTimeout?: (run: () => void, ms: number) => unknown;
   readonly clearTimeout?: (handle: unknown) => void;
@@ -147,8 +153,10 @@ export class ClaudeChromeActivity {
     const set = this.deps.setTimeout ?? ((run, ms) => setTimeout(run, ms));
     this.timer = set(() => {
       this.timer = undefined;
-      if (this.idle) void this.finish(CLAUDE_CHROME_STOPPED_IDLE);
-      // Background work has no end event here: look again after another idle window.
+      if (this.idle && (this.deps.stopsWhenIdle?.() ?? true))
+        void this.finish(CLAUDE_CHROME_STOPPED_IDLE);
+      // Background work has no end event here, and a shared session may stop sharing:
+      // look again after another idle window.
       else this.arm();
     }, this.deps.idleMs ?? CLAUDE_CHROME_IDLE_MS);
   }
