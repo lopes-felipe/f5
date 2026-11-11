@@ -4,9 +4,21 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Notifications have a macOS-style design at the top right, below the runtime strip. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
+- A bell in the sidebar title bar opens a notification inbox (⌘⇧L, or Ctrl+Shift+L) with filters by source, unread counts, and Do Not Disturb for an hour, until tomorrow, or until turned off.
+- Approval notifications for a single command or file request offer Approve and Deny in the toast and the inbox.
+- Notification settings choose in-app, system, sound and inbox delivery per source (threads, pull requests, scheduled runs, upstream, updates, errors) and the toast position. Upstream topics and scheduled runs also show in-app.
+
 ### Fixed
 
 - Git reviews keep tracked edits when untracked discovery fails and retain partial untracked listings when they are too large. Reviews include new files outside sparse-checkout folders, and commit and PR text includes changes outside nested projects. Selected-file commits during a merge now ask you to commit all files. Desktop startup stops waiting for stuck login shells, and safe Windows Git reads avoid starting a console host.
+- Codex sessions recover from failed app-server writes instead of leaving requests hanging, and exit errors include the stderr reason. Claude restores the selected model after a failed live update while preserving it during effort-only changes.
+- Provider updates allow the package's install scripts on npm 12, including the postinstall script that installs Grok's updated binary.
+- The certification runner's Claude in Chrome check now passes its isolated Claude config to the live run. The live run gains an optional shared-host phase that checks two F5 profiles using Claude in Chrome at once, and its checks now count only calls that actually reach Chrome. The Claude 2.1.317 record is re-certified with that phase passing; F5 doesn't use shared Claude in Chrome yet.
+- The certification runner's Claude in Chrome check now passes its isolated Claude config to the live run. The live run gains an optional shared-host phase that checks two F5 profiles using Claude in Chrome at once, and its checks now count only calls that actually reach Chrome. The Claude 2.1.317 record is re-certified with that phase passing.
+- Claude threads in different profiles can use Claude in Chrome at the same time with a certified Claude version, instead of one profile's session reporting a conflict or waiting for the other to go idle. Their Chrome calls run one at a time, each waiting up to 20 seconds for the other's; a call waiting for approval doesn't hold the other profile up. Threads in the same profile still take turns.
 - An open Claude in Chrome session no longer blocks computer control for every other thread and profile. Other agents can control the computer while it isn't running a Chrome call, and its next Chrome call waits up to 20 seconds for them. Waiting threads say which agent they're waiting for and offer **Stop that agent**. Busy errors name the profile holding control.
 - Clicking a desktop notification opens its thread, pull request, scheduled task or upstream project instead of only bringing F5 forward, including after a reload, after closing the window, and from Notification Center. Scheduled-run notices open their thread without reloading the app.
 - New worktree threads based on a branch that isn't on the remote no longer finish with a "Fetch base branch" warning. A local base branch with unpushed commits is used as is, instead of starting from the older remote copy; the setup card warns when the local branch has diverged from the remote or the remote can't be reached.

@@ -664,7 +664,7 @@ function initializeComputerSystem(): void {
         controller.stop("kill-switch");
         // Invalidate synchronously and stop every registered integration group here;
         // the server is told afterwards, but nothing depends on it answering.
-        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? null;
+        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? [];
         // Idle integrations (Codex holds the lease only per call) are stopped too; their
         // generations stay invalidated in main until the user resumes the thread.
         const stopped = supervisor.stop(() => true, "emergency");
@@ -673,15 +673,11 @@ function initializeComputerSystem(): void {
           { profileId: string; threadId: string; generation: string }
         >();
         for (const entry of [
-          ...(chrome
-            ? [
-                {
-                  profileId: chrome.profileId,
-                  threadId: chrome.threadId,
-                  generation: chrome.sessionGeneration,
-                },
-              ]
-            : []),
+          ...chrome.map((holder) => ({
+            profileId: holder.profileId,
+            threadId: holder.threadId,
+            generation: holder.sessionGeneration,
+          })),
           ...stopped.map((registration) => ({
             profileId: registration.profileId,
             threadId: registration.threadId,

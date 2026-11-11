@@ -45,6 +45,8 @@ import {
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
+import { appendStderrTail, stderrExcerpt } from "./codex/stderrDiagnostics.ts";
 import * as OS from "node:os";
 
 import {
@@ -1358,6 +1360,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const writer = createJsonRpcStdinWriter({
         stdin: child.stdin,
         closedMessage: "Cannot write to codex app-server stdin.",
+        onFailure: (cause) => {
+          if (!context || context.phase === "closed" || context.phase === "draining") return;
+          const error = cause instanceof Error ? cause : new Error(String(cause));
+          context.beginDrain?.(error, "session/exited", error.message);
+          if (!child.killed) killChildTree(child);
+        },
       });
 
       context = {
@@ -3593,6 +3601,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private attachProcessListeners(context: CodexSessionContext): void {
     const drained = Promise.withResolvers<void>();
     const stderr = new Utf8Lines(1024 * 1024, "truncate");
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrTail = "";
+    let exitMessage: string | undefined;
+    let processExitTerminal = false;
+    const withStderr = (message: string) => {
+      const excerpt = stderrExcerpt(stderrTail);
+      return excerpt ? `${message} ${excerpt}` : message;
+    };
     let stdoutClosed = false;
     let stderrClosed = false;
     let finishing = false;
@@ -3608,6 +3624,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (classified) this.emitErrorEvent(context, "process/stderr", classified.message);
     };
     const onStderr = (chunk: Buffer) => {
+      stderrTail = appendStderrTail(stderrTail, stderrDecoder.write(chunk));
       for (const line of stderr.push(chunk)) emitStderr(line);
     };
     const onLine = (line: string) => {
@@ -3622,6 +3639,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       // bytes already received while the context still accepts notifications.
       context.output.finish();
       for (const line of stderr.finish()) emitStderr(line);
+      stderrTail = appendStderrTail(stderrTail, stderrDecoder.end());
+      if (exitMessage && processExitTerminal) {
+        const previousMessage = terminal.message;
+        terminal.message = withStderr(exitMessage);
+        if (context.session.lastError === previousMessage && isCurrent())
+          this.updateSession(context, { lastError: terminal.message });
+      }
       context.phase = "closed";
       this.sourceDrains.delete(drained.promise);
       drained.resolve();
@@ -3698,7 +3722,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       beginDrain(error, "session/exited", error.message);
     };
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      const message = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      exitMessage = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      const message = withStderr(exitMessage);
+      if (!terminal || (endedByStdoutClose && !finishing && signal === null))
+        processExitTerminal = true;
       // An exit code that arrives after the stdout grace period still describes
       // how the process ended. A signal is usually the kill that followed.
       if (endedByStdoutClose && !finishing && signal === null) {

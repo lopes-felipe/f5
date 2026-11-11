@@ -161,11 +161,13 @@ it("toasts a finished download even when the menu started it", async () => {
   await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledTimes(1));
   const toast = mocks.toast.mock.calls[0]![0] as {
     title: string;
-    actionProps: { onClick: () => void };
+    data: { source: string; actions: Array<{ label: string; onClick: () => void }> };
   };
   expect(f.download).not.toHaveBeenCalled();
   expect(toast.title).toBe("Update downloaded");
-  toast.actionProps.onClick();
+  expect(toast.data.source).toBe("update");
+  const restart = toast.data.actions.find((action) => action.label === "Restart to update");
+  restart!.onClick();
   await vi.waitFor(() => expect(f.install).toHaveBeenCalledTimes(1));
 });
 

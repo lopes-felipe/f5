@@ -193,8 +193,8 @@
       }
     ],
     "profileIsolation": "isolated",
-    "evidenceId": "claude-chrome-darwin-arm64-20261103",
-    "evidenceCommit": "cc1141061f3dc918b370e4ca3e09c6968dce75e4",
+    "evidenceId": "claude-chrome-darwin-arm64-20261111",
+    "evidenceCommit": "968101c0c889e725ebe8a87a132f31e7044e8a39",
     "toolNames": [
       "browser_batch",
       "computer",
@@ -218,6 +218,7 @@
       "tabs_context_mcp",
       "tabs_create_mcp",
       "upload_image"
-    ]
+    ],
+    "capabilities": ["shared-native-host"]
   }
 ]

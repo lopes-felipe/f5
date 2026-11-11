@@ -173,6 +173,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     when: "isElectron && !terminalFocus && !dialogFocus && !modelPickerOpen",
   })),
   { key: "mod+shift+p", command: "prHub.open", when: "!terminalFocus" },
+  // Not mod+shift+i: on Windows and Linux that chord opens DevTools in Electron and Chromium.
+  { key: "mod+shift+l", command: "notifications.toggle", when: "!terminalFocus" },
   { key: "mod+p", command: "palette.files", when: "!terminalFocus" },
   { key: "mod+shift+f", command: "projectContentSearch.toggle", when: "!terminalFocus" },
   { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },

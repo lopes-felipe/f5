@@ -31,7 +31,11 @@ function setup(
     requiresLocalResume: vi.fn(() => nativeHeld),
   };
   const channel = {
-    chrome: { current: vi.fn(() => chrome) },
+    chrome: {
+      holderOf: vi.fn((profileId: string, threadId: string) =>
+        chrome?.profileId === profileId && chrome.threadId === threadId ? chrome : undefined,
+      ),
+    },
     setThreadPaused: vi.fn((_profileId: string, _threadId: string, _paused: boolean) => !!chrome),
     send: vi.fn(),
   };
