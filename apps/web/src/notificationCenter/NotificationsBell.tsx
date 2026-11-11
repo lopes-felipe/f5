@@ -7,7 +7,11 @@ import { Button } from "../components/ui/button";
 import { Kbd } from "../components/ui/kbd";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { shortcutLabelForCommand, useServerKeybindings } from "../keybindings";
-import { unreadInboxCount, useNotificationInbox, useNotificationInboxPopover } from "./inboxStore";
+import {
+  unreadInboxCount,
+  useNotificationInboxPopover,
+  useVisibleInboxEntries,
+} from "./inboxStore";
 import { NotificationInboxPopover } from "./NotificationInboxPopover";
 import { isDoNotDisturbActive } from "./preferences";
 
@@ -30,7 +34,7 @@ function useDoNotDisturbActive(): boolean {
  * desktop title bar's drag region.
  */
 export function NotificationsBell() {
-  const unread = useNotificationInbox((state) => unreadInboxCount(state.entries));
+  const unread = unreadInboxCount(useVisibleInboxEntries());
   const open = useNotificationInboxPopover((state) => state.open);
   const toggle = useNotificationInboxPopover((state) => state.toggle);
   const dnd = useDoNotDisturbActive();

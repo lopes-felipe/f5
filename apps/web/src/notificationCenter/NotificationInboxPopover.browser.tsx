@@ -9,9 +9,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import { updateAppSettings } from "../appSettings";
 import { StoreProvider } from "../store";
 import { useNotificationInbox, useNotificationInboxPopover } from "./inboxStore";
 import { NotificationsBell } from "./NotificationsBell";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "./preferences";
 
 // The bell reads its shortcut from the server config; no server runs here.
 vi.mock("../keybindings", async (importOriginal) => ({
@@ -90,6 +92,34 @@ describe("notification inbox", () => {
     // Opening a row with no target reads it without closing the popover.
     rows()[0]!.click();
     await expect.poll(() => bell.textContent).toContain("1 unread");
+
+    await screen.unmount();
+  });
+
+  it("hides a source whose Inbox switch is off from the badge, list and filters", async () => {
+    seed();
+    const errorsOff = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      errors: { ...DEFAULT_NOTIFICATION_PREFERENCES.errors, inbox: false },
+    };
+    updateAppSettings({ notificationPreferences: errorsOff });
+    const screen = await mountBell();
+    const bell = document.querySelector<HTMLButtonElement>(
+      '[data-testid="sidebar-notifications"]',
+    )!;
+    expect(bell.textContent).toContain("1 unread");
+
+    bell.click();
+    await expect.poll(() => rows().map((row) => row.dataset.inboxRow)).toEqual(["pr"]);
+    const tabs = () =>
+      Array.from(document.querySelectorAll('[role="tab"]')).map((tab) => tab.textContent);
+    expect(tabs()).not.toContain("Errors");
+
+    // Turning the switch back on brings the earlier entries back.
+    updateAppSettings({ notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES });
+    await expect.poll(() => rows().length).toBe(2);
+    expect(tabs()).toContain("Errors");
+    await expect.poll(() => bell.textContent).toContain("2 unread");
 
     await screen.unmount();
   });
