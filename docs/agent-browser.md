@@ -1211,7 +1211,9 @@ DOM text or screenshots) for the operator gate and never stamps a record:
   inherited `CLAUDE_CONFIG_DIR`) and `F5_CLAUDE_CHROME_REPORT=<file>`. Optionally, set
   `F5_CLAUDE_CHROME_ISOLATED_STATE_DIR=<dir>` (an isolated F5 profile's folder,
   `~/.f5/userdata-profiles/<id>`, whose Claude is signed in to the extension's claude.ai
-  account) to add the isolated-profile phase;
+  account) to add the isolated-profile phase, and
+  `F5_CLAUDE_CHROME_SHARED_CONFIG_DIR=<dir>` (a second isolated Claude config signed in
+  the same way) to add the shared-host phase;
 - `F5_CODEX_NATIVE_LIVE=chrome … integration/codexChromeNative.live.test.ts` with
   `F5_CODEX_CHROME_HOME=<dir>` (a Codex home signed in once with
   `CODEX_HOME=<dir> codex login`), `F5_CODEX_CHROME_REPORT=<file>` and, optionally,
@@ -1281,6 +1283,45 @@ versions (stamped as floors) and `admission: "session"`, and computes:
   passed. Without the phase, or if any of them fails, the record is still stamped and
   isolated profiles stay closed. `evidenceMismatches` checks a claimed capability's
   assertions like the base ones.
+
+  The optional shared-host phase (`F5_CLAUDE_CHROME_SHARED_CONFIG_DIR`: a second
+  isolated Claude config, neither `~/.claude` nor `F5_CLAUDE_CHROME_CONFIG_DIR`, signed
+  in to the same claude.ai account) plays two F5 profiles holding Chrome at once. Each has
+  its own journal and wrapper. Each session may list tabs (`tabs_context_mcp` with
+  `createIfEmpty`, which opens one blank tab in that session's own group) and close only
+  the tabs its own listings returned. The phase observes four assertions:
+
+  Every listing in the run, including `read-only-call` and `isolated-read-only-call`,
+  counts only when a tab listing comes back and parses. The read-only calls don't set
+  `createIfEmpty`, so a new session may instead get the extension's "has no tab group of its
+  own" answer; that also counts, because the call reached Chrome. When several Chrome browsers are
+  connected to the claude.ai account, the CLI answers a session's first browser call with
+  a browser choice instead of reaching Chrome. The harness then lets that session select
+  the first browser listed under "Browsers on this computer", and only that one, and asks
+  again. The report records each listing's outcome under `readOnlyListings` and
+  `shared.listings`, without tab ids or device ids.
+  - `shared-host-survives-flip`: the native hosts serving before the second profile's
+    launch are still the same ones after that launch rewrote every manifest to its own
+    wrapper. The host is a live `<pid>.sock` in `/tmp/claude-mcp-browser-bridge-$USER`.
+    The first session also stays connected, and the second launch verifies.
+  - `shared-calls-routed`: concurrent tab listings from both sessions succeed. Each comes
+    from a different tab group with no tab in common, and the first session's group is the
+    one it had before the flip.
+  - `shared-peer-exit`: after the first profile's session (the one holding the original
+    bytes) exits, the second session's next listing succeeds in the same group, served by
+    the same hosts.
+  - `shared-restore`: restoring the second journal and then the first returns every
+    manifest and both wrappers to their pre-phase bytes.
+
+  The report keeps only counts and booleans: whether the manifests flipped, whether the
+  groups were stable and distinct, and `firstSeesConflict`, which is what per-call
+  admission reports until a shared registration ledger accepts the flip. It leaves out
+  pids and tab ids. `--evidence` adds `shared-native-host` only when all four pass;
+  `claudeChromeSupportsSharedNativeHost` gates shared Claude in Chrome on it. Without the
+  capability, Chrome stays exclusive and another profile's idle session hands it over
+  between turns. CLI 2.1.317 honours `CLAUDE_CHROME_TAB_GROUP_KEY` only in remote sessions
+  (`CLAUDE_CODE_REMOTE_SESSION_ID`). A local session gets a fresh tab group per process,
+  so a thread can't keep its group across CLI restarts.
 
   Not required of the live run: permission-mode behaviour (disclosed in the toggle and
   consent), routing isolation (another profile's registration always asks, even with

@@ -162,7 +162,23 @@ describe("certification inventory and coverage", () => {
       commandsFor(scenario("chrome.codex"), target, "/out", { claude: launch.claude }, "darwin"),
     ).toBe("provider-launch-not-configured");
     expect(env("builtin.codex")).toMatchObject({ F5_CODEX_NATIVE_LIVE: "computer" });
-    expect(env("chrome.claude")).toMatchObject({ F5_CLAUDE_CHROME_LIVE: "1" });
+    expect(env("chrome.claude")).toMatchObject({
+      F5_CLAUDE_CHROME_LIVE: "1",
+      F5_CLAUDE_CHROME_CONFIG_DIR: "/private/claude",
+    });
+    // The optional phases' variables pass through only when the operator set them.
+    const saved = process.env.F5_CLAUDE_CHROME_SHARED_CONFIG_DIR;
+    try {
+      delete process.env.F5_CLAUDE_CHROME_SHARED_CONFIG_DIR;
+      expect(env("chrome.claude")).not.toHaveProperty("F5_CLAUDE_CHROME_SHARED_CONFIG_DIR");
+      process.env.F5_CLAUDE_CHROME_SHARED_CONFIG_DIR = "/private/claude-2";
+      expect(env("chrome.claude")).toMatchObject({
+        F5_CLAUDE_CHROME_SHARED_CONFIG_DIR: "/private/claude-2",
+      });
+    } finally {
+      if (saved === undefined) delete process.env.F5_CLAUDE_CHROME_SHARED_CONFIG_DIR;
+      else process.env.F5_CLAUDE_CHROME_SHARED_CONFIG_DIR = saved;
+    }
     expect(env("builtin.claude")).toBe("supported-launch-consent-veto-unavailable");
     expect(commandsFor(scenario("chrome.codex"), target, "/out", launch, "win32")).toBe(
       "interactive-platform-unavailable",
