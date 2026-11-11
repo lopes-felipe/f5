@@ -6,18 +6,24 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-import { NotificationsNavButton } from "../components/sidebar/SidebarNav";
 import { StoreProvider } from "../store";
 import { useNotificationInbox, useNotificationInboxPopover } from "./inboxStore";
+import { NotificationsBell } from "./NotificationsBell";
+
+// The bell reads its shortcut from the server config; no server runs here.
+vi.mock("../keybindings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../keybindings")>()),
+  useServerKeybindings: () => [],
+}));
 
 async function mountBell() {
   const rootRoute = createRootRoute({
     component: () => (
       <StoreProvider>
-        <NotificationsNavButton shortcutLabel={null} />
+        <NotificationsBell />
       </StoreProvider>
     ),
   });
@@ -85,6 +91,16 @@ describe("notification inbox", () => {
     rows()[0]!.click();
     await expect.poll(() => bell.textContent).toContain("1 unread");
 
+    await screen.unmount();
+  });
+
+  it("stays clickable inside the desktop title bar's drag region", async () => {
+    const screen = await mountBell();
+    const bell = document.querySelector<HTMLButtonElement>(
+      '[data-testid="sidebar-notifications"]',
+    )!;
+    expect(bell.classList.contains("no-drag")).toBe(true);
+    expect(bell.getAttribute("aria-pressed")).toBe("false");
     await screen.unmount();
   });
 

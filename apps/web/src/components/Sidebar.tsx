@@ -1077,10 +1077,6 @@ export default function Sidebar() {
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
     [keybindings],
   );
-  const notificationsShortcutLabel = useMemo(
-    () => shortcutLabelForCommand(keybindings, "notifications.toggle"),
-    [keybindings],
-  );
   const handleOpenCommandPalette = useStableCallback(() => {
     setCommandPaletteOpen(true);
   });
@@ -1259,7 +1255,6 @@ export default function Sidebar() {
           onOpenCommandPalette={handleOpenCommandPalette}
           commandPaletteShortcutLabel={commandPaletteShortcutLabel}
           pullRequestsShortcutLabel={pullRequestsShortcutLabel}
-          notificationsShortcutLabel={notificationsShortcutLabel}
           view={sidebarView}
           onViewChange={setSidebarView}
         />
