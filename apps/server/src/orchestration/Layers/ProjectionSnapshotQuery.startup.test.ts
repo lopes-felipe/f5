@@ -330,6 +330,31 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
   });
 
 projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
+  it.effect("can page older work when alignment leaves an empty activity stream", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`UPDATE projection_thread_activities
+        SET turn_id = 'older-turn', created_at = '2026-04-01T08:00:00.000Z'`;
+      const tail = yield* query.getThreadTailDetails({
+        threadId: asThreadId("thread-1"),
+        messageLimit: 1,
+      });
+      assert.deepEqual(tail.activities, []);
+      assert.isTrue(tail.hasOlderActivities);
+      assert.isNotNull(tail.oldestLoadedActivityCursor);
+      const page = yield* query.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        beforeMessageCursor: null,
+        beforeCheckpointTurnCount: null,
+        beforeCommandExecutionCursor: null,
+        activityCursor: tail.oldestLoadedActivityCursor,
+      });
+      assert.isAbove(page.activities.length, 0);
+      assert.equal(page.activities.at(-1)?.id, asEventId("activity-1"));
+    }),
+  );
   it.effect("bounds a long single turn and pages every message without gaps", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -921,8 +946,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         assert.equal(bootstrapThread.proposedPlans[0]?.id, "plan-4");
         assert.equal(bootstrapThread.activities.length, MAX_THREAD_ACTIVITIES);
         assert.equal(bootstrapThread.activities[0]?.id, asEventId("activity-5"));
-        assert.equal(tail.activities.length, MAX_THREAD_ACTIVITIES);
-        assert.equal(tail.activities[0]?.id, asEventId("activity-5"));
+        // These synthetic activities predate every message in the bounded tail.
+        assert.equal(tail.activities.length, 0);
+        assert.isNotNull(tail.oldestLoadedActivityCursor);
         assert.equal(tail.hasOlderActivities, true);
         assert.equal(bootstrapThread.checkpoints.length, MAX_THREAD_CHECKPOINTS);
         assert.equal(bootstrapThread.checkpoints[0]?.turnId, asTurnId("turn-4"));

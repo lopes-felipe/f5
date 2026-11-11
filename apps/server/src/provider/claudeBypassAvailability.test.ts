@@ -34,6 +34,9 @@ it("combines isolated home, remote cache and effective managed restrictions", as
 it("fails closed on unreadable policy without caching the failure", async () => {
   const read = vi.spyOn(fs, "readFile").mockRejectedValue(new Error("unreadable"));
   expect((await resolveClaudeBypassAvailability("/profile", "/repo")).bypassDisabled).toBe(true);
+  expect((await resolveClaudeBypassAvailability("/profile", "/repo")).failureReason).toContain(
+    "Could not read remote-settings.json",
+  );
   read.mockResolvedValue("{}");
   vi.spyOn(sdk, "resolveSettings").mockResolvedValue({
     effective: {},
@@ -41,4 +44,27 @@ it("fails closed on unreadable policy without caching the failure", async () => 
     provenance: {},
   });
   expect((await resolveClaudeBypassAvailability("/profile", "/repo")).bypassDisabled).toBe(false);
+});
+
+it("accepts comments and trailing commas in Claude settings", async () => {
+  vi.spyOn(fs, "readFile").mockResolvedValue(
+    '{\n// policy\n"permissions": {"disableBypassPermissionsMode": "disable",},\n}',
+  );
+  vi.spyOn(sdk, "resolveSettings").mockResolvedValue({
+    effective: {},
+    sources: [],
+    provenance: {},
+  });
+  expect(await resolveClaudeBypassAvailability("/profile", "/repo")).toEqual({
+    bypassDisabled: true,
+    autoDisabled: false,
+  });
+});
+
+it("reports parse failures without including settings contents", async () => {
+  vi.spyOn(fs, "readFile").mockResolvedValue('{"privateValue": "do-not-report",');
+  const result = await resolveClaudeBypassAvailability("/profile", "/repo");
+  expect(result.bypassDisabled).toBe(true);
+  expect(result.failureReason).toContain("Could not parse remote-settings.json");
+  expect(result.failureReason).not.toContain("do-not-report");
 });

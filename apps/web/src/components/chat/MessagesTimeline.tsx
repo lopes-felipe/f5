@@ -405,6 +405,7 @@ interface MessagesTimelineProps {
    * owned elsewhere stops tail-following in the same frame it scrolls.
    */
   leaveEndRef?: MutableRefObject<(() => void) | null> | undefined;
+  onLeaveEnd?: (() => void) | undefined;
   /** Runs after each committed change of the entry-to-row map. */
   onEntryRowIndexMapCommit?: (() => void) | undefined;
   /** Header element the "Conversation navigation" control portals into. */
@@ -526,6 +527,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onQuoteAssistantMessage,
   onNavigateToEntry,
   leaveEndRef,
+  onLeaveEnd,
   onEntryRowIndexMapCommit,
   navigationHost = null,
   onOpenThreadFind,
@@ -905,6 +907,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
   const leaveEnd = useCallback(() => {
+    onLeaveEnd?.();
     manualScrollGenerationRef.current++;
     isAtEndRef.current = false;
     liveFollowEnabledRef.current = false;
@@ -914,7 +917,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       window.cancelAnimationFrame(disclosureSettleFrameRef.current);
       disclosureSettleFrameRef.current = null;
     }
-  }, []);
+  }, [onLeaveEnd]);
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {

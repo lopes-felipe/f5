@@ -108,6 +108,7 @@ function makeHarness(config?: {
   readonly computerAutomationBroker?: ClaudeAdapterLiveOptions["computerAutomationBroker"];
   readonly chromeRuntime?: ClaudeAdapterLiveOptions["chromeRuntime"];
   readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
+  readonly resolveBypassAvailability?: ClaudeAdapterLiveOptions["resolveBypassAvailability"];
   readonly threadMcpBroker?: ClaudeAdapterLiveOptions["threadMcpBroker"];
 }) {
   const query = new FakeClaudeQuery();
@@ -124,6 +125,9 @@ function makeHarness(config?: {
     | undefined;
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
+    resolveBypassAvailability:
+      config?.resolveBypassAvailability ??
+      (async () => ({ bypassDisabled: false, autoDisabled: false })),
     ...(config?.computerAutomationBroker
       ? { computerAutomationBroker: config.computerAutomationBroker }
       : {}),
@@ -14317,6 +14321,95 @@ describe("ClaudeAdapterLive", () => {
           "accept",
         );
       assert.equal((yield* Fiber.join(permission))?.behavior, "allow");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("retries a failed bypass resolution on a later turn and caches only success", () => {
+    const resolve = vi
+      .fn()
+      .mockResolvedValueOnce({
+        bypassDisabled: true,
+        autoDisabled: false,
+        failureReason: "temporary read failure",
+      })
+      .mockResolvedValue({ bypassDisabled: false, autoDisabled: false });
+    const harness = makeHarness({ resolveBypassAvailability: resolve });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "default");
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "retry", attachments: [] });
+      assert.equal(resolve.mock.calls.length, 2);
+      assert.deepEqual(harness.query.setPermissionModeCalls, ["bypassPermissions"]);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-bypass-retry",
+        uuid: "bypass-retry-result",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(completed);
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "cached", attachments: [] });
+      assert.equal(resolve.mock.calls.length, 2);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("does not resolve bypass policy for a workflow plan session", () => {
+    const resolve = vi.fn(async () => ({ bypassDisabled: true, autoDisabled: true }));
+    const harness = makeHarness({ resolveBypassAvailability: resolve });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "plan");
+      assert.equal(resolve.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("installs approval handling when resolved policy disables bypass and Auto", () => {
+    const harness = makeHarness({
+      resolveBypassAvailability: async () => ({ bypassDisabled: true, autoDisabled: true }),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.equal(options.permissionMode, "default");
+      const request = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const permission = yield* Effect.promise(() =>
+        options.canUseTool!(
+          "Bash",
+          { command: "pwd" },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "restricted-bypass",
+            requestId: "restricted-bypass",
+          },
+        ),
+      ).pipe(Effect.forkChild);
+      const opened = yield* Fiber.join(request);
+      assert.ok(Option.isSome(opened));
+      if (Option.isSome(opened) && opened.value.requestId)
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId),
+          "decline",
+        );
+      assert.equal((yield* Fiber.join(permission))?.behavior, "deny");
     }).pipe(Effect.provide(harness.layer));
   });
 

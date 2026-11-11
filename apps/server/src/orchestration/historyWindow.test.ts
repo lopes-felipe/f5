@@ -23,6 +23,44 @@ it("caps user turns and permits an oversized row to make progress", () => {
   expect(boundedHistoryRows([{ text: "x".repeat(1_048_576) }])).toHaveLength(1);
 });
 
+it("keeps the reply to the tenth user message in forward pages", () => {
+  const rows = Array.from({ length: 12 }, (_, turn) => [
+    { role: "user", turn },
+    { role: "assistant", turn },
+  ]).flat();
+  const page = boundedHistoryRows(rows, true, (row) => row.role === "user");
+  expect(page).toHaveLength(20);
+  expect(page.at(-1)).toEqual({ role: "assistant", turn: 9 });
+});
+
+it("aligns work streams with the kept message turns and retains empty-stream continuations", () => {
+  const rows = Array.from({ length: 40 }, (_, turn) => ({
+    turnId: String(turn),
+    role: "user",
+    createdAt: String(turn).padStart(4, "0"),
+  }));
+  const page = boundedHistoryStreams({
+    messages: rows,
+    activities: rows,
+    checkpoints: rows,
+    commandExecutions: rows.slice(0, 10),
+    hasOlderMessages: false,
+    hasOlderActivities: false,
+    hasOlderCheckpoints: false,
+    hasOlderCommandExecutions: false,
+  });
+  expect(page.messages).toEqual(rows.slice(30));
+  expect(page.activities).toEqual(rows.slice(30));
+  expect(page.checkpoints).toEqual(rows.slice(30));
+  expect(page.commandExecutions).toEqual([]);
+  expect(page.deferredCommandExecution).toEqual(rows[9]);
+  expect(page).toMatchObject({
+    hasOlderActivities: true,
+    hasOlderCheckpoints: true,
+    hasOlderCommandExecutions: true,
+  });
+});
+
 it("marks truncation on the correct side of each independent cursor", () => {
   const rows = Array.from({ length: 300 }, (_, id) => ({ id, role: "assistant" }));
   const page = boundedHistoryStreams(
@@ -43,4 +81,18 @@ it("marks truncation on the correct side of each independent cursor", () => {
   expect(page.activities[0]?.id).toBe(175);
   expect(page.hasOlderMessages).toBe(false);
   expect(page).toMatchObject({ hasNewerMessages: true, hasOlderActivities: true });
+});
+
+it("does not create keyset paging holes when activity timestamps go backwards", () => {
+  const page = boundedHistoryStreams({
+    messages: [{ role: "user", createdAt: "0020" }],
+    activities: [{ createdAt: "0010" }, { createdAt: "0021" }, { createdAt: "0019" }],
+    checkpoints: [],
+    commandExecutions: [],
+    hasOlderMessages: false,
+    hasOlderActivities: false,
+    hasOlderCheckpoints: false,
+    hasOlderCommandExecutions: false,
+  });
+  expect(page.activities).toEqual([{ createdAt: "0021" }, { createdAt: "0019" }]);
 });

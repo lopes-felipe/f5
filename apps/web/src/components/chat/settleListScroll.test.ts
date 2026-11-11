@@ -52,3 +52,31 @@ it("stops after 60 moving frames and respects cancellation and missing nodes", a
     expect(scroll).toHaveBeenCalledTimes(mode === "moving" ? 60 : 0);
   }
 });
+
+it("stops correcting when a navigation generation takes over", async () => {
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+  let generation = 1;
+  const element = { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 };
+  const scroll = vi.fn(async () => {
+    element.scrollHeight++;
+  });
+  const done = settleListScroll(
+    {
+      getScrollableNode: () => element as HTMLElement,
+      scrollToOffset: scroll,
+    },
+    () => generation !== 1,
+  );
+  frames.shift()!(0);
+  await Promise.resolve();
+  generation++;
+  element.scrollTop = 250; // The minimap/find result owns this position now.
+  while (frames.length) {
+    frames.shift()!(0);
+    await Promise.resolve();
+  }
+  await done;
+  expect(scroll).toHaveBeenCalledTimes(1);
+  expect(element.scrollTop).toBe(250);
+});

@@ -1,5 +1,8 @@
 import { normalizeUserInputOptions } from "../userInputOptions.ts";
-import { resolveClaudeBypassAvailability } from "../claudeBypassAvailability.ts";
+import {
+  resolveClaudeBypassAvailability,
+  type ClaudeBypassResolution,
+} from "../claudeBypassAvailability.ts";
 import { resolveClaudeSubagentFile } from "../agentTranscript/claudeSubagentTranscript.ts";
 import {
   classifyToolItemType,
@@ -584,6 +587,9 @@ interface ClaudeSessionContext {
   readonly startedAt: string;
   /** Mode restored after plan turns; `auto` only while the model and CLI support it. */
   basePermissionMode: PermissionMode | undefined;
+  bypassPolicyCache?: { cwd: string | undefined; resolution: ClaudeBypassResolution };
+  bypassCliRestricted?: boolean;
+  bypassWarning?: string;
   /** The session's runtime mode asked for Claude `auto` review. */
   readonly autoRequested: boolean;
   resumeSessionId: string | undefined;
@@ -749,6 +755,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
 }
 
 export interface ClaudeAdapterLiveOptions {
+  readonly resolveBypassAvailability?: typeof resolveClaudeBypassAvailability;
   readonly oneOffProviderOptions?: ProviderStartOptions["claudeAgent"];
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly createQuery?: (input: {
@@ -2422,6 +2429,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
     const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
+    const resolveBypass = async (
+      directory: string,
+      cwd: string | undefined,
+    ): Promise<ClaudeBypassResolution> => {
+      try {
+        return await (options?.resolveBypassAvailability ?? resolveClaudeBypassAvailability)(
+          directory,
+          cwd,
+        );
+      } catch (error) {
+        return { bypassDisabled: true, autoDisabled: false, failureReason: String(error) };
+      }
+    };
     const toolSearchPath = yield* Path.Path;
     // MCP App snapshots are stored as activity attachments (Codex parity); without SQL
     // (some tests) completed app tools stay ordinary tool rows.
@@ -3717,7 +3737,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ) {
           // Keep an effective CLI downgrade across later plan-mode exits.
           context.basePermissionMode = reported;
+          context.bypassCliRestricted = true;
           context.configuredBase = { ...context.configuredBase, permissionMode: reported };
+          yield* warnBypassDowngrade(context, "Claude reported " + reported + " permission mode.");
           return;
         }
         if (
@@ -3762,6 +3784,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           },
           providerRefs: nativeProviderRefs(context),
         });
+      });
+
+    const warnBypassDowngrade = (context: ClaudeSessionContext, reason: string) =>
+      Effect.gen(function* () {
+        if (context.workflowExecutionProfile || context.bypassWarning === reason) return;
+        context.bypassWarning = reason;
+        yield* emitRuntimeWarning(
+          context,
+          "Full access is running with approval checks. " + reason,
+          { category: "provider" },
+        );
       });
 
     const rememberTaskState = (
@@ -8304,6 +8337,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           launchReported,
         );
         const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+        const launchBypass =
+          runtimeMode === "full-access" && !input.workflowExecutionProfile
+            ? yield* Effect.promise(() =>
+                resolveBypass(resolveClaudeConfigDir(queryEnvironment, input.cwd), input.cwd),
+              )
+            : undefined;
         // `auto` fails closed to `default` unless the model reports support.
         const launchPermission = claudeRuntimePermissionMode(
           runtimeMode,
@@ -8312,14 +8351,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             runtimeModelSelection.baseModel ?? input.model,
             launchReported,
           ).supportsAutoMode,
-          runtimeMode === "full-access"
-            ? yield* Effect.promise(() =>
-                resolveClaudeBypassAvailability(
-                  resolveClaudeConfigDir(queryEnvironment, input.cwd),
-                  input.cwd,
-                ),
-              )
-            : undefined,
+          launchBypass,
         );
         const runtimePermissionMode = launchPermission.mode;
         // Runtime mode is the user-visible enforcement boundary. Persisted
@@ -8967,6 +8999,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           streamFiber: undefined,
           startedAt,
           basePermissionMode: permissionMode,
+          ...(launchBypass && !launchBypass.failureReason
+            ? { bypassPolicyCache: { cwd: input.cwd, resolution: launchBypass } }
+            : {}),
           autoRequested: runtimeMode === "auto",
           resumeSessionId: sessionId,
           pendingApprovals,
@@ -9078,11 +9113,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* emitRuntimeWarning(context, CLAUDE_AUTO_UNAVAILABLE_WARNING, {
             category: "provider",
           });
-        if (runtimeMode === "full-access" && runtimePermissionMode !== "bypassPermissions")
-          yield* emitRuntimeWarning(
+        if (launchBypass?.bypassDisabled)
+          yield* warnBypassDowngrade(
             context,
-            "Claude bypass permissions could not be confirmed; Full access is running with approval checks.",
-            { category: "provider" },
+            launchBypass.failureReason
+              ? "Could not resolve Claude policy: " + launchBypass.failureReason
+              : "Claude settings disable bypass permissions.",
           );
         if (resumeFallbackWarning) {
           yield* emitRuntimeWarning(
@@ -9234,6 +9270,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ? new ClaudeQueryEndedBeforePrompt(context, cause)
                 : toRequestError(input.threadId, method, cause),
           });
+        const applyPermissionMode = (mode: PermissionMode) =>
+          Effect.gen(function* () {
+            let effective = mode;
+            yield* controlRequest("turn/setPermissionMode", () =>
+              context.query.setPermissionMode(mode).catch(async (error) => {
+                if (mode !== "bypassPermissions") throw error;
+                await context.query.setPermissionMode("default");
+                effective = "default";
+                context.bypassCliRestricted = true;
+              }),
+            );
+            yield* ensureLive;
+            if (effective !== mode)
+              yield* warnBypassDowngrade(context, "Claude refused to restore bypass permissions.");
+            return effective;
+          });
         yield* ensureLive;
         if (
           input.workflowExecutionProfile !== undefined &&
@@ -9252,6 +9304,44 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             method: "turn/start",
             detail: "A Claude turn is already active. Use steering to add a prompt.",
           });
+        }
+        if (
+          context.session.runtimeMode === "full-access" &&
+          !context.workflowExecutionProfile &&
+          !context.bypassCliRestricted
+        ) {
+          const cwd = context.session.cwd;
+          let resolution =
+            context.bypassPolicyCache && context.bypassPolicyCache.cwd === cwd
+              ? context.bypassPolicyCache.resolution
+              : undefined;
+          if (!resolution) {
+            resolution = yield* Effect.promise(() =>
+              resolveBypass(resolveClaudeConfigDir(context.processEnvironment, cwd), cwd),
+            );
+            if (!resolution.failureReason) context.bypassPolicyCache = { cwd, resolution };
+          }
+          const reported = yield* reportedCapabilitiesFor(context.session.model);
+          let next = claudeRuntimePermissionMode(
+            "full-access",
+            resolveModelCapabilities("claudeAgent", context.session.model, reported)
+              .supportsAutoMode,
+            resolution,
+          ).mode;
+          if (context.basePermissionMode !== next) {
+            if (context.configuredBase?.permissionMode !== "plan") {
+              next = yield* applyPermissionMode(next);
+              context.configuredBase = { ...context.configuredBase, permissionMode: next };
+            }
+            context.basePermissionMode = next;
+          }
+          if (resolution.bypassDisabled)
+            yield* warnBypassDowngrade(
+              context,
+              resolution.failureReason
+                ? "Could not resolve Claude policy: " + resolution.failureReason
+                : "Claude settings disable bypass permissions.",
+            );
         }
         if (context.turnState?.synthetic) {
           // Auto-close a stale synthetic turn (from background agent responses
@@ -9375,16 +9465,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             permissionMode: "plan",
           };
         } else if (input.interactionMode === "default") {
-          yield* controlRequest("turn/setPermissionMode", () =>
-            context.query
-              .setPermissionMode(context.basePermissionMode ?? "default")
-              .catch(async (error) => {
-                if (context.basePermissionMode !== "bypassPermissions") throw error;
-                await context.query.setPermissionMode("default");
-                context.basePermissionMode = "default";
-              }),
+          context.basePermissionMode = yield* applyPermissionMode(
+            context.basePermissionMode ?? "default",
           );
-          yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: context.basePermissionMode ?? "default",

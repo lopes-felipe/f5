@@ -1079,12 +1079,25 @@ export default memo(function ChatView({
   const sendInFlightRef = useRef(false);
 
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
+  const endScrollGenerationRef = useRef(0);
+  const cancelEndScroll = useCallback(() => {
+    endScrollGenerationRef.current++;
+  }, []);
   const scrollToEnd = useCallback((animated = false) => {
     const list = legendListRef.current;
     if (!list) return;
+    const generation = ++endScrollGenerationRef.current;
     isAtEndRef.current = true;
+    showScrollDebouncer.current?.cancel();
+    setShowScrollToBottom(false);
     void Promise.resolve(list.scrollToEnd?.({ animated })).then(() =>
-      settleListScroll(list, () => !isMountedRef.current || legendListRef.current !== list),
+      settleListScroll(
+        list,
+        () =>
+          !isMountedRef.current ||
+          legendListRef.current !== list ||
+          generation !== endScrollGenerationRef.current,
+      ),
     );
   }, []);
   // Pin the scroll position to the bottom before a new row is appended.
@@ -1145,7 +1158,7 @@ export default memo(function ChatView({
     };
   }, []);
   const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
-    if (isAtEndRef.current === isAtEnd) return;
+    if (isAtEndRef.current === isAtEnd && !isAtEnd) return;
     isAtEndRef.current = isAtEnd;
     if (isAtEnd) {
       showScrollDebouncer.current?.cancel();
@@ -1161,6 +1174,7 @@ export default memo(function ChatView({
     loadAround: (entryId, anchorKind, signal) =>
       loadThreadHistoryAroundMessage(threadId, entryId as MessageId, anchorKind, signal),
     onLeaveEnd: () => {
+      endScrollGenerationRef.current++;
       timelineLeaveEndRef.current?.();
       onIsAtEndChange(false);
     },
@@ -8541,6 +8555,7 @@ export default memo(function ChatView({
                       listRef={legendListRef}
                       entryRowIndexMapRef={timelineEntryRowIndexMapRef}
                       leaveEndRef={timelineLeaveEndRef}
+                      onLeaveEnd={cancelEndScroll}
                       onIsAtEndChange={onIsAtEndChange}
                       followNextTailNonce={followNextTailNonce}
                       hasOlderHistory={hasOlderTimelineHistory}
