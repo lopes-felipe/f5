@@ -762,6 +762,66 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("retires a broken writer and fails requests already waiting for a response", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-writer-failure-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.166.0");
+    const internal = manager as unknown as {
+      sessions: Map<
+        string,
+        {
+          child: { stdin: import("node:stream").Writable };
+          phase?: string;
+          pending: Map<string, { wasWritten: boolean }>;
+        }
+      >;
+      sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+    };
+    const bootstrap = () =>
+      vi
+        .spyOn(internal, "sendRequest")
+        .mockImplementation(async (_context, method) =>
+          method === "thread/start" ? { thread: { id: "native-thread" } } : {},
+        );
+    const initial = bootstrap();
+    const input = {
+      threadId: asThreadId("writer-failure"),
+      cwd: directory,
+      runtimeMode: "full-access" as const,
+      providerOptions: { codex: { binaryPath } },
+    };
+    try {
+      await manager.startSession(input);
+      initial.mockRestore();
+      const context = internal.sessions.get(input.threadId)!;
+      const pending = internal.sendRequest(context, "thread/read", {});
+      const rejected = expect(pending).rejects.toThrow("EPIPE");
+      await vi.waitFor(() =>
+        expect([...context.pending.values()].some((entry) => entry.wasWritten)).toBe(true),
+      );
+      context.child.stdin.emit("error", new Error("EPIPE"));
+      await rejected;
+      expect(context.pending.size).toBe(0);
+      expect(context.phase).toBe("draining");
+      await expect(internal.sendRequest(context, "thread/read", {})).rejects.toThrow();
+      const replacementBootstrap = bootstrap();
+      try {
+        await manager.startSession(input);
+        expect(internal.sessions.get(input.threadId)).not.toBe(context);
+      } finally {
+        replacementBootstrap.mockRestore();
+      }
+    } finally {
+      initial.mockRestore();
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
+
   it("removes a stale browser tool flag when resume falls back to a fresh thread", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-browser-fallback-"));
     const binaryPath = path.join(directory, "codex.cjs");
@@ -5278,6 +5338,42 @@ describe("Codex process settlement and source draining", () => {
       expect(f.child.eventNames()).toEqual([]);
     },
   );
+  it("includes launcher stderr in pending request failures and terminal events", () => {
+    const f = fixture();
+    const reason = "Error: Missing optional dependency @openai/codex-darwin-arm64.";
+    f.child.stderr.emit(
+      "data",
+      Buffer.from("source excerpt\n" + reason + "\n at launcher\nNode.js v26\n"),
+    );
+    f.child.emit("exit", 1, null);
+    expect(f.reject.mock.calls[0]?.[0].message).toContain(reason);
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.stringContaining(reason),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+  });
+
+  it("retains late stderr in the terminal event and session error", () => {
+    const f = fixture();
+    f.child.emit("exit", 1, null);
+    f.child.stderr.emit("data", Buffer.from("Error: invalid config"));
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.stringContaining("Error: invalid config"),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+    expect((f.context.session as { lastError?: string }).lastError).toContain(
+      "Error: invalid config",
+    );
+  });
+
   it("publishes final output and split stderr after exit before one terminal event", () => {
     const f = fixture();
     f.child.stderr.emit("data", Buffer.from("ERROR final "));

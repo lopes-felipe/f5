@@ -161,7 +161,14 @@ describe("provider installation ownership", () => {
     expect(target?.channel).toBe("npm");
     expect(buildProviderUpdateCommand(target!, "linux", "1.2.3")).toEqual({
       executable: "/nvm/v24/bin/npm",
-      args: ["install", "-g", "@openai/codex@1.2.3", "--no-audit", "--no-fund"],
+      args: [
+        "install",
+        "-g",
+        "--allow-scripts=@openai/codex",
+        "@openai/codex@1.2.3",
+        "--no-audit",
+        "--no-fund",
+      ],
       channel: "npm",
       shell: "posix",
       pathPrepend: "/nvm/v24/bin",
@@ -457,6 +464,16 @@ it("updates Grok through `grok update` with the instance's Grok home", () => {
     channel: "self-update",
   });
   expect(canRunInApp(target!, "darwin", undefined)).toBe(true);
+  const command = buildProviderUpdateCommand(target!, "linux")!;
+  expect(
+    filterProviderUpdateEnvironment(
+      { ...target!.updateEnvironment, ...command.env },
+      "self-update",
+    ),
+  ).toMatchObject({
+    GROK_HOME: "/custom/grok",
+    NPM_CONFIG_ALLOW_SCRIPTS: "@xai-official/grok",
+  });
   expect(filterProviderUpdateEnvironment(target!.updateEnvironment, "self-update")).toEqual({
     HOME: "/isolated",
     GROK_HOME: "/custom/grok",
@@ -480,6 +497,7 @@ it("updates Grok with the instance's GROK_HOME instead of the host's", () => {
     expect(target?.updateEnvironment.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(buildProviderUpdateCommand(target!, "linux")?.env).toEqual({
       GROK_HOME: "/instance/grok",
+      NPM_CONFIG_ALLOW_SCRIPTS: "@xai-official/grok",
     });
   } finally {
     vi.unstubAllEnvs();
@@ -490,7 +508,10 @@ it("gives each self-updater only its own provider home", () => {
   const environment = { HOME: "/isolated", GROK_HOME: "/grok", CLAUDE_CONFIG_DIR: "/claude" };
   const grok = fixture("/home/test/.grok/bin/grok", { driver: "grok", environment }).target!;
   expect(grok.updateEnvironment).toEqual({ HOME: "/isolated", GROK_HOME: "/grok" });
-  expect(buildProviderUpdateCommand(grok, "linux")?.env).toEqual({ GROK_HOME: "/grok" });
+  expect(buildProviderUpdateCommand(grok, "linux")?.env).toEqual({
+    GROK_HOME: "/grok",
+    NPM_CONFIG_ALLOW_SCRIPTS: "@xai-official/grok",
+  });
 
   const claude = fixture("/home/test/.local/share/claude/versions/2.0.0", {
     driver: "claudeAgent",

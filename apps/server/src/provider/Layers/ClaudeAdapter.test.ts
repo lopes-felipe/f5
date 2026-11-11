@@ -13091,6 +13091,45 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("restores the model after a partially applied live selection fails", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        runtimeMode: "full-access",
+      });
+      const failure = vi
+        .spyOn(harness.query, "applyFlagSettings")
+        .mockRejectedValueOnce(new Error("control request failed"));
+      try {
+        const result = yield* adapter
+          .sendTurn({
+            threadId: THREAD_ID,
+            model: "claude-haiku-4-5",
+            input: "switch",
+            attachments: [],
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          model: "claude-opus-5",
+          input: "restore",
+          attachments: [],
+        });
+        assert.deepEqual(harness.query.setModelCalls, ["claude-haiku-4-5", "claude-opus-5"]);
+      } finally {
+        failure.mockRestore();
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("sets Claude Code 1M model id on follow-up turns", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

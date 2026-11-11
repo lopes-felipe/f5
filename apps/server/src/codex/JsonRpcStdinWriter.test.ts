@@ -44,6 +44,30 @@ class ControlledWritable extends Writable {
   }
 }
 
+it("reports transport failures once and rejects subsequent writes", async () => {
+  const stdin = new ControlledWritable();
+  const onFailure = vi.fn();
+  const writer = createJsonRpcStdinWriter({ stdin, closedMessage: "closed", onFailure });
+  const pending = writer.write({ id: 1 });
+  const rejected = expect(pending).rejects.toThrow("EPIPE");
+  await Promise.resolve();
+  stdin.completeNext(new Error("EPIPE"));
+  await rejected;
+  await expect(writer.write({ id: 2 })).rejects.toThrow("EPIPE");
+  expect(onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("does not report explicit shutdown as a transport failure", () => {
+  const onFailure = vi.fn();
+  const writer = createJsonRpcStdinWriter({
+    stdin: new ControlledWritable(),
+    closedMessage: "closed",
+    onFailure,
+  });
+  writer.close();
+  expect(onFailure).not.toHaveBeenCalled();
+});
+
 describe("JsonRpcStdinWriter", () => {
   it("preserves start/steer/interrupt order for one thread while bypassing other threads", async () => {
     const stdin = new ControlledWritable();
