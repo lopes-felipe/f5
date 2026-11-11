@@ -22,6 +22,7 @@ import {
   COMPUTER_CHROME_RELEASE_CAPABILITY,
   COMPUTER_CHROME_RELEASE_WAIT_MS,
   COMPUTER_CHROME_SHARED_CAPABILITY,
+  CHROME_LAUNCH_LOCK_MAX_MS,
   DesktopComputerHostMessage,
   type ChromeSharedRegistration,
   type ChromeReleaseOutcome,
@@ -35,7 +36,11 @@ import {
   type ChromeProcessRegistration,
   type RememberedComputerConsent,
 } from "@t3tools/contracts";
-import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
+import {
+  CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
+  computerError,
+  ComputerControlError,
+} from "@t3tools/shared/computerControl";
 import { restrictComputerTier } from "@t3tools/shared/computerApps";
 import type { ComputerController, ComputerExecutionStateUpdate } from "./ComputerController";
 import {
@@ -87,6 +92,13 @@ export class ComputerHostChannel {
    * after the session ends: the manifests still point at that wrapper until another launch.
    */
   private readonly chromeRegistrations = new Map<string, ChromeSharedRegistration>();
+  /**
+   * The shared launch in progress (`chromeLaunchLock`). One at a time: each CLI rewrites the
+   * registration as it starts, so overlapping launches would overwrite each other's.
+   */
+  private chromeLaunch:
+    | { holder: ChromeLeaseHolder; timer: ReturnType<typeof setTimeout> }
+    | undefined;
   /**
    * Calls main admitted (`chromeLeaseValidate.callId`) and hasn't seen end, per holder. Marked
    * before the validation answer, so no native admission can slip in ahead of the call.
@@ -177,6 +189,10 @@ export class ComputerHostChannel {
           this.chromeCallsAdmitted.delete(key);
         }
         this.chromeCallsHolders = holders;
+        // A launch lock ends with its holder's lease.
+        const launching = this.chromeLaunch?.holder;
+        if (launching && !holders.some((holder) => sameChromeHolder(holder, launching)))
+          this.setChromeLaunch(undefined);
         for (const profileId of this.backends.keys()) this.sendChromeLease(profileId);
         // Native requests queued behind the lease re-check at once.
         controller.availabilityChanged?.();
@@ -260,13 +276,33 @@ export class ComputerHostChannel {
       return this.chromeCalls.get(key) === true || !!this.chromeCallsAdmitted.get(key)?.size;
     });
   }
-  /** Shared peers learn every profile's latest verified shared registration. */
+  /**
+   * Shared peers learn every profile's latest verified shared registration, and whether
+   * another profile is launching (its rewrite may land before its verified copy).
+   */
   private sendChromeRegistrations(profileId: string): void {
     if (!this.backends.get(profileId)?.capabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY)) return;
+    const launching = this.chromeLaunch?.holder.profileId;
     this.send(profileId, {
       type: "chromeRegistrations",
       registrations: [...this.chromeRegistrations.values()],
+      ...(launching !== undefined && launching !== profileId ? { peerLaunching: true } : {}),
     });
+  }
+  /** Takes or frees the shared launch lock; every shared peer hears of it before the answer. */
+  private setChromeLaunch(holder: ChromeLeaseHolder | undefined): void {
+    if (this.chromeLaunch) clearTimeout(this.chromeLaunch.timer);
+    const changed =
+      holder === undefined
+        ? this.chromeLaunch !== undefined
+        : !this.chromeLaunch || !sameChromeHolder(this.chromeLaunch.holder, holder);
+    if (holder) {
+      // A backend that never unlocks (crashed mid-launch) can't hold launches up for good.
+      const timer = setTimeout(() => this.setChromeLaunch(undefined), CHROME_LAUNCH_LOCK_MAX_MS);
+      timer.unref?.();
+      this.chromeLaunch = { holder, timer };
+    } else this.chromeLaunch = undefined;
+    if (changed) for (const peer of this.backends.keys()) this.sendChromeRegistrations(peer);
   }
   /** No call running by the backend's report, and none admitted by main still unfinished. */
   private chromeCallsIdle(holder: ChromeLeaseHolder): boolean {
@@ -328,6 +364,7 @@ export class ComputerHostChannel {
       if (key.startsWith(prefix)) this.chromeCalls.delete(key);
     for (const key of this.chromeCallsAdmitted.keys())
       if (key.startsWith(prefix)) this.chromeCallsAdmitted.delete(key);
+    if (this.chromeLaunch?.holder.profileId === profileId) this.setChromeLaunch(undefined);
     // Settling deletes the entry; Map iteration tolerates that.
     for (const pending of this.releaseRequests.values())
       if (pending.profileId === profileId) pending.settle("timeout");
@@ -454,7 +491,8 @@ export class ComputerHostChannel {
         this.sendLeases(profileId);
         if (this.chrome.current() || this.chrome.recoveryRequired())
           this.sendChromeLease(profileId);
-        if (this.chromeRegistrations.size) this.sendChromeRegistrations(profileId);
+        if (this.chromeRegistrations.size || this.chromeLaunch)
+          this.sendChromeRegistrations(profileId);
         return;
       }
       const fail = (requestId: string, error: unknown) => {
@@ -797,6 +835,40 @@ export class ComputerHostChannel {
           for (const peer of this.backends.keys()) this.sendChromeRegistrations(peer);
           break;
         }
+        case "chromeLaunchLock":
+          try {
+            if (
+              !backend.capabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY) ||
+              message.holder.profileId !== profileId ||
+              !this.chrome.sharedHolder(message.holder)
+            )
+              throw new ComputerControlError({
+                _tag: "Execution",
+                message: "This Chrome session doesn't share Chrome.",
+              });
+            const launching = this.chromeLaunch?.holder;
+            if (launching && !sameChromeHolder(launching, message.holder))
+              throw new ComputerControlError({
+                _tag: "Execution",
+                message: CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
+              });
+            // Peers hear of the launch before its CLI can start, so its rewrite is waited out.
+            this.setChromeLaunch(message.holder);
+            this.send(profileId, { type: "response", requestId: message.requestId, result: true });
+          } catch (error) {
+            fail(message.requestId, error);
+          }
+          break;
+        case "chromeLaunchUnlock": {
+          const launching = this.chromeLaunch?.holder;
+          if (
+            launching &&
+            message.holder.profileId === profileId &&
+            sameChromeHolder(launching, message.holder)
+          )
+            this.setChromeLaunch(undefined);
+          break;
+        }
         case "chromeRestoreAcquire":
           if (message.holder.profileId !== profileId) {
             child.disconnect();
@@ -1049,7 +1121,9 @@ export class ComputerHostChannel {
               });
             // Shared holders drive one Chrome: one call runs at a time across them. Each call
             // is marked admitted below before the answer, so two can never both pass here.
-            if (this.chromeCallRunningElsewhere(message.holder))
+            // A validation without a call (session setup) runs nothing in Chrome, so a peer's
+            // call doesn't hold it up.
+            if (message.callId !== undefined && this.chromeCallRunningElsewhere(message.holder))
               throw new ComputerControlError({
                 _tag: "Execution",
                 message: CHROME_WAITING_FOR_CHROME_CALL_MESSAGE,

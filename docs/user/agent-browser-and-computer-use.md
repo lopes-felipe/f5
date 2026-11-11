@@ -135,8 +135,9 @@ thread.
 
 Claude threads in different profiles share Claude in Chrome when the installed Claude
 version is certified for it. Each keeps its own tab group, and their Chrome calls run one
-at a time: a call waits up to twenty seconds for another agent's call to finish. Each
-profile's Claude must be connected to the browser once: run `claude --chrome` with that
+at a time: a call waits up to twenty seconds for another agent's call to finish. A call
+waiting for your approval doesn't hold anyone up. Threads in the same profile still take
+turns with Chrome, as before. Each profile's Claude must be connected to the browser once: run `claude --chrome` with that
 profile's Claude settings folder, open `/chrome` and choose **Select browser…**. Until
 then its Chrome calls report that the extension isn't connected.
 

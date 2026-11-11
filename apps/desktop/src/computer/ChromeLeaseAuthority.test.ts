@@ -8,7 +8,11 @@ import {
   ChromeLeaseAuthority,
   isChromeSelfWait,
 } from "./ChromeLeaseAuthority";
-import type { ChromeLeaseHolder, ComputerLeaseHolder } from "@t3tools/contracts";
+import {
+  CHROME_LEASE_HOLDERS_MAX,
+  type ChromeLeaseHolder,
+  type ComputerLeaseHolder,
+} from "@t3tools/contracts";
 const holder = {
   profileId: "profile-a",
   threadId: "thread",
@@ -135,15 +139,16 @@ describe("Chrome device lease", () => {
   });
 });
 
+const refusal = (run: () => void) => {
+  try {
+    run();
+  } catch (error) {
+    return (error as { error: unknown }).error;
+  }
+  return undefined;
+};
+
 describe("native control for the Chrome holder's own thread", () => {
-  const refusal = (run: () => void) => {
-    try {
-      run();
-    } catch (error) {
-      return (error as { error: unknown }).error;
-    }
-    return undefined;
-  };
   const self = { threadId: "thread" };
 
   it("lets a Claude holder's own thread take native control while its calls are idle", () => {
@@ -400,6 +405,47 @@ describe("shared Claude in Chrome", () => {
       cases.push([() => lease.acquire(peer, null, true), "older backend"]);
     }
     for (const [run, label] of cases) expect(run, label).toThrow(ComputerControlError);
+  });
+
+  it("keeps threads in one profile taking turns: they share one Claude config", () => {
+    const { lease } = make();
+    lease.acquire(holder, null, true);
+    const sibling = { ...holder, threadId: "sibling", sessionGeneration: "g2" };
+    expect(refusal(() => lease.acquire(sibling, null, true))).toMatchObject({
+      _tag: "Busy",
+      holder: "same-profile",
+      holderThreadId: holder.threadId,
+    });
+  });
+
+  it("doesn't hold a newcomer up behind another profile's stopping session", () => {
+    let alive = true;
+    const lease = new ChromeLeaseAuthority(
+      vi.fn(),
+      { alive: () => alive, stop: vi.fn(), recoveryRequired: () => false },
+      { callAdmission: () => true, callsIdle: () => true, sharedCapable: () => true },
+    );
+    lease.acquire(holder, null, true);
+    lease.release(holder);
+    // Its group is still exiting; the next session of the same thread waits for it.
+    expect(() => lease.acquire({ ...holder, sessionGeneration: "next" }, null, true)).toThrow(
+      ComputerControlError,
+    );
+    lease.acquire(peer, null, true);
+    expect(lease.holders()).toEqual([holder, peer]);
+    alive = false;
+    lease.processExited();
+    expect(lease.holders()).toEqual([peer]);
+  });
+
+  it("caps how many sessions hold Chrome, so every holder list fits main's message", () => {
+    const { lease } = make();
+    for (let index = 0; index < CHROME_LEASE_HOLDERS_MAX; index += 1)
+      lease.acquire({ ...peer, profileId: `profile-${index}` }, null, true);
+    expect(() => lease.acquire({ ...peer, profileId: "one-too-many" }, null, true)).toThrow(
+      ComputerControlError,
+    );
+    expect(lease.holders()).toHaveLength(CHROME_LEASE_HOLDERS_MAX);
   });
 
   it("releases each shared holder on its own, by holder or by profile", () => {

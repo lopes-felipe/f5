@@ -1,8 +1,9 @@
-import type {
-  ChromeLeaseHolder,
-  ChromeProcessRegistration,
-  ComputerLeaseHolder,
-  ComputerLeaseScope,
+import {
+  CHROME_LEASE_HOLDERS_MAX,
+  type ChromeLeaseHolder,
+  type ChromeProcessRegistration,
+  type ComputerLeaseHolder,
+  type ComputerLeaseScope,
 } from "@t3tools/contracts";
 import {
   computerError,
@@ -235,6 +236,14 @@ export class ChromeLeaseAuthority {
       this.options.sharedCapable?.(entry.holder) === true
     );
   }
+  /**
+   * Shared sessions from different profiles hold Chrome together. Threads in one profile
+   * share one Claude config, wrapper and journal, which certification didn't cover, so they
+   * still take turns: an idle one is preempted as before.
+   */
+  private coexist(a: Pick<Entry, "holder" | "shared">, b: Pick<Entry, "holder" | "shared">) {
+    return this.shareable(a) && this.shareable(b) && a.holder.profileId !== b.holder.profileId;
+  }
   acquire(holder: ChromeLeaseHolder, native: ComputerLeaseHolder | null, shared = false): void {
     if (this.recoveryRequired()) {
       this.log(`acquire refused, recovery required (${describeHolder(holder)})`, true);
@@ -262,14 +271,11 @@ export class ChromeLeaseAuthority {
     if (existing && !existing.draining && !existing.invalidated) return;
     const candidate = { holder, shared };
     // A stopping generation of the same holder still owns its slot until its group exits.
-    const blocking = this.entries.find(
-      (entry) =>
-        entry === existing ||
-        !this.shareable(candidate) ||
-        !this.shareable(entry) ||
-        entry.draining ||
-        entry.invalidated,
-    );
+    // Another profile's stopping session doesn't: its CLI's exit can't disturb a peer's.
+    const blocking =
+      this.entries.length >= CHROME_LEASE_HOLDERS_MAX
+        ? this.entries[0]
+        : this.entries.find((entry) => entry === existing || !this.coexist(candidate, entry));
     if (blocking) {
       this.log(
         `acquire refused (${describeHolder(holder)}): held by ${describeHolder(blocking.holder)}`,

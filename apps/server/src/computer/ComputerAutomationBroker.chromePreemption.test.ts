@@ -1,8 +1,15 @@
 import { EventEmitter } from "node:events";
-import { ComputerControlError } from "@t3tools/shared/computerControl";
+import {
+  CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
+  ComputerControlError,
+} from "@t3tools/shared/computerControl";
 import { describe, expect, it } from "vitest";
 import type { ChromeLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
-import { ComputerAutomationBrokerRuntime, type ChromeReleaser } from "./ComputerAutomationBroker";
+import {
+  CHROME_PREEMPT_MAX_RELEASES,
+  ComputerAutomationBrokerRuntime,
+  type ChromeReleaser,
+} from "./ComputerAutomationBroker";
 import { DesktopComputerHost } from "./DesktopComputerHost";
 
 const holderA: ChromeLeaseHolder = {
@@ -283,6 +290,48 @@ describe("Chrome lease preemption", () => {
     );
   });
 
+  it("waits for another profile's launch to finish before taking the launch lock", async () => {
+    const { ipc, broker } = await harness();
+    // Without sharing negotiated there is no lock to take.
+    expect(await broker.lockChromeLaunch(holderA)).toBe(false);
+    ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["chrome-call-activity-v1", "chrome-call-admission-v1", "chrome-shared-v1"],
+    });
+    let refusals = 2;
+    const send = ipc.send.bind(ipc);
+    ipc.send = (raw, callback) => {
+      const message = raw as DesktopComputerHostMessage;
+      if (message.type !== "chromeLaunchLock") return send(raw, callback);
+      ipc.messages.push(message);
+      callback(null);
+      queueMicrotask(() =>
+        ipc.emit(
+          "message",
+          refusals-- > 0
+            ? {
+                type: "response",
+                requestId: message.requestId,
+                error: { _tag: "Execution", message: CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE },
+              }
+            : { type: "response", requestId: message.requestId, result: true },
+        ),
+      );
+      return true;
+    };
+    expect(await broker.lockChromeLaunch(holderA)).toBe(true);
+    expect(ipc.messages.filter((message) => message.type === "chromeLaunchLock")).toHaveLength(3);
+    // A wait that runs out goes ahead without the lock.
+    refusals = Number.POSITIVE_INFINITY;
+    expect(await broker.lockChromeLaunch(holderA, 300)).toBe(false);
+    broker.unlockChromeLaunch(holderA);
+    expect(ipc.messages.at(-1)).toEqual({ type: "chromeLaunchUnlock", holder: holderA });
+    ipc.emit("message", { type: "chromeRegistrations", registrations: [], peerLaunching: true });
+    expect(broker.chromePeerLaunchInProgress()).toBe(true);
+    ipc.emit("message", { type: "chromeRegistrations", registrations: [] });
+    expect(broker.chromePeerLaunchInProgress()).toBe(false);
+  });
+
   it("leaves other profiles' holders anonymous and alone", async () => {
     const { ipc, broker } = await harness();
     ipc.setChrome({ ...holderA, profileId: "other" });
@@ -303,7 +352,8 @@ describe("Chrome lease preemption", () => {
 
 /** Main with another profile holding Chrome, which lets go when asked while idle. */
 class CrossProfileIpc extends Ipc {
-  otherHeld = true;
+  /** Other profiles' sessions holding Chrome (shared ones may be several). */
+  othersHolding = 1;
   otherAnswer: "released" | "working" = "released";
   override send(raw: unknown, callback: (error: Error | null) => void) {
     const message = raw as DesktopComputerHostMessage;
@@ -316,7 +366,7 @@ class CrossProfileIpc extends Ipc {
       });
       return true;
     }
-    if (message.type === "chromeLeaseAcquire" && this.otherHeld) {
+    if (message.type === "chromeLeaseAcquire" && this.othersHolding > 0) {
       this.messages.push(message);
       callback(null);
       queueMicrotask(() =>
@@ -337,7 +387,7 @@ class CrossProfileIpc extends Ipc {
       this.messages.push(message);
       callback(null);
       queueMicrotask(() => {
-        if (this.otherAnswer === "released") this.otherHeld = false;
+        if (this.otherAnswer === "released") this.othersHolding -= 1;
         this.emit("message", {
           type: "response",
           requestId: message.requestId,
@@ -374,6 +424,25 @@ describe("Chrome lease preemption across profiles", () => {
     expect(ipc.acquires()).toBe(2);
     expect(ipc.chrome?.threadId).toBe("b");
     broker.close();
+  });
+
+  it("releases each idle shared session in the way, in turn, within a bound", async () => {
+    const { ipc, broker } = await crossHarness();
+    const requests = () =>
+      ipc.messages.filter((message) => message.type === "chromeHolderRelease").length;
+    // Two other profiles share Chrome: an exclusive acquisition frees both.
+    ipc.othersHolding = 2;
+    await broker.acquireChromeLease({ ...holderB, provider: "codex" });
+    expect(requests()).toBe(2);
+    expect(ipc.acquires()).toBe(3);
+    // Releases that make no headway stop after the bound instead of looping.
+    const stuck = await crossHarness();
+    stuck.ipc.othersHolding = Number.POSITIVE_INFINITY;
+    const error = await refusal(stuck.broker.acquireChromeLease(holderB));
+    expect(error.error).toMatchObject({ _tag: "Busy", holder: "other-profile" });
+    expect(stuck.ipc.acquires()).toBe(CHROME_PREEMPT_MAX_RELEASES + 1);
+    broker.close();
+    stuck.broker.close();
   });
 
   it("keeps the refusal when the other profile's holder is working", async () => {

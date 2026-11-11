@@ -42,6 +42,7 @@ import {
   computerRequestPayload,
   isComputerMutation,
   CHROME_OWN_STOPPING_MESSAGE,
+  CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
 } from "@t3tools/shared/computerControl";
 import {
   COMPUTER_CHROME_APP_IDS,
@@ -164,6 +165,13 @@ export const CHROME_OTHER_PROFILE_LINGER_MS = 3000;
  * SIGTERM, SIGKILL after 1 s, and observes the group exit within 5 s.
  */
 export const CHROME_PREEMPT_WAIT_MS = 8000;
+/**
+ * Holders one exclusive acquisition releases before giving up. Shared sessions come one per
+ * profile, so this covers several profiles while keeping the wait bounded.
+ */
+export const CHROME_PREEMPT_MAX_RELEASES = 8;
+/** How long a shared launch waits for another profile's; main frees a lock after 45 s. */
+export const CHROME_LAUNCH_LOCK_WAIT_MS = 50_000;
 /** How a Chrome-holding session gives the lease up (see `registerChromeReleaser`). */
 export interface ChromeReleaser {
   /** Idle by the session's own account: nothing it runs would die with the release. */
@@ -303,6 +311,8 @@ export class ComputerAutomationBrokerRuntime {
   private chromeHolders: ReadonlyArray<ChromeLeaseHolder> = [];
   /** Verified registrations of shared sessions in every profile (`chromeRegistrations`). */
   private chromeSharedRegistrations: ReadonlyArray<ChromeSharedRegistration> = [];
+  /** Another profile's shared session holds the launch lock (`chromeRegistrations`). */
+  private chromePeerLaunching = false;
   /** Whether a browser call runs, per thread and session generation (`reportChromeCalls`). */
   private readonly chromeCalls = new Map<string, boolean>();
   /** How each Chrome-holding session gives the lease up, per thread and generation. */
@@ -526,8 +536,10 @@ export class ComputerAutomationBrokerRuntime {
         // A waiter that finishes deletes itself; Set iteration tolerates that.
         for (const check of this.chromeReleaseWaiters) check();
       }
-      if (message.type === "chromeRegistrations")
+      if (message.type === "chromeRegistrations") {
         this.chromeSharedRegistrations = message.registrations;
+        this.chromePeerLaunching = message.peerLaunching === true;
+      }
       // Main forwards another profile's request to release this profile's idle Chrome holder.
       if (message.type === "chromeReleaseRequest") {
         const { requestId, threadId, sessionGeneration } = message;
@@ -575,6 +587,7 @@ export class ComputerAutomationBrokerRuntime {
         this.chromeHolders = [];
         // Main relays them again to the next host connection.
         this.chromeSharedRegistrations = [];
+        this.chromePeerLaunching = false;
         this.chromeCalls.clear();
         for (const check of this.chromeReleaseWaiters) check();
         this.pendingTakeover = undefined;
@@ -1218,32 +1231,32 @@ export class ComputerAutomationBrokerRuntime {
     });
   }
   /**
-   * Runs an acquisition that main may refuse because this profile's Chrome holder has the
-   * lease. An idle holder is released and the acquisition retried once; otherwise the
-   * refusal comes back naming the holder.
+   * Runs an acquisition that main may refuse because a Chrome holder has the lease. Each
+   * idle holder in the way is released in turn (several shared sessions may hold Chrome)
+   * and the acquisition retried; a working holder's refusal comes back naming it. Bounded:
+   * it stops once a release makes no progress.
    */
   async withChromePreemption<A>(acquire: () => Promise<A>): Promise<A> {
-    try {
-      return await acquire();
-    } catch (error) {
-      const busy =
-        error instanceof ComputerControlError &&
-        error.error._tag === "Busy" &&
-        error.error.resource === "chrome"
-          ? error.error
-          : undefined;
-      const released =
-        busy?.holder === "same-profile" && busy.holderThreadId
-          ? await this.releaseChromeHolder(busy.holderThreadId)
-          : busy?.holder === "other-profile"
-            ? (await this.releaseOtherProfileChromeHolder()) === "released"
-            : false;
-      if (!released) throw await this.attributeBusy(error);
-    }
-    try {
-      return await acquire();
-    } catch (error) {
-      throw await this.attributeBusy(error);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await acquire();
+      } catch (error) {
+        const busy =
+          error instanceof ComputerControlError &&
+          error.error._tag === "Busy" &&
+          error.error.resource === "chrome"
+            ? error.error
+            : undefined;
+        const released =
+          attempt >= CHROME_PREEMPT_MAX_RELEASES
+            ? false
+            : busy?.holder === "same-profile" && busy.holderThreadId
+              ? await this.releaseChromeHolder(busy.holderThreadId)
+              : busy?.holder === "other-profile"
+                ? (await this.releaseOtherProfileChromeHolder()) === "released"
+                : false;
+        if (!released) throw await this.attributeBusy(error);
+      }
     }
   }
   /**
@@ -1289,6 +1302,39 @@ export class ComputerAutomationBrokerRuntime {
   /** Verified registrations of every profile's shared Chrome sessions, as main relays them. */
   sharedChromeRegistrations(): ReadonlyArray<ChromeSharedRegistration> {
     return this.chromeSharedRegistrations;
+  }
+  /** Whether another profile's shared session is launching, as main last said. */
+  chromePeerLaunchInProgress(): boolean {
+    return this.chromePeerLaunching;
+  }
+  /**
+   * Takes main's shared launch lock for `holder`, waiting while another profile launches.
+   * Answers whether it holds the lock. Without one (main refused sharing, or the wait ran out)
+   * the launch goes ahead as it did before the lock existed.
+   */
+  async lockChromeLaunch(holder: ChromeLeaseHolder, waitMs = CHROME_LAUNCH_LOCK_WAIT_MS) {
+    if (!this.host.chromeSharedCapable()) return false;
+    const deadline = performance.now() + waitMs;
+    for (;;) {
+      try {
+        await this.host.correlated(
+          { type: "chromeLaunchLock", requestId: randomUUID(), holder },
+          5_000,
+          false,
+        );
+        return true;
+      } catch (error) {
+        const waiting =
+          error instanceof ComputerControlError &&
+          error.error._tag === "Execution" &&
+          error.error.message === CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE;
+        if (!waiting || performance.now() + 250 >= deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+  unlockChromeLaunch(holder: ChromeLeaseHolder): void {
+    if (this.host.chromeSharedCapable()) this.host.send({ type: "chromeLaunchUnlock", holder });
   }
   /** A shared session's launch verified: main relays its registration to shared peers. */
   reportChromeRegistration(holder: ChromeLeaseHolder, registration: ChromeSharedRegistration) {

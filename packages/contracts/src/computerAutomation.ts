@@ -204,6 +204,13 @@ export const COMPUTER_CHROME_RELEASE_CAPABILITY = "chrome-release-v1";
  * → `chromeRegistrations`), so a peer's launch isn't read as an external change.
  */
 export const COMPUTER_CHROME_SHARED_CAPABILITY = "chrome-shared-v1";
+/** Main holds at most this many Chrome leases at once, so `chromeLeaseChanged` always fits. */
+export const CHROME_LEASE_HOLDERS_MAX = 64;
+/**
+ * Main frees a shared launch lock (`chromeLaunchLock`) its holder never unlocked after this
+ * long: a launch records its registration within the CLI's start plus a 10 s wait.
+ */
+export const CHROME_LAUNCH_LOCK_MAX_MS = 45_000;
 /** One manifest or wrapper as a verified launch left it. */
 export const ChromeRegistrationArtifact = Schema.Struct({
   location: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
@@ -931,6 +938,26 @@ export const DesktopComputerHostMessage = Schema.Union([
      */
     type: Schema.Literal("chromeRegistrations"),
     registrations: Schema.Array(ChromeSharedRegistration).check(Schema.isMaxLength(32)),
+    /**
+     * Another profile's shared session holds the launch lock: its CLI may rewrite the
+     * registration before its verified copy arrives here, so that rewrite is waited out.
+     */
+    peerLaunching: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    /**
+     * Backend to main (`COMPUTER_CHROME_SHARED_CAPABILITY`): a shared holder takes the launch
+     * lock before it inspects and approves the registration, and holds it until its launch
+     * is recorded, so shared launches never overlap. Refused with the retryable
+     * `CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE` while another holder launches.
+     */
+    type: Schema.Literal("chromeLaunchLock"),
+    requestId: Id,
+    holder: ChromeLeaseHolder,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("chromeLaunchUnlock"),
+    holder: ChromeLeaseHolder,
   }),
   Schema.Struct({
     type: Schema.Literal("chromeLeaseValidate"),
@@ -974,7 +1001,9 @@ export const DesktopComputerHostMessage = Schema.Union([
     type: Schema.Literal("chromeLeaseChanged"),
     /** This profile's first Chrome holder; `holders` lists all of them to shared peers. */
     holder: Schema.NullOr(ChromeLeaseHolder),
-    holders: Schema.optionalKey(Schema.Array(ChromeLeaseHolder).check(Schema.isMaxLength(64))),
+    holders: Schema.optionalKey(
+      Schema.Array(ChromeLeaseHolder).check(Schema.isMaxLength(CHROME_LEASE_HOLDERS_MAX)),
+    ),
     otherProfile: Schema.optionalKey(Schema.Boolean),
     /**
      * `COMPUTER_CHROME_RELEASE_CAPABILITY` peers: another profile's Chrome holder refuses this

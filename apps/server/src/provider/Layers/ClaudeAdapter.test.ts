@@ -1754,6 +1754,89 @@ describe("ClaudeAdapter agent browser", () => {
   );
 
   it.effect(
+    "stops counting a Chrome call as running while it waits for approval, and admits it again after",
+    () => {
+      const order: string[] = [];
+      const { harness, computerBroker, artifacts, record } = certifiedChromeFixture({
+        validate: async () => {
+          order.push("validate");
+        },
+      });
+      harness.query.mcpServerStatusValue = [
+        { name: "claude-in-chrome", status: "connected", source: "dynamic" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        const report = computerBroker.reportChromeCalls.bind(computerBroker);
+        vi.spyOn(computerBroker, "reportChromeCalls").mockImplementation(
+          (threadId, generation, running) => {
+            order.push(`calls:${running}`);
+            report(threadId, generation, running);
+          },
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        });
+        artifacts.set(
+          "user",
+          JSON.stringify({
+            name: record.identity.hostName,
+            type: "stdio",
+            path: "/test/host",
+            allowed_origins: record.identity.allowedOrigins,
+          }),
+        );
+        artifacts.set("/test/host", "wrapper");
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "session.configured" &&
+                  JSON.stringify(event.payload.config.agentBrowser).includes(
+                    '"chrome":{"state":"connected"',
+                  ),
+              ),
+            ),
+          ),
+        );
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+        order.length = 0;
+        const navigate = canUseTool(
+          "mcp__claude-in-chrome__navigate",
+          { url: "https://example.com" },
+          permissionOptions("chrome-call"),
+        );
+        yield* Effect.promise(() =>
+          vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+        );
+        // Admitted, then ended for the prompt: nobody waits on the user's decision.
+        assert.deepEqual(order, ["calls:true", "validate", "calls:false"]);
+        const opened = events.find((event) => event.type === "request.opened")!;
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.requestId!),
+          "accept",
+        );
+        assert.equal((yield* Effect.promise(() => navigate))?.behavior, "allow");
+        // Approval admits it again, and it runs from there.
+        assert.deepEqual(order.slice(3), ["calls:true", "validate"]);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => computerBroker.close())),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
     "routes a certified Chrome launch through its lease, status verifier and live veto",
     () => {
       const artifacts = new Map<string, string>();

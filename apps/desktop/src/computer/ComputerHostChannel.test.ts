@@ -11,6 +11,7 @@ import {
   CHROME_WAITING_FOR_CHROME_CALL_MESSAGE,
   CHROME_WAITING_FOR_NATIVE_MESSAGE,
 } from "./ChromeLeaseAuthority";
+import { CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE } from "@t3tools/shared/computerControl";
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
 import { ComputerConsentStore } from "./ComputerConsentStore";
 import type { ComputerController } from "./ComputerController";
@@ -2257,6 +2258,68 @@ describe("background capability negotiation", () => {
       expect(await h.validateB("b-2", "call-b2")).toMatchObject({
         error: { message: CHROME_WAITING_FOR_CHROME_CALL_MESSAGE },
       });
+    });
+
+    it("lets a session's setup validation through while a peer's call runs", async () => {
+      const h = await bothHold();
+      expect(await h.validateB("b-1", "call-b")).toMatchObject({ result: true });
+      h.process.emit("message", {
+        type: "chromeLeaseValidate",
+        requestId: "setup",
+        holder: holderA,
+      });
+      await vi.waitFor(() =>
+        expect(
+          h.sentA().find((message) => message.type === "response" && message.requestId === "setup"),
+        ).toMatchObject({ result: true }),
+      );
+    });
+
+    it("runs one shared launch at a time and tells peers while one is under way", async () => {
+      const h = await bothHold();
+      const answer = async (
+        emit: (message: unknown) => void,
+        messages: () => Array<Record<string, unknown>>,
+        requestId: string,
+        holder: typeof holderA,
+      ) => {
+        emit({ type: "chromeLaunchLock", requestId, holder });
+        await vi.waitFor(() =>
+          expect(
+            messages().find(
+              (message) => message.type === "response" && message.requestId === requestId,
+            ),
+          ).toBeDefined(),
+        );
+        return messages().find(
+          (message) => message.type === "response" && message.requestId === requestId,
+        );
+      };
+      const lockA = (requestId: string) =>
+        answer((message) => h.process.emit("message", message), h.sentA, requestId, holderA);
+      const lockB = (requestId: string) =>
+        answer((message) => h.b.emit("message", message), h.sentB, requestId, holderB);
+      const launching = (messages: Array<Record<string, unknown>>) =>
+        messages.filter((message) => message.type === "chromeRegistrations").at(-1)
+          ?.peerLaunching === true;
+      expect(await lockA("lock-a")).toMatchObject({ result: true });
+      // The peer hears of the launch; the launcher doesn't wait on itself.
+      expect(launching(h.sentB())).toBe(true);
+      expect(launching(h.sentA())).toBe(false);
+      expect(await lockB("lock-b")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE },
+      });
+      // Only its holder unlocks it.
+      h.b.emit("message", { type: "chromeLaunchUnlock", holder: holderA });
+      expect(await lockB("lock-b2")).toMatchObject({ error: { _tag: "Execution" } });
+      h.process.emit("message", { type: "chromeLaunchUnlock", holder: holderA });
+      expect(launching(h.sentB())).toBe(false);
+      expect(await lockB("lock-b3")).toMatchObject({ result: true });
+      // A lock ends with its holder's lease.
+      h.b.emit("message", { type: "chromeLeaseRelease", requestId: "rel", holder: holderB });
+      await vi.waitFor(() => expect(h.channel.chrome.holders()).toEqual([holderA]));
+      expect(launching(h.sentA())).toBe(false);
+      expect(await lockA("lock-a2")).toMatchObject({ result: true });
     });
 
     it("keeps Chrome exclusive for an unshared session or a backend without sharing", async () => {
