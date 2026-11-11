@@ -267,7 +267,9 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
     const readOnlyCall = async (handle: ReturnType<typeof launch>, label: string) => {
       const { context, record } = await listTabs(handle, false);
       readOnlyListings[label] = record;
-      return context !== undefined;
+      // A listing, or the extension saying this new session has no group yet: either
+      // way the call reached Chrome without opening anything.
+      return context !== undefined || record.outcome === "no-session-group";
     };
     const observations: Record<string, unknown> = { readOnlyListings };
     let toolNames: string[] = [];

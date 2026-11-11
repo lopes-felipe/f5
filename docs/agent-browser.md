@@ -1292,7 +1292,9 @@ versions (stamped as floors) and `admission: "session"`, and computes:
   the tabs its own listings returned. The phase observes four assertions:
 
   Every listing in the run, including `read-only-call` and `isolated-read-only-call`,
-  counts only when a tab listing comes back and parses. When several Chrome browsers are
+  counts only when a tab listing comes back and parses. The read-only calls don't set
+  `createIfEmpty`, so a new session may instead get the extension's "has no tab group of its
+  own" answer; that also counts, because the call reached Chrome. When several Chrome browsers are
   connected to the claude.ai account, the CLI answers a session's first browser call with
   a browser choice instead of reaching Chrome. The harness then lets that session select
   the first browser listed under "Browsers on this computer", and only that one, and asks

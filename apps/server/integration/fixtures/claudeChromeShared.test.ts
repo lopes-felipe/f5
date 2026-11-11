@@ -119,6 +119,13 @@ describe("classifyListing", () => {
     expect(parseBrowserChoice(listing(1, [2]))).toBeUndefined();
   });
 
+  it("recognises the extension's no-group answer as a delivered call", () => {
+    const answer =
+      "This session has no tab group of its own. Use createIfEmpty: true to create this session's group.";
+    expect(classifyListing([ok(answer)], denial)).toEqual({ outcome: "no-session-group" });
+    expect(classifyListing([err(answer)], denial).outcome).toBe("tool-error");
+  });
+
   it("keeps device ids and UUIDs out of scrubbed text", () => {
     expect(scrubError("deviceId: abc-123 id 0f22c62c-1111-2222-3333-444455556666")).toBe(
       "deviceId: <id> id <uuid>",

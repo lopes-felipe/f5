@@ -20,8 +20,12 @@ export type ListingOutcome =
   | "unreadable"
   | "tool-error"
   | "denied"
+  | "no-session-group"
   | "browser-not-selected"
   | "not-called";
+
+/** In the extension's answer when a session lists tabs before it has a group of its own. */
+export const NO_SESSION_GROUP_MARK = "has no tab group of its own";
 
 /** The CLI's "choose a browser" answer, which stands in for any browser call's result. */
 export interface BrowserChoice {
@@ -207,6 +211,16 @@ export function classifyListing(
     const choice = parseBrowserChoice(result.content);
     if (choice) return { outcome: "browser-not-selected", choice };
   }
+  // The extension's answer to a listing without createIfEmpty from a session that has
+  // no group yet: the call reached Chrome, and nothing was opened.
+  if (
+    results.some(
+      (result) =>
+        !result.isError &&
+        textsOf(result.content).some((text) => text.includes(NO_SESSION_GROUP_MARK)),
+    )
+  )
+    return { outcome: "no-session-group" };
   const errors = results.filter((result) => result.isError);
   if (errors.length === 0) {
     const text = textsOf(results[0]!.content).join(" ");
