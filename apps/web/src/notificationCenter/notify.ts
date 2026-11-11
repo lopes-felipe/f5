@@ -82,26 +82,28 @@ export interface DeliveryPlan {
 }
 
 /**
- * Who hears about a notification. Everything is recorded in the inbox; Do Not Disturb holds the
- * rest back unless the item is urgent and urgent items are allowed through. A focused app shows
- * a toast (not for the thread already on screen); an unfocused one uses the OS when it can and
- * otherwise leaves a toast waiting for the user's return.
+ * Who hears about a notification. It is recorded in the inbox when the source's Inbox switch is
+ * on, even during Do Not Disturb; Do Not Disturb holds the rest back unless the item is urgent
+ * and urgent items are allowed through. A focused app shows a toast (not for the thread already
+ * on screen); an unfocused one uses the OS when it can and otherwise leaves a toast waiting for
+ * the user's return.
  */
 export function planNotificationDelivery(
   input: Pick<NotifyInput, "source" | "urgent" | "threadId">,
   env: DeliveryEnvironment,
 ): DeliveryPlan {
   const prefs = env.preferences[input.source];
+  const record = prefs.inbox;
   const muted =
     isDoNotDisturbActive(env.doNotDisturbUntil, env.nowMs) &&
     !(input.urgent === true && env.dndAllowUrgent);
-  if (muted) return { record: true, toast: false, os: false, sound: false };
+  if (muted) return { record, toast: false, os: false, sound: false };
   if (env.appFocused) {
     const onScreen = input.threadId !== undefined && input.threadId === env.activeThreadId;
-    return { record: true, toast: prefs.inApp && !onScreen, os: false, sound: false };
+    return { record, toast: prefs.inApp && !onScreen, os: false, sound: false };
   }
   const os = prefs.system && env.permission === "granted";
-  return { record: true, toast: !os && prefs.inApp, os, sound: prefs.sound };
+  return { record, toast: !os && prefs.inApp, os, sound: prefs.sound };
 }
 
 type NotificationHost = {
@@ -287,7 +289,7 @@ export function notify(input: NotifyInput, env: DeliveryEnvironment = readDelive
   const plan = planNotificationDelivery(input, env);
   const onScreen =
     env.appFocused && input.threadId !== undefined && input.threadId === env.activeThreadId;
-  recorder?.({ ...input, id, createdAt: env.nowMs, read: onScreen });
+  if (plan.record) recorder?.({ ...input, id, createdAt: env.nowMs, read: onScreen });
 
   if (plan.sound) playThrottledSound(env.nowMs);
 
@@ -323,7 +325,7 @@ function playThrottledSound(nowMs: number): void {
 
 /**
  * The delivery policy for a plain error toast raised anywhere in the app (not through
- * `notify`): records it, plays the sound and shows the OS notification when the Errors source
+ * `notify`): records it when the Errors Inbox switch is on, plays the sound and shows the OS notification when the Errors source
  * asks for them, and returns whether the caller's own toast should show. Do Not Disturb holds
  * it back like any other notification. While F5 is in the background the toast also shows when
  * in-app delivery is on, so the error is still there on return.
@@ -344,7 +346,7 @@ export function deliverErrorNotification(
     target: { kind: "none" },
   };
   const plan = planNotificationDelivery(input, env);
-  recorder?.({ ...input, id, createdAt: env.nowMs, read: false });
+  if (plan.record) recorder?.({ ...input, id, createdAt: env.nowMs, read: false });
   if (plan.sound) playThrottledSound(env.nowMs);
   if (plan.os) {
     void presentOsNotification(

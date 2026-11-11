@@ -9,9 +9,10 @@ import {
   recordInboxEntry,
   unreadInboxCount,
   useNotificationInbox,
+  visibleInboxEntries,
   type InboxRecordInput,
 } from "./inboxStore";
-import { doNotDisturbUntilFor } from "./preferences";
+import { DEFAULT_NOTIFICATION_PREFERENCES, doNotDisturbUntilFor } from "./preferences";
 
 const NOW = new Date(2026, 10, 10, 15, 0, 0).getTime();
 
@@ -139,6 +140,20 @@ describe("inbox store", () => {
     store.resolveThreadApprovals("t2", "Answered");
     expect(useNotificationInbox.getState().entries[0]?.resolved?.label).toBe("Answered");
     store.clear();
+  });
+});
+
+describe("visibleInboxEntries", () => {
+  it("hides sources whose Inbox switch is off and shows them again when it is back on", () => {
+    let entries = recordInboxEntry([], input({ id: "e", source: "errors" }), NOW);
+    entries = recordInboxEntry(entries, input({ id: "p", source: "pr" }), NOW);
+    const hidden = visibleInboxEntries(entries, {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      errors: { ...DEFAULT_NOTIFICATION_PREFERENCES.errors, inbox: false },
+    });
+    expect(hidden.map((entry) => entry.id)).toEqual(["p"]);
+    expect(unreadInboxCount(hidden)).toBe(1);
+    expect(visibleInboxEntries(entries, DEFAULT_NOTIFICATION_PREFERENCES)).toBe(entries);
   });
 });
 

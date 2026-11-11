@@ -36,6 +36,7 @@ const CHANNELS = [
   { key: "inApp", label: "In-app" },
   { key: "system", label: "System" },
   { key: "sound", label: "Sound" },
+  { key: "inbox", label: "Inbox" },
 ] as const satisfies ReadonlyArray<{ key: keyof NotificationChannelPreference; label: string }>;
 
 const POSITION_LABELS = { "top-right": "Top right", "bottom-right": "Bottom right" } as const;
@@ -73,7 +74,7 @@ export function NotificationsSettings() {
     <div className="space-y-4">
       <SettingsCard
         title="Notifications"
-        description="In-app shows a toast while F5 is focused. System uses your OS notifications while it is in the background. Everything is also kept in the notification inbox."
+        description="In-app shows a toast while F5 is focused. System uses your OS notifications while it is in the background. Inbox keeps it in the bell's notification inbox; turning it off also hides what that source already recorded."
         searchTarget="notifications.in-app"
         actions={
           NOTIFICATION_KEYS.some(
@@ -92,7 +93,7 @@ export function NotificationsSettings() {
         <div role="table" aria-label="Notification sources" className="text-sm">
           <div
             role="row"
-            className="grid grid-cols-[minmax(0,1fr)_repeat(3,--spacing(16))] items-center gap-2 border-b border-border pb-2 text-xs text-muted-foreground"
+            className="grid grid-cols-[minmax(0,1fr)_repeat(4,--spacing(16))] items-center gap-2 border-b border-border pb-2 text-xs text-muted-foreground"
           >
             <span role="columnheader">Source</span>
             {CHANNELS.map((channel) => (
@@ -105,7 +106,7 @@ export function NotificationsSettings() {
             <div
               key={source}
               role="row"
-              className="grid grid-cols-[minmax(0,1fr)_repeat(3,--spacing(16))] items-center gap-2 border-b border-border py-2.5 last:border-b-0"
+              className="grid grid-cols-[minmax(0,1fr)_repeat(4,--spacing(16))] items-center gap-2 border-b border-border py-2.5 last:border-b-0"
               data-settings-search-target={SOURCE_SEARCH_TARGETS[source]}
             >
               <div role="cell" className="min-w-0">
@@ -133,8 +134,8 @@ export function NotificationsSettings() {
           title="Do Not Disturb"
           description={
             dndSummary
-              ? `${dndSummary}. Notifications still go to the inbox.`
-              : "Pause toasts, system notifications and sounds. Notifications still go to the inbox."
+              ? `${dndSummary}. Notifications still go to the inbox when its switch is on.`
+              : "Pause toasts, system notifications and sounds. Notifications still go to the inbox when its switch is on."
           }
           control={
             <Select

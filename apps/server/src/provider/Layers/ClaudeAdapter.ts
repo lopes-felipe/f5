@@ -8159,6 +8159,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 },
               });
 
+              // Nothing runs in Chrome while the user decides. The admission this call got
+              // before the prompt ends here, so a peer's Chrome calls and other agents'
+              // native control don't wait on a person; approval admits it again (`fresh`).
+              if (isClaudeInChromeTool(toolName) && callbackOptions.toolUseID)
+                context.chromeActivity?.callEnded(callbackOptions.toolUseID);
+
               pendingApprovals.set(requestId, pendingApproval);
 
               const onAbort = () => {

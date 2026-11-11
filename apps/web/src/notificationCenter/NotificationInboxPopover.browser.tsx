@@ -6,18 +6,29 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-import { NotificationsNavButton } from "../components/sidebar/SidebarNav";
+import { updateAppSettings } from "../appSettings";
 import { StoreProvider } from "../store";
 import { useNotificationInbox, useNotificationInboxPopover } from "./inboxStore";
+import { NotificationsBell } from "./NotificationsBell";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "./preferences";
+
+// The bell reads its shortcut from the server config; no server runs here.
+vi.mock("../keybindings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../keybindings")>()),
+  useServerKeybindings: () => [],
+}));
 
 async function mountBell() {
   const rootRoute = createRootRoute({
     component: () => (
       <StoreProvider>
-        <NotificationsNavButton shortcutLabel={null} />
+        {/* Like the desktop title bar the bell sits in. */}
+        <div className="drag-region">
+          <NotificationsBell />
+        </div>
       </StoreProvider>
     ),
   });
@@ -85,6 +96,47 @@ describe("notification inbox", () => {
     rows()[0]!.click();
     await expect.poll(() => bell.textContent).toContain("1 unread");
 
+    await screen.unmount();
+  });
+
+  it("hides a source whose Inbox switch is off from the badge, list and filters", async () => {
+    seed();
+    const errorsOff = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      errors: { ...DEFAULT_NOTIFICATION_PREFERENCES.errors, inbox: false },
+    };
+    updateAppSettings({ notificationPreferences: errorsOff });
+    const screen = await mountBell();
+    const bell = document.querySelector<HTMLButtonElement>(
+      '[data-testid="sidebar-notifications"]',
+    )!;
+    expect(bell.textContent).toContain("1 unread");
+
+    bell.click();
+    await expect.poll(() => rows().map((row) => row.dataset.inboxRow)).toEqual(["pr"]);
+    const tabs = () =>
+      Array.from(document.querySelectorAll('[role="tab"]')).map((tab) => tab.textContent);
+    expect(tabs()).not.toContain("Errors");
+
+    // Turning the switch back on brings the earlier entries back.
+    updateAppSettings({ notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES });
+    await expect.poll(() => rows().length).toBe(2);
+    expect(tabs()).toContain("Errors");
+    await expect.poll(() => bell.textContent).toContain("2 unread");
+
+    await screen.unmount();
+  });
+
+  it("stays clickable inside the desktop title bar's drag region", async () => {
+    const screen = await mountBell();
+    const bell = document.querySelector<HTMLButtonElement>(
+      '[data-testid="sidebar-notifications"]',
+    )!;
+    expect(getComputedStyle(bell.parentElement!).getPropertyValue("-webkit-app-region")).toBe(
+      "drag",
+    );
+    expect(getComputedStyle(bell).getPropertyValue("-webkit-app-region")).toBe("no-drag");
+    expect(bell.getAttribute("aria-pressed")).toBe("false");
     await screen.unmount();
   });
 

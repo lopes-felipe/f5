@@ -906,6 +906,50 @@ Settings → Browser & Computer shows "Always allowed for this profile" with Rev
 Claude in Chrome. The grant only skips this dialog; the toggle, ⌃⌘Esc and Restore are
 unchanged.
 
+Sharing across profiles: when the record claims `shared-native-host`
+(`claudeChromeSupportsSharedNativeHost`) and main accepted `chrome-shared-v1` (only
+beside call activity and call admission), a Claude session acquires with `shared: true`.
+`ChromeLeaseAuthority` then keeps a list of holders (at most `CHROME_LEASE_HOLDERS_MAX`,
+so `chromeLeaseChanged.holders` always fits): shared Claude holders from different
+profiles coexist. Threads in one profile share one Claude config, wrapper and journal,
+which certification didn't cover, so they still take turns, and a Codex, restore or
+unshared holder excludes and is excluded by every other. Another profile's stopping
+(draining or invalidated) session doesn't block a newcomer; the same thread's earlier
+generation still does. Native control is exempt only while every holder is idle.
+
+Calls go one at a time across holders: `chromeLeaseValidate` with a `callId` is refused
+with the retryable `CHROME_WAITING_FOR_CHROME_CALL_MESSAGE` while another holder has a
+call admitted or running, and the backend retries within the same 20 s budget as
+`CHROME_WAITING_FOR_NATIVE_MESSAGE`. Setup validation (no `callId`) runs nothing in Chrome
+and isn't held up. A call waiting for the user's approval runs nothing either: the adapter
+ends its admission when the prompt opens and the approved call is admitted again
+(`fresh`), so a prompt never stalls peers or native control.
+
+Each CLI rewrites the manifest to point at its own wrapper. After a verified launch
+(`recordLaunch`), a shared session sends `chromeRegistrationVerified` (manifest and
+wrapper hashes); main keeps the latest per profile (at most 32, kept after the session
+ends, since the manifest may still point at it) and relays them to shared backends as
+`chromeRegistrations`. Admission's registration check accepts a manifest only when it
+matches this session's own snapshot or a relayed peer registration whose wrapper bytes are
+unchanged, and this session's own wrapper must still match. Anything else, terminal Claude
+included, is `external-cli-conflict`. Shared launches are serialized by main's launch lock
+(`chromeLaunchLock` / `chromeLaunchUnlock`), held from inspection until the launch is
+recorded and let go while a consent dialog is open. Main tells the other shared backends
+first (`chromeRegistrations.peerLaunching`), so a call that meets the launching peer's
+rewrite before its registration arrives gets the retryable
+`CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE` instead of a conflict. Main frees a lock its
+holder never unlocks when that lease ends, on disconnect, or after
+`CHROME_LAUNCH_LOCK_MAX_MS`. A shared session's registration conflict clears by itself
+once the registration matches again (a peer's verified copy arrived late, or the peer
+relaunched); other conflicts still need a reconnect. Setup consent is unchanged.
+
+Shared sessions keep the `CLAUDE_CHROME_IDLE_MS` stop, and an exclusive acquisition (Codex)
+releases each idle holder in its way in turn (`withChromePreemption`, at most
+`CHROME_PREEMPT_MAX_RELEASES`); a working holder's refusal still comes back. Restore stays
+exclusive: while another profile holds Chrome it returns `busy` after 5 s. Each Claude
+config must still be paired with the browser once (`/chrome` → "Select browser…"); F5
+doesn't detect an unpaired config, whose calls report that the extension isn't connected.
+
 ### Main-owned stop
 
 Chrome-enabled CLIs and proxied integration children are spawned in their own process
@@ -1315,11 +1359,11 @@ versions (stamped as floors) and `admission: "session"`, and computes:
 
   The report keeps only counts and booleans: whether the manifests flipped, whether the
   groups were stable and distinct, and `firstSeesConflict`, which is what per-call
-  admission reports until a shared registration ledger accepts the flip. It leaves out
-  pids and tab ids. `--evidence` adds `shared-native-host` only when all four pass;
-  `claudeChromeSupportsSharedNativeHost` gates shared Claude in Chrome on it. Without the
-  capability, Chrome stays exclusive and another profile's idle session hands it over
-  between turns. CLI 2.1.317 honours `CLAUDE_CHROME_TAB_GROUP_KEY` only in remote sessions
+  admission reports without the shared registration ledger ("Sharing across profiles"
+  above). It leaves out pids and tab ids. `--evidence` adds `shared-native-host` only
+  when all four pass; `claudeChromeSupportsSharedNativeHost` gates shared Claude in Chrome
+  on it. Without the capability, Chrome stays exclusive and another profile's idle session
+  hands it over between turns. CLI 2.1.317 honours `CLAUDE_CHROME_TAB_GROUP_KEY` only in remote sessions
   (`CLAUDE_CODE_REMOTE_SESSION_ID`). A local session gets a fresh tab group per process,
   so a thread can't keep its group across CLI restarts.
 

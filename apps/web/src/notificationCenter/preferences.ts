@@ -30,11 +30,15 @@ export const NOTIFICATION_SOURCE_DESCRIPTIONS: Record<NotificationSource, string
   errors: "Something you started failed.",
 };
 
-/** In-app: a toast while F5 is focused. System: an OS notification while it is not. */
+/**
+ * In-app: a toast while F5 is focused. System: an OS notification while it is not. Inbox: kept
+ * in the bell's notification inbox; off also hides the source's existing entries there.
+ */
 export type NotificationChannelPreference = {
   readonly inApp: boolean;
   readonly system: boolean;
   readonly sound: boolean;
+  readonly inbox: boolean;
 };
 
 export type NotificationPreferences = Record<NotificationSource, NotificationChannelPreference>;
@@ -43,15 +47,16 @@ const ChannelPreferenceSchema = Schema.Struct({
   inApp: Schema.Boolean,
   system: Schema.Boolean,
   sound: Schema.Boolean,
+  inbox: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
 });
 
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
-  thread: { inApp: false, system: true, sound: false },
-  pr: { inApp: true, system: true, sound: false },
-  scheduled: { inApp: true, system: true, sound: false },
-  upstream: { inApp: true, system: true, sound: false },
-  update: { inApp: true, system: false, sound: false },
-  errors: { inApp: true, system: false, sound: false },
+  thread: { inApp: false, system: true, sound: false, inbox: true },
+  pr: { inApp: true, system: true, sound: false, inbox: true },
+  scheduled: { inApp: true, system: true, sound: false, inbox: true },
+  upstream: { inApp: true, system: true, sound: false, inbox: true },
+  update: { inApp: true, system: false, sound: false, inbox: true },
+  errors: { inApp: true, system: false, sound: false, inbox: true },
 };
 
 export const NotificationPreferencesSchema = Schema.Struct({
@@ -86,6 +91,7 @@ export function deriveNotificationPreferences(
       inApp: legacy.inAppThreadNotifications === true,
       system: mode === "system" || mode === "system-and-sound",
       sound: mode === "sound" || mode === "system-and-sound",
+      inbox: true,
     },
     pr: {
       ...DEFAULT_NOTIFICATION_PREFERENCES.pr,
@@ -107,6 +113,7 @@ export function normalizeNotificationPreferences(value: unknown): NotificationPr
       inApp: typeof channel.inApp === "boolean" ? channel.inApp : result[source].inApp,
       system: typeof channel.system === "boolean" ? channel.system : result[source].system,
       sound: typeof channel.sound === "boolean" ? channel.sound : result[source].sound,
+      inbox: typeof channel.inbox === "boolean" ? channel.inbox : result[source].inbox,
     };
   }
   return result;

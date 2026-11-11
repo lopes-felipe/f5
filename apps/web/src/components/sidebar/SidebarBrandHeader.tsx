@@ -10,6 +10,7 @@ import {
   useCanNavigateHistory,
   type HistoryDirection,
 } from "../../navigationHistory";
+import { NotificationsBell } from "../../notificationCenter/NotificationsBell";
 import { ProfileSwitcher } from "../ProfileSwitcher";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -98,7 +99,7 @@ function HistoryNavigationButton({ direction }: { direction: HistoryDirection })
   );
 }
 
-/** Wordmark, history navigation (desktop), profile switcher and update controls. */
+/** Wordmark, history navigation (desktop), notifications, profile switcher and update controls. */
 export function SidebarBrandHeader({ update }: { update: DesktopUpdateController }) {
   return (
     <SidebarHeader
@@ -116,6 +117,7 @@ export function SidebarBrandHeader({ update }: { update: DesktopUpdateController
       ) : null}
       <div className="ml-auto flex min-w-0 items-center gap-1">
         {isElectron && update.showButton ? <DesktopUpdatePill update={update} /> : null}
+        <NotificationsBell />
         <ProfileSwitcher />
       </div>
       {isElectron ? <DesktopUpdateInstalledNotesDialog update={update} /> : null}
