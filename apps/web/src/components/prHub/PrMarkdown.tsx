@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import { getServerHttpOrigin } from "../../lib/serverHttpOrigin";
 import { getPrHubSelectedAccountId } from "../../lib/prHubAccount";
 import { PrLinkPreview } from "./PrLinkPreview";
+import type { SourceControlProviderKind } from "@t3tools/contracts";
+import { remarkHardLineBreaks } from "./remarkHardLineBreaks";
 
 export function prMediaUrl(src: string, host: string): string {
   try {
@@ -23,7 +25,15 @@ export function prMediaUrl(src: string, host: string): string {
   if (accountId) params.set("accountId", accountId);
   return `${getServerHttpOrigin()}/api/prhub/media?${params}`;
 }
-export function PrMarkdown({ body, host }: { body: string; host: string }) {
+export function PrMarkdown({
+  body,
+  host,
+  provider = host === "github.com" ? "github" : "unknown",
+}: {
+  body: string;
+  host: string;
+  provider?: SourceControlProviderKind;
+}) {
   const videos = new Set<string>();
   // Extract only a quoted HTTPS video source; all other HTML remains escaped.
   const markdown = body.replace(
@@ -36,7 +46,11 @@ export function PrMarkdown({ body, host }: { body: string; host: string }) {
   return (
     <div className="prose prose-sm max-w-none break-words dark:prose-invert">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={
+          ["github", "forgejo", "azure-devops"].includes(provider)
+            ? [remarkGfm, remarkHardLineBreaks]
+            : [remarkGfm]
+        }
         components={{
           img: ({ src, alt }) =>
             typeof src === "string" ? (

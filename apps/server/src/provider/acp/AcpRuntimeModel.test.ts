@@ -9,11 +9,41 @@ import {
   decideToolCallUpdateEmission,
   mergeToolCallState,
   parsePermissionRequest,
+  withTrackedPermissionToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("fills ID-only approvals but preserves explicit clears and non-execution kinds", () => {
+    const tracked = {
+      toolCallId: "tool",
+      kind: "execute",
+      data: { title: "git status", rawInput: { command: "git status" } },
+    };
+    const request = { sessionId: "session", toolCall: { toolCallId: "tool" }, options: [] };
+    expect(parsePermissionRequest(withTrackedPermissionToolCall(request, tracked))).toMatchObject({
+      kind: "execute",
+      detail: "git status",
+    });
+    expect(
+      withTrackedPermissionToolCall(
+        {
+          ...request,
+          toolCall: {
+            toolCallId: "tool",
+            kind: null,
+            title: null,
+            rawInput: null,
+          },
+        },
+        tracked,
+      ).toolCall,
+    ).toMatchObject({ kind: null, title: null, rawInput: null });
+    expect(
+      withTrackedPermissionToolCall(request, { ...tracked, kind: "read" }).toolCall.kind,
+    ).toBeUndefined();
+  });
   it("keeps thinking chunks separate from assistant output", () => {
     expect(
       parseSessionUpdateEvent({

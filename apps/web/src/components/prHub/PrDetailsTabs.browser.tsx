@@ -207,9 +207,9 @@ afterEach(async () => {
   savedOperation = null;
 });
 
-async function renderTabs() {
+async function renderTabs(timelineOverride?: PrHubTimelinePage) {
   const detail = detailResult();
-  const timeline = timelinePage();
+  const timeline = timelineOverride ?? timelinePage();
   const mutationResult: PrHubDetailMutationResult = { detail, timeline };
   nativeApiRef.updateComment.mockResolvedValue(mutationResult);
   nativeApiRef.setReaction.mockResolvedValue(mutationResult);
@@ -288,6 +288,32 @@ async function renderTabs() {
 }
 
 describe("PrDetailsTabs", () => {
+  it("mounts only nearby events for a large timeline and reaches distant rows", async () => {
+    const timeline = timelinePage();
+    const first = timeline.entries[0]!;
+    const entries = Array.from({ length: 1000 }, (_, index) => ({
+      ...first,
+      id: "virtual-" + index,
+      ...(first.type === "comment" ? { body: "Timeline comment " + index } : {}),
+    }));
+    await renderTabs({ ...timeline, entries });
+    await page.getByRole("tab", { name: "Timeline", exact: true }).click();
+    await expect.element(page.getByText("Timeline comment 0", { exact: true })).toBeVisible();
+    expect(
+      document.querySelectorAll(
+        'section[aria-label="Timeline"] article, [aria-label="Timeline"] article',
+      ).length,
+    ).toBeLessThan(200);
+    const panel = page.getByRole("tabpanel", { name: "Timeline" }).element();
+    const scroller = [...panel.querySelectorAll<HTMLElement>("*")].find(
+      (element) =>
+        element.scrollHeight > element.clientHeight &&
+        ["auto", "scroll"].includes(getComputedStyle(element).overflowY),
+    )!;
+    scroller.scrollTop = scroller.scrollHeight;
+    scroller.dispatchEvent(new Event("scroll"));
+    await expect.element(page.getByText("Timeline comment 999", { exact: true })).toBeVisible();
+  });
   it("loads summary, timeline, and file detail without leaving the PR surface", async () => {
     await renderTabs();
     await expect.element(page.getByText("Detailed description")).toBeInTheDocument();

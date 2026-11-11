@@ -1875,6 +1875,7 @@ function shouldRenderWorkEntryAsStandaloneRow(
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
   return (
+    entry.usageLimited === true ||
     entry.activityKind === "user-input.resolved" ||
     !!entry.userInput ||
     !!entry.htmlRender ||
@@ -4421,7 +4422,8 @@ function WorkGroupRowContent(props: {
   const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
-    (row.groupedEntries[0]?.htmlRender ||
+    (row.groupedEntries[0]?.usageLimited ||
+      row.groupedEntries[0]?.htmlRender ||
       row.groupedEntries[0]?.mcpApp ||
       row.groupedEntries[0]?.activityKind === "user-input.resolved" ||
       row.groupedEntries[0]?.userInput)
@@ -5215,6 +5217,23 @@ export function buildTimelineRows(input: {
     }
   }
   const isolationOptions = { settingsExpandMcpToolCalls: input.expandMcpToolCalls };
+  const usageLimitedTurns = new Set(
+    timelineEntries.flatMap((entry) =>
+      entry.kind === "work" && entry.entry.usageLimited && entry.entry.turnId
+        ? [entry.entry.turnId]
+        : [],
+    ),
+  );
+  for (const entry of timelineEntries) {
+    if (
+      entry.kind === "work" &&
+      entry.entry.tone === "error" &&
+      !entry.entry.usageLimited &&
+      entry.entry.turnId
+    ) {
+      usageLimitedTurns.delete(entry.entry.turnId);
+    }
+  }
 
   for (let index = 0; index < timelineEntries.length; index += 1) {
     const timelineEntry = timelineEntries[index];
@@ -5272,7 +5291,10 @@ export function buildTimelineRows(input: {
       }
       // A steer leaves a running subagent working, so its group stays open until it ends.
       const isPriorTurn =
-        index < lastUserMessageEntryIndex &&
+        (index < lastUserMessageEntryIndex ||
+          (!input.isWorking &&
+            !!timelineEntry.entry.turnId &&
+            usageLimitedTurns.has(timelineEntry.entry.turnId))) &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
       // Only the working turn's calls can still be running; elsewhere an in-progress
       // snapshot is a completion that never arrived.

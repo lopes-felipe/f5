@@ -11,10 +11,39 @@ import {
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
   makeClaudeProcessEnvironment,
+  readClaudeSettingsBaseUrl,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
+  it.effect("reads endpoint settings with managed precedence and isolated home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const files: string[] = [];
+      const result = yield* readClaudeSettingsBaseUrl(
+        { homePath: "/isolated" },
+        { HOME: "/host", ANTHROPIC_BASE_URL: "https://process.example" },
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: (file) => {
+            files.push(file);
+            return Effect.succeed(
+              JSON.stringify({
+                env: {
+                  ANTHROPIC_BASE_URL: file.includes("/isolated/")
+                    ? "https://user.example"
+                    : "https://managed.example",
+                },
+              }),
+            );
+          },
+        }),
+      );
+      expect(files[0]).toContain("/isolated/.claude/settings.json");
+      expect(result).toBe("https://managed.example");
+    }),
+  );
   describe("Claude process entrypoint", () => {
     it.effect("removes launching session identity but preserves explicit instance overrides", () =>
       Effect.gen(function* () {

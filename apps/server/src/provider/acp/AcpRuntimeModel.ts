@@ -583,6 +583,29 @@ export function decideToolCallUpdateEmission(
   return { emit: false, skippedSinceEmit: skippedSinceEmit + 1 };
 }
 
+/** Omitted fields may be supplied by the tracked call; explicit nulls stay cleared. */
+export function withTrackedPermissionToolCall(
+  params: EffectAcpSchema.RequestPermissionRequest,
+  tracked: AcpToolCallState | undefined,
+): EffectAcpSchema.RequestPermissionRequest {
+  if (!tracked) return params;
+  return {
+    ...params,
+    toolCall: {
+      ...params.toolCall,
+      ...(params.toolCall.title === undefined && typeof tracked.data.title === "string"
+        ? { title: tracked.data.title }
+        : {}),
+      ...(params.toolCall.kind === undefined && tracked.kind === "execute"
+        ? { kind: "execute" as const }
+        : {}),
+      ...(params.toolCall.rawInput === undefined && tracked.data.rawInput !== undefined
+        ? { rawInput: tracked.data.rawInput }
+        : {}),
+    },
+  };
+}
+
 export function parsePermissionRequest(
   params: EffectAcpSchema.RequestPermissionRequest,
 ): AcpPermissionRequest {

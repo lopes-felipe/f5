@@ -58,7 +58,13 @@ export function PrReviewGuideTab({ pr }: { pr: Pick<TrackedPullRequest, "key" | 
           disabled={running || query.isPending || query.isError}
           onClick={() => generate.mutate()}
         >
-          {running ? "Generating guide…" : guide ? "Regenerate guide" : "Generate guide"}
+          {running
+            ? "Generating guide…"
+            : data?.run?._tag === "Failed"
+              ? "Try again"
+              : guide
+                ? "Regenerate guide"
+                : "Generate guide"}
         </Button>
       </div>
       {query.isError ? (
@@ -70,7 +76,17 @@ export function PrReviewGuideTab({ pr }: { pr: Pick<TrackedPullRequest, "key" | 
         </div>
       ) : null}
       {generate.isError ? <p role="alert">Could not start guide generation. Try again.</p> : null}
-      {data?.run?._tag === "Failed" ? <p role="alert">{data.run.detail}</p> : null}
+      {data?.run?._tag === "Failed" && !running ? (
+        <div role="alert" className="space-y-2 text-sm">
+          <p>Could not write a review guide. Check the review guide model in Settings.</p>
+          <details>
+            <summary className="cursor-pointer">Technical details</summary>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-border p-3 text-xs">
+              {data.run.detail}
+            </pre>
+          </details>
+        </div>
+      ) : null}
       {stale ? (
         <p role="status" className="rounded border border-warning p-3 text-sm">
           This guide describes an older PR head. Regenerate it before relying on its line

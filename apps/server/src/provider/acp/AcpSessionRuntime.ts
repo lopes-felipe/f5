@@ -36,6 +36,7 @@ import {
   findModelConfigOption,
   findSessionConfigOption,
   mergeToolCallState,
+  withTrackedPermissionToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
@@ -993,7 +994,17 @@ const makeAcpSessionRuntime = (
     );
 
     return {
-      handleRequestPermission: acp.handleRequestPermission,
+      handleRequestPermission: (handler) =>
+        acp.handleRequestPermission((params) =>
+          Effect.gen(function* () {
+            const started = yield* Ref.get(startStateRef);
+            const tracked =
+              started._tag === "Started" && params.sessionId === started.result.sessionId
+                ? (yield* Ref.get(toolCallsRef)).get(params.toolCall.toolCallId)
+                : undefined;
+            return yield* handler(withTrackedPermissionToolCall(params, tracked));
+          }),
+        ),
       handleElicitation: acp.handleElicitation,
       handleReadTextFile: acp.handleReadTextFile,
       handleWriteTextFile: acp.handleWriteTextFile,

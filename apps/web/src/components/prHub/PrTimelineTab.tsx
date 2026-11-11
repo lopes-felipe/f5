@@ -4,6 +4,7 @@ import { PrSendToAgent } from "./PrSendToAgent";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { useEffect, useState } from "react";
+import { LegendList } from "@legendapp/list/react";
 import { useInfiniteQuery, useQueries } from "@tanstack/react-query";
 import {
   AlertTriangleIcon,
@@ -34,8 +35,16 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { PrReactionBar } from "./PrReactionBar";
 import { prDetailCapability } from "./prDetails.logic";
-import { groupTimelineReviewThreads, type PrTimelineThreadRow } from "./prTimelineThreads";
+import {
+  groupTimelineReviewThreads,
+  type PrTimelineThreadRow,
+  type PrTimelineRow,
+} from "./prTimelineThreads";
 import type { usePrDetailMutations } from "./usePrDetailMutations";
+
+function TimelineSeparator() {
+  return <div className="h-3" />;
+}
 
 function TimelineComment({
   pr,
@@ -155,7 +164,7 @@ function TimelineComment({
           </div>
         </div>
       ) : comment.body.trim() ? (
-        <PrMarkdown body={comment.body} host={pr.host} />
+        <PrMarkdown body={comment.body} host={pr.host} provider={pr.provider} />
       ) : (
         <p className="text-sm italic text-muted-foreground">No written comment.</p>
       )}
@@ -381,37 +390,48 @@ export function PrTimelineTab({
       {entries.length === 0 ? (
         <p className="py-4 text-sm text-muted-foreground">No timeline activity.</p>
       ) : (
-        rows.map((row) => {
-          if (row.type === "thread") {
-            return (
-              <TimelineReviewThread
-                key={`thread:${row.id}:${row.thread.isResolved}:${row.dismissed}`}
-                pr={pr}
-                row={row}
-                mutations={mutations}
-              />
-            );
+        <LegendList<PrTimelineRow>
+          data={[...rows]}
+          keyExtractor={(row) =>
+            row.type === "thread"
+              ? ["thread", row.id, row.thread.isResolved, row.dismissed].join(":")
+              : row.entry.id
           }
-          const entry = row.entry;
-          return entry.type === "comment" ? (
-            <TimelineComment key={entry.id} pr={pr} comment={entry} mutations={mutations} />
-          ) : (
-            <article
-              key={entry.id}
-              className="flex items-start gap-3 rounded-lg border border-border/70 px-3 py-2.5"
-            >
-              <GitCommitHorizontalIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 text-sm">
-                <p className="break-words font-medium">{entry.messageHeadline}</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  <span className="font-mono">{entry.oid.slice(0, 8)}</span>
-                  {entry.authors[0] ? ` · ${entry.authors[0].login}` : ""}
-                  {` · ${formatRelativeTimeLabel(entry.committedAt)}`}
-                </p>
-              </div>
-            </article>
-          );
-        })
+          estimatedItemSize={160}
+          ItemSeparatorComponent={TimelineSeparator}
+          style={{ height: "65vh" }}
+          renderItem={({ item: row }) => {
+            if (row.type === "thread") {
+              return (
+                <TimelineReviewThread
+                  key={`thread:${row.id}:${row.thread.isResolved}:${row.dismissed}`}
+                  pr={pr}
+                  row={row}
+                  mutations={mutations}
+                />
+              );
+            }
+            const entry = row.entry;
+            return entry.type === "comment" ? (
+              <TimelineComment key={entry.id} pr={pr} comment={entry} mutations={mutations} />
+            ) : (
+              <article
+                key={entry.id}
+                className="flex items-start gap-3 rounded-lg border border-border/70 px-3 py-2.5"
+              >
+                <GitCommitHorizontalIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 text-sm">
+                  <p className="break-words font-medium">{entry.messageHeadline}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    <span className="font-mono">{entry.oid.slice(0, 8)}</span>
+                    {entry.authors[0] ? ` · ${entry.authors[0].login}` : ""}
+                    {` · ${formatRelativeTimeLabel(entry.committedAt)}`}
+                  </p>
+                </div>
+              </article>
+            );
+          }}
+        />
       )}
 
       {query.hasNextPage ? (

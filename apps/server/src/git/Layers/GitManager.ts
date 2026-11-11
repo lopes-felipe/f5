@@ -1373,6 +1373,7 @@ export const makeGitManager = Effect.gen(function* () {
     const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
 
     const latestPr =
+      input.includeRemote !== false &&
       details.branch !== null &&
       sourceControlProviders.providers.some(
         (provider) =>
@@ -1413,6 +1414,13 @@ export const makeGitManager = Effect.gen(function* () {
             ),
           )
         : null;
+    // A slow forge lookup must not publish status for a branch that was left meanwhile.
+    if (input.includeRemote !== false) {
+      const current = yield* gitCore.statusDetails(input.cwd, { refreshUpstream: false });
+      if (current.branch !== details.branch) {
+        return yield* status({ ...input, includeRemote: false });
+      }
+    }
     if (latestPr) yield* noteStatusPullRequestState(latestPr);
     const pr = latestPr ? toStatusPr(latestPr) : null;
     const changeRequest = latestPr ? toChangeRequest(latestPr, sourceControlProvider) : null;

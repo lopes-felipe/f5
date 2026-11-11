@@ -214,6 +214,43 @@ describe("GitManager unit", () => {
       provider: { kind: "github", remoteName: "origin" },
     });
   });
+  it("skips forge lookups for a local-only status read", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+    });
+    const result = await Effect.runPromise(manager.status({ cwd, includeRemote: false }));
+    expect(result.branch).toBe(cleanStatus.branch);
+    expect(result.pr).toBeNull();
+    expect(github.calls).toEqual([]);
+  });
+  it("rejects remote metadata when the checked-out branch changes during the lookup", async () => {
+    let reads = 0;
+    const { manager } = await makeManager({
+      gitCore: {
+        statusDetails: () =>
+          Effect.succeed({
+            ...cleanStatus,
+            branch: reads++ === 0 ? cleanStatus.branch : "next-branch",
+          }),
+      },
+      gitHub: {
+        pullRequests: [
+          {
+            number: 42,
+            title: "Old branch",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: cleanStatus.branch!,
+            headRefOid: "abc",
+            state: "open",
+          },
+        ],
+      },
+    });
+    const result = await Effect.runPromise(manager.status({ cwd }));
+    expect(result.branch).toBe("next-branch");
+    expect(result.pr).toBeNull();
+  });
 
   it("announces a pull request once when status sees it change state", async () => {
     const pr = {

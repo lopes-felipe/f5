@@ -36,6 +36,29 @@ const decodeSettingsEnv = Schema.decodeUnknownEffect(
   ),
 );
 
+/** User and managed settings override the process environment, as in Claude Code. */
+export const readClaudeSettingsBaseUrl = Effect.fn("readClaudeSettingsBaseUrl")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  baseEnv: NodeJS.ProcessEnv,
+  cwd?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const environment = yield* makeClaudeEnvironment(config, baseEnv);
+  let baseUrl = environment.ANTHROPIC_BASE_URL;
+  for (const file of [
+    NodePath.join(resolveClaudeConfigDir(environment, cwd), "settings.json"),
+    NodePath.join(claudeManagedSettingsDir(process.platform), "managed-settings.json"),
+  ]) {
+    const value = yield* fs.readFileString(file).pipe(
+      Effect.flatMap(decodeSettingsEnv),
+      Effect.map((settings) => settings.env?.ANTHROPIC_BASE_URL),
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (typeof value === "string") baseUrl = value;
+  }
+  return baseUrl;
+});
+
 const CLAUDE_HOST_SESSION_VARIABLES = new Set([
   "CLAUDECODE",
   "CLAUDE_CODE_SESSION_ID",
