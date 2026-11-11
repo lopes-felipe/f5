@@ -6,7 +6,11 @@ import {
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
-import { resolveExecutable, resolveInvocation } from "./spawn/resolveCommand.ts";
+import {
+  resolveExecutable,
+  resolveInvocation,
+  runsGitWithoutConsole,
+} from "./spawn/resolveCommand.ts";
 import { resolveProfileGithubLauncher } from "./git/GithubCliLauncher";
 import { isManagedGitCommand, managedGitProcessEnvironment } from "./git/gitProcessEnvironment.ts";
 
@@ -215,6 +219,7 @@ export async function runProcess(
     ? { ...environment, ELECTRON_RUN_AS_NODE: "1" }
     : environment;
 
+  const consoleFreeGit = runsGitWithoutConsole(process.platform, invocation.file, invocation.args);
   return new Promise<ProcessRunResult>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
@@ -222,7 +227,8 @@ export async function runProcess(
         cwd: options.cwd,
         env: spawnEnvironment,
         stdio: "pipe",
-        detached: process.platform !== "win32",
+        detached: process.platform !== "win32" || consoleFreeGit,
+        ...(consoleFreeGit ? { windowsHide: true } : {}),
       });
     } catch (error) {
       // Node throws some spawn failures synchronously, e.g. ENOTDIR when a

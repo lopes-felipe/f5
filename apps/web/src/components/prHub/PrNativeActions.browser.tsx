@@ -162,6 +162,23 @@ function dialogProps(pendingAction: PrActionDialogProps["pendingAction"]): PrAct
     openInF5: vi.fn(),
   };
 }
+it("keeps oversized inline confirmation headers and Cancel reachable", async () => {
+  const props = dialogProps("merge");
+  props.pr = { ...props.pr, title: "Long confirmation description ".repeat(500) };
+  await mount(
+    <div style={{ display: "flex", flexDirection: "column", height: 280 }}>
+      <div data-pr-detail-tabs style={{ flex: 1, minHeight: 0 }}>
+        Timeline area
+      </div>
+      <PrActionDialogs {...props} confirmationMode="inline" />
+    </div>,
+  );
+  const confirmation = page.getByRole("region", { name: "Native action" }).element();
+  expect(confirmation.scrollHeight).toBeGreaterThan(confirmation.clientHeight);
+  await expect.element(page.getByRole("heading", { name: "Native action" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(props.setPendingAction).toHaveBeenCalledWith(null);
+});
 it("native merge previews and confirms a saved operation without calling the legacy action", async () => {
   await mount(<PrActionDialogs {...dialogProps("merge")} />);
   await page.getByRole("button", { name: "Prepare merge", exact: true }).click();

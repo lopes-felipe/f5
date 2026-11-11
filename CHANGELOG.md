@@ -14,6 +14,14 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Provider updates can take up to 30 minutes without the browser giving up early. Codex instances respect their environment's home directory when switching accounts, including directory names containing whitespace. Agents using ACP now report a disconnected input stream instead of hanging when their process closes stdout but stays alive.
+- Git reviews keep tracked edits when untracked discovery fails and retain partial untracked listings when they are too large. Reviews include new files outside sparse-checkout folders, and commit and PR text includes changes outside nested projects. Selected-file commits during a merge now ask you to commit all files. Desktop startup stops waiting for stuck login shells, and safe Windows Git reads avoid starting a console host.
+- PR descriptions and comments preserve single newlines on GitHub, Forgejo and Azure DevOps.
+- Failed review guides keep retry controls reachable and put provider output in collapsed technical details.
+- Claude instances recognize proxy endpoints set in user or managed settings.
+- Large PR timelines mount only nearby events while preserving comment drafts and thread disclosures. Narrow panels keep every tab reachable, keyboard navigation focuses the content scroller, and oversized inline confirmations retain accessible controls.
+- Local Git status appears before slow PR lookups, without losing sidebar PR badges or accepting another branch's metadata.
+- Usage-limit pauses keep tool calls grouped and show the pause separately.
+- ID-only ACP approvals retain the original command title and execution kind without mixing tool calls from different sessions.
 - Codex sessions recover from failed app-server writes instead of leaving requests hanging, and exit errors include the stderr reason. Claude restores the selected model after a failed live update while preserving it during effort-only changes.
 - Provider updates allow the package's install scripts on npm 12, including the postinstall script that installs Grok's updated binary.
 - The certification runner's Claude in Chrome check now passes its isolated Claude config to the live run. The live run gains an optional shared-host phase that checks two F5 profiles using Claude in Chrome at once, and its checks now count only calls that actually reach Chrome. The Claude 2.1.317 record is re-certified with that phase passing; F5 doesn't use shared Claude in Chrome yet.
@@ -40,6 +48,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - ACP Always allow falls back to the agent's allow-once option. Archived Codex threads can be forked, and late provider refreshes cannot replace status from changed settings.
 - PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
 - New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
+
+- Custom ACP agents, including Copilot, enter native Plan mode and restore their build mode when leaving Plan, including across reconnects. Steering preserves the active turn's mode. GitHub SSH aliases such as github.com-work resolve to github.com for pull requests.
 
 ## [0.1.7] - 2026-11-10
 

@@ -16,6 +16,16 @@ const SOURCE_CONTROL_PROVIDER_KINDS = [
   "unknown",
 ] as const satisfies ReadonlyArray<SourceControlProviderKind>;
 
+/** Rendering rules for text authored on each forge. Exhaustive so new forges choose a rule. */
+export const SOURCE_CONTROL_MARKDOWN = {
+  github: { hardLineBreaks: true },
+  gitlab: { hardLineBreaks: false },
+  "azure-devops": { hardLineBreaks: true },
+  bitbucket: { hardLineBreaks: false },
+  forgejo: { hardLineBreaks: true },
+  unknown: { hardLineBreaks: false },
+} satisfies Record<SourceControlProviderKind, { hardLineBreaks: boolean }>;
+
 export interface ParsedSourceControlRemote {
   readonly kind: SourceControlProviderKind;
   readonly host: string | null;
@@ -326,13 +336,16 @@ export function parseSourceControlRemoteUrl(
   if (!raw) {
     return { kind: "unknown", host: null, owner: null, repository: null, webUrl: null };
   }
+  // SSH config aliases are transport names, not API or browser hosts.
+  const canonicalSshHost = (host: string) =>
+    /^github\.com-[a-z0-9_-]+$/i.test(host) ? "github.com" : host;
 
   const userlessHost = userlessScpRemoteHost(raw);
   const sshMatch =
     /^[a-zA-Z0-9._-]+@([^:/\s]+):(.+)$/.exec(raw) ??
     (userlessHost ? [raw, userlessHost, raw.slice(userlessHost.length + 1)] : null);
   if (sshMatch) {
-    const host = sshMatch[1]!.trim();
+    const host = canonicalSshHost(sshMatch[1]!.trim());
     const parsed = parseRemoteParts({ host, pathname: sshMatch[2] ?? "" });
     return {
       kind: parsed.kind,
@@ -345,7 +358,7 @@ export function parseSourceControlRemoteUrl(
 
   const azureSshMatch = /^ssh:\/\/[^@]+@([^/]+)\/(?:v3\/)?(.+)$/.exec(raw);
   if (azureSshMatch) {
-    const host = azureSshMatch[1]!.trim().replace(/:\d+$/, "");
+    const host = canonicalSshHost(azureSshMatch[1]!.trim().replace(/:\d+$/, ""));
     const parsed = parseRemoteParts({ host, pathname: azureSshMatch[2] ?? "" });
     return {
       kind: parsed.kind,
@@ -358,7 +371,7 @@ export function parseSourceControlRemoteUrl(
 
   try {
     const parsed = new URL(raw);
-    const host = parsed.hostname;
+    const host = parsed.protocol === "ssh:" ? canonicalSshHost(parsed.hostname) : parsed.hostname;
     const remote = parseRemoteParts({ host, pathname: parsed.pathname });
     return {
       kind: remote.kind,

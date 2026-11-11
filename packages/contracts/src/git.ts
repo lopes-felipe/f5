@@ -41,6 +41,8 @@ export const GitStatusInput = Schema.Struct({
   cwd: FilesystemPath,
   /** false skips the stale-upstream fetch; passive callers such as sidebar rows read local state. */
   includeRemote: Schema.optionalKey(Schema.Boolean),
+  /** false skips forge lookup for the interim local scan; independent of upstream fetching. */
+  includePullRequest: Schema.optionalKey(Schema.Boolean),
 });
 export type GitStatusInput = typeof GitStatusInput.Type;
 

@@ -1,4 +1,4 @@
-import { readEnvironmentFromLoginShell, ShellEnvironmentReader } from "@t3tools/shared/shell";
+import { readEnvironmentFromLoginShellAsync, ShellEnvironmentReader } from "@t3tools/shared/shell";
 import {
   ensureWindowsPathHydration,
   type WindowsRegistryPathReader,
@@ -14,7 +14,7 @@ const LOCALE_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
  * timed-out probe (cold boot, first launch after an update, endpoint scanning)
  * leaves the server to repair PATH.
  */
-export function syncShellEnvironment(
+export async function syncShellEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   options: {
     platform?: NodeJS.Platform;
@@ -40,13 +40,10 @@ export function syncShellEnvironment(
   let prepared = false;
   try {
     const shell = env.SHELL ?? "/bin/zsh";
-    const shellEnvironment = (options.readEnvironment ?? readEnvironmentFromLoginShell)(shell, [
-      "PATH",
-      "__MISE_DIFF",
-      "SSH_AUTH_SOCK",
-      ...LOCALE_NAMES,
-      ...CA_TRUST_NAMES,
-    ]);
+    const shellEnvironment = await (options.readEnvironment ?? readEnvironmentFromLoginShellAsync)(
+      shell,
+      ["PATH", "__MISE_DIFF", "SSH_AUTH_SOCK", ...LOCALE_NAMES, ...CA_TRUST_NAMES],
+    );
 
     for (const name of CA_TRUST_NAMES)
       if (!env[name]?.trim() && shellEnvironment[name]?.trim()) env[name] = shellEnvironment[name];

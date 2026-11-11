@@ -100,6 +100,8 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  /** A provider pause, rather than a failed tool call. */
+  usageLimited?: boolean;
   htmlRender?: HtmlRenderReference;
   mcpApp?: McpAppView;
   imagePath?: string;
@@ -2183,6 +2185,7 @@ export function deriveWorkLogEntries(
         }
       }
       entry.isIssue = usageLimit !== null || isWorkLogIssue(entry);
+      if (usageLimit) entry.usageLimited = true;
       workLogEntryByActivity.set(activity, { cacheKey, entry });
       return entry;
     });

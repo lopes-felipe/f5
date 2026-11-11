@@ -5,7 +5,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer, Sink, Stream } from "effect";
+import { Effect, FileSystem, Layer, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
@@ -29,6 +29,15 @@ import {
 
 const encoder = new TextEncoder();
 
+// Keep provider probes deterministic even when user or managed Claude settings define a proxy.
+const isolatedNodeServices = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return { ...fs, readFileString: () => Effect.succeed("{}") };
+  }),
+).pipe(Layer.provideMerge(NodeServices.layer));
+
 effectIt.effect.each([
   { delay: "19 seconds", elapsed: "19 seconds", status: "ready" },
   { delay: "1 minute", elapsed: "21 seconds", status: "error" },
@@ -48,7 +57,7 @@ effectIt.effect.each([
       }),
     );
     const fiber = yield* checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
-      Effect.provide(Layer.merge(NodeServices.layer, spawner)),
+      Effect.provide(Layer.merge(isolatedNodeServices, spawner)),
       Effect.forkChild,
     );
     yield* Deferred.await(started);
@@ -133,7 +142,7 @@ const capabilitiesProbe = () =>
 function runStatusForVersion(version: string) {
   return Effect.runPromise(
     checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
-      Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer(version))),
+      Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer(version))),
     ),
   );
 }
@@ -159,7 +168,7 @@ it("runs the version and auth probes in the given directory", async () => {
   );
   await Effect.runPromise(
     checkClaudeProviderStatus(claudeSettings, capabilitiesProbe, {}, "/state/dir").pipe(
-      Effect.provide(Layer.merge(NodeServices.layer, spawner)),
+      Effect.provide(Layer.merge(isolatedNodeServices, spawner)),
     ),
   );
   expect(cwds).toEqual(["/state/dir", "/state/dir"]);
@@ -168,7 +177,7 @@ it("runs the version and auth probes in the given directory", async () => {
 function runStatusForVersionWithSettings(version: string, settings: ClaudeSettings) {
   return Effect.runPromise(
     checkClaudeProviderStatus(settings, capabilitiesProbe).pipe(
-      Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer(version))),
+      Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer(version))),
     ),
   );
 }
@@ -244,7 +253,7 @@ describe("checkClaudeProviderStatus", () => {
   ])("does not treat SDK initialization as a login: %s", async (auth, expected) => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, capabilitiesProbe, {}).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.257", auth))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer("2.1.257", auth))),
       ),
     );
     expect(snapshot.auth.status).toBe(expected);
@@ -263,7 +272,7 @@ describe("checkClaudeProviderStatus", () => {
       checkClaudeProviderStatus(claudeSettings, accountlessCapabilities, environment).pipe(
         Effect.provide(
           Layer.merge(
-            NodeServices.layer,
+            isolatedNodeServices,
             mockClaudeVersionLayer("2.1.257", '{"loggedIn":false,"authMethod":"none"}'),
           ),
         ),
@@ -392,7 +401,7 @@ describe("checkClaudeProviderStatus", () => {
   it("preserves verified authentication and the upgrade hint when capability probing fails", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, () => Effect.sync(() => undefined)).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.219"))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer("2.1.219"))),
       ),
     );
 
@@ -427,7 +436,7 @@ describe("checkClaudeProviderStatus", () => {
   it("keeps gated models visible in disabled provider snapshots when the version is unknown", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus({ ...claudeSettings, enabled: false }, capabilitiesProbe).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.170"))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeVersionLayer("2.1.170"))),
       ),
     );
 
@@ -438,7 +447,7 @@ describe("checkClaudeProviderStatus", () => {
   it("keeps gated models visible in spawn-failure snapshots when the version is unknown", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
-        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeSpawnFailureLayer("boom"))),
+        Effect.provide(Layer.merge(isolatedNodeServices, mockClaudeSpawnFailureLayer("boom"))),
       ),
     );
 
@@ -714,7 +723,10 @@ it("reports catalog failure on a known-version CLI error instead of switching to
   const snapshot = await Effect.runPromise(
     checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.298", '{"loggedIn":true}', 1)),
+        Layer.merge(
+          isolatedNodeServices,
+          mockClaudeVersionLayer("2.1.298", '{"loggedIn":true}', 1),
+        ),
       ),
     ),
   );

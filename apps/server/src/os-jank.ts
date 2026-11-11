@@ -2,7 +2,7 @@ import * as OS from "node:os";
 import * as PathNode from "node:path";
 import { Effect, Path } from "effect";
 import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
-import { readEnvironmentFromLoginShell } from "@t3tools/shared/shell";
+import { readEnvironmentFromLoginShellAsync } from "@t3tools/shared/shell";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
 // Service managers (launchd, systemd) can start the server without HOME. `gh`,
@@ -41,7 +41,7 @@ export async function fixPath(
 
   try {
     const shell = env.SHELL ?? "/bin/zsh";
-    const result = readEnvironmentFromLoginShell(shell, ["PATH", "__MISE_DIFF"]);
+    const result = await readEnvironmentFromLoginShellAsync(shell, ["PATH", "__MISE_DIFF"]);
     if (result.PATH?.trim()) {
       env.PATH = result.PATH;
       // mise's record of the PATH entries it added. It must travel with the

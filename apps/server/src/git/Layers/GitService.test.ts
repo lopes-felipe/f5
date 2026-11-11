@@ -174,9 +174,9 @@ layer("GitServiceLive", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "delivers Windows long-path configuration to the Git process without changing argv",
-    () =>
+  it.effect.each([undefined, ""])(
+    "delivers Windows long-path configuration through the Git process (stdin: %s)",
+    (stdin) =>
       Effect.gen(function* () {
         const service = yield* GitService;
         const policy = GitProcessEnvironment.managedGitProcessEnvironment;
@@ -188,10 +188,12 @@ layer("GitServiceLive", (it) => {
             operation: "test.windowsLongPaths",
             cwd: process.cwd(),
             args: ["config", "--get", "--", "core.longpaths"],
+            ...(stdin === undefined ? {} : { stdin }),
             allowNonZeroExit: true,
           });
+          // The native runner also enforces policy. Assert Git's effective value,
+          // independent of whether one or both process layers applied it.
           assert.equal(result.stdout.trim(), "true");
-          expect(host).toHaveBeenCalledOnce();
         } finally {
           host.mockRestore();
         }
