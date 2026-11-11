@@ -1,4 +1,5 @@
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
+import { makeAcpPlanModeSwitcher } from "../acp/AcpPlanMode.ts";
 import { isSyntheticOneOffThreadId } from "../../codexAppServerManager";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import {
@@ -340,6 +341,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       );
 
     const automationCatalogs = new Map<string, AcpAutomationCatalogs>();
+    const planModeSwitchers = new WeakMap<
+      AcpSessionRuntimeShape,
+      ReturnType<typeof makeAcpPlanModeSwitcher>
+    >();
     const prepareRuntimeEvent = yield* makeAutomationRuntimeEventPreparer;
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) => {
       const release = automationEventSanitizer.retain(event.threadId);
@@ -1319,6 +1324,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ctx.promptsInFlight += 1;
 
             return yield* Effect.gen(function* () {
+              if (PROVIDER === "acp") {
+                let switchMode = planModeSwitchers.get(ctx.acp);
+                if (!switchMode) {
+                  switchMode = makeAcpPlanModeSwitcher(ctx.acp, ctx.acpSessionId);
+                  planModeSwitchers.set(ctx.acp, switchMode);
+                }
+                yield* switchMode(input.interactionMode === "plan").pipe(
+                  Effect.mapError((cause) =>
+                    mapAcpToAdapterError(
+                      PROVIDER,
+                      input.threadId,
+                      "session/set_mode",
+                      cause,
+                      automationCatalogs.get(input.threadId)?.scrubDiagnostic,
+                      automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
+                    ),
+                  ),
+                );
+              }
               const turnModelSelection =
                 input.modelSelection?.instanceId === boundInstanceId
                   ? input.modelSelection

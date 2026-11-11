@@ -75,6 +75,18 @@ it("isolates custom instances, publishes the session's models without a new prob
           expect(other.models.map((m) => m.slug)).toEqual(["acp-default", "only-b"]);
           expect(other.status).toBe("disabled");
           expect(yield* b.adapter.hasSession(threadId)).toBe(false);
+          yield* a.adapter.sendTurn({
+            threadId,
+            input: "Plan the change",
+            attachments: [],
+            interactionMode: "plan",
+          });
+          yield* a.adapter.sendTurn({
+            threadId,
+            input: "Implement the change",
+            attachments: [],
+            interactionMode: "default",
+          });
           const metadata = yield* a.textGeneration.generateStructuredJson({
             cwd,
             operation: "fixture",
@@ -92,6 +104,11 @@ it("isolates custom instances, publishes the session's models without a new prob
       .map((line) => JSON.parse(line));
     expect(requests.some((r) => r.method === "authenticate")).toBe(false);
     expect(requests.filter((r) => r.method === "initialize")).toHaveLength(3);
+    expect(
+      requests
+        .filter((r) => r.method === "session/set_config_option" && r.params?.configId === "mode")
+        .map((r) => r.params.value),
+    ).toEqual(["architect", "ask"]);
     expect(
       requests.some(
         (r) => r.params?.modelId === "acp-default" || r.params?.value === "acp-default",
