@@ -403,11 +403,21 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.148Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:9578",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:9586"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-16419",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -1506,11 +1516,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.147Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22661",
-      "status": "port",
+      "reason": "F5 uses classic OpenCode history without the affected compaction decoder.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -2120,11 +2132,21 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.147Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:7494",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:8560"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-23219",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -2289,11 +2311,13 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.147Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23270",
-      "status": "port",
+      "reason": "F5’s OpenCode adapter does not expose native steering.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -10421,11 +10445,22 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.147Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:6944",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:6966",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:9156"
+        ],
+        "f5Refs": [
+          "6a7c1777770dd3a5e1dba40f5ef31bb92f96a4f3"
+        ]
+      },
       "id": "pr-28356",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -10601,11 +10636,13 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:55.226Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-28374",
-      "status": "port",
+      "reason": "F5 has no branch-change totals scan to optimize.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
@@ -14044,14 +14081,16 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.147Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29398",
+      "reason": "F5 uses Cursor ACP rather than @cursor/sdk.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-28718"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -14426,11 +14465,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:51.147Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29535",
-      "status": "port",
+      "reason": "F5 does not filter OpenCode2 skill-ID mentions against its inventory.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -18040,11 +18081,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:55.226Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-30142",
-      "status": "port",
+      "reason": "F5 has no repository-publishing operation.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",

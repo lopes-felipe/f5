@@ -43118,11 +43118,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T09:59:55.226Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22939",
-      "status": "port",
+      "reason": "F5 has no Trace2 commit-hook monitor.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git"
