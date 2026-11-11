@@ -36,34 +36,106 @@ function textsOf(content: unknown): string[] {
 }
 
 /**
- * Reads a `tabs_context_mcp` tool result: text content holding JSON with `availableTabs`
- * and, optionally, a numeric `tabGroupId` (the shape the CLI itself parses). Undefined
- * for anything else, so an unreadable result never counts as a routed call.
+ * JSON object candidates in a text: the whole text, then each balanced `{…}` starting at
+ * a `{"` (string-aware). The CLI returns the JSON and a readable listing as two blocks,
+ * which a transcript may join into one string.
+ */
+function jsonCandidates(text: string): unknown[] {
+  const found: unknown[] = [];
+  const tryParse = (slice: string) => {
+    try {
+      found.push(JSON.parse(slice));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (tryParse(text.trim())) return found;
+  let attempts = 0;
+  for (let start = text.indexOf('{"'); start !== -1 && attempts < 50; ) {
+    attempts += 1;
+    let depth = 0;
+    let inString = false;
+    let end = -1;
+    for (let i = start; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (char === "\\") i += 1;
+        else if (char === '"') inString = false;
+      } else if (char === '"') inString = true;
+      else if (char === "{") depth += 1;
+      else if (char === "}" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (end === -1) break;
+    tryParse(text.slice(start, end + 1));
+    start = text.indexOf('{"', end + 1);
+  }
+  return found;
+}
+
+function fromJson(parsed: unknown): TabContext | undefined {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const { availableTabs, tabGroupId } = parsed as {
+    availableTabs?: unknown;
+    tabGroupId?: unknown;
+  };
+  if (!Array.isArray(availableTabs)) return undefined;
+  const tabIds = availableTabs.flatMap((tab) =>
+    typeof tab === "object" &&
+    tab !== null &&
+    typeof (tab as { tabId?: unknown }).tabId === "number"
+      ? [(tab as { tabId: number }).tabId]
+      : [],
+  );
+  return typeof tabGroupId === "number" ? { tabGroupId, tabIds } : { tabIds };
+}
+
+/**
+ * Reads a `tabs_context_mcp` tool result: JSON with `availableTabs` and, optionally, a
+ * numeric `tabGroupId` (the shape the CLI itself parses), alone or joined with other
+ * text. Falls back to the readable listing (`• tabId N: …` under "Available tabs"),
+ * which carries no group id. Undefined for anything else, so an unreadable result never
+ * counts as a routed call.
  */
 export function parseTabContext(content: unknown): TabContext | undefined {
-  for (const text of textsOf(content)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      continue;
+  const texts = textsOf(content);
+  for (const text of texts)
+    for (const candidate of jsonCandidates(text)) {
+      const context = fromJson(candidate);
+      if (context) return context;
     }
-    if (typeof parsed !== "object" || parsed === null) continue;
-    const { availableTabs, tabGroupId } = parsed as {
-      availableTabs?: unknown;
-      tabGroupId?: unknown;
-    };
-    if (!Array.isArray(availableTabs)) continue;
-    const tabIds = availableTabs.flatMap((tab) =>
-      typeof tab === "object" &&
-      tab !== null &&
-      typeof (tab as { tabId?: unknown }).tabId === "number"
-        ? [(tab as { tabId: number }).tabId]
-        : [],
-    );
-    return typeof tabGroupId === "number" ? { tabGroupId, tabIds } : { tabIds };
+  for (const text of texts) {
+    const at = text.indexOf("Available tabs:");
+    if (at === -1) continue;
+    const tabIds = [...text.slice(at).matchAll(/tabId (\d+):/g)].map((match) => Number(match[1]));
+    return { tabIds };
   }
   return undefined;
+}
+
+/**
+ * What a result looked like, without its content: for diagnosing an unreadable listing.
+ */
+export function resultShape(content: unknown): Record<string, unknown> {
+  const texts = textsOf(content);
+  return {
+    kind:
+      typeof content === "string" ? "string" : Array.isArray(content) ? "array" : typeof content,
+    blocks: Array.isArray(content)
+      ? content.map((block) =>
+          typeof block === "object" && block !== null
+            ? String((block as { type?: unknown }).type)
+            : typeof block,
+        )
+      : undefined,
+    textLength: texts.reduce((sum, text) => sum + text.length, 0),
+    hasAvailableTabs: texts.some((text) => text.includes("availableTabs")),
+    hasTabGroupId: texts.some((text) => text.includes("tabGroupId")),
+    hasReadableListing: texts.some((text) => text.includes("Available tabs:")),
+  };
 }
 
 /** One `tool_result` for a tab listing in a turn. */
@@ -79,7 +151,12 @@ export interface ListingResult {
 export function classifyListing(
   results: ReadonlyArray<ListingResult>,
   denialMessage: string,
-): { readonly outcome: ListingOutcome; readonly context?: TabContext; readonly error?: string } {
+): {
+  readonly outcome: ListingOutcome;
+  readonly context?: TabContext;
+  readonly error?: string;
+  readonly shape?: Record<string, unknown>;
+} {
   for (const result of results) {
     if (result.isError) continue;
     const context = parseTabContext(result.content);
@@ -88,7 +165,8 @@ export function classifyListing(
   }
   if (results.length === 0) return { outcome: "not-called" };
   const errors = results.filter((result) => result.isError);
-  if (errors.length === 0) return { outcome: "unreadable" };
+  if (errors.length === 0)
+    return { outcome: "unreadable", shape: resultShape(results[0]!.content) };
   const text = errors.flatMap((result) => textsOf(result.content)).join(" ");
   if (text.includes(denialMessage)) return { outcome: "denied" };
   return { outcome: "tool-error", error: scrubError(text) };

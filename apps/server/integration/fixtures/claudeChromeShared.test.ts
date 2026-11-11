@@ -11,6 +11,7 @@ import {
   liveBridgeHosts,
   parseTabContext,
   processAlive,
+  resultShape,
   sameGroup,
   scrubError,
   sharedTabCount,
@@ -39,6 +40,39 @@ describe("parseTabContext", () => {
     ).toEqual({ tabIds: [5] });
   });
 
+  it("reads the CLI's two blocks when a transcript joins them into one string", () => {
+    const joined = `${listing(7, [11, 12])}\n\nTab Context:\n- Available tabs:\n  • tabId 11: "New Tab" ("chrome://newtab/")`;
+    expect(parseTabContext(joined)).toEqual({ tabGroupId: 7, tabIds: [11, 12] });
+    expect(parseTabContext([{ type: "text", text: `prefix ${listing(2, [3])} suffix {` }])).toEqual(
+      { tabGroupId: 2, tabIds: [3] },
+    );
+    // Braces inside strings don't end the object.
+    const tricky = JSON.stringify({
+      availableTabs: [{ tabId: 4, title: "a } b {", url: "x" }],
+      tabGroupId: 9,
+    });
+    expect(parseTabContext(`note: ${tricky}`)).toEqual({ tabGroupId: 9, tabIds: [4] });
+  });
+
+  it("falls back to the readable listing, without a group id", () => {
+    expect(
+      parseTabContext(
+        'Tab Context:\n- Available tabs:\n  • tabId 11: "A" ("x")\n  • tabId 12: "B" ("y")',
+      ),
+    ).toEqual({ tabIds: [11, 12] });
+  });
+
+  it("describes an unreadable result without its content", () => {
+    expect(resultShape([{ type: "text", text: "secret page" }, { type: "image" }])).toEqual({
+      kind: "array",
+      blocks: ["text", "image"],
+      textLength: 11,
+      hasAvailableTabs: false,
+      hasTabGroupId: false,
+      hasReadableListing: false,
+    });
+  });
+
   it("rejects results without a tab list", () => {
     expect(parseTabContext([{ type: "text", text: '{"tabGroupId":1}' }])).toBeUndefined();
     expect(parseTabContext([{ type: "image", data: "" }])).toBeUndefined();
@@ -58,7 +92,10 @@ describe("classifyListing", () => {
     });
     expect(classifyListing([ok('{"availableTabs":[]}')], denial).outcome).toBe("ok-no-group-id");
     expect(classifyListing([], denial).outcome).toBe("not-called");
-    expect(classifyListing([ok("Tabs: none")], denial).outcome).toBe("unreadable");
+    expect(classifyListing([ok("Tabs: none")], denial)).toMatchObject({
+      outcome: "unreadable",
+      shape: { kind: "array", textLength: 10 },
+    });
     expect(classifyListing([err(`${denial} is allowed.`)], denial).outcome).toBe("denied");
     expect(
       classifyListing([err("Extension not connected; see https://claude.ai/x?y=1")], denial),

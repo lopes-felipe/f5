@@ -610,7 +610,10 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             ? { behavior: "allow", updatedInput: toolInput }
             : { behavior: "deny", message: denial };
       /** Each listing's outcome, in order, so a failed assertion says which call and why. */
-      const listings: Record<string, { outcome: string; error?: string }> = {};
+      const listings: Record<
+        string,
+        { outcome: string; error?: string; shape?: Record<string, unknown> }
+      > = {};
       const listOwnTabs = async (
         label: string,
         handle: ReturnType<typeof launch>,
@@ -622,8 +625,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             "Call tabs_context_mcp once with createIfEmpty set to true, then reply DONE. Use no other tool.",
           )
         ).filter((result) => result.name === TAB_CONTEXT);
-        const { outcome, context, error } = classifyListing(results, denial);
-        listings[label] = { outcome, ...(error ? { error } : {}) };
+        const { outcome, context, error, shape } = classifyListing(results, denial);
+        listings[label] = { outcome, ...(error ? { error } : {}), ...(shape ? { shape } : {}) };
         for (const tabId of context?.tabIds ?? []) own.add(tabId);
         return context;
       };
