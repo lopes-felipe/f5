@@ -30,8 +30,8 @@ function useDoNotDisturbActive(): boolean {
 
 /**
  * The bell in the sidebar title bar: unread count, Do Not Disturb state, and the inbox popover
- * it anchors. Styled like the back/forward buttons; `no-drag` keeps it clickable inside the
- * desktop title bar's drag region.
+ * it anchors. Styled like the back/forward buttons; as a `<button>` it stays clickable inside the
+ * desktop title bar's drag region (`.drag-region button` in index.css).
  */
 export function NotificationsBell() {
   const unread = unreadInboxCount(useVisibleInboxEntries());
@@ -53,7 +53,7 @@ export function NotificationsBell() {
               aria-label={label}
               aria-pressed={open}
               data-testid="sidebar-notifications"
-              className="no-drag relative text-muted-foreground aria-pressed:bg-accent aria-pressed:text-foreground"
+              className="relative text-muted-foreground aria-pressed:bg-accent aria-pressed:text-foreground"
               onClick={toggle}
               size="icon-xs"
               variant="ghost"

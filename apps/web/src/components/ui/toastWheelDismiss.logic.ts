@@ -66,9 +66,10 @@ export function stepToastWheel(
     // The rest of a dismissing swipe, momentum included, must not reach the next toast.
     return { state, offset: 0, dismiss: null, handled: true };
   }
+  // Pinch-zoom arrives as ctrl+wheel; line and page deltas come from mouse wheels.
+  const swipeInput = !event.ctrlKey && event.deltaMode === DOM_DELTA_PIXEL;
   if (state.kind === "pending") {
-    // Pinch-zoom arrives as ctrl+wheel; line and page deltas come from mouse wheels.
-    if (event.ctrlKey || event.deltaMode !== DOM_DELTA_PIXEL) {
+    if (!swipeInput) {
       return { state: { kind: "ignored" }, offset: 0, dismiss: null, handled: false };
     }
     const sumX = state.sumX + event.deltaX;
@@ -81,6 +82,8 @@ export function stepToastWheel(
     }
     return track(sumX, options);
   }
+  // A zoom or mouse-wheel event mid-swipe neither moves the toast nor loses its default action.
+  if (!swipeInput) return { ...track(state.sumX, options), handled: false };
   return track(state.sumX + event.deltaX, options);
 }
 

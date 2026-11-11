@@ -8,19 +8,21 @@ import {
   Outlet,
   RouterProvider,
 } from "@tanstack/react-router";
+import { useEffect, useState, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import type { DesktopTrackpadScrollEvent } from "@t3tools/contracts";
 
 import { AnchoredToastProvider, anchoredToastManager, ToastProvider, toastManager } from "./toast";
 
-function createTestRouter() {
+function createTestRouter(component: () => ReactNode = ToastHarness) {
   const rootRoute = createRootRoute({
     component: () => <Outlet />,
   });
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/",
-    component: ToastHarness,
+    component,
   });
 
   return createRouter({
@@ -315,6 +317,143 @@ describe("Trackpad scroll to dismiss", () => {
       expect(toastRoot("Back toast")).not.toBeNull();
     } finally {
       await screen.unmount();
+    }
+  });
+
+  let setHarnessPosition: ((position: "top-left" | "top-right" | "bottom-right") => void) | null =
+    null;
+  function PositionedHarness() {
+    const [position, setPosition] = useState<"top-left" | "top-right" | "bottom-right">(
+      "top-right",
+    );
+    useEffect(() => {
+      setHarnessPosition = setPosition;
+      return () => {
+        setHarnessPosition = null;
+      };
+    }, []);
+    return (
+      <ToastProvider position={position}>
+        <span />
+      </ToastProvider>
+    );
+  }
+
+  it("dismisses a left-hand stack's toast to the left, and only rubber-bands it to the right", async () => {
+    const screen = await render(<RouterProvider router={createTestRouter(PositionedHarness)} />);
+    try {
+      await vi.waitFor(() => expect(setHarnessPosition).not.toBeNull());
+      setHarnessPosition!("top-left");
+      toastManager.add({ type: "info", title: "Left stack", timeout: 0 });
+      await waitForToastTitle("Left stack");
+      await vi.waitFor(() =>
+        expect(toastRoot("Left stack")!.getAttribute("data-position")).toBe("top-left"),
+      );
+      const root = toastRoot("Left stack")!;
+      swipe(root, outward);
+      // Fingers moving right push a left-hand toast inward: rubber band, capped at 16px.
+      expect(root.style.translate).toBe("16px");
+      await idle();
+      expect(toastRoot("Left stack")).not.toBeNull();
+      swipe(
+        root,
+        outward.map(([deltaX, deltaY]): [number, number] => [-deltaX, deltaY]),
+      );
+      await waitForToastTitleRemoved("Left stack");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("closes right away, so the position changing or a repeat arriving mid-exit loses nothing", async () => {
+    const screen = await render(<RouterProvider router={createTestRouter(PositionedHarness)} />);
+    try {
+      await vi.waitFor(() => expect(setHarnessPosition).not.toBeNull());
+      toastManager.add({ type: "error", title: "Repeat me", timeout: 0 });
+      await waitForToastTitle("Repeat me");
+      const first = toastRoot("Repeat me")!;
+      swipe(first, outward);
+      // The same toast again, during the exit animation: a new toast, not a merge into the old.
+      toastManager.add({ type: "error", title: "Repeat me", timeout: 0 });
+      setHarnessPosition!("bottom-right");
+      await vi.waitFor(() => {
+        const roots = Array.from(
+          document.querySelectorAll<HTMLElement>('[data-slot="toast-root"]'),
+        );
+        expect(roots).toHaveLength(1);
+        expect(roots[0]!.getAttribute("data-position")).toBe("bottom-right");
+        expect(roots[0]!.style.opacity).toBe("");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("fades without sliding under reduced motion", async () => {
+    const matchMedia = window.matchMedia.bind(window);
+    const spy = vi.spyOn(window, "matchMedia").mockImplementation((query) => {
+      const real = matchMedia(query);
+      if (query !== "(prefers-reduced-motion: reduce)") return real;
+      return new Proxy(real, {
+        get: (target, property) => {
+          if (property === "matches") return true;
+          const value: unknown = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    const screen = await render(<RouterProvider router={createTestRouter()} />);
+    try {
+      toastManager.add({ type: "info", title: "Fade only", timeout: 0 });
+      await waitForToastTitle("Fade only");
+      const root = toastRoot("Fade only")!;
+      swipe(root, outward);
+      expect(root.style.opacity).toBe("0");
+      // It fades where the fingers left it instead of sliding past its own width.
+      expect(Number.parseFloat(root.style.translate)).toBeLessThan(
+        root.getBoundingClientRect().width,
+      );
+      expect(root.style.transition).not.toContain("translate");
+      await waitForToastTitleRemoved("Fade only");
+    } finally {
+      spy.mockRestore();
+      await screen.unmount();
+    }
+  });
+
+  it("ignores a mouse wheel the desktop app reports as imprecise", async () => {
+    let listener: ((event: DesktopTrackpadScrollEvent) => void) | null = null;
+    const bridge = {
+      onTrackpadScroll: (next: (event: DesktopTrackpadScrollEvent) => void) => {
+        listener = next;
+        return () => {
+          listener = null;
+        };
+      },
+    };
+    Object.defineProperty(window, "desktopBridge", { configurable: true, value: bridge });
+    const screen = await render(<RouterProvider router={createTestRouter()} />);
+    try {
+      toastManager.add({ type: "info", title: "Mouse wheel", timeout: 0 });
+      await waitForToastTitle("Mouse wheel");
+      await vi.waitFor(() => expect(listener).not.toBeNull());
+      const root = toastRoot("Mouse wheel")!;
+      // The scroll's begin can arrive after its first wheel event.
+      swipe(root, outward.slice(0, 2));
+      listener!({ phase: "begin", precise: false });
+      expect(root.style.translate).toBe("");
+      expect(swipe(root, outward)).toEqual(outward.map(() => false));
+      listener!({ phase: "end" });
+      await idle();
+      expect(toastRoot("Mouse wheel")).not.toBeNull();
+
+      // A trackpad scroll afterwards still swipes.
+      listener!({ phase: "begin", precise: true });
+      swipe(root, outward);
+      await waitForToastTitleRemoved("Mouse wheel");
+    } finally {
+      await screen.unmount();
+      Reflect.deleteProperty(window, "desktopBridge");
     }
   });
 });

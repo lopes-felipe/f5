@@ -25,7 +25,10 @@ async function mountBell() {
   const rootRoute = createRootRoute({
     component: () => (
       <StoreProvider>
-        <NotificationsBell />
+        {/* Like the desktop title bar the bell sits in. */}
+        <div className="drag-region">
+          <NotificationsBell />
+        </div>
       </StoreProvider>
     ),
   });
@@ -129,7 +132,10 @@ describe("notification inbox", () => {
     const bell = document.querySelector<HTMLButtonElement>(
       '[data-testid="sidebar-notifications"]',
     )!;
-    expect(bell.classList.contains("no-drag")).toBe(true);
+    expect(getComputedStyle(bell.parentElement!).getPropertyValue("-webkit-app-region")).toBe(
+      "drag",
+    );
+    expect(getComputedStyle(bell).getPropertyValue("-webkit-app-region")).toBe("no-drag");
     expect(bell.getAttribute("aria-pressed")).toBe("false");
     await screen.unmount();
   });

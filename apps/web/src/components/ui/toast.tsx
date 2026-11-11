@@ -227,6 +227,10 @@ export function createAppToastManager(base: typeof baseToastManager) {
       return id;
     },
     close(id?: string): void {
+      // A closing toast stays mounted while it animates out; a repeat arriving then is new.
+      for (const [key, entry] of openByKey) {
+        if (id === undefined || entry.id === id) openByKey.delete(key);
+      }
       base.close(id);
     },
     /** Called by the stack with the toasts it holds, so dedupe never targets a vanished one. */
@@ -731,6 +735,10 @@ function clearWheelDrag(element: HTMLElement) {
  * it past a threshold, like a macOS notification banner. One listener on the viewport; each
  * gesture locks to the toast it started on, so momentum after a dismissal never reaches the
  * toast that slides into its place.
+ *
+ * Mouse wheels: line-mode wheels (Firefox) never swipe. Chromium reports mouse wheels in pixels
+ * too; the macOS desktop app tells them apart through the main process, but on the web and on
+ * Windows a horizontal mouse wheel over a toast can dismiss it as well.
  */
 function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosition) {
   useEffect(() => {
@@ -747,9 +755,11 @@ function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosit
       width: number;
     } | null = null;
     let idleTimer: number | undefined;
-    const leaveTimers = new Set<number>();
+    // The desktop app reports a mouse-wheel scroll as it begins (sometimes after its first event).
+    let mouseWheelScroll = false;
 
     const endGesture = () => {
+      window.clearTimeout(idleTimer);
       idleTimer = undefined;
       const ended = gesture;
       gesture = null;
@@ -757,9 +767,27 @@ function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosit
       if (ended?.state.kind === "tracking") clearWheelDrag(ended.element);
     };
 
+    const unsubscribeTrackpad = window.desktopBridge?.onTrackpadScroll?.((event) => {
+      if (event.phase === "end") {
+        mouseWheelScroll = false;
+        return;
+      }
+      mouseWheelScroll = event.precise === false;
+      if (mouseWheelScroll && gesture) {
+        if (gesture.state.kind === "tracking") clearWheelDrag(gesture.element);
+        gesture.state = { kind: "ignored" };
+      }
+    });
+
+    /**
+     * Closes the toast right away, so a repeat is a new toast and nothing is left pending if
+     * this effect restarts. Its transform is pinned so the stack's own exit doesn't add a second
+     * slide; the inline slide and fade run while Base UI waits for them to unmount it.
+     */
     const dismiss = (element: HTMLElement, toastId: string, direction: "left" | "right") => {
       const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
       const duration = reduced ? TOAST_WHEEL_LEAVE_REDUCED_MS : TOAST_WHEEL_LEAVE_MS;
+      element.style.transform = getComputedStyle(element).transform;
       element.removeAttribute("data-wheel-dragging");
       element.style.transition = reduced
         ? `opacity ${duration}ms ease-out`
@@ -769,14 +797,11 @@ function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosit
         element.style.translate = `${direction === "right" ? distance : -distance}px 0`;
       }
       element.style.opacity = "0";
-      const timer = window.setTimeout(() => {
-        leaveTimers.delete(timer);
-        toastManager.close(toastId);
-      }, duration);
-      leaveTimers.add(timer);
+      toastManager.close(toastId);
     };
 
     const onWheel = (event: WheelEvent) => {
+      if (mouseWheelScroll) return;
       if (!gesture) {
         const element =
           event.target instanceof Element
@@ -784,12 +809,21 @@ function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosit
             : null;
         const toastId = element?.dataset.toastId;
         if (!element || !toastId || !viewport.contains(element)) return;
+        // Already on its way out (closed elsewhere, or by an earlier swipe).
+        if (element.hasAttribute("data-ending-style")) return;
         gesture = {
           state: INITIAL_TOAST_WHEEL_STATE,
           element,
           toastId,
           width: element.getBoundingClientRect().width,
         };
+      } else if (
+        gesture.state.kind === "tracking" &&
+        gesture.element.hasAttribute("data-ending-style")
+      ) {
+        // Closed mid-drag (timeout or elsewhere): let its exit fade run, and drop the gesture.
+        clearWheelDrag(gesture.element);
+        gesture.state = { kind: "ignored" };
       }
       window.clearTimeout(idleTimer);
       idleTimer = window.setTimeout(endGesture, TOAST_WHEEL_IDLE_MS);
@@ -810,10 +844,8 @@ function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosit
     viewport.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       viewport.removeEventListener("wheel", onWheel);
-      window.clearTimeout(idleTimer);
-      if (gesture?.state.kind === "tracking") clearWheelDrag(gesture.element);
-      gesture = null;
-      for (const timer of leaveTimers) window.clearTimeout(timer);
+      unsubscribeTrackpad?.();
+      endGesture();
     };
   }, [viewport, position]);
 }
@@ -886,7 +918,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
               className={cn(
                 "group/toast surface-notification absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-2xl text-popover-foreground [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s,translate_.2s_ease-out]",
                 // A trackpad swipe drags the toast with the fingers: no lag on translate or fade.
-                "data-wheel-dragging:[transition:transform_.5s_cubic-bezier(.22,1,.36,1),height_.15s]",
+                "not-data-ending-style:data-wheel-dragging:[transition:transform_.5s_cubic-bezier(.22,1,.36,1),height_.15s]",
                 // Base positioning using data-position
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
@@ -918,7 +950,8 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 "data-[position*=top]:data-starting-style:transform-[translateY(calc(-100%-var(--toast-inset)))]",
                 "data-[position*=bottom]:data-starting-style:transform-[translateY(calc(100%+var(--toast-inset)))]",
                 "data-[position*=right]:data-starting-style:transform-[translateX(calc(100%+var(--toast-inset)))_translateY(var(--toast-calc-offset-y))]",
-                "data-ending-style:opacity-0",
+                // Important, so a drag's inline opacity can't keep a closing toast visible.
+                "data-ending-style:opacity-0!",
                 // Ending animations (direction-aware)
                 "data-ending-style:not-data-limited:not-data-swipe-direction:transform-[translateY(calc(100%+var(--toast-inset)))]",
                 "data-[position*=right]:data-ending-style:not-data-limited:not-data-swipe-direction:transform-[translateX(calc(100%+var(--toast-inset)))_translateY(var(--toast-calc-offset-y))]",
@@ -931,9 +964,9 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 "data-expanded:data-ending-style:data-[swipe-direction=right]:transform-[translateX(calc(var(--toast-swipe-movement-x)+100%+var(--toast-inset)))_translateY(var(--toast-calc-offset-y))]",
                 "data-expanded:data-ending-style:data-[swipe-direction=up]:transform-[translateY(calc(var(--toast-swipe-movement-y)-100%-var(--toast-inset)))]",
                 "data-expanded:data-ending-style:data-[swipe-direction=down]:transform-[translateY(calc(var(--toast-swipe-movement-y)+100%+var(--toast-inset)))]",
-                // Reduced motion: fade only.
-                "motion-reduce:[transition:opacity_.2s,height_.15s,translate_.2s_ease-out] motion-reduce:data-starting-style:transform-none motion-reduce:data-ending-style:transform-none",
-                "motion-reduce:data-wheel-dragging:[transition:height_.15s]",
+                // Reduced motion: fade only; a short swipe snaps back without sliding.
+                "motion-reduce:[transition:opacity_.2s,height_.15s] motion-reduce:data-starting-style:transform-none motion-reduce:data-ending-style:transform-none",
+                "motion-reduce:not-data-ending-style:data-wheel-dragging:[transition:height_.15s]",
               )}
               data-position={position}
               data-toast-id={toast.id}

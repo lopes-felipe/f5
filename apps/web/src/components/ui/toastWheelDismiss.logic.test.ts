@@ -79,6 +79,16 @@ describe("stepToastWheel", () => {
     expect(run([wheel(-50, 0, { ctrlKey: true })])[0]!.state.kind).toBe("ignored");
     expect(run([wheel(-50, 0, { deltaMode: 1 })])[0]!.state.kind).toBe("ignored");
   });
+
+  it("neither moves nor claims a zoom or line-wheel event in the middle of a swipe", () => {
+    for (const odd of [wheel(-500, 0, { ctrlKey: true }), wheel(-500, 0, { deltaMode: 1 })]) {
+      const [first, rejected, next] = run([wheel(-10), odd, wheel(-5)]);
+      expect(first!.offset).toBe(10);
+      expect(rejected).toMatchObject({ offset: 10, dismiss: null, handled: false });
+      expect(rejected!.state).toEqual({ kind: "tracking", sumX: -10 });
+      expect(next).toMatchObject({ offset: 15, handled: true });
+    }
+  });
 });
 
 describe("toastWheelProgress", () => {
