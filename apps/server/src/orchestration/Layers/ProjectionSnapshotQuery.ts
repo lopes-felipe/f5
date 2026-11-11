@@ -1,4 +1,5 @@
 import { ScheduledOrigin } from "@t3tools/contracts";
+import { boundedHistoryStreams } from "../historyWindow.ts";
 import { ReadSqlClient } from "../../persistence/ReadSqlClient.ts";
 import { makeThreadFind } from "../threadFind.ts";
 import { SnapshotReadClients, withSnapshotRead } from "../../persistence/snapshotReadExecutor.ts";
@@ -844,6 +845,7 @@ function buildThreadTailDetailsResult(params: {
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadTailDetails, ProjectionRepositoryError> {
+  params = boundedHistoryStreams(params);
   return decodeThreadTailDetails({
     threadId: params.threadId,
     messages: mapThreadDetailMessages(params.messages),
@@ -877,6 +879,8 @@ function buildThreadTailDetailsResult(params: {
 }
 
 function buildThreadHistoryPageResult(params: {
+  readonly forwardMessages?: boolean;
+  readonly forwardActivities?: boolean;
   readonly threadId: OrchestrationThreadHistoryPage["threadId"];
   readonly messages: ReadonlyArray<ProjectionThreadMessage>;
   readonly checkpoints: ReadonlyArray<ProjectionCheckpoint>;
@@ -890,6 +894,7 @@ function buildThreadHistoryPageResult(params: {
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadHistoryPage, ProjectionRepositoryError> {
+  params = boundedHistoryStreams(params, params.forwardMessages, params.forwardActivities);
   return decodeThreadHistoryPage({
     threadId: params.threadId,
     messages: mapThreadDetailMessages(params.messages),
@@ -3174,6 +3179,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
         const threadExists = Option.isSome(threadOption);
         return yield* buildThreadHistoryPageResult({
+          forwardMessages: input.afterMessageCursor != null,
+          forwardActivities: input.afterActivityCursor != null,
           threadId: input.threadId,
           messages: threadExists ? messageResult.messages : [],
           checkpoints: threadExists ? checkpointResult.checkpoints : [],

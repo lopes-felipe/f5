@@ -330,6 +330,44 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
   });
 
 projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
+  it.effect("bounds a long single turn and pages every message without gaps", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`DELETE FROM projection_thread_messages`;
+      const ids = Array.from({ length: 900 }, (_, index) => String(index).padStart(4, "0"));
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        SELECT value, 'thread-1', 'turn-1', 'assistant', ${"x".repeat(8000)}, 0,
+          '2026-04-01T09:00:04.000Z', '2026-04-01T09:00:05.000Z'
+        FROM json_each(${JSON.stringify(ids)})
+      `;
+      const tail = yield* query.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+      assert.isBelow(Buffer.byteLength(JSON.stringify(tail)), 1_048_576);
+      assert.isBelow(tail.messages.length, 120);
+      const loaded = tail.messages.map((message) => String(message.id));
+      let cursor = tail.oldestLoadedMessageCursor;
+      let hasOlder = tail.hasOlderMessages;
+      while (hasOlder) {
+        const page = yield* query.getThreadHistoryPage({
+          threadId: asThreadId("thread-1"),
+          beforeMessageCursor: cursor,
+          beforeCheckpointTurnCount: null,
+          activityCursor: null,
+          beforeCommandExecutionCursor: null,
+        });
+        assert.isAbove(page.messages.length, 0);
+        assert.isBelow(Buffer.byteLength(JSON.stringify(page)), 1_048_576);
+        loaded.push(...page.messages.map((message) => String(message.id)));
+        cursor = page.oldestLoadedMessageCursor;
+        hasOlder = page.hasOlderMessages;
+      }
+      assert.deepEqual(loaded.sort(), ids);
+    }),
+  );
   it.effect(
     "searches unloaded older messages and plans, counts occurrences and hydrates the selected plan",
     () =>

@@ -1,4 +1,5 @@
 import { normalizeUserInputOptions } from "../userInputOptions.ts";
+import { resolveClaudeBypassAvailability } from "../claudeBypassAvailability.ts";
 import { resolveClaudeSubagentFile } from "../agentTranscript/claudeSubagentTranscript.ts";
 import {
   classifyToolItemType,
@@ -3710,6 +3711,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       reported: unknown,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (
+          context.basePermissionMode === "bypassPermissions" &&
+          (reported === "auto" || reported === "default" || reported === "acceptEdits")
+        ) {
+          // Keep an effective CLI downgrade across later plan-mode exits.
+          context.basePermissionMode = reported;
+          context.configuredBase = { ...context.configuredBase, permissionMode: reported };
+          return;
+        }
         if (
           !claudeAutoModeRejected({
             base: context.basePermissionMode,
@@ -8063,9 +8073,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
-              // Full access never prompts, whatever the approval policy; plan
-              // mode still refuses workspace edits.
-              if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
+              // Bypass sessions in plan mode still refuse workspace edits.
+              if (
+                inPlanMode &&
+                (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access" &&
+                context.basePermissionMode === "bypassPermissions"
+              ) {
                 return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
                   plansDirectory,
                   cwd: input.cwd,
@@ -8086,10 +8099,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 : (input.runtimeMode ?? DEFAULT_RUNTIME_MODE);
               switch (runtimeMode) {
                 case "full-access":
-                  return {
-                    behavior: "allow",
-                    updatedInput: toolInput,
-                  } satisfies PermissionResult;
+                  // CLI-forwarded requests still require a decision under bypass:
+                  // ask rules and policy restrictions can override Full access.
+                  break;
                 case "approval-required":
                   break;
                 case "auto-accept-edits":
@@ -8300,6 +8312,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             runtimeModelSelection.baseModel ?? input.model,
             launchReported,
           ).supportsAutoMode,
+          runtimeMode === "full-access"
+            ? yield* Effect.promise(() =>
+                resolveClaudeBypassAvailability(
+                  resolveClaudeConfigDir(queryEnvironment, input.cwd),
+                  input.cwd,
+                ),
+              )
+            : undefined,
         );
         const runtimePermissionMode = launchPermission.mode;
         // Runtime mode is the user-visible enforcement boundary. Persisted
@@ -9058,6 +9078,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* emitRuntimeWarning(context, CLAUDE_AUTO_UNAVAILABLE_WARNING, {
             category: "provider",
           });
+        if (runtimeMode === "full-access" && runtimePermissionMode !== "bypassPermissions")
+          yield* emitRuntimeWarning(
+            context,
+            "Claude bypass permissions could not be confirmed; Full access is running with approval checks.",
+            { category: "provider" },
+          );
         if (resumeFallbackWarning) {
           yield* emitRuntimeWarning(
             context,
@@ -9350,7 +9376,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         } else if (input.interactionMode === "default") {
           yield* controlRequest("turn/setPermissionMode", () =>
-            context.query.setPermissionMode(context.basePermissionMode ?? "default"),
+            context.query
+              .setPermissionMode(context.basePermissionMode ?? "default")
+              .catch(async (error) => {
+                if (context.basePermissionMode !== "bypassPermissions") throw error;
+                await context.query.setPermissionMode("default");
+                context.basePermissionMode = "default";
+              }),
           );
           yield* ensureLive;
           context.configuredBase = {

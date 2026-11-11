@@ -1,4 +1,5 @@
 import { McpAppFrame } from "./McpAppFrame";
+import { settleListScroll } from "./settleListScroll";
 import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
 import { highlightThreadFind } from "./threadFindHighlights";
@@ -650,9 +651,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return;
     }
     if (!initialScrollAtEndEnabled) return;
-    const frame = window.requestAnimationFrame(() => setInitialScrollAtEndEnabled(false));
-    return () => window.cancelAnimationFrame(frame);
-  }, [initialScrollAtEndEnabled, rowCount]);
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => {
+      const list = listRef.current;
+      if (!list) return;
+      void settleListScroll(
+        list,
+        () => cancelled || !liveFollowEnabledRef.current || listRef.current !== list,
+      ).then(() => {
+        if (!cancelled) setInitialScrollAtEndEnabled(false);
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [initialScrollAtEndEnabled, listRef, rowCount]);
   const lastRowId = rowCount > 0 ? (rows[rowCount - 1]?.id ?? null) : null;
   const entryRowIndexMap = useMemo(
     () =>

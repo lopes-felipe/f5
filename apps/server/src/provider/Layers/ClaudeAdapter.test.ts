@@ -22,7 +22,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection, createReportedClaudeModelCapabilities } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
-import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
+import { Cause, Effect, Fiber, Layer, Option, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as computerBackendPolicy from "../../computer/computerBackendPolicy";
@@ -3416,6 +3416,11 @@ describe("ClaudeAdapterLive", () => {
         true,
       );
 
+      const request = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
       const grepPermission = yield* Effect.promise(() =>
         canUseTool(
           "Grep",
@@ -3429,8 +3434,16 @@ describe("ClaudeAdapterLive", () => {
             requestId: "request-disabled-agent-grep-1",
           },
         ),
-      );
-      assert.equal((grepPermission as PermissionResult).behavior, "allow");
+      ).pipe(Effect.forkChild);
+      const opened = yield* Fiber.join(request);
+      assert.ok(Option.isSome(opened));
+      if (Option.isSome(opened) && opened.value.requestId)
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId),
+          "accept",
+        );
+      assert.equal((yield* Fiber.join(grepPermission))?.behavior, "allow");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -14242,7 +14255,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("allows full-access repo edits again after leaving plan mode", () => {
+  it.effect("retains CLI-forwarded approvals after leaving full-access plan mode", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -14289,7 +14302,75 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
         interactionMode: "default",
       });
-      assert.equal((yield* decide())?.behavior, "allow");
+      const request = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const permission = yield* decide().pipe(Effect.forkChild);
+      const opened = yield* Fiber.join(request);
+      assert.ok(Option.isSome(opened));
+      if (Option.isSome(opened) && opened.value.requestId)
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId),
+          "accept",
+        );
+      assert.equal((yield* Fiber.join(permission))?.behavior, "allow");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("preserves an effective CLI bypass downgrade on the next turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const status = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "session.state.changed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        permissionMode: "default",
+        session_id: "sdk-bypass-downgrade",
+        uuid: "bypass-downgrade",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(status);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "continue",
+        attachments: [],
+        interactionMode: "default",
+      });
+      assert.deepEqual(harness.query.setPermissionModeCalls, ["default"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("falls back to default when restoring bypass is refused", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const restore = vi
+        .spyOn(harness.query, "setPermissionMode")
+        .mockRejectedValueOnce(new Error("bypass disabled"));
+      try {
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "continue",
+          attachments: [],
+          interactionMode: "default",
+        });
+        assert.deepEqual(
+          restore.mock.calls.map(([mode]) => mode),
+          ["bypassPermissions", "default"],
+        );
+        assert.equal(harness.getLastCreateQueryInput()?.options.canUseTool !== undefined, true);
+      } finally {
+        restore.mockRestore();
+      }
     }).pipe(Effect.provide(harness.layer));
   });
 

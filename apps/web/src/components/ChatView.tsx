@@ -1,4 +1,5 @@
 import { ThreadFindBar, type ThreadFindMatch } from "./chat/ThreadFindBar";
+import { settleListScroll } from "./chat/settleListScroll";
 import { ThreadFindContext } from "./chat/threadFindContext";
 import { queuedTurnLabel } from "./chat/NextTurnQueuePanel.logic";
 import {
@@ -1079,7 +1080,12 @@ export default memo(function ChatView({
 
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
   const scrollToEnd = useCallback((animated = false) => {
-    legendListRef.current?.scrollToEnd?.({ animated });
+    const list = legendListRef.current;
+    if (!list) return;
+    isAtEndRef.current = true;
+    void Promise.resolve(list.scrollToEnd?.({ animated })).then(() =>
+      settleListScroll(list, () => !isMountedRef.current || legendListRef.current !== list),
+    );
   }, []);
   // Pin the scroll position to the bottom before a new row is appended.
   // Flipping `isAtEndRef`/`setShowScrollToBottom` optimistically is only safe

@@ -6,6 +6,15 @@ import { Effect } from "effect";
 import { runProcess } from "../../processRunner.ts";
 import { grokProbeEnvironment } from "../Layers/GrokProvider.ts";
 
+export function rewriteLeadingGrokSkill(
+  text: string,
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "enabled">>,
+): string {
+  const match = /^\s*\$([a-zA-Z_][a-zA-Z0-9_.:-]*)(?=\s|$)/u.exec(text);
+  if (!match || !skills.some((skill) => skill.enabled && skill.name === match[1])) return text;
+  return `/${match[1]}${text.slice(match[0].length)}`;
+}
+
 /** Ask the CLI so disabled and plugin skills follow Grok's own configuration. */
 export function parseGrokSkills(text: string): ServerProviderSkill[] {
   let value: unknown;

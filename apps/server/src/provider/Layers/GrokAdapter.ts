@@ -29,6 +29,7 @@ import {
 } from "../acp/AntigravityQuestions.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 import { leadingSlashCommandName } from "../nativeCommandInput.ts";
+import { discoverGrokSkills, rewriteLeadingGrokSkill } from "../Drivers/GrokSkills.ts";
 import * as nodePath from "node:path";
 
 import {
@@ -279,6 +280,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
     const sessions = new Map<ThreadId, GrokSessionContext>();
+    const skillCatalogs = new Map<ThreadId, ReadonlyArray<{ name: string; enabled: boolean }>>();
     const startupPendingUserInputs = new Map<ThreadId, Map<ApprovalRequestId, PendingUserInput>>();
     /** Private ACP form/URL requests, keyed by thread so startup requests are covered. */
     const elicitationsByThread = new Map<ThreadId, ElicitationRegistry>();
@@ -527,6 +529,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             payload: { class: "transport_error", message: failure },
           });
         sessions.delete(ctx.threadId);
+        skillCatalogs.delete(ctx.threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
         yield* abortElicitations(ctx.threadId);
@@ -1245,6 +1248,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
           ctx.notificationFiber = nf;
           sessions.set(input.threadId, ctx);
+          if (PROVIDER === "grok")
+            skillCatalogs.set(
+              input.threadId,
+              discoveredSkillCommands.map(({ name }) => ({ name, enabled: true })),
+            );
           startupPendingUserInputs.delete(input.threadId);
           sessionScopeTransferred = true;
           const watchedCtx = ctx;
@@ -1381,7 +1389,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ),
               });
 
-              const text = input.input?.trim();
+              const userText = input.input ?? "";
+              const text = (
+                PROVIDER === "grok" && /^\s*\$/u.test(userText)
+                  ? rewriteLeadingGrokSkill(
+                      userText,
+                      yield* discoverGrokSkills(
+                        grokSettings,
+                        options?.environment ?? process.env,
+                        ctx.session.cwd ?? process.cwd(),
+                      ),
+                    )
+                  : userText
+              ).trim();
               let totalAttachmentBytes = 0;
               const imagePromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
@@ -1756,8 +1776,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       },
       // ACP agents read a slash command only as the leading prompt text, and learn
       // their commands after the session starts, so any leading `/name` may be one.
-      classifyTurnInput: (_threadId, text) =>
-        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
+      classifyTurnInput: (threadId, text) =>
+        leadingSlashCommandName(
+          PROVIDER === "grok"
+            ? rewriteLeadingGrokSkill(text, skillCatalogs.get(threadId) ?? [])
+            : text,
+        ) !== undefined
+          ? "native-command"
+          : "prompt",
       startSession,
       sendTurn,
       steerTurn: sendTurn,
