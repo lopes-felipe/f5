@@ -164,8 +164,8 @@ export function PrFocusView({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-2xl p-6">
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="mx-auto h-full w-full max-w-2xl p-6">
           <PrDetailPanel
             key={currentPr.key}
             ref={detailHandleRef}

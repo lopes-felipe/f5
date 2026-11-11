@@ -16,6 +16,16 @@ const SOURCE_CONTROL_PROVIDER_KINDS = [
   "unknown",
 ] as const satisfies ReadonlyArray<SourceControlProviderKind>;
 
+/** Rendering rules for text authored on each forge. Exhaustive so new forges choose a rule. */
+export const SOURCE_CONTROL_MARKDOWN = {
+  github: { hardLineBreaks: true },
+  gitlab: { hardLineBreaks: false },
+  "azure-devops": { hardLineBreaks: true },
+  bitbucket: { hardLineBreaks: false },
+  forgejo: { hardLineBreaks: true },
+  unknown: { hardLineBreaks: false },
+} satisfies Record<SourceControlProviderKind, { hardLineBreaks: boolean }>;
+
 export interface ParsedSourceControlRemote {
   readonly kind: SourceControlProviderKind;
   readonly host: string | null;

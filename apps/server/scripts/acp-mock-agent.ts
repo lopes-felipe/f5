@@ -260,7 +260,14 @@ const program = Effect.gen(function* () {
   const agent = yield* EffectAcpAgent.AcpAgent;
 
   yield* agent.handleInitialize((request) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      if (process.env.ACP_MOCK_ID_ONLY_PERMISSION === "1") {
+        yield* agent.client.requestPermission({
+          sessionId,
+          toolCall: { toolCallId: "before-start" },
+          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+        });
+      }
       parameterizedModelPicker =
         request.clientCapabilities?._meta?.parameterizedModelPicker !== false;
       return {
@@ -402,6 +409,53 @@ const program = Effect.gen(function* () {
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "malformed") {
         process.stdout.write("{malformed-json\n");
         return yield* Effect.never;
+      }
+      if (process.env.ACP_MOCK_ID_ONLY_PERMISSION === "1") {
+        yield* agent.client.sessionUpdate({
+          sessionId: "foreign-session",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tracked-command",
+            kind: "execute",
+            title: "foreign command",
+            status: "pending",
+            rawInput: { command: "foreign command" },
+          },
+        });
+        yield* agent.client.requestPermission({
+          sessionId: requestedSessionId,
+          toolCall: { toolCallId: "tracked-command" },
+          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tracked-command",
+            kind: "execute",
+            title: "git status",
+            status: "pending",
+            rawInput: {},
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: "foreign-session",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tracked-command",
+            kind: "execute",
+            title: "foreign overwrite",
+            rawInput: { command: "foreign overwrite" },
+          },
+        });
+        for (const permissionSessionId of ["foreign-session", requestedSessionId]) {
+          yield* agent.client.requestPermission({
+            sessionId: permissionSessionId,
+            toolCall: { toolCallId: "tracked-command" },
+            options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          });
+        }
+        return { stopReason: "end_turn" };
       }
       if (process.env.ACP_MOCK_ARGUMENT_STREAM === "1") {
         const toolCallId = "argument-stream";

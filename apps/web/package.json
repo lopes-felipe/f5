@@ -11,7 +11,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "node node_modules/vitest/vitest.mjs run",
     "test:browser": "node node_modules/vitest/vitest.mjs run --config vitest.browser.config.ts",
-    "test:browser:install": "playwright install --with-deps chromium"
+    "test:browser:install": "node ../../scripts/install-browser.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",
