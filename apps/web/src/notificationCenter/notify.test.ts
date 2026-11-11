@@ -53,7 +53,7 @@ describe("planNotificationDelivery", () => {
   it("follows each source's switches", () => {
     const preferences = {
       ...DEFAULT_NOTIFICATION_PREFERENCES,
-      upstream: { inApp: false, system: false, sound: true },
+      upstream: { inApp: false, system: false, sound: true, inbox: true },
     };
     expect(planNotificationDelivery({ source: "upstream" }, env({ preferences }))).toMatchObject({
       toast: false,
@@ -66,7 +66,7 @@ describe("planNotificationDelivery", () => {
   it("keeps the thread on screen out of the toast stack", () => {
     const preferences = {
       ...DEFAULT_NOTIFICATION_PREFERENCES,
-      thread: { inApp: true, system: true, sound: false },
+      thread: { inApp: true, system: true, sound: false, inbox: true },
     };
     expect(
       planNotificationDelivery(
@@ -97,6 +97,23 @@ describe("planNotificationDelivery", () => {
     ).toBe(false);
   });
 
+  it("keeps a source out of the inbox when its Inbox switch is off, and still delivers it", () => {
+    const preferences = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      pr: { ...DEFAULT_NOTIFICATION_PREFERENCES.pr, inbox: false },
+    };
+    expect(planNotificationDelivery({ source: "pr" }, env({ preferences }))).toEqual({
+      record: false,
+      toast: true,
+      os: false,
+      sound: false,
+    });
+    expect(
+      planNotificationDelivery({ source: "pr" }, env({ preferences, doNotDisturbUntil: "forever" }))
+        .record,
+    ).toBe(false);
+  });
+
   it("ends Do Not Disturb when its time passes", () => {
     expect(isDoNotDisturbActive("2026-11-10T13:00:00.000Z", NOW)).toBe(true);
     expect(isDoNotDisturbActive("2026-11-10T11:00:00.000Z", NOW)).toBe(false);
@@ -114,17 +131,18 @@ describe("notification preferences migration", () => {
         enablePrAttentionNotifications: false,
       }),
     ).toMatchObject({
-      thread: { inApp: true, system: true, sound: true },
-      pr: { inApp: true, system: false, sound: false },
+      thread: { inApp: true, system: true, sound: true, inbox: true },
+      pr: { inApp: true, system: false, sound: false, inbox: true },
       scheduled: { inApp: true, system: true },
     });
     expect(
       deriveNotificationPreferences({ enableThreadStatusNotifications: false }).thread,
-    ).toEqual({ inApp: false, system: false, sound: false });
+    ).toEqual({ inApp: false, system: false, sound: false, inbox: true });
     expect(deriveNotificationPreferences({}).thread).toEqual({
       inApp: false,
       system: true,
       sound: false,
+      inbox: true,
     });
   });
 
@@ -133,7 +151,12 @@ describe("notification preferences migration", () => {
       pr: { inApp: false, system: "yes", sound: true },
       errors: null,
     });
-    expect(normalized?.pr).toEqual({ inApp: false, system: true, sound: true });
+    expect(normalized?.pr).toEqual({ inApp: false, system: true, sound: true, inbox: true });
+    expect(
+      normalizeNotificationPreferences({
+        pr: { inApp: true, system: true, sound: false, inbox: false },
+      })?.pr.inbox,
+    ).toBe(false);
     expect(normalized?.errors).toEqual(DEFAULT_NOTIFICATION_PREFERENCES.errors);
     expect(normalizeNotificationPreferences(undefined)).toBe(null);
   });

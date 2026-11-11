@@ -1,11 +1,17 @@
+import { useMemo } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { useAppSettingsSelector } from "../appSettings";
 import type { ToastItemTone } from "../components/ui/toast";
 import type { ThreadStatus } from "../threadStatus";
 import type { NotificationSeverity } from "./notify";
 import type { NotificationTarget } from "./openTarget";
-import { NOTIFICATION_SOURCES, type NotificationSource } from "./preferences";
+import {
+  NOTIFICATION_SOURCES,
+  type NotificationPreferences,
+  type NotificationSource,
+} from "./preferences";
 
 export const NOTIFICATION_INBOX_STORAGE_KEY = "f5:notifications:inbox:v1";
 export const INBOX_MAX_ENTRIES = 200;
@@ -112,6 +118,26 @@ function markEntryRead(entry: InboxEntry, nowMs: number): InboxEntry {
 
 export function unreadInboxCount(entries: readonly InboxEntry[]): number {
   return entries.reduce((count, entry) => count + (entry.readAt === null ? 1 : 0), 0);
+}
+
+/**
+ * The entries the inbox shows: sources whose Inbox switch is off are hidden, including what
+ * they recorded earlier. Turning the switch back on shows those entries again.
+ */
+export function visibleInboxEntries(
+  entries: readonly InboxEntry[],
+  preferences: NotificationPreferences,
+): InboxEntry[] {
+  if (NOTIFICATION_SOURCES.every((source) => preferences[source].inbox))
+    return entries as InboxEntry[];
+  return entries.filter((entry) => preferences[entry.source].inbox);
+}
+
+/** The inbox entries to show, filtered by each source's Inbox switch. */
+export function useVisibleInboxEntries(): InboxEntry[] {
+  const entries = useNotificationInbox((state) => state.entries);
+  const preferences = useAppSettingsSelector((settings) => settings.notificationPreferences);
+  return useMemo(() => visibleInboxEntries(entries, preferences), [entries, preferences]);
 }
 
 export type InboxGroup = {

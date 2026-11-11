@@ -2325,11 +2325,15 @@ describe("Thread sidebar", () => {
         "Search threads",
         "Pull requests",
         "Scheduled",
-        "Notifications",
         "Usage",
         "Projects",
         "Recent",
       ]);
+      // The notifications bell lives in the title bar, beside the profile switcher.
+      const bell = document.querySelector('[data-testid="sidebar-notifications"]');
+      expect(bell).toBeInstanceOf(HTMLElement);
+      expect(bell!.closest('[data-sidebar="header"]')).not.toBeNull();
+      expect(navigation.contains(bell)).toBe(false);
       // The view toggle lives in the strip; the Projects label carries Add project.
       expect(
         navigation.querySelector('[role="radiogroup"] [data-testid="sidebar-view-projects"]'),

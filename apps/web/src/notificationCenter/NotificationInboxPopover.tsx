@@ -16,6 +16,7 @@ import {
   unreadInboxCount,
   useNotificationInbox,
   useNotificationInboxPopover,
+  useVisibleInboxEntries,
   type InboxEntry,
 } from "./inboxStore";
 import { loadPendingApprovalRequestIds } from "./inlineApproval";
@@ -211,7 +212,8 @@ function DoNotDisturbFooter() {
 export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLElement | null> }) {
   const open = useNotificationInboxPopover((state) => state.open);
   const setOpen = useNotificationInboxPopover((state) => state.setOpen);
-  const entries = useNotificationInbox((state) => state.entries);
+  const entries = useVisibleInboxEntries();
+  const preferences = useAppSettingsSelector((settings) => settings.notificationPreferences);
   const markRead = useNotificationInbox((state) => state.markRead);
   const markAllRead = useNotificationInbox((state) => state.markAllRead);
   const remove = useNotificationInbox((state) => state.remove);
@@ -290,9 +292,15 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
       cancelled = true;
     };
   }, [open, threadsToVerify]);
+  // Filters for sources kept out of the inbox would always be empty, so they are hidden.
+  const filters = FILTERS.filter(
+    (option) => option.value === "all" || preferences[option.value].inbox,
+  );
+  const activeFilter = filters.some((option) => option.value === filter) ? filter : "all";
   const visible = useMemo(
-    () => (filter === "all" ? entries : entries.filter((entry) => entry.source === filter)),
-    [entries, filter],
+    () =>
+      activeFilter === "all" ? entries : entries.filter((entry) => entry.source === activeFilter),
+    [entries, activeFilter],
   );
   const groups = groupInboxEntries(visible, new Date(now));
   const unread = unreadInboxCount(entries);
@@ -371,15 +379,15 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
             </div>
           </div>
           <div className="flex flex-wrap gap-1 px-3 pb-2" role="tablist" aria-label="Filter">
-            {FILTERS.map((option) => (
+            {filters.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 role="tab"
-                aria-selected={filter === option.value}
+                aria-selected={activeFilter === option.value}
                 className={cn(
                   "rounded-full px-2 py-0.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                  filter === option.value
+                  activeFilter === option.value
                     ? "bg-secondary text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}

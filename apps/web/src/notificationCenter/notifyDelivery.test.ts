@@ -52,7 +52,7 @@ const threadInput = {
 };
 const threadPrefs = {
   ...DEFAULT_NOTIFICATION_PREFERENCES,
-  thread: { inApp: true, system: true, sound: false },
+  thread: { inApp: true, system: true, sound: false, inbox: true },
 };
 
 beforeEach(() => {
@@ -74,7 +74,7 @@ describe("notify", () => {
     mocks.present.mockImplementation(async () => false);
     const preferences = {
       ...DEFAULT_NOTIFICATION_PREFERENCES,
-      thread: { inApp: false, system: true, sound: false },
+      thread: { inApp: false, system: true, sound: false, inbox: true },
     };
     notify({ ...threadInput }, env({ appFocused: false, preferences }));
     await vi.waitFor(() => expect(mocks.present).toHaveBeenCalled());
@@ -134,10 +134,26 @@ describe("deliverErrorNotification", () => {
     expect(recorded).toEqual(["errors"]);
   });
 
+  it("keeps errors out of the inbox when the Errors Inbox switch is off", () => {
+    const recorded: string[] = [];
+    const unregister = registerNotificationRecorder((input) => recorded.push(input.source));
+    const preferences = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      errors: { ...DEFAULT_NOTIFICATION_PREFERENCES.errors, inbox: false },
+    };
+    expect(deliverErrorNotification({ title: "Push failed" }, env({ preferences }))).toBe(true);
+    notify(
+      { ...threadInput },
+      env({ preferences: { ...threadPrefs, thread: { ...threadPrefs.thread, inbox: false } } }),
+    );
+    unregister();
+    expect(recorded).toEqual([]);
+  });
+
   it("follows the Errors switches and Do Not Disturb", () => {
     const off = {
       ...DEFAULT_NOTIFICATION_PREFERENCES,
-      errors: { inApp: false, system: false, sound: false },
+      errors: { inApp: false, system: false, sound: false, inbox: true },
     };
     expect(deliverErrorNotification({ title: "Push failed" }, env({ preferences: off }))).toBe(
       false,
@@ -153,7 +169,7 @@ describe("deliverErrorNotification", () => {
   it("uses the OS for errors in the background when asked, and keeps the toast for return", () => {
     const system = {
       ...DEFAULT_NOTIFICATION_PREFERENCES,
-      errors: { inApp: true, system: true, sound: false },
+      errors: { inApp: true, system: true, sound: false, inbox: true },
     };
     expect(
       deliverErrorNotification(
