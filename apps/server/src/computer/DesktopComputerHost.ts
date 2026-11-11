@@ -16,6 +16,7 @@ import {
   COMPUTER_CHROME_CALLS_CAPABILITY,
   COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
   COMPUTER_CHROME_RELEASE_CAPABILITY,
+  COMPUTER_CHROME_SHARED_CAPABILITY,
   DesktopComputerHostMessage,
   type ComputerAutomationBackendStatus,
   type ComputerAutomationRequest,
@@ -87,6 +88,7 @@ export class DesktopComputerHost {
         COMPUTER_CHROME_CALLS_CAPABILITY,
         COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
         COMPUTER_CHROME_RELEASE_CAPABILITY,
+        COMPUTER_CHROME_SHARED_CAPABILITY,
       ],
     });
   }
@@ -190,6 +192,14 @@ export class DesktopComputerHost {
   /** Main routes Chrome release requests across profiles and sends waiting blockers. */
   chromeReleaseCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_RELEASE_CAPABILITY);
+  }
+  /** Main lets certified Claude sessions share Chrome and relays their registrations. */
+  chromeSharedCapable(): boolean {
+    return (
+      this.connected &&
+      this.hostCapabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY) &&
+      this.hostCapabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY)
+    );
   }
   notificationsCapable(): boolean {
     return this.connected && this.hostCapabilities.has(SCHEDULED_NOTIFICATIONS_CAPABILITY);

@@ -8,8 +8,10 @@ import {
   CHROME_NATIVE_WORK_FINISHING_MESSAGE,
   CHROME_OWN_CALL_RUNNING_MESSAGE,
   CHROME_OWN_NATIVE_CONTROL_MESSAGE,
+  CHROME_WAITING_FOR_CHROME_CALL_MESSAGE,
   CHROME_WAITING_FOR_NATIVE_MESSAGE,
 } from "./ChromeLeaseAuthority";
+import { CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE } from "@t3tools/shared/computerControl";
 import { ComputerGrantAuthority } from "./ComputerGrantAuthority";
 import { ComputerConsentStore } from "./ComputerConsentStore";
 import type { ComputerController } from "./ComputerController";
@@ -2147,6 +2149,236 @@ describe("background capability negotiation", () => {
       h.b.emit("message", { type: "chromeLeaseRelease", requestId: "rel", holder: holderB });
       await vi.waitFor(() => expect(h.channel.chrome.current()).toBeNull());
       expect(h.channel.resolveBlocker("profile", blocker!.token)).toBeUndefined();
+    });
+  });
+  describe("shared Claude in Chrome across profiles", () => {
+    const shared = [
+      "background-ax-v1",
+      "chrome-call-activity-v1",
+      "chrome-call-admission-v1",
+      "chrome-release-v1",
+      "chrome-shared-v1",
+    ];
+    const holderA = {
+      profileId: "profile",
+      threadId: "a-thread",
+      sessionGeneration: "a-gen",
+      provider: "claude" as const,
+    };
+    const holderB = {
+      profileId: "profile-b",
+      threadId: "b-thread",
+      sessionGeneration: "b-gen",
+      provider: "claude" as const,
+    };
+    const registration = (wrapper: string) => ({
+      manifests: [{ location: "/m/chrome.json", sha256: "a".repeat(64) }],
+      wrapper: { location: wrapper, sha256: "b".repeat(64) },
+    });
+    async function bothHold(capabilitiesB = shared, sharedB = true) {
+      const h = setup(true);
+      h.hello(shared);
+      const b = Object.assign(new EventEmitter(), {
+        pid: 52,
+        connected: true,
+        send: vi.fn(),
+        disconnect: vi.fn(),
+      });
+      h.channel.register("profile-b", "incarnation-b", b as unknown as ChildProcess);
+      b.emit("message", {
+        type: "hello",
+        profileId: "profile-b",
+        backendIncarnation: "incarnation-b",
+        protocolVersion: 1,
+        capabilities: capabilitiesB,
+      });
+      h.process.emit("message", {
+        type: "chromeLeaseAcquire",
+        requestId: "acquire-a",
+        holder: holderA,
+        shared: true,
+      });
+      await vi.waitFor(() => expect(h.channel.chrome.current()).toEqual(holderA));
+      b.emit("message", {
+        type: "chromeLeaseAcquire",
+        requestId: "acquire-b",
+        holder: holderB,
+        shared: sharedB,
+      });
+      const sentA = () => sent(h);
+      const sentB = () => b.send.mock.calls.map(([message]) => message as Record<string, unknown>);
+      const responseA = (requestId: string) =>
+        sentA().find((message) => message.type === "response" && message.requestId === requestId);
+      const responseB = (requestId: string) =>
+        sentB().find((message) => message.type === "response" && message.requestId === requestId);
+      await vi.waitFor(() => expect(responseB("acquire-b")).toBeDefined());
+      const validateA = async (requestId: string, callId: string) => {
+        h.process.emit("message", {
+          type: "chromeLeaseValidate",
+          requestId,
+          holder: holderA,
+          callId,
+        });
+        await vi.waitFor(() => expect(responseA(requestId)).toBeDefined());
+        return responseA(requestId);
+      };
+      const validateB = async (requestId: string, callId: string) => {
+        b.emit("message", { type: "chromeLeaseValidate", requestId, holder: holderB, callId });
+        await vi.waitFor(() => expect(responseB(requestId)).toBeDefined());
+        return responseB(requestId);
+      };
+      return { ...h, b, sentA, sentB, responseB, validateA, validateB };
+    }
+
+    it("lets both profiles hold Chrome and tells each one its own holders", async () => {
+      const h = await bothHold();
+      expect(h.responseB("acquire-b")).toMatchObject({ result: true });
+      expect(h.channel.chrome.holders()).toEqual([holderA, holderB]);
+      const lastLease = (messages: Array<Record<string, unknown>>) =>
+        messages.filter((message) => message.type === "chromeLeaseChanged").at(-1);
+      expect(lastLease(h.sentA())).toMatchObject({ holder: holderA, holders: [holderA] });
+      expect(lastLease(h.sentB())).toMatchObject({ holder: holderB, holders: [holderB] });
+    });
+
+    it("runs one Chrome call at a time across the shared holders", async () => {
+      const h = await bothHold();
+      expect(await h.validateB("b-1", "call-b")).toMatchObject({ result: true });
+      expect(await h.validateA("a-1", "call-a")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_WAITING_FOR_CHROME_CALL_MESSAGE },
+      });
+      h.b.emit("message", {
+        type: "chromeCallEnded",
+        threadId: "b-thread",
+        sessionGeneration: "b-gen",
+        callId: "call-b",
+      });
+      expect(await h.validateA("a-2", "call-a")).toMatchObject({ result: true });
+      // The same holder's own calls aren't serialized against each other here.
+      expect(await h.validateA("a-3", "call-a2")).toMatchObject({ result: true });
+      expect(await h.validateB("b-2", "call-b2")).toMatchObject({
+        error: { message: CHROME_WAITING_FOR_CHROME_CALL_MESSAGE },
+      });
+    });
+
+    it("lets a session's setup validation through while a peer's call runs", async () => {
+      const h = await bothHold();
+      expect(await h.validateB("b-1", "call-b")).toMatchObject({ result: true });
+      h.process.emit("message", {
+        type: "chromeLeaseValidate",
+        requestId: "setup",
+        holder: holderA,
+      });
+      await vi.waitFor(() =>
+        expect(
+          h.sentA().find((message) => message.type === "response" && message.requestId === "setup"),
+        ).toMatchObject({ result: true }),
+      );
+    });
+
+    it("runs one shared launch at a time and tells peers while one is under way", async () => {
+      const h = await bothHold();
+      const answer = async (
+        emit: (message: unknown) => void,
+        messages: () => Array<Record<string, unknown>>,
+        requestId: string,
+        holder: typeof holderA,
+      ) => {
+        emit({ type: "chromeLaunchLock", requestId, holder });
+        await vi.waitFor(() =>
+          expect(
+            messages().find(
+              (message) => message.type === "response" && message.requestId === requestId,
+            ),
+          ).toBeDefined(),
+        );
+        return messages().find(
+          (message) => message.type === "response" && message.requestId === requestId,
+        );
+      };
+      const lockA = (requestId: string) =>
+        answer((message) => h.process.emit("message", message), h.sentA, requestId, holderA);
+      const lockB = (requestId: string) =>
+        answer((message) => h.b.emit("message", message), h.sentB, requestId, holderB);
+      const launching = (messages: Array<Record<string, unknown>>) =>
+        messages.filter((message) => message.type === "chromeRegistrations").at(-1)
+          ?.peerLaunching === true;
+      expect(await lockA("lock-a")).toMatchObject({ result: true });
+      // The peer hears of the launch; the launcher doesn't wait on itself.
+      expect(launching(h.sentB())).toBe(true);
+      expect(launching(h.sentA())).toBe(false);
+      expect(await lockB("lock-b")).toMatchObject({
+        error: { _tag: "Execution", message: CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE },
+      });
+      // Only its holder unlocks it.
+      h.b.emit("message", { type: "chromeLaunchUnlock", holder: holderA });
+      expect(await lockB("lock-b2")).toMatchObject({ error: { _tag: "Execution" } });
+      h.process.emit("message", { type: "chromeLaunchUnlock", holder: holderA });
+      expect(launching(h.sentB())).toBe(false);
+      expect(await lockB("lock-b3")).toMatchObject({ result: true });
+      // A lock ends with its holder's lease.
+      h.b.emit("message", { type: "chromeLeaseRelease", requestId: "rel", holder: holderB });
+      await vi.waitFor(() => expect(h.channel.chrome.holders()).toEqual([holderA]));
+      expect(launching(h.sentA())).toBe(false);
+      expect(await lockA("lock-a2")).toMatchObject({ result: true });
+    });
+
+    it("keeps Chrome exclusive for an unshared session or a backend without sharing", async () => {
+      for (const [capabilities, sharedB] of [
+        [shared, false],
+        [shared.filter((capability) => capability !== "chrome-shared-v1"), true],
+        // Sharing needs main to admit each call.
+        [shared.filter((capability) => capability !== "chrome-call-admission-v1"), true],
+      ] as const) {
+        const h = await bothHold([...capabilities], sharedB);
+        expect(h.responseB("acquire-b")).toMatchObject({ error: { _tag: "Busy" } });
+        expect(h.channel.chrome.holders()).toEqual([holderA]);
+      }
+    });
+
+    it("relays a shared holder's verified registration to shared peers only", async () => {
+      const h = await bothHold();
+      const relayed = (messages: Array<Record<string, unknown>>) =>
+        messages.filter((message) => message.type === "chromeRegistrations").at(-1);
+      // Another profile can't vouch for this one's holder.
+      h.b.emit("message", {
+        type: "chromeRegistrationVerified",
+        holder: holderA,
+        registration: registration("/forged"),
+      });
+      expect(relayed(h.sentA())?.registrations ?? []).toEqual([]);
+      h.b.emit("message", {
+        type: "chromeRegistrationVerified",
+        holder: holderB,
+        registration: registration("/b/wrapper"),
+      });
+      expect(relayed(h.sentA())).toEqual({
+        type: "chromeRegistrations",
+        registrations: [registration("/b/wrapper")],
+      });
+      // It outlives the session: the manifests still point at that wrapper.
+      h.b.emit("message", { type: "chromeLeaseRelease", requestId: "rel", holder: holderB });
+      await vi.waitFor(() => expect(h.channel.chrome.holders()).toEqual([holderA]));
+      h.process.emit("message", {
+        type: "chromeRegistrationVerified",
+        holder: holderA,
+        registration: registration("/a/wrapper"),
+      });
+      expect(relayed(h.sentB())?.registrations).toEqual([
+        registration("/b/wrapper"),
+        registration("/a/wrapper"),
+      ]);
+    });
+
+    it("ignores a registration from a holder that doesn't share", async () => {
+      const h = await bothHold();
+      h.b.emit("message", { type: "chromeLeaseRelease", requestId: "rel", holder: holderB });
+      await vi.waitFor(() => expect(h.channel.chrome.holders()).toEqual([holderA]));
+      h.b.emit("message", {
+        type: "chromeRegistrationVerified",
+        holder: holderB,
+        registration: registration("/b/wrapper"),
+      });
+      expect(h.sentA().some((message) => message.type === "chromeRegistrations")).toBe(false);
     });
   });
   describe("an idle Claude Chrome holder and other threads' native control", () => {

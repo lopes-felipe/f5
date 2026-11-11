@@ -18,10 +18,18 @@ export const CHROME_WAITING_FOR_NATIVE_MESSAGE =
   "Another agent is controlling the computer; retry this Chrome call in a few seconds.";
 export const CHROME_NATIVE_WORK_FINISHING_MESSAGE =
   "Native computer input is still finishing; retry the Chrome call shortly.";
+/** Shared Claude in Chrome runs one call at a time across every session holding it. */
+export const CHROME_WAITING_FOR_CHROME_CALL_MESSAGE =
+  "Another agent's Chrome call is running; retry this Chrome call in a few seconds.";
+/** Another profile's Claude session is starting Chrome; its setup lands within seconds. */
+export const CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE =
+  "Another agent is starting Chrome; retry this Chrome call in a few seconds.";
 export function isChromeNativeWait(message: string): boolean {
   return (
     message === CHROME_WAITING_FOR_NATIVE_MESSAGE ||
-    message === CHROME_NATIVE_WORK_FINISHING_MESSAGE
+    message === CHROME_NATIVE_WORK_FINISHING_MESSAGE ||
+    message === CHROME_WAITING_FOR_CHROME_CALL_MESSAGE ||
+    message === CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE
   );
 }
 
