@@ -163,6 +163,14 @@ it("can navigate back at a shadow scroller's left edge", async () => {
   expect(router.history.back).toHaveBeenCalledTimes(1);
 });
 
+it("leaves a sideways swipe over a toast to the toast", async () => {
+  await render(<HistorySwipeNavigation />);
+  const toast = mount(document.createElement("div"));
+  toast.setAttribute("data-slot", "toast-root");
+  scroll(toast.appendChild(document.createElement("span")), repeat(-10, 15));
+  expect(router.history.back).not.toHaveBeenCalled();
+});
+
 it("remembers a dialog closed before the swipe axis locks", async () => {
   await render(<HistorySwipeNavigation />);
   const dialog = mount(document.createElement("div"));

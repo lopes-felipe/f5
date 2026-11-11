@@ -45,6 +45,14 @@ import {
   TOAST_MIN_TOP_OFFSET_PX,
   toastDedupeKey,
 } from "./toast.logic";
+import {
+  INITIAL_TOAST_WHEEL_STATE,
+  stepToastWheel,
+  TOAST_WHEEL_IDLE_MS,
+  toastWheelProgress,
+  type ToastWheelOutward,
+  type ToastWheelState,
+} from "./toastWheelDismiss.logic";
 
 export type ToastSource =
   | "thread"
@@ -707,6 +715,109 @@ function ThreadToastVisibleAutoDismiss({
   return null;
 }
 
+const TOAST_WHEEL_LEAVE_MS = 180;
+const TOAST_WHEEL_LEAVE_REDUCED_MS = 120;
+/** How far past its own width a dismissed toast slides. */
+const TOAST_WHEEL_LEAVE_OVERSHOOT_PX = 16;
+
+function clearWheelDrag(element: HTMLElement) {
+  element.removeAttribute("data-wheel-dragging");
+  element.style.translate = "";
+  element.style.opacity = "";
+}
+
+/**
+ * Two-finger horizontal trackpad swipes over a toast drag it toward the screen edge and dismiss
+ * it past a threshold, like a macOS notification banner. One listener on the viewport; each
+ * gesture locks to the toast it started on, so momentum after a dismissal never reaches the
+ * toast that slides into its place.
+ */
+function useToastWheelDismiss(viewport: HTMLElement | null, position: ToastPosition) {
+  useEffect(() => {
+    if (!viewport) return;
+    const outward: ToastWheelOutward = position.includes("center")
+      ? "either"
+      : position.includes("left")
+        ? "left"
+        : "right";
+    let gesture: {
+      state: ToastWheelState;
+      element: HTMLElement;
+      toastId: string;
+      width: number;
+    } | null = null;
+    let idleTimer: number | undefined;
+    const leaveTimers = new Set<number>();
+
+    const endGesture = () => {
+      idleTimer = undefined;
+      const ended = gesture;
+      gesture = null;
+      // A swipe that stopped short snaps back through the root's translate transition.
+      if (ended?.state.kind === "tracking") clearWheelDrag(ended.element);
+    };
+
+    const dismiss = (element: HTMLElement, toastId: string, direction: "left" | "right") => {
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+      const duration = reduced ? TOAST_WHEEL_LEAVE_REDUCED_MS : TOAST_WHEEL_LEAVE_MS;
+      element.removeAttribute("data-wheel-dragging");
+      element.style.transition = reduced
+        ? `opacity ${duration}ms ease-out`
+        : `translate ${duration}ms ease-in, opacity ${duration}ms ease-in`;
+      if (!reduced) {
+        const distance = element.getBoundingClientRect().width + TOAST_WHEEL_LEAVE_OVERSHOOT_PX;
+        element.style.translate = `${direction === "right" ? distance : -distance}px 0`;
+      }
+      element.style.opacity = "0";
+      const timer = window.setTimeout(() => {
+        leaveTimers.delete(timer);
+        toastManager.close(toastId);
+      }, duration);
+      leaveTimers.add(timer);
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      if (!gesture) {
+        const element =
+          event.target instanceof Element
+            ? event.target.closest<HTMLElement>("[data-toast-id]")
+            : null;
+        const toastId = element?.dataset.toastId;
+        if (!element || !toastId || !viewport.contains(element)) return;
+        gesture = {
+          state: INITIAL_TOAST_WHEEL_STATE,
+          element,
+          toastId,
+          width: element.getBoundingClientRect().width,
+        };
+      }
+      window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(endGesture, TOAST_WHEEL_IDLE_MS);
+      const step = stepToastWheel(gesture.state, event, { width: gesture.width, outward });
+      gesture.state = step.state;
+      if (step.handled) event.preventDefault();
+      if (step.dismiss) {
+        dismiss(gesture.element, gesture.toastId, step.dismiss);
+        return;
+      }
+      if (step.state.kind !== "tracking") return;
+      const { element, width } = gesture;
+      element.setAttribute("data-wheel-dragging", "");
+      element.style.translate = `${step.offset}px 0`;
+      element.style.opacity = String(1 - 0.6 * toastWheelProgress(step.offset, width, outward));
+    };
+
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", onWheel);
+      window.clearTimeout(idleTimer);
+      if (gesture?.state.kind === "tracking") clearWheelDrag(gesture.element);
+      gesture = null;
+      for (const timer of leaveTimers) window.clearTimeout(timer);
+    };
+  }, [viewport, position]);
+}
+
 function ToastProvider({ children, position = "top-right", ...props }: ToastProviderProps) {
   return (
     <Toast.Provider toastManager={baseToastManager} timeout={DEFAULT_TOAST_TIMEOUT_MS} {...props}>
@@ -725,6 +836,8 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
     shouldRenderForActiveThread(toast.data, activeThreadId),
   );
   const visibleToastLayout = buildVisibleToastLayout(visibleToasts);
+  const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
+  useToastWheelDismiss(viewport, position);
 
   useEffect(() => {
     const activeToastIds = new Set(toasts.map((toast) => toast.id));
@@ -740,6 +853,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
   return (
     <Toast.Portal data-slot="toast-portal">
       <Toast.Viewport
+        ref={setViewport}
         className={cn(
           "fixed z-50 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-86 [--toast-inset:--spacing(3)] sm:[--toast-inset:--spacing(4)]",
           // Vertical positioning: below the header and its runtime strip.
@@ -770,7 +884,9 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
               data-slot="toast-root"
               data-urgent={toast.data?.urgent ? "" : undefined}
               className={cn(
-                "group/toast surface-notification absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-2xl text-popover-foreground [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s]",
+                "group/toast surface-notification absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-2xl text-popover-foreground [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s,translate_.2s_ease-out]",
+                // A trackpad swipe drags the toast with the fingers: no lag on translate or fade.
+                "data-wheel-dragging:[transition:transform_.5s_cubic-bezier(.22,1,.36,1),height_.15s]",
                 // Base positioning using data-position
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
@@ -816,9 +932,11 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 "data-expanded:data-ending-style:data-[swipe-direction=up]:transform-[translateY(calc(var(--toast-swipe-movement-y)-100%-var(--toast-inset)))]",
                 "data-expanded:data-ending-style:data-[swipe-direction=down]:transform-[translateY(calc(var(--toast-swipe-movement-y)+100%+var(--toast-inset)))]",
                 // Reduced motion: fade only.
-                "motion-reduce:[transition:opacity_.2s,height_.15s] motion-reduce:data-starting-style:transform-none motion-reduce:data-ending-style:transform-none",
+                "motion-reduce:[transition:opacity_.2s,height_.15s,translate_.2s_ease-out] motion-reduce:data-starting-style:transform-none motion-reduce:data-ending-style:transform-none",
+                "motion-reduce:data-wheel-dragging:[transition:height_.15s]",
               )}
               data-position={position}
+              data-toast-id={toast.id}
               key={toast.id}
               style={
                 {

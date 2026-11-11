@@ -221,3 +221,100 @@ describe("Notification-style toasts", () => {
     }
   });
 });
+
+describe("Trackpad scroll to dismiss", () => {
+  afterEach(() => {
+    toastManager.close();
+    document.body.innerHTML = "";
+  });
+
+  function toastRoot(title: string): HTMLElement | null {
+    const match = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-slot="toast-title"]'),
+    ).find((candidate) => candidate.textContent === title);
+    return match?.closest<HTMLElement>('[data-slot="toast-root"]') ?? null;
+  }
+
+  /** A two-finger swipe: `deltaX < 0` is the fingers moving right, with natural scrolling. */
+  function swipe(target: Element, deltas: ReadonlyArray<[number, number]>): boolean[] {
+    return deltas.map(([deltaX, deltaY]) => {
+      const event = new WheelEvent("wheel", {
+        deltaX,
+        deltaY,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+  }
+
+  const outward = Array.from({ length: 10 }, (): [number, number] => [-20, 0]);
+  const idle = () => new Promise((resolve) => setTimeout(resolve, 220));
+
+  it("dismisses a toast swiped toward the screen edge", async () => {
+    const screen = await render(<RouterProvider router={createTestRouter()} />);
+    try {
+      toastManager.add({ type: "info", title: "Swipe me away", timeout: 0 });
+      await waitForToastTitle("Swipe me away");
+      const prevented = swipe(toastRoot("Swipe me away")!, outward);
+      expect(prevented.at(-1)).toBe(true);
+      await waitForToastTitleRemoved("Swipe me away");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("snaps a short swipe back and ignores vertical scrolling", async () => {
+    const screen = await render(<RouterProvider router={createTestRouter()} />);
+    try {
+      toastManager.add({ type: "info", title: "Stay put", timeout: 0 });
+      await waitForToastTitle("Stay put");
+      const root = toastRoot("Stay put")!;
+      swipe(root, [
+        [-6, 0],
+        [-10, 0],
+        [-14, 0],
+      ]);
+      expect(root.style.translate).toBe("30px");
+      expect(root.hasAttribute("data-wheel-dragging")).toBe(true);
+      await idle();
+      expect(root.style.translate).toBe("");
+      expect(root.hasAttribute("data-wheel-dragging")).toBe(false);
+
+      const prevented = swipe(root, [
+        [0, 20],
+        [-2, 40],
+        [-40, 0],
+      ]);
+      expect(prevented).toEqual([false, false, false]);
+      expect(root.style.translate).toBe("");
+      await idle();
+      expect(toastRoot("Stay put")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a dismissing swipe's momentum from reaching the next toast", async () => {
+    const screen = await render(<RouterProvider router={createTestRouter()} />);
+    try {
+      toastManager.add({ type: "info", title: "Back toast", timeout: 0 });
+      toastManager.add({ type: "info", title: "Front toast", timeout: 0 });
+      await waitForToastTitle("Front toast");
+      const front = toastRoot("Front toast")!;
+      swipe(front, outward);
+      // Momentum keeps arriving, now over whatever toast slid into place.
+      for (let index = 0; index < 6; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        swipe(toastRoot("Back toast") ?? document.body, outward);
+      }
+      await waitForToastTitleRemoved("Front toast");
+      await idle();
+      expect(toastRoot("Back toast")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
