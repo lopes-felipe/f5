@@ -361,16 +361,22 @@ function makeWorkingTreePatch(
           const removeFailure = commandFailure(remove);
           if (removeFailure) return removeFailure;
         }
-        const untrackedUnavailable =
-          untrackedFailure !== null || untracked.stdoutTruncated === true;
-        const untrackedOutput = untrackedUnavailable ? "" : untracked.stdout;
+        const untrackedUnavailable = untrackedFailure !== null;
+        const untrackedOutput = untrackedUnavailable
+          ? ""
+          : untracked.stdoutTruncated
+            ? untracked.stdout.slice(0, untracked.stdout.lastIndexOf("\0") + 1)
+            : untracked.stdout;
         const stagedAdditionsOutput = stagedAdditions.stdoutTruncated
           ? stagedAdditions.stdout.slice(0, stagedAdditions.stdout.lastIndexOf("\0") + 1)
           : stagedAdditions.stdout;
         const allPaths = untrackedOutput
           .split("\0")
           .filter((candidate) => candidate.length > 0 && !deletedPathSet.has(candidate));
-        const untrackedTruncated = untrackedUnavailable || allPaths.length > UNTRACKED_LIMIT_PATHS;
+        const untrackedTruncated =
+          untrackedUnavailable ||
+          untracked.stdoutTruncated === true ||
+          allPaths.length > UNTRACKED_LIMIT_PATHS;
         const stagedAdditionPaths = stagedAdditionsOutput.split("\0").filter(Boolean);
         const stagedAdditionsTruncated = stagedAdditions.stdoutTruncated === true;
         const candidatePaths = [

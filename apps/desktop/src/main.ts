@@ -4597,6 +4597,10 @@ async function bootstrap(): Promise<void> {
     registryWatcher.close();
     if (profileWatchTimer) clearTimeout(profileWatchTimer);
   });
+  const shellEnvironmentMs = await shellEnvironmentReady;
+  writeDesktopLogHeader(
+    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
+  );
   await previewRuntime.initialize();
   initializeComputerSystem();
   registerIpcHandlers();
@@ -4605,10 +4609,6 @@ async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap backend request authentication configured");
   mainWindow = createWindow();
   writeDesktopLogHeader("bootstrap main window created");
-  const shellEnvironmentMs = await shellEnvironmentReady;
-  writeDesktopLogHeader(
-    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
-  );
   if (!isQuitting) {
     try {
       await ensureBackendRunning(defaultBackend);

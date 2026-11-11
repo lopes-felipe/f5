@@ -16,6 +16,7 @@ import {
 } from "../../project/worktreeMerge.ts";
 import { GitCoreTestLive as GitCoreLive } from "../testLayers.ts";
 import { GitCommandError } from "../Errors.ts";
+import { runsGitWithoutConsole } from "../../spawn/resolveCommand.ts";
 import { GitServiceLive } from "./GitService.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import {
@@ -437,6 +438,18 @@ describe("GitCore unit", () => {
       "not a git repository",
     );
     expect(scripted.calls.filter((call) => call.args[0] === "worktree")).toHaveLength(1);
+  });
+
+  it("classifies actual GitCore metadata reads as console-free on Windows", async () => {
+    const scripted = makeScriptedGitService();
+    const core = await makeCore(scripted.service);
+    await Effect.runPromise(core.readConfigValue(process.cwd(), "branch.main.pushRemote"));
+    await Effect.runPromise(core.listRemotes(process.cwd()));
+    await Effect.runPromise(core.resolveCommonDir(process.cwd()));
+    expect(scripted.calls).toHaveLength(3);
+    for (const call of scripted.calls) {
+      expect(runsGitWithoutConsole("win32", "C:\\Git\\ucrt64\\bin\\git.exe", call.args)).toBe(true);
+    }
   });
 
   it("limits generated commit context to the selected paths", async () => {

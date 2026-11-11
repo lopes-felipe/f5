@@ -254,6 +254,10 @@ const GIT_FOR_WINDOWS_BUILDS = ["ucrt64", "clangarm64", "mingw64", "mingw32"] as
 // Exact forms that cannot start hooks, helpers, pagers, editors or lazy fetches.
 const CONSOLE_FREE_GIT_READS = [
   "rev-parse --git-path index",
+  "rev-parse --path-format=absolute --git-path index",
+  "rev-parse --path-format=absolute --git-path MERGE_HEAD",
+  "rev-parse --path-format=absolute --git-common-dir",
+  "rev-parse --path-format=absolute --show-toplevel",
   "rev-parse --git-common-dir",
   "rev-parse --show-toplevel",
   "rev-parse --symbolic-full-name HEAD",
@@ -261,9 +265,11 @@ const CONSOLE_FREE_GIT_READS = [
   "symbolic-ref --quiet HEAD",
   "symbolic-ref *",
   "remote",
+  "remote -v",
   "remote get-url *",
   "remote get-url -- *",
   "config --get *",
+  "config --get -- *",
 ].map((form) => form.split(" "));
 
 export function runsGitWithoutConsole(

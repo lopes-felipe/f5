@@ -415,7 +415,7 @@ describe("getReviewPreviewDiff", () => {
     expect(result.patch).not.toContain("release.txt");
   });
 
-  it.each(["failure", "overflow", "spawn failure"])(
+  it.each(["failure", "spawn failure"])(
     "keeps tracked changes after untracked %s",
     async (scenario) => {
       const cwd = makeRepository();
@@ -427,11 +427,11 @@ describe("getReviewPreviewDiff", () => {
           return {
             stdout: "",
             stderr: "failed listing",
-            code: scenario === "failure" ? 1 : 0,
+            code: 1,
             signal: null,
             timedOut: false,
             aborted: false,
-            stdoutTruncated: scenario === "overflow",
+            stdoutTruncated: false,
           };
         },
       });
@@ -441,6 +441,25 @@ describe("getReviewPreviewDiff", () => {
       expect(result.truncated).toBe(true);
     },
   );
+
+  it("keeps complete untracked paths when the real listing exceeds 256 KiB", async () => {
+    const cwd = makeRepository();
+    const directory = "untracked-" + "x".repeat(180);
+    for (let index = 0; index < 1400; index++) {
+      write(cwd, directory + "/" + String(index).padStart(4, "0") + ".txt", "new file\n");
+    }
+    expect(
+      Buffer.byteLength(gitRaw(cwd, ["ls-files", "--others", "--exclude-standard", "-z"])),
+    ).toBeGreaterThan(256 * 1024);
+    write(cwd, "README.md", "tracked edit\n");
+    const result = await preview(cwd, "working-tree");
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.patch).toContain(directory + "/0000.txt");
+    expect(result.patch).toContain("+tracked edit");
+    expect(result.truncated).toBe(true);
+    expect(result.truncationReason).toContain("512 untracked paths");
+  });
 
   it("reviews untracked files outside the sparse cone without changing the real index", async () => {
     const cwd = makeRepository();

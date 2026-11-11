@@ -2041,7 +2041,7 @@ const makeGitCore = Effect.gen(function* () {
           (args, options) => executeGit("GitCore.commitPrepared.stage", cwd, args, options),
           expected.filePaths,
         );
-        const result = yield* commit(cwd, subject, body, expected.filePaths);
+        const result = yield* commitChecked(cwd, subject, body, expected.filePaths);
         preparedContexts.delete(context);
         return { status: "created" as const, commitSha: result.commitSha };
       }),
@@ -2080,6 +2080,12 @@ const makeGitCore = Effect.gen(function* () {
   const commit: GitCoreShape["commit"] = (cwd, subject, body, filePaths) =>
     Effect.gen(function* () {
       yield* rejectSelectedMerge(cwd, filePaths);
+      return yield* commitChecked(cwd, subject, body, filePaths);
+    });
+
+  // commitPrepared already checked before staging; direct callers check above.
+  const commitChecked: GitCoreShape["commit"] = (cwd, subject, body, filePaths) =>
+    Effect.gen(function* () {
       const args = ["commit", "-m", subject];
       const trimmedBody = body.trim();
       if (trimmedBody.length > 0) {
