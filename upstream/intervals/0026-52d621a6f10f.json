@@ -1,0 +1,84 @@
+{
+  "baseSha": "9ef52de2930782e413ca9d2b5fef7500496d7123",
+  "commits": [
+    {
+      "pr": 21661,
+      "sha": "52d621a6f10f5a80ec433e3f3515eafbeabac74b",
+      "subject": "fix(desktop,web): Open in runs locally for a background service sharing the desktop's T3 home (#21661)",
+      "topic": "pr-21661"
+    },
+    {
+      "pr": 25743,
+      "sha": "afb4f91a7d3ec7707293a07d54e300b9639f2b5e",
+      "subject": "fix(provider-core): a model reply of \"title\" no longer replaces the thread title (#25743)",
+      "topic": "pr-25743"
+    },
+    {
+      "pr": 22948,
+      "sha": "c266631bde2a77e4c5bb52f0e56a115af205889f",
+      "subject": "fix(preview): always return evaluated results by value (#22948)",
+      "topic": "pr-22948"
+    },
+    {
+      "pr": 22155,
+      "sha": "75c7fb28af1d80d0941fa276d5d8f67c2f85c379",
+      "subject": "fix(server): imported ACP sessions show their native history (#22155)",
+      "topic": "pr-22155"
+    },
+    {
+      "pr": 19553,
+      "sha": "49bab9936e7ea335c31508fa5b2b5ca1a9e1ccc3",
+      "subject": "fix(web): Changes row matches the diff comparison (#19553)",
+      "topic": "pr-19553"
+    },
+    {
+      "pr": 18187,
+      "sha": "43821388a9af0bdd2e41c36af31cbc859fba5a71",
+      "subject": "fix(web): focus the primary action when confirmation dialogs open (#18187)",
+      "topic": "pr-18187"
+    },
+    {
+      "pr": 23111,
+      "sha": "ba32aabf62e6d33b55656bf8b836d407303a70fe",
+      "subject": "fix(scheduler): show short server timezone on fixed-time labels (#23111)",
+      "topic": "pr-23111"
+    },
+    {
+      "pr": 22239,
+      "sha": "2c74ea6915e4f8013992816697c4b27905e88e7e",
+      "subject": "fix(web): render Claude insight blocks as a callout (#22239)",
+      "topic": "pr-22239"
+    },
+    {
+      "pr": 34192,
+      "sha": "f6433dba45ae0022f17513e2c0cfc76a632eb835",
+      "subject": "fix(desktop): an SSH password prompt that ended leaves the dialog instead of stacking (#34192)",
+      "topic": "pr-34192"
+    },
+    {
+      "pr": 22960,
+      "sha": "e93f6ea36178f18b4cd38a9ec4939151c086f440",
+      "subject": "fix(desktop): Cmd+F now searches the page in the integrated browser (#22960)",
+      "topic": "pr-22960"
+    },
+    {
+      "pr": 18622,
+      "sha": "c9dfc404ccde9a4c8be901b287026dd19e4ed19a",
+      "subject": "fix(server): custom Codex providers no longer report native quota (#18622)",
+      "topic": "pr-18622"
+    },
+    {
+      "pr": 23194,
+      "sha": "25f4c9d44e98ca3a4b0e51cfecc1db122cc4d87b",
+      "subject": "fix(web): offer retry while an environment reconnects (#23194)",
+      "topic": "pr-23194"
+    }
+  ],
+  "count": 12,
+  "createdAt": "2026-11-11T11:06:31.860Z",
+  "digest": "a82a98a29084c69dc9738c1a165897275d2510f9bd44c823aec9a739c9c5e164",
+  "interval": 26,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "52d621a6f10f5a80ec433e3f3515eafbeabac74b"
+}

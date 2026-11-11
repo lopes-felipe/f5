@@ -497,6 +497,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-18187",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "desktop",
+          "dialogs"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A small keyboard UX fix for update dialogs in settings and desktop. Skip the relay install dialog part.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A DialogAction marker lets a dialog focus its enabled primary button when it opens. Update and install prompts opt in, so Enter confirms; generic and destructive confirmations keep Cancel focused.",
+      "title": "Update confirmation dialogs focus the primary action",
+      "upstreamPrs": [
+        18187
+      ]
+    },
+    {
       "createdAt": "2026-11-06T08:58:00.915Z",
       "epoch": 1,
       "id": "pr-18385",
@@ -563,6 +586,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-18622",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "usage"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes Usage → Limits for custom Codex routes, which wrongly showed another account's limits or a misleading probe failure. f5 has the Codex provider and usage limits.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Codex publishes subscription quota only when the account needs OpenAI auth, is not an API-key account, and routing is confirmed to reach a native OpenAI endpoint. Otherwise it skips the quota RPC and the quota-derived workspace identity.",
+      "title": "Custom Codex providers no longer report another account's native quota",
+      "upstreamPrs": [
+        18622
+      ]
+    },
+    {
       "createdAt": "2026-11-09T11:09:57.237Z",
       "decidedAt": "2026-11-09T11:09:57.237Z",
       "decidedBy": "rule",
@@ -599,6 +644,31 @@
       "title": "Windows git reads no longer start a console host",
       "upstreamPrs": [
         19288
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-19553",
+      "relatedTopics": [
+        "pr-22347"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "diff panel"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes Changes counts that disagreed with the Diff panel, in f5's diff and git actions surfaces.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Changes row reads the same comparison query as the Diff panel, with the remembered base and a shared session ignore-whitespace toggle. The +/- counts then match what the panel shows.",
+      "title": "Changes row counts match the Diff panel's comparison",
+      "upstreamPrs": [
+        19553
       ]
     },
     {
@@ -1106,6 +1176,30 @@
       ]
     },
     {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-21661",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "open in",
+          "connections"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 support driving a local background service from the desktop with Local environment turned off?",
+        "reason": "Fixes dead-end 'No SSH route' errors in Open in and Reveal for a same-machine service. f5 has a desktop and remote environments.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When the desktop drives a same-machine background service through a saved environment, Open in, Reveal in file manager and the file preview's editor picker run locally instead of falling back to SSH deep links.",
+      "title": "Open in runs locally for a background service sharing the desktop's T3 home",
+      "upstreamPrs": [
+        21661
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -1289,6 +1383,32 @@
       ]
     },
     {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-22155",
+      "relatedTopics": [
+        "pr-32880"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "session import",
+          "threads"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes empty threads after ACP session import, which f5 has. The upstream code is in orchestration-v2, so it must be reimplemented in f5's layers.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Importing an ACP session reads the native session snapshot from session/load and stores it as run-less history, with thoughts as reasoning items. The imported thread no longer opens empty.",
+      "title": "Imported ACP sessions show their native history",
+      "upstreamPrs": [
+        22155
+      ]
+    },
+    {
       "createdAt": "2026-11-07T11:05:23.639Z",
       "decidedAt": "2026-11-07T23:28:08.434Z",
       "decidedBy": "user",
@@ -1310,6 +1430,29 @@
       "title": "Delete archived threads from Settings → Archive",
       "upstreamPrs": [
         22160
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-22239",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "markdown",
+          "claude"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A timeline readability improvement for Claude output. f5 has ChatMarkdown and thread find.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A remark transform turns Claude's explanatory-style ★ Insight box-drawing fences into titled Insight callouts in assistant messages. Code, user messages and plans stay literal, and thread find indexes the insight body without the fences.",
+      "title": "Claude ★ Insight blocks render as callouts",
+      "upstreamPrs": [
+        22239
       ]
     },
     {
@@ -1937,6 +2080,53 @@
       ]
     },
     {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-22948",
+      "relatedTopics": [
+        "pr-31925"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "The fix is in upstream's server headless-Chrome preview, which policy says does not apply. f5 keeps its desktop-hosted preview.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Removes the returnByValue option from the preview evaluate contract, and ServerBrowserPage always evaluates by value. Object results then come back as data instead of {\"value\":\"Object\"}.",
+      "title": "preview_evaluate always returns results by value (server headless browser)",
+      "upstreamPrs": [
+        22948
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-22960",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "desktop"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A user-visible capability in the desktop preview browser, which f5 has. It is Electron-hosted, not the server headless browser.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Adds a find bar to Electron-rendered preview tabs: search as you type, an active/total count, Enter and Shift+Enter navigation, and Escape to close. Works through PreviewManager findInPage IPC and a ⋮ menu entry.",
+      "title": "Cmd+F finds text on the page in the integrated browser",
+      "upstreamPrs": [
+        22960
+      ]
+    },
+    {
       "createdAt": "2026-11-04T11:12:56.883Z",
       "epoch": 1,
       "id": "pr-22962",
@@ -2085,6 +2275,28 @@
       "title": "Oversized Codex /goal objectives are rejected with a clear message",
       "upstreamPrs": [
         23033
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-23111",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "scheduled tasks",
+          "settings"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has its own scheduler. This labeling fix applies to its fixed-time schedules; reimplement it without client-runtime.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The scheduled-task list returns the server timeZone, and fixed-time labels append a short zone (UTC, PDT, GMT+5:30), so remote clients don't read the time as their own local time.",
+      "title": "Fixed-time scheduled tasks show the short server timezone",
+      "upstreamPrs": [
+        23111
       ]
     },
     {
@@ -2491,6 +2703,28 @@
       "title": "Session import applies the record limit to each transcript",
       "upstreamPrs": [
         23192
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-23194",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "connections"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A small UX fix for remote environment connections, which f5 has (SSH and saved environments). It restores a retry action that was missing during backoff.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "While a paired environment reconnects, the composer banner shows a 'Retry now' button that runs the existing retry command. A first connection still hides the button, and offline or error states keep 'Reconnect'.",
+      "title": "Reconnecting environment banner offers Retry now",
+      "upstreamPrs": [
+        23194
       ]
     },
     {
@@ -5202,6 +5436,28 @@
       "title": "PR sync and run-status checks stop reading whole thread histories",
       "upstreamPrs": [
         25728
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-25743",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "providers"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a visible bad-title bug in text generation, which f5 has. Reimplement it outside provider-core.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Thread title generation fails when the sanitized result is the literal placeholder 'title', so the seed title is kept instead of being overwritten.",
+      "title": "A model reply of \"title\" no longer becomes the thread title",
+      "upstreamPrs": [
+        25743
       ]
     },
     {
@@ -28842,6 +29098,28 @@
       "title": "test(web): right panel tab swipe test runs as macOS on any CI host (#34191)",
       "upstreamPrs": [
         34191
+      ]
+    },
+    {
+      "createdAt": "2026-11-11T11:06:31.860Z",
+      "epoch": 1,
+      "id": "pr-34192",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "ssh"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes stacked expired SSH prompts that forced a restart. f5's desktop has SSH environments.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The desktop tells the window when an SSH password request is answered, cancelled, times out or is interrupted. The dialog then removes that request, so expired prompts no longer pile up after sleep or a background reconnect.",
+      "title": "Ended SSH password prompts leave the dialog instead of stacking",
+      "upstreamPrs": [
+        34192
       ]
     },
     {
