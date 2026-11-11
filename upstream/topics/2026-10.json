@@ -27555,11 +27555,21 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:58:56.746Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/claudeToolPresentation.ts:134",
+          "apps/web/src/components/chat/ComposerPendingApprovalPanel.tsx:103"
+        ],
+        "f5Refs": [
+          "69f21715ca99582d2b92001bae21516f456879e7"
+        ]
+      },
       "id": "pr-20145",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -49147,11 +49157,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:58:56.746Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24231",
-      "status": "port",
+      "reason": "F5 uses Cursor ACP without the SDK late-resume lifecycle.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -50160,11 +50172,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:58:56.746Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24402",
-      "status": "port",
+      "reason": "F5 delegates managed-policy resolution to Claude’s CLI without the affected decoder.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -51868,11 +51882,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:58:56.746Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24702",
-      "status": "port",
+      "reason": "F5 uses Cursor ACP without the SDK credential store.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -64591,11 +64607,13 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-11T10:58:56.746Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26592",
-      "status": "port",
+      "reason": "F5 uses Cursor ACP without the affected protobuf result decoder.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
