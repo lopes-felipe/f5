@@ -288,9 +288,20 @@ function makeWorkingTreePatch(
             stdoutLimit: UNTRACKED_LIMIT_BYTES,
           },
           execution,
+        ).pipe(
+          Effect.orElseSucceed(
+            (): ProcessRunResult => ({
+              stdout: "",
+              stderr: "Untracked discovery failed.",
+              code: 1,
+              signal: null,
+              timedOut: false,
+              aborted: false,
+            }),
+          ),
         );
         const untrackedFailure = commandFailure(untracked);
-        if (untrackedFailure) return untrackedFailure;
+        if (untracked.aborted) return untrackedFailure!;
         const stagedAdditions = yield* runGit(
           cwd,
           [
@@ -350,17 +361,16 @@ function makeWorkingTreePatch(
           const removeFailure = commandFailure(remove);
           if (removeFailure) return removeFailure;
         }
-        const untrackedOutput = untracked.stdoutTruncated
-          ? untracked.stdout.slice(0, untracked.stdout.lastIndexOf("\0") + 1)
-          : untracked.stdout;
+        const untrackedUnavailable =
+          untrackedFailure !== null || untracked.stdoutTruncated === true;
+        const untrackedOutput = untrackedUnavailable ? "" : untracked.stdout;
         const stagedAdditionsOutput = stagedAdditions.stdoutTruncated
           ? stagedAdditions.stdout.slice(0, stagedAdditions.stdout.lastIndexOf("\0") + 1)
           : stagedAdditions.stdout;
         const allPaths = untrackedOutput
           .split("\0")
           .filter((candidate) => candidate.length > 0 && !deletedPathSet.has(candidate));
-        const untrackedTruncated =
-          untracked.stdoutTruncated === true || allPaths.length > UNTRACKED_LIMIT_PATHS;
+        const untrackedTruncated = untrackedUnavailable || allPaths.length > UNTRACKED_LIMIT_PATHS;
         const stagedAdditionPaths = stagedAdditionsOutput.split("\0").filter(Boolean);
         const stagedAdditionsTruncated = stagedAdditions.stdoutTruncated === true;
         const candidatePaths = [
@@ -371,7 +381,14 @@ function makeWorkingTreePatch(
         for (let offset = 0; offset < paths.length; offset += 64) {
           const add = yield* runGit(
             cwd,
-            ["add", "-N", "--", ...paths.slice(offset, offset + 64).map(literalGitPathspec)],
+            [
+              "-c",
+              "core.sparseCheckout=false",
+              "add",
+              "-N",
+              "--",
+              ...paths.slice(offset, offset + 64).map(literalGitPathspec),
+            ],
             {
               env,
             },
@@ -413,6 +430,9 @@ function makeWorkingTreePatch(
             stagedAdditionsTruncated ||
             stagedDeletionsTruncated,
           reason:
+            (untrackedUnavailable
+              ? "Untracked files were omitted because discovery failed or exceeded its output limit."
+              : null) ??
             (untrackedTruncated
               ? `Only the first ${UNTRACKED_LIMIT_PATHS} untracked paths were included.`
               : null) ??

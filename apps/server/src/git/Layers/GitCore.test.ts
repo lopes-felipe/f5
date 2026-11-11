@@ -462,6 +462,8 @@ describe("GitCore unit", () => {
         .every((call) => call.env?.GIT_INDEX_FILE?.startsWith(`${indexPath}.f5-`)),
     ).toBe(true);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "-c",
+      "diff.relative=false",
       "diff",
       "--cached",
       "--name-status",
@@ -469,6 +471,8 @@ describe("GitCore unit", () => {
       ":(top,literal)src/selected.ts",
     ]);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "-c",
+      "diff.relative=false",
       "diff",
       "--cached",
       "--patch",
@@ -511,7 +515,7 @@ describe("GitCore unit", () => {
     expect(patchInterrupted).toBe(true);
   });
 
-  it("commits the full index during a merge even when selected paths were requested", async () => {
+  it("rejects selected paths during a merge before running any commit", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-git-core-merge-"));
     const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
     fs.writeFileSync(mergeHeadPath, "0123456789abcdef\n");
@@ -527,13 +531,9 @@ describe("GitCore unit", () => {
     try {
       await expect(
         Effect.runPromise(core.commit(cwd, "Resolve merge", "", ["src/selected.ts"])),
-      ).resolves.toEqual({ commitSha: "abc123" });
-      expect(scripted.calls.map((call) => call.args)).toContainEqual([
-        "commit",
-        "-m",
-        "Resolve merge",
-      ]);
-      expect(scripted.calls.some((call) => call.args.includes("--only"))).toBe(false);
+      ).rejects.toThrow("Cannot commit selected files during a merge");
+      expect(scripted.calls.some((call) => call.args[0] === "commit")).toBe(false);
+      expect(fs.readFileSync(mergeHeadPath, "utf8")).toBe("0123456789abcdef\n");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

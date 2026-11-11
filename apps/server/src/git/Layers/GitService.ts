@@ -7,7 +7,7 @@ import { ServerSettingsService } from "../../serverSettings";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore";
 import { profileGitEnvironment } from "../profileGitEnvironment";
 import { managedGitProcessEnvironment } from "../gitProcessEnvironment.ts";
-import { resolveGitExecutable } from "../../spawn/resolveCommand.ts";
+import { resolveGitExecutable, runsGitWithoutConsole } from "../../spawn/resolveCommand.ts";
 import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 /**
  * Git process helpers - Effect-native git execution with typed errors.
@@ -187,7 +187,7 @@ const makeGitService = Effect.gen(function* () {
       // close input before a checkpoint write completes (especially on shutdown).
       // Use the shared native runner for input-fed commands and await its shutdown
       // before releasing the repository's calling scope.
-      const runWithInput = Effect.acquireUseRelease(
+      const runNative = Effect.acquireUseRelease(
         Effect.sync(() => {
           const controller = new AbortController();
           const pending = runProcess(resolveGitExecutable(environment), commandInput.args, {
@@ -206,7 +206,7 @@ const makeGitService = Effect.gen(function* () {
         ({ pending }) =>
           Effect.tryPromise({
             try: () => pending,
-            catch: toGitCommandError(commandInput, "stdin command failed."),
+            catch: toGitCommandError(commandInput, "native command failed."),
           }).pipe(
             Effect.flatMap((result) =>
               result.signal
@@ -252,9 +252,16 @@ const makeGitService = Effect.gen(function* () {
           { concurrency: "unbounded" },
         );
       });
-      const [stdout, stderr, exitCode] = yield* input.stdin === undefined
-        ? runWithoutInput
-        : runWithInput;
+      // The pinned Effect spawner cannot forward windowsHide. Native spawning sets both
+      // windowsHide and detached, avoiding a console host for these exact Windows reads.
+      const useNativeRunner =
+        input.stdin !== undefined ||
+        runsGitWithoutConsole(
+          process.platform,
+          resolveGitExecutable(environment),
+          commandInput.args,
+        );
+      const [stdout, stderr, exitCode] = yield* useNativeRunner ? runNative : runWithoutInput;
 
       if (!input.allowNonZeroExit && exitCode !== 0) {
         const trimmedStderr = stderr.trim();

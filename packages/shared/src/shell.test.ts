@@ -2,6 +2,8 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -9,8 +11,42 @@ import {
   buildEnvironmentCaptureCommand,
   extractPathFromShellOutput,
   readEnvironmentFromLoginShell,
+  readEnvironmentFromLoginShellAsync,
   readPathFromLoginShell,
 } from "./shell";
+
+describe("async login shell environment", () => {
+  it("stops waiting when a killed shell never closes stdout or exits", async () => {
+    vi.useFakeTimers();
+    const stdout = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr: null,
+      kill: vi.fn(() => true),
+      unref: vi.fn(),
+    });
+    try {
+      const result = readEnvironmentFromLoginShellAsync(
+        "/bin/zsh",
+        ["PATH"],
+        (() => child) as unknown as typeof NodeChildProcess.spawn,
+      );
+      const rejection = expect(result).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(6000);
+      await rejection;
+      expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+      expect(stdout.destroyed).toBe(true);
+      expect(child.unref).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads captured values from a real shell", async () => {
+    if (process.platform === "win32") return;
+    expect((await readEnvironmentFromLoginShellAsync("/bin/sh", ["PATH"])).PATH).toBeTruthy();
+  });
+});
 
 describe("extractPathFromShellOutput", () => {
   it("extracts the path between capture markers", () => {

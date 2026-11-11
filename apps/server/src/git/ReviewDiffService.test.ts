@@ -415,6 +415,48 @@ describe("getReviewPreviewDiff", () => {
     expect(result.patch).not.toContain("release.txt");
   });
 
+  it.each(["failure", "overflow", "spawn failure"])(
+    "keeps tracked changes after untracked %s",
+    async (scenario) => {
+      const cwd = makeRepository();
+      write(cwd, "README.md", "tracked edit\n");
+      const result = await preview(cwd, "working-tree", undefined, {
+        processRunner: async (command, args, options) => {
+          if (args[0] !== "ls-files") return runProcess(command, args, options);
+          if (scenario === "spawn failure") throw new Error("failed to spawn");
+          return {
+            stdout: "",
+            stderr: "failed listing",
+            code: scenario === "failure" ? 1 : 0,
+            signal: null,
+            timedOut: false,
+            aborted: false,
+            stdoutTruncated: scenario === "overflow",
+          };
+        },
+      });
+      expect(result.kind).toBe("success");
+      if (result.kind !== "success") return;
+      expect(result.patch).toContain("+tracked edit");
+      expect(result.truncated).toBe(true);
+    },
+  );
+
+  it("reviews untracked files outside the sparse cone without changing the real index", async () => {
+    const cwd = makeRepository();
+    write(cwd, "excluded/tracked.txt", "tracked\n");
+    git(cwd, ["add", "."]);
+    git(cwd, ["commit", "-m", "directory"]);
+    git(cwd, ["sparse-checkout", "set", "--cone", "included"]);
+    write(cwd, "excluded/new.txt", "outside cone\n");
+    const index = fs.readFileSync(path.join(cwd, ".git/index"));
+    const result = await preview(cwd, "working-tree");
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.patch).toContain("+outside cone");
+    expect(fs.readFileSync(path.join(cwd, ".git/index"))).toEqual(index);
+  });
+
   it("caps untracked enumeration and reports truncation", async () => {
     const cwd = makeRepository();
     for (let index = 0; index < 513; index += 1) {

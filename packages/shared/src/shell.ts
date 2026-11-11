@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import * as NodePath from "node:path";
 
 const PATH_CAPTURE_START = "__T3CODE_PATH_START__";
@@ -114,6 +114,57 @@ export type ShellEnvironmentReader = (
   execFile?: ExecFileSyncLike,
 ) => Partial<Record<string, string>>;
 
+/** Startup probes must stop waiting even when the OS cannot reap a killed shell. */
+export async function readEnvironmentFromLoginShellAsync(
+  shell: string,
+  names: ReadonlyArray<string>,
+  execute: typeof spawn = spawn,
+): Promise<Partial<Record<string, string>>> {
+  if (names.length === 0) return {};
+  const command = buildEnvironmentCaptureCommand(shell, names);
+  const output = await new Promise<string>((resolve, reject) => {
+    let child: ReturnType<typeof spawn>;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      reject(new Error("Login shell environment probe timed out."));
+    }, 6000);
+    try {
+      child = execute(shell, ["-ilc", command], {
+        detached: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      let stdout = "";
+      child.stdout!.setEncoding("utf8");
+      child.stdout!.on("data", (chunk: string) => {
+        stdout += chunk;
+        if (stdout.length > 1024 * 1024) {
+          child.kill("SIGKILL");
+          child.stdout?.destroy();
+          child.unref();
+          clearTimeout(timer);
+          reject(new Error("Login shell environment output exceeded its limit."));
+        }
+      });
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(stdout);
+        else reject(new Error("Login shell environment probe failed."));
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
+  });
+  return extractEnvironment(output, names);
+}
+
 export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
   shell,
   names,
@@ -133,6 +184,13 @@ export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
     stdio: ["ignore", "pipe", "ignore"],
   });
 
+  return extractEnvironment(output, names);
+};
+
+function extractEnvironment(
+  output: string,
+  names: ReadonlyArray<string>,
+): Partial<Record<string, string>> {
   const environment: Partial<Record<string, string>> = {};
   for (const name of names) {
     const value = extractEnvironmentValue(output, name);
@@ -142,4 +200,4 @@ export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
   }
 
   return environment;
-};
+}
