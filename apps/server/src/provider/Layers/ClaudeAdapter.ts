@@ -627,6 +627,8 @@ interface ClaudeSessionContext {
   latestCacheWrites?: { ephemeral5mInputTokens: number; ephemeral1hInputTokens: number };
   lastThreadStartedId: string | undefined;
   configuredBase: Record<string, unknown>;
+  /** A failed live update can leave the CLI running a different model. */
+  modelSelectionUnknown?: boolean;
   /**
    * Turn IDs whose turnState was cleared while interrupt was in-flight. Late
    * SDK output for these turns (result/assistant messages arriving after the
@@ -9262,8 +9264,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               autoRejected: context.autoRejectedForModel === runtimeModelSelection.baseModel,
             });
             const shouldSetModel =
+              context.modelSelectionUnknown === true ||
               runtimeModelSelection.baseModel !== previousModel ||
               runtimeModelSelection.contextWindow !== previousContextWindow;
+            context.modelSelectionUnknown = true;
             if (shouldSetModel) {
               yield* controlRequest("turn/setModel", () =>
                 context.query.setModel(runtimeModelSelection.apiModel),
@@ -9279,6 +9283,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             yield* ensureLive;
             appliedFastMode = runtimeTraits.fastMode;
+            context.modelSelectionUnknown = false;
             context.session = {
               ...context.session,
               model: runtimeModelSelection.baseModel,
