@@ -340,7 +340,7 @@ describe("MessagesTimeline", () => {
       },
     ]);
     expect(markup).toContain("Usage resets tomorrow");
-    expect(markup).toContain('data-slot="work-group-summary"');
+    expect(markup.match(/data-slot="work-group-summary"/g)).toHaveLength(1);
   });
   it("groups computer and preview runs into session rows even when MCP calls expand", async () => {
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
