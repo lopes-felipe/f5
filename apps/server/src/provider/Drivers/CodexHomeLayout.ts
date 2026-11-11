@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { symlinkSync } from "node:fs";
+import { realpathSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
 import { Effect, FileSystem, Path, Schema } from "effect";
@@ -14,6 +15,17 @@ export interface CodexHomeLayout {
   readonly sharedHomePath: string;
   readonly effectiveHomePath: string | undefined;
   readonly continuationKey: string;
+}
+
+/** Canonical identity shared by reset-credit requests and persisted account history. */
+export function codexResetCreditIdentity(home: string): string {
+  let canonical = home;
+  try {
+    canonical = realpathSync(home);
+  } catch {
+    // A missing home still needs a stable identity; whitespace is part of its name.
+  }
+  return `codex-home:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
 const KNOWN_SHARED_DIRECTORIES = [
@@ -107,8 +119,8 @@ export function resolveCodexInstanceHomePaths(input: {
         ? expandHomePath(inherited)
         : NodePath.join(NodeOS.homedir(), ".codex"),
   );
-  const shadow = input.config.shadowHomePath.trim();
-  return !input.managed && shadow.length > 0
+  const shadow = input.config.shadowHomePath;
+  return !input.managed && shadow.trim().length > 0
     ? [shared, NodePath.resolve(expandHomePath(shadow))]
     : [shared];
 }
@@ -135,8 +147,8 @@ export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(functi
       effectiveHomePath: sharedHomePath,
       continuationKey: `codex:managed:${sharedHomePath}`,
     };
-  const shadowHomePath = config.shadowHomePath.trim();
-  if (shadowHomePath.length === 0) {
+  const shadowHomePath = config.shadowHomePath;
+  if (shadowHomePath.trim().length === 0) {
     return {
       mode: "direct",
       sharedHomePath,

@@ -125,8 +125,8 @@ export type CustomModelSetting = typeof CustomModelSetting.Type;
 export const CodexSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
-  homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  shadowHomePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  homePath: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  shadowHomePath: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });

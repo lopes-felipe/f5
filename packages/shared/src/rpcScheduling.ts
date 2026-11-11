@@ -1,6 +1,5 @@
 import type { ClientOrchestrationCommand, WebSocketRequest } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "./codexOAuthTiming";
-import { PROVIDER_UPDATE_TIMEOUT_MS } from "./providerUpdate";
 
 export type RpcLane = "ordinary" | "stop" | "answer" | "recovery" | "long" | "health";
 export const RPC_LANES: ReadonlyArray<RpcLane> = [
@@ -362,7 +361,9 @@ export const RPC_METHOD_POLICY = {
   "server.repairClaudeTranscript": MUTATION_RT,
   "server.reportClientDiagnostics": MUTATION,
   "server.resetKeybindings": MUTATION,
-  "server.runProviderUpdate": long(false, PROVIDER_UPDATE_TIMEOUT_MS + 60_000),
+  // The queue has its own deadline. After dispatch, wait for server preparation
+  // and its bounded installer result without abandoning an in-flight mutation.
+  "server.runProviderUpdate": long(false, null),
   "server.undoClaudeTranscriptRepair": MUTATION_RT,
   "server.updateKeybinding": MUTATION,
   "server.updateSettings": MUTATION,

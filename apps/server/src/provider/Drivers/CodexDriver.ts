@@ -2,7 +2,6 @@ import { makeCodexCatalogCache } from "../codexCatalogCache";
 import { saveCodexFeedback } from "../codexFeedback";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
 import { CodexControlClient } from "../../codex/CodexControlClient.ts";
 import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
@@ -43,6 +42,7 @@ import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import { fingerprintableProviderEnvironment } from "../sensitiveFingerprint.ts";
 import {
   codexContinuationIdentity,
+  codexResetCreditIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
@@ -348,21 +348,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           );
         }).pipe(Effect.scoped);
       // Shared by reset-credit idempotency and persisted account history.
-      const resetCreditIdentity = `codex-home:${createHash("sha256")
-        .update(
-          (() => {
-            const home =
-              effectiveConfig.homePath.trim() ||
-              processEnvironment.CODEX_HOME ||
-              homeLayout.sharedHomePath;
-            try {
-              return realpathSync(home);
-            } catch {
-              return home;
-            }
-          })(),
-        )
-        .digest("hex")}`;
+      const resetCreditIdentity = codexResetCreditIdentity(
+        effectiveConfig.homePath.trim()
+          ? effectiveConfig.homePath
+          : processEnvironment.CODEX_HOME || homeLayout.sharedHomePath,
+      );
       const accountUsage = yield* makeCodexAccountUsage(
         { instanceId, displayName: displayName ?? "Codex", enabled, identity: resetCreditIdentity },
         {

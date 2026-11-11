@@ -1,4 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
@@ -10,6 +12,7 @@ import {
   normalizeWindowsLinkPath,
   hasKnownFileIdentity,
   resolveCodexHomeLayout,
+  codexResetCreditIdentity,
   resolveCodexInstanceHomePaths,
 } from "./CodexHomeLayout.ts";
 
@@ -65,6 +68,41 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   });
 
   describe("resolveCodexHomeLayout", () => {
+    it.effect("preserves existing reset-credit identities without conflating missing homes", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir("f5-codex-reset-identity-");
+        const legacyIdentity = `codex-home:${createHash("sha256").update(realpathSync(home)).digest("hex")}`;
+        expect(codexResetCreditIdentity(home)).toBe(legacyIdentity);
+        const missingHome = path.join(home, "missing", "work");
+        expect(codexResetCreditIdentity(missingHome)).not.toBe(
+          codexResetCreditIdentity(missingHome + " "),
+        );
+        expect(codexResetCreditIdentity(missingHome + " ")).toBe(
+          `codex-home:${createHash("sha256")
+            .update(missingHome + " ")
+            .digest("hex")}`,
+        );
+      }),
+    );
+
+    it.effect("preserves configured home names through decoding and runtime resolution", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const rawHome = path.join("accounts", " shared ");
+        const rawShadow = path.join("accounts", " private ");
+        const config = decodeCodexSettings({ homePath: rawHome, shadowHomePath: rawShadow });
+        expect(config.homePath).toBe(rawHome);
+        expect(config.shadowHomePath).toBe(rawShadow);
+        const layout = yield* resolveCodexHomeLayout(config);
+        expect(layout.sharedHomePath).toBe(path.resolve(rawHome));
+        expect(layout.effectiveHomePath).toBe(path.resolve(rawShadow));
+        expect(
+          resolveCodexInstanceHomePaths({ config, managed: false, inheritedCodexHome: "/ignored" }),
+        ).toEqual([path.resolve(rawHome), path.resolve(rawShadow)]);
+      }),
+    );
+
     it.effect("keeps integration home paths aligned with runtime paths containing whitespace", () =>
       Effect.gen(function* () {
         for (const fixture of [
