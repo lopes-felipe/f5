@@ -7826,6 +7826,77 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const scenario of ["direct", "structured", "permission", "authentication"] as const) {
+    it.effect("handles direct gateway cooldown with " + scenario + " evidence", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        if (scenario === "structured")
+          harness.query.emit({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "rejected",
+              rateLimitType: "five_hour",
+              resetsAt: 1790607600,
+            },
+            uuid: "structured-gateway-limit",
+            session_id: "gateway",
+          } as unknown as SDKMessage);
+        if (scenario === "authentication")
+          harness.query.emit({
+            type: "assistant",
+            error: "authentication_failed",
+            uuid: "gateway-auth",
+            session_id: "gateway",
+            parent_tool_use_id: null,
+            message: { id: "gateway-auth", role: "assistant", content: [], usage: {} },
+          } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "api_error",
+          api_error_status: scenario === "permission" ? 403 : 429,
+          result: "API Error: Request rejected (429) (reset after 4m 6s)",
+          session_id: "gateway",
+          uuid: "direct-gateway-result",
+          usage: {},
+          modelUsage: {},
+        } as unknown as SDKMessage);
+        const events = Array.from(
+          yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+          ),
+        );
+        const completed = events.find((event) => event.type === "turn.completed");
+        const limit =
+          completed?.type === "turn.completed" ? completed.payload.usageLimit : undefined;
+        if (scenario === "structured") {
+          assert.equal(limit?.resetSource, "provider");
+          assert.equal(limit?.resetsAt, new Date(1790607600 * 1000).toISOString());
+          assert.equal(limit?.windows[0]?.id, "five_hour");
+        } else if (scenario === "direct") {
+          assert.equal(limit?.resetSource, "message");
+          assert.closeTo(
+            Date.parse(limit?.resetsAt ?? "") - Date.parse(completed?.createdAt ?? ""),
+            246000,
+            1000,
+          );
+        } else assert.isUndefined(limit);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
   for (const assistantRateLimit of [false, true]) {
     it.effect(
       "schedules a resume from a gateway's wrapped cooldown (assistant rate limit: " +

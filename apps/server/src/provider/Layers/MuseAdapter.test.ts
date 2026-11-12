@@ -192,6 +192,32 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
     );
   }
 
+  it.effect("bounds and redacts session-close reasons on terminal and exit events", () =>
+    Effect.gen(function* () {
+      const harness = yield* MuseHarness;
+      const { events, stop } = yield* collect(harness.adapter);
+      const threadId = ThreadId.make("muse-closed-error");
+      yield* start(harness, threadId);
+      yield* harness.adapter.sendTurn({ threadId, input: "go" });
+      const host = harness.hosts.at(-1)!;
+      host.notify("turn/started", { turnId: "turn-1" });
+      host.notify("session/closed", { reason: "api_key=abc123 " + "x".repeat(5000) });
+      for (
+        let attempt = 0;
+        attempt < 100 && !events.some((event) => event.type === "session.exited");
+        attempt++
+      )
+        yield* tick(10);
+      const terminal = events.find((event) => event.type === "turn.completed");
+      const exited = events.find((event) => event.type === "session.exited");
+      assert.equal(terminal?.payload.errorMessage?.length, 4096);
+      assert.equal(exited?.payload.reason, terminal?.payload.errorMessage);
+      assert.include(exited?.payload.reason ?? "", "api_key=[REDACTED]");
+      assert.notInclude(exited?.payload.reason ?? "", "abc123");
+      yield* stop;
+    }),
+  );
+
   it.effect("drains final MSP output before its single terminal lifecycle event", () =>
     Effect.scoped(
       Effect.gen(function* () {

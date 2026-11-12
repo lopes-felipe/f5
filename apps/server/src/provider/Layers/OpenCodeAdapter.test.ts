@@ -863,8 +863,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
       const captured = Array.from(yield* Fiber.join(events).pipe(Effect.timeout("2 seconds")));
       for (const event of captured) {
-        if (event.type === "turn.completed" || event.type === "runtime.error")
+        if (event.type === "turn.completed" || event.type === "runtime.error") {
+          assert.ok(event.turnId);
           assert.equal(event.payload.usageLimit?.resetsAt, "2026-11-02T20:00:00.000Z");
+        }
       }
       assert.ok(captured.some((event) => event.type === "turn.completed"));
       yield* adapter.stopSession(threadId);
@@ -1273,7 +1275,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
               messageID: "message-tools",
               type: "tool",
               callID: state.status === "error" ? "failed-call" : "working-call",
-              tool: "bash",
+              tool: "shell",
               state,
             },
           },

@@ -688,6 +688,25 @@ describe("ProviderRuntimeIngestion", () => {
     expect(terminal.session?.activeTurnId).toBeNull();
     expect(terminal.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
     expect(refreshes).toBe(1);
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("post-terminal-limit-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("limited-turn"),
+      createdAt: "2026-10-01T00:00:00Z",
+      payload: {
+        message: "usage limit reached",
+        usageLimit: { ...usageLimit, resetsAt: "2026-10-01T03:00:00Z" },
+      },
+    });
+    const afterError = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.lastErrorId === "post-terminal-limit-error",
+    );
+    expect(afterError.session?.activeTurnId).toBeNull();
+    expect(afterError.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
   });
 
   it.each([false, true])(

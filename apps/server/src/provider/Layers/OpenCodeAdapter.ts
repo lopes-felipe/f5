@@ -1280,6 +1280,7 @@ export function makeOpenCodeAdapter(
             ...(yield* buildEventBase({
               ...context.eventIdentity,
               threadId: context.session.threadId,
+              turnId: activeTurnId,
               raw: event,
             })),
             type: "runtime.error",

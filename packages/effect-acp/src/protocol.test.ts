@@ -508,9 +508,15 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
   it.effect("routes a final response without a newline before stdout termination", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
+      const logs: Array<AcpProtocol.AcpProtocolLogEvent> = [];
       const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
         stdio,
         serverRequestMethods: new Set(),
+        logIncoming: true,
+        logger: (event) =>
+          Effect.sync(() => {
+            logs.push(event);
+          }),
       });
       const pending = yield* transport.request("x/test", {}).pipe(Effect.forkScoped);
       yield* Queue.take(output);
@@ -520,6 +526,15 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       );
       yield* Queue.end(input);
       assert.deepEqual(yield* Fiber.join(pending), { ok: true });
+      assert.isTrue(
+        logs.some(
+          (event) =>
+            event.direction === "incoming" &&
+            event.stage === "decoded" &&
+            Array.isArray(event.payload) &&
+            event.payload.length > 0,
+        ),
+      );
     }),
   );
 
@@ -527,9 +542,15 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
       const termination = yield* Deferred.make<AcpError.AcpError>();
+      const logs: Array<AcpProtocol.AcpProtocolLogEvent> = [];
       const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
         stdio,
         terminationError: Effect.never,
+        logIncoming: true,
+        logger: (event) =>
+          Effect.sync(() => {
+            logs.push(event);
+          }),
         serverRequestMethods: new Set(),
         onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
       });
@@ -541,6 +562,7 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       yield* Queue.end(input);
       const error = yield* Deferred.await(termination);
       assert.instanceOf(error, AcpError.AcpTransportError);
+      assert.isTrue(logs.some((event) => event.stage === "decode_failed"));
       assert.include(error.message, "input stream ended");
       assert.strictEqual(yield* Fiber.join(pending), error);
       assert.strictEqual(

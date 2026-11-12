@@ -542,11 +542,17 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         let messages: ReadonlyArray<RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded>;
         try {
           messages = preserveZeroValuedRequestIds(tail, parser.decode(tail) as typeof messages);
-        } catch {
+        } catch (cause) {
           // A truncated final frame is better explained by the child's exit status.
-          return Effect.void;
+          return logProtocol({
+            direction: "incoming",
+            stage: "decode_failed",
+            payload: { detail: "Failed to decode final ACP wire message", cause },
+          });
         }
-        return Effect.forEach(messages, routeDecodedMessage, { discard: true });
+        return logProtocol({ direction: "incoming", stage: "decoded", payload: messages }).pipe(
+          Effect.andThen(Effect.forEach(messages, routeDecodedMessage, { discard: true })),
+        );
       }),
     ),
     Effect.matchCauseEffect({
