@@ -230,6 +230,15 @@ export const ServerProvider = Schema.Struct({
     }),
   ),
   models: Schema.Array(ServerProviderModel),
+  updateRequiredModels: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        slug: TrimmedNonEmptyString,
+        name: TrimmedNonEmptyString,
+        minVersion: TrimmedNonEmptyString,
+      }),
+    ),
+  ),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(() => []),
   ),

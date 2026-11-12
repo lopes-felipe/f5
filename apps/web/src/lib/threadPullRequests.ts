@@ -34,6 +34,14 @@ export interface LinkedPullRequestState {
 
 type BranchPullRequest = NonNullable<GitStatusResult["pr"]>;
 
+/** A checkout's PR belongs to this thread only when their branches match. */
+export function threadBranchPullRequest(
+  branch: string | null,
+  status: Pick<GitStatusResult, "branch" | "pr"> | null | undefined,
+): BranchPullRequest | null {
+  return branch !== null && status?.branch === branch ? (status.pr ?? null) : null;
+}
+
 const STATE_RANK: Record<ThreadPullRequestState, number> = { open: 0, merged: 1, closed: 2 };
 
 /**
