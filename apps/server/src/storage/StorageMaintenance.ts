@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isBusySession } from "../orchestration/sessionBusy.ts";
 import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
 import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
@@ -3588,7 +3589,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 yield* engine.dispatch({
                   type: "thread.delete",
                   commandId: CommandId.makeUnsafe(
-                    `server:storage-archived-delete:${Crypto.randomUUID()}`,
+                    `server:storage-archived-delete:${timeOrderedUuid()}`,
                   ),
                   threadId: thread.threadId,
                   expectedArchivedAt: thread.archivedAt!,
@@ -4057,7 +4058,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 return "Workspace activity changed before archiving. Rescan.";
               yield* engine.dispatch({
                 type: "thread.archive",
-                commandId: CommandId.makeUnsafe("storage:archive:" + Crypto.randomUUID()),
+                commandId: CommandId.makeUnsafe("storage:archive:" + timeOrderedUuid()),
                 threadId: thread.threadId,
                 createdAt: nowIso(),
                 cleanupExpectation: {

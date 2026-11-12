@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
@@ -1637,7 +1638,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         this.stopSession(threadId);
       } else if (!context) {
         this.emitEvent({
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "error",
           provider: "codex",
           threadId,
@@ -2288,7 +2289,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         };
         this.emitEvent({
           ...context.mcpEventIdentity,
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "notification",
           provider: "codex",
           threadId: input.threadId,
@@ -3071,7 +3072,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3134,7 +3135,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3228,7 +3229,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "request",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3258,7 +3259,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3947,7 +3948,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
         this.emitEvent({
           ...context.mcpEventIdentity,
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "notification",
           provider: "codex",
           threadId: context.session.threadId,
@@ -4128,7 +4129,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4388,7 +4389,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.emitEvent({
         ...context.mcpEventIdentity,
-        id: EventId.makeUnsafe(randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         kind: "request",
         provider: "codex",
         threadId: context.session.threadId,
@@ -4522,7 +4523,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4673,7 +4674,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "session",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4696,7 +4697,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "session",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4727,7 +4728,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "error",
       provider: "codex",
       threadId: context.session.threadId,

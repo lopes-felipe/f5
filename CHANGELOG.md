@@ -12,6 +12,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Changed
 
 - Database snapshot history is thinned when the disk runs low: 6 hourly and 3 daily copies with under 10 GB free, and only the newest 2 with under 2 GB free. With more space it stays at 24 hourly and 7 daily copies.
+- New events and commands get time-ordered IDs, so the database rewrites fewer index pages per hour and each snapshot holds less space.
 
 ### Fixed
 

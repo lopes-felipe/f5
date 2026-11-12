@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { readIncompleteHistory } from "../provider/runtimePayload.ts";
 import { readPersistedSessionGeneration } from "../provider/sessionCapabilities.ts";
 import {
@@ -354,7 +355,7 @@ function buildSnapshotCommandId(
   tag: string,
 ): CommandId {
   return CommandId.makeUnsafe(
-    `provider:snapshot:${source}:${threadId}:${turnId}:${tag}:${crypto.randomUUID()}`,
+    `provider:snapshot:${source}:${threadId}:${turnId}:${tag}:${timeOrderedUuid()}`,
   );
 }
 
