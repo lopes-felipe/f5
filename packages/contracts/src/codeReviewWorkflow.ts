@@ -57,6 +57,38 @@ export const CodeReviewConsolidation = Schema.Struct({
 });
 export type CodeReviewConsolidation = typeof CodeReviewConsolidation.Type;
 
+/**
+ * The pull request a code review targets, resolved once when the workflow is
+ * created. `key` is the provider-qualified PR Hub key (`github:host/owner/repo#n`).
+ */
+export const CodeReviewPullRequest = Schema.Struct({
+  url: TrimmedNonEmptyString,
+  key: TrimmedNonEmptyString,
+});
+export type CodeReviewPullRequest = typeof CodeReviewPullRequest.Type;
+
+export const CodeReviewPostStatus = Schema.Literals([
+  "posting",
+  "posted",
+  "failed",
+  "needs_recovery",
+]);
+export type CodeReviewPostStatus = typeof CodeReviewPostStatus.Type;
+
+/** Delivery of the merged review to the pull request as a timeline comment. */
+export const CodeReviewPost = Schema.Struct({
+  trigger: Schema.Literals(["auto", "manual"]),
+  status: CodeReviewPostStatus,
+  /** PR Hub comment operation id; reused on resume so a restart never resends. */
+  operationId: TrimmedNonEmptyString,
+  /** The consolidation turn whose merged review this post delivers. */
+  consolidationTurnId: Schema.NullOr(TrimmedNonEmptyString),
+  commentUrl: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  updatedAt: IsoDateTime,
+});
+export type CodeReviewPost = typeof CodeReviewPost.Type;
+
 export const CodeReviewWorkflow = Schema.Struct({
   id: CodeReviewWorkflowId,
   projectId: ProjectId,
@@ -68,6 +100,11 @@ export const CodeReviewWorkflow = Schema.Struct({
   templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   reviewPrompt: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optional(Schema.NullOr(CodeReviewPullRequest)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  autoPost: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
+  post: Schema.optional(Schema.NullOr(CodeReviewPost)).pipe(Schema.withDecodingDefault(() => null)),
   reviewerA: CodeReviewReviewer,
   reviewerB: CodeReviewReviewer,
   consolidation: CodeReviewConsolidation,

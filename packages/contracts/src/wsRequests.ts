@@ -213,6 +213,7 @@ import {
   OrchestrationGetThreadTailDetailsInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationSkipDocumentReaderPassInput,
@@ -505,6 +506,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow,
     OrchestrationRetryCodeReviewWorkflowInput,
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow,
+    OrchestrationPostCodeReviewWorkflowInput,
   ),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow,

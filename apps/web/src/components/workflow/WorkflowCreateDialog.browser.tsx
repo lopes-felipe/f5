@@ -1374,6 +1374,53 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("enables auto-post only for a detected GitHub pull request", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+    const autoPost = () =>
+      page.getByRole("checkbox", { name: /Post merged review to the PR when it finishes/ });
+
+    try {
+      await page.getByRole("button", { name: "Code Review" }).click();
+      await typeRequirementPrompt("Review the workflow changes");
+      await expect.element(autoPost()).toBeDisabled();
+      await expect
+        .element(page.getByText("Add a GitHub PR link or PR #number to the review instructions."))
+        .toBeVisible();
+
+      await typeRequirementPrompt(" for issue #42");
+      await expect.element(autoPost()).toBeDisabled();
+
+      await typeRequirementPrompt(" in PR #42");
+      await expect
+        .element(page.getByText(/^PR #42 in this project's GitHub repo\. It posts from your/))
+        .toBeVisible();
+
+      await typeRequirementPrompt(" https://github.com/acme/app/pull/42");
+      await expect.element(page.getByText(/^Will post to acme\/app#42\./)).toBeVisible();
+      await expect.element(autoPost()).toBeEnabled();
+      await autoPost().click();
+
+      await vi.waitFor(() => {
+        expect(createWorkflowButton().disabled).toBe(false);
+      });
+      createWorkflowButton().click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createCodeReviewWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createCodeReviewWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        autoPost: true,
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("sends investigation workflow own-model review preference", async () => {
     const host = document.createElement("div");
     document.body.append(host);
