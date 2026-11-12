@@ -28,6 +28,9 @@ class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const discoverHardeningSkills = vi.fn(() =>
+  Effect.succeed([{ name: "deploy", description: "Deploy" }]),
+);
 
 const GrokAdapterHardeningTestLayer = Layer.effect(
   GrokAdapter,
@@ -37,7 +40,9 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
       env: { T3_ACP_PROMPT_DELAY_MS: "80", T3_ACP_LOAD_FAIL_NOT_FOUND: "1" },
     });
     const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
-    return yield* makeGrokAdapter(settings);
+    return yield* makeGrokAdapter(settings, {
+      discoverSkillCommands: discoverHardeningSkills,
+    });
   }),
 ).pipe(
   Layer.provideMerge(
@@ -51,6 +56,48 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
 );
 
 it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) => {
+  it.effect(
+    "classifies and sends leading catalog skills through the same native command path",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* GrokAdapter;
+        const threadId = ThreadId.make("grok-picked-skill");
+        const original = GrokAcpSupport.makeGrokAcpRuntime;
+        const prompts: Array<unknown> = [];
+        const spy = vi.spyOn(GrokAcpSupport, "makeGrokAcpRuntime").mockImplementation((input) =>
+          original(input).pipe(
+            Effect.map((runtime) => ({
+              ...runtime,
+              prompt: (input) => {
+                prompts.push(input.prompt);
+                return runtime.prompt(input);
+              },
+            })),
+          ),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+        const classification = adapter.classifyTurnInput!(threadId, "$deploy ship", process.cwd());
+        assert.equal(
+          yield* Effect.isEffect(classification) ? classification : Effect.succeed(classification),
+          "native-command",
+        );
+        const probes = discoverHardeningSkills.mock.calls.length;
+        assert.equal(adapter.classifyTurnInput!(threadId, "$25 budget", process.cwd()), "prompt");
+        assert.equal(discoverHardeningSkills.mock.calls.length, probes);
+        yield* adapter.startSession({
+          threadId,
+          provider: "grok",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId, input: "$deploy ship", attachments: [] });
+        assert.deepEqual(prompts[0], [{ type: "text", text: "/deploy ship" }]);
+        discoverHardeningSkills.mockReturnValueOnce(Effect.succeed([]));
+        const removed = adapter.classifyTurnInput!(threadId, "$deploy ship", process.cwd());
+        assert.equal(yield* Effect.isEffect(removed) ? removed : Effect.succeed(removed), "prompt");
+        yield* adapter.stopSession(threadId);
+      }),
+  );
   it.effect("classifies only a leading slash command as native for a provider switch", () =>
     Effect.gen(function* () {
       const adapter = yield* GrokAdapter;

@@ -3053,9 +3053,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const classifyTurnInput: NonNullable<ProviderServiceShape["classifyTurnInput"]> = (input) =>
       registry.getByInstance(input.instanceId).pipe(
-        Effect.map(
-          (adapter) => adapter.classifyTurnInput?.(input.threadId, input.text) ?? "prompt",
-        ),
+        Effect.flatMap((adapter) => {
+          const classification =
+            adapter.classifyTurnInput?.(input.threadId, input.text, input.cwd) ?? "prompt";
+          return Effect.isEffect(classification) ? classification : Effect.succeed(classification);
+        }),
         Effect.orElseSucceed(() => "prompt" as const),
       );
 

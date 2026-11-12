@@ -8,6 +8,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Upstream ranks every topic in a lane (Security, Bugs, Perf, Features, Maintenance) with a 0–100 score, and the Inbox opens on a shortlist of the topics worth reviewing today. **Expire backlog…** and an optional **Expire after** setting skip unreviewed topics after a while (security topics never expire), **Areas** choose which features reach the shortlist, a weekly notification counts new features, and an opt-in **Auto-port** queues confident high and critical security fixes, and optionally high-impact bug fixes, after each run. Every profile that opens the ledger must run this version first: the ledger and `upstream/rules.json` use new formats that older versions cannot read.
 
+### Fixed
+
+- Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+
 ## [0.1.8] - 2026-11-12
 
 ### Added
