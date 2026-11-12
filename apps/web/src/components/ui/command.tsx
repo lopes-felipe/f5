@@ -48,7 +48,8 @@ function CommandDialogViewport({ className, ...props }: CommandDialogPrimitive.V
     <CommandDialogPrimitive.Viewport
       className={cn(
         "fixed inset-0 z-50 flex flex-col items-center px-4 py-[max(--spacing(4),4vh)] sm:py-[10vh]",
-        isElectron && "pt-14 sm:pt-[max(3.5rem,10vh)]",
+        isElectron &&
+          "pt-[max(1rem,4vh,env(titlebar-area-height,0px))] sm:pt-[max(10vh,env(titlebar-area-height,0px))]",
         className,
       )}
       data-slot="command-dialog-viewport"

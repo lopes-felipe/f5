@@ -1,6 +1,5 @@
 import "./stdioErrors";
 import { systemLocale } from "./systemLocale";
-import { MIN_MAIN_WINDOW_SIZE, readWindowSize, writeWindowSize } from "./windowSize";
 import { installKeepAwake } from "./keepAwake/install";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import {
@@ -4311,16 +4310,11 @@ function createWindow(
   installAppFramePermissionPolicy(appSession);
   const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
   const createdAt = performance.now();
-  const windowSizePath = Path.join(
-    profilesRootDir(STATE_DIR),
-    "window-size-" + runtime.profile.id + ".json",
-  );
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    ...readWindowSize(windowSizePath),
-    minWidth: MIN_MAIN_WINDOW_SIZE.width,
-    minHeight: MIN_MAIN_WINDOW_SIZE.height,
+    minWidth: 400,
+    minHeight: 360,
     show: false,
     autoHideMenuBar: true,
     ...getIconOption(),
@@ -4343,14 +4337,6 @@ function createWindow(
   });
 
   appRendererWebContentsIds.add(window.webContents.id);
-  window.on("close", () => {
-    try {
-      const { width, height } = window.getNormalBounds();
-      writeWindowSize(windowSizePath, { width, height });
-    } catch (error) {
-      writeDesktopLogHeader("Could not persist window size: " + formatErrorMessage(error));
-    }
-  });
   profileByWebContentsId.set(window.webContents.id, runtime.profile.id);
   window.on("focus", () => {
     lastOpenedProfileId = runtime.profile.id;

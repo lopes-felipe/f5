@@ -11,6 +11,34 @@ afterEach(() => {
   updateAppSettings({ snoozePresets: DEFAULT_SNOOZE_PRESETS });
 });
 
+it("keeps duration and time fields inside a 400px settings surface", async () => {
+  updateAppSettings({
+    snoozePresets: [
+      { kind: "after", minutes: 60 },
+      { kind: "at", day: "tomorrow", time: "09:00" },
+    ],
+  });
+  const view = await render(
+    <div data-testid="compact-snooze" style={{ width: 400, padding: 24 }}>
+      <SnoozePresetsSettings />
+    </div>,
+  );
+  try {
+    const surface = document.querySelector<HTMLElement>('[data-testid="compact-snooze"]')!;
+    const bounds = surface.getBoundingClientRect();
+    for (const field of surface.querySelectorAll<HTMLElement>("input,button")) {
+      // Base UI renders visually hidden form controls beside its visible triggers.
+      if (field.getAttribute("aria-hidden") === "true" || field.tabIndex < 0) continue;
+      const rect = field.getBoundingClientRect();
+      expect(rect.right).toBeLessThanOrEqual(bounds.right);
+      expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+    }
+    expect(surface.scrollWidth).toBeLessThanOrEqual(surface.clientWidth);
+  } finally {
+    await view.unmount();
+  }
+});
+
 it("adds, edits and removes snooze options, up to the limit", async () => {
   const view = await render(<SnoozePresetsSettings />);
   try {

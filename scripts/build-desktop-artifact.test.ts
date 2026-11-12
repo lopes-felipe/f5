@@ -1,11 +1,14 @@
+import { matchesGlob } from "node:path";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
-import { createBuildConfig, DESKTOP_ASAR_UNPACK } from "./build-desktop-artifact.ts";
-import { matchesGlob } from "node:path";
-import { resolveMacFileExclusions } from "./build-desktop-artifact.ts";
+import {
+  createBuildConfig,
+  DESKTOP_ASAR_UNPACK,
+  resolveMacFileExclusions,
+} from "./build-desktop-artifact.ts";
 
 it("excludes unused Darwin natives across all packages, preserving universal builds", async () => {
   for (const arch of ["arm64", "x64", "universal"] as const) {

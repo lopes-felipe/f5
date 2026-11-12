@@ -72,7 +72,7 @@ export function SettingsRow({
         data-settings-search-target={searchTarget}
       >
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-[1_1_14rem]">
             <p className="text-sm font-medium text-foreground">{title}</p>
             {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
           </div>
@@ -90,7 +90,7 @@ export function SettingsRow({
       )}
       data-settings-search-target={searchTarget}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 flex-[1_1_14rem]">
         <p className="text-sm font-medium text-foreground">{title}</p>
         {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
       </div>
