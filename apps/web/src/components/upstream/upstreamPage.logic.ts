@@ -24,9 +24,20 @@ import {
   type UpstreamTopicStatus,
   type UpstreamTopicSuggestion,
   type UpstreamUserImpact,
+  type UpstreamAreaPolicy,
+  type UpstreamExpireBacklogResult,
+  type UpstreamLane,
+  type UpstreamRunKind,
 } from "@t3tools/contracts";
 import type { InfiniteData } from "@tanstack/react-query";
 import { decisionFromOutcome } from "@t3tools/shared/upstreamPortsOutcomes";
+import {
+  featureAreaPolicy,
+  formatScoreParts,
+  laneLabel,
+  scoreUpstreamTopic,
+  topicKindFromCommits,
+} from "@t3tools/shared/upstreamPortsScore";
 
 import type { UpstreamSearch } from "./upstreamSearch";
 
@@ -451,10 +462,12 @@ export function withoutTopics(
   // Every removed row matched the whole filter, so it counted once in each facet dimension.
   const suggestion = { ...data.pages[0]!.facets.suggestion };
   const impact = { ...data.pages[0]!.facets.impact };
+  const lane = { ...data.pages[0]!.facets.lane };
   const areaDrops = new Map<string, number>();
-  for (const { topic } of gone) {
+  for (const { topic, lane: rowLane } of gone) {
     const verb = topic.suggestion?.status ?? "none";
     suggestion[verb] = Math.max(0, suggestion[verb] - 1);
+    lane[rowLane] = Math.max(0, lane[rowLane] - 1);
     const userImpact = topic.suggestion?.userImpact;
     if (userImpact) impact[userImpact] = Math.max(0, impact[userImpact] - 1);
     for (const area of new Set(topic.suggestion?.areas ?? [])) areaDrops.set(area, (areaDrops.get(area) ?? 0) + 1);
@@ -470,6 +483,7 @@ export function withoutTopics(
           ? {
               suggestion,
               impact,
+              lane,
               areas: page.facets.areas.map((entry) => ({
                 area: entry.area,
                 count: Math.max(0, entry.count - (areaDrops.get(entry.area) ?? 0)),
@@ -639,6 +653,36 @@ export function repositoryUrl(repository: string): string {
   return repository.replace(/\.git$/u, "").replace(/\/$/u, "");
 }
 
+export function runKindLabel(kind: UpstreamRunKind): string {
+  switch (kind) {
+    case "upstream":
+      return "Run";
+    case "retriage":
+      return "Re-triage run";
+    case "legacy":
+      return "Legacy run";
+    case "reclassify":
+      return "Reclassify run";
+  }
+}
+
+/** The Expire backlog confirmation, from a dry run. */
+export function expireBacklogSummary(
+  preview: Pick<UpstreamExpireBacklogResult, "count" | "byLane">,
+  olderThanDays: number,
+): { readonly title: string; readonly description: string } {
+  const lanes = (["bug", "perf", "feature", "maintenance"] as const)
+    .filter((lane) => preview.byLane[lane] > 0)
+    .map((lane) => `${LANE_LABELS[lane]} ${preview.byLane[lane].toLocaleString()}`);
+  return {
+    title: `Expire ${topicCount(preview.count)}?`,
+    description:
+      `Inbox topics waiting more than ${olderThanDays} days (twice as long for high scores) move to Skipped as ` +
+      `"Expired unreviewed". Security topics never expire.${lanes.length ? ` ${lanes.join(" · ")}.` : ""} ` +
+      "You can undo this for 15 minutes, and reopen any topic later.",
+  };
+}
+
 export interface RunStatus {
   readonly tone: "running" | "failed" | "idle" | "never";
   readonly label: string;
@@ -712,34 +756,104 @@ export const DECIDED_BY_LABELS: Readonly<Record<UpstreamDecidedBy, string>> = {
 };
 
 export const SORT_LABELS: Readonly<Record<UpstreamTopicSort, string>> = {
+  score: "Score",
   priority: "Priority",
   newest: "Newest",
   oldest: "Oldest",
   confidence: "Confidence",
 };
 
-/** The fields of the page's search params that filter the list. */
-type FilterSearch = Pick<UpstreamSearch, "q" | "suggestion" | "impact" | "area" | "question" | "conflict" | "by">;
+export const LANE_LABELS: Readonly<Record<UpstreamLane, string>> = {
+  security: "Security",
+  bug: "Bugs",
+  perf: "Perf",
+  feature: "Features",
+  maintenance: "Maintenance",
+};
 
-/** The server filter for the page's search params. */
-export function filterFromSearch(search: FilterSearch): UpstreamTopicFilter {
+/** The row chip: `Security · high`, `Bug`. */
+export function laneChipLabel(row: Pick<UpstreamTopicRow, "lane" | "topic">): string {
+  if (row.lane === "security") return `Security · ${row.topic.suggestion?.severity ?? "low"}`;
+  return laneLabel(row.lane);
+}
+
+export function laneBadgeVariant(row: Pick<UpstreamTopicRow, "lane" | "topic">): "error" | "secondary" | "outline" {
+  if (row.lane !== "security") return row.lane === "maintenance" ? "outline" : "secondary";
+  return "error";
+}
+
+/**
+ * The detail pane's score line: `Score 85: Bug 40 · high impact +30 · files
+ * exist in f5 +15`, from the same weights the server uses.
+ */
+export function scoreBreakdown(
+  row: Pick<UpstreamTopicRow, "topic" | "score">,
+  areaPolicy: Readonly<Record<string, UpstreamAreaPolicy>>,
+  subjects: ReadonlyArray<string>,
+): string {
+  const suggestion = row.topic.suggestion;
+  const { parts } = scoreUpstreamTopic({
+    kind: suggestion?.kind ?? topicKindFromCommits(subjects.map((subject) => ({ subject }))),
+    severity: suggestion?.severity,
+    impact: suggestion?.userImpact,
+    coverage: suggestion?.f5Coverage,
+    suggestionStatus: suggestion?.status,
+    featurePolicy: featureAreaPolicy(suggestion?.areas ?? [], areaPolicy),
+  });
+  return `Score ${row.score}: ${formatScoreParts(parts)}`;
+}
+
+/** Reason keys the Skipped list can narrow to, with chip labels. */
+export const REASON_FILTER_LABELS: Readonly<Record<string, string>> = {
+  "aged-out": "Expired",
+  "area-ignored": "Area not followed",
+};
+
+/** The fields of the page's search params that filter the list. */
+type FilterSearch = Pick<
+  UpstreamSearch,
+  "q" | "suggestion" | "impact" | "lane" | "area" | "reason" | "question" | "conflict" | "by"
+>;
+
+/**
+ * The server filter for the page's search params. On the Inbox, `list` adds
+ * the shortlist unless the search asks for the whole list (`all`).
+ */
+export function filterFromSearch(
+  search: FilterSearch & Pick<UpstreamSearch, "all">,
+  list?: UpstreamTopicList,
+): UpstreamTopicFilter {
   const query = search.q?.trim();
   return {
     ...(query ? { query } : {}),
     ...(search.suggestion?.length ? { suggestion: [...search.suggestion] } : {}),
     ...(search.impact?.length ? { impact: [...search.impact] } : {}),
+    ...(search.lane?.length ? { lane: [...search.lane] } : {}),
     ...(search.area ? { area: search.area } : {}),
+    ...(search.reason ? { reasonKey: search.reason } : {}),
     ...(search.question ? { hasQuestion: true } : {}),
     ...(search.conflict ? { hasConflict: true } : {}),
     ...(search.by ? { decidedBy: search.by } : {}),
+    ...(list === "inbox" && !search.all ? { shortlist: true } : {}),
   };
 }
 
 export const hasActiveFilters = (search: FilterSearch) => Object.keys(filterFromSearch(search)).length > 0;
 
-/** `search` with every filter removed; the list, project, sort and focus stay. */
+/** `search` with every filter removed; the list, project, sort, focus and Shortlist/All stay. */
 export function withoutFilters(search: UpstreamSearch): UpstreamSearch {
-  const { q: _q, suggestion: _s, impact: _i, area: _a, question: _qu, conflict: _c, by: _b, ...rest } = search;
+  const {
+    q: _q,
+    suggestion: _s,
+    impact: _i,
+    lane: _l,
+    area: _a,
+    reason: _r,
+    question: _qu,
+    conflict: _c,
+    by: _b,
+    ...rest
+  } = search;
   return rest;
 }
 
@@ -775,11 +889,27 @@ export function activeFilterChips(search: FilterSearch): FilterChip[] {
         return next.length ? { ...rest, impact: next } : rest;
       },
     });
+  for (const value of search.lane ?? [])
+    chips.push({
+      key: `lane:${value}`,
+      label: LANE_LABELS[value],
+      remove: (current) => {
+        const { lane, ...rest } = current;
+        const next = (lane ?? []).filter((entry) => entry !== value);
+        return next.length ? { ...rest, lane: next } : rest;
+      },
+    });
   if (search.area)
     chips.push({
       key: "area",
       label: `Area: ${search.area}`,
       remove: ({ area: _a, ...rest }) => rest,
+    });
+  if (search.reason)
+    chips.push({
+      key: "reason",
+      label: REASON_FILTER_LABELS[search.reason] ?? `Reason: ${search.reason}`,
+      remove: ({ reason: _r, ...rest }) => rest,
     });
   if (search.question)
     chips.push({

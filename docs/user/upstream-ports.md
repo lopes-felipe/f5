@@ -52,9 +52,9 @@ with a prompt that carries the topic's commits and the trailer that completes it
 - `?` marks an open question: the choice depends on a product preference that
   `upstream/policy.md` does not cover. Answer it in the policy so later runs stop asking.
 - Press `/` to search titles, summaries, PR numbers, areas and commit subjects. **Filter**
-  narrows by suggestion, impact, area, open question, conflict or who decided; each option
-  shows how many topics it would leave. **Sort** switches between priority, newest, oldest and
-  confidence. Filters live in the URL and show as chips you can remove one at a time.
+  narrows by lane, suggestion, impact, area, open question, conflict or who decided; each option
+  shows how many topics it would leave. **Sort** switches between score, priority, newest, oldest
+  and confidence. Filters live in the URL and show as chips you can remove one at a time.
 - The strip under the Inbox tabs counts the suggestions (`Port 6 · Skip 1,204 …`). Click one,
   tick the header checkbox, click **Select all N matching**, then **Accept suggestions** to
   confirm hundreds of skips in a few clicks. A decision that reaches topics past the loaded
@@ -80,6 +80,56 @@ with a prompt that carries the topic's commits and the trailer that completes it
   On a Ready topic, edit the note and click **Save scope**.
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a
   Feature workflow or any thread. The trailer still completes the topic once merged.
+
+## Lanes, score and the shortlist
+
+Upstream lands more commits a day than anyone can review, so the Inbox opens on a
+**Shortlist**: the topics worth your time today. **All** shows the whole Inbox.
+
+- Each topic sits in one **lane**: Security, Bugs, Perf, Features or Maintenance. Triage takes
+  the kind from the commits' conventional prefix (`fix:`, `feat:`, `perf:` …) and from the
+  model, which can override it, for example for a `fix:` that is really a security fix. A CVE
+  or GHSA id, or a named security fix, keeps a topic in Security with a question when the model
+  disagrees. Security topics carry a severity (critical, high, medium, low).
+- Each topic gets a **score** from 0 to 100. The lane sets the base (security critical 100,
+  high 90, medium 75, low 55; bug 40; perf 35; feature 40 in a followed area, 15 otherwise,
+  0 when ignored; maintenance 5), then user impact (high +30, medium +15, none −15), whether
+  the changed source files exist in f5 (all +15, some +5, none −20) and a skip (−30) or watch
+  (−10) suggestion adjust it. The detail pane explains a topic's score in one line.
+- The Shortlist holds the top topics scoring 50 or more, 15 by default (**Shortlist size** in
+  the settings). The lane strip above the suggestion strip counts each lane; click one to filter.
+- Topics triaged before lanes existed take their kind from their commit subjects. Run
+  **Reclassify backlog** from the run menu once to store kind, f5 coverage and normalized areas
+  on every Inbox topic. It never changes a decision; only topics with a security hint go back
+  to the model.
+
+## Budget: expiry, areas and auto-port
+
+These settings live in the settings popover and stay with the writer profile, like the
+schedule. All automatic behavior ships off.
+
+- **Expire after** (never, 7, 14 or 30 days) moves Inbox topics nobody reviewed to Skipped as
+  **Expired unreviewed** (`aged-out`, `decidedBy: rule`) after each scheduled or manual run.
+  Topics scoring at least **Keep longer from score** (70) get twice as long. Security topics
+  never expire, and topics with a port thread or queue entry are left alone. A watched topic
+  counts from its revisit date. **Skipped** → **Expired** lists them for spot checks; `r`
+  reopens one.
+- **Expire backlog…** in the run menu applies the same rule once, with the setting's age or
+  14 days. It shows the counts by lane first and offers **Undo** for 15 minutes.
+- **Areas** lists the taxonomy from `upstream/rules.json`. **Follow** puts that area's features
+  on the shortlist; **Fixes only** (the default) keeps them below it and in the weekly feature
+  digest; **Ignore** skips them at triage (`area-ignored`), eligible for the usual automatic
+  skip. Bug and security fixes are never affected.
+- Once a week, after a scheduled run, a notification counts the new Inbox features ("7 new
+  features this week (2 in followed areas)") and opens them, newest first.
+- **Auto-port** (off, security fixes, or security + high-impact bugs) queues topics from a run
+  without asking, up to **N a day** (5): confident (85%) port suggestions without a question,
+  conflict or triage error, in Security at high or critical severity or, with the second mode,
+  high-impact bug fixes whose source files all exist in f5. They are marked ready
+  (`decidedBy: llm`, an **Auto** chip in the list) and queued one thread each with the saved
+  port model and review choices. Auto-port waits when no port model is saved, the queue is
+  paused or held, or this profile is not the writer. A notification says how many it queued.
+  PRs still need your merge.
 
 ## Good to know
 
@@ -236,7 +286,14 @@ moves it, and the paths below are then relative to that directory.
 - `upstream/policy.md` is free text that both triage and port prompts include. Edit it like any
   other file; it may change together with code. Prompts include up to 16 KiB of it.
 - `upstream/rules.json` holds reason keys, path rules that skip commits without the LLM (mobile,
-  marketing, CI, docs, tests) and `autoSkipConfidence` (0.85).
+  marketing, CI, docs, tests), `autoSkipConfidence` (0.85) and, from `schemaVersion` 2, the
+  `areas` taxonomy (`key`, `label`, `aliases`) that triage picks areas from. Aliases map the
+  model's names to a key (`claude` → `providers`). Expiry needs the `aged-out` reason key and
+  area ignoring needs `area-ignored`.
+- Ledger files are `schemaVersion` 8, which adds `kind`, `severity` and `f5Coverage` to
+  suggestions. Version 7 files still read; F5 writes 8 for every file it rewrites, so do not
+  open the ledger with an older F5. Lane and score are never stored, so tuning them does not
+  rewrite the ledger.
 - `upstream/archive/schema6.json` is the frozen earlier catch-up. Its deferred records are
   triaged through **Triage legacy backlog**. Records whose implementation commits are already on
   the default branch get an `Equivalent 70%` suggestion you confirm with `a`.

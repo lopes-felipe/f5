@@ -41,6 +41,38 @@ export const UpstreamPortReviewSettings = Schema.Struct({
 });
 export type UpstreamPortReviewSettings = typeof UpstreamPortReviewSettings.Type;
 
+/** How features in an area reach the user; unlisted areas are `fixes-only`. */
+export const UpstreamAreaPolicy = Schema.Literals(["follow", "fixes-only", "ignore"]);
+export type UpstreamAreaPolicy = typeof UpstreamAreaPolicy.Type;
+
+export const UPSTREAM_SHORTLIST_SIZE_MIN = 5;
+export const UPSTREAM_SHORTLIST_SIZE_MAX = 50;
+export const UPSTREAM_EXPIRE_AFTER_DAYS_OPTIONS = [7, 14, 30] as const;
+const UpstreamShortlistSize = Schema.Int.check(
+  Schema.isBetween({ minimum: UPSTREAM_SHORTLIST_SIZE_MIN, maximum: UPSTREAM_SHORTLIST_SIZE_MAX }),
+);
+const UpstreamExpireAfterDays = Schema.NullOr(Schema.Literals(UPSTREAM_EXPIRE_AFTER_DAYS_OPTIONS));
+const UpstreamKeepScore = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 }));
+
+export const UpstreamBudgetSettings = Schema.Struct({
+  shortlistSize: UpstreamShortlistSize.pipe(Schema.withDecodingDefault(() => 15)),
+  /** `null` turns automatic expiry off (the default: new automatic behavior ships off). */
+  expireAfterDays: UpstreamExpireAfterDays.pipe(Schema.withDecodingDefault(() => null)),
+  /** Topics scoring at least this get twice the expiry window. */
+  keepScore: UpstreamKeepScore.pipe(Schema.withDecodingDefault(() => 70)),
+});
+export type UpstreamBudgetSettings = typeof UpstreamBudgetSettings.Type;
+
+export const UpstreamAutoPortMode = Schema.Literals(["off", "security", "security-and-bugs"]);
+export type UpstreamAutoPortMode = typeof UpstreamAutoPortMode.Type;
+const UpstreamAutoPortDailyLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 20 }));
+
+export const UpstreamAutoPortSettings = Schema.Struct({
+  mode: UpstreamAutoPortMode.pipe(Schema.withDecodingDefault(() => "off" as const)),
+  dailyLimit: UpstreamAutoPortDailyLimit.pipe(Schema.withDecodingDefault(() => 5)),
+});
+export type UpstreamAutoPortSettings = typeof UpstreamAutoPortSettings.Type;
+
 export const UpstreamPortsSettings = Schema.Struct({
   portConcurrency: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).pipe(
     Schema.withDecodingDefault(() => 5),
@@ -50,6 +82,11 @@ export const UpstreamPortsSettings = Schema.Struct({
   triageModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
   portModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
   portReview: UpstreamPortReviewSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  budget: UpstreamBudgetSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  areaPolicy: Schema.Record(Schema.String, UpstreamAreaPolicy).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
+  autoPort: UpstreamAutoPortSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type UpstreamPortsSettings = typeof UpstreamPortsSettings.Type;
 
@@ -73,6 +110,23 @@ export const UpstreamPortsSettingsPatch = Schema.Struct({
   triageModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   portModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   portReview: Schema.optionalKey(UpstreamPortReviewSettings),
+  /** Fields merge like `schedule`. */
+  budget: Schema.optionalKey(
+    Schema.Struct({
+      shortlistSize: Schema.optionalKey(UpstreamShortlistSize),
+      expireAfterDays: Schema.optionalKey(UpstreamExpireAfterDays),
+      keepScore: Schema.optionalKey(UpstreamKeepScore),
+    }),
+  ),
+  /** Replaces the whole map. */
+  areaPolicy: Schema.optionalKey(Schema.Record(Schema.String, UpstreamAreaPolicy)),
+  /** Fields merge like `schedule`. */
+  autoPort: Schema.optionalKey(
+    Schema.Struct({
+      mode: Schema.optionalKey(UpstreamAutoPortMode),
+      dailyLimit: Schema.optionalKey(UpstreamAutoPortDailyLimit),
+    }),
+  ),
 });
 export type UpstreamPortsSettingsPatch = typeof UpstreamPortsSettingsPatch.Type;
 
@@ -88,6 +142,7 @@ export const UPSTREAM_PORTS_WS_METHODS = {
   decide: "upstreamPorts.decide",
   acceptSuggestions: "upstreamPorts.acceptSuggestions",
   undoDecisions: "upstreamPorts.undoDecisions",
+  expireBacklog: "upstreamPorts.expireBacklog",
   run: "upstreamPorts.run",
   startPort: "upstreamPorts.startPort",
   previewPortGroups: "upstreamPorts.previewPortGroups",
@@ -115,6 +170,7 @@ export const UpstreamChangedReason = Schema.Literals([
   "queue-updated",
   "links-updated",
   "publication-updated",
+  "feature-digest",
 ]);
 export type UpstreamChangedReason = typeof UpstreamChangedReason.Type;
 
@@ -122,5 +178,9 @@ export const UpstreamPortsChanged = Schema.Struct({
   projectId: ProjectId,
   reason: UpstreamChangedReason,
   newInboxCount: Schema.optionalKey(NonNegativeInt),
+  /** Set on `run-finished` when the run queued ports automatically. */
+  autoQueuedCount: Schema.optionalKey(NonNegativeInt),
+  /** Set on `feature-digest`: Inbox features created in the last seven days. */
+  digest: Schema.optionalKey(Schema.Struct({ followed: NonNegativeInt, other: NonNegativeInt })),
 });
 export type UpstreamPortsChanged = typeof UpstreamPortsChanged.Type;

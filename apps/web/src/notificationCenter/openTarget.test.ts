@@ -26,6 +26,19 @@ describe("openNotificationTarget", () => {
       { kind: "upstream", projectId: "project-1" },
       { to: "/upstream", search: { project: "project-1" } },
     ],
+    [
+      { kind: "upstream", projectId: "project-1", view: "features" },
+      {
+        to: "/upstream",
+        search: {
+          project: "project-1",
+          list: "inbox",
+          lane: ["feature"],
+          sort: "newest",
+          all: true,
+        },
+      },
+    ],
     [{ kind: "update" }, { to: "/settings", search: { category: "about" } }],
   ] as const)("routes %o", async (target, expected) => {
     const { navigate, asNavigate } = navigateSpy();

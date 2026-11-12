@@ -6,7 +6,7 @@ Edit it in a normal pull request. When you answer an open triage question, recor
 ## Port when
 
 - The change is a user-visible capability or UX improvement in a surface f5 has: threads, timeline and composer; panels; PR hub and forges; providers (Codex, Claude, Cursor, OpenCode, Grok, Antigravity, Muse, Pi); terminal; git, worktrees and checkpoints; preview browser; usage; settings; desktop.
-- It fixes a bug whose symptom can occur in f5's equivalent subsystem. Judge by behavior, not by path.
+- It fixes a bug whose symptom can occur in f5's equivalent subsystem. Judge by behavior, not by path. A fix in code f5 does not have gets `userImpact` low unless the symptom clearly reaches f5.
 - It is a measurable performance, reliability or observability improvement.
 
 ## Skip

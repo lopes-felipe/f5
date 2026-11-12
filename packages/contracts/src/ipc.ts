@@ -109,6 +109,8 @@ import type {
   UpstreamTopicDetail,
   UpstreamTopicFiles,
   UpstreamUndoDecisionsInput,
+  UpstreamExpireBacklogInput,
+  UpstreamExpireBacklogResult,
   UpstreamUnlinkPortInput,
   UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
@@ -769,7 +771,8 @@ export type DesktopNotificationTarget =
   | { readonly kind: "thread"; readonly threadId: string }
   | { readonly kind: "prHub"; readonly prKey?: string }
   | { readonly kind: "scheduled"; readonly taskId: string }
-  | { readonly kind: "upstream"; readonly projectId: string }
+  /** `view: "features"` opens the newest Inbox features (the weekly digest). */
+  | { readonly kind: "upstream"; readonly projectId: string; readonly view?: "features" }
   | { readonly kind: "update" }
   | { readonly kind: "none" };
 
@@ -1453,6 +1456,7 @@ export interface NativeApi {
     decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
     acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
     undoDecisions: (input: UpstreamUndoDecisionsInput) => Promise<UpstreamDecideResult>;
+    expireBacklog: (input: UpstreamExpireBacklogInput) => Promise<UpstreamExpireBacklogResult>;
     run: (input: UpstreamRunInput) => Promise<UpstreamRunResult>;
     startPort: (input: UpstreamStartPortInput) => Promise<UpstreamStartPortResult>;
     previewPortGroups: (

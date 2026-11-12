@@ -1,6 +1,14 @@
-import type { ProjectId, ServerProvider, UpstreamOverview, UpstreamPortsSettings } from "@t3tools/contracts";
+import {
+  UPSTREAM_EXPIRE_AFTER_DAYS_OPTIONS,
+  type ProjectId,
+  type ServerProvider,
+  type UpstreamAreaPolicy,
+  type UpstreamAutoPortMode,
+  type UpstreamOverview,
+  type UpstreamPortsSettings,
+} from "@t3tools/contracts";
 import { SettingsIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -16,6 +24,31 @@ const SCHEDULE_LABELS: Record<UpstreamPortsSettings["schedule"]["mode"], string>
   weekly: "Weekly",
 };
 const formatHour = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
+const SHORTLIST_SIZES = [5, 10, 15, 20, 30, 50];
+const KEEP_SCORES = [50, 60, 70, 80, 90, 100];
+const AUTO_PORT_LABELS: Record<UpstreamAutoPortMode, string> = {
+  off: "Off",
+  security: "Security fixes",
+  "security-and-bugs": "Security + high-impact bugs",
+};
+const AREA_POLICY_LABELS: Record<UpstreamAreaPolicy, string> = {
+  follow: "Follow",
+  "fixes-only": "Fixes only",
+  ignore: "Ignore",
+};
+const expireLabel = (days: number | null) => (days === null ? "Never" : `${days} days`);
+/** Keeps a saved value listed even when it is not one of the presets. */
+const withCurrent = (presets: ReadonlyArray<number>, value: number) =>
+  presets.includes(value) ? presets : [...presets, value].toSorted((a, b) => a - b);
+/** `fixes-only` is the default, so it is dropped from the map instead of stored. */
+export function withAreaPolicy(
+  policy: Readonly<Record<string, UpstreamAreaPolicy>>,
+  area: string,
+  value: string,
+): Record<string, UpstreamAreaPolicy> {
+  const { [area]: _previous, ...rest } = policy;
+  return value === "follow" || value === "ignore" ? { ...rest, [area]: value } : rest;
+}
 
 /** Triage runs without tools or a workspace; only Claude instances guarantee that today. */
 export const isTriageCapable = (provider: ServerProvider) => provider.driver === "claudeAgent";
@@ -82,6 +115,9 @@ export function UpstreamSettingsPopover(props: {
     triageModelSelection: null,
     portModelSelection: null,
     portReview: { enabled: true, reviewerA: null, reviewerB: null, consolidation: null },
+    budget: { shortlistSize: 15, expireAfterDays: null, keepScore: 70 },
+    areaPolicy: {},
+    autoPort: { mode: "off", dailyLimit: 5 },
   };
   const triageModels = modelOptions(props.providers, isTriageCapable);
   const portModels = modelOptions(props.providers);
@@ -102,7 +138,7 @@ export function UpstreamSettingsPopover(props: {
       <PopoverTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Upstream settings" />}>
         <SettingsIcon />
       </PopoverTrigger>
-      <PopoverPopup align="end" className="w-80 space-y-3 text-sm">
+      <PopoverPopup align="end" className="max-h-[80vh] w-80 space-y-3 overflow-y-auto text-sm">
         {projectSettings.isError && (
           <p className="text-xs text-destructive">
             Could not load this project's settings.{" "}
@@ -212,6 +248,116 @@ export function UpstreamSettingsPopover(props: {
           />
           Record equivalent / not-applicable outcomes automatically
         </label>
+        <div className="space-y-1 border-t pt-3">
+          <span className="font-medium">Budget</span>
+          <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5">
+            <span className="text-muted-foreground">Shortlist size</span>
+            <SettingSelect
+              label="Shortlist size"
+              value={String(current.budget.shortlistSize)}
+              display={String(current.budget.shortlistSize)}
+              disabled={disabled}
+              options={withCurrent(SHORTLIST_SIZES, current.budget.shortlistSize).map((size) => ({
+                value: String(size),
+                label: String(size),
+              }))}
+              onChange={(size) => void save({ budget: { ...current.budget, shortlistSize: Number(size) } })}
+            />
+            <span className="text-muted-foreground">Expire after</span>
+            <SettingSelect
+              label="Expire after"
+              value={String(current.budget.expireAfterDays ?? "")}
+              display={expireLabel(current.budget.expireAfterDays)}
+              disabled={disabled}
+              options={[
+                { value: "", label: expireLabel(null) },
+                ...UPSTREAM_EXPIRE_AFTER_DAYS_OPTIONS.map((days) => ({ value: String(days), label: expireLabel(days) })),
+              ]}
+              onChange={(value) =>
+                void save({
+                  budget: {
+                    ...current.budget,
+                    expireAfterDays:
+                      UPSTREAM_EXPIRE_AFTER_DAYS_OPTIONS.find((days) => String(days) === value) ?? null,
+                  },
+                })
+              }
+            />
+            <span className="text-muted-foreground">Keep longer from score</span>
+            <SettingSelect
+              label="Keep longer from score"
+              value={String(current.budget.keepScore)}
+              display={String(current.budget.keepScore)}
+              disabled={disabled}
+              options={withCurrent(KEEP_SCORES, current.budget.keepScore).map((score) => ({
+                value: String(score),
+                label: String(score),
+              }))}
+              onChange={(score) => void save({ budget: { ...current.budget, keepScore: Number(score) } })}
+            />
+          </div>
+          <span className="block text-xs text-muted-foreground">
+            Unreviewed Inbox topics move to Skipped as "Expired unreviewed" after this long, or twice as long from the
+            keep score. Security topics never expire.
+          </span>
+        </div>
+        <div className="space-y-1 border-t pt-3">
+          <span className="font-medium">Auto-port</span>
+          <div className="flex gap-2">
+            <SettingSelect
+              label="Auto-port"
+              value={current.autoPort.mode}
+              display={AUTO_PORT_LABELS[current.autoPort.mode]}
+              disabled={disabled}
+              options={Object.entries(AUTO_PORT_LABELS).map(([value, label]) => ({ value, label }))}
+              onChange={(mode) =>
+                void save({ autoPort: { ...current.autoPort, mode: mode as UpstreamAutoPortMode } })
+              }
+            />
+            {current.autoPort.mode !== "off" && (
+              <SettingSelect
+                label="Auto-ports per day"
+                value={String(current.autoPort.dailyLimit)}
+                display={`${current.autoPort.dailyLimit} a day`}
+                disabled={disabled}
+                options={Array.from({ length: 20 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} a day` }))}
+                onChange={(limit) => void save({ autoPort: { ...current.autoPort, dailyLimit: Number(limit) } })}
+              />
+            )}
+          </div>
+          <span className="block text-xs text-muted-foreground">
+            {current.autoPort.mode !== "off" && !current.portModelSelection
+              ? "Choose a port model above; auto-port waits for one."
+              : "Queues confident high/critical security fixes (and high-impact bug fixes in code f5 has) after each run. PRs still need your merge."}
+          </span>
+        </div>
+        {props.overview.areas.length > 0 && (
+          <div className="space-y-1 border-t pt-3">
+            <span className="font-medium">Areas</span>
+            <span className="block text-xs text-muted-foreground">
+              Followed areas put features on the shortlist. Others reach the weekly feature digest; ignored areas
+              skip their features.
+            </span>
+            <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1">
+              {props.overview.areas.map((area) => {
+                const policy = current.areaPolicy[area.key] ?? "fixes-only";
+                return (
+                  <Fragment key={area.key}>
+                    <span className="truncate">{area.label}</span>
+                    <SettingSelect
+                      label={`${area.label} features`}
+                      value={policy}
+                      display={AREA_POLICY_LABELS[policy]}
+                      disabled={disabled}
+                      options={Object.entries(AREA_POLICY_LABELS).map(([value, label]) => ({ value, label }))}
+                      onChange={(value) => void save({ areaPolicy: withAreaPolicy(current.areaPolicy, area.key, value) })}
+                    />
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </PopoverPopup>
     </Popover>
   );

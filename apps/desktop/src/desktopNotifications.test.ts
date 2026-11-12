@@ -170,6 +170,7 @@ describe("parseDesktopNotificationInput", () => {
       { kind: "prHub", prKey: "o/r#1" },
       { kind: "scheduled", taskId: "task" },
       { kind: "upstream", projectId: "project" },
+      { kind: "upstream", projectId: "project", view: "features" },
       { kind: "update" },
       { kind: "none" },
     ])

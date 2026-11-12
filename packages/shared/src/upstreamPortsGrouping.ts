@@ -14,6 +14,9 @@ const LOCKFILES = new Set([
   "pnpm-lock.yaml",
 ]);
 
+/** Package-manager lockfiles, by base name. */
+export const isLockfilePath = (path: string): boolean => LOCKFILES.has(path.split("/").at(-1)!);
+
 export function portFileKeys(
   fileSetsByTopic: ReadonlyMap<string, ReadonlyArray<string> | null>,
   options: { readonly dropHotPaths?: boolean } = {},
@@ -39,9 +42,7 @@ export function portFileKeys(
         id,
         paths === null
           ? null
-          : [...new Set(paths)].filter(
-              (path) => !LOCKFILES.has(path.split("/").at(-1)!) && !hotPaths.has(path),
-            ),
+          : [...new Set(paths)].filter((path) => !isLockfilePath(path) && !hotPaths.has(path)),
       ]),
     ),
   };

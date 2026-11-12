@@ -195,6 +195,24 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
       }),
     );
   return {
+    /** Topics in entries whose request id starts with `prefix`, created at or after `since`. */
+    countTopicsRequestedSince: (projectId: string, prefix: string, since: string) =>
+      sql<{ topic_ids_json: string }>`SELECT topic_ids_json FROM upstream_port_queue
+      WHERE project_id = ${projectId} AND substr(request_id,1,${prefix.length}) = ${prefix}
+      AND created_at >= ${since}`.pipe(
+        Effect.map((rows) =>
+          rows.reduce(
+            (sum, row) => sum + (JSON.parse(row.topic_ids_json) as ReadonlyArray<string>).length,
+            0,
+          ),
+        ),
+      ),
+    getLastDigestAt: (projectId: string) =>
+      sql<{ last_digest_at: string | null }>`SELECT last_digest_at FROM upstream_budget_state
+      WHERE project_id = ${projectId}`.pipe(Effect.map((rows) => rows[0]?.last_digest_at ?? null)),
+    setLastDigestAt: (projectId: string, at: string) =>
+      sql`INSERT INTO upstream_budget_state(project_id,last_digest_at) VALUES (${projectId},${at})
+      ON CONFLICT(project_id) DO UPDATE SET last_digest_at = excluded.last_digest_at`,
     hasQueueHistory: (projectId: string) =>
       sql`SELECT 1 FROM upstream_port_queue WHERE project_id = ${projectId} LIMIT 1`.pipe(
         Effect.map((rows) => rows.length > 0),

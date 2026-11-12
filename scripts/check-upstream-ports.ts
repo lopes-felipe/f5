@@ -1,6 +1,6 @@
 /**
- * `bun run upstream-ports:check`: validates the v7 upstream ledger in the
- * working tree. Ledger-state files are written only by F5's Upstream page.
+ * `bun run upstream-ports:check`: validates the upstream ledger (v8, with v7
+ * files accepted) in the working tree. Ledger-state files are written only by F5's Upstream page.
  *
  * Environment:
  * - F5_UPSTREAM_PORTS_ROOT: repository root (defaults to this checkout).

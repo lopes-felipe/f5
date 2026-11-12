@@ -140,6 +140,55 @@ describe("canonicalJson", () => {
     expect(serializeLedgerFiles(parsed.ledger)).toEqual(files);
   });
 
+  it("decodes v7 topic files and rewrites them as v8", () => {
+    const files = serializeLedgerFiles(baseLedger());
+    const path = "topics/2026-10.json";
+    const v7 = new Map(files);
+    v7.set(path, canonicalJson({ ...JSON.parse(files.get(path)!), schemaVersion: 7 }));
+    const parsed = parseLedgerFiles(v7);
+    expect(parsed.errors).toEqual([]);
+    expect(JSON.parse(serializeLedgerFiles(parsed.ledger).get(path)!).schemaVersion).toBe(8);
+  });
+
+  it("round-trips v8 classification and allows severity only on security", () => {
+    const suggestion = {
+      status: "port" as const,
+      reason: "Fixes a token leak",
+      userImpact: "high" as const,
+      confidence: 0.9,
+      areas: ["server"],
+      model: "claude",
+    };
+    const classified = {
+      ...baseLedger(),
+      topics: [
+        topic("c-0000000000d1"),
+        topic("pr-1", {
+          suggestion: { ...suggestion, kind: "security", severity: "high", f5Coverage: "all" },
+        }),
+        topic("pr-2", { suggestion: { ...suggestion, kind: "fix", f5Coverage: "none" } }),
+      ],
+    };
+    const files = serializeLedgerFiles(classified);
+    const parsed = parseLedgerFiles(files);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.ledger.topics.find((t) => t.id === "pr-1")?.suggestion).toMatchObject({
+      kind: "security",
+      severity: "high",
+      f5Coverage: "all",
+    });
+    expect(validate(classified)).toEqual([]);
+    const misplaced = {
+      ...classified,
+      topics: [
+        topic("c-0000000000d1"),
+        topic("pr-1", { suggestion: { ...suggestion, kind: "fix", severity: "high" } }),
+        topic("pr-2"),
+      ],
+    };
+    expect(validate(misplaced).join("\n")).toContain("severity is allowed only with kind security");
+  });
+
   it("rejects null where the schema disallows it and non-canonical bytes", () => {
     const files = serializeLedgerFiles(baseLedger());
     const path = "topics/2026-10.json";
@@ -299,6 +348,30 @@ describe("validateLedger", () => {
     const rules = { ...rest, reasonLabels: { ...reasonLabels, mobile: "" } };
     expect(parseRules(JSON.stringify(rules)).errors.join("\n")).toContain("mobile has no label");
     expect(parseRules(JSON.stringify(RULES)).errors).toEqual([]);
+  });
+
+  it("accepts an area taxonomy only in rules v2, with unique names", () => {
+    const areas = [
+      { key: "pr-hub", label: "PR Hub", aliases: ["pr hub", "pull requests"] },
+      { key: "providers", label: "Providers", aliases: ["claude", "codex"] },
+    ];
+    expect(parseRules(JSON.stringify({ ...RULES, schemaVersion: 2, areas })).errors).toEqual([]);
+    expect(parseRules(JSON.stringify({ ...RULES, schemaVersion: 2 })).errors).toEqual([]);
+    expect(parseRules(JSON.stringify({ ...RULES, areas })).errors.join("\n")).toContain(
+      "areas require schemaVersion 2",
+    );
+    const duplicate = [...areas, { key: "agents", label: "Agents", aliases: ["Claude"] }];
+    expect(
+      parseRules(JSON.stringify({ ...RULES, schemaVersion: 2, areas: duplicate })).errors.join(
+        "\n",
+      ),
+    ).toContain("area name Claude is used more than once");
+    const badKey = [{ key: "PR Hub", label: "", aliases: [] }];
+    const errors = parseRules(
+      JSON.stringify({ ...RULES, schemaVersion: 2, areas: badKey }),
+    ).errors.join("\n");
+    expect(errors).toContain("invalid area key PR Hub");
+    expect(errors).toContain("has no label");
   });
 
   it("requires the maintenance key when ignored path prefixes are set", () => {

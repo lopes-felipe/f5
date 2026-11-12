@@ -3,11 +3,16 @@ import { useEffect } from "react";
 import { useUpstreamPortsInvalidation } from "../../lib/upstreamPortsReactQuery";
 import { readNativeApi } from "../../nativeApi";
 import { notify } from "../../notificationCenter/notify";
-import { formatUpstreamInboxTitle } from "../../upstreamNotifications";
+import {
+  formatUpstreamAutoQueuedTitle,
+  formatUpstreamDigestTitle,
+  formatUpstreamInboxTitle,
+} from "../../upstreamNotifications";
 
 /**
- * Keeps upstream queries fresh app-wide and, after a run adds inbox topics, tells the user
- * "Upstream: N new topics to review" (toast, OS notification and inbox via `notify`).
+ * Keeps upstream queries fresh app-wide and tells the user (toast, OS notification and inbox
+ * via `notify`) when a run adds Inbox topics or auto-queues ports, and about the weekly
+ * feature digest.
  */
 export default function UpstreamNotificationController() {
   useUpstreamPortsInvalidation();
@@ -15,17 +20,41 @@ export default function UpstreamNotificationController() {
     const api = readNativeApi();
     if (!api?.upstreamPorts) return;
     return api.upstreamPorts.onChanged((event) => {
-      if (event.reason !== "run-finished" || !event.newInboxCount) return;
-      notify({
+      const base = {
         source: "upstream",
         severity: "info",
-        title: formatUpstreamInboxTitle(event.newInboxCount),
         sourceLabel: "Upstream",
-        dedupeKey: `upstream:${event.projectId}`,
-        target: { kind: "upstream", projectId: event.projectId },
-        openLabel: "Review",
-        os: { tag: `upstream:${event.projectId}` },
-      });
+      } as const;
+      if (event.reason === "feature-digest" && event.digest) {
+        notify({
+          ...base,
+          title: formatUpstreamDigestTitle(event.digest),
+          dedupeKey: `upstream-digest:${event.projectId}`,
+          target: { kind: "upstream", projectId: event.projectId, view: "features" },
+          openLabel: "Browse",
+          os: { tag: `upstream-digest:${event.projectId}` },
+        });
+        return;
+      }
+      if (event.reason !== "run-finished") return;
+      if (event.autoQueuedCount)
+        notify({
+          ...base,
+          title: formatUpstreamAutoQueuedTitle(event.autoQueuedCount),
+          dedupeKey: `upstream-auto:${event.projectId}`,
+          target: { kind: "upstream", projectId: event.projectId },
+          openLabel: "Open",
+          os: { tag: `upstream-auto:${event.projectId}` },
+        });
+      if (event.newInboxCount)
+        notify({
+          ...base,
+          title: formatUpstreamInboxTitle(event.newInboxCount),
+          dedupeKey: `upstream:${event.projectId}`,
+          target: { kind: "upstream", projectId: event.projectId },
+          openLabel: "Review",
+          os: { tag: `upstream:${event.projectId}` },
+        });
     });
   }, []);
   return null;

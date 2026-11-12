@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import { TextGenerationError } from "../git/Errors.ts";
 import { chunkCommit, SEED_RULES, sha } from "./testFixtures.ts";
 import {
+  applyAreaPolicy,
   autoDecision,
   batchCommits,
+  classifySuggestion,
+  SECURITY_HINT_QUESTION,
   buildTopics,
   legacyEquivalenceGroups,
   planReverts,
@@ -489,5 +492,93 @@ describe("buildTopics", () => {
       confidence: 0.7,
       f5Refs: [sha(100, "b")],
     });
+  });
+});
+
+describe("classification", () => {
+  const suggestion = {
+    status: "port" as const,
+    reason: "r",
+    userImpact: "medium" as const,
+    confidence: 0.9,
+    areas: ["PR Hub", "Claude", "Model Picker", "Widget Gallery"],
+    model: "m",
+  };
+  const commit = (
+    subject: string,
+    files: ReadonlyArray<[string, boolean]> | null = null,
+    body: string | null = null,
+  ) => ({
+    subject,
+    body,
+    files: files?.map(([path, existsInFork]) => ({ path, existsInFork })) ?? null,
+  });
+
+  it("derives the kind from prefixes, coverage from source files, and normalizes areas", () => {
+    const result = classifySuggestion(
+      suggestion,
+      [
+        commit("feat: a", [
+          ["apps/web/a.ts", true],
+          ["apps/web/a.test.ts", false],
+        ]),
+        commit("fix: b", [["b.ts", false]]),
+      ],
+      SEED_RULES,
+    );
+    expect(result).toMatchObject({
+      kind: "fix",
+      f5Coverage: "partial",
+      areas: ["pr-hub", "providers", "widget-gallery"],
+    });
+    expect(result.severity).toBeUndefined();
+  });
+
+  it("keeps the model's kind and drops a severity outside security", () => {
+    const result = classifySuggestion(
+      { ...suggestion, kind: "perf", severity: "high" },
+      [commit("fix: a")],
+      SEED_RULES,
+    );
+    expect(result.kind).toBe("perf");
+    expect(result.severity).toBeUndefined();
+    expect(result.f5Coverage).toBeUndefined();
+    expect(
+      classifySuggestion({ ...suggestion, kind: "security" }, [commit("fix: a")], SEED_RULES)
+        .severity,
+    ).toBe("low");
+  });
+
+  it("keeps a security hint in the security lane with a question when the model disagrees", () => {
+    const hinted = [commit("fix: bump ws", null, "Fixes CVE-2026-1234")];
+    expect(classifySuggestion({ ...suggestion, kind: "fix" }, hinted, SEED_RULES)).toMatchObject({
+      kind: "security",
+      severity: "low",
+      question: SECURITY_HINT_QUESTION,
+    });
+    expect(
+      classifySuggestion({ ...suggestion, kind: "security", severity: "high" }, hinted, SEED_RULES),
+    ).toMatchObject({ kind: "security", severity: "high" });
+    expect(
+      classifySuggestion({ ...suggestion, kind: "security", severity: "high" }, hinted, SEED_RULES)
+        .question,
+    ).toBe(undefined);
+  });
+
+  it("skips features whose areas are all ignored", () => {
+    const feature = { ...suggestion, kind: "feat" as const, areas: ["git", "terminal"] };
+    expect(
+      applyAreaPolicy(feature, SEED_RULES, { git: "ignore", terminal: "ignore" }),
+    ).toMatchObject({
+      status: "skip",
+      reasonKey: "area-ignored",
+    });
+    expect(applyAreaPolicy(feature, SEED_RULES, { git: "ignore" })).toBe(feature);
+    expect(
+      applyAreaPolicy({ ...feature, kind: "fix" }, SEED_RULES, {
+        git: "ignore",
+        terminal: "ignore",
+      }).status,
+    ).toBe("port");
   });
 });

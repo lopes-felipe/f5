@@ -180,6 +180,18 @@ Upstream ports track a forked-from repository commit by commit. The ledger lives
 
 One reviewable upstream change: one or more upstream commits grouped by triage, with a stored status (`inbox`, `port`, `skip`, `declined`, `watch`, `equivalent`) and a suggestion. The page shows a derived state (Inbox, Ready, In progress, Watch, Done, Skipped) computed from the status, `Upstream-Topic:` trailers on the default branch, and linked port threads.
 
+#### Upstream lane
+
+The bucket a topic is ranked in: Security, Bug, Perf, Feature or Maintenance. It is derived from the suggestion's stored `kind` (conventional-commit prefix, model output, security hints), or from commit subjects for topics triaged before classification. Lanes are never stored in the ledger.
+
+#### Upstream score
+
+A 0–100 rank derived at read time from the lane (and security severity or feature area policy), user impact, whether the changed source files exist in f5, and the suggestion. The Inbox Shortlist shows the top topics scoring 50 or more. Weights live in [upstreamPortsScore.ts][31].
+
+#### Expired unreviewed
+
+The `aged-out` skip reason: an Inbox topic outside the Security lane that waited longer than the budget's expiry window (twice as long for high scores) is skipped with `decidedBy: rule`. Reopen it like any skip.
+
 #### Topic epoch
 
 A counter on each topic that increments when a topic returns to Inbox or Watch from Port or Done. Trailers and port threads count only for the current epoch, so an old port cannot complete a reopened topic. Port commits carry `Upstream-Topic: <id>` for epoch 1 and `Upstream-Topic: <id>#<epoch>` after that.
@@ -234,6 +246,7 @@ The single rolling pull request through which F5 publishes recorded decisions an
 [28]: ../apps/server/src/upstreamPorts/
 [29]: ../packages/shared/src/upstreamPorts.ts
 [30]: ./user/upstream-ports.md
+[31]: ../packages/shared/src/upstreamPortsScore.ts
 
 ## Profile
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  formatUpstreamAutoQueuedTitle,
+  formatUpstreamDigestTitle,
+  formatUpstreamInboxTitle,
+} from "../../upstreamNotifications";
+import { withAreaPolicy } from "./UpstreamSettingsPopover";
 import { compactUpstreamSearch, validateUpstreamSearch } from "./upstreamSearch";
 import {
   actionTargets,
@@ -13,6 +19,7 @@ import {
   decisionBatches,
   decisionToastTitle,
   equivalentFromLink,
+  expireBacklogSummary,
   extendSelection,
   filterFromSearch,
   focusAfterRemoval,
@@ -32,6 +39,7 @@ import {
   promptLimitError,
   reconcileFocus,
   runDisabledReason,
+  runKindLabel,
   runStatus,
   selectRange,
   shortRepository,
@@ -169,11 +177,12 @@ describe("upstream page logic", () => {
         { from: "inbox", to: "skipped" },
       ]),
     ).toEqual({ ...counts, inbox: 1, ready: 1, skipped: 2 });
-    const row = (id: string, status: string, areas: string[]) =>
-      ({ topic: { id, suggestion: { status, userImpact: "high", areas } } }) as never;
+    const row = (id: string, status: string, areas: string[], lane = "bug") =>
+      ({ topic: { id, suggestion: { status, userImpact: "high", areas } }, lane }) as never;
     const facets = {
       suggestion: { port: 2, skip: 1, watch: 0, equivalent: 0, none: 0 },
       impact: { high: 3, medium: 0, low: 0, none: 0 },
+      lane: { security: 0, bug: 2, perf: 0, feature: 1, maintenance: 0 },
       areas: [
         { area: "terminal", count: 2 },
         { area: "git", count: 1 },
@@ -191,7 +200,7 @@ describe("upstream page logic", () => {
       pageParams: [null, "c1"],
       pages: [
         page([row("a", "port", ["git"]), row("b", "port", ["terminal"])], "c1"),
-        page([row("c", "skip", ["terminal"])], null),
+        page([row("c", "skip", ["terminal"], "feature")], null),
       ],
     };
     const next = withoutTopics(data as never, new Set(["b", "c", "unloaded"]));
@@ -200,6 +209,7 @@ describe("upstream page logic", () => {
     expect(next?.pages[0]?.facets).toEqual({
       suggestion: { port: 1, skip: 0, watch: 0, equivalent: 0, none: 0 },
       impact: { high: 1, medium: 0, low: 0, none: 0 },
+      lane: { security: 0, bug: 1, perf: 0, feature: 0, maintenance: 0 },
       areas: [
         { area: "terminal", count: 0 },
         { area: "git", count: 1 },
@@ -388,6 +398,9 @@ describe("upstream page logic", () => {
     const triage = { instanceId: "claude", model: "claude-opus-5-5" } as never;
     const current = {
       portReview: { enabled: true, reviewerA: null, reviewerB: null, consolidation: null },
+      budget: { shortlistSize: 15, expireAfterDays: null, keepScore: 70 },
+      areaPolicy: {},
+      autoPort: { mode: "off" as const, dailyLimit: 5 },
       portConcurrency: 5,
       autoRecordOutcomes: true,
       schedule: { mode: "daily" as const, hour: 7, weekday: 1 },
@@ -557,5 +570,45 @@ describe("undo, files and history", () => {
     expect(historyEntryLabel({ at: "2026-10-01T00:00:00Z", kind: "created", epoch: 1 })).toBe(
       "Triaged into the ledger",
     );
+  });
+
+  it("shortlists only the Inbox, unless All is chosen, and maps lane and reason filters", () => {
+    expect(filterFromSearch({}, "inbox")).toEqual({ shortlist: true });
+    expect(filterFromSearch({ all: true }, "inbox")).toEqual({});
+    expect(filterFromSearch({}, "skipped")).toEqual({});
+    expect(filterFromSearch({ lane: ["security", "bug"], reason: "aged-out" }, "skipped")).toEqual({
+      lane: ["security", "bug"],
+      reasonKey: "aged-out",
+    });
+    expect(hasActiveFilters({ lane: ["bug"] })).toBe(true);
+    expect(withoutFilters({ list: "inbox", lane: ["bug"], reason: "x", all: true })).toEqual({
+      list: "inbox",
+      all: true,
+    });
+    const search = { lane: ["feature" as const], reason: "aged-out", all: true as const };
+    expect(validateUpstreamSearch(compactUpstreamSearch(search) as never)).toMatchObject(search);
+  });
+
+  it("summarizes an expiry preview and names run kinds", () => {
+    const summary = expireBacklogSummary({ count: 3, byLane: { bug: 2, perf: 0, feature: 1, maintenance: 0 } }, 14);
+    expect(summary.title).toBe("Expire 3 topics?");
+    expect(summary.description).toContain("more than 14 days");
+    expect(summary.description).toContain("Bugs 2 · Features 1.");
+    expect(runKindLabel("reclassify")).not.toBe(runKindLabel("retriage"));
+  });
+
+  it("stores only non-default area policies", () => {
+    expect(withAreaPolicy({}, "git", "follow")).toEqual({ git: "follow" });
+    expect(withAreaPolicy({ git: "follow", mcp: "ignore" }, "git", "fixes-only")).toEqual({ mcp: "ignore" });
+    expect(withAreaPolicy({ git: "follow" }, "git", "ignore")).toEqual({ git: "ignore" });
+  });
+
+  it("titles run, auto-port and digest notifications", () => {
+    expect(formatUpstreamInboxTitle(1)).toBe("Upstream: 1 new topic to review");
+    expect(formatUpstreamAutoQueuedTitle(2)).toBe("Upstream: auto-queued 2 ports");
+    expect(formatUpstreamDigestTitle({ followed: 2, other: 5 })).toBe(
+      "Upstream: 7 new features this week (2 in followed areas)",
+    );
+    expect(formatUpstreamDigestTitle({ followed: 0, other: 1 })).toBe("Upstream: 1 new feature this week");
   });
 });

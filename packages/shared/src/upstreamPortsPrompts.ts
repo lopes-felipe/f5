@@ -103,6 +103,13 @@ function formatTopicTable(rows: ReadonlyArray<TriageTopicRow>): string {
     .join("\n");
 }
 
+function areaInstruction(rules: Rules): string {
+  const keys = (rules.areas ?? []).map((area) => area.key);
+  return keys.length === 0
+    ? "- areas lists up to 5 short fork areas affected, such as composer, terminal, or git."
+    : `- areas lists up to 5 fork areas affected, chosen from: ${keys.join(", ")}. Use another short name only when none fits.`;
+}
+
 export interface TriageBatchPromptInput {
   readonly repository: string;
   readonly policy: string;
@@ -145,8 +152,10 @@ export function buildTriageBatchPrompt(input: TriageBatchPromptInput): {
     "- For skip, set reasonKey to one of the listed keys; otherwise reasonKey is null.",
     "- Keep commits of a revert chain (a commit and the commits that revert it) in one group.",
     "- confidence (0 to 1) is your certainty that the suggestion matches the policy.",
-    "- userImpact is high, medium, low, or none for fork users.",
-    "- areas lists up to 5 short fork areas affected, such as composer, terminal, or git.",
+    "- userImpact is high, medium, low, or none for fork users. A bug fix in code the fork does not have (no * on its source files) is low unless the symptom clearly reaches the fork.",
+    "- kind is security, fix, feat, perf, refactor, maintenance, or revert. Start from the conventional-commit prefix, but use security for any change that fixes a vulnerability or applies upstream security patches, and fix for a feat: that only repairs behavior.",
+    "- severity is critical, high, medium, or low when kind is security (critical: remote code execution or credential exposure; high: privilege, sandbox, or auth bypass; medium: limited data exposure or injection behind user action; low: hardening). Otherwise severity is null.",
+    areaInstruction(input.rules),
     "- Set question to one sentence when the choice depends on a fork product preference the policy does not cover; do not guess. Otherwise null.",
     "- title is at most 100 characters; summary at most 300; reason at most 300.",
     "",
@@ -156,7 +165,7 @@ export function buildTriageBatchPrompt(input: TriageBatchPromptInput): {
     input.commits.map(formatDigest).join("\n\n"),
     "</upstream-data>",
     "",
-    'Respond with JSON only: {"groups": [{"key", "commits", "attachTo", "relatedTo", "title", "summary", "suggestion", "reasonKey", "reason", "userImpact", "confidence", "areas", "question"}]}.',
+    'Respond with JSON only: {"groups": [{"key", "commits", "attachTo", "relatedTo", "title", "summary", "suggestion", "reasonKey", "reason", "userImpact", "confidence", "areas", "question", "kind", "severity"}]}.',
   ].join("\n");
   return { prompt, policyTruncated: policy.truncated };
 }

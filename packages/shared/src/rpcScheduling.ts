@@ -401,6 +401,7 @@ export const RPC_METHOD_POLICY = {
   "upstreamPorts.addRemote": MUTATION_RT,
   "upstreamPorts.controlPortQueue": MUTATION_RT,
   "upstreamPorts.decide": MUTATION_RT,
+  "upstreamPorts.expireBacklog": MUTATION_RT,
   "upstreamPorts.dequeuePort": MUTATION_RT,
   "upstreamPorts.enqueuePort": MUTATION_RT,
   "upstreamPorts.getOverview": READ_RT,
