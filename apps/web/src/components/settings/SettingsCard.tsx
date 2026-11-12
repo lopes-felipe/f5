@@ -71,8 +71,8 @@ export function SettingsRow({
         className={cn("border-b border-border py-2 last:border-b-0", className)}
         data-settings-search-target={searchTarget}
       >
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0 flex-[1_1_14rem]">
             <p className="text-sm font-medium text-foreground">{title}</p>
             {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
           </div>
@@ -85,12 +85,12 @@ export function SettingsRow({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0",
+        "flex flex-wrap items-center justify-between gap-4 border-b border-border py-2 last:border-b-0",
         className,
       )}
       data-settings-search-target={searchTarget}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 flex-[1_1_14rem]">
         <p className="text-sm font-medium text-foreground">{title}</p>
         {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
       </div>

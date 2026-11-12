@@ -15,6 +15,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Desktop windows can shrink to 400×360. Settings controls and snooze fields wrap in narrow windows, dialogs clear the native titlebar, and command palettes focus search before submenu navigation buttons.
+- Slow desktop backends get three minutes to start before recovery appears. macOS SnapShot skips transparent windows and helper strips, and timestamps respect macOS region/hour preferences and Linux LC_TIME.
+- Desktop bundles Electron 44.10.1 for Node and Chromium security fixes. Single-architecture macOS builds omit the other architecture's native prebuilds.
 - Cmd+O / Ctrl+O opens the visible file preview in the preferred editor, or the workspace when no file preview is visible. Handled shortcuts no longer launch another editor, and the shortcut works while the terminal is focused.
 - Provider updates can take up to 30 minutes without the browser giving up early. Codex instances respect their environment's home directory when switching accounts, including directory names containing whitespace. Agents using ACP now report a disconnected input stream instead of hanging when their process closes stdout but stays alive.
 - Git reviews keep tracked edits when untracked discovery fails and retain partial untracked listings when they are too large. Reviews include new files outside sparse-checkout folders, and commit and PR text includes changes outside nested projects. Selected-file commits during a merge now ask you to commit all files. Desktop startup stops waiting for stuck login shells, and safe Windows Git reads avoid starting a console host.
