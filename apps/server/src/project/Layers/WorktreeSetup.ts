@@ -1745,10 +1745,13 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       ),
     );
     yield* preparation.startup;
+    // A partial index holds only these activities; without it this read scans every
+    // activity. The kind is a literal so the index matches when the statement is
+    // compiled, not only if SQLite plans it again once a bound value is known.
     const rows = yield* sql<{ readonly threadId: ThreadId; readonly payload: string }>`
       SELECT thread_id AS "threadId", payload_json AS payload
       FROM projection_thread_activities
-      WHERE kind = ${WORKTREE_SETUP_ACTIVITY_KIND}
+      WHERE kind = ${sql.literal(`'${WORKTREE_SETUP_ACTIVITY_KIND}'`)}
     `.pipe(Effect.orElseSucceed(() => []));
     for (const row of rows) {
       const decoded = Option.getOrNull(decodeSnapshotJson(row.payload));

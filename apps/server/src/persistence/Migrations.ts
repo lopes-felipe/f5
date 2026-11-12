@@ -4,6 +4,7 @@ import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts
 import Migration0156 from "./Migrations/156_UpstreamReclassifyRuns.ts";
 import Migration0157 from "./Migrations/157_EventCompactionKeepLast.ts";
 import Migration0158 from "./Migrations/158_DropUnreadEventIndexes.ts";
+import Migration0159 from "./Migrations/159_WorktreeSetupActivityIndex.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -196,6 +197,7 @@ export const MIGRATIONS = {
   "156_UpstreamReclassifyRuns": Migration0156,
   "157_EventCompactionKeepLast": Migration0157,
   "158_DropUnreadEventIndexes": Migration0158,
+  "159_WorktreeSetupActivityIndex": Migration0159,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.
