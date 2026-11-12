@@ -36218,6 +36218,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-34547",
+      "relatedTopics": [
+        "pr-33935"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "server",
+          "threads"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "The fail-fast export avoids decoding hundreds of MB, a real reliability gain if f5 has transcript export. The handoff part is upstream-only (context-handoff), so port only the export check.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Before reading the thread, transcript export asks SQLite for a lower bound on its size and fails early when that is over the attachment limit. Thread opens no longer decode context-handoff history and delivery payloads that the wire projection drops anyway.",
+      "title": "Oversized transcript exports fail fast; thread opens skip unused handoff bodies",
+      "upstreamPrs": [
+        34547
+      ]
+    },
+    {
       "createdAt": "2026-11-12T11:14:04.510Z",
       "epoch": 1,
       "id": "pr-34552",
@@ -38988,6 +39013,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35031",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "The bug only happens when a thread runs in a remote environment, and the fix is in client-runtime asset resolution.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Relative Markdown image references are marked hostOnly, and the asset query is scoped to match. Remote-environment threads then don't resolve them against the local desktop's files.",
+      "title": "Relative Markdown images in a remote thread no longer show the desktop's file",
+      "upstreamPrs": [
+        35031
+      ]
+    },
+    {
       "createdAt": "2026-11-12T11:14:04.510Z",
       "epoch": 1,
       "id": "pr-35032",
@@ -39106,6 +39153,50 @@
       ]
     },
     {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35043",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "preview browser"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has a right panel and a preview browser, so the same overlap can happen. This is a small CSS fix.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The right-panel resize handle's hit area moves inside the panel's left edge and is raised to z-40, above the browser webview layer. It no longer sits on the chat scrollbar lane.",
+      "title": "Panel resize handle no longer covers the chat scrollbar",
+      "upstreamPrs": [
+        35043
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35045",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "chat header",
+          "git"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Small UX improvement on header controls that exist in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Wraps these icon-only controls in tooltips: the Git quick action and options chevron, the Open in primary and editor chevron, and the Script actions chevron.",
+      "title": "Icon-only chat header controls show their name on hover",
+      "upstreamPrs": [
+        35045
+      ]
+    },
+    {
       "createdAt": "2026-11-12T11:14:04.510Z",
       "epoch": 1,
       "id": "pr-35048",
@@ -39151,6 +39242,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35054",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "claude"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Claude /clear can happen in f5 too. Reimplement in f5's Claude adapter, because the upstream change lives in orchestration-v2.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When system/init reports a new session_id after /clear, the adapter records the new native session and stores it on the thread. Reopening the thread resumes the post-clear session instead of the old one or failing with 'No conversation found'.",
+      "title": "Claude threads resume the session that /clear started",
+      "upstreamPrs": [
+        35054
+      ]
+    },
+    {
       "createdAt": "2026-11-12T11:14:04.510Z",
       "epoch": 1,
       "id": "pr-35055",
@@ -39193,6 +39306,31 @@
       "title": "A damaged state database fails startup with its path and how to recover",
       "upstreamPrs": [
         35057
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35059",
+      "relatedTopics": [
+        "pr-26126"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "workspace search",
+          "server"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "f5 uses fff-based workspace search. A server-wide freeze from blocking native reads is a real reliability bug.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Each fff file finder runs in its own Node worker thread, so blocking native calls no longer stall the server's event loop. The worker's create handshake ignores Node --watch messages.",
+      "title": "A slow file read in the search watcher no longer freezes the server",
+      "upstreamPrs": [
+        35059
       ]
     },
     {
@@ -39277,6 +39415,49 @@
       "title": "A finished turn refreshes only its own project's PR listings",
       "upstreamPrs": [
         35070
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35072",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Opt-in flags used only by the mobile client. The changes sit in client-runtime and ws, which f5 doesn't share.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Mobile asks for provider catalog digests and status deltas, and calls refreshProviders with omitProviders. The server and client-runtime support exists to shrink the mobile launch payload.",
+      "title": "Mobile environments send about 85% less data at launch",
+      "upstreamPrs": [
+        35072
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35074",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a visible bug in the timeline: drag selections break when you scroll. f5's MessagesTimeline uses the same virtualized list.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Rows covered by the current text selection are added to LegendList's always-render indices. Recycled row containers then no longer move the selection's start onto other messages or drop the rows in between.",
+      "title": "Chat text selection stays continuous while scrolling",
+      "upstreamPrs": [
+        35074
       ]
     },
     {
@@ -39711,6 +39892,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35128",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "f5 commits selected files too, so a large selection can fail and leave the Git action stuck. Reimplement in f5's git layer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Selected paths go to git add on stdin through --pathspec-from-file with NUL separators. Spawn errors thrown synchronously now map to GitCommandError, so the Git button settles instead of hanging after a defect.",
+      "title": "Committing a large file selection no longer fails with spawn E2BIG",
+      "upstreamPrs": [
+        35128
+      ]
+    },
+    {
       "createdAt": "2026-11-12T11:14:04.510Z",
       "epoch": 1,
       "id": "pr-35130",
@@ -39734,6 +39936,97 @@
       "title": "Sending to a very long thread reads about 5x less of its history",
       "upstreamPrs": [
         35130
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35132",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Stops f5's commit action from silently committing unresolved conflicts. A git correctness fix.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Before git add -A, which marks unmerged paths as resolved, commit runs git diff --check on unmerged paths. It refuses when a file still has both an opening and a closing conflict marker. A lone ======= line is allowed.",
+      "title": "Commit refuses while a merge still has conflict markers",
+      "upstreamPrs": [
+        35132
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35137",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "PR hub"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Small correctness fix to PR suggestions in the composer, which f5 has for its forges.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The newest-first tie-break compares Date.parse instants instead of ISO strings. GitLab timestamps with different UTC offsets then sort correctly, and the limit no longer drops a newer request.",
+      "title": "Composer # suggestions sort by update time, not timestamp text",
+      "upstreamPrs": [
+        35137
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "epoch": 1,
+      "id": "pr-35143",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "preview browser"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "If f5 has scoped browser settings, this fixes a settings-leak bug. The upstream settings files mostly don't exist in f5, so reimplement it.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Browser viewport, zoom, appearance and default-profile settings save through scoped updates, so a change made in project scope stays in that scope. Creating, renaming and removing profiles still write to the primary settings.",
+      "title": "Browser settings changed in project scope no longer overwrite the global default",
+      "upstreamPrs": [
+        35143
+      ]
+    },
+    {
+      "createdAt": "2026-11-12T11:14:46.966Z",
+      "decidedAt": "2026-11-12T11:14:46.966Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-35170",
+      "reason": "Docs only; no change to the product.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "docs"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Docs only; no change to the product.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Rewrites the upstream README with a hero image, a 'What you get' list and a short install table.",
+      "title": "README refresh with hero image and shorter install guide",
+      "upstreamPrs": [
+        35170
       ]
     },
     {
