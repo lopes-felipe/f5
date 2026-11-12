@@ -36,8 +36,7 @@ export default function UpstreamNotificationController() {
         });
         return;
       }
-      if (event.reason !== "run-finished") return;
-      if (event.autoQueuedCount)
+      if (event.reason === "auto-port" && event.autoQueuedCount) {
         notify({
           ...base,
           title: formatUpstreamAutoQueuedTitle(event.autoQueuedCount),
@@ -46,7 +45,9 @@ export default function UpstreamNotificationController() {
           openLabel: "Open",
           os: { tag: `upstream-auto:${event.projectId}` },
         });
-      if (event.newInboxCount)
+        return;
+      }
+      if (event.reason === "run-finished" && event.newInboxCount)
         notify({
           ...base,
           title: formatUpstreamInboxTitle(event.newInboxCount),

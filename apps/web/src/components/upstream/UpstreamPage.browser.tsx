@@ -754,6 +754,7 @@ it("previews Expire backlog, applies it after confirming, and offers Undo", asyn
     count: 2,
     byLane: { bug: 2, perf: 0, feature: 0, maintenance: 0 },
     undoToken: dryRun ? null : "expire-token",
+    unclassified: 0,
   }));
   await setup();
   await page.getByRole("button", { name: "More run options" }).click();

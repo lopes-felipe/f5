@@ -83,6 +83,19 @@ describe("expiryCandidates", () => {
     expect(countExpiryByLane(expired)).toEqual({ bug: 0, perf: 0, feature: 1, maintenance: 0 });
   });
 
+  it("never expires a topic without a stored classification", () => {
+    const old = "2026-09-01T00:00:00.000Z";
+    const { kind: _kind, ...unclassified } = suggestion();
+    const rows = [
+      row({ id: "v7", createdAt: old, suggestion: unclassified }),
+      {
+        ...row({ id: "rules-only", createdAt: old }),
+        topic: topic({ id: "rules-only", createdAt: old }),
+      },
+    ];
+    expect(expiryCandidates(rows, options)).toEqual([]);
+  });
+
   it("measures a returned watch from its revisit date", () => {
     const watch = row({
       id: "w",
@@ -128,6 +141,11 @@ it("counts this week's inbox features by area policy", () => {
     row({ id: "fix", createdAt: "2026-10-14T00:00:00.000Z" }, "inbox", policy),
   ];
   expect(featureDigest(rows, "2026-10-15", policy)).toEqual({ followed: 1, other: 1 });
+  // Features in ignored areas are left out of the digest.
+  expect(featureDigest(rows, "2026-10-15", { git: "follow", mcp: "ignore" })).toEqual({
+    followed: 1,
+    other: 0,
+  });
 });
 
 describe("autoPortCandidates", () => {

@@ -6,6 +6,8 @@ import {
   buildAreaAliasMap,
   combineCoverage,
   coverageOf,
+  coverageOfCommits,
+  maxSeverity,
   featureAreaPolicy,
   formatScoreParts,
   hasSecurityHint,
@@ -104,10 +106,27 @@ describe("coverage", () => {
     expect(coverageOf([file("a.ts", true), file("b.ts", false)])).toBe("partial");
     expect(coverageOf([file("a.ts", false), file("bun.lock", true)])).toBe("none");
     expect(coverageOf([file("docs/a.md", true)])).toBeNull();
-    expect(combineCoverage(["all", null, "all"])).toBe("all");
     expect(combineCoverage(["none", "none"])).toBe("none");
     expect(combineCoverage(["all", "none"])).toBe("partial");
     expect(combineCoverage([null, undefined])).toBeNull();
+  });
+
+  it("never reports all while a commit's files are unknown", () => {
+    const file = (path: string, existsInFork: boolean) => ({ path, existsInFork });
+    expect(combineCoverage(["all", null, "all"])).toBeNull();
+    expect(combineCoverage(["all", undefined])).toBeNull();
+    expect(coverageOfCommits([{ files: [file("a.ts", true)] }, { files: null }])).toBeNull();
+    // A commit that changed only docs or tests says nothing either way.
+    expect(
+      coverageOfCommits([{ files: [file("a.ts", true)] }, { files: [file("docs/a.md", false)] }]),
+    ).toBe("all");
+    expect(coverageOfCommits([])).toBeNull();
+  });
+
+  it("keeps the more severe security severity", () => {
+    expect(maxSeverity("low", "critical")).toBe("critical");
+    expect(maxSeverity("high", undefined)).toBe("high");
+    expect(maxSeverity(undefined, undefined)).toBeUndefined();
   });
 });
 
@@ -143,6 +162,9 @@ describe("scoreUpstreamTopic", () => {
     [{ kind: "perf", impact: "medium", coverage: "partial" }, "perf", 55],
     [{ kind: "feat", featurePolicy: "follow", impact: "medium" }, "feature", 55],
     [{ kind: "feat", impact: "medium" }, "feature", 30],
+    // Fixes-only features stay below the shortlist threshold of 50.
+    [{ kind: "feat", impact: "high", coverage: "all" }, "feature", 49],
+    [{ kind: "feat", featurePolicy: "follow", impact: "high", coverage: "all" }, "feature", 85],
     [{ kind: "feat", featurePolicy: "ignore", impact: "none" }, "feature", 0],
     [{ kind: "refactor", impact: "none", suggestionStatus: "skip" }, "maintenance", 0],
     [{ kind: "fix", impact: "high", suggestionStatus: "watch" }, "bug", 60],

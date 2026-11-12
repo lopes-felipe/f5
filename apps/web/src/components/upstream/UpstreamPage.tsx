@@ -87,6 +87,7 @@ import {
   toggleId,
   topicCount,
   topicStates,
+  unclassifiedNote,
   UNDO_STACK_MAX,
   UNDO_WINDOW_MS,
   undoKeptTitle,
@@ -654,7 +655,11 @@ export function UpstreamPage(props: {
     void withBusy("Could not preview the expiry", async () => {
       const preview = await ensureNativeApi().upstreamPorts.expireBacklog({ projectId, dryRun: true, olderThanDays });
       if (preview.count === 0) {
-        toastManager.add({ type: "info", title: `No Inbox topic has waited more than ${olderThanDays} days` });
+        toastManager.add({
+          type: "info",
+          title: `No Inbox topic has waited ${olderThanDays} days or more`,
+          ...(preview.unclassified > 0 ? { description: unclassifiedNote(preview.unclassified) } : {}),
+        });
         return;
       }
       const summary = expireBacklogSummary(preview, olderThanDays);
@@ -676,6 +681,12 @@ export function UpstreamPage(props: {
                 token: result.undoToken,
                 title: `Expired ${topicCount(result.count)}`,
                 expiresAt: Date.now() + UNDO_WINDOW_MS,
+              });
+            if (result.stoppedEarly)
+              toastManager.add({
+                type: "warning",
+                title: `Expiry stopped after ${topicCount(result.count)}`,
+                description: result.stoppedEarly,
               });
             await invalidateUpstreamPorts(queryClient);
           }),

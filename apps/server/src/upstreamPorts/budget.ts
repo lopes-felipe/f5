@@ -15,7 +15,7 @@ import { featureAreaPolicy, type AreaPolicy } from "@t3tools/shared/upstreamPort
 
 import type { DerivedRow } from "./view.ts";
 
-export const AGED_OUT_REASON_KEY = "aged-out";
+export { AGED_OUT_REASON_KEY } from "./triage.ts";
 export const DEFAULT_EXPIRE_AFTER_DAYS = 14;
 export const DIGEST_WINDOW_DAYS = 7;
 /** A weekly schedule may drift by hours; anything past six days counts as a week. */
@@ -45,15 +45,23 @@ export interface ExpiryOptions {
 }
 
 /**
- * Inbox topics outside the security lane that waited at least the window:
- * `olderThanDays`, doubled for topics scoring at least `keepScore`.
+ * Whether the topic carries a stored classification. Without one its lane
+ * comes from commit subjects alone, which miss CVE ids in commit and PR
+ * bodies, so it could be a security fix: it never expires until Reclassify
+ * (or triage) stores a kind.
+ */
+export const isClassified = (row: Pick<DerivedRow, "topic">) => row.topic.suggestion?.kind != null;
+
+/**
+ * Classified Inbox topics outside the security lane that waited at least the
+ * window: `olderThanDays`, doubled for topics scoring at least `keepScore`.
  */
 export function expiryCandidates<Row extends DerivedRow>(
   rows: ReadonlyArray<Row>,
   options: ExpiryOptions,
 ): Row[] {
   return rows.filter((row) => {
-    if (row.state !== "inbox" || row.lane === "security") return false;
+    if (row.state !== "inbox" || row.lane === "security" || !isClassified(row)) return false;
     if (options.busyTopicIds.has(row.topic.id)) return false;
     const window =
       row.score >= options.keepScore ? options.olderThanDays * 2 : options.olderThanDays;
@@ -69,7 +77,10 @@ export function countExpiryByLane(
   return byLane;
 }
 
-/** Inbox features created in the last seven days, split by the area follow list. */
+/**
+ * Inbox features created in the last seven days, split by the area follow
+ * list; features in ignored areas are left out.
+ */
 export function featureDigest(
   rows: ReadonlyArray<DerivedRow>,
   today: string,
@@ -81,8 +92,9 @@ export function featureDigest(
   for (const row of rows) {
     if (row.state !== "inbox" || row.lane !== "feature") continue;
     if (row.topic.createdAt.slice(0, 10) <= since) continue;
-    if (featureAreaPolicy(row.topic.suggestion?.areas ?? [], areaPolicy) === "follow")
-      followed += 1;
+    const policy = featureAreaPolicy(row.topic.suggestion?.areas ?? [], areaPolicy);
+    if (policy === "ignore") continue;
+    if (policy === "follow") followed += 1;
     else other += 1;
   }
   return { followed, other };

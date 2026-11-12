@@ -298,7 +298,8 @@ export function UpstreamSettingsPopover(props: {
           </div>
           <span className="block text-xs text-muted-foreground">
             Unreviewed Inbox topics move to Skipped as "Expired unreviewed" after this long, or twice as long from the
-            keep score. Security topics never expire.
+            keep score. Security topics never expire, and neither do topics without a classification: run Reclassify
+            backlog once first.
           </span>
         </div>
         <div className="space-y-1 border-t pt-3">
@@ -328,7 +329,11 @@ export function UpstreamSettingsPopover(props: {
           <span className="block text-xs text-muted-foreground">
             {current.autoPort.mode !== "off" && !current.portModelSelection
               ? "Choose a port model above; auto-port waits for one."
-              : "Queues confident high/critical security fixes (and high-impact bug fixes in code f5 has) after each run. PRs still need your merge."}
+              : current.autoPort.mode !== "off" &&
+                  current.portReview.enabled &&
+                  !(current.portReview.reviewerA && current.portReview.reviewerB && current.portReview.consolidation)
+                ? "Code review after port is on: choose its reviewer models once in Start port; auto-port waits for them."
+                : "Queues confident high/critical security fixes (and high-impact bug fixes in code f5 has) after each run. PRs still need your merge."}
           </span>
         </div>
         {props.overview.areas.length > 0 && (

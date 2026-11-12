@@ -848,6 +848,10 @@ export const UpstreamExpireBacklogResult = Schema.Struct({
   }),
   /** `null` for a dry run or when nothing expired. */
   undoToken: Schema.NullOr(Schema.String),
+  /** Inbox topics without a stored classification; they never expire until reclassified. */
+  unclassified: NonNegativeInt,
+  /** Set when a batch failed after earlier batches expired: `count` covers those only. */
+  stoppedEarly: Schema.optionalKey(Schema.String),
 });
 export type UpstreamExpireBacklogResult = typeof UpstreamExpireBacklogResult.Type;
 

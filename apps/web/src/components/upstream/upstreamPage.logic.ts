@@ -668,7 +668,7 @@ export function runKindLabel(kind: UpstreamRunKind): string {
 
 /** The Expire backlog confirmation, from a dry run. */
 export function expireBacklogSummary(
-  preview: Pick<UpstreamExpireBacklogResult, "count" | "byLane">,
+  preview: Pick<UpstreamExpireBacklogResult, "count" | "byLane" | "unclassified">,
   olderThanDays: number,
 ): { readonly title: string; readonly description: string } {
   const lanes = (["bug", "perf", "feature", "maintenance"] as const)
@@ -677,11 +677,16 @@ export function expireBacklogSummary(
   return {
     title: `Expire ${topicCount(preview.count)}?`,
     description:
-      `Inbox topics waiting more than ${olderThanDays} days (twice as long for high scores) move to Skipped as ` +
+      `Inbox topics waiting ${olderThanDays} days or more (twice as long for high scores) move to Skipped as ` +
       `"Expired unreviewed". Security topics never expire.${lanes.length ? ` ${lanes.join(" · ")}.` : ""} ` +
-      "You can undo this for 15 minutes, and reopen any topic later.",
+      "You can undo this for 15 minutes, and reopen any topic later." +
+      (preview.unclassified > 0 ? ` ${unclassifiedNote(preview.unclassified)}` : ""),
   };
 }
+
+/** Topics without a stored classification are kept until Reclassify backlog stores one. */
+export const unclassifiedNote = (count: number) =>
+  `${topicCount(count)} without a classification ${count === 1 ? "is" : "are"} kept; run Reclassify backlog to include them.`;
 
 export interface RunStatus {
   readonly tone: "running" | "failed" | "idle" | "never";

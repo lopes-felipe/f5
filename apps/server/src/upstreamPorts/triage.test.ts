@@ -8,10 +8,12 @@ import {
   applyAreaPolicy,
   autoDecision,
   batchCommits,
+  classifyCommitOf,
   classifySuggestion,
   SECURITY_HINT_QUESTION,
   buildTopics,
   legacyEquivalenceGroups,
+  mergeSuggestions,
   planReverts,
   ProviderUnavailableError,
   triageChunk,
@@ -413,6 +415,54 @@ describe("triageChunk", () => {
     expect(result.groups[0]).toMatchObject({ attachTo: null, related: ["pr-77"] });
     expect(result.groups[0]!.suggestion?.question).toBe("Is the old flow still used?");
   });
+
+  it("keeps a security follow-up out of an existing topic as its own related topic", async () => {
+    const call: TriageCall = () =>
+      Effect.succeed({
+        groups: [
+          group({ commits: [sha(1)], attachTo: "pr-77" }),
+          group({ commits: [sha(2)], attachTo: "pr-77", kind: "security", severity: "high" }),
+        ],
+      });
+    const hinted = [
+      chunkCommit({ sha: sha(1), body: "Fixes CVE-2026-1234 in the parser" }),
+      commits[1]!,
+    ];
+    const result = await run(
+      triageChunk({ ...baseInput(hinted, call), attachable: new Set(["pr-77"]) }),
+    );
+    expect(result.groups.map((entry) => [entry.attachTo, entry.related])).toEqual([
+      [null, ["pr-77"]],
+      [null, ["pr-77"]],
+    ]);
+    expect(result.groups.map((entry) => entry.suggestion?.kind)).toEqual(["security", "security"]);
+  });
+
+  it("never offers F5's own reason keys to the model and rejects them in its output", async () => {
+    const prompts: string[] = [];
+    const call: TriageCall = (prompt) => {
+      prompts.push(prompt);
+      return Effect.succeed({
+        groups: [
+          group({ commits: [sha(1)], suggestion: "skip", reasonKey: "aged-out", confidence: 0.99 }),
+          group({
+            commits: [sha(2)],
+            suggestion: "skip",
+            reasonKey: "area-ignored",
+            confidence: 0.99,
+          }),
+        ],
+      });
+    };
+    const result = await run(triageChunk(baseInput(commits.slice(0, 2), call)));
+    expect(prompts[0]).not.toContain("aged-out");
+    expect(prompts[0]).not.toContain("area-ignored");
+    expect(result.groups.map((entry) => entry.suggestion?.reasonKey)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(result.groups.map((entry) => entry.decision)).toEqual([null, null]);
+  });
 });
 
 describe("buildTopics", () => {
@@ -563,6 +613,65 @@ describe("classification", () => {
       classifySuggestion({ ...suggestion, kind: "security", severity: "high" }, hinted, SEED_RULES)
         .question,
     ).toBe(undefined);
+  });
+
+  it("keeps a security classification when merging with a normal group", () => {
+    const fix = { ...suggestion, kind: "fix" as const, f5Coverage: "all" as const };
+    const security = {
+      ...suggestion,
+      kind: "security" as const,
+      severity: "critical" as const,
+      f5Coverage: "none" as const,
+    };
+    for (const merged of [mergeSuggestions(fix, security), mergeSuggestions(security, fix)])
+      expect(merged).toMatchObject({
+        kind: "security",
+        severity: "critical",
+        f5Coverage: "partial",
+      });
+    expect(
+      mergeSuggestions({ ...security, severity: "low" }, { ...security, severity: "high" })
+        .severity,
+    ).toBe("high");
+    const unknownCoverage = mergeSuggestions(fix, { ...suggestion, kind: "fix" });
+    expect(unknownCoverage.f5Coverage).toBeUndefined();
+    expect(unknownCoverage.severity).toBeUndefined();
+  });
+
+  it("computes coverage from every changed file, not the 15 the digest lists", () => {
+    const paths = Array.from({ length: 16 }, (_, index) => `apps/web/f${index}.ts`);
+    const base = chunkCommit({ sha: sha(1), subject: "fix: wide change", paths });
+    const wide = {
+      ...base,
+      digest: { ...base.digest, files: base.digest.files.slice(0, 15) },
+      coverageFiles: paths.map((path, index) => ({ path, existsInFork: index < 15 })),
+    };
+    expect(classifySuggestion(suggestion, [classifyCommitOf(wide)], SEED_RULES).f5Coverage).toBe(
+      "partial",
+    );
+    // No fork evidence (the fork's paths could not be read) is unknown, not "none".
+    expect(classifyCommitOf(base).files).toBeNull();
+  });
+
+  it("keeps stored coverage when the commits carry no file evidence", () => {
+    const result = classifySuggestion(
+      { ...suggestion, kind: "fix", f5Coverage: "none" },
+      [commit("fix: a")],
+      SEED_RULES,
+    );
+    expect(result.f5Coverage).toBe("none");
+  });
+
+  it("attributes an area-ignored skip to the rule", () => {
+    const skip = applyAreaPolicy(
+      { ...suggestion, kind: "feat", areas: ["git"], confidence: 0.99 },
+      SEED_RULES,
+      { git: "ignore" },
+    );
+    expect(autoDecision({ suggestion: skip, revertChain: false }, SEED_RULES)).toMatchObject({
+      reasonKey: "area-ignored",
+      decidedBy: "rule",
+    });
   });
 
   it("skips features whose areas are all ignored", () => {

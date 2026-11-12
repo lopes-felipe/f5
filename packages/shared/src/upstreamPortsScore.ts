@@ -133,15 +133,58 @@ export function coverageOf(
   return present === source.length ? "all" : present === 0 ? "none" : "partial";
 }
 
-/** Combines per-commit coverage into the topic's. */
+/**
+ * Combines per-commit coverage into the topic's. `null` or `undefined` is
+ * unknown evidence and makes the whole result unknown (`null`), so a commit
+ * whose files were never checked cannot yield `all`. Callers drop commits
+ * that changed only excluded files before combining.
+ */
 export function combineCoverage(
   values: ReadonlyArray<UpstreamF5Coverage | null | undefined>,
 ): UpstreamF5Coverage | null {
-  const known = values.filter((value): value is UpstreamF5Coverage => value != null);
-  if (known.length === 0) return null;
+  if (values.length === 0 || values.some((value) => value == null)) return null;
+  const known = values as ReadonlyArray<UpstreamF5Coverage>;
   if (known.every((value) => value === "all")) return "all";
   if (known.every((value) => value === "none")) return "none";
   return "partial";
+}
+
+/**
+ * The topic's coverage from per-commit file evidence: `files: null` is
+ * unknown, and commits that changed only excluded files are ignored.
+ */
+export function coverageOfCommits(
+  commits: ReadonlyArray<{
+    readonly files: ReadonlyArray<{ readonly path: string; readonly existsInFork: boolean }> | null;
+  }>,
+): UpstreamF5Coverage | null {
+  const values: Array<UpstreamF5Coverage | null> = [];
+  for (const commit of commits) {
+    if (commit.files === null) {
+      values.push(null);
+      continue;
+    }
+    const coverage = coverageOf(commit.files);
+    if (coverage !== null) values.push(coverage);
+  }
+  return combineCoverage(values);
+}
+
+const SEVERITY_RANK: Readonly<Record<UpstreamSecuritySeverity, number>> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+/** The more severe of two severities; `undefined` when neither is set. */
+export function maxSeverity(
+  a: UpstreamSecuritySeverity | undefined,
+  b: UpstreamSecuritySeverity | undefined,
+): UpstreamSecuritySeverity | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b;
 }
 
 // ── Areas ───────────────────────────────────────────────────────────────
@@ -221,6 +264,8 @@ export const UPSTREAM_SCORE_WEIGHTS = {
   impact: { high: 30, medium: 15, low: 0, none: -15 },
   coverage: { all: 15, partial: 5, none: -20 },
   suggestion: { skip: -30, watch: -10 },
+  /** Features outside followed areas never reach the shortlist (`UPSTREAM_SHORTLIST_MIN_SCORE`). */
+  unfollowedFeatureMax: 49,
 } as const;
 
 export interface ScoreInput {
@@ -299,6 +344,14 @@ export function scoreUpstreamTopic(input: ScoreInput): ScoreResult {
   if (input.suggestionStatus === "skip" || input.suggestionStatus === "watch")
     add(`suggested ${input.suggestionStatus}`, weights.suggestion[input.suggestionStatus]);
   const raw = parts.reduce((sum, part) => sum + part.delta, 0);
+  // Only followed areas put features on the shortlist; the rest wait for the digest.
+  if (lane === "feature" && (input.featurePolicy ?? "fixes-only") !== "follow") {
+    const cap = UPSTREAM_SCORE_WEIGHTS.unfollowedFeatureMax;
+    if (raw > cap) {
+      parts.push({ label: "kept below the shortlist", delta: cap - raw });
+      return { lane, score: cap, parts };
+    }
+  }
   return { lane, score: Math.max(0, Math.min(100, raw)), parts };
 }
 

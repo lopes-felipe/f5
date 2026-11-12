@@ -195,17 +195,19 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
       }),
     );
   return {
-    /** Topics in entries whose request id starts with `prefix`, created at or after `since`. */
+    /**
+     * Topics queued by requests whose client request id starts with `prefix`,
+     * recorded at or after `since`. Reads the immutable request records, so
+     * dequeuing a topic later does not give its slot back.
+     */
     countTopicsRequestedSince: (projectId: string, prefix: string, since: string) =>
-      sql<{ topic_ids_json: string }>`SELECT topic_ids_json FROM upstream_port_queue
-      WHERE project_id = ${projectId} AND substr(request_id,1,${prefix.length}) = ${prefix}
-      AND created_at >= ${since}`.pipe(
-        Effect.map((rows) =>
-          rows.reduce(
-            (sum, row) => sum + (JSON.parse(row.topic_ids_json) as ReadonlyArray<string>).length,
-            0,
-          ),
-        ),
+      sql<{
+        total: number | null;
+      }>`SELECT SUM(COALESCE(json_array_length(result_json,'$.queuedTopicIds'),0)) AS total
+      FROM upstream_port_queue_requests
+      WHERE project_id = ${projectId} AND substr(client_request_id,1,${prefix.length}) = ${prefix}
+      AND created_at >= ${since} AND json_valid(result_json)`.pipe(
+        Effect.map((rows) => Number(rows[0]?.total ?? 0)),
       ),
     getLastDigestAt: (projectId: string) =>
       sql<{ last_digest_at: string | null }>`SELECT last_digest_at FROM upstream_budget_state

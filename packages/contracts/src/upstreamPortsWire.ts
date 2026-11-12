@@ -171,6 +171,7 @@ export const UpstreamChangedReason = Schema.Literals([
   "links-updated",
   "publication-updated",
   "feature-digest",
+  "auto-port",
 ]);
 export type UpstreamChangedReason = typeof UpstreamChangedReason.Type;
 
@@ -178,7 +179,7 @@ export const UpstreamPortsChanged = Schema.Struct({
   projectId: ProjectId,
   reason: UpstreamChangedReason,
   newInboxCount: Schema.optionalKey(NonNegativeInt),
-  /** Set on `run-finished` when the run queued ports automatically. */
+  /** Set on `auto-port`, sent after a run once it queued ports automatically. */
   autoQueuedCount: Schema.optionalKey(NonNegativeInt),
   /** Set on `feature-digest`: Inbox features created in the last seven days. */
   digest: Schema.optionalKey(Schema.Struct({ followed: NonNegativeInt, other: NonNegativeInt })),

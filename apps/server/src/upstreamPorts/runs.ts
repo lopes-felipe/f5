@@ -259,7 +259,8 @@ function reclassifyChunk(
   chunk: ChunkPlan,
   chunkCommits: ReadonlyArray<FirstParentCommit>,
   snapshot: ViewSnapshot,
-  forkPaths: ReadonlySet<string>,
+  /** `null` when the fork's paths could not be read: coverage is then unknown. */
+  forkPaths: ReadonlySet<string> | null,
   warnings: { prBodies: boolean },
   circuit: { consecutiveFailures: number },
   budget: {
@@ -273,28 +274,48 @@ function reclassifyChunk(
       .streamNumstat(context.cwd, chunk.source)
       .pipe(withChunkRetry);
     const bySha = new Map(chunkCommits.map((commit) => [commit.sha, commit]));
+    // Triage scans PR bodies for security hints, so reclassification does too.
+    const prs = [
+      ...new Set(
+        chunkCommits
+          .map((commit) => prNumberFromSubject(commit.subject))
+          .filter((pr): pr is number => pr !== null),
+      ),
+    ];
+    const prBodies =
+      context.prBodies && prs.length
+        ? yield* context.prBodies(prs).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("upstreamPorts.reclassify.prBodies.failed", {
+                detail: describe(error),
+              }).pipe(Effect.as(new Map<number, string>())),
+            ),
+          )
+        : new Map<number, string>();
     const classifyOf = (sha: string, subject: string): ClassifyCommit => {
       const stat = numstat.get(sha);
+      const commit = bySha.get(sha);
+      const pr = commit ? prNumberFromSubject(commit.subject) : null;
       return {
         subject,
-        body: bySha.get(sha)?.body ?? null,
-        files: stat
-          ? stat.paths
-              .filter(
-                (path) =>
-                  !context.rules.ignoredPathPrefixes.some((prefix) => path.startsWith(prefix)),
-              )
-              .map((path) => ({ path, existsInFork: forkPaths.has(path) }))
-          : null,
+        body:
+          [commit?.body, pr !== null ? prBodies.get(pr) : undefined].filter(Boolean).join("\n") ||
+          null,
+        files:
+          stat && forkPaths
+            ? coverageFilesOf(stat.paths, forkPaths, context.rules.ignoredPathPrefixes)
+            : null,
       };
     };
     const entries: RetriageEntry[] = [];
     const needsModel: UpstreamTopic[] = [];
+    const commitsOf = new Map<string, ClassifyCommit[]>();
     for (const topic of chunk.topics ?? []) {
       const suggestion = topic.suggestion;
       if (!suggestion) continue;
       const members = snapshot.view.members.get(topic.id) ?? [];
       const commits = members.map((member) => classifyOf(member.sha, member.subject));
+      commitsOf.set(topic.id, commits);
       if (
         context.triage &&
         suggestion.kind !== "security" &&
@@ -315,6 +336,7 @@ function reclassifyChunk(
       });
     }
     let llmCalls = 0;
+    const resolved = new Set<string>();
     if (needsModel.length && context.triage) {
       const shas = new Set(
         needsModel.flatMap((topic) =>
@@ -355,11 +377,48 @@ function reclassifyChunk(
         ),
       );
       llmCalls = triaged.llmCalls;
-      for (const entry of retriageEntries(needsModel, triaged.groups, snapshot, context.rules))
-        entries.push({ ...entry, decision: null });
+      // The model only settles kind and severity; the rest of the suggestion stays.
+      const byTopic = new Map(needsModel.map((topic) => [topic.id, topic]));
+      for (const entry of retriageEntries(needsModel, triaged.groups, snapshot, context.rules)) {
+        const topic = byTopic.get(entry.topicId)!;
+        const before = topic.suggestion!;
+        const { severity: _severity, ...rest } = before;
+        const next = classifySuggestion(
+          {
+            ...rest,
+            ...(entry.suggestion?.kind ? { kind: entry.suggestion.kind } : {}),
+            ...(entry.suggestion?.severity ? { severity: entry.suggestion.severity } : {}),
+          },
+          commitsOf.get(topic.id) ?? [],
+          context.rules,
+        );
+        resolved.add(topic.id);
+        if (canonicalJson(next) === canonicalJson(before)) continue;
+        entries.push({
+          topicId: topic.id,
+          epoch: topic.epoch,
+          title: topic.title,
+          summary: topic.summary,
+          suggestion: next,
+          decision: null,
+        });
+      }
     }
-    return { entries, llmCalls };
+    // Topics the model could not settle stay unclassified and count as remaining.
+    const unresolved = needsModel.filter((topic) => !resolved.has(topic.id)).length;
+    return { entries, llmCalls, unresolved };
   });
+}
+
+/** Every changed path outside the ignored prefixes, with its presence in the fork. */
+export function coverageFilesOf(
+  paths: ReadonlyArray<string>,
+  forkPaths: ReadonlySet<string>,
+  ignoredPathPrefixes: ReadonlyArray<string>,
+): Array<{ path: string; existsInFork: boolean }> {
+  return paths
+    .filter((path) => !ignoredPathPrefixes.some((prefix) => path.startsWith(prefix)))
+    .map((path) => ({ path, existsInFork: forkPaths.has(path) }));
 }
 
 export function buildChunkCommits(
@@ -368,7 +427,8 @@ export function buildChunkCommits(
   source: CommitSource,
   chunkCommits: ReadonlyArray<FirstParentCommit>,
   snapshot: ViewSnapshot,
-  forkPaths: ReadonlySet<string>,
+  /** `null` when the fork's paths could not be read. */
+  forkPaths: ReadonlySet<string> | null,
   warnings: { prBodies: boolean },
 ) {
   return Effect.gen(function* () {
@@ -418,13 +478,17 @@ export function buildChunkCommits(
           (file) =>
             !context.rules.ignoredPathPrefixes.some((prefix) => file.path.startsWith(prefix)),
         )
-        .map((file) => ({ ...file, existsInFork: forkPaths.has(file.path) }));
+        .map((file) => ({ ...file, existsInFork: forkPaths?.has(file.path) ?? false }));
       return {
         sha: commit.sha,
         subject: initial.kind === "legacy" && entry ? entry.subject : commit.subject,
         body: commit.body,
         pr,
         paths: stat?.paths ?? [],
+        coverageFiles:
+          stat && forkPaths
+            ? coverageFilesOf(stat.paths, forkPaths, context.rules.ignoredPathPrefixes)
+            : null,
         digest: {
           sha: commit.sha,
           subject: commit.subject,
@@ -611,9 +675,15 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       yield* update({ remainingCount: shas.length });
     }
 
-    const forkPaths = yield* git
-      .listPathsAtRef(cwd, baseRef)
-      .pipe(Effect.orElseSucceed(() => new Set<string>()));
+    // Unknown (null) rather than empty on failure, so no path reads as missing from f5.
+    const forkPaths = yield* git.listPathsAtRef(cwd, baseRef).pipe(
+      Effect.map((paths): ReadonlySet<string> | null => paths),
+      Effect.catch((error) =>
+        Effect.logWarning("upstreamPorts.run.forkPaths.failed", { detail: describe(error) }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
     const reachable =
       initial.kind === "legacy"
         ? yield* git.reachableSet(cwd, baseRef).pipe(Effect.orElseSucceed(() => new Set<string>()))
@@ -651,10 +721,10 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
         yield* context
           .recordRetriage(result.entries)
           .pipe(Effect.mapError((error) => runFailure("record", describe(error))));
-        remainingAfter -= chunk.topics?.length ?? 0;
+        remainingAfter -= (chunk.topics?.length ?? 0) - result.unresolved;
+        // Reclassified topics were already in the Inbox, so the run reports none as new.
         yield* update({
           commitCount: run.commitCount + shas.length,
-          inboxCount: run.inboxCount + result.entries.length,
           llmCalls: run.llmCalls + result.llmCalls,
           remainingCount: remainingAfter,
         });

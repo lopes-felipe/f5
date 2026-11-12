@@ -590,10 +590,11 @@ describe("undo, files and history", () => {
   });
 
   it("summarizes an expiry preview and names run kinds", () => {
-    const summary = expireBacklogSummary({ count: 3, byLane: { bug: 2, perf: 0, feature: 1, maintenance: 0 } }, 14);
+    const summary = expireBacklogSummary({ count: 3, byLane: { bug: 2, perf: 0, feature: 1, maintenance: 0 }, unclassified: 4 }, 14);
     expect(summary.title).toBe("Expire 3 topics?");
-    expect(summary.description).toContain("more than 14 days");
+    expect(summary.description).toContain("14 days or more");
     expect(summary.description).toContain("Bugs 2 · Features 1.");
+    expect(summary.description).toContain("4 topics without a classification are kept");
     expect(runKindLabel("reclassify")).not.toBe(runKindLabel("retriage"));
   });
 
