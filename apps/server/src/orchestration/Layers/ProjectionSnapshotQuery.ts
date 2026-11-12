@@ -1,4 +1,5 @@
 import { ScheduledOrigin } from "@t3tools/contracts";
+import { boundedHistoryStreams } from "../historyWindow.ts";
 import { ReadSqlClient } from "../../persistence/ReadSqlClient.ts";
 import { makeThreadFind } from "../threadFind.ts";
 import { SnapshotReadClients, withSnapshotRead } from "../../persistence/snapshotReadExecutor.ts";
@@ -23,6 +24,7 @@ import {
   MessageId,
   NonNegativeInt,
   OrchestrationCommandExecutionSummary,
+  OrchestrationCommandExecutionId,
   OrchestrationCheckpointFile,
   OrchestrationGetThreadHistoryPageInput,
   OrchestrationGetStartupSnapshotResult,
@@ -829,6 +831,44 @@ function resolveThreadHistoryCommandExecutionLimit(commandExecutionLimit?: numbe
   );
 }
 
+function historyContinuationCursors(params: {
+  checkpoints: ReadonlyArray<ProjectionCheckpoint>;
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  commandExecutions: ReadonlyArray<OrchestrationCommandExecutionSummary>;
+  deferredCheckpoint?: ProjectionCheckpoint | undefined;
+  deferredActivity?: OrchestrationThreadActivity | undefined;
+  deferredCommandExecution?: OrchestrationCommandExecutionSummary | undefined;
+}) {
+  // Keyset reads use strict "<". Appending NUL gives an exclusive boundary
+  // immediately above a deferred opaque ID, so that row is included next time.
+  const activity = params.deferredActivity;
+  const command = params.deferredCommandExecution;
+  return {
+    oldestLoadedCheckpointTurnCount:
+      resolveOldestLoadedCheckpointTurnCount(params.checkpoints) ??
+      (params.deferredCheckpoint ? params.deferredCheckpoint.checkpointTurnCount + 1 : null),
+    oldestLoadedActivityCursor:
+      resolveOldestLoadedActivityCursor(params.activities) ??
+      (activity
+        ? {
+            sequenceIsNull: activity.sequence === undefined,
+            sequence: activity.sequence ?? null,
+            createdAt: activity.createdAt,
+            activityId: EventId.makeUnsafe(activity.id + "\0"),
+          }
+        : null),
+    oldestLoadedCommandExecutionCursor:
+      resolveOldestLoadedCommandExecutionCursor(params.commandExecutions) ??
+      (command
+        ? {
+            startedAt: command.startedAt,
+            startedSequence: command.startedSequence,
+            commandExecutionId: OrchestrationCommandExecutionId.makeUnsafe(command.id + "\0"),
+          }
+        : null),
+  };
+}
+
 function buildThreadTailDetailsResult(params: {
   readonly scope: "getStartupSnapshot" | "getThreadTailDetails";
   readonly threadId: OrchestrationThreadTailDetails["threadId"];
@@ -844,6 +884,8 @@ function buildThreadTailDetailsResult(params: {
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadTailDetails, ProjectionRepositoryError> {
+  const bounded = boundedHistoryStreams(params);
+  params = bounded;
   return decodeThreadTailDetails({
     threadId: params.threadId,
     messages: mapThreadDetailMessages(params.messages),
@@ -863,11 +905,7 @@ function buildThreadTailDetailsResult(params: {
     hasOlderActivities: params.hasOlderActivities,
     hasOlderCommandExecutions: params.hasOlderCommandExecutions,
     oldestLoadedMessageCursor: resolveOldestLoadedMessageCursor(params.messages),
-    oldestLoadedCheckpointTurnCount: resolveOldestLoadedCheckpointTurnCount(params.checkpoints),
-    oldestLoadedActivityCursor: resolveOldestLoadedActivityCursor(params.activities),
-    oldestLoadedCommandExecutionCursor: resolveOldestLoadedCommandExecutionCursor(
-      params.commandExecutions,
-    ),
+    ...historyContinuationCursors(bounded),
     detailSequence: params.detailSequence,
   }).pipe(
     Effect.mapError(
@@ -877,6 +915,8 @@ function buildThreadTailDetailsResult(params: {
 }
 
 function buildThreadHistoryPageResult(params: {
+  readonly forwardMessages?: boolean;
+  readonly forwardActivities?: boolean;
   readonly threadId: OrchestrationThreadHistoryPage["threadId"];
   readonly messages: ReadonlyArray<ProjectionThreadMessage>;
   readonly checkpoints: ReadonlyArray<ProjectionCheckpoint>;
@@ -890,6 +930,8 @@ function buildThreadHistoryPageResult(params: {
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadHistoryPage, ProjectionRepositoryError> {
+  const bounded = boundedHistoryStreams(params, params.forwardMessages, params.forwardActivities);
+  params = bounded;
   return decodeThreadHistoryPage({
     threadId: params.threadId,
     messages: mapThreadDetailMessages(params.messages),
@@ -906,12 +948,8 @@ function buildThreadHistoryPageResult(params: {
     hasOlderCommandExecutions: params.hasOlderCommandExecutions,
     oldestLoadedMessageCursor: resolveOldestLoadedMessageCursor(params.messages),
     newestLoadedMessageCursor: resolveNewestLoadedMessageCursor(params.messages),
-    oldestLoadedCheckpointTurnCount: resolveOldestLoadedCheckpointTurnCount(params.checkpoints),
-    oldestLoadedActivityCursor: resolveOldestLoadedActivityCursor(params.activities),
+    ...historyContinuationCursors(bounded),
     newestLoadedActivityCursor: resolveNewestLoadedActivityCursor(params.activities),
-    oldestLoadedCommandExecutionCursor: resolveOldestLoadedCommandExecutionCursor(
-      params.commandExecutions,
-    ),
     detailSequence: params.detailSequence,
   }).pipe(
     Effect.mapError(
@@ -3174,6 +3212,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
         const threadExists = Option.isSome(threadOption);
         return yield* buildThreadHistoryPageResult({
+          forwardMessages: input.afterMessageCursor != null,
+          forwardActivities: input.afterActivityCursor != null,
           threadId: input.threadId,
           messages: threadExists ? messageResult.messages : [],
           checkpoints: threadExists ? checkpointResult.checkpoints : [],

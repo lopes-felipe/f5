@@ -1,4 +1,5 @@
 import { McpAppFrame } from "./McpAppFrame";
+import { settleListScroll } from "./settleListScroll";
 import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
 import { highlightThreadFind } from "./threadFindHighlights";
@@ -404,6 +405,7 @@ interface MessagesTimelineProps {
    * owned elsewhere stops tail-following in the same frame it scrolls.
    */
   leaveEndRef?: MutableRefObject<(() => void) | null> | undefined;
+  onLeaveEnd?: (() => void) | undefined;
   /** Runs after each committed change of the entry-to-row map. */
   onEntryRowIndexMapCommit?: (() => void) | undefined;
   /** Header element the "Conversation navigation" control portals into. */
@@ -525,6 +527,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onQuoteAssistantMessage,
   onNavigateToEntry,
   leaveEndRef,
+  onLeaveEnd,
   onEntryRowIndexMapCommit,
   navigationHost = null,
   onOpenThreadFind,
@@ -650,9 +653,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return;
     }
     if (!initialScrollAtEndEnabled) return;
-    const frame = window.requestAnimationFrame(() => setInitialScrollAtEndEnabled(false));
-    return () => window.cancelAnimationFrame(frame);
-  }, [initialScrollAtEndEnabled, rowCount]);
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => {
+      const list = listRef.current;
+      if (!list) return;
+      void settleListScroll(
+        list,
+        () => cancelled || !liveFollowEnabledRef.current || listRef.current !== list,
+      ).then(() => {
+        if (!cancelled) setInitialScrollAtEndEnabled(false);
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [initialScrollAtEndEnabled, listRef, rowCount]);
   const lastRowId = rowCount > 0 ? (rows[rowCount - 1]?.id ?? null) : null;
   const entryRowIndexMap = useMemo(
     () =>
@@ -891,6 +907,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
   const leaveEnd = useCallback(() => {
+    onLeaveEnd?.();
     manualScrollGenerationRef.current++;
     isAtEndRef.current = false;
     liveFollowEnabledRef.current = false;
@@ -900,7 +917,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       window.cancelAnimationFrame(disclosureSettleFrameRef.current);
       disclosureSettleFrameRef.current = null;
     }
-  }, []);
+  }, [onLeaveEnd]);
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {

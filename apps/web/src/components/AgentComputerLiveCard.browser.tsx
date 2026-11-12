@@ -595,6 +595,8 @@ it("shows the tier badge and browser warning in the consent dialog", async () =>
 });
 
 it("shows consent deadlines and the number waiting, and records tool actions only once", async () => {
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
   const store = useAgentComputerActivityStore.getState();
   window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
   store.request({ ...accessRequest("deadline", "Review"), expiresAtMs: Date.now() + 65_000 });

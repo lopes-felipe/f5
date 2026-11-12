@@ -8,6 +8,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
 
+### Fixed
+
+- Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+
 ## [0.1.8] - 2026-11-12
 
 ### Added
