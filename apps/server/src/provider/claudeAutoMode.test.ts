@@ -7,6 +7,21 @@ import {
 } from "./claudeAutoMode.ts";
 
 describe("claudeRuntimePermissionMode", () => {
+  it("retains approvals when bypass is restricted", () => {
+    expect(
+      claudeRuntimePermissionMode("full-access", true, {
+        bypassDisabled: true,
+        autoDisabled: false,
+      }).mode,
+    ).toBe("auto");
+    for (const support of [true, false, undefined])
+      expect(
+        claudeRuntimePermissionMode("full-access", support, {
+          bypassDisabled: true,
+          autoDisabled: true,
+        }).mode,
+      ).toBe("default");
+  });
   it("uses auto only with explicit model support", () => {
     expect(claudeRuntimePermissionMode("auto", true)).toEqual({
       mode: "auto",

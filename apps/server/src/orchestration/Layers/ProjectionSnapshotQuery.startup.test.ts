@@ -330,6 +330,69 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
   });
 
 projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
+  it.effect("can page older work when alignment leaves an empty activity stream", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`UPDATE projection_thread_activities
+        SET turn_id = 'older-turn', created_at = '2026-04-01T08:00:00.000Z'`;
+      const tail = yield* query.getThreadTailDetails({
+        threadId: asThreadId("thread-1"),
+        messageLimit: 1,
+      });
+      assert.deepEqual(tail.activities, []);
+      assert.isTrue(tail.hasOlderActivities);
+      assert.isNotNull(tail.oldestLoadedActivityCursor);
+      const page = yield* query.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        beforeMessageCursor: null,
+        beforeCheckpointTurnCount: null,
+        beforeCommandExecutionCursor: null,
+        activityCursor: tail.oldestLoadedActivityCursor,
+      });
+      assert.isAbove(page.activities.length, 0);
+      assert.equal(page.activities.at(-1)?.id, asEventId("activity-1"));
+    }),
+  );
+  it.effect("bounds a long single turn and pages every message without gaps", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`DELETE FROM projection_thread_messages`;
+      const ids = Array.from({ length: 900 }, (_, index) => String(index).padStart(4, "0"));
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        SELECT value, 'thread-1', 'turn-1', 'assistant', ${"x".repeat(8000)}, 0,
+          '2026-04-01T09:00:04.000Z', '2026-04-01T09:00:05.000Z'
+        FROM json_each(${JSON.stringify(ids)})
+      `;
+      const tail = yield* query.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+      assert.isBelow(Buffer.byteLength(JSON.stringify(tail)), 1_048_576);
+      assert.isBelow(tail.messages.length, 120);
+      const loaded = tail.messages.map((message) => String(message.id));
+      let cursor = tail.oldestLoadedMessageCursor;
+      let hasOlder = tail.hasOlderMessages;
+      while (hasOlder) {
+        const page = yield* query.getThreadHistoryPage({
+          threadId: asThreadId("thread-1"),
+          beforeMessageCursor: cursor,
+          beforeCheckpointTurnCount: null,
+          activityCursor: null,
+          beforeCommandExecutionCursor: null,
+        });
+        assert.isAbove(page.messages.length, 0);
+        assert.isBelow(Buffer.byteLength(JSON.stringify(page)), 1_048_576);
+        loaded.push(...page.messages.map((message) => String(message.id)));
+        cursor = page.oldestLoadedMessageCursor;
+        hasOlder = page.hasOlderMessages;
+      }
+      assert.deepEqual(loaded.sort(), ids);
+    }),
+  );
   it.effect(
     "searches unloaded older messages and plans, counts occurrences and hydrates the selected plan",
     () =>
@@ -883,8 +946,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         assert.equal(bootstrapThread.proposedPlans[0]?.id, "plan-4");
         assert.equal(bootstrapThread.activities.length, MAX_THREAD_ACTIVITIES);
         assert.equal(bootstrapThread.activities[0]?.id, asEventId("activity-5"));
-        assert.equal(tail.activities.length, MAX_THREAD_ACTIVITIES);
-        assert.equal(tail.activities[0]?.id, asEventId("activity-5"));
+        // These synthetic activities predate every message in the bounded tail.
+        assert.equal(tail.activities.length, 0);
+        assert.isNotNull(tail.oldestLoadedActivityCursor);
         assert.equal(tail.hasOlderActivities, true);
         assert.equal(bootstrapThread.checkpoints.length, MAX_THREAD_CHECKPOINTS);
         assert.equal(bootstrapThread.checkpoints[0]?.turnId, asTurnId("turn-4"));

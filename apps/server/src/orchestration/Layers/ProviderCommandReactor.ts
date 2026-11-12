@@ -671,6 +671,11 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           instanceId: input.targetInstanceId,
           text: input.userText,
+          cwd:
+            resolveThreadWorkspaceCwd({
+              thread,
+              projects: (yield* orchestrationEngine.getReadModel()).projects,
+            }) ?? undefined,
         })
       : "prompt";
     if (classification === "native-command")
@@ -2258,6 +2263,11 @@ const make = Effect.gen(function* () {
           threadId,
           instanceId: activeInstanceId,
           text: input.userText,
+          cwd:
+            resolveThreadWorkspaceCwd({
+              thread,
+              projects: (yield* orchestrationEngine.getReadModel()).projects,
+            }) ?? undefined,
         })
       : "prompt";
     const base = {
