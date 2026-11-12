@@ -7,6 +7,9 @@ export function settleListScroll(
   cancelled: () => boolean,
 ): Promise<void> {
   return new Promise((resolve) => {
+    // scrollToEnd can resolve after the caller's view has unmounted. LegendList's
+    // ref methods dereference its disposed scroller, so check ownership first.
+    if (cancelled()) return resolve();
     let frames = 0;
     let stable = 0;
     let interrupted = false;

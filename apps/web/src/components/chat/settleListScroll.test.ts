@@ -3,6 +3,24 @@ import { settleListScroll } from "./settleListScroll";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("does not access a disposed list when the initial scroll resolves after unmount", async () => {
+  let mounted = true;
+  let release!: () => void;
+  const scrolling = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const getScrollableNode = vi.fn(() => {
+    throw new Error("The list scroller was disposed");
+  });
+  const done = scrolling.then(() =>
+    settleListScroll({ getScrollableNode, scrollToOffset: vi.fn() }, () => !mounted),
+  );
+  mounted = false;
+  release();
+  await done;
+  expect(getScrollableNode).not.toHaveBeenCalled();
+});
+
 it("corrects changing DOM measurements before accepting two stable frames", async () => {
   const frames: FrameRequestCallback[] = [];
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));

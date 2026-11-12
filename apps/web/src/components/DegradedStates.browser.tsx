@@ -4,6 +4,7 @@ import {
   TimelineHarness,
   makeUserEntry,
   makeAssistantEntry,
+  waitForTimelineLayout,
   type TimelineHarnessApi,
   type TimelineEntry,
 } from "../test/timeline";
@@ -314,9 +315,9 @@ it.each(["restore", "pending layout", "wheel", "abort", "replacement", "tail"] a
         .toBeLessThan(8);
       await expect.poll(() => list).not.toBeNull();
       await expect.poll(() => host.querySelector('[data-message-id="anchor-79"]')).not.toBeNull();
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      );
+      // Wait for measured end settling before setting up the history-reading
+      // position; two frames can still overlap the initial end correction.
+      await waitForTimelineLayout(() => node);
       await list!.scrollToOffset({ offset: 0, animated: false });
       node.dispatchEvent(new Event("scroll"));
       await expect.poll(() => readTimelineScrollAnchor(node).atEnd).toBe(false);
