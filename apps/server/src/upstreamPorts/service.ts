@@ -13,8 +13,12 @@ import {
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   CommandId,
+  DEFAULT_RUNTIME_MODE,
   UPSTREAM_LIST_IDS_MAX,
+  UPSTREAM_MAX_DECIDE_TOPICS,
   UpstreamPortsSettings,
+  type UpstreamExpireBacklogInput,
+  type UpstreamExpireBacklogResult,
   UpstreamTriageBatchResult,
   type ModelSelection,
   type NextTurnQueueSubmitInput,
@@ -81,10 +85,12 @@ import {
   coverageTarget,
   EMPTY_LEDGER,
   isLedgerStatePath,
+  isValidReasonKey,
   localDate,
   parseLedgerFiles,
   parseRules,
   pickDecisionFields,
+  reasonLabel,
   parseUpstreamTopicTrailers,
   sha256Hex,
   POLICY_PATH,
@@ -122,7 +128,7 @@ import {
   portFileKeys,
   type PortGroupingTopic,
 } from "@t3tools/shared/upstreamPortsGrouping";
-import { Data, Effect, Exit, Schema, Scope, Semaphore, Stream } from "effect";
+import { Cause, Data, Effect, Exit, Schema, Scope, Semaphore, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeBackgroundWorker } from "../backgroundWorker.ts";
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
@@ -154,6 +160,17 @@ import {
   portSubmissionId,
   portThreadTitle,
 } from "./admission.ts";
+import {
+  AGED_OUT_REASON_KEY,
+  AUTO_PORT_REQUEST_PREFIX,
+  autoPortCandidates,
+  countExpiryByLane,
+  DIGEST_MIN_INTERVAL_MS,
+  expiryCandidates,
+  featureDigest,
+  isClassified,
+  localDayStart,
+} from "./budget.ts";
 import { decisionFields, DecisionError, suggestionDecision } from "./decisions.ts";
 import type { CommitNumstat, UpstreamGit } from "./git.ts";
 import { parseGitHubRepo, type PullRequestTopicEvidence, type UpstreamGitHub } from "./github.ts";
@@ -400,6 +417,9 @@ export interface UpstreamPortsService {
   readonly undoDecisions: (
     input: UpstreamUndoDecisionsInput,
   ) => Effect.Effect<UpstreamDecideResult, UpstreamPortsError>;
+  readonly expireBacklog: (
+    input: UpstreamExpireBacklogInput,
+  ) => Effect.Effect<UpstreamExpireBacklogResult, UpstreamPortsError>;
   readonly getTopicFiles: (
     input: UpstreamGetTopicInput,
   ) => Effect.Effect<UpstreamTopicFiles, UpstreamPortsError>;
@@ -501,12 +521,14 @@ export function makeUpstreamPortsService(
       projectId: string,
       reason: UpstreamPortsChanged["reason"],
       newInboxCount?: number,
+      extra?: Pick<UpstreamPortsChanged, "autoQueuedCount">,
     ) =>
       host
         .publish({
           projectId: projectId as ProjectId,
           reason,
           ...(newInboxCount !== undefined ? { newInboxCount } : {}),
+          ...extra,
         })
         .pipe(Effect.ignore);
 
@@ -721,18 +743,25 @@ export function makeUpstreamPortsService(
         const publication = yield* store
           .getPublication(context.projectId)
           .pipe(Effect.mapError(internal));
-        const rows = deriveRows(view, base.trailers, links, today());
+        const rows = deriveRows(view, base.trailers, links, today(), context.settings.areaPolicy);
+        // Scores depend on the area policy and the shortlist on its size.
+        const scoring = canonicalJson({
+          areaPolicy: context.settings.areaPolicy,
+          shortlistSize: context.settings.budget.shortlistSize,
+        });
         const revision = revisionOf({
           baseSha: base.baseSha,
           maxSeq,
           linksVersion: publication.linksVersion,
           today: today(),
+          scoring,
         });
         const contentRevision = revisionOf({
           baseSha: base.baseSha,
           maxSeq,
           linksVersion: 0,
           today: today(),
+          scoring,
         });
         return { base, view, rows, links, publication, revision, contentRevision, maxSeq };
       });
@@ -1002,6 +1031,8 @@ export function makeUpstreamPortsService(
         yield* requireWriter(context.cwd);
         if (input.kind === "retriage" && (input.triage !== "llm" || input.trigger !== "manual"))
           return yield* fail("invalid", "Re-triage requires a manual LLM run.");
+        if (input.kind === "reclassify" && input.trigger !== "manual")
+          return yield* fail("invalid", "Reclassify runs only on request.");
         if (activeRuns.has(context.projectId))
           return yield* fail("busy", "A run is already in progress for this project.");
         // Reserve before anything yields, so a double click or a racing scheduler
@@ -1088,6 +1119,7 @@ export function makeUpstreamPortsService(
               prBodies,
               rules,
               policy: snapshot.base.policy,
+              areaPolicy: context.settings.areaPolicy,
               archive: snapshot.base.archive,
               triage,
               model,
@@ -1145,13 +1177,24 @@ export function makeUpstreamPortsService(
                 yield* emit(
                   context.projectId,
                   "run-finished",
-                  finished.kind === "retriage" ? undefined : finished.inboxCount,
+                  finished.kind === "retriage" || finished.kind === "reclassify"
+                    ? undefined
+                    : finished.inboxCount,
                 );
                 schedulePublish(context.projectId, 0);
+                // Auto-port, expiry and the digest run after the run's slot is free, so they
+                // neither delay the notification nor block the next run.
+                postRun = afterUpstreamRun(context, finished);
               }),
             ),
-            Effect.ensuring(Effect.sync(() => activeRuns.delete(context.projectId))),
+            Effect.ensuring(
+              Effect.suspend(() => {
+                activeRuns.delete(context.projectId);
+                return postRun ? track(postRun) : Effect.void;
+              }),
+            ),
           );
+          let postRun: Effect.Effect<void> | null = null;
           yield* track(work);
           return { runId };
         }).pipe(Effect.onError(() => Effect.sync(() => activeRuns.delete(context.projectId))));
@@ -1424,6 +1467,8 @@ export function makeUpstreamPortsService(
             state: row.state,
             commitCount: row.commitCount,
             doneBy: row.doneBy,
+            lane: row.lane,
+            score: row.score,
             links: relevant
               .filter((link) => link.topicId === row.topic.id && link.epoch === row.topic.epoch)
               .map((link) => ({
@@ -1748,6 +1793,346 @@ export function makeUpstreamPortsService(
         return result;
       });
 
+    // ── Budget: expiry, auto-port, feature digest ──
+
+    const activeLinkTopicIds = (snapshot: CurrentView) =>
+      new Set(
+        snapshot.links
+          .filter(
+            (link) =>
+              link.state === "active" &&
+              snapshot.view.topicsById.get(link.topicId)?.epoch === link.epoch,
+          )
+          .map((link) => link.topicId),
+      );
+
+    /**
+     * Skips Inbox topics that waited past the window (`aged-out`, decided by
+     * rule) in batches under the repository lock, re-checking each batch
+     * against the view read under that lock. Queued topics are Ready, never
+     * Inbox, so only port links need excluding.
+     */
+    const expireTopics = (
+      context: ProjectContext,
+      input: {
+        readonly olderThanDays: number;
+        readonly dryRun: boolean;
+        readonly mode: "user" | "background";
+        /** Keep an undo token (manual expiry only); joins `undoToken` when given. */
+        readonly undo: boolean;
+        readonly undoToken?: string | undefined;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const snapshot = yield* currentView(context);
+        const options = (busyTopicIds: ReadonlySet<string>) => ({
+          olderThanDays: input.olderThanDays,
+          keepScore: context.settings.budget.keepScore,
+          today: today(),
+          busyTopicIds,
+        });
+        const candidates = expiryCandidates(snapshot.rows, options(activeLinkTopicIds(snapshot)));
+        const unclassified = snapshot.rows.filter(
+          (row) => row.state === "inbox" && !isClassified(row),
+        ).length;
+        if (input.dryRun || candidates.length === 0) {
+          const result: UpstreamExpireBacklogResult = {
+            revision: snapshot.revision,
+            count: candidates.length,
+            byLane: countExpiryByLane(candidates),
+            undoToken: input.undoToken ?? null,
+            unclassified,
+          };
+          return result;
+        }
+        yield* requireParsedLedger(snapshot.base);
+        const rules = yield* requireRules(snapshot.base);
+        if (!isValidReasonKey(rules, AGED_OUT_REASON_KEY))
+          return yield* fail(
+            "unavailable",
+            `The default branch ${RULES_PATH} has no ${AGED_OUT_REASON_KEY} reason key yet.`,
+          );
+        const reason = `${reasonLabel(rules, AGED_OUT_REASON_KEY)} after ${input.olderThanDays} days`;
+        const ids = candidates.map((row) => row.topic.id);
+        const expired: DerivedRow[] = [];
+        let token = input.undoToken;
+        let stoppedEarly: string | undefined;
+        for (let start = 0; start < ids.length; start += UPSTREAM_MAX_DECIDE_TOPICS) {
+          const batch = new Set(ids.slice(start, start + UPSTREAM_MAX_DECIDE_TOPICS));
+          const attempt = yield* recordPlanned(context, input.mode, (fresh) => {
+            const still = expiryCandidates(
+              fresh.rows.filter((row) => batch.has(row.topic.id)),
+              options(activeLinkTopicIds(fresh)),
+            );
+            const ops: UpstreamLedgerOp[] = [];
+            const undo: Array<UndoRecord["entries"][number]> = [];
+            for (const row of still) {
+              const fields = decisionFields(
+                row.topic,
+                { kind: "skip", reasonKey: AGED_OUT_REASON_KEY, reason },
+                {
+                  rules,
+                  state: row.state,
+                  now: now().toISOString(),
+                  today: today(),
+                  baseSha: fresh.base.baseSha,
+                  decidedBy: "rule",
+                },
+              );
+              ops.push({ kind: "decision", topicId: row.topic.id, fields });
+              undo.push({
+                topicId: row.topic.id,
+                before: pickDecisionFields(row.topic),
+                after: undoKey(fields),
+              });
+            }
+            return { ops, result: { rows: still, undo } };
+          }).pipe(Effect.exit);
+          if (Exit.isFailure(attempt)) {
+            // The first batch failing is a plain failure. After that, return what expired
+            // with its undo token instead of losing the token with the error.
+            if (expired.length === 0) return yield* Effect.failCause(attempt.cause);
+            stoppedEarly = describe(Cause.squash(attempt.cause));
+            yield* Effect.logWarning("upstreamPorts.expiry.stoppedEarly", {
+              projectId: context.projectId,
+              expired: expired.length,
+              detail: stoppedEarly,
+            });
+            break;
+          }
+          const planned = attempt.value;
+          expired.push(...planned.rows);
+          if (input.undo) token = saveUndo(context.projectId, planned.undo, token) ?? token;
+        }
+        const after = yield* currentView(context);
+        const result: UpstreamExpireBacklogResult = {
+          revision: after.revision,
+          count: expired.length,
+          byLane: countExpiryByLane(expired),
+          undoToken: input.undo ? (token ?? null) : null,
+          unclassified,
+          ...(stoppedEarly !== undefined ? { stoppedEarly } : {}),
+        };
+        return result;
+      });
+
+    const expireBacklog: UpstreamPortsService["expireBacklog"] = (input) =>
+      Effect.gen(function* () {
+        const context = yield* resolveContext(input.projectId);
+        yield* requireConfig(context);
+        return yield* expireTopics(context, {
+          olderThanDays: input.olderThanDays,
+          dryRun: input.dryRun,
+          mode: "user",
+          undo: true,
+          undoToken: input.undoToken,
+        });
+      }).pipe(Effect.mapError(internal));
+
+    /**
+     * Queues the run's new high-severity security fixes (and, when enabled,
+     * high-impact bug fixes in f5-covered code) up to the daily limit. Returns
+     * how many topics it queued; skips with a log line when it cannot.
+     */
+    const autoPortAfterRun = (context: ProjectContext, finished: RunRecord) =>
+      Effect.gen(function* () {
+        const settings = context.settings;
+        if (settings.autoPort.mode === "off") return 0;
+        const skip = (detail: string) =>
+          Effect.logInfo("upstreamPorts.autoPort.skipped", {
+            projectId: context.projectId,
+            runId: finished.runId,
+            detail,
+          }).pipe(Effect.as(0));
+        const modelSelection = settings.portModelSelection;
+        if (!modelSelection) return yield* skip("no port model is selected in Upstream settings");
+        // Review stays on unless it is turned off: incomplete reviewer choices hold auto-port.
+        const reviewSettings = settings.portReview;
+        let review: UpstreamPortReviewRequest | null = null;
+        if (reviewSettings.enabled) {
+          if (
+            !reviewSettings.reviewerA ||
+            !reviewSettings.reviewerB ||
+            !reviewSettings.consolidation
+          )
+            return yield* skip(
+              "code review after port is on but its reviewer models are not chosen; choose them once in Start port",
+            );
+          review = {
+            reviewerA: reviewSettings.reviewerA,
+            reviewerB: reviewSettings.reviewerB,
+            consolidation: reviewSettings.consolidation,
+          };
+        }
+        if (!(yield* isWriter(context.cwd))) return yield* skip("this profile is not the writer");
+        // Check what enqueueing checks before any decision is recorded.
+        const providers = yield* host.listProviders;
+        if (
+          !providers.some(
+            (provider) => provider.instanceId === modelSelection.instanceId && provider.enabled,
+          )
+        )
+          return yield* skip("the saved port model's provider instance is unavailable");
+        const reviewProblem = yield* validatePortReview(review).pipe(
+          Effect.as(null),
+          Effect.catch((error) => Effect.succeed(describe(error))),
+        );
+        if (reviewProblem !== null) return yield* skip(`review settings: ${reviewProblem}`);
+        const state = yield* queue.getQueueState(context.projectId);
+        if (state.paused || state.holdKind)
+          return yield* skip(`the port queue is ${state.paused ? "paused" : "held"}`);
+        const used = yield* queue.countTopicsRequestedSince(
+          context.projectId,
+          AUTO_PORT_REQUEST_PREFIX,
+          localDayStart(now()),
+        );
+        const remaining = settings.autoPort.dailyLimit - used;
+        if (remaining <= 0) return yield* skip("the daily auto-port limit is reached");
+        const snapshot = yield* currentView(context);
+        const created = new Set(
+          snapshot.rows
+            .filter((row) => row.topic.createdAt >= finished.startedAt)
+            .map((row) => row.topic.id),
+        );
+        const picked = autoPortCandidates(snapshot.rows, {
+          mode: settings.autoPort.mode,
+          topicIds: created,
+          busyTopicIds: activeLinkTopicIds(snapshot),
+        }).slice(0, remaining);
+        if (picked.length === 0) return 0;
+        const rules = yield* requireRules(snapshot.base);
+        const pickedIds = new Set(picked.map((row) => row.topic.id));
+        const decided = yield* recordPlanned(context, "background", (fresh) => {
+          const ops: UpstreamLedgerOp[] = [];
+          const undo: Array<UndoRecord["entries"][number]> = [];
+          for (const row of fresh.rows) {
+            if (
+              !pickedIds.has(row.topic.id) ||
+              row.state !== "inbox" ||
+              row.topic.status !== "inbox"
+            )
+              continue;
+            const fields = decisionFields(
+              row.topic,
+              { kind: "port" },
+              {
+                rules,
+                state: row.state,
+                now: now().toISOString(),
+                today: today(),
+                baseSha: fresh.base.baseSha,
+                decidedBy: "llm",
+              },
+            );
+            ops.push({ kind: "decision", topicId: row.topic.id, fields });
+            undo.push({
+              topicId: row.topic.id,
+              before: pickDecisionFields(row.topic),
+              after: undoKey(fields),
+            });
+          }
+          return { ops, result: undo };
+        });
+        if (decided.length === 0) return 0;
+        const topicIds = decided.map((entry) => entry.topicId);
+        const queued = yield* enqueuePort({
+          projectId: context.projectId as ProjectId,
+          target: { kind: "ids", topicIds: topicIds as [string, ...string[]] },
+          grouping: "separately",
+          modelSelection,
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          review,
+          clientRequestId: `${AUTO_PORT_REQUEST_PREFIX}${finished.runId}`,
+        }).pipe(Effect.exit);
+        const notQueued = Exit.isSuccess(queued)
+          ? topicIds.filter((id) => !queued.value.queuedTopicIds.includes(id))
+          : topicIds;
+        if (notQueued.length > 0) {
+          // Put topics that did not reach the queue back in the Inbox, unless they changed since,
+          // rather than leaving them Ready with nothing queued.
+          const restore = new Set(notQueued);
+          yield* restoreDecisions(context, {
+            token: "auto-port",
+            expiresAt: 0,
+            entries: decided.filter((entry) => restore.has(entry.topicId)),
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("upstreamPorts.autoPort.restoreFailed", {
+                projectId: context.projectId,
+                cause,
+              }),
+            ),
+          );
+        }
+        if (Exit.isFailure(queued)) return yield* Effect.failCause(queued.cause);
+        return queued.value.queuedTopicIds.length;
+      });
+
+    /** At most once every six days, after a scheduled run: Inbox features from the last week. */
+    const featureDigestAfterRun = (context: ProjectContext, finished: RunRecord) =>
+      Effect.gen(function* () {
+        if (finished.trigger === "manual") return;
+        const last = yield* queue.getLastDigestAt(context.projectId);
+        if (last !== null && now().getTime() - Date.parse(last) < DIGEST_MIN_INTERVAL_MS) return;
+        const snapshot = yield* currentView(context);
+        const digest = featureDigest(snapshot.rows, today(), context.settings.areaPolicy);
+        yield* queue.setLastDigestAt(context.projectId, now().toISOString());
+        if (digest.followed + digest.other > 0)
+          yield* host
+            .publish({
+              projectId: context.projectId as ProjectId,
+              reason: "feature-digest",
+              digest,
+            })
+            .pipe(Effect.ignore);
+      });
+
+    /** Auto-port, then expiry, then the digest; each step logs and continues on failure. */
+    const afterUpstreamRun = (
+      finishedContext: ProjectContext,
+      finished: RunRecord,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (
+          finished.kind !== "upstream" ||
+          (finished.status !== "succeeded" && finished.status !== "partial")
+        )
+          return;
+        // Settings may have changed while the run was going.
+        const context = yield* resolveContext(finishedContext.projectId).pipe(
+          Effect.orElseSucceed(() => finishedContext),
+        );
+        // Defects too: one failing step never stops the others.
+        const step = <A, E>(name: string, effect: Effect.Effect<A, E>, fallback: A) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(`upstreamPorts.${name}.failed`, {
+                projectId: context.projectId,
+                detail: describe(Cause.squash(cause)),
+              }).pipe(Effect.as(fallback)),
+            ),
+          );
+        const autoQueued = yield* step("autoPort", autoPortAfterRun(context, finished), 0);
+        if (autoQueued > 0) {
+          yield* emit(context.projectId, "auto-port", undefined, { autoQueuedCount: autoQueued });
+          schedulePublish(context.projectId, 0);
+        }
+        const expireAfterDays = context.settings.budget.expireAfterDays;
+        if (expireAfterDays !== null)
+          yield* step(
+            "expiry",
+            expireTopics(context, {
+              olderThanDays: expireAfterDays,
+              dryRun: false,
+              mode: "background",
+              undo: false,
+            }),
+            null,
+          );
+        yield* step("featureDigest", featureDigestAfterRun(context, finished), undefined);
+        schedulePublish(context.projectId, 0);
+      });
+
     // ── RPC ──
 
     const getOverview: UpstreamPortsService["getOverview"] = (projectId) =>
@@ -1812,6 +2197,7 @@ export function makeUpstreamPortsService(
           reasonKeys: [],
           reasonLabels: {},
           upstreamOnlySubsystems: [],
+          areas: [],
         };
         if (!context.config) return empty;
         const config = context.config;
@@ -1897,6 +2283,7 @@ export function makeUpstreamPortsService(
           reasonKeys: rules?.reasonKeys ?? [],
           reasonLabels: rules?.reasonLabels ?? {},
           upstreamOnlySubsystems: rules?.upstreamOnlySubsystems ?? [],
+          areas: (rules?.areas ?? []).map((area) => ({ key: area.key, label: area.label })),
         } satisfies UpstreamOverview;
       }).pipe(Effect.mapError(internal));
 
@@ -1928,7 +2315,13 @@ export function makeUpstreamPortsService(
         const context = yield* resolveContext(input.projectId);
         yield* requireConfig(context);
         const snapshot = yield* currentView(context);
-        const page = pageRows(snapshot.rows, input, snapshot.contentRevision, subjectsOf(snapshot));
+        const page = pageRows(
+          snapshot.rows,
+          input,
+          snapshot.contentRevision,
+          subjectsOf(snapshot),
+          context.settings.budget.shortlistSize,
+        );
         const topics = yield* toRows(context, page.rows, snapshot);
         return {
           revision: snapshot.revision,
@@ -1946,7 +2339,11 @@ export function makeUpstreamPortsService(
         const context = yield* resolveContext(input.projectId);
         yield* requireConfig(context);
         const snapshot = yield* currentView(context);
-        const result = selectTopicIds(snapshot.rows, input, subjectsOf(snapshot));
+        const result = selectTopicIds(
+          snapshot.rows,
+          { ...input, shortlistSize: context.settings.budget.shortlistSize },
+          subjectsOf(snapshot),
+        );
         const ids: UpstreamListTopicIdsResult = {
           revision: snapshot.revision,
           contentRevision: snapshot.contentRevision,
@@ -4074,6 +4471,7 @@ export function makeUpstreamPortsService(
       decide,
       acceptSuggestions,
       undoDecisions,
+      expireBacklog,
       getTopicFiles,
       run,
       startPort,

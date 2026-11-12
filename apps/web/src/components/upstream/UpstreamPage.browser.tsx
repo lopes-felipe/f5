@@ -34,6 +34,7 @@ const api = vi.hoisted(() => ({
   dequeuePort: vi.fn(),
   getPortQueue: vi.fn(),
   controlPortQueue: vi.fn(),
+  expireBacklog: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ upstreamPorts: api, server: { updateSettings: vi.fn() } }),
@@ -77,6 +78,8 @@ const row = (id: string, title: string, status: "port" | "skip" = "port"): Upstr
     commitCount: 1,
     links: [],
     doneBy: null,
+    lane: "bug",
+    score: status === "skip" ? 40 : 70,
   }) as never;
 
 const ROWS = [row("pr-1", "Topic A"), row("pr-2", "Topic B", "skip"), row("pr-3", "Topic C")];
@@ -162,10 +165,12 @@ const overview = {
   reasonKeys: ["docs"],
   reasonLabels: { docs: "Docs only" },
   upstreamOnlySubsystems: [],
+  areas: [{ key: "server", label: "Server" }],
 } as unknown as UpstreamOverview;
 
 const FACETS = {
   suggestion: { port: 2, skip: 1, watch: 0, equivalent: 0, none: 0 },
+  lane: { security: 0, bug: 3, perf: 0, feature: 0, maintenance: 0 },
   impact: { high: 3, medium: 0, low: 0, none: 0 },
   areas: [{ area: "server", count: 3 }],
 };
@@ -690,7 +695,7 @@ it("round-trips filters through the search params and shows them as removable ch
   await page.getByRole("menuitemcheckbox", { name: /^Skip/u }).click();
   await vi.waitFor(() =>
     expect(api.listTopics).toHaveBeenLastCalledWith(
-      expect.objectContaining({ list: "inbox", filter: { suggestion: ["skip"] } }),
+      expect.objectContaining({ list: "inbox", filter: { suggestion: ["skip"], shortlist: true } }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ),
   );
@@ -708,7 +713,7 @@ it("filters from the suggestion strip and searches with a debounce", async () =>
   await page.getByRole("searchbox", { name: "Search topics" }).fill("terminal");
   await vi.waitFor(() =>
     expect(api.listTopics).toHaveBeenLastCalledWith(
-      expect.objectContaining({ filter: { query: "terminal", suggestion: ["port"] } }),
+      expect.objectContaining({ filter: { query: "terminal", suggestion: ["port"], shortlist: true } }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ),
   );
@@ -716,6 +721,54 @@ it("filters from the suggestion strip and searches with a debounce", async () =>
   await expect.element(page.getByTestId("search")).not.toHaveTextContent("suggestion");
   await expect.element(page.getByTestId("search")).not.toHaveTextContent('"q"');
   await expect.element(page.getByRole("searchbox", { name: "Search topics" })).toHaveValue("");
+});
+
+it("switches the Inbox between Shortlist and All, and filters by lane, through the URL", async () => {
+  await setup();
+  await vi.waitFor(() =>
+    expect(api.listTopics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ list: "inbox", filter: { shortlist: true } }),
+      expect.anything(),
+    ),
+  );
+  await page.getByRole("group", { name: "Inbox view" }).getByRole("button", { name: "All", exact: true }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"all":true');
+  await vi.waitFor(() => {
+    const [input] = api.listTopics.mock.lastCall!;
+    expect(input).toMatchObject({ list: "inbox" });
+    expect(input.filter).toBeUndefined();
+  });
+  await page.getByRole("group", { name: "Lanes" }).getByRole("button", { name: /^Bugs/u }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"lane":["bug"]');
+  await vi.waitFor(() =>
+    expect(api.listTopics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ filter: { lane: ["bug"] } }),
+      expect.anything(),
+    ),
+  );
+});
+
+it("previews Expire backlog, applies it after confirming, and offers Undo", async () => {
+  api.expireBacklog.mockImplementation(async ({ dryRun }: { dryRun: boolean }) => ({
+    revision: "r2",
+    count: 2,
+    byLane: { bug: 2, perf: 0, feature: 0, maintenance: 0 },
+    undoToken: dryRun ? null : "expire-token",
+    unclassified: 0,
+  }));
+  await setup();
+  await page.getByRole("button", { name: "More run options" }).click();
+  await page.getByRole("menuitem", { name: "Expire backlog…" }).click();
+  await expect.element(page.getByText("Expire 2 topics?")).toBeVisible();
+  expect(api.expireBacklog).toHaveBeenCalledWith({ projectId, dryRun: true, olderThanDays: 14 });
+  await page.getByRole("button", { name: "Expire", exact: true }).click();
+  await vi.waitFor(() =>
+    expect(api.expireBacklog).toHaveBeenLastCalledWith({ projectId, dryRun: false, olderThanDays: 14 }),
+  );
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await vi.waitFor(() =>
+    expect(api.undoDecisions).toHaveBeenCalledWith({ projectId, undoToken: "expire-token" }),
+  );
 });
 
 const matchingIds = (count: number) => Array.from({ length: count }, (_, index) => `pr-${index + 100}`);

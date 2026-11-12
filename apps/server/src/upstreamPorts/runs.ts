@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import {
   addDays,
+  canonicalJson,
   coverageTarget,
   digestShas,
   findRevertTarget,
@@ -21,6 +22,7 @@ import {
   type Rules,
   type UpstreamLedgerOp,
 } from "@t3tools/shared/upstreamPorts";
+import { topicKindFromCommits, type AreaPolicy } from "@t3tools/shared/upstreamPortsScore";
 import {
   archiveContext,
   archiveEntriesBySha,
@@ -45,10 +47,13 @@ import {
 import type { RunRecord } from "./store.ts";
 import {
   buildTopics,
+  classifySuggestion,
   legacyEquivalenceGroups,
   ProviderUnavailableError,
   triageChunk,
   type ChunkCommit,
+  type ClassifyCommit,
+  type DraftGroup,
   type PriorCommit,
   type TriageCall,
   type GroupDecision,
@@ -87,6 +92,8 @@ export interface RunContext {
     | null;
   readonly rules: Rules;
   readonly policy: string;
+  /** The user's area follow list (personal setting). */
+  readonly areaPolicy?: Readonly<Record<string, AreaPolicy>>;
   readonly archive: Schema6Archive | null;
   /** null runs rules only. */
   readonly triage: TriageCall | null;
@@ -107,6 +114,12 @@ export interface RunContext {
     readonly batchSize?: number;
   };
 }
+
+/** Triage never suggests `not-applicable`; that comes from port outcomes. */
+const triageRules = (rules: Rules): Rules => ({
+  ...rules,
+  reasonKeys: rules.reasonKeys.filter((key) => key !== "not-applicable"),
+});
 
 const describe = (error: unknown) =>
   Schema.is(GitCommandError)(error)
@@ -180,13 +193,242 @@ export interface RetriageEntry {
 export const runRetriage = (context: RunContext, initial: RunRecord): Effect.Effect<RunRecord> =>
   runTriage(context, { ...initial, kind: "retriage" });
 
+/**
+ * One entry per topic whose commits the re-triaged groups cover completely
+ * without errors. Several groups merge into one suggestion; a decision is kept
+ * only when the groups agree on it.
+ */
+export function retriageEntries(
+  topics: ReadonlyArray<UpstreamTopic>,
+  groups: ReadonlyArray<DraftGroup>,
+  snapshot: ViewSnapshot,
+  rules: Rules,
+): RetriageEntry[] {
+  const entries: RetriageEntry[] = [];
+  for (const topic of topics) {
+    const shas = new Set((snapshot.view.members.get(topic.id) ?? []).map((member) => member.sha));
+    const covering = groups.filter((group) => group.commits.some((sha) => shas.has(sha)));
+    if (
+      covering.length === 0 ||
+      [...shas].some((sha) => !covering.some((group) => group.commits.includes(sha))) ||
+      covering.some(
+        (group) => group.suggestion?.triageError || (!group.suggestion && !group.decision),
+      )
+    )
+      continue;
+    const suggestions = covering.flatMap((group) => (group.suggestion ? [group.suggestion] : []));
+    const suggestion = suggestions.length
+      ? suggestions.slice(1).reduce(mergeSuggestions, suggestions[0]!)
+      : null;
+    const decisions = covering.flatMap((group) => (group.decision ? [group.decision] : []));
+    const revertChain = covering.some((group) => group.revertChain);
+    const decision =
+      covering.length === 1
+        ? covering[0]!.decision
+        : decisions.length === covering.length &&
+            decisions.every((decision) => decision.reasonKey === decisions[0]!.reasonKey)
+          ? decisions[0]!
+          : !revertChain && suggestions.length === covering.length
+            ? autoDecision({ suggestion, revertChain: false }, rules)
+            : null;
+    const ownGroup =
+      covering.length === 1 && covering[0]!.commits.every((sha) => shas.has(sha))
+        ? covering[0]
+        : null;
+    entries.push({
+      topicId: topic.id,
+      epoch: topic.epoch,
+      title: ownGroup?.title ?? topic.title,
+      summary: ownGroup?.summary ?? topic.summary,
+      suggestion,
+      decision,
+    });
+  }
+  return entries;
+}
+
+/**
+ * Reclassifies a chunk of Inbox topics: kind, severity, coverage and areas from
+ * their commits, without the LLM. Topics whose commit text carries a security
+ * hint the stored suggestion lacks go through re-triage when a model is
+ * available, for a severity. Never records a decision.
+ */
+function reclassifyChunk(
+  context: RunContext,
+  initial: RunRecord,
+  chunk: ChunkPlan,
+  chunkCommits: ReadonlyArray<FirstParentCommit>,
+  snapshot: ViewSnapshot,
+  /** `null` when the fork's paths could not be read: coverage is then unknown. */
+  forkPaths: ReadonlySet<string> | null,
+  warnings: { prBodies: boolean },
+  circuit: { consecutiveFailures: number },
+  budget: {
+    readonly calls: number;
+    readonly deadlineAt: number;
+    readonly batchSize?: number | undefined;
+  },
+) {
+  return Effect.gen(function* () {
+    const numstat = yield* context.git
+      .streamNumstat(context.cwd, chunk.source)
+      .pipe(withChunkRetry);
+    const bySha = new Map(chunkCommits.map((commit) => [commit.sha, commit]));
+    // Triage scans PR bodies for security hints, so reclassification does too.
+    const prs = [
+      ...new Set(
+        chunkCommits
+          .map((commit) => prNumberFromSubject(commit.subject))
+          .filter((pr): pr is number => pr !== null),
+      ),
+    ];
+    const prBodies =
+      context.prBodies && prs.length
+        ? yield* context.prBodies(prs).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("upstreamPorts.reclassify.prBodies.failed", {
+                detail: describe(error),
+              }).pipe(Effect.as(new Map<number, string>())),
+            ),
+          )
+        : new Map<number, string>();
+    const classifyOf = (sha: string, subject: string): ClassifyCommit => {
+      const stat = numstat.get(sha);
+      const commit = bySha.get(sha);
+      const pr = commit ? prNumberFromSubject(commit.subject) : null;
+      return {
+        subject,
+        body:
+          [commit?.body, pr !== null ? prBodies.get(pr) : undefined].filter(Boolean).join("\n") ||
+          null,
+        files:
+          stat && forkPaths
+            ? coverageFilesOf(stat.paths, forkPaths, context.rules.ignoredPathPrefixes)
+            : null,
+      };
+    };
+    const entries: RetriageEntry[] = [];
+    const needsModel: UpstreamTopic[] = [];
+    const commitsOf = new Map<string, ClassifyCommit[]>();
+    for (const topic of chunk.topics ?? []) {
+      const suggestion = topic.suggestion;
+      if (!suggestion) continue;
+      const members = snapshot.view.members.get(topic.id) ?? [];
+      const commits = members.map((member) => classifyOf(member.sha, member.subject));
+      commitsOf.set(topic.id, commits);
+      if (
+        context.triage &&
+        suggestion.kind !== "security" &&
+        topicKindFromCommits(commits) === "security"
+      ) {
+        needsModel.push(topic);
+        continue;
+      }
+      const next = classifySuggestion(suggestion, commits, context.rules);
+      if (canonicalJson(next) === canonicalJson(suggestion)) continue;
+      entries.push({
+        topicId: topic.id,
+        epoch: topic.epoch,
+        title: topic.title,
+        summary: topic.summary,
+        suggestion: next,
+        decision: null,
+      });
+    }
+    let llmCalls = 0;
+    const resolved = new Set<string>();
+    if (needsModel.length && context.triage) {
+      const shas = new Set(
+        needsModel.flatMap((topic) =>
+          (snapshot.view.members.get(topic.id) ?? []).map((member) => member.sha),
+        ),
+      );
+      const subset = chunkCommits.filter((commit) => shas.has(commit.sha));
+      const { commits, prior } = yield* buildChunkCommits(
+        context,
+        initial,
+        { kind: "shas", shas: subset.map((commit) => commit.sha) },
+        subset,
+        snapshot,
+        forkPaths,
+        warnings,
+      );
+      const triaged = yield* triageChunk({
+        repository: context.config.repository,
+        policy: context.policy,
+        rules: triageRules(context.rules),
+        model: context.model,
+        commits,
+        prior,
+        openTopics: openTopicRows(snapshot.rows, context.today()),
+        attachable: new Set(),
+        triage: context.triage,
+        circuit,
+        budget: {
+          calls: budget.calls,
+          deadlineAt: budget.deadlineAt,
+          now: () => context.now().getTime(),
+        },
+        ...(context.areaPolicy ? { areaPolicy: context.areaPolicy } : {}),
+        ...(budget.batchSize !== undefined ? { batchSize: budget.batchSize } : {}),
+      }).pipe(
+        Effect.mapError((error: ProviderUnavailableError) =>
+          runFailure("provider-unavailable", error.detail),
+        ),
+      );
+      llmCalls = triaged.llmCalls;
+      // The model only settles kind and severity; the rest of the suggestion stays.
+      const byTopic = new Map(needsModel.map((topic) => [topic.id, topic]));
+      for (const entry of retriageEntries(needsModel, triaged.groups, snapshot, context.rules)) {
+        const topic = byTopic.get(entry.topicId)!;
+        const before = topic.suggestion!;
+        const { severity: _severity, ...rest } = before;
+        const next = classifySuggestion(
+          {
+            ...rest,
+            ...(entry.suggestion?.kind ? { kind: entry.suggestion.kind } : {}),
+            ...(entry.suggestion?.severity ? { severity: entry.suggestion.severity } : {}),
+          },
+          commitsOf.get(topic.id) ?? [],
+          context.rules,
+        );
+        resolved.add(topic.id);
+        if (canonicalJson(next) === canonicalJson(before)) continue;
+        entries.push({
+          topicId: topic.id,
+          epoch: topic.epoch,
+          title: topic.title,
+          summary: topic.summary,
+          suggestion: next,
+          decision: null,
+        });
+      }
+    }
+    // Topics the model could not settle stay unclassified and count as remaining.
+    const unresolved = needsModel.filter((topic) => !resolved.has(topic.id)).length;
+    return { entries, llmCalls, unresolved };
+  });
+}
+
+/** Every changed path outside the ignored prefixes, with its presence in the fork. */
+export function coverageFilesOf(
+  paths: ReadonlyArray<string>,
+  forkPaths: ReadonlySet<string>,
+  ignoredPathPrefixes: ReadonlyArray<string>,
+): Array<{ path: string; existsInFork: boolean }> {
+  return paths
+    .filter((path) => !ignoredPathPrefixes.some((prefix) => path.startsWith(prefix)))
+    .map((path) => ({ path, existsInFork: forkPaths.has(path) }));
+}
+
 export function buildChunkCommits(
   context: RunContext,
   initial: Pick<RunRecord, "kind" | "projectId">,
   source: CommitSource,
   chunkCommits: ReadonlyArray<FirstParentCommit>,
   snapshot: ViewSnapshot,
-  forkPaths: ReadonlySet<string>,
+  /** `null` when the fork's paths could not be read. */
+  forkPaths: ReadonlySet<string> | null,
   warnings: { prBodies: boolean },
 ) {
   return Effect.gen(function* () {
@@ -236,13 +478,17 @@ export function buildChunkCommits(
           (file) =>
             !context.rules.ignoredPathPrefixes.some((prefix) => file.path.startsWith(prefix)),
         )
-        .map((file) => ({ ...file, existsInFork: forkPaths.has(file.path) }));
+        .map((file) => ({ ...file, existsInFork: forkPaths?.has(file.path) ?? false }));
       return {
         sha: commit.sha,
         subject: initial.kind === "legacy" && entry ? entry.subject : commit.subject,
         body: commit.body,
         pr,
         paths: stat?.paths ?? [],
+        coverageFiles:
+          stat && forkPaths
+            ? coverageFilesOf(stat.paths, forkPaths, context.rules.ignoredPathPrefixes)
+            : null,
         digest: {
           sha: commit.sha,
           subject: commit.subject,
@@ -375,13 +621,14 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       }
       remainingAfter = all.length;
       yield* update({ targetSha: head, remainingCount: all.length });
-    } else if (initial.kind === "retriage") {
+    } else if (initial.kind === "retriage" || initial.kind === "reclassify") {
       const targets = snapshot.rows
-        .filter(
-          (row) =>
-            row.state === "inbox" &&
-            row.topic.status === "inbox" &&
-            row.topic.suggestion?.triageError,
+        .filter((row) =>
+          initial.kind === "retriage"
+            ? row.state === "inbox" &&
+              row.topic.status === "inbox" &&
+              row.topic.suggestion?.triageError
+            : row.state === "inbox" && row.topic.suggestion !== undefined,
         )
         .toSorted((a, b) => a.topic.createdAt.localeCompare(b.topic.createdAt))
         .map((row) => row.topic);
@@ -428,9 +675,15 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       yield* update({ remainingCount: shas.length });
     }
 
-    const forkPaths = yield* git
-      .listPathsAtRef(cwd, baseRef)
-      .pipe(Effect.orElseSucceed(() => new Set<string>()));
+    // Unknown (null) rather than empty on failure, so no path reads as missing from f5.
+    const forkPaths = yield* git.listPathsAtRef(cwd, baseRef).pipe(
+      Effect.map((paths): ReadonlySet<string> | null => paths),
+      Effect.catch((error) =>
+        Effect.logWarning("upstreamPorts.run.forkPaths.failed", { detail: describe(error) }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
     const reachable =
       initial.kind === "legacy"
         ? yield* git.reachableSet(cwd, baseRef).pipe(Effect.orElseSucceed(() => new Set<string>()))
@@ -446,6 +699,38 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
         break;
       const chunkCommits = yield* chunk.load;
       const shas = chunkCommits.map((commit) => commit.sha);
+
+      if (initial.kind === "reclassify") {
+        const result = yield* reclassifyChunk(
+          context,
+          initial,
+          chunk,
+          chunkCommits,
+          snapshot,
+          forkPaths,
+          warnings,
+          circuit,
+          {
+            calls: limits.callBudget - run.llmCalls,
+            deadlineAt: startedAt + limits.deadlineMs,
+            batchSize: limits.batchSize,
+          },
+        );
+        if (!context.recordRetriage)
+          return yield* runFailure("record", "Re-triage recording is unavailable.");
+        yield* context
+          .recordRetriage(result.entries)
+          .pipe(Effect.mapError((error) => runFailure("record", describe(error))));
+        remainingAfter -= (chunk.topics?.length ?? 0) - result.unresolved;
+        // Reclassified topics were already in the Inbox, so the run reports none as new.
+        yield* update({
+          commitCount: run.commitCount + shas.length,
+          llmCalls: run.llmCalls + result.llmCalls,
+          remainingCount: remainingAfter,
+        });
+        continue;
+      }
+
       const { commits, prior } = yield* buildChunkCommits(
         context,
         initial,
@@ -472,10 +757,8 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       const triaged = yield* triageChunk({
         repository: config.repository,
         policy: context.policy,
-        rules: {
-          ...context.rules,
-          reasonKeys: context.rules.reasonKeys.filter((key) => key !== "not-applicable"),
-        },
+        rules: triageRules(context.rules),
+        ...(context.areaPolicy ? { areaPolicy: context.areaPolicy } : {}),
         model: context.model,
         commits,
         prior,
@@ -498,52 +781,12 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       );
 
       if (initial.kind === "retriage") {
-        const entries: RetriageEntry[] = [];
-        for (const topic of chunk.topics ?? []) {
-          const shas = new Set(
-            (snapshot.view.members.get(topic.id) ?? []).map((member) => member.sha),
-          );
-          const groups = triaged.groups.filter((group) =>
-            group.commits.some((sha) => shas.has(sha)),
-          );
-          if (
-            groups.length === 0 ||
-            [...shas].some((sha) => !groups.some((group) => group.commits.includes(sha))) ||
-            groups.some(
-              (group) => group.suggestion?.triageError || (!group.suggestion && !group.decision),
-            )
-          )
-            continue;
-          const suggestions = groups.flatMap((group) =>
-            group.suggestion ? [group.suggestion] : [],
-          );
-          const suggestion = suggestions.length
-            ? suggestions.slice(1).reduce(mergeSuggestions, suggestions[0]!)
-            : null;
-          const decisions = groups.flatMap((group) => (group.decision ? [group.decision] : []));
-          const revertChain = groups.some((group) => group.revertChain);
-          const decision =
-            groups.length === 1
-              ? groups[0]!.decision
-              : decisions.length === groups.length &&
-                  decisions.every((decision) => decision.reasonKey === decisions[0]!.reasonKey)
-                ? decisions[0]!
-                : !revertChain && suggestions.length === groups.length
-                  ? autoDecision({ suggestion, revertChain: false }, context.rules)
-                  : null;
-          const ownGroup =
-            groups.length === 1 && groups[0]!.commits.every((sha) => shas.has(sha))
-              ? groups[0]
-              : null;
-          entries.push({
-            topicId: topic.id,
-            epoch: topic.epoch,
-            title: ownGroup?.title ?? topic.title,
-            summary: ownGroup?.summary ?? topic.summary,
-            suggestion,
-            decision,
-          });
-        }
+        const entries = retriageEntries(
+          chunk.topics ?? [],
+          triaged.groups,
+          snapshot,
+          context.rules,
+        );
         if (!context.recordRetriage)
           return yield* runFailure("record", "Re-triage recording is unavailable.");
         yield* context

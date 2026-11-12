@@ -28,6 +28,10 @@
       "types": "./src/upstreamPortsGrouping.ts",
       "import": "./src/upstreamPortsGrouping.ts"
     },
+    "./upstreamPortsScore": {
+      "types": "./src/upstreamPortsScore.ts",
+      "import": "./src/upstreamPortsScore.ts"
+    },
     "./nativeHistoryReconciliation": {
       "types": "./src/nativeHistoryReconciliation.ts",
       "import": "./src/nativeHistoryReconciliation.ts"

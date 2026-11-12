@@ -27,7 +27,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { LedgerChip } from "./PublicationBanner";
 import { UpstreamSettingsPopover } from "./UpstreamSettingsPopover";
 import { UpstreamPortQueue } from "./UpstreamPortQueue";
-import { repositoryUrl, runDisabledReason, runStatus, shortRepository } from "./upstreamPage.logic";
+import { repositoryUrl, runDisabledReason, runKindLabel, runStatus, shortRepository } from "./upstreamPage.logic";
 
 const formatNextRun = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
@@ -66,7 +66,7 @@ function RunStatusChip(props: {
         {run ? (
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt className="text-muted-foreground">
-              {run.kind === "retriage" ? "Re-triage run" : run.kind === "legacy" ? "Legacy run" : "Run"}
+              {runKindLabel(run.kind)}
             </dt>
             <dd>
               {run.status} · {formatRelativeTimeLabel(run.finishedAt ?? run.startedAt)} ({run.trigger},{" "}
@@ -144,6 +144,7 @@ function RunButton(props: {
   readonly readOnly: boolean;
   readonly busy: boolean;
   readonly onRun: (kind: UpstreamRunKind, triage: UpstreamRunTriage) => void;
+  readonly onExpireBacklog: () => void;
 }) {
   const { overview } = props;
   const disabledReason = runDisabledReason(props);
@@ -194,6 +195,12 @@ function RunButton(props: {
             Triage legacy backlog
             {overview.legacyRemaining > 0 ? ` (${overview.legacyRemaining})` : ""}
           </MenuItem>
+          <MenuItem disabled={overview.counts.inbox === 0} onClick={() => props.onRun("reclassify", triage)}>
+            Reclassify backlog
+          </MenuItem>
+          <MenuItem disabled={overview.counts.inbox === 0} onClick={props.onExpireBacklog}>
+            Expire backlog…
+          </MenuItem>
         </MenuPopup>
       </Menu>
     </div>
@@ -210,6 +217,7 @@ export function UpstreamHeader(props: {
   readonly busy: boolean;
   readonly refreshing: boolean;
   readonly onRun: (kind: UpstreamRunKind, triage: UpstreamRunTriage) => void;
+  readonly onExpireBacklog: () => void;
   readonly onRefresh: () => void;
   readonly onResolvePublication: (action: UpstreamResolvePublicationInput["action"]) => void;
 }) {
@@ -252,7 +260,13 @@ export function UpstreamHeader(props: {
           busy={props.busy || props.readOnly}
           onResolve={props.onResolvePublication}
         />
-        <RunButton overview={overview} readOnly={props.readOnly} busy={props.busy} onRun={props.onRun} />
+        <RunButton
+          overview={overview}
+          readOnly={props.readOnly}
+          busy={props.busy}
+          onRun={props.onRun}
+          onExpireBacklog={props.onExpireBacklog}
+        />
         <Button
           size="icon-sm"
           variant="ghost"

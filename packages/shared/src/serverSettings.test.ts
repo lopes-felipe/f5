@@ -262,24 +262,36 @@ describe("serverSettings helpers", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,
       upstreamPorts: {
-        portReview: DEFAULT_SERVER_SETTINGS.upstreamPorts.portReview,
+        ...DEFAULT_SERVER_SETTINGS.upstreamPorts,
         portConcurrency: 5,
         autoRecordOutcomes: true,
         schedule: { mode: "daily" as const, hour: 9, weekday: 1 },
         triageModelSelection: triage,
         portModelSelection: port,
+        areaPolicy: { git: "follow" as const },
       },
     };
     const patch = Schema.decodeUnknownSync(ServerSettingsPatch)({
       upstreamPorts: { schedule: { mode: "weekly" } },
     });
     expect(applyServerSettingsPatch(current, patch).upstreamPorts).toEqual({
-      portReview: DEFAULT_SERVER_SETTINGS.upstreamPorts.portReview,
-      portConcurrency: 5,
-      autoRecordOutcomes: true,
+      ...current.upstreamPorts,
       schedule: { mode: "weekly", hour: 9, weekday: 1 },
-      triageModelSelection: triage,
-      portModelSelection: port,
+    });
+    // Budget and auto-port fields merge; the area policy map replaces.
+    expect(
+      applyServerSettingsPatch(current, {
+        upstreamPorts: {
+          budget: { expireAfterDays: 14 },
+          autoPort: { mode: "security-and-bugs" },
+          areaPolicy: { mcp: "ignore" },
+        },
+      }).upstreamPorts,
+    ).toEqual({
+      ...current.upstreamPorts,
+      budget: { shortlistSize: 15, expireAfterDays: 14, keepScore: 70 },
+      autoPort: { mode: "security-and-bugs", dailyLimit: 5 },
+      areaPolicy: { mcp: "ignore" },
     });
     expect(
       applyServerSettingsPatch(current, { upstreamPorts: { triageModelSelection: null } })
