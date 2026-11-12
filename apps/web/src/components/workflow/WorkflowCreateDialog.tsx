@@ -316,14 +316,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     (reviewPullRequestTarget.kind === "number" ||
       reviewPullRequestTarget.ref.provider === "github");
   const autoPostReviewEffective = autoPostReview && canAutoPostReview;
-  const autoPostReviewDescription =
+  const autoPostReviewTarget =
     reviewPullRequestTarget === null
-      ? "Add a GitHub PR link or #number to the review instructions."
+      ? "Add a GitHub PR link or PR #number to the review instructions."
       : reviewPullRequestTarget.kind === "number"
         ? `PR #${reviewPullRequestTarget.number} in this project's GitHub repo.`
         : reviewPullRequestTarget.ref.provider === "github"
           ? `Will post to ${reviewPullRequestTarget.ref.repository}#${reviewPullRequestTarget.ref.number}.`
           : "Posting supports GitHub pull requests only.";
+  const autoPostReviewDescription = canAutoPostReview
+    ? `${autoPostReviewTarget} It posts from your GitHub account without a review step, and the review can quote text from the PR.`
+    : autoPostReviewTarget;
   const parsedMaxCostUsd = maxCostUsd.trim().length > 0 ? Number(maxCostUsd) : null;
   const validMaxCostUsd =
     parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);

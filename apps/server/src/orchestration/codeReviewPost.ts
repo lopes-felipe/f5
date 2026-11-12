@@ -15,22 +15,36 @@ import { Cause, Effect } from "effect";
 
 import { userFacingCauseMessage } from "../causeMessage.ts";
 import type { PrHubFederationShape } from "../prHub/Layers/PrHubFederation.ts";
-import type { PrHubServiceShape } from "../prHub/Services/PrHubService.ts";
-import { latestAssistantFeedback, reviewFeedbackForPinnedTurn } from "./workflowSharedUtils.ts";
 
 export const CODE_REVIEW_POST_NEEDS_RECOVERY_MESSAGE =
-  "GitHub may have received the comment. Check the pull request; Check again re-verifies without resending.";
+  "GitHub may have received the comment. Check again re-verifies it without resending; Post anyway abandons that attempt and posts again, which can leave a duplicate comment.";
 
 export interface CodeReviewPostJob {
   readonly workflowId: CodeReviewWorkflow["id"];
   readonly operationId: string;
   /** Re-verify an unknown outcome only; never prepares or sends. */
   readonly checkOnly: boolean;
-  /** A previous attempt's operation that may still sit `prepared` in PR Hub. */
+  /**
+   * Resumed after a restart: the operation may already have been sent, so a
+   * failure before it is read back cannot be reported as "not posted".
+   */
+  readonly resumed: boolean;
+  /** A previous attempt's operation, which may still be pending in PR Hub. */
   readonly supersededOperationId: string | null;
+  /**
+   * The previous attempt delivered this same merged review and its outcome is
+   * not known to be negative, so a sent or unknown operation is adopted rather
+   * than posted over.
+   */
+  readonly adoptSuperseded: boolean;
+  /** "Post anyway": abandon a superseded operation whose outcome is unknown. */
+  readonly abandonSuperseded: boolean;
 }
 
-export type CodeReviewPostOutcome = Pick<CodeReviewPost, "status" | "commentUrl" | "error">;
+export type CodeReviewPostOutcome = Pick<CodeReviewPost, "status" | "commentUrl" | "error"> & {
+  /** Set when the outcome belongs to an adopted earlier operation. */
+  readonly operationId?: string | undefined;
+};
 
 export function newCodeReviewPostOperationId(workflowId: string): string {
   return `f5-code-review:${workflowId}:${crypto.randomUUID()}`;
@@ -91,7 +105,11 @@ export function manualCodeReviewPostBlocker(workflow: CodeReviewWorkflow): strin
   return null;
 }
 
-/** The pinned merged-review text from the consolidation thread. */
+/**
+ * The merged review exactly as the workflow page shows it: the pinned
+ * assistant message's text. Reasoning and proposed plans are internal
+ * agent-to-agent channels and are never published.
+ */
 export function codeReviewMergedReviewText(
   workflow: CodeReviewWorkflow,
   snapshot: Pick<OrchestrationReadModel, "threads">,
@@ -99,13 +117,11 @@ export function codeReviewMergedReviewText(
   const threadId = workflow.consolidation.threadId;
   const thread = threadId ? snapshot.threads.find((entry) => entry.id === threadId) : undefined;
   if (!thread) return null;
-  const feedback =
-    reviewFeedbackForPinnedTurn(
-      thread,
-      workflow.consolidation.pinnedTurnId,
-      workflow.consolidation.pinnedAssistantMessageId,
-    ) ?? latestAssistantFeedback(thread, workflow.consolidation.pinnedAssistantMessageId);
-  const text = feedback?.text.trim() ?? "";
+  const pinnedId = workflow.consolidation.pinnedAssistantMessageId;
+  const message = pinnedId
+    ? thread.messages.find((entry) => entry.id === pinnedId)
+    : thread.messages.toReversed().find((entry) => entry.role === "assistant" && !entry.streaming);
+  const text = message?.text.trim() ?? "";
   return text.length > 0 ? text : null;
 }
 
@@ -170,6 +186,8 @@ function outcomeFromOperation(
  * Deliver the merged review through PR Hub's durable comment operation. The
  * operation id makes a resumed job idempotent: an existing operation is read
  * back instead of re-created, and only a `prepared` operation is ever sent.
+ * Every call goes through the federated hub, which routes the PR to its
+ * account and translates the account generation for that account's hub.
  */
 export function runCodeReviewPostJob(input: {
   readonly federation: PrHubFederationShape | null;
@@ -191,32 +209,72 @@ export function runCodeReviewPostJob(input: {
     return Effect.succeed(failed("PR Hub is unavailable, so the review cannot be posted."));
   }
   const federation = input.federation;
-  const needsRecovery = (detail?: string): CodeReviewPostOutcome => ({
+  const hub = federation.hub;
+  const needsRecovery = (detail?: string, operationId?: string): CodeReviewPostOutcome => ({
     status: "needs_recovery",
     commentUrl: null,
     error: detail
       ? `${CODE_REVIEW_POST_NEEDS_RECOVERY_MESSAGE} (${detail})`
       : CODE_REVIEW_POST_NEEDS_RECOVERY_MESSAGE,
+    ...(operationId ? { operationId } : {}),
   });
-  // Once a send may have started, a failure no longer proves the comment is absent.
-  let sendMayHaveStarted = job.checkOnly;
+  // Until our own operation is read back, a failure cannot prove the comment
+  // is absent: a check, or a job resumed after a restart, may follow a send.
+  let sendMayHaveStarted = job.checkOnly || job.resumed;
 
   return Effect.gen(function* () {
     const runtime = yield* federation.resolve({ url: pullRequest.url });
-    const hub: PrHubServiceShape = runtime.hub;
     const accountGeneration = runtime.account.generation;
     const tracked = yield* hub.track({ url: pullRequest.url, accountGeneration });
     const key: PullRequestKey = tracked.key;
-
-    // Reconciles an in-flight or unknown operation, then reports the PR's most
-    // relevant one; it only answers for ours when the id matches.
-    const readOwnOperation = hub
-      .getCommentOperation({ accountGeneration, key })
-      .pipe(Effect.map((operation) => (operation?.id === job.operationId ? operation : null)));
+    // Reads and reconciles exactly this operation, not the PR's latest one.
+    const readOperation = (id: string) =>
+      hub
+        .getCommentOperation({ accountGeneration, key, id })
+        .pipe(Effect.map((operation) => (operation?.id === id ? operation : null)));
 
     if (job.checkOnly) {
-      const operation = yield* readOwnOperation;
+      const operation = yield* readOperation(job.operationId);
       return operation ? outcomeFromOperation(operation, pullRequest.url) : needsRecovery();
+    }
+
+    if (job.resumed) {
+      const existing = yield* readOperation(job.operationId);
+      if (existing && existing.status !== "prepared") {
+        return outcomeFromOperation(existing, pullRequest.url);
+      }
+      // Missing or `prepared`: nothing was sent yet.
+      sendMayHaveStarted = false;
+    }
+
+    if (job.supersededOperationId) {
+      const superseded = yield* readOperation(job.supersededOperationId);
+      if (superseded?.status === "prepared") {
+        yield* hub.recoverComment({
+          accountGeneration,
+          key,
+          id: superseded.id,
+          payloadHash: superseded.payloadHash,
+          action: "cancel",
+        });
+      } else if (
+        superseded &&
+        (superseded.status === "creating" || superseded.status === "outcome_unknown")
+      ) {
+        if (job.abandonSuperseded) {
+          yield* hub.recoverComment({
+            accountGeneration,
+            key,
+            id: superseded.id,
+            payloadHash: superseded.payloadHash,
+            action: "abandon",
+          });
+        } else if (job.adoptSuperseded) {
+          return needsRecovery(undefined, superseded.id);
+        }
+      } else if (superseded?.status === "succeeded" && job.adoptSuperseded) {
+        return { ...outcomeFromOperation(superseded, pullRequest.url), operationId: superseded.id };
+      }
     }
 
     if (!input.body) return failed("The merged review text is unavailable.");
@@ -224,19 +282,6 @@ export function runCodeReviewPostJob(input: {
       return failed(
         `The merged review is ${input.body.length.toLocaleString("en-US")} characters; GitHub comments allow ${CODE_REVIEW_POST_BODY_MAX_CHARS.toLocaleString("en-US")}.`,
       );
-    }
-
-    if (job.supersededOperationId) {
-      const lingering = yield* hub.getCommentOperation({ accountGeneration, key });
-      if (lingering?.id === job.supersededOperationId && lingering.status === "prepared") {
-        yield* hub.recoverComment({
-          accountGeneration,
-          key,
-          id: lingering.id,
-          payloadHash: lingering.payloadHash,
-          action: "cancel",
-        });
-      }
     }
 
     let operation = yield* hub.prepareComment({
@@ -255,7 +300,7 @@ export function runCodeReviewPostJob(input: {
       });
     }
     if (operation.status === "creating" || operation.status === "outcome_unknown") {
-      operation = (yield* readOwnOperation) ?? operation;
+      operation = (yield* readOperation(job.operationId)) ?? operation;
     }
     return outcomeFromOperation(operation, pullRequest.url);
   }).pipe(

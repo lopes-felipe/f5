@@ -188,9 +188,12 @@ describe("codeReviewPostAction", () => {
     expect(codeReviewPostAction(completed(post("needs_recovery")))?.kind).toBe("check");
   });
 
-  it("lists failed posts with the other failed steps", () => {
+  it("lists failed posts with the other failed steps and in the status", () => {
     expect(collectCodeReviewWorkflowErrors(completed(post("failed")))).toEqual([
       { key: "post", step: "Post to PR", message: "Forbidden" },
     ]);
+    expect(statusLabel(completed(post("failed")))).toBe("Completed · post failed");
+    expect(statusLabel(completed(post("needs_recovery")))).toBe("Completed · post unconfirmed");
+    expect(statusLabel(completed(post("posted")))).toBe("Completed");
   });
 });

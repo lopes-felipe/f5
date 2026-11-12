@@ -3408,11 +3408,20 @@ const REVIEW_SLOTS = {
   consolidation: { provider: "codex", model: "gpt-5-codex" },
 } as const;
 
+const MANAGER_GENERATION = "manager-generation";
+const CONTEXT_GENERATION = "context-generation";
+
+/**
+ * Models PR Hub federation: the resolved account carries the account manager's
+ * generation, the account's own hub only accepts its credential-context
+ * generation, and only the federated hub translates between them.
+ */
 function makeFakePrHub(
   options: {
     submitStatus?: PrHubCommentOperation["status"];
     seed?: ReadonlyArray<PrHubCommentOperation>;
     resolveError?: string;
+    trackError?: string;
   } = {},
 ) {
   const operations = new Map<string, PrHubCommentOperation>(
@@ -3425,15 +3434,31 @@ function makeFakePrHub(
   };
   let submitStatus = options.submitStatus ?? "succeeded";
   let reconcileUnknownTo: PrHubCommentOperation["status"] | null = null;
+  let trackError = options.trackError ?? null;
   const set = (operation: PrHubCommentOperation) => {
     operations.delete(operation.id);
     operations.set(operation.id, operation);
     return operation;
   };
-  const hub = {
-    track: () => Effect.succeed({ key: PULL_REQUEST.key }),
-    prepareComment: (input: { id: string; body: string }) =>
-      Effect.sync(() => {
+  const checked = <A>(input: { accountGeneration?: string }, effect: () => A) =>
+    input.accountGeneration === CONTEXT_GENERATION
+      ? Effect.sync(effect)
+      : Effect.fail(new Error("The GitHub account changed. Refresh PR Hub before continuing."));
+  const reconcile = (operation: PrHubCommentOperation | null) =>
+    operation && operation.status === "outcome_unknown" && reconcileUnknownTo
+      ? set({
+          ...operation,
+          status: reconcileUnknownTo,
+          remoteId: reconcileUnknownTo === "succeeded" ? "777" : null,
+        })
+      : operation;
+  const accountHub = {
+    track: (input: { accountGeneration?: string }) =>
+      trackError
+        ? Effect.fail(new Error(trackError))
+        : checked(input, () => ({ key: PULL_REQUEST.key })),
+    prepareComment: (input: { accountGeneration: string; id: string; body: string }) =>
+      checked(input, () => {
         calls.prepare.push({ id: input.id, body: input.body });
         return (
           operations.get(input.id) ??
@@ -3452,8 +3477,8 @@ function makeFakePrHub(
           })
         );
       }),
-    submitComment: (input: { id: string }) =>
-      Effect.sync(() => {
+    submitComment: (input: { accountGeneration: string; id: string }) =>
+      checked(input, () => {
         calls.submit.push(input.id);
         const operation = operations.get(input.id)!;
         return set({
@@ -3463,50 +3488,71 @@ function makeFakePrHub(
           errorMessage: submitStatus === "rejected" ? "Resource not accessible" : null,
         });
       }),
-    // Mirrors PR Hub: reconcile, then report pending operations first, newest first.
-    getCommentOperation: () =>
-      Effect.sync(() => {
+    // Mirrors PR Hub: by id when given, else pending operations first, newest first.
+    getCommentOperation: (input: { accountGeneration: string; id?: string }) =>
+      checked(input, () => {
+        if (input.id) return reconcile(operations.get(input.id) ?? null);
         const all = [...operations.values()];
         const pending = all.filter((operation) =>
           ["prepared", "creating", "outcome_unknown"].includes(operation.status),
         );
-        const top = pending.at(-1) ?? all.at(-1) ?? null;
-        if (top && top.status === "outcome_unknown" && reconcileUnknownTo) {
-          return set({
-            ...top,
-            status: reconcileUnknownTo,
-            remoteId: reconcileUnknownTo === "succeeded" ? "777" : null,
-          });
-        }
-        return top;
+        return reconcile(pending.at(-1) ?? all.at(-1) ?? null);
       }),
-    recoverComment: (input: { id: string; action: string }) =>
-      Effect.sync(() => {
+    recoverComment: (input: { accountGeneration: string; id: string; action: string }) =>
+      checked(input, () => {
         calls.recover.push({ id: input.id, action: input.action });
-        return set({ ...operations.get(input.id)!, status: "abandoned" });
+        return set({
+          ...operations.get(input.id)!,
+          status: input.action === "cancel" ? "failed_before_send" : "abandoned",
+        });
       }),
-  } as unknown as PrHubServiceShape;
+  };
+  const translate = <I extends { accountGeneration?: string }>(input: I): I => ({
+    ...input,
+    accountGeneration:
+      input.accountGeneration === MANAGER_GENERATION ? CONTEXT_GENERATION : input.accountGeneration,
+  });
+  const federatedHub = Object.fromEntries(
+    Object.entries(accountHub).map(([name, method]) => [
+      name,
+      (input: { accountGeneration?: string }) =>
+        (method as (value: unknown) => unknown)(translate(input)),
+    ]),
+  ) as unknown as PrHubServiceShape;
   const federation = {
-    hub,
+    hub: federatedHub,
     resolve: () =>
       options.resolveError
         ? Effect.fail(new Error(options.resolveError) as never)
         : Effect.succeed({
-            account: { generation: "generation-1" },
-            hub,
+            account: { generation: MANAGER_GENERATION },
+            hub: accountHub as unknown as PrHubServiceShape,
             provider: {},
           } as unknown as PrHubAccountRuntime),
     parseUrl: (url: string) => Effect.succeed(parseSourceControlPullRequestUrl(url)),
   } satisfies PrHubFederationShape;
+  const seedOperation = (operation: Partial<PrHubCommentOperation> & { id: string }) =>
+    set({
+      payloadHash: `hash-${operation.id}`,
+      remoteId: null,
+      status: "prepared",
+      errorMessage: null,
+      payload: { version: 2, source: "timeline_comment", body: "x", markedBody: "x" },
+      ...operation,
+    });
   return {
     federation,
     operations,
     calls,
+    seedOperation,
     setSubmitStatus(status: PrHubCommentOperation["status"]) {
       submitStatus = status;
     },
     reconcileUnknownTo(status: PrHubCommentOperation["status"]) {
       reconcileUnknownTo = status;
+    },
+    setTrackError(error: string | null) {
+      trackError = error;
     },
   };
 }
@@ -3750,7 +3796,7 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     await harness.start();
     await harness.drain();
 
-    expect(prHub.calls.prepare.map((call) => call.id)).toEqual([operationId]);
+    expect(prHub.calls.prepare).toHaveLength(0);
     expect(prHub.calls.submit).toHaveLength(0);
     expect(currentPost(harness)).toMatchObject({
       status: "posted",
@@ -3873,6 +3919,173 @@ describe("CodeReviewWorkflowService pull request posting", () => {
       status: "failed",
       error: "PR Hub is unavailable, so the review cannot be posted.",
     });
+  });
+
+  it("posts only the pinned message text, never reasoning or a longer plan", async () => {
+    const prHub = makeFakePrHub();
+    const thread = mergeThread();
+    const merged = makeThread({
+      ...thread,
+      messages: thread.messages.map((message) => ({
+        ...message,
+        reasoningText: "SECRET reasoning about /Users/me/project",
+      })),
+      proposedPlans: [
+        {
+          id: OrchestrationProposedPlanId.makeUnsafe("plan-merge"),
+          turnId: TurnId.makeUnsafe("turn-merge"),
+          planMarkdown: `PLAN ${"x".repeat(500)}`,
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [merged] }),
+      {
+        prHubFederation: prHub.federation,
+      },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    const body = prHub.calls.prepare[0]!.body;
+    expect(body).toContain("## Findings\n- Missing null check");
+    expect(body).not.toContain("SECRET");
+    expect(body).not.toContain("Reviewer reasoning");
+    expect(body).not.toContain("PLAN");
+    expect(currentPost(harness)?.status).toBe("posted");
+  });
+
+  it("does not report a resumed post as failed when it cannot be read back", async () => {
+    const operationId = "f5-code-review:workflow-1:resume";
+    const prHub = makeFakePrHub({ trackError: "offline at launch" });
+    prHub.seedOperation({ id: operationId, status: "succeeded", remoteId: "555" });
+    harness = await createHarness(
+      makeReadModel({
+        workflow: makeCompletedWorkflow({
+          post: {
+            trigger: "auto",
+            status: "posting",
+            operationId,
+            consolidationTurnId: TurnId.makeUnsafe("turn-merge"),
+            commentUrl: null,
+            error: null,
+            updatedAt: NOW,
+          },
+        }),
+        threads: [mergeThread()],
+      }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(currentPost(harness)).toMatchObject({ status: "needs_recovery", operationId });
+    expect(currentPost(harness)?.error).toContain("offline at launch");
+
+    prHub.setTrackError(null);
+    await Effect.runPromise(harness.service.postWorkflow({ workflowId: makeWorkflow().id }));
+    await harness.drain();
+
+    expect(prHub.calls.submit).toHaveLength(0);
+    expect(currentPost(harness)).toMatchObject({
+      status: "posted",
+      operationId,
+      commentUrl: `${PULL_REQUEST.url}#issuecomment-555`,
+    });
+  });
+
+  it.each([
+    ["succeeded", "posted"],
+    ["outcome_unknown", "needs_recovery"],
+  ] as const)(
+    "adopts a %s earlier attempt for the same merge instead of posting again",
+    async (earlierStatus, expected) => {
+      const earlierId = "f5-code-review:workflow-1:earlier";
+      const prHub = makeFakePrHub();
+      prHub.seedOperation({
+        id: earlierId,
+        status: earlierStatus,
+        remoteId: earlierStatus === "succeeded" ? "321" : null,
+      });
+      harness = await createHarness(
+        makeReadModel({
+          workflow: makeCompletedWorkflow({
+            post: {
+              trigger: "auto",
+              status: "failed",
+              operationId: earlierId,
+              consolidationTurnId: TurnId.makeUnsafe("turn-merge"),
+              commentUrl: null,
+              error: "offline",
+              updatedAt: NOW,
+            },
+          }),
+          threads: [mergeThread()],
+        }),
+        { prHubFederation: prHub.federation },
+      );
+
+      await Effect.runPromise(harness.service.postWorkflow({ workflowId: makeWorkflow().id }));
+      await harness.drain();
+
+      expect(prHub.calls.prepare).toHaveLength(0);
+      expect(prHub.calls.submit).toHaveLength(0);
+      expect(currentPost(harness)).toMatchObject({ status: expected, operationId: earlierId });
+    },
+  );
+
+  it("finds its own operation when other comment operations share the PR", async () => {
+    const prHub = makeFakePrHub({ submitStatus: "outcome_unknown" });
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+    const operationId = currentPost(harness)!.operationId;
+    expect(currentPost(harness)?.status).toBe("needs_recovery");
+
+    // A newer composer draft is now the PR's "most relevant" operation.
+    prHub.seedOperation({ id: "composer-draft", status: "prepared" });
+    prHub.reconcileUnknownTo("succeeded");
+    await Effect.runPromise(harness.service.postWorkflow({ workflowId: makeWorkflow().id }));
+    await harness.drain();
+
+    expect(currentPost(harness)).toMatchObject({ status: "posted", operationId });
+    expect(prHub.calls.submit).toEqual([operationId]);
+  });
+
+  it("posts anyway by abandoning an unknown earlier attempt", async () => {
+    const prHub = makeFakePrHub({ submitStatus: "outcome_unknown" });
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+    const firstOperationId = currentPost(harness)!.operationId;
+
+    prHub.setSubmitStatus("succeeded");
+    await Effect.runPromise(
+      harness.service.postWorkflow({
+        workflowId: makeWorkflow().id,
+        allowPossibleDuplicate: true,
+      }),
+    );
+    await harness.drain();
+
+    expect(prHub.calls.recover).toEqual([{ id: firstOperationId, action: "abandon" }]);
+    expect(prHub.calls.submit).toHaveLength(2);
+    expect(currentPost(harness)).toMatchObject({ trigger: "manual", status: "posted" });
+    expect(currentPost(harness)!.operationId).not.toBe(firstOperationId);
   });
 
   it("never posts a deleted workflow", async () => {

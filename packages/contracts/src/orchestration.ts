@@ -3501,6 +3501,13 @@ export type OrchestrationRetryCodeReviewWorkflowInput =
 
 export const OrchestrationPostCodeReviewWorkflowInput = Schema.Struct({
   workflowId: CodeReviewWorkflowId,
+  /**
+   * When an earlier post's outcome is unknown, abandon it and post again
+   * instead of re-verifying it. The earlier comment may already be on GitHub.
+   */
+  allowPossibleDuplicate: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
 });
 export type OrchestrationPostCodeReviewWorkflowInput =
   typeof OrchestrationPostCodeReviewWorkflowInput.Type;

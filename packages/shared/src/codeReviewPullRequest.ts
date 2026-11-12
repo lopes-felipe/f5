@@ -19,9 +19,9 @@ export type CodeReviewPullRequestTarget =
   | { readonly kind: "number"; readonly number: number };
 
 const URL_PATTERN = /https:\/\/[^\s<>()[\]{}"'`]+/g;
-// `#123`, `PR 123`, `PR #123`, `PR#123`, `pull request 123`. A leading word
-// character, `/`, `&` (HTML entities) or `#` rules out fragments and paths.
-const SHORTHAND_PATTERN = /(?:^|[^\w/&#])(?:#|\bpr\s*#?|\bpull\s+request\s+#?)(\d{1,9})\b/gi;
+// Only an explicit PR phrase counts: `PR 123`, `PR #123`, `PR#123`,
+// `pull request 123`. A bare `#123` is too often an issue, a rank or a colour.
+const SHORTHAND_PATTERN = /(?:^|[^\w/&#])(?:pr\s*#?|pull\s+request\s+#?)(\d{1,9})\b/gi;
 
 /** HTTPS URLs in prompt order, without trailing sentence punctuation. */
 export function codeReviewPromptUrls(prompt: string): string[] {
@@ -129,6 +129,16 @@ export function codeReviewPostFooter(slots: {
   return `<sub>Posted by F5 code review · Reviewers: ${slots.reviewerA.model}, ${slots.reviewerB.model} · Merge: ${slots.consolidation.model}</sub>`;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Whether the report's first line already links this PR (`…/pull/12` is not `…/pull/123`). */
+function reportOpensWithPullRequest(body: string, url: string): boolean {
+  const firstLine = body.split("\n", 1)[0] ?? "";
+  return new RegExp(`${escapeRegExp(url)}(?!\\d)`).test(firstLine);
+}
+
 /**
  * The merged review as shown and posted. A PR link header is added only when
  * the model left the PR URL out, so the report always names its target.
@@ -143,7 +153,7 @@ export function formatCodeReviewReport(
   const body = text.trim();
   const pullRequest = options.pullRequest;
   const header =
-    pullRequest && !body.includes(pullRequest.url)
+    pullRequest && !reportOpensWithPullRequest(body, pullRequest.url)
       ? `**Reviewed PR:** [${codeReviewPullRequestLabel(pullRequest)}](${pullRequest.url})\n\n`
       : "";
   const footer = options.footer ? `\n\n---\n\n${options.footer}` : "";

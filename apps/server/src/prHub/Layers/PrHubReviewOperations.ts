@@ -387,8 +387,8 @@ function create(
       const { owner, request } = yield* commentDependencies(input.key);
       return yield* reconcileWhenIdle(
         JSON.stringify(owner),
-        reconcileCommentOperation(owner, request),
-        readCommentOperation(owner),
+        reconcileCommentOperation(owner, request, input.id),
+        readCommentOperation(owner, input.id),
       );
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
   const recoverComment: PrHubServiceShape["recoverComment"] = (input) =>

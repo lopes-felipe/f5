@@ -93,7 +93,11 @@ export function statusLabel(workflow: CodeReviewWorkflow): string {
     case "consolidating":
       return "Merging reviews";
     case "completed":
-      return "Completed";
+      return workflow.post?.status === "failed"
+        ? "Completed · post failed"
+        : workflow.post?.status === "needs_recovery"
+          ? "Completed · post unconfirmed"
+          : "Completed";
     case "error":
       return "Error";
     default:

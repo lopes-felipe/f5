@@ -250,8 +250,17 @@ describe("CodeReviewWorkflowView pull request posting", () => {
         .element(page.getByRole("link", { name: "acme/app#42" }))
         .toHaveAttribute("href", PULL_REQUEST.url);
       await page.getByRole("button", { name: "Post to PR" }).click();
+      await expect.element(page.getByText("Post the merged review to acme/app#42?")).toBeVisible();
+      expect(nativeApiMocks.postCodeReviewWorkflow).not.toHaveBeenCalled();
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Post", exact: true })
+        .click();
       await vi.waitFor(() => {
-        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledWith({ workflowId });
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledWith({
+          workflowId,
+          allowPossibleDuplicate: false,
+        });
       });
     } finally {
       await screen.unmount();
@@ -284,6 +293,10 @@ describe("CodeReviewWorkflowView pull request posting", () => {
     try {
       await expect.element(page.getByText("Resource not accessible")).toBeVisible();
       await page.getByRole("button", { name: "Retry post" }).click();
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Post", exact: true })
+        .click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledTimes(1);
       });
@@ -295,7 +308,21 @@ describe("CodeReviewWorkflowView pull request posting", () => {
           ),
         ],
       });
-      await expect.element(page.getByRole("button", { name: "Check again" })).toBeVisible();
+      await page.getByRole("button", { name: "Check again" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenLastCalledWith({
+          workflowId,
+          allowPossibleDuplicate: false,
+        });
+      });
+      await page.getByRole("button", { name: "Post anyway" }).click();
+      await page.getByRole("alertdialog").getByRole("button", { name: "Post anyway" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenLastCalledWith({
+          workflowId,
+          allowPossibleDuplicate: true,
+        });
+      });
     } finally {
       await screen.unmount();
     }
@@ -314,7 +341,10 @@ describe("CodeReviewWorkflowView pull request posting", () => {
       expect(nativeApiMocks.postCodeReviewWorkflow).not.toHaveBeenCalled();
       await page.getByRole("alertdialog").getByRole("button", { name: "Post again" }).click();
       await vi.waitFor(() => {
-        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledWith({ workflowId });
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledWith({
+          workflowId,
+          allowPossibleDuplicate: false,
+        });
       });
     } finally {
       await screen.unmount();

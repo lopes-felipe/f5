@@ -19,7 +19,7 @@ describe("detectCodeReviewPullRequestTarget", () => {
   it("canonicalizes the first PR URL", () => {
     expect(
       detectCodeReviewPullRequestTarget(
-        "Review https://github.com/acme/app/pull/42/files?w=1. Also see #7.",
+        "Review https://github.com/acme/app/pull/42/files?w=1. Also see PR 7.",
       ),
     ).toEqual({
       kind: "url",
@@ -52,19 +52,25 @@ describe("detectCodeReviewPullRequestTarget", () => {
 
 describe("detectCodeReviewPullRequestShorthand", () => {
   it.each([
-    ["Review #123", 123],
     ["review pr 123 please", 123],
     ["Review PR #123", 123],
     ["Review PR#123", 123],
     ["Review pull request 123", 123],
-    ["(#123)", 123],
-    ["#123 and PR 123 are the same", 123],
+    ["(PR #123)", 123],
+    ["PR #123, then pull request 123 again", 123],
   ])("detects %s", (prompt, expected) => {
     expect(detectCodeReviewPullRequestShorthand(prompt)).toBe(expected);
   });
 
   it.each([
-    "Review #12 and #13",
+    "Review #123",
+    "fix issue #482",
+    "My #1 concern is security",
+    "color changed to #123456",
+    "Review branch feat/x (follow-up to #610)",
+    "step #3 of the runbook",
+    "Review PR 12 and PR 13",
+    "SPR 12",
     "abc#123",
     "&#123;",
     "# 123 heading",
@@ -112,6 +118,15 @@ describe("formatCodeReviewReport", () => {
   it("does not duplicate a header the model already wrote", () => {
     const text = `**Reviewed PR:** ${PR.url}\n\n## Findings`;
     expect(formatCodeReviewReport(text, { pullRequest: PR })).toBe(text);
+  });
+
+  it("adds the header when the URL only appears later or as a longer PR number", () => {
+    const later = `## Findings\n- see ${PR.url}`;
+    expect(formatCodeReviewReport(later, { pullRequest: PR })).toMatch(/^\*\*Reviewed PR:\*\*/);
+    const longer = `**Reviewed PR:** ${PR.url}3\n\nbody`;
+    expect(formatCodeReviewReport(longer, { pullRequest: PR })).toMatch(
+      /^\*\*Reviewed PR:\*\* \[acme\/app#42\]/,
+    );
   });
 
   it("leaves reports without a PR unchanged apart from trimming", () => {

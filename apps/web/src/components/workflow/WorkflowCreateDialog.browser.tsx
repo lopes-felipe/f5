@@ -1389,14 +1389,19 @@ describe("WorkflowCreateDialog", () => {
       await typeRequirementPrompt("Review the workflow changes");
       await expect.element(autoPost()).toBeDisabled();
       await expect
-        .element(page.getByText("Add a GitHub PR link or #number to the review instructions."))
+        .element(page.getByText("Add a GitHub PR link or PR #number to the review instructions."))
         .toBeVisible();
 
-      await typeRequirementPrompt(" in #42");
-      await expect.element(page.getByText("PR #42 in this project's GitHub repo.")).toBeVisible();
+      await typeRequirementPrompt(" for issue #42");
+      await expect.element(autoPost()).toBeDisabled();
+
+      await typeRequirementPrompt(" in PR #42");
+      await expect
+        .element(page.getByText(/^PR #42 in this project's GitHub repo\. It posts from your/))
+        .toBeVisible();
 
       await typeRequirementPrompt(" https://github.com/acme/app/pull/42");
-      await expect.element(page.getByText("Will post to acme/app#42.")).toBeVisible();
+      await expect.element(page.getByText(/^Will post to acme\/app#42\./)).toBeVisible();
       await expect.element(autoPost()).toBeEnabled();
       await autoPost().click();
 
