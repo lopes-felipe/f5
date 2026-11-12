@@ -40,10 +40,12 @@ import {
   DEFAULT_TOAST_TIMEOUT_MS,
   defaultToastTimeout,
   formatToastAge,
+  resolveToastTone,
   resolveToastTopOffset,
   shouldHideCollapsedToastContent,
   TOAST_MIN_TOP_OFFSET_PX,
   toastDedupeKey,
+  type ToastTone,
 } from "./toast.logic";
 import {
   INITIAL_TOAST_WHEEL_STATE,
@@ -258,52 +260,89 @@ export function createAppToastManager(base: typeof baseToastManager) {
 
 const toastManager = createAppToastManager(baseToastManager);
 
-type ToastTileVisual = { Icon: LucideIcon; className: string };
+export type ToastVisual = { Icon: LucideIcon; tone: ToastTone };
 
-const TYPE_TILES: Record<string, ToastTileVisual> = {
-  error: { Icon: CircleAlertIcon, className: "bg-destructive text-white" },
-  warning: { Icon: TriangleAlertIcon, className: "bg-warning text-white" },
-  success: { Icon: CircleCheckIcon, className: "bg-success text-white" },
-  info: { Icon: InfoIcon, className: "bg-info text-white" },
-  loading: { Icon: LoaderCircleIcon, className: "bg-secondary text-muted-foreground" },
+const TYPE_ICONS: Partial<Record<string, LucideIcon>> = {
+  error: CircleAlertIcon,
+  warning: TriangleAlertIcon,
+  success: CircleCheckIcon,
+  info: InfoIcon,
+  loading: LoaderCircleIcon,
 };
 
-const SOURCE_TILES: Partial<Record<ToastSource, ToastTileVisual>> = {
-  pr: { Icon: GitPullRequestIcon, className: "bg-warning text-white" },
-  scheduled: { Icon: CalendarClockIcon, className: "bg-primary text-primary-foreground" },
-  upstream: { Icon: GitMergeIcon, className: "bg-secondary text-foreground" },
-  update: { Icon: DownloadIcon, className: "bg-primary text-primary-foreground" },
-  errors: TYPE_TILES.error!,
+const SOURCE_ICONS: Partial<Record<ToastSource, LucideIcon>> = {
+  pr: GitPullRequestIcon,
+  scheduled: CalendarClockIcon,
+  upstream: GitMergeIcon,
+  update: DownloadIcon,
+  errors: CircleAlertIcon,
 };
 
-function threadStatusTileClass(status: ThreadStatus): string {
-  switch (status) {
-    case "pending-approval":
-    case "awaiting-input":
-    case "plan-ready":
-      return "bg-info text-white";
-    case "failed":
-      return "bg-destructive text-white";
-    case "completed":
-      return "bg-success text-white";
-    default:
-      return "bg-secondary text-foreground";
-  }
+/** The glyph and status colour of a toast or inbox row; same precedence as the tone. */
+export function resolveToastVisual(
+  type: string | undefined,
+  data: Pick<AppToastData, "threadStatus" | "source"> | undefined,
+): ToastVisual {
+  const statusIcon = data?.threadStatus ? threadStatusIcon(data.threadStatus) : null;
+  const Icon =
+    statusIcon ??
+    (data?.source ? SOURCE_ICONS[data.source] : undefined) ??
+    (type ? TYPE_ICONS[type] : undefined) ??
+    InfoIcon;
+  return { Icon, tone: resolveToastTone(type, data) };
 }
 
-export function resolveToastTile(
-  type: string | undefined,
-  data: AppToastData | undefined,
-): ToastTileVisual | null {
-  if (data?.threadStatus) {
-    const Icon = threadStatusIcon(data.threadStatus);
-    if (Icon) return { Icon, className: threadStatusTileClass(data.threadStatus) };
-  }
-  if (data?.source) {
-    const visual = SOURCE_TILES[data.source];
-    if (visual) return visual;
-  }
-  return (type && TYPE_TILES[type]) || null;
+const RAIL_TONE_CLASS: Record<ToastTone, string> = {
+  warning: "bg-warning",
+  attention: "bg-attention",
+  info: "bg-info",
+  success: "bg-success",
+  destructive: "bg-destructive",
+  primary: "bg-primary",
+  muted: "bg-faint-foreground",
+};
+
+const GLYPH_TONE_CLASS: Record<ToastTone, string> = {
+  warning: "text-warning-foreground",
+  attention: "text-attention-foreground",
+  info: "text-info-foreground",
+  success: "text-success-foreground",
+  destructive: "text-destructive-foreground",
+  primary: "text-primary",
+  muted: "text-muted-foreground",
+};
+
+/** The status-coloured bar on the left edge; its parent must clip and be positioned. */
+export function ToastRail({ tone }: { tone: ToastTone }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("pointer-events-none absolute inset-y-0 left-0 w-0.75", RAIL_TONE_CLASS[tone])}
+      data-slot="toast-rail"
+      data-tone={tone}
+    />
+  );
+}
+
+/** The status glyph, centred on the first line of `text-ui` copy. */
+export function ToastGlyph({
+  visual,
+  spinning = false,
+  className,
+}: {
+  visual: ToastVisual;
+  spinning?: boolean;
+  className?: string;
+}) {
+  const { Icon } = visual;
+  return (
+    <span className={cn("flex h-5 shrink-0 items-center", className)} data-slot="toast-icon">
+      <Icon
+        className={cn("size-4", GLYPH_TONE_CLASS[visual.tone], spinning && "animate-spin")}
+        aria-hidden
+      />
+    </span>
+  );
 }
 
 function useNow(intervalMs: number): number {
@@ -315,23 +354,7 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-function ToastTile({ visual, spinning }: { visual: ToastTileVisual | null; spinning: boolean }) {
-  if (!visual) return null;
-  const { Icon } = visual;
-  return (
-    <div
-      className={cn(
-        "flex size-8 shrink-0 items-center justify-center rounded-lg",
-        visual.className,
-      )}
-      data-slot="toast-icon"
-    >
-      <Icon className={cn("size-4", spinning && "animate-spin")} aria-hidden />
-    </div>
-  );
-}
-
-const ITEM_TONE_CLASS: Record<ToastItemTone, string> = {
+export const ITEM_TONE_CLASS: Record<ToastItemTone, string> = {
   warning: "bg-warning",
   destructive: "bg-destructive",
   info: "bg-info",
@@ -349,7 +372,7 @@ function ToastItems({
   closeToast: () => void;
 }) {
   return (
-    <div className="-mx-1 border-t border-foreground/8 pt-1" data-slot="toast-items">
+    <div className="-mx-2 flex flex-col" data-slot="toast-items">
       {items.map((item) => (
         <button
           key={item.id}
@@ -388,10 +411,12 @@ function ToastActions({
   actions,
   actionProps,
   closeToast,
+  className,
 }: {
   actions: readonly ToastActionSpec[];
   actionProps: ToastActionConfig | undefined;
   closeToast: () => void;
+  className?: string;
 }) {
   const [pending, setPending] = useState(false);
   if (actions.length === 0 && !actionProps) return null;
@@ -416,7 +441,7 @@ function ToastActions({
     if (!spec.keepOpen && !event.defaultPrevented) closeToast();
   };
   return (
-    <div className="flex gap-1.5" data-slot="toast-actions">
+    <div className={cn("flex shrink-0 gap-1.5", className)} data-slot="toast-actions">
       {actions.map((spec, index) => (
         <button
           key={index}
@@ -427,7 +452,7 @@ function ToastActions({
               size: "xs",
               variant: spec.variant === "primary" ? "default" : "secondary",
             }),
-            "min-w-0 flex-1 rounded-lg",
+            "rounded-md",
           )}
           data-slot="toast-action"
           onClick={(event) => run(spec, event)}
@@ -439,7 +464,7 @@ function ToastActions({
         <Toast.Action
           className={cn(
             buttonVariants({ size: "xs", variant: actions.length > 0 ? "secondary" : "default" }),
-            "min-w-0 flex-1 rounded-lg",
+            "rounded-md",
             actionProps.className,
           )}
           data-slot="toast-action"
@@ -454,6 +479,10 @@ function ToastActions({
     </div>
   );
 }
+
+/** Solid notification card: the popover surface with a hairline and a soft, deep shadow. */
+const toastSurfaceClassName =
+  "rounded-lg border border-border bg-popover shadow-[0_2px_6px_rgb(0_0_0/0.06),0_14px_36px_-14px_rgb(0_0_0/0.28)] dark:shadow-[0_2px_6px_rgb(0_0_0/0.35),0_16px_40px_-14px_rgb(0_0_0/0.65)]";
 
 const toastCloseBadgeClassName =
   "absolute -top-1.5 -left-1.5 z-10 inline-flex size-5 items-center justify-center rounded-full border border-foreground/10 bg-popover text-muted-foreground opacity-0 shadow-sm transition-opacity duration-(--duration-fast) group-hover/toast:opacity-100 group-focus-within/toast:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -487,79 +516,118 @@ function CopyDetailsButton({ text }: { text: string }) {
 }
 
 /** The card body shared by stacked and anchored toasts. */
+function ToastDetail({ text, className }: { text: string; className?: string }) {
+  return (
+    <div
+      className={cn("min-w-0 truncate font-mono text-xs text-muted-foreground", className)}
+      data-slot="toast-detail"
+      title={text}
+    >
+      {text}
+    </div>
+  );
+}
+
+/**
+ * The card body shared by stacked and anchored toasts: glyph and title on the first line, and
+ * everything else indented under the title. A detail (a command, a path) shares its line with
+ * the buttons.
+ */
 function ToastCardBody({
   type,
   data,
+  hasDescription,
   actionProps,
   closeToast,
 }: {
   type: string | undefined;
   data: AppToastData | undefined;
+  hasDescription: boolean;
   actionProps: ToastActionConfig | undefined;
   closeToast: () => void;
 }) {
   const now = useNow(30_000);
   const [expanded, setExpanded] = useState(false);
-  const visual = resolveToastTile(type, data);
+  const visual = resolveToastVisual(type, data);
   const count = data?.count ?? 1;
   const items = data?.items ?? [];
   const actions = data?.actions ?? [];
+  const hasActions = actions.length > 0 || actionProps !== undefined;
+  const detail = data?.detail;
+  const hasText = Boolean(data?.sourceLabel) || hasDescription;
+  const hasBody = hasText || Boolean(detail) || items.length > 0 || hasActions;
   return (
-    <div className="flex min-w-0 flex-col gap-2">
-      <div className="flex min-w-0 gap-2.5">
-        <ToastTile visual={visual} spinning={type === "loading"} />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex min-w-0 items-start gap-2">
-            <Toast.Title
-              className="line-clamp-2 min-w-0 flex-1 break-words font-semibold"
-              data-slot="toast-title"
-            />
-            {count > 1 ? (
-              <span
-                className="mt-0.5 shrink-0 rounded-full bg-foreground/10 px-1.5 text-2xs font-semibold tabular-nums"
-                data-slot="toast-count"
-              >
-                ×{count}
-              </span>
-            ) : null}
-            {data?.copyText ? <CopyDetailsButton text={data.copyText} /> : null}
-            {data?.createdAt ? (
-              <span
-                className={cn(
-                  "mt-0.5 shrink-0 text-2xs text-muted-foreground tabular-nums",
-                  data.copyText && "group-hover/toast:hidden group-focus-within/toast:hidden",
-                )}
-                data-slot="toast-time"
-              >
-                {formatToastAge(data.createdAt, now)}
-              </span>
-            ) : null}
-          </div>
-          {data?.sourceLabel ? (
-            <div className="truncate text-2xs text-muted-foreground" data-slot="toast-source">
-              {data.sourceLabel}
-            </div>
-          ) : null}
-          <Toast.Description
-            className={cn("min-w-0 break-words text-muted-foreground", !expanded && "line-clamp-3")}
-            data-slot="toast-description"
-            onClick={() => setExpanded((value) => !value)}
-          />
-          {data?.detail ? (
-            <div
-              className="mt-1.5 truncate rounded-md bg-foreground/6 px-2 py-1 font-mono text-xs text-foreground"
-              data-slot="toast-detail"
-              title={data.detail}
-            >
-              {data.detail}
-            </div>
-          ) : null}
-        </div>
+    <div className="flex min-w-0 flex-col gap-1">
+      <ToastRail tone={visual.tone} />
+      <div className="flex min-w-0 items-start gap-2">
+        <ToastGlyph visual={visual} spinning={type === "loading"} />
+        <Toast.Title
+          className="line-clamp-2 min-w-0 flex-1 break-words font-medium"
+          data-slot="toast-title"
+        />
+        {count > 1 ? (
+          <span
+            className="mt-0.5 shrink-0 rounded-full bg-foreground/10 px-1.5 text-2xs font-semibold tabular-nums"
+            data-slot="toast-count"
+          >
+            ×{count}
+          </span>
+        ) : null}
+        {data?.copyText ? <CopyDetailsButton text={data.copyText} /> : null}
+        {data?.createdAt ? (
+          <span
+            className={cn(
+              "mt-0.5 shrink-0 text-2xs text-muted-foreground tabular-nums",
+              data.copyText && "group-hover/toast:hidden group-focus-within/toast:hidden",
+            )}
+            data-slot="toast-time"
+          >
+            {formatToastAge(data.createdAt, now)}
+          </span>
+        ) : null}
       </div>
-      {items.length > 0 ? (
-        <ToastItems items={items} moreCount={data?.moreCount} closeToast={closeToast} />
+      {hasBody ? (
+        <div className="flex min-w-0 flex-col gap-1.5 pl-6" data-slot="toast-body">
+          {hasText ? (
+            <div className="flex min-w-0 flex-col">
+              {data?.sourceLabel ? (
+                <div className="truncate text-xs text-muted-foreground" data-slot="toast-source">
+                  {data.sourceLabel}
+                </div>
+              ) : null}
+              <Toast.Description
+                className={cn(
+                  "min-w-0 break-words text-muted-foreground",
+                  !expanded && "line-clamp-3",
+                )}
+                data-slot="toast-description"
+                onClick={() => setExpanded((value) => !value)}
+              />
+            </div>
+          ) : null}
+          {items.length > 0 ? (
+            <ToastItems items={items} moreCount={data?.moreCount} closeToast={closeToast} />
+          ) : null}
+          {detail && hasActions ? (
+            <div className="flex min-w-0 items-center gap-2" data-slot="toast-detail-row">
+              <ToastDetail text={detail} className="flex-1" />
+              <ToastActions actions={actions} actionProps={actionProps} closeToast={closeToast} />
+            </div>
+          ) : (
+            <>
+              {detail ? <ToastDetail text={detail} /> : null}
+              {hasActions ? (
+                <ToastActions
+                  actions={actions}
+                  actionProps={actionProps}
+                  closeToast={closeToast}
+                  className="justify-end"
+                />
+              ) : null}
+            </>
+          )}
+        </div>
       ) : null}
-      <ToastActions actions={actions} actionProps={actionProps} closeToast={closeToast} />
     </div>
   );
 }
@@ -916,7 +984,8 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
               data-slot="toast-root"
               data-urgent={toast.data?.urgent ? "" : undefined}
               className={cn(
-                "group/toast surface-notification absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-2xl text-popover-foreground [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s,translate_.2s_ease-out]",
+                toastSurfaceClassName,
+                "group/toast absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none text-popover-foreground [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s,translate_.2s_ease-out]",
                 // A trackpad swipe drags the toast with the fingers: no lag on translate or fade.
                 "not-data-ending-style:data-wheel-dragging:[transition:transform_.5s_cubic-bezier(.22,1,.36,1),height_.15s]",
                 // Base positioning using data-position
@@ -992,7 +1061,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
               />
               <Toast.Content
                 className={cn(
-                  "pointer-events-auto overflow-hidden px-3 py-2.5 text-ui transition-opacity duration-250 data-expanded:opacity-100",
+                  "pointer-events-auto relative overflow-hidden rounded-[inherit] py-2.5 pr-3 pl-4 text-ui transition-opacity duration-250 data-expanded:opacity-100",
                   hideCollapsedContent &&
                     "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
                 )}
@@ -1000,6 +1069,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 <ToastCardBody
                   type={toast.type}
                   data={toast.data}
+                  hasDescription={toast.description != null}
                   actionProps={toast.actionProps}
                   closeToast={() => toastManager.close(toast.id)}
                 />
@@ -1052,7 +1122,7 @@ function AnchoredToasts() {
                     "group/toast relative text-balance text-popover-foreground text-xs transition-[scale,opacity] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0",
                     tooltipStyle
                       ? "rounded-md border bg-popover shadow-md/5"
-                      : "surface-notification rounded-2xl",
+                      : toastSurfaceClassName,
                   )}
                   data-slot="toast-popup"
                   toast={toast}
@@ -1063,10 +1133,11 @@ function AnchoredToasts() {
                     </Toast.Content>
                   ) : (
                     <>
-                      <Toast.Content className="pointer-events-auto overflow-hidden px-3 py-2.5 text-ui">
+                      <Toast.Content className="pointer-events-auto relative overflow-hidden rounded-[inherit] py-2.5 pr-3 pl-4 text-ui">
                         <ToastCardBody
                           type={toast.type}
                           data={toast.data}
+                          hasDescription={toast.description != null}
                           actionProps={toast.actionProps}
                           closeToast={() => anchoredToastManager.close(toast.id)}
                         />

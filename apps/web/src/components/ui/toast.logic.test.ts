@@ -1,5 +1,57 @@
 import { assert, describe, it } from "vitest";
-import { buildVisibleToastLayout, shouldHideCollapsedToastContent } from "./toast.logic";
+import {
+  buildVisibleToastLayout,
+  resolveToastTone,
+  shouldHideCollapsedToastContent,
+} from "./toast.logic";
+
+describe("resolveToastTone", () => {
+  it("colours thread statuses like the rest of the app (F3)", () => {
+    const cases = [
+      ["pending-approval", "warning"],
+      ["plan-ready", "warning"],
+      ["awaiting-input", "attention"],
+      ["working", "info"],
+      ["connecting", "info"],
+      ["failed", "destructive"],
+      ["completed", "success"],
+    ] as const;
+    for (const [threadStatus, tone] of cases) {
+      assert.equal(resolveToastTone("info", { threadStatus }), tone, threadStatus);
+    }
+  });
+
+  it("colours sources, then types", () => {
+    assert.equal(resolveToastTone("info", { source: "pr" }), "warning");
+    assert.equal(resolveToastTone("info", { source: "scheduled" }), "primary");
+    assert.equal(resolveToastTone("info", { source: "update" }), "primary");
+    assert.equal(resolveToastTone("info", { source: "upstream" }), "muted");
+    assert.equal(resolveToastTone("info", { source: "errors" }), "destructive");
+    assert.equal(resolveToastTone("error", undefined), "destructive");
+    assert.equal(resolveToastTone("warning", undefined), "warning");
+    assert.equal(resolveToastTone("success", undefined), "success");
+    assert.equal(resolveToastTone("info", undefined), "info");
+    assert.equal(resolveToastTone("loading", undefined), "muted");
+  });
+
+  it("prefers the thread status over the source, and the source over the type", () => {
+    assert.equal(
+      resolveToastTone("error", { threadStatus: "completed", source: "errors" }),
+      "success",
+    );
+    assert.equal(resolveToastTone("error", { source: "scheduled" }), "primary");
+    // A source without its own colour, or no thread status, falls through to the type.
+    assert.equal(
+      resolveToastTone("success", { source: "thread", threadStatus: "none" }),
+      "success",
+    );
+  });
+
+  it("is muted when nothing says otherwise", () => {
+    assert.equal(resolveToastTone(undefined, undefined), "muted");
+    assert.equal(resolveToastTone("custom", { source: "system" }), "muted");
+  });
+});
 
 describe("shouldHideCollapsedToastContent", () => {
   it("keeps a single visible toast readable", () => {

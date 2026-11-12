@@ -6,8 +6,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
-- Notifications have a macOS-style design at the top right, below the runtime strip. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
-- A bell in the sidebar title bar opens a notification inbox (⌘⇧L, or Ctrl+Shift+L) with filters by source, unread counts, and Do Not Disturb for an hour, until tomorrow, or until turned off.
+- Notifications appear at the top right, below the runtime strip, as solid cards with a status-coloured rail and glyph. A command or path shares its line with the toast's buttons. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
+- A bell in the sidebar title bar opens a notification inbox (⌘⇧L, or Ctrl+Shift+L). Approvals and input requests that still wait on you are pinned under **Needs you**, and All / Needs you / Unread views sit above the list. The header filters by source and turns on Do Not Disturb for an hour, until tomorrow, or until turned off.
 - Approval notifications for a single command or file request offer Approve and Deny in the toast and the inbox.
 - Notification settings choose in-app, system, sound and inbox delivery per source (threads, pull requests, scheduled runs, upstream, updates, errors) and the toast position. Upstream topics and scheduled runs also show in-app.
 
