@@ -3051,6 +3051,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               );
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.type === "thread.turn-processing-quiesced") {
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === event.aggregateId);
+            const project = model.projects.find((project) => project.id === thread?.projectId);
+            const cwd = thread ? threadWorkspaceCwd(thread, project) : null;
+            if (cwd) {
+              const status = yield* gitManager
+                .status({ cwd, includeRemote: false, includePullRequest: false })
+                .pipe(Effect.orElseSucceed(() => null));
+              if (status)
+                yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status });
+            }
+          }
           if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
             yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);

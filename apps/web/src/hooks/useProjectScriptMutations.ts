@@ -70,6 +70,7 @@ export function useProjectScriptMutations(project: ProjectScriptMutationTarget |
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
         ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
+        stopOnSettle: input.stopOnSettle ?? false,
         ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
       const nextScripts = input.runOnWorktreeCreate
@@ -111,6 +112,7 @@ export function useProjectScriptMutations(project: ProjectScriptMutationTarget |
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
         ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
+        stopOnSettle: input.stopOnSettle ?? false,
         ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
       const nextScripts = project.scripts.map((script) =>

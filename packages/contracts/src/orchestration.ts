@@ -305,6 +305,7 @@ export const ProjectScript = Schema.Struct({
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
   runOnWorktreeSettle: Schema.optional(Schema.Boolean),
+  stopOnSettle: Schema.optional(Schema.Boolean),
   /**
    * Whether the agent may start while this setup script still runs. Absent
    * means true, so scripts saved before the option existed keep running in

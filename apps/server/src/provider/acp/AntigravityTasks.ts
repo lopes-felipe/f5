@@ -8,6 +8,9 @@ type TaskEvent = Pick<
 /** start_subagent completes when the batch launches, not when its agents finish. */
 export class AntigravityTasks {
   private readonly active = new Set<string>();
+  get hasActive(): boolean {
+    return this.active.size > 0;
+  }
   update(tool: AcpToolCallState, raw: unknown): TaskEvent[] {
     const update = raw && typeof raw === "object" && "update" in raw ? raw.update : undefined;
     const meta =

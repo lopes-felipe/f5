@@ -109,6 +109,26 @@ const expectEquivalent = (sql: SqlClient.SqlClient, threadId: ThreadId | null) =
   });
 
 it.layer(SqlitePersistenceMemory)("retained thread activities query", (it) => {
+  it.effect("retains an older pending approval in addition to the full normal window", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* insertThreads(sql, 1, "pending-");
+      yield* insertActivities(sql, "pending-", MAX_THREAD_ACTIVITIES + 5);
+      const oldest = yield* sql<{ activityId: string }>`SELECT activity_id AS "activityId"
+        FROM projection_thread_activities WHERE thread_id = 'pending-1'
+        ORDER BY sequence ASC, created_at ASC, activity_id ASC LIMIT 1`;
+      yield* sql`UPDATE projection_thread_activities
+        SET kind='approval.requested', payload_json='{"requestId":"approval-old"}'
+        WHERE activity_id=${oldest[0]!.activityId}`;
+      yield* sql`INSERT INTO projection_pending_approvals(request_id,thread_id,status,created_at)
+        VALUES('approval-old','pending-1','pending','2026-10-01T00:00:00.000Z')`;
+      const rows = yield* retainedThreadActivitiesSql(sql, ThreadId.makeUnsafe("pending-1"));
+      assert.equal(rows.length, MAX_THREAD_ACTIVITIES + 1);
+      assert.isTrue(rows.some((row) => row.activityId === oldest[0]!.activityId));
+      yield* sql`UPDATE projection_pending_approvals SET status='resolved' WHERE request_id='approval-old'`;
+      yield* sql`UPDATE projection_threads SET deleted_at='2026-10-02T00:00:00.000Z' WHERE thread_id='pending-1'`;
+    }),
+  );
   it.effect("returns the same ordered rows as the previous query", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -164,7 +184,7 @@ it.layer(SqlitePersistenceMemory)("retained thread activities query", (it) => {
         // Only the budget and final orderings sort; the window reads index order.
         assert.isAtMost(
           details.filter((detail) => detail.includes("TEMP B-TREE")).length,
-          2,
+          3,
           details.join("\n"),
         );
       }

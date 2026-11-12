@@ -3665,6 +3665,7 @@ export default memo(function ChatView({
         env?: Record<string, string>;
         worktreePath?: string | null;
         preferNewTerminal?: boolean;
+        stopOnSettle?: boolean;
       },
     ) => {
       const api = readNativeApi();
@@ -3681,7 +3682,8 @@ export default memo(function ChatView({
         terminalState.terminalIds[0] ||
         DEFAULT_THREAD_TERMINAL_ID;
       const isBaseTerminalBusy = terminalState.runningTerminalIds.includes(baseTerminalId);
-      const wantsNewTerminal = Boolean(options?.preferNewTerminal) || isBaseTerminalBusy;
+      const wantsNewTerminal =
+        Boolean(options?.preferNewTerminal || options?.stopOnSettle) || isBaseTerminalBusy;
       const shouldCreateNewTerminal = wantsNewTerminal;
       const targetTerminalId = shouldCreateNewTerminal
         ? `terminal-${randomUUID()}`
@@ -3712,7 +3714,10 @@ export default memo(function ChatView({
             env: runtimeEnv,
           };
 
-      await api.terminal.open(openTerminalInput);
+      await api.terminal.open({
+        ...openTerminalInput,
+        stopOnSettle: options?.stopOnSettle ?? false,
+      });
       await api.terminal.write({
         threadId: activeThreadId,
         terminalId: targetTerminalId,
@@ -3746,7 +3751,10 @@ export default memo(function ChatView({
         );
       }
       try {
-        await runTerminalCommand(script.command, options);
+        await runTerminalCommand(script.command, {
+          ...options,
+          stopOnSettle: script.stopOnSettle ?? false,
+        });
       } catch (error) {
         setThreadError(
           activeThreadId,

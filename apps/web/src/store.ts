@@ -866,7 +866,9 @@ function mergeActivitiesFromTail(
   }
 
   const preservedOlderActivities = existing.activities.filter(
-    (activity) => compareActivityToCursor(activity, oldestLoadedActivityCursor) < 0,
+    (activity) =>
+      activity.kind !== "approval.requested" &&
+      compareActivityToCursor(activity, oldestLoadedActivityCursor) < 0,
   );
   if (preservedOlderActivities.length === 0) {
     return { activities: mappedTailActivities, preservedOlderActivities: false };

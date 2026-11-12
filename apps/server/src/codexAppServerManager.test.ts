@@ -548,7 +548,12 @@ describe("isRecoverableThreadResumeError", () => {
         new Error("thread/resume failed: no rollout found for thread id abc"),
       ),
     ).toBe(true);
-    for (const reason of ["rate limit exceeded", "unauthorized", "permission denied"]) {
+    for (const reason of [
+      "rate limit exceeded",
+      "unauthorized",
+      "permission denied",
+      "thread not found: already has an active writer",
+    ]) {
       expect(isRecoverableThreadResumeError(new Error(`thread/resume failed: ${reason}`))).toBe(
         false,
       );

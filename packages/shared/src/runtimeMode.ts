@@ -1,6 +1,10 @@
 import type { ProviderKind, RuntimeMode } from "@t3tools/contracts";
 
 const BASIC_MODES = new Set<RuntimeMode>(["approval-required", "full-access"]);
+/** Antigravity has no reviewer for Auto; old stored threads must ask instead. */
+export function effectiveRuntimeMode(provider: ProviderKind, mode: RuntimeMode): RuntimeMode {
+  return provider === "antigravity" && mode === "auto" ? "approval-required" : mode;
+}
 const EDIT_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "full-access"]);
 // Muse auto-approves in-workspace edits in every approval mode, so F5 never
 // claims `approval-required` for it.
