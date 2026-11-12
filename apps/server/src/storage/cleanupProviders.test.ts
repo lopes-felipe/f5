@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { StorageDiscoverySettings } from "@t3tools/contracts";
 import {
   cleanupProviders,
   discoverProviderCandidates,
   isUngatedProviderTarget,
+  scanCleanupProviders,
 } from "./cleanupProviders.ts";
+import { allocatedBytes } from "./diskUsage.ts";
 import { runStorageTask } from "./storageWorker.ts";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
@@ -315,4 +318,92 @@ describe("cleanup provider locations and boundaries", () => {
     expect(uv({ XDG_CACHE_HOME: "/custom/cache" }).roots).toEqual(["/custom/cache"]);
     expect(uv({ UV_CACHE_DIR: "/custom/uv-cache" }).roots).toEqual(["/custom"]);
   });
+});
+
+describe("database snapshot sizes", () => {
+  async function scanBackups(stateDir: string) {
+    const scan = await scanCleanupProviders({
+      stateDirs: [stateDir],
+      settings: { machineCleanupEnabled: false } as StorageDiscoverySettings,
+      snapshotUsageCachePath: Path.join(stateDir, "snapshot-usage-cache.json"),
+    });
+    return { scan, backups: scan.categories.find((category) => category.id === "f5Backups")! };
+  }
+
+  it("reports a snapshot at what the next copy no longer shares, and remembers the comparison", async () => {
+    const stateDir = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-provider-usage-"));
+    try {
+      const backups = Path.join(stateDir, "backups");
+      const older = Path.join(backups, "snapshot-1790000000000");
+      const newest = Path.join(backups, "snapshot-1790003600000");
+      // The first 16 KiB were rewritten after the older snapshot: whole chunks
+      // on every platform's copy-on-write unit.
+      const current = Buffer.alloc(256 * 1024, "page");
+      const before = Buffer.concat([Buffer.alloc(16 * 1024, "old!"), current.subarray(16 * 1024)]);
+      await FS.mkdir(older, { recursive: true });
+      await FS.mkdir(newest);
+      await FS.writeFile(Path.join(older, "state.sqlite"), before);
+      await FS.writeFile(Path.join(older, "state.sqlite-wal"), "write-ahead log");
+      await FS.writeFile(Path.join(newest, "state.sqlite"), current);
+      await FS.writeFile(Path.join(stateDir, "state.sqlite"), current);
+
+      const { scan, backups: category } = await scanBackups(stateDir);
+      const walBytes = allocatedBytes(await FS.lstat(Path.join(older, "state.sqlite-wal")));
+      expect(category.measurement).toBe("complete");
+      expect(category.targets.map((target) => target.path)).toEqual([older]);
+      expect(category.targets[0]!.bytes).toBe(16 * 1024 + walBytes);
+      expect(category.targets[0]!.detail).toContain("not shared with newer copies");
+      expect(category.reclaimableBytes).toBe(16 * 1024 + walBytes);
+      expect(scan.reviews.get(older)?.reclaimBytes).toBe(16 * 1024 + walBytes);
+      // Both snapshots' databases, minus the 16 KiB only the older one holds.
+      const databaseBytes = allocatedBytes(await FS.lstat(Path.join(older, "state.sqlite")));
+      expect(scan.sharedSnapshotBytes.get(backups)).toBe(2 * databaseBytes - 16 * 1024);
+
+      const cache = JSON.parse(
+        await FS.readFile(Path.join(stateDir, "snapshot-usage-cache.json"), "utf8"),
+      ) as { entries: Array<{ older: string; unsharedBytes: number }> };
+      expect(cache.entries).toMatchObject([
+        { older: Path.join(older, "state.sqlite"), unsharedBytes: 16 * 1024 },
+      ]);
+
+      // Once the older snapshot is gone its comparison is dropped as well.
+      await FS.rm(older, { recursive: true });
+      await scanBackups(stateDir);
+      expect(
+        JSON.parse(await FS.readFile(Path.join(stateDir, "snapshot-usage-cache.json"), "utf8")),
+      ).toMatchObject({ entries: [] });
+    } finally {
+      await FS.rm(stateDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  // Permission bits do not stop root or Windows from reading the file.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "falls back to the logical size, marked partial, when a snapshot cannot be compared",
+    async () => {
+      const stateDir = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-provider-usage-"));
+      try {
+        const backups = Path.join(stateDir, "backups");
+        const unreadable = Path.join(backups, "snapshot-1790000000000");
+        const newest = Path.join(backups, "snapshot-1790003600000");
+        await FS.mkdir(unreadable, { recursive: true });
+        await FS.mkdir(newest);
+        await FS.writeFile(Path.join(unreadable, "state.sqlite"), Buffer.alloc(64 * 1024, "x"));
+        await FS.chmod(Path.join(unreadable, "state.sqlite"), 0o000);
+        await FS.writeFile(Path.join(newest, "state.sqlite"), "database");
+        await FS.writeFile(Path.join(stateDir, "state.sqlite"), "database");
+
+        const { scan, backups: category } = await scanBackups(stateDir);
+        expect(category.measurement).toBe("partial");
+        expect(category.targets[0]!.bytes).toBe(
+          allocatedBytes(await FS.lstat(Path.join(unreadable, "state.sqlite"))),
+        );
+        expect(category.targets[0]!.detail).toContain("may free less than shown");
+        expect(scan.reviews.get(unreadable)?.reclaimBytes).toBeUndefined();
+      } finally {
+        await FS.rm(stateDir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 });

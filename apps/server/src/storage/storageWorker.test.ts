@@ -202,3 +202,56 @@ it("cancels an isolated scanner without deleting fixture data", async () => {
   ).rejects.toThrow("cancelled");
   expect(await FS.readFile(Path.join(f.path, "item"), "utf8")).toBe("downloaded package");
 });
+
+async function snapshotFixture() {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-storage-worker-"));
+  roots.push(root);
+  const path = Path.join(root, "snapshot-1790000000000");
+  await FS.mkdir(path);
+  await FS.writeFile(Path.join(path, "state.sqlite"), "database");
+  await FS.writeFile(Path.join(path, "state.sqlite-wal"), "log");
+  return { root, path };
+}
+async function snapshotRemoval(path: string, root: string) {
+  const review = (await executeStorageTask({ kind: "inspect", path }, [])) as StorageFileInspection;
+  return {
+    kind: "remove" as const,
+    providerId: "f5Backups" as const,
+    path,
+    allowedRoot: root,
+    identity: review.identity!,
+    fingerprint: review.fingerprint!,
+  };
+}
+it("removes a reclaimed database snapshot together with its directory", async () => {
+  const f = await snapshotFixture();
+  const result = (await executeStorageTask(
+    await snapshotRemoval(f.path, f.root),
+    [],
+  )) as StorageFileInspection;
+  expect(result.warnings).toEqual([]);
+  expect(await FS.readdir(f.root)).toEqual([]);
+});
+it("removes a snapshot directory that an earlier cleanup left empty", async () => {
+  const f = await snapshotFixture();
+  await FS.rm(Path.join(f.path, "state.sqlite"));
+  await FS.rm(Path.join(f.path, "state.sqlite-wal"));
+  await executeStorageTask(await snapshotRemoval(f.path, f.root), []);
+  expect(await FS.readdir(f.root)).toEqual([]);
+});
+it("leaves a snapshot directory in place while it still holds something", async () => {
+  const f = await snapshotFixture();
+  // Not a file, so not part of the reviewed deletion.
+  await FS.mkdir(Path.join(f.path, "unexpected"));
+  const result = (await executeStorageTask(
+    await snapshotRemoval(f.path, f.root),
+    [],
+  )) as StorageFileInspection;
+  expect(result.warnings).toEqual([]);
+  expect(await FS.readdir(f.path)).toEqual(["unexpected"]);
+});
+it("keeps the directory of a backups target that is not a database snapshot", async () => {
+  const f = await fixture();
+  await executeStorageTask({ ...f.task, providerId: "f5Backups" }, []);
+  expect(await FS.readdir(f.path)).toEqual([]);
+});

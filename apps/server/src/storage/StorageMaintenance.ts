@@ -2400,9 +2400,22 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ],
           providerHomesDir,
           settings: discoverySettings,
+          snapshotUsageCachePath: Path.join(config.stateDir, "snapshot-usage-cache.json"),
           ...(signal ? { signal } : {}),
         }),
       );
+      // Database snapshots are clones: the walk above counted the blocks they
+      // share with newer copies once per snapshot. Count them once.
+      for (const [backupsDir, sharedBytes] of providerScan.sharedSnapshotBytes) {
+        if (!isPathWithinRoot({ root: config.stateDir, target: backupsDir })) continue;
+        measured.totalBytes = Math.max(0, measured.totalBytes - sharedBytes);
+        for (const [checkpoint, usage] of measured.byCheckpoint)
+          if (isPathWithinRoot({ root: checkpoint, target: backupsDir }))
+            measured.byCheckpoint.set(checkpoint, {
+              ...usage,
+              bytes: Math.max(0, usage.bytes - sharedBytes),
+            });
+      }
       const categories: StorageCleanupCategoryUsage[] = [
         ...providerScan.categories,
         categoryUsage({
@@ -5137,7 +5150,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
           perTargetReclaimed.push({
             id,
             path: review.path,
-            reclaimedBytes: outcome.success.removedBytes,
+            // A database snapshot frees only what newer copies do not share.
+            reclaimedBytes: Math.min(
+              outcome.success.removedBytes,
+              review.reclaimBytes ?? outcome.success.removedBytes,
+            ),
             status: "Removed",
           });
         }

@@ -1180,6 +1180,67 @@ layer("StorageMaintenance", (it) => {
     ),
   );
 
+  it.effect("counts database snapshots at what newer copies do not share", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const backups = NodePath.join(config.stateDir, "backups");
+        const older = NodePath.join(backups, "snapshot-1790000000000");
+        const newest = NodePath.join(backups, "snapshot-1790003600000");
+        // Unchanged since both snapshots: on a cloning volume they would share every block.
+        const database = "page".repeat(64 * 1024);
+        yield* Effect.promise(async () => {
+          await writeFile(NodePath.join(config.stateDir, "state.sqlite"), database);
+          for (const snapshot of [older, newest]) {
+            await writeFile(NodePath.join(snapshot, "state.sqlite"), database);
+            await writeFile(NodePath.join(snapshot, "state.sqlite-wal"), "write-ahead log");
+          }
+        });
+        // The first scan stores its comparison next to the usage report; scan
+        // again so that file is part of what both sides measure.
+        yield* storage.inspect({ force: true });
+        const report = yield* storage.inspect({ force: true });
+
+        const sizeOf = (path: string) => Effect.promise(() => sizeIfExists(path));
+        const snapshotDatabaseBytes =
+          (yield* sizeOf(NodePath.join(older, "state.sqlite"))).bytes +
+          (yield* sizeOf(NodePath.join(newest, "state.sqlite"))).bytes;
+        const category = report.categories.find((entry) => entry.id === "f5Backups")!;
+        assert.equal(category.measurement, "complete");
+        // The newest snapshot is never offered.
+        assert.deepStrictEqual(
+          category.targets.map((target) => target.path),
+          [older],
+        );
+        const target = category.targets[0]!;
+        assert.equal(target.bytes, (yield* sizeOf(NodePath.join(older, "state.sqlite-wal"))).bytes);
+        assert.include(target.detail, "not shared with newer copies");
+        assert.equal(category.bytes, target.bytes);
+        assert.equal(
+          report.totalUsedBytes,
+          (yield* sizeOf(config.stateDir)).bytes +
+            (yield* sizeOf(config.worktreesDir)).bytes -
+            snapshotDatabaseBytes,
+        );
+
+        const result = yield* storage.cleanup({
+          operationId: "operation-reclaim-snapshot",
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["f5Backups"],
+          targetSelections: [{ categoryId: "f5Backups", targetIds: [target.id] }],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.equal(result.results[0]?.status, "Cleaned");
+        assert.equal(result.results[0]?.reclaimedBytes, target.bytes);
+        assert.equal(yield* Effect.promise(() => pathExists(older)), false);
+        assert.equal(yield* Effect.promise(() => pathExists(newest)), true);
+      }),
+    ),
+  );
+
   it.effect("requires explicit target selection for legacy worktree cleanup", () =>
     withHomeSandbox(
       Effect.gen(function* () {

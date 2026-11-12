@@ -11,6 +11,7 @@ import {
   inspectWindowsFileUse,
 } from "./storageActivity.ts";
 import { removeFileIfSafe, validateDeletablePath } from "./storagePathSafety.ts";
+import { isDatabaseSnapshotName } from "../persistence/databaseFiles.ts";
 import { createHash, randomUUID } from "node:crypto";
 
 export type StorageWorkerTask =
@@ -21,6 +22,12 @@ export type StorageWorkerTask =
     }
   | { kind: "measure"; roots: string[]; checkpoints: string[]; fileRoots?: string[] }
   | { kind: "repositories"; roots: string[] }
+  | {
+      kind: "snapshotUsage";
+      backupsDir: string;
+      liveDbPath: string;
+      cache: ReadonlyArray<import("./snapshotUsage.ts").SnapshotUsageCacheEntry>;
+    }
   | {
       kind: "checkoutScan";
       checkouts: Array<{ root: string; commonDir: string | null }>;
@@ -83,6 +90,10 @@ export async function executeStorageTask(
     return discoverProviderCandidates(task.providerId, task.root);
   }
   if (task.kind === "repositories") return discoverRepositories(task.roots);
+  if (task.kind === "snapshotUsage") {
+    const { measureSnapshotUsage } = await import("./snapshotUsage.ts");
+    return measureSnapshotUsage(task);
+  }
   if (task.kind === "checkoutScan") {
     const { scanCheckoutGarbage } = await import("./checkoutGarbage.ts");
     return scanCheckoutGarbage(task);
@@ -270,6 +281,29 @@ export async function executeStorageTask(
           "Retained Bun cache files are outside the live cache and remain available for review.",
       });
   }
+  // An emptied snapshot directory is not a recovery copy, and one left behind
+  // keeps being offered for cleanup. rmdir refuses a directory that gained a
+  // file during cleanup.
+  if (
+    task.providerId === "f5Backups" &&
+    isDatabaseSnapshotName(Path.basename(task.path)) &&
+    warnings.length === 0
+  ) {
+    const validated = await validateDeletablePath({
+      path: task.path,
+      allowedRoot: task.allowedRoot,
+      expectedIdentity: task.identity,
+      directoryIdentityOnly: true,
+    });
+    if (validated.kind === "validated" && validated.stat.isDirectory())
+      await FS.rmdir(task.path).catch((error: NodeJS.ErrnoException) => {
+        if (!["ENOTEMPTY", "EEXIST", "ENOENT"].includes(error.code ?? ""))
+          warnings.push({
+            path: task.path,
+            reason: "Retained snapshot directory: " + String(error),
+          });
+      });
+  }
   // Preserve directories and files created during cleanup; never recursively remove a cache.
   return { ...result, removedBytes, warnings };
 }
@@ -344,7 +378,7 @@ export function runStorageTask<A>(
     "removeDependencyFolder",
   ].includes(task.kind)
     ? undefined
-    : task.kind === "checkoutScan"
+    : task.kind === "checkoutScan" || task.kind === "snapshotUsage"
       ? 120_000
       : 30_000,
 ): Promise<A> {

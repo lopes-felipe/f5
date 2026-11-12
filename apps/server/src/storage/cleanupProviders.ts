@@ -8,8 +8,16 @@ import type {
   StoragePathWarning,
   StorageDiscoverySettings,
 } from "@t3tools/contracts";
+import { formatByteSize } from "@t3tools/shared/byteSize";
+import { isDatabaseSnapshotName, listDatabaseSnapshots } from "../persistence/databaseFiles.ts";
 import { runStorageTask, type StorageFileInspection } from "./storageWorker.ts";
 import { type FileIdentity } from "./diskUsage.ts";
+import {
+  readSnapshotUsageCache,
+  writeSnapshotUsageCache,
+  type SnapshotUsageCacheEntry,
+  type SnapshotUsageResult,
+} from "./snapshotUsage.ts";
 
 /** Categories scanned by {@link cleanupProviders} and removed through reviewed file deletion. */
 export const MACHINE_CATEGORY_IDS: ReadonlySet<StorageCleanupCategoryId> = new Set([
@@ -37,6 +45,11 @@ export interface CleanupFileReview {
   identity: FileIdentity;
   fingerprint: string;
   application?: "chrome" | "bambu";
+  /**
+   * What removing the target frees, when that is less than the size of its
+   * files: a database snapshot shares most of its blocks with newer copies.
+   */
+  reclaimBytes?: number;
 }
 interface Provider {
   id: StorageCleanupCategoryId;
@@ -366,10 +379,24 @@ export async function scanCleanupProviders(input: {
   stateDirs: string[];
   providerHomesDir?: string;
   settings: StorageDiscoverySettings;
+  /** Keeps snapshot comparison results between scans; snapshots are immutable. */
+  snapshotUsageCachePath?: string;
   signal?: AbortSignal;
 }) {
   const categories: StorageCleanupCategoryUsage[] = [],
     reviews = new Map<string, CleanupFileReview>();
+  /**
+   * Per backups directory, the bytes its snapshots share with newer copies.
+   * A directory walk counts those bytes once per clone.
+   */
+  const sharedSnapshotBytes = new Map<string, number>();
+  const knownSnapshotUsage = input.snapshotUsageCachePath
+    ? await readSnapshotUsageCache(input.snapshotUsageCachePath)
+    : [];
+  const currentSnapshotUsage: SnapshotUsageCacheEntry[] = [];
+  const comparedBackupsDirs: string[] = [];
+  const withinBackupsDir = (directory: string, path: string) =>
+    path.startsWith(directory + Path.sep);
   for (const provider of cleanupProviders({
     stateDirs: input.stateDirs,
     enabled: input.settings.machineCleanupEnabled,
@@ -377,6 +404,7 @@ export async function scanCleanupProviders(input: {
   })) {
     const targets: StorageCleanupCategoryUsage["targets"][number][] = [],
       warnings: StoragePathWarning[] = [];
+    let snapshotEstimateMissing = false;
     for (const root of new Set(provider.roots)) {
       input.signal?.throwIfAborted();
       try {
@@ -384,6 +412,29 @@ export async function scanCleanupProviders(input: {
           { kind: "providerCandidates", providerId: provider.id, root },
           input.signal,
         );
+        // The newest snapshot is never a candidate, but it is still a clone
+        // that a directory walk counts in full, so compare even without candidates.
+        let snapshotUsage: SnapshotUsageResult | null = null;
+        if (provider.id === "f5Backups" && listDatabaseSnapshots(root).length > 0) {
+          snapshotUsage = await runStorageTask<SnapshotUsageResult>(
+            {
+              kind: "snapshotUsage",
+              backupsDir: root,
+              liveDbPath: Path.join(Path.dirname(root), "state.sqlite"),
+              cache: knownSnapshotUsage.filter((entry) => withinBackupsDir(root, entry.older)),
+            },
+            input.signal,
+          ).catch(() => null);
+          input.signal?.throwIfAborted();
+          if (snapshotUsage) {
+            sharedSnapshotBytes.set(
+              root,
+              snapshotUsage.entries.reduce((sum, entry) => sum + entry.sharedBytes, 0),
+            );
+            currentSnapshotUsage.push(...snapshotUsage.cache);
+            comparedBackupsDirs.push(root);
+          }
+        }
         if (!candidates.length) continue;
         const inspections = await runStorageTask<
           Array<{ path: string; inspection?: StorageFileInspection; error?: string }>
@@ -424,6 +475,17 @@ export async function scanCleanupProviders(input: {
             !!inspection.fingerprint;
           const disabledReason =
             inspection.activity.state === "idle" ? undefined : inspection.activity.reason;
+          const isSnapshot =
+            provider.id === "f5Backups" && isDatabaseSnapshotName(Path.basename(path));
+          const logicalBytes = inspection.bytes ?? 0;
+          const sharedBytes = isSnapshot
+            ? snapshotUsage?.entries.find((entry) => entry.path === path)?.sharedBytes
+            : undefined;
+          // An emptied snapshot directory has nothing to compare and nothing to misreport.
+          if (isSnapshot && sharedBytes === undefined && logicalBytes > 0)
+            snapshotEstimateMissing = true;
+          const bytes =
+            sharedBytes === undefined ? logicalBytes : Math.max(0, logicalBytes - sharedBytes);
           if (inspection.identity && inspection.fingerprint)
             reviews.set(path, {
               providerId: provider.id,
@@ -433,12 +495,13 @@ export async function scanCleanupProviders(input: {
               identity: inspection.identity,
               fingerprint: inspection.fingerprint,
               ...(provider.application ? { application: provider.application } : {}),
+              ...(sharedBytes === undefined ? {} : { reclaimBytes: bytes }),
             });
           targets.push({
             id: path,
             path,
             label: Path.basename(path),
-            bytes: inspection.bytes ?? 0,
+            bytes,
             safeToDelete,
             latestMtime: inspection.identity
               ? new Date(inspection.identity.mtimeMs).toISOString()
@@ -451,8 +514,10 @@ export async function scanCleanupProviders(input: {
               : {}),
             detail:
               provider.id === "f5Backups"
-                ? (DATABASE_SNAPSHOT_DIR.test(Path.basename(path))
-                    ? "Automatic database snapshot. It shares unchanged data with the live database, so deleting it may free less than shown · "
+                ? (isSnapshot
+                    ? sharedBytes === undefined
+                      ? "Automatic database snapshot. It shares unchanged data with the live database, so deleting it may free less than shown · "
+                      : `Automatic database snapshot · ${formatByteSize(logicalBytes)} logical, about ${formatByteSize(bytes)} not shared with newer copies · `
                     : candidates.filter(
                           (other) => !DATABASE_SNAPSHOT_DIR.test(Path.basename(other)),
                         ).length === 1
@@ -483,6 +548,7 @@ export async function scanCleanupProviders(input: {
       reclaimableBytes: targets.filter((t) => t.safeToDelete).reduce((n, t) => n + t.bytes, 0),
       measurement:
         warnings.length ||
+        snapshotEstimateMissing ||
         targets.some((t) => t.blockingReasons?.some((r) => r.code === "inspection_unavailable"))
           ? targets.some((t) => t.bytes > 0)
             ? "partial"
@@ -504,5 +570,18 @@ export async function scanCleanupProviders(input: {
       warnings,
     });
   }
-  return { categories, reviews };
+  if (input.snapshotUsageCachePath) {
+    // Directories that were compared now list exactly their current pairs;
+    // results for a directory that could not be compared this time are kept.
+    const next = [
+      ...currentSnapshotUsage,
+      ...knownSnapshotUsage.filter(
+        (entry) =>
+          !comparedBackupsDirs.some((directory) => withinBackupsDir(directory, entry.older)),
+      ),
+    ];
+    if (JSON.stringify(next) !== JSON.stringify(knownSnapshotUsage))
+      await writeSnapshotUsageCache(input.snapshotUsageCachePath, next).catch(() => {});
+  }
+  return { categories, reviews, sharedSnapshotBytes };
 }

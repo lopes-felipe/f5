@@ -14,6 +14,11 @@ import * as Path from "node:path";
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "latin1");
 const SNAPSHOT_NAME = /^snapshot-(\d{13})$/;
 
+/** Whether `name` is the directory name of a published automatic snapshot. */
+export function isDatabaseSnapshotName(name: string): boolean {
+  return SNAPSHOT_NAME.test(name);
+}
+
 export type DatabaseHeaderStatus =
   | { readonly status: "missing" }
   | { readonly status: "empty" }
@@ -69,7 +74,11 @@ export interface DatabaseSnapshotEntry {
   readonly createdAt: number;
 }
 
-/** Published snapshots, newest first. `.partial` directories are excluded. */
+/**
+ * Published snapshots, newest first. `.partial` directories are excluded, and
+ * so are directories without a `state.sqlite`: storage cleanup once emptied
+ * snapshots without removing them, and such a husk is not a recovery copy.
+ */
 export function listDatabaseSnapshots(directory: string): DatabaseSnapshotEntry[] {
   let entries: FS.Dirent[];
   try {
@@ -81,7 +90,7 @@ export function listDatabaseSnapshots(directory: string): DatabaseSnapshotEntry[
   return entries
     .flatMap((entry) => {
       const match = entry.isDirectory() ? SNAPSHOT_NAME.exec(entry.name) : null;
-      return match
+      return match && FS.existsSync(Path.join(directory, entry.name, "state.sqlite"))
         ? [
             {
               name: entry.name,

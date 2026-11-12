@@ -6,6 +6,12 @@
  * and its WAL costs almost nothing on APFS and is a complete, openable copy,
  * so these run by default and keep 24 hourly and 7 daily copies.
  *
+ * A clone only costs space as the live database diverges from it, but on a
+ * busy profile that is a few hundred megabytes per hour. When the volume runs
+ * low the history is thinned (see {@link retentionTierForFreeBytes}); new
+ * snapshots are still taken, because a fresh clone is what keeps the retained
+ * set cheap.
+ *
  * Consistency: the clones are taken while holding the write lock
  * (`BEGIN IMMEDIATE`). No commit can happen and the WAL cannot be reset while
  * the lock is held; a concurrent passive checkpoint may copy frames into the
@@ -19,7 +25,7 @@
  */
 import { execFile } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, rmdir, stat, statfs } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -32,18 +38,51 @@ import {
   databaseSnapshotName,
   databaseSnapshotsDir,
   inspectDatabaseHeader,
+  isDatabaseSnapshotName,
   listDatabaseSnapshots,
   type DatabaseSnapshotEntry,
 } from "../persistence/databaseFiles.ts";
 import { getDatabaseDamage } from "../persistence/databaseHealth.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { CRITICAL_DISK_SPACE_BYTES, LOW_DISK_SPACE_BYTES } from "./diskSpace.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const MIN_INTERVAL_MS = 55 * 60 * 1000;
-const HOURLY_RETAINED = 24;
-const DAILY_RETAINED = 7;
 const PARTIAL_SUFFIX = ".partial";
+
+/** How many of the newest snapshots, and the newest of how many recent days, to keep. */
+export interface SnapshotRetentionTier {
+  readonly hourly: number;
+  readonly daily: number;
+}
+
+export const SNAPSHOT_RETENTION = {
+  normal: { hourly: 24, daily: 7 },
+  low: { hourly: 6, daily: 3 },
+  critical: { hourly: 2, daily: 0 },
+} as const satisfies Record<string, SnapshotRetentionTier>;
+
+/**
+ * Retention for the free space on the snapshots' volume, using the thresholds
+ * at which F5 warns about and holds turns for a full disk. Unknown free space
+ * keeps the full history: an unreadable volume is no reason to discard copies.
+ */
+export function retentionTierForFreeBytes(freeBytes: number | null): SnapshotRetentionTier {
+  if (freeBytes === null || !Number.isFinite(freeBytes)) return SNAPSHOT_RETENTION.normal;
+  if (freeBytes < CRITICAL_DISK_SPACE_BYTES) return SNAPSHOT_RETENTION.critical;
+  if (freeBytes < LOW_DISK_SPACE_BYTES) return SNAPSHOT_RETENTION.low;
+  return SNAPSHOT_RETENTION.normal;
+}
+
+async function volumeFreeBytes(directory: string): Promise<number | null> {
+  try {
+    const stats = await statfs(directory);
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    return null;
+  }
+}
 const UNSUPPORTED_CODES = new Set(["ENOTSUP", "EXDEV", "ENOSYS", "EOPNOTSUPP", "EINVAL"]);
 
 const gate = Semaphore.makeUnsafe(1);
@@ -113,21 +152,24 @@ export interface RunDatabaseSnapshotInput {
   readonly directory: string;
   readonly now?: number;
   readonly clone?: CloneFile;
+  /** Free bytes on the volume holding `directory`; null when unknown. */
+  readonly freeBytes?: (directory: string) => Promise<number | null>;
 }
 
 /**
- * Snapshots to keep: the newest {@link HOURLY_RETAINED}, plus the newest of
- * each UTC day for the last {@link DAILY_RETAINED} days.
+ * Snapshots to keep: the newest `tier.hourly`, plus the newest of each UTC day
+ * for the last `tier.daily` days.
  */
 export function selectRetainedSnapshots(
   snapshots: ReadonlyArray<DatabaseSnapshotEntry>,
   now: number,
+  tier: SnapshotRetentionTier = SNAPSHOT_RETENTION.normal,
 ): Set<string> {
   const newestFirst = snapshots.toSorted((left, right) => right.createdAt - left.createdAt);
-  const keep = new Set(newestFirst.slice(0, HOURLY_RETAINED).map((entry) => entry.name));
+  const keep = new Set(newestFirst.slice(0, tier.hourly).map((entry) => entry.name));
   const days = new Set<number>();
   for (const entry of newestFirst) {
-    if (entry.createdAt < now - DAILY_RETAINED * DAY_MS) break;
+    if (entry.createdAt < now - tier.daily * DAY_MS) break;
     const day = Math.floor(entry.createdAt / DAY_MS);
     if (days.has(day)) continue;
     days.add(day);
@@ -136,17 +178,25 @@ export function selectRetainedSnapshots(
   return keep;
 }
 
-async function removePartials(directory: string) {
-  for (const entry of await readdir(directory, { withFileTypes: true }))
-    if (entry.isDirectory() && /^snapshot-\d{13}\.partial-/.test(entry.name))
+/**
+ * Removes interrupted `.partial` copies, and snapshot directories that storage
+ * cleanup emptied. `rmdir` refuses a directory that still holds anything.
+ */
+async function removeLeftovers(directory: string) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (/^snapshot-\d{13}\.partial-/.test(entry.name))
       await rm(join(directory, entry.name), { recursive: true, force: true });
+    else if (isDatabaseSnapshotName(entry.name))
+      await rmdir(join(directory, entry.name)).catch(() => {});
+  }
 }
 
-async function prune(directory: string, now: number): Promise<number> {
+async function prune(directory: string, now: number, tier: SnapshotRetentionTier): Promise<number> {
   // Never discard a known-good copy while the live database is damaged.
   if (getDatabaseDamage() !== null) return 0;
   const snapshots = listDatabaseSnapshots(directory);
-  const keep = selectRetainedSnapshots(snapshots, now);
+  const keep = selectRetainedSnapshots(snapshots, now, tier);
   let pruned = 0;
   for (const snapshot of snapshots) {
     if (keep.has(snapshot.name)) continue;
@@ -172,7 +222,7 @@ export const runDatabaseSnapshot = (input: RunDatabaseSnapshotInput) =>
 
     yield* Effect.promise(async () => {
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      await removePartials(directory);
+      await removeLeftovers(directory);
     });
     const latest = listDatabaseSnapshots(directory)[0];
     if (latest && now - latest.createdAt < MIN_INTERVAL_MS && latest.createdAt <= now)
@@ -217,7 +267,13 @@ export const runDatabaseSnapshot = (input: RunDatabaseSnapshotInput) =>
     }
 
     yield* Effect.promise(() => rename(partial, published));
-    const pruned = yield* Effect.promise(() => prune(directory, now));
+    const pruned = yield* Effect.promise(async () =>
+      prune(
+        directory,
+        now,
+        retentionTierForFreeBytes(await (input.freeBytes ?? volumeFreeBytes)(directory)),
+      ),
+    );
     return { status: "published", path: published, pruned } as const;
   }).pipe(gate.withPermit);
 

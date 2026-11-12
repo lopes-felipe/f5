@@ -16,12 +16,15 @@ import { makeRuntimeSqliteLayer } from "../persistence/Layers/Sqlite.ts";
 import {
   mountFsType,
   prepareClone,
+  retentionTierForFreeBytes,
   runDatabaseSnapshot,
   selectRetainedSnapshots,
+  SNAPSHOT_RETENTION,
   type CloneFile,
 } from "./databaseSnapshots.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
+const GIB = 1024 ** 3;
 const NOW = Date.UTC(2026, 10, 2, 12, 0, 0);
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -171,6 +174,7 @@ describe("runDatabaseSnapshot", () => {
         directory: db.directory,
         now: NOW,
         clone: copyClone,
+        freeBytes: async () => 64 * GIB,
       }),
     );
     expect(result.status).toBe("published");
@@ -179,6 +183,78 @@ describe("runDatabaseSnapshot", () => {
     expect(remaining.every((createdAt) => createdAt >= NOW - 7 * 24 * HOUR_MS)).toBe(true);
     expect(remaining).toContain(daily[3]);
     expect(remaining).not.toContain(daily[9]);
+  });
+
+  it("thins the history to 6 hourly and 3 daily copies when the volume is low on space", async () => {
+    const db = await makeDatabase();
+    const hourly = Array.from({ length: 30 }, (_, index) => NOW - (index + 2) * HOUR_MS);
+    const daily = Array.from({ length: 10 }, (_, index) => NOW - (index + 3) * 24 * HOUR_MS);
+    seedSnapshots(db.directory, [...hourly, ...daily]);
+    const result = await db.runtime.runPromise(
+      runDatabaseSnapshot({
+        dbPath: db.dbPath,
+        directory: db.directory,
+        now: NOW,
+        clone: copyClone,
+        freeBytes: async () => 5 * GIB,
+      }),
+    );
+    expect(result.status).toBe("published");
+    const remaining = listDatabaseSnapshots(db.directory).map((entry) => entry.createdAt);
+    // NOW is 12:00 UTC: the newest six, then the newest copy of each earlier
+    // day inside the three-day window (the day before, and exactly three days ago).
+    expect(remaining).toEqual([NOW, ...hourly.slice(0, 5), NOW - 13 * HOUR_MS, daily[0]]);
+  });
+
+  it("keeps the full history when free space cannot be read", async () => {
+    const db = await makeDatabase();
+    const hourly = Array.from({ length: 30 }, (_, index) => NOW - (index + 2) * HOUR_MS);
+    seedSnapshots(db.directory, hourly);
+    await db.runtime.runPromise(
+      runDatabaseSnapshot({
+        dbPath: db.dbPath,
+        directory: db.directory,
+        now: NOW,
+        clone: copyClone,
+        freeBytes: async () => null,
+      }),
+    );
+    expect(listDatabaseSnapshots(db.directory).length).toBeGreaterThanOrEqual(24);
+  });
+
+  it("ignores and removes snapshot directories that cleanup emptied", async () => {
+    const db = await makeDatabase();
+    const husk = Path.join(db.directory, `snapshot-${NOW - 30 * 60 * 1000}`);
+    FS.mkdirSync(husk, { recursive: true });
+    // A husk is newer than any real snapshot here, and must not count as "recent".
+    expect(listDatabaseSnapshots(db.directory)).toEqual([]);
+    const result = await db.runtime.runPromise(
+      runDatabaseSnapshot({
+        dbPath: db.dbPath,
+        directory: db.directory,
+        now: NOW,
+        clone: copyClone,
+      }),
+    );
+    expect(result.status).toBe("published");
+    expect(FS.existsSync(husk)).toBe(false);
+    expect(listDatabaseSnapshots(db.directory).map((entry) => entry.createdAt)).toEqual([NOW]);
+  });
+
+  it("leaves a snapshot directory that holds anything other than a database", async () => {
+    const db = await makeDatabase();
+    const odd = Path.join(db.directory, `snapshot-${NOW - 3 * HOUR_MS}`);
+    FS.mkdirSync(odd, { recursive: true });
+    FS.writeFileSync(Path.join(odd, "notes.txt"), "kept");
+    await db.runtime.runPromise(
+      runDatabaseSnapshot({
+        dbPath: db.dbPath,
+        directory: db.directory,
+        now: NOW,
+        clone: copyClone,
+      }),
+    );
+    expect(FS.readFileSync(Path.join(odd, "notes.txt"), "utf8")).toBe("kept");
   });
 
   it("stands down while the database is damaged", async () => {
@@ -216,5 +292,30 @@ describe("selectRetainedSnapshots", () => {
     expect(keep.size).toBeLessThanOrEqual(24 + 7);
     expect(keep.has(`snapshot-${NOW - 6 * 24 * HOUR_MS - HOUR_MS}`)).toBe(true);
     expect(keep.has(`snapshot-${NOW - 9 * 24 * HOUR_MS - HOUR_MS}`)).toBe(false);
+  });
+
+  it("keeps only the newest two copies in the critical tier", () => {
+    const entries = Array.from({ length: 40 }, (_, hour) => NOW - (hour + 1) * HOUR_MS).map(
+      (createdAt) => ({ name: `snapshot-${createdAt}`, path: "", createdAt }),
+    );
+    expect([...selectRetainedSnapshots(entries, NOW, SNAPSHOT_RETENTION.critical)]).toEqual([
+      `snapshot-${NOW - HOUR_MS}`,
+      `snapshot-${NOW - 2 * HOUR_MS}`,
+    ]);
+  });
+});
+
+describe("retentionTierForFreeBytes", () => {
+  it("switches tiers at the low and critical disk space thresholds", () => {
+    expect(retentionTierForFreeBytes(10 * GIB)).toBe(SNAPSHOT_RETENTION.normal);
+    expect(retentionTierForFreeBytes(10 * GIB - 1)).toBe(SNAPSHOT_RETENTION.low);
+    expect(retentionTierForFreeBytes(2 * GIB)).toBe(SNAPSHOT_RETENTION.low);
+    expect(retentionTierForFreeBytes(2 * GIB - 1)).toBe(SNAPSHOT_RETENTION.critical);
+    expect(retentionTierForFreeBytes(0)).toBe(SNAPSHOT_RETENTION.critical);
+  });
+
+  it("keeps the full history when free space is unknown", () => {
+    expect(retentionTierForFreeBytes(null)).toBe(SNAPSHOT_RETENTION.normal);
+    expect(retentionTierForFreeBytes(Number.NaN)).toBe(SNAPSHOT_RETENTION.normal);
   });
 });
