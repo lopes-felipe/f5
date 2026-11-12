@@ -1,4 +1,4 @@
-import { ScheduledOrigin } from "@t3tools/contracts";
+import { ScheduledOrigin, WORKTREE_SETUP_ACTIVITY_KIND } from "@t3tools/contracts";
 import { boundedHistoryStreams } from "../historyWindow.ts";
 import { ReadSqlClient } from "../../persistence/ReadSqlClient.ts";
 import { makeThreadFind } from "../threadFind.ts";
@@ -356,9 +356,17 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
  * Retained activities: the newest `MAX_THREAD_ACTIVITIES` per thread (one
  * thread, or every live thread), capped by `MAX_READ_MODEL_ACTIVITIES` plus a
  * sentinel row. Ranking reads keys only, from the covering rank index; payloads
- * are fetched by rowid for the rows that survive.
+ * are fetched by rowid for the rows that survive. `unarchivedOnly` narrows the
+ * all-thread form to threads that are not archived.
  */
-export function retainedThreadActivitiesSql(sql: SqlClient.SqlClient, threadId: string | null) {
+export function retainedThreadActivitiesSql(
+  sql: SqlClient.SqlClient,
+  threadId: string | null,
+  options?: { readonly unarchivedOnly?: boolean },
+) {
+  const liveThreads = options?.unarchivedOnly
+    ? sql`thread_id IN (SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL AND archived_at IS NULL)`
+    : sql`thread_id IN (SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL)`;
   return sql`
     WITH ranked_activities AS (
       SELECT
@@ -375,7 +383,7 @@ export function retainedThreadActivitiesSql(sql: SqlClient.SqlClient, threadId: 
             activity_id DESC
         ) AS row_number
       FROM projection_thread_activities
-      WHERE ${threadId === null ? sql`thread_id IN (SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL)` : sql`thread_id = ${threadId}`}
+      WHERE ${threadId === null ? liveThreads : sql`thread_id = ${threadId}`}
     ),
     bounded_activities AS (
       SELECT *
@@ -1382,6 +1390,45 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: (threadId) => retainedThreadActivitiesSql(sql, threadId),
   });
 
+  const listUnarchivedRetainedThreadActivityRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: () => retainedThreadActivitiesSql(sql, null, { unarchivedOnly: true }),
+  });
+
+  // The only activities an archived thread keeps in memory (see
+  // `isColdRetainedActivity`). The kind is a literal and the index is named so
+  // this reads the partial index instead of every archived thread's history.
+  const listArchivedThreadSetupActivityRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+          INDEXED BY idx_projection_thread_activities_worktree_setup
+        WHERE kind = ${sql.literal(`'${WORKTREE_SETUP_ACTIVITY_KIND.replaceAll("'", "''")}'`)}
+          AND thread_id IN (
+            SELECT thread_id FROM projection_threads
+            WHERE deleted_at IS NULL AND archived_at IS NOT NULL
+          )
+        ORDER BY
+          thread_id ASC,
+          sequence ASC,
+          created_at ASC,
+          activity_id ASC
+      `,
+  });
+
   const listThreadSessionRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadSessionDbRowSchema,
@@ -2369,6 +2416,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     readonly includeDetailFields: boolean;
     /** Leave archived threads' plans out and flag them `proposedPlansOmitted`. */
     readonly omitArchivedPlans?: boolean;
+    /** Load archived threads' worktree-setup activity only (retained mode). */
+    readonly omitArchivedActivities?: boolean;
   }) =>
     Effect.gen(function* () {
       const stateRows = yield* withTimedLog({
@@ -2541,9 +2590,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             kind: "query",
             scope: params.scope,
             name: "listThreadActivities",
-            effect: (params.historyLoadMode === "retained"
-              ? listRetainedThreadActivityRows(null)
-              : listThreadActivityRows(null)
+            effect: (params.historyLoadMode !== "retained"
+              ? listThreadActivityRows(null)
+              : params.omitArchivedActivities
+                ? listUnarchivedRetainedThreadActivityRows(undefined)
+                : listRetainedThreadActivityRows(null)
             ).pipe(
               Effect.mapError(
                 toPersistenceSqlOrDecodeError(
@@ -2554,6 +2605,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           })
         : ([] as ReadonlyArray<Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>>);
+      const archivedSetupActivityRows =
+        params.includeActivities &&
+        params.historyLoadMode === "retained" &&
+        params.omitArchivedActivities
+          ? yield* withTimedLog({
+              kind: "query",
+              scope: params.scope,
+              name: "listArchivedThreadSetupActivities",
+              effect: listArchivedThreadSetupActivityRows(undefined).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    `ProjectionSnapshotQuery.${params.scope}:listArchivedThreadSetupActivities:query`,
+                    `ProjectionSnapshotQuery.${params.scope}:listArchivedThreadSetupActivities:decodeRows`,
+                  ),
+                ),
+              ),
+            })
+          : [];
       const activitiesTruncated =
         params.historyLoadMode === "retained" &&
         loadedActivityRows.length > MAX_READ_MODEL_ACTIVITIES;
@@ -2564,9 +2633,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           perThreadActivityLimit: MAX_THREAD_ACTIVITIES,
         });
       }
-      const activityRows = activitiesTruncated
+      const boundedActivityRows = activitiesTruncated
         ? loadedActivityRows.slice(0, MAX_READ_MODEL_ACTIVITIES)
         : loadedActivityRows;
+      // Archived and unarchived threads are disjoint, so no thread mixes the two lists.
+      const activityRows = archivedSetupActivityRows.length
+        ? [...boundedActivityRows, ...archivedSetupActivityRows]
+        : boundedActivityRows;
       const sessionRows = yield* withTimedLog({
         kind: "query",
         scope: params.scope,
@@ -2889,6 +2962,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     readonly includeCheckpoints: boolean;
     readonly includeActivities: boolean;
     readonly includeDetailFields: boolean;
+    readonly omitArchivedActivities?: boolean;
   }) =>
     readSnapshotQueries(params).pipe(
       Effect.mapError((error) => {
@@ -2920,7 +2994,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       }),
     });
 
-  const getBootstrapSnapshot: ProjectionSnapshotQueryShape["getBootstrapSnapshot"] = () =>
+  const getBootstrapSnapshot: ProjectionSnapshotQueryShape["getBootstrapSnapshot"] = (options) =>
     withTimedLog({
       kind: "request",
       scope: "getBootstrapSnapshot",
@@ -2932,6 +3006,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         includeCheckpoints: true,
         includeActivities: true,
         includeDetailFields: true,
+        ...(options?.omitArchivedActivities ? { omitArchivedActivities: true } : {}),
       }),
     });
 
@@ -3376,12 +3451,12 @@ export const OrchestrationProjectionSnapshotQueryLive = Layer.effect(
           front.getRetainedThreadDetails(threadId),
         ),
       // Full startup reads must finish even on databases that exceed the interactive budget.
-      getBootstrapSnapshot: () =>
+      getBootstrapSnapshot: (options) =>
         run(
           background,
           "background",
           "getBootstrapSnapshot",
-          back.getBootstrapSnapshot(),
+          back.getBootstrapSnapshot(options),
           Infinity,
         ),
       getStartupSnapshot: (input) =>

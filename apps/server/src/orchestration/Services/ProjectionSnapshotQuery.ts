@@ -54,11 +54,14 @@ export interface ProjectionSnapshotQueryShape {
    *
    * Preserves full thread metadata while bounding historical collections to
    * the same limits enforced by the live projector.
+   *
+   * `omitArchivedActivities` leaves archived threads with their worktree-setup
+   * activity only. The engine sets it and loads the rest on demand through
+   * `getRetainedThreadDetails`; other callers get every thread's activities.
    */
-  readonly getBootstrapSnapshot: () => Effect.Effect<
-    OrchestrationReadModel,
-    ProjectionRepositoryError
-  >;
+  readonly getBootstrapSnapshot: (options?: {
+    readonly omitArchivedActivities?: boolean;
+  }) => Effect.Effect<OrchestrationReadModel, ProjectionRepositoryError>;
 
   /**
    * Read the lightweight startup snapshot used for first paint.

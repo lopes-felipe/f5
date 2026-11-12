@@ -461,11 +461,17 @@ export const reconcileCodexThreadSnapshots = (
               return;
             const turn = snapshot.turns.find((entry) => entry.id === incomplete.turnId);
             if (!turn) return;
+            // Tool items are verified against recorded activities, which a thread
+            // archived before startup has not loaded yet.
+            yield* (
+              dependencies.orchestrationEngine.ensureThreadActivities?.([threadId]) ?? Effect.void
+            );
+            const verifiedThread = (yield* getCurrentThread(threadId)) ?? currentThread;
             // Every item must be verifiable before anything is written: partial
             // repair is never proof that the whole stream was recovered.
             const classification = classifyIncompleteTurnItems(
               turn,
-              currentThread,
+              verifiedThread,
               incomplete.turnId,
             );
             if (classification.kind === "unsupported") {

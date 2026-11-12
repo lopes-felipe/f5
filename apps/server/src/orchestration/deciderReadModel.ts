@@ -12,6 +12,15 @@ export type RetainedThreadDetails = Pick<
   "messages" | "proposedPlans" | "activities"
 >;
 
+/** The threads whose history a command's decision and projection can read. */
+export function commandThreadIds(command: OrchestrationCommand): Set<ThreadId> {
+  const ids = new Set<ThreadId>();
+  if ("threadId" in command) ids.add(command.threadId);
+  if (command.type === "thread.turn.start" && command.sourceProposedPlan)
+    ids.add(command.sourceProposedPlan.threadId);
+  return ids;
+}
+
 /** Deleted history stays in SQLite; command decisions retain their existing semantics. */
 export const hydrateDeciderReadModel = (
   model: OrchestrationReadModel,
@@ -19,10 +28,7 @@ export const hydrateDeciderReadModel = (
   read: (id: ThreadId) => Effect.Effect<RetainedThreadDetails, ProjectionRepositoryError>,
 ) =>
   Effect.gen(function* () {
-    const ids = new Set<ThreadId>();
-    if ("threadId" in command) ids.add(command.threadId);
-    if (command.type === "thread.turn.start" && command.sourceProposedPlan)
-      ids.add(command.sourceProposedPlan.threadId);
+    const ids = commandThreadIds(command);
     let threads = model.threads;
     for (const id of ids) {
       const thread = threads.find((thread) => thread.id === id);
