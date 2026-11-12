@@ -49,6 +49,8 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly devUrl: URL | undefined;
   readonly noBrowser: boolean;
   readonly authToken: string | undefined;
+  /** Reverse proxies, besides loopback, whose `X-Forwarded-*` headers are honored. */
+  readonly trustedProxies?: ReadonlyArray<string>;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
   readonly observabilityEnabled: boolean;

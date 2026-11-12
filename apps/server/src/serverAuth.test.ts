@@ -2,7 +2,7 @@ import * as Http from "node:http";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { makeServerAuth } from "./serverAuth.ts";
+import { makeServerAuth, makeTrustedProxyCheck, requestUsesTls } from "./serverAuth.ts";
 
 const servers: Http.Server[] = [];
 
@@ -99,6 +99,116 @@ describe("server authentication", () => {
     expect(
       auth.isWebSocketRequestAuthenticated(request("10.0.0.5", "Bearer correct-token"), url),
     ).toBe(true);
+  });
+
+  it("honors forwarded headers only from loopback and listed proxies", () => {
+    const request = (remoteAddress: string, headers: Record<string, string>) =>
+      ({ headers, socket: { remoteAddress } }) as unknown as Http.IncomingMessage;
+    const https = { "x-forwarded-proto": "https" };
+
+    expect(requestUsesTls(request("127.0.0.1", https))).toBe(true);
+    expect(requestUsesTls(request("::ffff:127.0.0.1", https))).toBe(true);
+    // A direct client wrote this header itself.
+    expect(requestUsesTls(request("10.0.0.5", https))).toBe(false);
+    const listed = makeTrustedProxyCheck(["10.0.0.5", " 172.16.0.0/12 ", "fd00::/8", ""]);
+    for (const address of ["10.0.0.5", "::ffff:10.0.0.5", "172.31.4.4", "fd12::1", "::1"]) {
+      expect(listed(address), address).toBe(true);
+      expect(requestUsesTls(request(address, https), listed), address).toBe(true);
+    }
+    for (const address of ["10.0.0.6", "172.32.0.1", "fe80::1", "unknown"]) {
+      expect(listed(address), address).toBe(false);
+    }
+    for (const entry of [
+      "proxy.example",
+      "10.0.0.0/33",
+      "10.0.0.0/8/8",
+      "fd00::/129",
+      "10.0.0.0/",
+    ]) {
+      expect(() => makeTrustedProxyCheck([entry]), entry).toThrow(/Invalid trusted proxy/u);
+    }
+
+    const auth = makeServerAuth("correct-token", { trustedProxies: ["10.0.0.5"] });
+    const proxied = (remoteAddress: string) =>
+      request(remoteAddress, { ...https, host: "f5.example", origin: "https://f5.example" });
+    expect(auth.isWebSocketOriginAllowed(proxied("10.0.0.5"))).toBe(true);
+    expect(auth.externalRequestOrigin(proxied("10.0.0.5"))).toBe("https://f5.example");
+    expect(auth.ignoredForwardedProtoPeer(proxied("10.0.0.5"))).toBeNull();
+    expect(auth.isWebSocketOriginAllowed(proxied("10.0.0.6"))).toBe(false);
+    expect(auth.externalRequestOrigin(proxied("10.0.0.6"))).toBe("http://f5.example");
+    expect(auth.ignoredForwardedProtoPeer(proxied("10.0.0.6"))).toBe("10.0.0.6");
+    expect(auth.ignoredForwardedProtoPeer(request("10.0.0.6", {}))).toBeNull();
+
+    // The query token is for clients on this machine, not ones a local proxy forwards for.
+    const url = new URL("ws://example.test/?token=correct-token");
+    const forwardedFor = (remoteAddress: string, value: string) =>
+      request(remoteAddress, { "x-forwarded-for": value });
+    expect(auth.isWebSocketRequestAuthenticated(forwardedFor("127.0.0.1", "127.0.0.1"), url)).toBe(
+      true,
+    );
+    expect(
+      auth.isWebSocketRequestAuthenticated(forwardedFor("127.0.0.1", "203.0.113.9"), url),
+    ).toBe(false);
+    expect(
+      auth.isWebSocketRequestAuthenticated(forwardedFor("10.0.0.5", "203.0.113.9, 10.0.0.5"), url),
+    ).toBe(false);
+    // An untrusted peer cannot claim to be forwarding for loopback.
+    expect(auth.isWebSocketRequestAuthenticated(forwardedFor("10.0.0.6", "127.0.0.1"), url)).toBe(
+      false,
+    );
+  });
+
+  it("limits logins per forwarded client, so one client cannot lock out the rest", async () => {
+    const auth = makeServerAuth("correct-token", { maxFailuresPerSource: 2 });
+    const origin = await startAuthServer(auth);
+    const authenticate = (token: string, forwardedFor: string) =>
+      fetch(`${origin}/auth/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": forwardedFor },
+        body: JSON.stringify({ token }),
+      });
+
+    expect((await authenticate("wrong", "198.51.100.1")).status).toBe(401);
+    expect((await authenticate("wrong", "198.51.100.1")).status).toBe(429);
+    // Entries the client put in front of the one the proxy appended change nothing.
+    expect((await authenticate("correct-token", "198.51.100.7, 198.51.100.1")).status).toBe(429);
+    expect((await authenticate("correct-token", "[198.51.100.1]:4711")).status).toBe(429);
+    expect((await authenticate("correct-token", "198.51.100.2")).status).toBe(204);
+  });
+
+  it("counts wrong bearer tokens from remote clients toward the login limits", () => {
+    let now = 1_000;
+    const auth = makeServerAuth("correct-token", {
+      now: () => now,
+      maxFailuresPerSource: 2,
+      lockoutMs: 10_000,
+    });
+    const request = (remoteAddress: string, token: string) =>
+      ({
+        headers: { authorization: `Bearer ${token}` },
+        socket: { remoteAddress },
+      }) as unknown as Http.IncomingMessage;
+    const accepted = (remoteAddress: string, token = "correct-token") =>
+      auth.isHttpRequestAuthenticated(request(remoteAddress, token));
+
+    // One request is one failure, however often it is checked.
+    const wrong = request("10.0.0.5", "wrong");
+    expect(auth.isHttpRequestAuthenticated(wrong)).toBe(false);
+    expect(auth.isHttpRequestAuthenticated(wrong)).toBe(false);
+    expect(accepted("10.0.0.5")).toBe(true);
+
+    expect(accepted("10.0.0.5", "wrong-again")).toBe(false);
+    // Locked out: even the right token is refused, from this client only.
+    expect(accepted("10.0.0.5")).toBe(false);
+    expect(accepted("10.0.0.6")).toBe(true);
+    now += 10_001;
+    expect(accepted("10.0.0.5")).toBe(true);
+
+    // The desktop app reconnects from loopback and is never locked out.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect(accepted("127.0.0.1", "stale")).toBe(false);
+    }
+    expect(accepted("127.0.0.1")).toBe(true);
   });
 
   it("answers a token-less server only under loopback names", () => {

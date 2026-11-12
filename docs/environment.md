@@ -22,6 +22,7 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 | `F5_BACKUP_MAX_EXPANSION_RATIO`    | Maximum gzip expansion ratio; defaults to 200×                                                                                   |
 | `F5_BACKUP_MIN_FREE_BYTES`         | Free disk space restore staging leaves; defaults to 512 MiB                                                                      |
 | `F5_RELEASE_REPOSITORY`            | Marketing site build: GitHub `owner/name` for download links; defaults to `lopes-felipe/f5`                                      |
+| `F5_TRUSTED_PROXIES`               | Reverse proxies on other hosts whose `X-Forwarded-*` headers are honored: comma-separated IP addresses or CIDR ranges            |
 | `T3CODE_PORT`                      | Server port                                                                                                                      |
 | `T3CODE_MODE`                      | Operating mode                                                                                                                   |
 | `T3CODE_AUTH_TOKEN`                | Authentication token for WebSocket connections                                                                                   |

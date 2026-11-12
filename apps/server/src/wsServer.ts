@@ -1078,6 +1078,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
       ...(devUrl ? [devUrl.origin] : []),
     ],
+    ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
   const availableEditors = resolveAvailableEditors();
 
@@ -2483,6 +2484,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               workspaceAssetAuthorizer,
               checkedInProjectFileService,
               req,
+              serverAuth.externalRequestOrigin,
             ),
           )
         ) {
@@ -8119,7 +8121,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }
 
     if (!serverAuth.isWebSocketOriginAllowed(request)) {
-      rejectUpgrade(socket, 403, "WebSocket origin is not allowed");
+      // The usual cause behind a TLS proxy on another host: its X-Forwarded-Proto is not
+      // believed, so the https Origin does not match. Say so instead of a bare refusal.
+      const ignoredPeer = serverAuth.ignoredForwardedProtoPeer(request);
+      rejectUpgrade(
+        socket,
+        403,
+        ignoredPeer === null
+          ? "WebSocket origin is not allowed"
+          : `WebSocket origin is not allowed. X-Forwarded-Proto from ${ignoredPeer} was ignored; ` +
+              "if that is your reverse proxy, start F5 with --trusted-proxy.",
+      );
       return;
     }
 
