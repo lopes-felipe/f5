@@ -182,6 +182,29 @@ describe("profile backend recovery", () => {
       vi.useRealTimers();
     }
   });
+
+  it("allows a slow database to start after a minute and times out at three minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const waiting = waitForProfileBackend(
+        () => true,
+        async () => Date.now() - start >= 66_000,
+      );
+      await vi.advanceTimersByTimeAsync(66_000);
+      await waiting;
+      const timedOut = expect(
+        waitForProfileBackend(
+          () => true,
+          async () => false,
+        ),
+      ).rejects.toThrow("startup timed out");
+      await vi.advanceTimersByTimeAsync(180_000);
+      await timedOut;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 it("coalesces concurrent opens and permits reopening after completion", async () => {

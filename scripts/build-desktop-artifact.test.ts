@@ -4,6 +4,25 @@ import { describe, expect, it } from "vitest";
 import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 import { createBuildConfig, DESKTOP_ASAR_UNPACK } from "./build-desktop-artifact.ts";
+import { matchesGlob } from "node:path";
+import { resolveMacFileExclusions } from "./build-desktop-artifact.ts";
+
+it("excludes unused Darwin natives across all packages, preserving universal builds", async () => {
+  for (const arch of ["arm64", "x64", "universal"] as const) {
+    const config = await Effect.runPromise(
+      createBuildConfig("mac", "dmg", "F5", false, false, arch),
+    );
+    expect(config.mac).toHaveProperty("files", ["**/*", ...resolveMacFileExclusions(arch)]);
+    for (const pkg of ["node-pty", "objc-js"]) {
+      for (const nativeArch of ["arm64", "x64"]) {
+        const file = `node_modules/${pkg}/prebuilds/darwin-${nativeArch}/binary.node`;
+        expect(
+          resolveMacFileExclusions(arch).some((glob) => matchesGlob(file, glob.slice(1))),
+        ).toBe(arch !== "universal" && arch !== nativeArch);
+      }
+    }
+  }
+});
 
 it("bundles the audited Codex version and unpacks its native platform packages", () => {
   expect(serverPackageJson.dependencies["@openai/codex"]).toBe(CODEX_PROTOCOL_BASELINE_VERSION);

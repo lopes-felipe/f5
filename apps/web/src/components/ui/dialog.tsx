@@ -2,6 +2,7 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
+import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
@@ -38,6 +39,7 @@ function DialogViewport({ className, ...props }: DialogPrimitive.Viewport.Props)
     <DialogPrimitive.Viewport
       className={cn(
         "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center p-4",
+        isElectron && "pt-14",
         className,
       )}
       data-slot="dialog-viewport"
