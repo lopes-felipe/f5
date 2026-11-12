@@ -77,4 +77,38 @@ describe("codeReviewWorkflow contracts", () => {
 
     expect(workflow.archivedAt).toBeNull();
   });
+
+  it("defaults pull request posting fields for older records", () => {
+    const workflow = Schema.decodeUnknownSync(CodeReviewWorkflow)(
+      makeWorkflowRecord(new Date().toISOString()),
+    );
+
+    expect(workflow.pullRequest).toBeNull();
+    expect(workflow.autoPost).toBe(false);
+    expect(workflow.post).toBeNull();
+  });
+
+  it("decodes pull request posting state", () => {
+    const now = new Date().toISOString();
+    const workflow = Schema.decodeUnknownSync(CodeReviewWorkflow)({
+      ...makeWorkflowRecord(now),
+      pullRequest: {
+        url: "https://github.com/acme/app/pull/42",
+        key: "github:github.com/acme/app#42",
+      },
+      autoPost: true,
+      post: {
+        trigger: "auto",
+        status: "posted",
+        operationId: "f5-code-review:workflow-1:op",
+        consolidationTurnId: "turn-merge",
+        commentUrl: "https://github.com/acme/app/pull/42#issuecomment-1",
+        error: null,
+        updatedAt: now,
+      },
+    });
+
+    expect(workflow.pullRequest?.key).toBe("github:github.com/acme/app#42");
+    expect(workflow.post?.status).toBe("posted");
+  });
 });

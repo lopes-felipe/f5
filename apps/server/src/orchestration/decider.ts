@@ -593,6 +593,8 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             reviewerB: command.reviewerB,
             consolidation: command.consolidation,
             maxCostUsd: command.maxCostUsd ?? undefined,
+            pullRequest: command.pullRequest ?? null,
+            autoPost: command.autoPost ?? false,
             createdAt: command.createdAt,
           }),
         },

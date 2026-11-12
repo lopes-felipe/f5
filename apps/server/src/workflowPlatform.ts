@@ -204,6 +204,14 @@ const V1_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
       },
       { id: "branch", label: "Branch", type: "branch", required: false, description: null },
       {
+        id: "autoPost",
+        label: "Post merged review to the PR",
+        type: "boolean",
+        required: false,
+        description:
+          "Posts the merged review to the detected GitHub pull request when it finishes.",
+      },
+      {
         id: "reviewerA",
         label: "Reviewer A",
         type: "model-slot",
