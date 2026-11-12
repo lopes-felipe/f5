@@ -17,6 +17,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Agents, Git hooks, setup scripts and other processes F5 starts no longer inherit the backend's own auth token (`T3CODE_AUTH_TOKEN`).
 - A running turn stores its context-size estimate when it moves by 1% of the context window (at least 2,000 tokens) and when the turn settles, not after every model step. Long turns add far fewer events to the profile database.
 - The server log counts recorded worktrees kept for recovery once per start, and Upstream reports a failed pull-request evidence read once per pass, not once per thread.
+- Behind a reverse proxy, the failed-login limit applies to each client the proxy reports in `X-Forwarded-For`, so one client's wrong tokens no longer lock out everyone else. Wrong bearer tokens from remote clients count toward the same limit. `X-Forwarded-*` headers are honored only from a proxy on the same machine or one listed with `--trusted-proxy` (`F5_TRUSTED_PROXIES`), so a TLS proxy on another host must now be listed there.
+- Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
+- The profile database drops two indexes on its event log that nothing read. Their space is reused by later writes, and every event is cheaper to store.
+- The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
+- Starting the server no longer reads every stored activity to find worktree setups a restart interrupted. On a large profile that read stalled the server for several seconds.
 
 ## [0.1.8] - 2026-11-12
 
