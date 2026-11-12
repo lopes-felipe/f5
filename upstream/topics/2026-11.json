@@ -19506,11 +19506,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T17:45:01.296Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29594",
-      "status": "port",
+      "reason": "F5 uses Antigravity ACP without upstream’s protobuf history watcher.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -20890,11 +20892,20 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T17:45:01.296Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1754"
+        ],
+        "f5Refs": [
+          "5004f8143b46f9ba693b26dbe4a0cce862263312"
+        ]
+      },
       "id": "pr-29765",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -25177,11 +25188,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T17:45:01.295Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-30652",
-      "status": "port",
+      "reason": "F5 has no onboarding rollout transcript importer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
