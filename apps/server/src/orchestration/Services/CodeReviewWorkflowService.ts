@@ -3,6 +3,8 @@ import type {
   CodeReviewWorkflow,
   CodeReviewWorkflowId,
   OrchestrationCreateCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowResult,
   OrchestrationRetryCodeReviewWorkflowInput,
   OrchestrationRetryWorkflowResult,
   ThreadId,
@@ -24,6 +26,10 @@ export interface CodeReviewWorkflowServiceShape {
   readonly retryWorkflow: (
     input: OrchestrationRetryCodeReviewWorkflowInput,
   ) => Effect.Effect<OrchestrationRetryWorkflowResult, Error>;
+  /** Post the merged review to its GitHub PR, or re-verify an unknown earlier post. */
+  readonly postWorkflow: (
+    input: OrchestrationPostCodeReviewWorkflowInput,
+  ) => Effect.Effect<OrchestrationPostCodeReviewWorkflowResult, Error>;
   readonly workflowForThread: (threadId: ThreadId) => Effect.Effect<
     {
       workflow: CodeReviewWorkflow;

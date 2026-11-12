@@ -13,7 +13,29 @@ import {
   type CodeReviewWorkflow,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Scope, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Scope, Semaphore, Stream } from "effect";
+import {
+  codeReviewPromptUrls,
+  codeReviewPullRequestFromRef,
+  detectCodeReviewPullRequestShorthand,
+  githubPullRequestFromRemote,
+  isGitHubCodeReviewPullRequest,
+} from "@t3tools/shared/codeReviewPullRequest";
+import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
+import { GitCore } from "../../git/Services/GitCore.ts";
+import { PrHubFederation } from "../../prHub/Layers/PrHubFederation.ts";
+import {
+  codeReviewMergedReviewText,
+  codeReviewPostBody,
+  type CodeReviewPostJob,
+  type CodeReviewPostOutcome,
+  manualCodeReviewPostBlocker,
+  newCodeReviewPostOperationId,
+  runCodeReviewPostJob,
+  shouldAutoPostCodeReview,
+  startedCodeReviewPost,
+  withCodeReviewPost,
+} from "../codeReviewPost.ts";
 import { makeOperationGate } from "../../provider/operationGate.ts";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 
@@ -489,6 +511,7 @@ function startReviewerTurn(input: {
     lensBranch: input.reviewer.threadId === input.workflow.reviewerA.threadId ? "a" : "b",
     branch: input.workflow.branch,
     reviewerSlot: input.reviewer.slot,
+    pullRequest: input.workflow.pullRequest,
     retry: input.retry,
   });
   if (prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
@@ -558,6 +581,7 @@ function startConsolidationTurn(input: {
     reviewPrompt: input.workflow.reviewPrompt,
     reviews: input.reviews,
     consolidationSlot: input.workflow.consolidation.slot,
+    pullRequest: input.workflow.pullRequest,
     retry: input.retry,
   });
   const behavior = resolveWorkflowBehavior({
@@ -612,6 +636,12 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
+  const prHubFederation = Option.getOrNull(yield* Effect.serviceOption(PrHubFederation));
+  const gitCore = Option.getOrNull(yield* Effect.serviceOption(GitCore));
+  // Serializes workflow read-modify-write between the event fiber and the post
+  // worker, so a post result never overwrites a stage transition or vice versa.
+  const workflowWriteLock = yield* Semaphore.make(1);
+  const withWorkflowWriteLock = workflowWriteLock.withPermits(1);
   const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
   // Only running stages are gated on their dispatch; skip the lookup otherwise.
   const resolveRunningStageDispatch = (stage: CodeReviewStage) =>
@@ -731,6 +761,88 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       ),
     { name: "CodeReviewWorkflowService", key: (item) => String(item.workflowId) },
   );
+
+  const applyPostOutcome = (job: CodeReviewPostJob, outcome: CodeReviewPostOutcome) =>
+    withWorkflowWriteLock(
+      Effect.gen(function* () {
+        const latest = yield* readCodeReviewWorkflow(orchestrationEngine, job.workflowId);
+        const post = latest?.post;
+        if (
+          !latest ||
+          isDeletedWorkflow(latest) ||
+          !post ||
+          post.operationId !== job.operationId ||
+          post.status !== "posting"
+        ) {
+          return;
+        }
+        const updatedAt = new Date().toISOString();
+        yield* upsertWorkflow(
+          orchestrationEngine,
+          withCodeReviewPost(latest, { ...post, ...outcome, updatedAt }, updatedAt),
+          updatedAt,
+        );
+      }),
+    );
+
+  // GitHub I/O stays off the event fiber; results come back through the lock.
+  const postWorker = yield* makeBackgroundWorker(
+    (job: CodeReviewPostJob) =>
+      Effect.gen(function* () {
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const workflow = snapshot.codeReviewWorkflows.find((entry) => entry.id === job.workflowId);
+        if (
+          !workflow ||
+          isDeletedWorkflow(workflow) ||
+          workflow.post?.operationId !== job.operationId ||
+          workflow.post.status !== "posting"
+        ) {
+          return;
+        }
+        const mergedReview = job.checkOnly ? null : codeReviewMergedReviewText(workflow, snapshot);
+        const outcome = yield* runCodeReviewPostJob({
+          federation: prHubFederation,
+          workflow,
+          job,
+          body: mergedReview === null ? null : codeReviewPostBody(workflow, mergedReview),
+        });
+        yield* applyPostOutcome(job, outcome);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("CodeReviewWorkflowService.postWorker failed", {
+            workflowId: job.workflowId,
+            cause,
+          }),
+        ),
+      ),
+    { name: "CodeReviewWorkflowService.post", key: (job) => String(job.workflowId) },
+  );
+
+  /**
+   * Record the post as in flight, then hand the GitHub work to the post worker.
+   * An unknown earlier outcome is only re-verified, never resent. Callers must
+   * hold the workflow write lock or run on the event fiber under it.
+   */
+  const beginPost = (workflow: CodeReviewWorkflow, trigger: "auto" | "manual", updatedAt: string) =>
+    Effect.gen(function* () {
+      const previous = workflow.post;
+      const checkOnly = previous?.status === "needs_recovery";
+      const operationId = checkOnly
+        ? previous.operationId
+        : newCodeReviewPostOperationId(workflow.id);
+      const post = checkOnly
+        ? { ...previous, status: "posting" as const, updatedAt }
+        : startedCodeReviewPost({ workflow, trigger, operationId, updatedAt });
+      const nextWorkflow = withCodeReviewPost(workflow, post, updatedAt);
+      yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
+      yield* postWorker.enqueue({
+        workflowId: workflow.id,
+        operationId,
+        checkOnly,
+        supersededOperationId: checkOnly ? null : (previous?.operationId ?? null),
+      });
+      return nextWorkflow;
+    });
 
   const maybeStartConsolidation = (
     workflow: CodeReviewWorkflow,
@@ -982,6 +1094,9 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         });
         if (nextWorkflow !== workflow) {
           yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
+          if (shouldAutoPostCodeReview(nextWorkflow)) {
+            return yield* beginPost(nextWorkflow, "auto", updatedAt);
+          }
         }
         return nextWorkflow;
       }
@@ -1082,6 +1197,20 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         if (advancedWorkflow !== reconciledWorkflow) {
           reconciledWorkflow = advancedWorkflow;
         }
+      }
+
+      if (workflow.post?.status === "posting") {
+        // Resume with the same operation id: PR Hub reads an existing operation
+        // back and only ever sends one that is still `prepared`. (A post begun
+        // by the advancement above was already enqueued.)
+        yield* postWorker.enqueue({
+          workflowId: workflow.id,
+          operationId: workflow.post.operationId,
+          checkOnly: false,
+          supersededOperationId: null,
+        });
+      } else if (shouldAutoPostCodeReview(reconciledWorkflow)) {
+        reconciledWorkflow = yield* beginPost(reconciledWorkflow, "auto", updatedAt);
       }
 
       if (reconciledWorkflow.consolidation.status === "pending_start") {
@@ -1420,7 +1549,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const start: CodeReviewWorkflowServiceShape["start"] = Effect.gen(function* () {
     if (sources.stopped) return;
     yield* Effect.addFinalizer(() => sources.stop);
-    yield* reconcileStuckWorkflows.pipe(
+    yield* withWorkflowWriteLock(reconcileStuckWorkflows).pipe(
       Effect.catchCause((cause) =>
         Effect.logError("CodeReviewWorkflowService.reconcileStuckWorkflows failed", {
           cause,
@@ -1442,7 +1571,9 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           )
         : domainEvents;
     yield* Stream.runForEach(work, (item) =>
-      item.kind === "event" ? handleDomainEvent(item.event) : handleDeliveryOutcome(item.outcome),
+      withWorkflowWriteLock(
+        item.kind === "event" ? handleDomainEvent(item.event) : handleDeliveryOutcome(item.outcome),
+      ),
     ).pipe(
       Scope.provide(sources.scope),
       Effect.forkIn(sources.scope, { startImmediately: true }),
@@ -1484,6 +1615,36 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       Effect.mapError((error) => new Error(error instanceof Error ? error.message : String(error))),
     );
   };
+
+  /**
+   * The PR the instructions name: the first PR URL (account hosts first, so
+   * GitHub Enterprise resolves), else one shorthand number resolved against
+   * the project's GitHub `origin`.
+   */
+  const resolveCodeReviewPullRequest = (
+    reviewPrompt: string,
+    projectId: CodeReviewWorkflow["projectId"],
+    snapshot: OrchestrationReadModel,
+  ) =>
+    Effect.gen(function* () {
+      for (const candidate of codeReviewPromptUrls(reviewPrompt)) {
+        const federated = prHubFederation
+          ? yield* prHubFederation.parseUrl(candidate).pipe(Effect.orElseSucceed(() => null))
+          : null;
+        const ref = federated ?? parseSourceControlPullRequestUrl(candidate);
+        if (ref) return codeReviewPullRequestFromRef(ref, candidate);
+      }
+      const number = detectCodeReviewPullRequestShorthand(reviewPrompt);
+      if (number === null || !gitCore) return null;
+      const cwd = snapshot.projects.find(
+        (project) => project.id === projectId && project.deletedAt === null,
+      )?.workspaceRoot;
+      if (!cwd) return null;
+      const remoteUrl = yield* gitCore
+        .readConfigValue(cwd, "remote.origin.url")
+        .pipe(Effect.orElseSucceed(() => null));
+      return githubPullRequestFromRemote(remoteUrl, number);
+    });
 
   const createNewWorkflow = (
     rawInput: Parameters<CodeReviewWorkflowServiceShape["createWorkflow"]>[0],
@@ -1532,6 +1693,19 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         catch: (error) => error as UnsupportedWorkflowProviderError,
       });
       const snapshot = yield* orchestrationEngine.getReadModel();
+      const pullRequest = yield* resolveCodeReviewPullRequest(
+        input.reviewPrompt,
+        input.projectId,
+        snapshot,
+      );
+      const autoPost = input.autoPost === true;
+      if (autoPost && !isGitHubCodeReviewPullRequest(pullRequest)) {
+        return yield* Effect.fail(
+          new Error(
+            "Auto-post needs a GitHub pull request link or #number in the review instructions.",
+          ),
+        );
+      }
       const existingSlugs = new Set(
         snapshot.codeReviewWorkflows
           .filter(
@@ -1570,6 +1744,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         reviewerB: input.reviewerB,
         consolidation: input.consolidation,
         maxCostUsd: input.maxCostUsd,
+        pullRequest,
+        autoPost,
       });
 
       yield* orchestrationEngine.dispatch({
@@ -1587,6 +1763,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         reviewerB: input.reviewerB,
         consolidation: input.consolidation,
         maxCostUsd: input.maxCostUsd ?? null,
+        pullRequest,
+        autoPost,
         reviewerThreadIdA: reviewThreadIdA,
         reviewerThreadIdB: reviewThreadIdB,
         createdAt: now,
@@ -2010,6 +2188,24 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       return { status: "started" as const };
     });
 
+  const postWorkflow: CodeReviewWorkflowServiceShape["postWorkflow"] = (input) =>
+    withWorkflowWriteLock(
+      Effect.gen(function* () {
+        const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, input.workflowId).pipe(
+          Effect.mapError(
+            (error) => new Error(`Failed to load workflow '${input.workflowId}': ${String(error)}`),
+          ),
+        );
+        if (!workflow) {
+          return yield* Effect.fail(new Error(`Workflow '${input.workflowId}' does not exist.`));
+        }
+        const blocker = manualCodeReviewPostBlocker(workflow);
+        if (blocker) return yield* Effect.fail(new Error(blocker));
+        yield* beginPost(workflow, "manual", new Date().toISOString());
+        return { status: "started" as const };
+      }),
+    ).pipe(Effect.mapError((error) => (error instanceof Error ? error : new Error(String(error)))));
+
   const workflowForThread: CodeReviewWorkflowServiceShape["workflowForThread"] = (threadId) =>
     orchestrationEngine.getReadModel().pipe(
       Effect.map((snapshot) => {
@@ -2044,12 +2240,13 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   return {
     start,
-    drain: titleGenerationWorker.drain,
+    drain: Effect.andThen(titleGenerationWorker.drain, postWorker.drain),
     createWorkflow,
     archiveWorkflow,
     unarchiveWorkflow,
     deleteWorkflow,
     retryWorkflow,
+    postWorkflow,
     workflowForThread,
   } satisfies CodeReviewWorkflowServiceShape;
 });

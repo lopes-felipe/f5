@@ -1,5 +1,9 @@
 import { useWorkflowDetails, WorkflowDetailsStatus } from "../../hooks/useWorkflowDetails";
 import type { ThreadId } from "@t3tools/contracts";
+import {
+  codeReviewPullRequestLabel,
+  formatCodeReviewReport,
+} from "@t3tools/shared/codeReviewPullRequest";
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -9,6 +13,7 @@ import { readNativeApi } from "../../nativeApi";
 import { useThreadsByIds } from "../../threadSelectors";
 import { threadIdsForCodeReviewWorkflow } from "./codeReviewWorkflowUtils";
 import ChatMarkdown from "../ChatMarkdown";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -24,6 +29,7 @@ import { toastManager } from "../ui/toast";
 import {
   canRetryConsolidation,
   canRetryFailedReviewers,
+  codeReviewPostAction,
   collectCodeReviewWorkflowErrors,
   statusLabel,
 } from "./codeReviewWorkflowView.logic";
@@ -52,8 +58,9 @@ const EMPTY_WORKFLOW_THREAD_IDS: readonly ThreadId[] = [];
 
 export function CodeReviewWorkflowView(props: { workflowId: string }) {
   const navigate = useNavigate();
-  const [busy, setBusy] = useState<"retry" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"retry" | "delete" | "post" | null>(null);
   const [duplicateRisk, setDuplicateRisk] = useState<DuplicateRisk | null>(null);
+  const [confirmPostAgain, setConfirmPostAgain] = useState(false);
   const detail = useWorkflowDetails("codeReview", props.workflowId);
   const workflow = detail.workflow;
   // Only this workflow's threads: unrelated streaming does not re-render the view.
@@ -94,6 +101,11 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
               .toReversed()
               .find((message) => message.role === "assistant" && !message.streaming)?.text
           : null) ?? null);
+  const pullRequest = workflow.pullRequest ?? null;
+  const mergedReviewText = consolidatedText
+    ? formatCodeReviewReport(consolidatedText, { pullRequest })
+    : null;
+  const postAction = codeReviewPostAction(workflow);
   const showRetryFailed = canRetryFailedReviewers(workflow);
   const showRetryMerge = canRetryConsolidation(workflow);
 
@@ -126,6 +138,29 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
     }
   };
 
+  const handlePost = async () => {
+    const api = readNativeApi();
+    if (!api) {
+      toastManager.add({
+        type: "error",
+        title: "Posting is unavailable while disconnected.",
+      });
+      return;
+    }
+    setBusy("post");
+    try {
+      await api.orchestration.postCodeReviewWorkflow({ workflowId: workflow.id });
+      setConfirmPostAgain(false);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: error instanceof Error ? error.message : "Failed to post the merged review.",
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleDelete = async () => {
     const api = readNativeApi();
     if (!api) {
@@ -142,6 +177,24 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
 
   const actions = (
     <>
+      {postAction?.kind === "posted" && postAction.commentUrl ? (
+        <Button
+          variant="outline"
+          render={<OpenLinkAnchor href={postAction.commentUrl} target="_blank" rel="noreferrer" />}
+        >
+          Posted
+        </Button>
+      ) : postAction ? (
+        <Button
+          variant="outline"
+          onClick={() =>
+            postAction.kind === "post-again" ? setConfirmPostAgain(true) : void handlePost()
+          }
+          disabled={busy !== null || postAction.kind === "posting" || postAction.kind === "posted"}
+        >
+          {postAction.label}
+        </Button>
+      ) : null}
       {showRetryFailed ? (
         <Button
           variant="outline"
@@ -193,9 +246,9 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
             </div>
           </WorkflowArtifactSection>
         ) : null}
-        {consolidatedText ? (
+        {mergedReviewText ? (
           <WorkflowArtifactSection title="Merged Review">
-            <ChatMarkdown text={consolidatedText} cwd={undefined} />
+            <ChatMarkdown text={mergedReviewText} cwd={undefined} />
           </WorkflowArtifactSection>
         ) : null}
         <WorkflowInputSection
@@ -203,6 +256,19 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
           text={workflow.reviewPrompt}
           defaultOpen={!consolidatedText}
         >
+          {pullRequest ? (
+            <p className="mt-2 text-ui text-muted-foreground">
+              Pull request:{" "}
+              <OpenLinkAnchor
+                href={pullRequest.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-foreground underline"
+              >
+                {codeReviewPullRequestLabel(pullRequest)}
+              </OpenLinkAnchor>
+            </p>
+          ) : null}
           {workflow.branch ? (
             <p className="mt-2 text-ui text-muted-foreground">
               Branch: <span className="font-mono">{workflow.branch}</span>
@@ -243,6 +309,30 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
               disabled={busy === "retry"}
             >
               Retry anyway
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <AlertDialog
+        open={confirmPostAgain}
+        onOpenChange={(open) => {
+          if (!open && busy !== "post") setConfirmPostAgain(false);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Post the new merged review?</AlertDialogTitle>
+            <AlertDialogDescription>
+              An earlier merged review is already posted to this pull request. Posting adds a second
+              comment; the earlier one stays.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy === "post"} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button onClick={() => void handlePost()} disabled={busy === "post"}>
+              Post again
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

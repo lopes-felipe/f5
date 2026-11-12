@@ -31,6 +31,7 @@ import type {
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import { detectCodeReviewPullRequestTarget } from "@t3tools/shared/codeReviewPullRequest";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 
 import { resolveThreadTitleModel, useAppSettings } from "../../appSettings";
@@ -224,6 +225,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   );
   const [selfReviewEnabled, setSelfReviewEnabled] = useState(true);
   const [investigationSelfReviewEnabled, setInvestigationSelfReviewEnabled] = useState(false);
+  const [autoPostReview, setAutoPostReview] = useState(false);
   const [maxCostUsd, setMaxCostUsd] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +306,24 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     workflowType === "investigation" &&
     branchAProvider === branchBProvider &&
     branchASelection === branchBSelection;
+  const reviewPullRequestTarget = useMemo(
+    () =>
+      workflowType === "codeReview" ? detectCodeReviewPullRequestTarget(requirementPrompt) : null,
+    [requirementPrompt, workflowType],
+  );
+  const canAutoPostReview =
+    reviewPullRequestTarget !== null &&
+    (reviewPullRequestTarget.kind === "number" ||
+      reviewPullRequestTarget.ref.provider === "github");
+  const autoPostReviewEffective = autoPostReview && canAutoPostReview;
+  const autoPostReviewDescription =
+    reviewPullRequestTarget === null
+      ? "Add a GitHub PR link or #number to the review instructions."
+      : reviewPullRequestTarget.kind === "number"
+        ? `PR #${reviewPullRequestTarget.number} in this project's GitHub repo.`
+        : reviewPullRequestTarget.ref.provider === "github"
+          ? `Will post to ${reviewPullRequestTarget.ref.repository}#${reviewPullRequestTarget.ref.number}.`
+          : "Posting supports GitHub pull requests only.";
   const parsedMaxCostUsd = maxCostUsd.trim().length > 0 ? Number(maxCostUsd) : null;
   const validMaxCostUsd =
     parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);
@@ -405,6 +425,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setMergeModelOptions(mergeDefaults.modelOptions);
     setSelfReviewEnabled(true);
     setInvestigationSelfReviewEnabled(false);
+    setAutoPostReview(false);
     setMaxCostUsd("");
     setError(null);
     setIsDragOverPrompt(false);
@@ -730,6 +751,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             reviewPrompt: promptForSubmission,
             titleGenerationModel,
             ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
+            ...(autoPostReviewEffective ? { autoPost: true } : {}),
             reviewerA: branchASlot,
             reviewerB: branchBSlot,
             consolidation: mergeSlot,
@@ -796,6 +818,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       : null,
     workflowType === "investigation" && investigationSelfReviewEnabled ? "Own-model review" : null,
     workflowType === "planning" ? `${plansDirectory.trim() || "plans"}/` : null,
+    workflowType === "codeReview" && autoPostReviewEffective ? "Auto-post" : null,
     (workflowType === "codeReview" || workflowType === "investigation") && reviewBranch.trim()
       ? `vs ${reviewBranch.trim()}`
       : null,
@@ -1168,6 +1191,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       ) : null}
                     </>
                   ) : null}
+                </div>
+              ) : null}
+              {workflowType === "codeReview" ? (
+                <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+                  <WorkflowOptionCheckbox
+                    disabled={!canAutoPostReview}
+                    checked={autoPostReviewEffective}
+                    onCheckedChange={setAutoPostReview}
+                    label="Post merged review to the PR when it finishes"
+                    description={autoPostReviewDescription}
+                  />
                 </div>
               ) : null}
               <WorkflowOptions summary={optionsSummary}>

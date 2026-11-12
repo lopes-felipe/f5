@@ -28,6 +28,7 @@ const nativeApiMocks = vi.hoisted(() => ({
   connected: true,
   retryCodeReviewWorkflow: vi.fn(),
   deleteCodeReviewWorkflow: vi.fn(),
+  postCodeReviewWorkflow: vi.fn(),
 }));
 
 vi.mock("../../nativeApi", () => ({
@@ -40,6 +41,7 @@ vi.mock("../../nativeApi", () => ({
           orchestration: {
             retryCodeReviewWorkflow: nativeApiMocks.retryCodeReviewWorkflow,
             deleteCodeReviewWorkflow: nativeApiMocks.deleteCodeReviewWorkflow,
+            postCodeReviewWorkflow: nativeApiMocks.postCodeReviewWorkflow,
           },
         }
       : null,
@@ -183,6 +185,137 @@ describe("CodeReviewWorkflowView recovery", () => {
         title: "Code-review retry is unavailable while disconnected.",
       });
       expect(nativeApiMocks.retryCodeReviewWorkflow).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+const PULL_REQUEST = {
+  url: "https://github.com/acme/app/pull/42",
+  key: "github:github.com/acme/app#42",
+};
+
+function makePostableWorkflow(post: CodeReviewWorkflow["post"] = null): CodeReviewWorkflow {
+  const base = makeWorkflow();
+  return {
+    ...base,
+    reviewerA: { ...base.reviewerA, status: "completed", error: null },
+    consolidation: {
+      ...base.consolidation,
+      status: "completed",
+      pinnedTurnId: "turn-merge",
+      pinnedAssistantMessageId: "assistant-merge",
+    },
+    pullRequest: PULL_REQUEST,
+    autoPost: false,
+    post,
+  };
+}
+
+function makePost(
+  overrides: Partial<NonNullable<CodeReviewWorkflow["post"]>>,
+): NonNullable<CodeReviewWorkflow["post"]> {
+  return {
+    trigger: "auto",
+    status: "posted",
+    operationId: "f5-code-review:code-review-retry:op",
+    consolidationTurnId: "turn-merge",
+    commentUrl: `${PULL_REQUEST.url}#issuecomment-9`,
+    error: null,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+describe("CodeReviewWorkflowView pull request posting", () => {
+  beforeEach(() => {
+    nativeApiMocks.connected = true;
+    nativeApiMocks.postCodeReviewWorkflow.mockReset();
+    nativeApiMocks.postCodeReviewWorkflow.mockResolvedValue({ status: "started" });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+    useStore.setState({ threads: [], codeReviewWorkflows: [] });
+  });
+
+  it("links the pull request and posts the merged review", async () => {
+    useStore.setState({ threads: [], codeReviewWorkflows: [makePostableWorkflow()] });
+    const screen = await renderView(<CodeReviewWorkflowView workflowId={workflowId} />);
+
+    try {
+      await expect
+        .element(page.getByRole("link", { name: "acme/app#42" }))
+        .toHaveAttribute("href", PULL_REQUEST.url);
+      await page.getByRole("button", { name: "Post to PR" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledWith({ workflowId });
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("links a posted comment", async () => {
+    useStore.setState({ threads: [], codeReviewWorkflows: [makePostableWorkflow(makePost({}))] });
+    const screen = await renderView(<CodeReviewWorkflowView workflowId={workflowId} />);
+
+    try {
+      await expect
+        .element(page.getByRole("link", { name: "Posted" }))
+        .toHaveAttribute("href", `${PULL_REQUEST.url}#issuecomment-9`);
+      expect(page.getByRole("button", { name: "Post to PR" }).elements()).toHaveLength(0);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows failed and unknown post outcomes with their recovery actions", async () => {
+    useStore.setState({
+      threads: [],
+      codeReviewWorkflows: [
+        makePostableWorkflow(makePost({ status: "failed", error: "Resource not accessible" })),
+      ],
+    });
+    const screen = await renderView(<CodeReviewWorkflowView workflowId={workflowId} />);
+
+    try {
+      await expect.element(page.getByText("Resource not accessible")).toBeVisible();
+      await page.getByRole("button", { name: "Retry post" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledTimes(1);
+      });
+
+      useStore.setState({
+        codeReviewWorkflows: [
+          makePostableWorkflow(
+            makePost({ status: "needs_recovery", error: "GitHub may have received the comment." }),
+          ),
+        ],
+      });
+      await expect.element(page.getByRole("button", { name: "Check again" })).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("confirms before posting a newer merged review again", async () => {
+    useStore.setState({
+      threads: [],
+      codeReviewWorkflows: [makePostableWorkflow(makePost({ consolidationTurnId: "turn-old" }))],
+    });
+    const screen = await renderView(<CodeReviewWorkflowView workflowId={workflowId} />);
+
+    try {
+      await page.getByRole("button", { name: "Post again" }).click();
+      await expect.element(page.getByText("Post the new merged review?")).toBeVisible();
+      expect(nativeApiMocks.postCodeReviewWorkflow).not.toHaveBeenCalled();
+      await page.getByRole("alertdialog").getByRole("button", { name: "Post again" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.postCodeReviewWorkflow).toHaveBeenCalledWith({ workflowId });
+      });
     } finally {
       await screen.unmount();
     }

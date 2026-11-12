@@ -13,7 +13,9 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type PrHubCommentOperation,
 } from "@t3tools/contracts";
+import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Effect, Exit, Layer, ManagedRuntime, Queue, Scope, Stream } from "effect";
 
@@ -36,6 +38,13 @@ import {
   type ProviderTurnDeliveryWorkerShape,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 import { CodeReviewWorkflowServiceLive } from "./CodeReviewWorkflowService.ts";
+import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
+import {
+  PrHubFederation,
+  type PrHubAccountRuntime,
+  type PrHubFederationShape,
+} from "../../prHub/Layers/PrHubFederation.ts";
+import type { PrHubServiceShape } from "../../prHub/Services/PrHubService.ts";
 
 const NOW = "2026-04-02T12:00:00.000Z";
 const ERROR_AT = "2026-04-02T12:01:00.000Z";
@@ -308,6 +317,9 @@ function applyCodeReviewWorkflowCommandToSnapshot(
         slug: command.slug,
         reviewPrompt: command.reviewPrompt,
         branch: command.branch,
+        pullRequest: command.pullRequest ?? null,
+        autoPost: command.autoPost ?? false,
+        post: null,
         reviewerA: {
           label: `Reviewer A (${command.reviewerA.provider}:${command.reviewerA.model})`,
           slot: command.reviewerA,
@@ -388,6 +400,8 @@ async function createHarness(
     failDispatch?: (command: OrchestrationCommand, count: number) => unknown | undefined;
     providerTurnDeliveryWorker?: ProviderTurnDeliveryWorkerShape;
     getDeliveryByCommandId?: ProviderTurnDeliveryRepositoryShape["getByCommandId"];
+    prHubFederation?: PrHubFederationShape;
+    originRemoteUrl?: string | null;
   },
 ) {
   let snapshot = initialSnapshot;
@@ -505,13 +519,27 @@ async function createHarness(
       } as unknown as TextGenerationShape),
     ),
   );
+  const withPrHub = options?.prHubFederation
+    ? serviceLayer.pipe(Layer.provideMerge(Layer.succeed(PrHubFederation, options.prHubFederation)))
+    : serviceLayer;
+  const withGit =
+    options?.originRemoteUrl !== undefined
+      ? withPrHub.pipe(
+          Layer.provideMerge(
+            Layer.succeed(GitCore, {
+              readConfigValue: (_cwd: string, key: string) =>
+                Effect.succeed(key === "remote.origin.url" ? options.originRemoteUrl! : null),
+            } as unknown as GitCoreShape),
+          ),
+        )
+      : withPrHub;
   const withDeliveryWorker = options?.providerTurnDeliveryWorker
-    ? serviceLayer.pipe(
+    ? withGit.pipe(
         Layer.provideMerge(
           Layer.succeed(ProviderTurnDeliveryWorker, options.providerTurnDeliveryWorker),
         ),
       )
-    : serviceLayer;
+    : withGit;
   const runtime = ManagedRuntime.make(
     options?.getDeliveryByCommandId
       ? withDeliveryWorker.pipe(
@@ -3366,5 +3394,501 @@ describe("CodeReviewWorkflowService stage dispatch correlation", () => {
       turnStarts.find((command) => command.threadId === workflow.reviewerB.threadId)?.commandId,
     );
     expect(upserted?.reviewerA.dispatchCommandId).not.toBe(upserted?.reviewerB.dispatchCommandId);
+  });
+});
+
+const PULL_REQUEST = {
+  url: "https://github.com/acme/app/pull/42",
+  key: "github:github.com/acme/app#42",
+};
+const MERGE_THREAD_ID = ThreadId.makeUnsafe("review-merge");
+const REVIEW_SLOTS = {
+  reviewerA: { provider: "codex", model: "gpt-5-codex" },
+  reviewerB: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+  consolidation: { provider: "codex", model: "gpt-5-codex" },
+} as const;
+
+function makeFakePrHub(
+  options: {
+    submitStatus?: PrHubCommentOperation["status"];
+    seed?: ReadonlyArray<PrHubCommentOperation>;
+    resolveError?: string;
+  } = {},
+) {
+  const operations = new Map<string, PrHubCommentOperation>(
+    (options.seed ?? []).map((operation) => [operation.id, operation]),
+  );
+  const calls = {
+    prepare: [] as Array<{ id: string; body: string }>,
+    submit: [] as string[],
+    recover: [] as Array<{ id: string; action: string }>,
+  };
+  let submitStatus = options.submitStatus ?? "succeeded";
+  let reconcileUnknownTo: PrHubCommentOperation["status"] | null = null;
+  const set = (operation: PrHubCommentOperation) => {
+    operations.delete(operation.id);
+    operations.set(operation.id, operation);
+    return operation;
+  };
+  const hub = {
+    track: () => Effect.succeed({ key: PULL_REQUEST.key }),
+    prepareComment: (input: { id: string; body: string }) =>
+      Effect.sync(() => {
+        calls.prepare.push({ id: input.id, body: input.body });
+        return (
+          operations.get(input.id) ??
+          set({
+            id: input.id,
+            payloadHash: `hash-${input.id}`,
+            remoteId: null,
+            status: "prepared",
+            errorMessage: null,
+            payload: {
+              version: 2,
+              source: "timeline_comment",
+              body: input.body,
+              markedBody: input.body,
+            },
+          })
+        );
+      }),
+    submitComment: (input: { id: string }) =>
+      Effect.sync(() => {
+        calls.submit.push(input.id);
+        const operation = operations.get(input.id)!;
+        return set({
+          ...operation,
+          status: submitStatus,
+          remoteId: submitStatus === "succeeded" ? "999" : null,
+          errorMessage: submitStatus === "rejected" ? "Resource not accessible" : null,
+        });
+      }),
+    // Mirrors PR Hub: reconcile, then report pending operations first, newest first.
+    getCommentOperation: () =>
+      Effect.sync(() => {
+        const all = [...operations.values()];
+        const pending = all.filter((operation) =>
+          ["prepared", "creating", "outcome_unknown"].includes(operation.status),
+        );
+        const top = pending.at(-1) ?? all.at(-1) ?? null;
+        if (top && top.status === "outcome_unknown" && reconcileUnknownTo) {
+          return set({
+            ...top,
+            status: reconcileUnknownTo,
+            remoteId: reconcileUnknownTo === "succeeded" ? "777" : null,
+          });
+        }
+        return top;
+      }),
+    recoverComment: (input: { id: string; action: string }) =>
+      Effect.sync(() => {
+        calls.recover.push({ id: input.id, action: input.action });
+        return set({ ...operations.get(input.id)!, status: "abandoned" });
+      }),
+  } as unknown as PrHubServiceShape;
+  const federation = {
+    hub,
+    resolve: () =>
+      options.resolveError
+        ? Effect.fail(new Error(options.resolveError) as never)
+        : Effect.succeed({
+            account: { generation: "generation-1" },
+            hub,
+            provider: {},
+          } as unknown as PrHubAccountRuntime),
+    parseUrl: (url: string) => Effect.succeed(parseSourceControlPullRequestUrl(url)),
+  } satisfies PrHubFederationShape;
+  return {
+    federation,
+    operations,
+    calls,
+    setSubmitStatus(status: PrHubCommentOperation["status"]) {
+      submitStatus = status;
+    },
+    reconcileUnknownTo(status: PrHubCommentOperation["status"]) {
+      reconcileUnknownTo = status;
+    },
+  };
+}
+
+function makeMergingWorkflow(overrides: Partial<CodeReviewWorkflow> = {}): CodeReviewWorkflow {
+  const base = makeWorkflow();
+  return makeWorkflow({
+    reviewerA: {
+      ...base.reviewerA,
+      status: "completed",
+      pinnedTurnId: TurnId.makeUnsafe("turn-review-a"),
+      pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-a"),
+    },
+    reviewerB: {
+      ...base.reviewerB,
+      status: "completed",
+      pinnedTurnId: TurnId.makeUnsafe("turn-review-b"),
+      pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-b"),
+    },
+    consolidation: { ...base.consolidation, threadId: MERGE_THREAD_ID, status: "running" },
+    pullRequest: PULL_REQUEST,
+    autoPost: true,
+    post: null,
+    ...overrides,
+  });
+}
+
+function makeCompletedWorkflow(overrides: Partial<CodeReviewWorkflow> = {}): CodeReviewWorkflow {
+  const base = makeMergingWorkflow();
+  return makeMergingWorkflow({
+    consolidation: {
+      ...base.consolidation,
+      status: "completed",
+      pinnedTurnId: TurnId.makeUnsafe("turn-merge"),
+      pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-merge"),
+    },
+    ...overrides,
+  });
+}
+
+const mergeThread = () =>
+  makeCompletedThread({
+    threadId: MERGE_THREAD_ID,
+    suffix: "merge",
+    text: "## Findings\n- Missing null check",
+  });
+
+function currentPost(harness: Awaited<ReturnType<typeof createHarness>>) {
+  return harness.getSnapshot().codeReviewWorkflows[0]?.post ?? null;
+}
+
+describe("CodeReviewWorkflowService pull request posting", () => {
+  let harness: Awaited<ReturnType<typeof createHarness>> | null = null;
+
+  afterEach(async () => {
+    if (harness) {
+      await harness.dispose();
+    }
+    harness = null;
+  });
+
+  it("resolves a PR URL at creation and names it in reviewer prompts", async () => {
+    const prHub = makeFakePrHub();
+    harness = await createHarness(makeReadModel({}), { prHubFederation: prHub.federation });
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review https://github.com/acme/app/pull/42/files please",
+        autoPost: true,
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    const workflow = harness.getSnapshot().codeReviewWorkflows[0]!;
+    expect(workflow.pullRequest).toEqual(PULL_REQUEST);
+    expect(workflow.autoPost).toBe(true);
+    const reviewerTurn = harness.dispatched.find(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    expect(reviewerTurn?.message.text).toContain(
+      `F5 resolved the review target to pull request ${PULL_REQUEST.url}.`,
+    );
+  });
+
+  it("resolves shorthand PR numbers against the GitHub origin remote", async () => {
+    harness = await createHarness(makeReadModel({}), {
+      originRemoteUrl: "git@github.com:acme/app.git",
+    });
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review PR #42",
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toEqual(PULL_REQUEST);
+  });
+
+  it("rejects auto-post when no GitHub pull request resolves", async () => {
+    harness = await createHarness(makeReadModel({}), {
+      originRemoteUrl: "git@gitlab.com:acme/app.git",
+    });
+
+    const exit = await Effect.runPromiseExit(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review PR #42",
+        autoPost: true,
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(String(exit)).toContain("Auto-post needs a GitHub pull request");
+    expect(harness.getSnapshot().codeReviewWorkflows).toHaveLength(0);
+  });
+
+  it("asks the merge model for the PR header line", async () => {
+    const prHub = makeFakePrHub();
+    const workflow = makeMergingWorkflow({
+      consolidation: {
+        ...makeMergingWorkflow().consolidation,
+        threadId: null,
+        status: "not_started",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+        ],
+      }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+
+    const mergeTurn = harness.dispatched.find(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    expect(mergeTurn?.message.text).toContain(
+      `Begin the report with this exact first line: **Reviewed PR:** ${PULL_REQUEST.url}`,
+    );
+  });
+
+  it("auto-posts once when the merge completes", async () => {
+    const prHub = makeFakePrHub();
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(prHub.calls.prepare).toHaveLength(1);
+    expect(prHub.calls.submit).toHaveLength(1);
+    const body = prHub.calls.prepare[0]!.body;
+    expect(body).toContain(`**Reviewed PR:** [acme/app#42](${PULL_REQUEST.url})`);
+    expect(body).toContain("## Findings\n- Missing null check");
+    expect(body).toContain("Reviewers: gpt-5-codex, gpt-5-codex · Merge: gpt-5-codex");
+    expect(currentPost(harness)).toMatchObject({
+      trigger: "auto",
+      status: "posted",
+      consolidationTurnId: TurnId.makeUnsafe("turn-merge"),
+      commentUrl: `${PULL_REQUEST.url}#issuecomment-999`,
+      error: null,
+    });
+    expect(currentPost(harness)?.operationId).toMatch(/^f5-code-review:workflow-1:/);
+  });
+
+  it("does not auto-post again after a later merge", async () => {
+    const prHub = makeFakePrHub();
+    const earlierPost = {
+      trigger: "auto" as const,
+      status: "posted" as const,
+      operationId: "f5-code-review:workflow-1:earlier",
+      consolidationTurnId: TurnId.makeUnsafe("turn-merge-old"),
+      commentUrl: `${PULL_REQUEST.url}#issuecomment-1`,
+      error: null,
+      updatedAt: NOW,
+    };
+    harness = await createHarness(
+      makeReadModel({
+        workflow: makeMergingWorkflow({ post: earlierPost }),
+        threads: [mergeThread()],
+      }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation.status).toBe("completed");
+    expect(prHub.calls.prepare).toHaveLength(0);
+    expect(currentPost(harness)).toEqual(earlierPost);
+  });
+
+  it("resumes an interrupted post with the same operation without resending", async () => {
+    const operationId = "f5-code-review:workflow-1:resume";
+    const prHub = makeFakePrHub({
+      seed: [
+        {
+          id: operationId,
+          payloadHash: `hash-${operationId}`,
+          remoteId: "555",
+          status: "succeeded",
+          errorMessage: null,
+          payload: { version: 2, source: "timeline_comment", body: "x", markedBody: "x" },
+        },
+      ],
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow: makeCompletedWorkflow({
+          post: {
+            trigger: "auto",
+            status: "posting",
+            operationId,
+            consolidationTurnId: TurnId.makeUnsafe("turn-merge"),
+            commentUrl: null,
+            error: null,
+            updatedAt: NOW,
+          },
+        }),
+        threads: [mergeThread()],
+      }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(prHub.calls.prepare.map((call) => call.id)).toEqual([operationId]);
+    expect(prHub.calls.submit).toHaveLength(0);
+    expect(currentPost(harness)).toMatchObject({
+      status: "posted",
+      operationId,
+      commentUrl: `${PULL_REQUEST.url}#issuecomment-555`,
+    });
+  });
+
+  it("marks an unknown outcome for recovery and re-verifies it without resending", async () => {
+    const prHub = makeFakePrHub({ submitStatus: "outcome_unknown" });
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(currentPost(harness)?.status).toBe("needs_recovery");
+    const operationId = currentPost(harness)!.operationId;
+
+    prHub.reconcileUnknownTo("succeeded");
+    await Effect.runPromise(harness.service.postWorkflow({ workflowId: makeWorkflow().id }));
+    await harness.drain();
+
+    expect(prHub.calls.submit).toEqual([operationId]);
+    expect(prHub.calls.prepare).toHaveLength(1);
+    expect(currentPost(harness)).toMatchObject({
+      status: "posted",
+      operationId,
+      commentUrl: `${PULL_REQUEST.url}#issuecomment-777`,
+    });
+  });
+
+  it("retries a rejected post with a new operation", async () => {
+    const prHub = makeFakePrHub({ submitStatus: "rejected" });
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(currentPost(harness)).toMatchObject({
+      status: "failed",
+      error: "Resource not accessible",
+    });
+    const firstOperationId = currentPost(harness)!.operationId;
+
+    prHub.setSubmitStatus("succeeded");
+    await Effect.runPromise(harness.service.postWorkflow({ workflowId: makeWorkflow().id }));
+    await harness.drain();
+
+    expect(currentPost(harness)).toMatchObject({ trigger: "manual", status: "posted" });
+    expect(currentPost(harness)!.operationId).not.toBe(firstOperationId);
+    expect(prHub.calls.submit).toHaveLength(2);
+  });
+
+  it("rejects manual posts that cannot start", async () => {
+    const prHub = makeFakePrHub();
+    const cases: Array<[CodeReviewWorkflow, string]> = [
+      [makeMergingWorkflow({ autoPost: false }), "not finished"],
+      [makeCompletedWorkflow({ pullRequest: null }), "no GitHub pull request"],
+      [
+        makeCompletedWorkflow({
+          post: {
+            trigger: "manual",
+            status: "posted",
+            operationId: "op",
+            consolidationTurnId: TurnId.makeUnsafe("turn-merge"),
+            commentUrl: PULL_REQUEST.url,
+            error: null,
+            updatedAt: NOW,
+          },
+        }),
+        "already posted",
+      ],
+    ];
+    for (const [workflow, message] of cases) {
+      harness = await createHarness(makeReadModel({ workflow }), {
+        prHubFederation: prHub.federation,
+      });
+      const exit = await Effect.runPromiseExit(
+        harness.service.postWorkflow({ workflowId: workflow.id }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(String(exit)).toContain(message);
+      await harness.dispose();
+      harness = null;
+    }
+    expect(prHub.calls.prepare).toHaveLength(0);
+  });
+
+  it("fails visibly without a PR Hub account", async () => {
+    const prHub = makeFakePrHub({ resolveError: "Connect an account before using PR Hub." });
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(currentPost(harness)).toMatchObject({
+      status: "failed",
+      error: "Connect an account before using PR Hub.",
+    });
+  });
+
+  it("fails visibly when PR Hub is unavailable", async () => {
+    harness = await createHarness(
+      makeReadModel({ workflow: makeMergingWorkflow(), threads: [mergeThread()] }),
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(currentPost(harness)).toMatchObject({
+      status: "failed",
+      error: "PR Hub is unavailable, so the review cannot be posted.",
+    });
+  });
+
+  it("never posts a deleted workflow", async () => {
+    const prHub = makeFakePrHub();
+    harness = await createHarness(
+      makeReadModel({
+        workflow: makeCompletedWorkflow({ deletedAt: NOW }),
+        threads: [mergeThread()],
+      }),
+      { prHubFederation: prHub.federation },
+    );
+
+    await harness.start();
+    await harness.drain();
+
+    expect(prHub.calls.prepare).toHaveLength(0);
+    expect(currentPost(harness)).toBeNull();
   });
 });
