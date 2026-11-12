@@ -2086,6 +2086,35 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline (full app)", () => {
+  it("focuses search when the add-project intent opens the real palette submenu", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-palette-add-project-focus" as MessageId,
+        targetText: "Palette focus regression",
+      }),
+    });
+    try {
+      await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+      useCommandPaletteStore.getState().openAddProject();
+      const back = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="command-palette"] button[aria-label="Back"]',
+          ),
+        "Add-project submenu should render its Back button.",
+      );
+      await expect.element(page.elementLocator(back)).toBeVisible();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
+        "Add-project search should render.",
+      );
+      await expect.element(page.elementLocator(input)).toHaveFocus();
+    } finally {
+      useCommandPaletteStore.getState().setOpen(false);
+      await mounted.cleanup();
+    }
+  });
   it.each(["message", "plan"] as const)(
     "finds and reveals an unloaded older %s without changing the draft or sending",
     async (kind) => {

@@ -1,4 +1,5 @@
 import "./stdioErrors";
+import { systemLocale } from "./systemLocale";
 import { installKeepAwake } from "./keepAwake/install";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import {
@@ -4312,8 +4313,8 @@ function createWindow(
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 600,
-    minHeight: 620,
+    minWidth: 400,
+    minHeight: 360,
     show: false,
     autoHideMenuBar: true,
     ...getIconOption(),
@@ -4324,7 +4325,7 @@ function createWindow(
       ...(partition ? { partition } : {}),
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
-        `--f5-system-locale=${app.getSystemLocale()}`,
+        `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
       ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,

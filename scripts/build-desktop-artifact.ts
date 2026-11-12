@@ -36,6 +36,12 @@ export const DESKTOP_ASAR_UNPACK = [
   "node_modules/@openai/codex-*/**/*",
 ] as const;
 
+export function resolveMacFileExclusions(arch?: typeof BuildArch.Type): string[] {
+  if (!arch || arch === "universal") return [];
+  const unusedArch = arch === "arm64" ? "x64" : "arm64";
+  return [`!**/node_modules/**/prebuilds/darwin-${unusedArch}/**/*`];
+}
+
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
@@ -455,6 +461,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   productName: string,
   signed: boolean,
   release: boolean,
+  arch?: typeof BuildArch.Type,
 ) {
   const repositoryOverride = process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim();
   if (release && repositoryOverride && repositoryOverride !== RELEASE_UPDATE_REPOSITORY) {
@@ -517,6 +524,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       });
     }
     buildConfig.mac = {
+      files: ["**/*", ...resolveMacFileExclusions(arch)],
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -740,6 +748,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       desktopPackageJson.productName ?? "F5",
       options.signed,
       options.version !== undefined,
+      options.arch,
     ),
     dependencies: stagedDependencies,
     devDependencies: {
