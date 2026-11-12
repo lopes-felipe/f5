@@ -505,6 +505,8 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowResult,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationRetryWorkflowResult,
@@ -1637,6 +1639,9 @@ export interface NativeApi {
     retryCodeReviewWorkflow: (
       input: OrchestrationRetryCodeReviewWorkflowInput,
     ) => Promise<OrchestrationRetryWorkflowResult>;
+    postCodeReviewWorkflow: (
+      input: OrchestrationPostCodeReviewWorkflowInput,
+    ) => Promise<OrchestrationPostCodeReviewWorkflowResult>;
     retryInvestigationWorkflow: (
       input: OrchestrationRetryInvestigationWorkflowInput,
     ) => Promise<void>;

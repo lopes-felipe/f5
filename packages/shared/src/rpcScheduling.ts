@@ -204,6 +204,7 @@ export const RPC_METHOD_POLICY = {
   "orchestration.getThreadPeek": READ,
   "orchestration.getThreadTailDetails": READ,
   "orchestration.getTurnDiff": READ,
+  "orchestration.postCodeReviewWorkflow": MUTATION_RT,
   "orchestration.retryCodeReviewWorkflow": MUTATION_RT,
   "orchestration.retryInvestigationWorkflow": MUTATION_RT,
   "orchestration.retryWorkflow": MUTATION_RT,

@@ -164,6 +164,10 @@
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"
     },
+    "./codeReviewPullRequest": {
+      "types": "./src/codeReviewPullRequest.ts",
+      "import": "./src/codeReviewPullRequest.ts"
+    },
     "./cliArgs": {
       "types": "./src/cliArgs.ts",
       "import": "./src/cliArgs.ts"

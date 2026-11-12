@@ -232,6 +232,7 @@ describe("OrchestrationReactor", () => {
               unarchiveWorkflow: () => Effect.die("unsupported"),
               deleteWorkflow: () => Effect.die("unsupported"),
               retryWorkflow: () => Effect.die("unsupported"),
+              postWorkflow: () => Effect.die("unsupported"),
               workflowForThread: () => Effect.succeed(null),
             }),
           ),

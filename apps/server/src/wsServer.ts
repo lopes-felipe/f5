@@ -5159,6 +5159,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow: {
+        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        return yield* codeReviewWorkflowService
+          .postWorkflow(body)
+          .pipe(Effect.mapError((cause) => new RouteRequestError({ message: cause.message })));
+      }
+
       case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {
         const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
