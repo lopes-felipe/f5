@@ -31,7 +31,11 @@ import { truncateMiddleByBytes } from "../orchestration/outputTruncation.ts";
  *   before it carries that same state and a later one in the run restates every
  *   estimate it set. The first and the last update of a run always stay, so a
  *   replay passes through the same session states and ends on the same
- *   estimates. Their receipts are kept, for the same reason as message receipts.
+ *   estimates. The context estimate and its source count as one value that a
+ *   single later update must restate: between session updates, message events
+ *   recompute the context estimate whenever the source is not the provider, so
+ *   restating the two in separate updates could leave a different estimate.
+ *   Their receipts are kept, for the same reason as message receipts.
  * - Superseded planning workflow updates ({@link compactWorkflowEvents}). Each
  *   `project.workflow-upserted` stores the whole workflow, and both projections
  *   replace the stored workflow with it, so only the newest matters. Older
@@ -81,6 +85,8 @@ const SESSION_ESTIMATE_PATHS = [
   "$.session.tokenUsageSource",
   "$.session.modelContextWindowTokens",
 ] as const;
+/** Flags of the context estimate and its source, which message events read and rewrite together. */
+const CONTEXT_ESTIMATE_FLAGS = 1 | 4;
 /** Commands `ProviderRuntimeIngestion` dispatches for a token report and nothing else. */
 const TOKEN_REPORT_COMMAND_ID = /^provider:.*:thread-(?:token-usage|thinking-tokens)-set$/u;
 const SESSION_UPDATES_PER_GROUP = 1_000;
@@ -217,19 +223,28 @@ interface SessionUpdate {
 /**
  * Which updates of one run (consecutive session updates with the same state
  * apart from the estimates) can go: token reports that are neither first nor
- * last and whose every estimate a later update restates.
+ * last and whose every estimate a later update restates. An update that sets
+ * the context estimate or its source needs one later update that sets both.
  */
 export function removableSessionUpdates(
   run: ReadonlyArray<SessionUpdate>,
 ): ReadonlyArray<SessionUpdate> {
   const removable: SessionUpdate[] = [];
   let restatedLater = 0;
+  let contextRestatedLater = false;
   for (let index = run.length - 1; index > 0; index -= 1) {
     const update = run[index]!;
-    if (index < run.length - 1 && update.tokenReport && (update.estimates & ~restatedLater) === 0) {
+    const setsContext = (update.estimates & CONTEXT_ESTIMATE_FLAGS) !== 0;
+    if (
+      index < run.length - 1 &&
+      update.tokenReport &&
+      (update.estimates & ~CONTEXT_ESTIMATE_FLAGS & ~restatedLater) === 0 &&
+      (!setsContext || contextRestatedLater)
+    ) {
       removable.push(update);
     }
     restatedLater |= update.estimates;
+    contextRestatedLater ||= (update.estimates & CONTEXT_ESTIMATE_FLAGS) === CONTEXT_ESTIMATE_FLAGS;
   }
   return removable.toReversed();
 }

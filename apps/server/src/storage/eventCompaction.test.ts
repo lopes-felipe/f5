@@ -729,6 +729,19 @@ it.layer(layer)("compactThreadEvents", (it) => {
             ${stored.commandId}, 'thread', ${threadId}, ${at}, ${stored.sequence}, 'accepted', NULL
           )
         `;
+        // A message after each update: with no provider usage recorded yet, a
+        // message event recomputes the context estimate itself, so a replay
+        // without the removed reports passes through different estimates.
+        yield* store.append(
+          threadEvent({
+            type: "thread.message-sent",
+            payload: message({
+              messageId: MessageId.makeUnsafe(`between-session-updates-${index}`),
+              text: "x".repeat(400 * (index + 1)),
+              streaming: false,
+            }),
+          }),
+        );
       }
       yield* (yield* OrchestrationProjectionPipeline).bootstrap;
       const projectedSession = sql`
@@ -736,14 +749,16 @@ it.layer(layer)("compactThreadEvents", (it) => {
       `;
       const before = {
         projected: yield* projectedSession,
-        replayed: (yield* replayedReadModel).threads.map((thread) => thread.session),
+        replayed: yield* replayedEstimates,
       };
-      assert.deepInclude(before.replayed[0]!, {
+      assert.deepInclude(before.replayed[0]!.session, {
         status: "ready",
         estimatedContextTokens: 4_200,
         estimatedThinkingTokens: 900,
         modelContextWindowTokens: 200_000,
+        tokenUsageSource: "provider",
       });
+      assert.equal(before.replayed[0]!.estimatedContextTokens, 4_200);
 
       const result = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
       assert.deepInclude(result, {
@@ -765,10 +780,7 @@ it.layer(layer)("compactThreadEvents", (it) => {
       );
 
       // The log replays to the same session, in memory and in the projection.
-      assert.deepStrictEqual(
-        (yield* replayedReadModel).threads.map((thread) => thread.session),
-        before.replayed,
-      );
+      assert.deepStrictEqual(yield* replayedEstimates, before.replayed);
       yield* sql`DELETE FROM projection_thread_sessions`;
       yield* sql`DELETE FROM projection_state WHERE projector = 'projection.thread-sessions'`;
       yield* (yield* OrchestrationProjectionPipeline).bootstrap;
@@ -792,16 +804,51 @@ describe("removableSessionUpdates", () => {
     removableSessionUpdates(run).map((entry) => entry.sequence);
 
   it("keeps the first and last update of a run and any estimate not restated later", () => {
+    // Flags: 1 context estimate, 2 thinking estimate, 4 usage source, 8 context window.
+    const context = 1 | 4;
     assert.deepStrictEqual(removed([]), []);
-    assert.deepStrictEqual(removed([update(1, 1)]), []);
-    assert.deepStrictEqual(removed([update(1, 1), update(2, 1)]), []);
-    assert.deepStrictEqual(removed([update(1, 1), update(2, 1), update(3, 1)]), [2]);
-    // 2 sets the thinking estimate (flag 2), which nothing later restates.
-    assert.deepStrictEqual(removed([update(1, 0), update(2, 2), update(3, 1), update(4, 1)]), [3]);
+    assert.deepStrictEqual(removed([update(1, context)]), []);
+    assert.deepStrictEqual(removed([update(1, context), update(2, context)]), []);
+    assert.deepStrictEqual(
+      removed([update(1, context), update(2, context), update(3, context)]),
+      [2],
+    );
+    // 2 sets the thinking estimate, which nothing later restates.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 2), update(3, context), update(4, context)]),
+      [3],
+    );
     // An update that is not a token report stays, and still restates for earlier ones.
     assert.deepStrictEqual(
-      removed([update(1, 0), update(2, 1), update(3, 1, false), update(4, 0)]),
+      removed([update(1, 0), update(2, context), update(3, context, false), update(4, 0)]),
       [2],
+    );
+  });
+
+  it("needs one later update to restate the context estimate together with its source", () => {
+    // Message events between the two would recompute the estimate while the source is unsettled.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4), update(3, 1), update(4, 4)]),
+      [],
+    );
+    assert.deepStrictEqual(removed([update(1, 0), update(2, 4), update(3, 1), update(4, 1)]), []);
+    assert.deepStrictEqual(removed([update(1, 0), update(2, 1), update(3, 1), update(4, 1)]), []);
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1), update(3, 4), update(4, 1 | 4), update(5, 2)]),
+      [2, 3],
+    );
+    // The context window is independent of both: 4 restates it for 2, 3 restates the rest.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4 | 8), update(3, 1 | 4), update(4, 8)]),
+      [2],
+    );
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4 | 8), update(3, 1 | 4), update(4, 2)]),
+      [],
+    );
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4 | 8), update(3, 1 | 4), update(4, 1 | 4 | 8)]),
+      [2, 3],
     );
   });
 });
@@ -969,6 +1016,18 @@ const replayedReadModel = Effect.gen(function* () {
   }
   return model;
 });
+
+/** Each thread's session and thread-level token estimates after a replay. */
+const replayedEstimates = replayedReadModel.pipe(
+  Effect.map((model) =>
+    model.threads.map((thread) => ({
+      session: thread.session,
+      estimatedContextTokens: thread.estimatedContextTokens,
+      estimatedThinkingTokens: thread.estimatedThinkingTokens,
+      modelContextWindowTokens: thread.modelContextWindowTokens,
+    })),
+  ),
+);
 
 const reset = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
