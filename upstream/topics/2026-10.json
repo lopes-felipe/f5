@@ -36042,11 +36042,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T17:17:24.663Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/nextTurnQueue/Layers/NextTurnQueueDispatcher.ts:1371"
+        ],
+        "f5Refs": [
+          "6e317fbf26b8a156a5fb1685ad18436d9144e868"
+        ]
+      },
       "id": "pr-21735",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
