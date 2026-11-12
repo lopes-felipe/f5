@@ -98,7 +98,12 @@ const decoder = new TextDecoder();
 export function makeAcpLineFramer() {
   const utf8 = new TextDecoder();
   let buffer = "";
-  return (bytes: string | Uint8Array): string => {
+  return (bytes?: string | Uint8Array): string => {
+    if (bytes === undefined) {
+      const tail = buffer + utf8.decode();
+      buffer = "";
+      return tail.trim() ? tail + "\n" : "";
+    }
     const chunk = typeof bytes === "string" ? bytes : utf8.decode(bytes, { stream: true });
     const end = chunk.lastIndexOf("\n");
     if (end === -1) {
@@ -530,6 +535,19 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
           }),
         ),
       ),
+    ),
+    Effect.andThen(
+      Effect.suspend(() => {
+        const tail = frameLines();
+        let messages: ReadonlyArray<RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded>;
+        try {
+          messages = preserveZeroValuedRequestIds(tail, parser.decode(tail) as typeof messages);
+        } catch {
+          // A truncated final frame is better explained by the child's exit status.
+          return Effect.void;
+        }
+        return Effect.forEach(messages, routeDecodedMessage, { discard: true });
+      }),
     ),
     Effect.matchCauseEffect({
       onFailure: (cause) => {

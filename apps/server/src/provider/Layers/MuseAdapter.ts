@@ -16,6 +16,7 @@ import { AGENT_AUTOMATION_SUPPORT } from "@t3tools/shared/agentAutomationSupport
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
 import { museWorkspaceRoot } from "../msp/MusePaths.ts";
+import { redactProviderFailureText } from "../failureText.ts";
 
 import {
   MuseGapFillError,
@@ -745,13 +746,17 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         }
         endTurn(ctx, turnId);
         const state = museTurnState(outcome.terminal);
-        const message = outcome.errorMessage ?? outcome.reason;
+        const failureText = outcome.errorMessage ?? outcome.reason;
+        const message =
+          failureText === undefined
+            ? undefined
+            : redactProviderFailureText(failureText).slice(0, 4096);
         const usageLimit =
           state === "failed"
             ? museUsageLimit(
                 ctx.latestSubscriptionUsage,
                 Date.parse(yield* nowIso),
-                message,
+                failureText,
                 outcome.quota,
               )
             : undefined;
@@ -775,7 +780,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
             ...(usageLimit ? { usageLimit } : {}),
             stopReason: outcome.reason ?? outcome.terminal,
             ...(outcome.usage ? { usage: outcome.usage } : {}),
-            ...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
+            ...(outcome.errorMessage ? { errorMessage: message } : {}),
           },
         });
         settleTurnWaiters(ctx, turnId);

@@ -93,6 +93,9 @@ it("frames large fragmented lines and streaming UTF-8 without losing the tail", 
   assert.equal(frame(utf8.slice(2)), "");
   assert.equal(frame("\nsecond\nthird"), chunk.repeat(1024) + "🙂\nsecond\n");
   assert.equal(frame("\n"), "third\n");
+  assert.equal(frame("last"), "");
+  assert.equal(frame(), "last\n");
+  assert.equal(frame(), "");
 });
 
 it.effect(
@@ -502,6 +505,24 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("routes a final response without a newline before stdout termination", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+      const pending = yield* transport.request("x/test", {}).pipe(Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(
+        input,
+        new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'),
+      );
+      yield* Queue.end(input);
+      assert.deepEqual(yield* Fiber.join(pending), { ok: true });
+    }),
+  );
+
   it.effect("fails pending and later requests when stdout closes before process exit", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
@@ -516,6 +537,7 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         .request("x/test", {})
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Queue.take(output);
+      yield* Queue.offer(input, new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":'));
       yield* Queue.end(input);
       const error = yield* Deferred.await(termination);
       assert.instanceOf(error, AcpError.AcpTransportError);

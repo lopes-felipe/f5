@@ -146,7 +146,7 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
             message:
               mode === "throttled"
                 ? "API error 429: Rate limit exceeded."
-                : "Model request refused.",
+                : "Model request refused. api_key=abc123",
             retryable: false,
             ...(mode === "throttled" ? {} : { quota: { limitKind: "tierLimit", resetsAtMs } }),
           },
@@ -180,6 +180,8 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
           assert.isUndefined(terminal?.payload.usageLimit);
           assert.isUndefined(error);
         } else {
+          assert.equal(terminal?.payload.errorMessage, "Model request refused. api_key=[REDACTED]");
+          assert.equal(error?.payload.message, terminal?.payload.errorMessage);
           assert.equal(terminal?.payload.usageLimit?.resetsAt, new Date(resetsAtMs).toISOString());
           assert.deepEqual(error?.payload.usageLimit, terminal?.payload.usageLimit);
         }
