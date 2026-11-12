@@ -2465,11 +2465,22 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T12:49:56.054Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/main.ts:3406",
+          "apps/desktop/src/main.ts:3457",
+          "apps/desktop/src/main.ts:4690"
+        ],
+        "f5Refs": [
+          "09a13e78be692c5e624ed1e504214b71d9987cc6"
+        ]
+      },
       "id": "pr-22572",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "desktop"
@@ -16595,14 +16606,24 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T12:49:56.055Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/main.ts:4621",
+          "apps/desktop/src/main.ts:4625"
+        ],
+        "f5Refs": [
+          "09a13e78be692c5e624ed1e504214b71d9987cc6"
+        ]
+      },
       "id": "pr-28715",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-28556"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "desktop",
