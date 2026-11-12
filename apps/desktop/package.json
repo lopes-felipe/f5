@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "main": "dist-electron/boot.js",
   "scripts": {
@@ -18,7 +18,7 @@
   "dependencies": {
     "dbus-next": "0.10.2",
     "effect": "catalog:",
-    "electron": "44.9.3",
+    "electron": "44.10.1",
     "electron-updater": "6.8.3"
   },
   "devDependencies": {

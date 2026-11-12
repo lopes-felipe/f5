@@ -4,17 +4,25 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+
+## [0.1.8] - 2026-11-12
+
 ### Added
 
-- Notifications have a macOS-style design at the top right, below the runtime strip. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
-- A bell in the sidebar title bar opens a notification inbox (⌘⇧L, or Ctrl+Shift+L) with filters by source, unread counts, and Do Not Disturb for an hour, until tomorrow, or until turned off.
+- Notifications appear at the top right, below the runtime strip, as solid cards with a status-coloured rail and glyph. A command or path shares its line with the toast's buttons. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
+- A bell in the sidebar title bar opens a notification inbox (⌘⇧L, or Ctrl+Shift+L). Approvals and input requests that still wait on you are pinned under **Needs you**, and All / Needs you / Unread views sit above the list. The header filters by source and turns on Do Not Disturb for an hour, until tomorrow, or until turned off.
 - Approval notifications for a single command or file request offer Approve and Deny in the toast and the inbox.
 - Notification settings choose in-app, system, sound and inbox delivery per source (threads, pull requests, scheduled runs, upstream, updates, errors) and the toast position. Upstream topics and scheduled runs also show in-app.
 
 ### Fixed
 
-- Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
-
+- Desktop windows can shrink to 400×360. Settings controls and snooze fields wrap in narrow windows, dialogs clear the native titlebar, and command palettes focus search before submenu navigation buttons.
+- Slow desktop backends get three minutes to start before recovery appears. macOS SnapShot skips transparent windows and helper strips, and timestamps respect macOS region/hour preferences and Linux LC_TIME.
+- Desktop bundles Electron 44.10.1 for Node and Chromium security fixes. Single-architecture macOS builds omit the other architecture's native prebuilds.
+- Cmd+O / Ctrl+O opens the visible file preview in the preferred editor, or the workspace when no file preview is visible. Handled shortcuts no longer launch another editor, and the shortcut works while the terminal is focused.
 - Provider updates can take up to 30 minutes without the browser giving up early. Codex instances respect their environment's home directory when switching accounts, including directory names containing whitespace. Agents using ACP now report a disconnected input stream instead of hanging when their process closes stdout but stays alive.
 - Git reviews keep tracked edits when untracked discovery fails and retain partial untracked listings when they are too large. Reviews include new files outside sparse-checkout folders, and commit and PR text includes changes outside nested projects. Selected-file commits during a merge now ask you to commit all files. Desktop startup stops waiting for stuck login shells, and safe Windows Git reads avoid starting a console host.
 - PR descriptions and comments preserve single newlines on GitHub, Forgejo and Azure DevOps.

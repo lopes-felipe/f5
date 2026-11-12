@@ -1,6 +1,6 @@
 {
   "integration": "claude-chrome",
-  "evidenceId": "claude-chrome-darwin-arm64-20261111",
+  "evidenceId": "claude-chrome-darwin-arm64-20261112",
   "platform": "darwin",
   "arch": "arm64",
   "versions": {
@@ -46,7 +46,7 @@
     "tabs_create_mcp",
     "upload_image"
   ],
-  "sourceCommit": "968101c0c889e725ebe8a87a132f31e7044e8a39",
+  "sourceCommit": "cb7da3111bf720895db7142c2abaa84c1bd803e8",
   "dirty": false,
   "observations": {
     "readOnlyListings": {
@@ -54,8 +54,8 @@
         "outcome": "no-session-group"
       }
     },
-    "manifestsMsAfterStart": 406,
-    "connectedMsAfterStart": 345,
+    "manifestsMsAfterStart": 305,
+    "connectedMsAfterStart": 246,
     "terminal": {
       "exitCode": 0,
       "terminalRegistered": true,
@@ -63,8 +63,8 @@
       "untouchedAfterRestore": true
     },
     "contestedRestore": {
-      "state": "restored",
-      "skipped": 0,
+      "state": "partially-restored",
+      "skipped": 7,
       "unresolved": 0
     },
     "isolated": {

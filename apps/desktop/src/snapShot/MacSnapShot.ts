@@ -27,7 +27,45 @@ function execute(
   );
 }
 export function activeWindowScript(pid: number): string {
-  return `ObjC.import('CoreGraphics'); ObjC.import('Foundation'); const windows=ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1,0)); const w=windows.find(w=>w.kCGWindowLayer===0 && w.kCGWindowOwnerPID!==${pid} && w.kCGWindowOwnerPID!==0 && w.kCGWindowBounds.Width>0 && w.kCGWindowBounds.Height>0); JSON.stringify(w?{id:w.kCGWindowNumber,pid:w.kCGWindowOwnerPID,title:w.kCGWindowName||'',app:w.kCGWindowOwnerName||'',bounds:w.kCGWindowBounds}:null);`;
+  return `ObjC.import('CoreGraphics'); ObjC.import('Foundation'); const windows=ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1,0)).filter(w=>w.kCGWindowLayer===0 && w.kCGWindowOwnerPID!==${pid} && w.kCGWindowOwnerPID!==0); const select=${selectMacContentWindow.toString()}; const w=select(windows); JSON.stringify(w?{id:w.kCGWindowNumber,pid:w.kCGWindowOwnerPID,title:w.kCGWindowName||'',app:w.kCGWindowOwnerName||'',bounds:w.kCGWindowBounds}:null);`;
+}
+
+interface MacWindow {
+  kCGWindowOwnerPID: number;
+  kCGWindowName?: string;
+  kCGWindowAlpha: number;
+  kCGWindowBounds: { X: number; Y: number; Width: number; Height: number };
+}
+
+// Self-contained because it also runs in the JXA lookup process.
+export function selectMacContentWindow<T extends MacWindow>(windows: T[]): T | undefined {
+  const visible = windows.filter(
+    (w) => w.kCGWindowAlpha > 0 && w.kCGWindowBounds.Width > 0 && w.kCGWindowBounds.Height > 0,
+  );
+  const pid = visible[0]?.kCGWindowOwnerPID;
+  const owned = visible.filter((w) => w.kCGWindowOwnerPID === pid);
+  return owned.find((candidate, index) => {
+    if (candidate.kCGWindowName?.trim()) return true;
+    const b = candidate.kCGWindowBounds;
+    return !owned.some((reference, i) => {
+      if (i <= index) return false;
+      const r = reference.kCGWindowBounds;
+      return (
+        (b.X === r.X &&
+          b.Width === r.Width &&
+          b.Y <= r.Y &&
+          r.Y - b.Y <= r.Height * 0.25 &&
+          b.Height <= b.Width * 0.25 &&
+          b.Height <= r.Height * 0.25) ||
+        (b.Y === r.Y &&
+          b.Height === r.Height &&
+          b.X <= r.X &&
+          r.X - b.X <= r.Width * 0.25 &&
+          b.Width <= b.Height * 0.25 &&
+          b.Width <= r.Width * 0.25)
+      );
+    });
+  });
 }
 export function accessibilityScript(
   pid: number,
@@ -48,7 +86,7 @@ export async function captureMacWindow(options: {
       "/usr/bin/osascript",
       ["-l", "JavaScript", "-e", activeWindowScript(options.pid)],
       3000,
-      64 * 1024,
+      1024 * 1024,
     ),
   );
   if (

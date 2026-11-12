@@ -1,6 +1,7 @@
 import { EditorId, type ResolvedKeybindingsConfig } from "@t3tools/contracts";
-import { memo, useCallback, useEffect, useMemo } from "react";
-import { isOpenFavoriteEditorShortcut, shortcutLabelForCommand } from "../../keybindings";
+import { memo, useCallback, useMemo } from "react";
+import { shortcutLabelForCommand } from "../../keybindings";
+import { useOpenFavoriteEditorShortcut } from "./useOpenFavoriteEditorShortcut";
 import { usePreferredEditor } from "../../editorPreferences";
 import { ChevronDownIcon, FolderClosedIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -83,10 +84,12 @@ export const OpenInPicker = memo(function OpenInPicker({
   keybindings,
   availableEditors,
   openInCwd,
+  enableShortcut = true,
 }: {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
+  enableShortcut?: boolean;
 }) {
   const [preferredEditor, setPreferredEditor] = usePreferredEditor(availableEditors);
   const options = useMemo(
@@ -114,21 +117,16 @@ export const OpenInPicker = memo(function OpenInPicker({
     [keybindings],
   );
 
-  useEffect(() => {
-    const handler = (e: globalThis.KeyboardEvent) => {
-      if (wsInteractionBlocked) return;
+  const openFavoriteEditor = useCallback(() => {
+    if (!openInCwd || !preferredEditor) return;
+    void readNativeApi()?.shell.openInEditor(openInCwd, preferredEditor);
+  }, [openInCwd, preferredEditor]);
 
-      const api = readNativeApi();
-      if (!isOpenFavoriteEditorShortcut(e, keybindings)) return;
-      if (!api || !openInCwd) return;
-      if (!preferredEditor) return;
-
-      e.preventDefault();
-      void api.shell.openInEditor(openInCwd, preferredEditor);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [preferredEditor, keybindings, openInCwd, wsInteractionBlocked]);
+  useOpenFavoriteEditorShortcut({
+    enabled: enableShortcut && !wsInteractionBlocked && !!openInCwd && !!preferredEditor,
+    keybindings,
+    onOpen: openFavoriteEditor,
+  });
 
   return (
     <Group aria-label="Subscription actions" variant="track">

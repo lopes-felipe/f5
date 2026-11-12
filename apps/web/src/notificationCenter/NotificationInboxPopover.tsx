@@ -1,40 +1,53 @@
 import { ApprovalRequestId, ThreadId, type ProviderRequestKind } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { SettingsIcon, XIcon } from "lucide-react";
+import { CheckCheckIcon, ListFilterIcon, MoonIcon, SettingsIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 
 import { updateAppSettings, useAppSettingsSelector } from "../appSettings";
-import { resolveToastTile, type AppToastData } from "../components/ui/toast";
+import {
+  ITEM_TONE_CLASS,
+  resolveToastVisual,
+  ToastGlyph,
+  ToastRail,
+  type AppToastData,
+  type ToastVisual,
+} from "../components/ui/toast";
 import { formatToastAge } from "../components/ui/toast.logic";
 import { Button } from "../components/ui/button";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "../components/ui/menu";
 import { Popover, PopoverPopup } from "../components/ui/popover";
-import { Switch } from "../components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
+import type { ThreadStatus } from "../threadStatus";
 import { useThreadSummaries } from "../threadSelectors";
 import {
-  groupInboxEntries,
-  unreadInboxCount,
   useNotificationInbox,
   useNotificationInboxPopover,
   useVisibleInboxEntries,
   type InboxEntry,
 } from "./inboxStore";
+import { buildInboxSections, type InboxView } from "./inboxView.logic";
 import { loadPendingApprovalRequestIds } from "./inlineApproval";
 import { respondToNotificationApproval } from "./notify";
 import { useOpenNotificationTarget } from "./openTarget";
 import {
   describeDoNotDisturb,
-  DO_NOT_DISTURB_FOREVER,
   DO_NOT_DISTURB_SNOOZE_LABELS,
   doNotDisturbUntilFor,
   type DoNotDisturbSnooze,
   type NotificationSource,
 } from "./preferences";
 
-type InboxFilter = "all" | NotificationSource;
-
-const FILTERS: ReadonlyArray<{ value: InboxFilter; label: string }> = [
-  { value: "all", label: "All" },
+const SOURCE_FILTERS: ReadonlyArray<{ value: NotificationSource; label: string }> = [
   { value: "thread", label: "Threads" },
   { value: "pr", label: "Pull requests" },
   { value: "scheduled", label: "Scheduled" },
@@ -42,7 +55,10 @@ const FILTERS: ReadonlyArray<{ value: InboxFilter; label: string }> = [
   { value: "errors", label: "Errors" },
 ];
 
-function entryTile(entry: InboxEntry) {
+const ALL_SOURCES = "all";
+const MAX_ROW_ITEMS = 3;
+
+function entryVisual(entry: InboxEntry): ToastVisual {
   const type =
     entry.severity === "error"
       ? "error"
@@ -55,24 +71,52 @@ function entryTile(entry: InboxEntry) {
     source: entry.source,
     ...(entry.threadStatus ? { threadStatus: entry.threadStatus } : {}),
   };
-  return resolveToastTile(type, data);
+  const visual = resolveToastVisual(type, data);
+  // An answered approval is history: it keeps its glyph but loses its colour.
+  return entry.resolved ? { ...visual, tone: "muted" } : visual;
+}
+
+function InboxRowItems({ entry }: { entry: InboxEntry }) {
+  const items = entry.items ?? [];
+  if (items.length === 0) return null;
+  const more = (entry.moreCount ?? 0) + Math.max(0, items.length - MAX_ROW_ITEMS);
+  return (
+    <span className="mt-0.5 flex min-w-0 flex-col gap-0.5" data-slot="inbox-row-items">
+      {items.slice(0, MAX_ROW_ITEMS).map((item) => (
+        <span key={item.id} className="flex min-w-0 items-center gap-2 text-xs">
+          <span
+            aria-hidden
+            className={cn("size-1.5 shrink-0 rounded-full", ITEM_TONE_CLASS[item.tone ?? "muted"])}
+          />
+          <span className="min-w-0 truncate font-mono text-foreground">{item.label}</span>
+          {item.trailing ? (
+            <span className="shrink-0 text-muted-foreground">{item.trailing}</span>
+          ) : null}
+        </span>
+      ))}
+      {more > 0 ? <span className="text-xs text-muted-foreground">+ {more} more</span> : null}
+    </span>
+  );
 }
 
 function InboxRow({
   entry,
   now,
   answerable,
+  pinned,
   onOpen,
 }: {
   entry: InboxEntry;
   now: number;
   answerable: boolean;
+  pinned: boolean;
   onOpen: (entry: InboxEntry) => void;
 }) {
   const remove = useNotificationInbox((state) => state.remove);
   const [pending, setPending] = useState(false);
-  const visual = entryTile(entry);
-  const Icon = visual?.Icon;
+  const visual = entryVisual(entry);
+  const unread = entry.readAt === null;
+  const showApproval = Boolean(entry.approval && !entry.resolved && answerable);
   const answer = (decision: "accept" | "decline") => {
     if (!entry.approval) return;
     setPending(true);
@@ -89,37 +133,36 @@ function InboxRow({
       .catch(() => undefined)
       .finally(() => setPending(false));
   };
-  const body = entry.body ?? entry.detail ?? entry.sourceLabel;
+  // With the approval buttons showing, the detail moves to their line.
+  const approvalDetail = showApproval ? (entry.detail ?? entry.approval?.detail) : undefined;
+  const secondLine = showApproval
+    ? (entry.body ?? entry.sourceLabel)
+    : (entry.body ?? entry.detail ?? entry.sourceLabel);
   return (
-    <li className="group/row relative">
+    <li
+      className={cn("group/row relative overflow-hidden rounded-lg", pinned && "bg-foreground/5")}
+      data-inbox-pinned={pinned ? "" : undefined}
+    >
+      <ToastRail tone={visual.tone} />
+      {unread ? (
+        <span
+          aria-label="Unread"
+          className="absolute top-3.5 left-1.5 size-1.5 rounded-full bg-primary"
+        />
+      ) : null}
       <button
         type="button"
         data-inbox-row={entry.id}
-        className="flex w-full min-w-0 gap-2.5 rounded-lg px-2 py-2 text-left outline-none transition-colors hover:bg-foreground/5 focus-visible:bg-foreground/7"
+        className="flex w-full min-w-0 gap-2 rounded-lg py-2 pr-2 pl-4 text-left outline-none transition-colors hover:bg-foreground/5 focus-visible:bg-foreground/7"
         onClick={() => onOpen(entry)}
       >
-        {entry.readAt === null ? (
-          <span
-            aria-label="Unread"
-            className="absolute top-3.5 left-0.5 size-1.5 rounded-full bg-primary"
-          />
-        ) : null}
-        {Icon ? (
-          <span
-            className={cn(
-              "flex size-7 shrink-0 items-center justify-center rounded-lg",
-              visual.className,
-            )}
-          >
-            <Icon className="size-3.5" aria-hidden />
-          </span>
-        ) : null}
+        <ToastGlyph visual={visual} />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <span
               className={cn(
                 "min-w-0 truncate text-ui font-medium",
-                entry.readAt !== null && "text-muted-foreground",
+                !unread && "text-muted-foreground",
               )}
             >
               {entry.title}
@@ -133,24 +176,36 @@ function InboxRow({
               {formatToastAge(entry.createdAt, now)}
             </span>
           </span>
-          {body ? <span className="truncate text-xs text-muted-foreground">{body}</span> : null}
+          {secondLine ? (
+            <span className="truncate text-xs text-muted-foreground">{secondLine}</span>
+          ) : null}
+          <InboxRowItems entry={entry} />
           {entry.resolved ? (
             <span className="text-2xs text-faint-foreground">{entry.resolved.label}</span>
           ) : null}
         </span>
       </button>
-      {entry.approval && !entry.resolved && answerable ? (
-        <div className="flex gap-1.5 pb-2 pl-11.5 pr-2">
+      {showApproval ? (
+        <div className="flex min-w-0 items-center gap-2 pr-2 pb-2 pl-10">
+          {approvalDetail ? (
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+              title={approvalDetail}
+            >
+              {approvalDetail}
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
           <Button
             size="xs"
             variant="secondary"
-            className="flex-1"
             disabled={pending}
             onClick={() => answer("decline")}
           >
             Deny
           </Button>
-          <Button size="xs" className="flex-1" disabled={pending} onClick={() => answer("accept")}>
+          <Button size="xs" disabled={pending} onClick={() => answer("accept")}>
             Approve
           </Button>
         </div>
@@ -167,47 +222,126 @@ function InboxRow({
   );
 }
 
-function DoNotDisturbFooter() {
+function SourceFilterMenu({
+  sources,
+  value,
+  onChange,
+}: {
+  sources: ReadonlyArray<{ value: NotificationSource; label: string }>;
+  value: NotificationSource | null;
+  onChange: (source: NotificationSource | null) => void;
+}) {
+  const label = value
+    ? `Filter by source: ${sources.find((option) => option.value === value)?.label ?? value}`
+    : "Filter by source";
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label={label}
+            title={label}
+            className="relative"
+            data-testid="inbox-source-filter"
+          />
+        }
+      >
+        <ListFilterIcon className="size-3.5" />
+        {value ? (
+          <span
+            aria-hidden
+            className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary"
+          />
+        ) : null}
+      </MenuTrigger>
+      <MenuPopup align="end">
+        <MenuRadioGroup
+          value={value ?? ALL_SOURCES}
+          onValueChange={(next) =>
+            onChange(next === ALL_SOURCES ? null : (next as NotificationSource))
+          }
+        >
+          <MenuRadioItem value={ALL_SOURCES} closeOnClick>
+            All sources
+          </MenuRadioItem>
+          {sources.map((option) => (
+            <MenuRadioItem key={option.value} value={option.value} closeOnClick>
+              {option.label}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+function DoNotDisturbMenu() {
   const until = useAppSettingsSelector((settings) => settings.doNotDisturbUntil);
   const summary = describeDoNotDisturb(until, new Date());
+  const active = summary !== null;
+  const label = active ? `Do Not Disturb: ${summary}` : "Do Not Disturb";
   return (
-    <div className="flex flex-col gap-2 border-t border-border px-3 py-2.5 text-xs">
-      <label className="flex items-center justify-between gap-2">
-        <span className="flex flex-col">
-          <span className="font-medium text-foreground">Do Not Disturb</span>
-          {summary ? <span className="text-muted-foreground">{summary}</span> : null}
-        </span>
-        <Switch
-          aria-label="Do Not Disturb"
-          checked={summary !== null}
-          onCheckedChange={(checked) =>
-            updateAppSettings({ doNotDisturbUntil: checked ? DO_NOT_DISTURB_FOREVER : null })
-          }
-        />
-      </label>
-      {summary === null ? (
-        <div className="flex flex-wrap gap-1">
-          {(["1h", "tomorrow"] as const satisfies readonly DoNotDisturbSnooze[]).map((snooze) => (
-            <button
-              key={snooze}
-              type="button"
-              className="rounded-md bg-secondary px-2 py-0.5 text-muted-foreground outline-none hover:bg-control-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() =>
-                updateAppSettings({ doNotDisturbUntil: doNotDisturbUntilFor(snooze, new Date()) })
-              }
-            >
-              {DO_NOT_DISTURB_SNOOZE_LABELS[snooze]}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label={label}
+            title={label}
+            data-active={active ? "" : undefined}
+            className={cn(active && "bg-control-active text-foreground")}
+            data-testid="inbox-do-not-disturb"
+          />
+        }
+      >
+        <MoonIcon className="size-3.5" />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        <MenuGroup>
+          <MenuGroupLabel>
+            {active ? `Do Not Disturb: ${summary}` : "Do Not Disturb"}
+          </MenuGroupLabel>
+          {active ? (
+            <MenuItem onClick={() => updateAppSettings({ doNotDisturbUntil: null })}>
+              Turn off
+            </MenuItem>
+          ) : (
+            (["1h", "tomorrow", "forever"] as const satisfies readonly DoNotDisturbSnooze[]).map(
+              (snooze) => (
+                <MenuItem
+                  key={snooze}
+                  onClick={() =>
+                    updateAppSettings({
+                      doNotDisturbUntil: doNotDisturbUntilFor(snooze, new Date()),
+                    })
+                  }
+                >
+                  {DO_NOT_DISTURB_SNOOZE_LABELS[snooze]}
+                </MenuItem>
+              ),
+            )
+          )}
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+function SectionHeading({ label }: { label: string }) {
+  return (
+    <h3 className="px-2 pt-2 pb-1 text-2xs font-medium tracking-wide text-muted-foreground uppercase">
+      {label}
+    </h3>
   );
 }
 
 /**
- * The notification inbox, anchored to the sidebar bell: filters, Today/Yesterday/Earlier groups,
- * inline approvals, and Do Not Disturb. Arrow keys move between rows; Backspace removes one.
+ * The notification inbox, anchored to the sidebar bell: what needs you pinned on top, then
+ * Today/Yesterday/Earlier, with All / Needs you / Unread views, a source filter and Do Not
+ * Disturb in the header. Arrow keys move between rows; Backspace removes one.
  */
 export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLElement | null> }) {
   const open = useNotificationInboxPopover((state) => state.open);
@@ -220,7 +354,8 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
   const openTarget = useOpenNotificationTarget();
   const navigate = useNavigate();
   const threads = useThreadSummaries();
-  const [filter, setFilter] = useState<InboxFilter>("all");
+  const [view, setView] = useState<InboxView>("all");
+  const [source, setSource] = useState<NotificationSource | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -231,6 +366,10 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
     return () => window.clearInterval(timer);
   }, [open]);
 
+  const threadStatusById = useMemo(
+    () => new Map<string, ThreadStatus>(threads.map((thread) => [thread.id, thread.status])),
+    [threads],
+  );
   const pendingApprovalThreads = useMemo(
     () =>
       new Set(
@@ -292,18 +431,22 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
       cancelled = true;
     };
   }, [open, threadsToVerify]);
-  // Filters for sources kept out of the inbox would always be empty, so they are hidden.
-  const filters = FILTERS.filter(
-    (option) => option.value === "all" || preferences[option.value].inbox,
-  );
-  const activeFilter = filters.some((option) => option.value === filter) ? filter : "all";
-  const visible = useMemo(
+  // Sources kept out of the inbox would always be empty, so they are not offered; a selected
+  // source whose Inbox switch goes off falls back to all sources.
+  const sources = SOURCE_FILTERS.filter((option) => preferences[option.value].inbox);
+  const activeSource = source && sources.some((option) => option.value === source) ? source : null;
+  const sections = useMemo(
     () =>
-      activeFilter === "all" ? entries : entries.filter((entry) => entry.source === activeFilter),
-    [entries, activeFilter],
+      buildInboxSections(entries, {
+        view,
+        source: activeSource,
+        threadStatusById,
+        now: new Date(now),
+      }),
+    [entries, view, activeSource, threadStatusById, now],
   );
-  const groups = groupInboxEntries(visible, new Date(now));
-  const unread = unreadInboxCount(entries);
+  const hasUnread = entries.some((entry) => entry.readAt === null);
+  const isEmpty = sections.needsYou.length === 0 && sections.groups.length === 0;
 
   const openEntry = (entry: InboxEntry) => {
     markRead(entry.id);
@@ -311,6 +454,12 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
     setOpen(false);
     void openTarget(entry.target);
   };
+
+  const isAnswerable = (entry: InboxEntry) =>
+    entry.approval
+      ? pendingApprovalThreads.has(ThreadId.makeUnsafe(entry.approval.threadId)) &&
+        pendingRequestIds.has(entry.approval.requestId)
+      : false;
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const rows = Array.from(
@@ -352,88 +501,126 @@ export function NotificationInboxPopover({ anchor }: { anchor: RefObject<HTMLEle
         className="w-95 max-w-[calc(100vw-2rem)] p-0 **:data-[slot=popover-viewport]:p-0"
       >
         <div className="flex max-h-[70vh] flex-col" data-testid="notification-inbox">
-          <div className="flex items-center gap-2 px-3 pt-3 pb-2">
-            <h2 className="text-sm font-semibold">Notifications</h2>
-            {unread > 0 ? (
-              <span className="rounded-full bg-primary px-1.5 text-2xs font-semibold text-primary-foreground tabular-nums">
-                {unread} new
-              </span>
-            ) : null}
-            <div className="ml-auto flex items-center gap-1">
-              {unread > 0 ? (
-                <Button size="xs" variant="ghost" onClick={markAllRead}>
-                  Mark all read
-                </Button>
-              ) : null}
-              <Button
-                size="icon-xs"
-                variant="ghost"
-                aria-label="Notification settings"
-                onClick={() => {
-                  setOpen(false);
-                  void navigate({ to: "/settings", search: { category: "notifications" } });
-                }}
-              >
-                <SettingsIcon className="size-3.5" />
-              </Button>
-            </div>
+          <div className="flex items-center gap-1 pt-2.5 pr-2 pb-2 pl-3">
+            <h2 className="flex-1 text-sm font-semibold">Notifications</h2>
+            <SourceFilterMenu sources={sources} value={activeSource} onChange={setSource} />
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Mark all read"
+              title="Mark all read"
+              disabled={!hasUnread}
+              onClick={markAllRead}
+            >
+              <CheckCheckIcon className="size-3.5" />
+            </Button>
+            <DoNotDisturbMenu />
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Notification settings"
+              title="Notification settings"
+              onClick={() => {
+                setOpen(false);
+                void navigate({ to: "/settings", search: { category: "notifications" } });
+              }}
+            >
+              <SettingsIcon className="size-3.5" />
+            </Button>
           </div>
-          <div className="flex flex-wrap gap-1 px-3 pb-2" role="tablist" aria-label="Filter">
-            {filters.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="tab"
-                aria-selected={activeFilter === option.value}
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-                  activeFilter === option.value
-                    ? "bg-secondary text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                onClick={() => setFilter(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
+          <div className="px-3 pb-2">
+            <ToggleGroup
+              variant="outline"
+              size="xs"
+              aria-label="Show"
+              className="w-full"
+              value={[view]}
+              onValueChange={(value) => {
+                const next = value[0];
+                if (next === "all" || next === "needs-you" || next === "unread") setView(next);
+              }}
+            >
+              <ToggleGroupItem value="all" className="flex-1" data-inbox-view="all">
+                All
+              </ToggleGroupItem>
+              <ToggleGroupItem value="needs-you" className="flex-1" data-inbox-view="needs-you">
+                Needs you
+                {sections.counts.needsYou > 0 ? (
+                  <span className="text-2xs font-semibold text-warning-foreground tabular-nums">
+                    {sections.counts.needsYou}
+                  </span>
+                ) : null}
+              </ToggleGroupItem>
+              <ToggleGroupItem value="unread" className="flex-1" data-inbox-view="unread">
+                Unread
+                {sections.counts.unread > 0 ? (
+                  <span className="text-2xs font-semibold tabular-nums">
+                    {sections.counts.unread}
+                  </span>
+                ) : null}
+              </ToggleGroupItem>
+            </ToggleGroup>
           </div>
           <div
             ref={listRef}
-            className="min-h-0 flex-1 overflow-y-auto border-t border-border px-1 py-1"
+            className="min-h-0 flex-1 overflow-y-auto border-t border-border"
             onKeyDown={onListKeyDown}
           >
-            {groups.length === 0 ? (
+            {isEmpty ? (
               <p className="px-3 py-10 text-center text-ui text-muted-foreground">
-                You're all caught up
+                {view === "needs-you" ? "Nothing needs you" : "You're all caught up"}
               </p>
             ) : (
-              groups.map((group) => (
-                <section key={group.label} aria-label={group.label}>
-                  <h3 className="px-2 pt-2 pb-1 text-2xs font-medium tracking-wide text-muted-foreground uppercase">
-                    {group.label}
-                  </h3>
-                  <ul>
-                    {group.entries.map((entry) => (
-                      <InboxRow
-                        key={entry.id}
-                        entry={entry}
-                        now={now}
-                        answerable={
-                          entry.approval
-                            ? pendingApprovalThreads.has(
-                                ThreadId.makeUnsafe(entry.approval.threadId),
-                              ) && pendingRequestIds.has(entry.approval.requestId)
-                            : false
-                        }
-                        onOpen={openEntry}
-                      />
-                    ))}
-                  </ul>
-                </section>
-              ))
+              <>
+                {sections.needsYou.length > 0 ? (
+                  <section
+                    aria-label="Needs you"
+                    className="px-1 pb-1"
+                    data-inbox-section="needs-you"
+                  >
+                    <SectionHeading label="Needs you" />
+                    <ul className="flex flex-col gap-px">
+                      {sections.needsYou.map((entry) => (
+                        <InboxRow
+                          key={entry.id}
+                          entry={entry}
+                          now={now}
+                          answerable={isAnswerable(entry)}
+                          pinned
+                          onOpen={openEntry}
+                        />
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+                {sections.groups.map((group, index) => (
+                  <section
+                    key={group.label}
+                    aria-label={group.label}
+                    className={cn(
+                      "px-1 pb-1",
+                      (index > 0 || sections.needsYou.length > 0) && "border-t border-border",
+                    )}
+                    data-inbox-section={group.label}
+                  >
+                    <SectionHeading label={group.label} />
+                    <ul className="flex flex-col gap-px">
+                      {group.entries.map((entry) => (
+                        <InboxRow
+                          key={entry.id}
+                          entry={entry}
+                          now={now}
+                          answerable={isAnswerable(entry)}
+                          pinned={false}
+                          onOpen={openEntry}
+                        />
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </>
             )}
           </div>
-          <DoNotDisturbFooter />
         </div>
       </PopoverPopup>
     </Popover>

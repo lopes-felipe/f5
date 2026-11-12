@@ -84,6 +84,7 @@ interface ChatHeaderProps {
   runtimeControls?: ReactNode;
   isGitRepo: boolean;
   openInCwd: string | null;
+  openInShortcutEnabled: boolean;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -157,6 +158,7 @@ export const ChatHeader = memo(function ChatHeader({
   runtimeControls,
   isGitRepo,
   openInCwd,
+  openInShortcutEnabled,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -443,6 +445,7 @@ export const ChatHeader = memo(function ChatHeader({
             keybindings={keybindings}
             availableEditors={availableEditors}
             openInCwd={openInCwd}
+            enableShortcut={openInShortcutEnabled}
           />
         )}
         {activeProjectName && (

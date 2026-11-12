@@ -734,6 +734,7 @@ function deriveFallbackTasksFromPlan(
 
 interface ChatViewProps {
   threadId: ThreadId;
+  openInShortcutEnabled: boolean;
   liveAgentCount: number;
   focusTimelineEntryId?: string | undefined;
   focusTimelineEntryKind?: "message" | "activity" | undefined;
@@ -821,10 +822,11 @@ function selectModelCatalogSettings(settings: UnifiedWebSettings): ModelCatalogS
   };
 }
 
-// Memoized: the props are primitives, and the thread route re-renders on every streamed token
-// and right panel change, none of which ChatView reads through its props.
+// Memoized: props are primitives, so streamed tokens and panel updates only re-render this
+// component when they change a prop, such as which surface owns the editor shortcut.
 export default memo(function ChatView({
   threadId,
+  openInShortcutEnabled,
   liveAgentCount,
   focusTimelineEntryId: routeFocusTimelineEntryId,
   focusTimelineEntryKind = "message",
@@ -8419,6 +8421,7 @@ export default memo(function ChatView({
               onOpenWorkflow={activeWorkflow ? handleOpenActiveWorkflow : undefined}
               isGitRepo={isGitRepo}
               openInCwd={threadWorkspaceCwd(activeThread, activeProject) ?? null}
+              openInShortcutEnabled={openInShortcutEnabled}
               activeProjectScripts={
                 isScratchProject(activeProject) ? undefined : activeProject?.scripts
               }

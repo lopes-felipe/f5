@@ -6,14 +6,18 @@ import {
   type EditorDraft,
 } from "../editorDrafts";
 import { useProfileState } from "../profileState";
-import { useServerMutationsAvailable } from "../wsConnectionState";
+import {
+  isWsInteractionBlocked,
+  useWsConnectionState,
+  useServerMutationsAvailable,
+} from "../wsConnectionState";
 import { FileBreadcrumbs } from "./FileBreadcrumbs";
 import { WorkspaceMediaView, workspaceMediaKind } from "./WorkspaceMediaView";
 import ChatMarkdown from "./ChatMarkdown";
 import { File as FileViewer } from "@pierre/diffs/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { type EditorId, ThreadId } from "@t3tools/contracts";
+import { type EditorId, type ResolvedKeybindingsConfig, ThreadId } from "@t3tools/contracts";
 import {
   AlertTriangleIcon,
   ExternalLinkIcon,
@@ -49,11 +53,13 @@ import { DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel";
 import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
 import { showFileEntryContextMenu } from "./fileEntryActions";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { useOpenFavoriteEditorShortcut } from "./chat/useOpenFavoriteEditorShortcut";
 
 interface FileViewPanelProps {
   mode: DiffPanelMode;
   surface?: Extract<RightPanelSurface, { kind: "file" }> | undefined;
   onClose?: (() => void) | undefined;
+  openInShortcutEnabled?: boolean;
 }
 
 function fileNameFromPath(filePath: string): string {
@@ -79,6 +85,7 @@ export function formatPositionBadge(params: {
 }
 
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
+const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 export function resolveEditorTarget(input: {
   filePath: string;
@@ -105,7 +112,12 @@ export function reconcileDraftContents(input: {
   return input.incomingContents;
 }
 
-export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelProps) {
+export default function FileViewPanel({
+  mode,
+  surface,
+  onClose,
+  openInShortcutEnabled = true,
+}: FileViewPanelProps) {
   const wordWrap = useDiffWordWrap();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -170,6 +182,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
   const [saveConflict, setSaveConflict] = useState(false);
   const profileId = useProfileState((state) => state.active?.id ?? "default");
   const mutationsAvailable = useServerMutationsAvailable();
+  const wsConnectionState = useWsConnectionState();
   const [draftRecoveryError, setDraftRecoveryError] = useState<string | null>(null);
   const [recoverableDrafts, setRecoverableDrafts] = useState<EditorDraft[]>([]);
   const [draftReady, setDraftReady] = useState(false);
@@ -546,6 +559,13 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         "vscode",
       );
   };
+
+  useOpenFavoriteEditorShortcut({
+    enabled:
+      openInShortcutEnabled && !isWsInteractionBlocked(wsConnectionState.phase) && canOpenInEditor,
+    keybindings: serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS,
+    onOpen: openInEditor,
+  });
 
   const showFileContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
