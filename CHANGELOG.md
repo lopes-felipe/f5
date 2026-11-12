@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-12
+
 ### Added
 
 - Notifications appear at the top right, below the runtime strip, as solid cards with a status-coloured rail and glyph. A command or path shares its line with the toast's buttons. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
