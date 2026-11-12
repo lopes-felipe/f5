@@ -8,7 +8,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * `orchestration_command_receipts`, events are read by stream, sequence or
  * type, and nothing filters on a correlation ID. Each held one entry per event
  * (about 140 MB apiece on a 1.5 million event log) and cost every append an
- * index write. The freed pages are reused by later writes.
+ * index write. The freed pages are reused by later writes or returned to disk
+ * by storage maintenance (see `databaseSpace.ts`).
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
