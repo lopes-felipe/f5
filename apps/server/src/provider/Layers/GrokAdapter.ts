@@ -29,6 +29,11 @@ import {
 } from "../acp/AntigravityQuestions.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 import { leadingSlashCommandName } from "../nativeCommandInput.ts";
+import {
+  discoverGrokSkills,
+  leadingGrokSkillMention,
+  rewriteLeadingGrokSkill,
+} from "../Drivers/GrokSkills.ts";
 import * as nodePath from "node:path";
 
 import {
@@ -279,6 +284,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
     const sessions = new Map<ThreadId, GrokSessionContext>();
+    const skillInventory = (
+      cwd: string,
+    ): Effect.Effect<ReadonlyArray<{ name: string; enabled: boolean }>> =>
+      options?.discoverSkillCommands
+        ? options.discoverSkillCommands(cwd).pipe(
+            Effect.map((commands) => commands.map((command) => ({ ...command, enabled: true }))),
+            Effect.orElseSucceed(() => []),
+          )
+        : discoverGrokSkills(grokSettings, options?.environment ?? process.env, cwd);
+    const rewriteUserText = (text: string, cwd: string | undefined) =>
+      PROVIDER === "grok" && leadingGrokSkillMention(text) && cwd
+        ? skillInventory(cwd).pipe(Effect.map((skills) => rewriteLeadingGrokSkill(text, skills)))
+        : Effect.succeed(text);
     const startupPendingUserInputs = new Map<ThreadId, Map<ApprovalRequestId, PendingUserInput>>();
     /** Private ACP form/URL requests, keyed by thread so startup requests are covered. */
     const elicitationsByThread = new Map<ThreadId, ElicitationRegistry>();
@@ -1381,7 +1399,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ),
               });
 
-              const text = input.input?.trim();
+              const userText = input.input ?? "";
+              const text = (yield* rewriteUserText(userText, ctx.session.cwd)).trim();
               let totalAttachmentBytes = 0;
               const imagePromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
@@ -1756,8 +1775,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       },
       // ACP agents read a slash command only as the leading prompt text, and learn
       // their commands after the session starts, so any leading `/name` may be one.
-      classifyTurnInput: (_threadId, text) =>
-        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
+      classifyTurnInput: (threadId, text, cwd) => {
+        if (leadingSlashCommandName(text) !== undefined) return "native-command";
+        if (PROVIDER !== "grok" || !leadingGrokSkillMention(text)) return "prompt";
+        return rewriteUserText(text, cwd ?? sessions.get(threadId)?.session.cwd).pipe(
+          Effect.map((rewritten) =>
+            leadingSlashCommandName(rewritten) !== undefined
+              ? ("native-command" as const)
+              : ("prompt" as const),
+          ),
+        );
+      },
       startSession,
       sendTurn,
       steerTurn: sendTurn,
