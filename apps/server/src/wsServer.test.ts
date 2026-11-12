@@ -1988,6 +1988,40 @@ describe("WebSocket Server", () => {
     expect(fs.readdirSync(uploadsDir)).toEqual([]);
   });
 
+  it("refuses a rebound hostname when no auth token is set", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    // What a browser sends after attacker.example's DNS answer is switched to 127.0.0.1:
+    // Origin and Host agree, so the same-origin check alone would accept it.
+    const rebound = {
+      Host: `attacker.example:${port}`,
+      Origin: `http://attacker.example:${port}`,
+    };
+
+    await expect(connectWs(port, undefined, 1, rebound)).rejects.toThrow(
+      "WebSocket connection failed",
+    );
+    const status = (path: string, headers: Record<string, string>) =>
+      new Promise<number>((resolve, reject) => {
+        const request = Http.request({ hostname: "127.0.0.1", port, path, headers }, (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+        request.once("error", reject);
+        request.end();
+      });
+    expect(await status("/", rebound)).toBe(403);
+    expect(await status("/api/bootstrap", rebound)).toBe(403);
+    expect(await status("/api/bootstrap", { Host: `localhost:${port}` })).toBe(200);
+
+    const [localWs] = await connectAndAwaitWelcome(port, undefined, {
+      Host: `localhost:${port}`,
+      Origin: `http://localhost:${port}`,
+    });
+    connections.push(localWs);
+  });
+
   it("rejects websocket connections without a valid auth token", async () => {
     h.server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
     const addr = h.server.address();
