@@ -477,13 +477,8 @@ export const compactThreadEvents = (input: {
         const groups = new Map<string, EventGroup>();
         // The current run of session updates with one state; only its removable
         // updates are kept once it ends.
-        let sessionRun: { state: string; updates: SessionUpdate[] } | null = null;
+        let sessionRun: { state: string; updates: SessionUpdate[] } | undefined;
         const removableSessions: SessionUpdate[] = [];
-        const endSessionRun = () => {
-          if (sessionRun !== null)
-            removableSessions.push(...removableSessionUpdates(sessionRun.updates));
-          sessionRun = null;
-        };
         let cursor = 0;
         while (true) {
           if (outOfTime()) return false;
@@ -552,7 +547,9 @@ export const compactThreadEvents = (input: {
             if (row.eventType === SESSION_EVENT) {
               if (row.sessionState === null) continue;
               if (sessionRun?.state !== row.sessionState) {
-                endSessionRun();
+                if (sessionRun) {
+                  removableSessions.push(...removableSessionUpdates(sessionRun.updates));
+                }
                 sessionRun = { state: row.sessionState, updates: [] };
               }
               sessionRun.updates.push({
@@ -595,7 +592,7 @@ export const compactThreadEvents = (input: {
           yield* Effect.yieldNow;
         }
 
-        endSessionRun();
+        if (sessionRun) removableSessions.push(...removableSessionUpdates(sessionRun.updates));
         // Each removal stands alone, so a long thread's updates go in several groups.
         chunks(removableSessions, SESSION_UPDATES_PER_GROUP).forEach((updates, index) =>
           groups.set(`session:${index}`, {
