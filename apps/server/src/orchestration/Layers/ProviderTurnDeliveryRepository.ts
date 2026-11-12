@@ -55,6 +55,31 @@ const deliveryFifoAvailable = `(json_extract(candidate.event_json, '$.type') = '
               (earlier.created_at = candidate.created_at AND earlier.rowid < candidate.rowid))
         ))`;
 
+/**
+ * Pending deliveries that may be sent now, one page in thread order.
+ *
+ * The unary `+` on `thread_id` keeps the planner off the thread indexes for the
+ * outer scan. With them it walks every delivery ever recorded, in thread order,
+ * to find the few pending ones; without them it starts from a state index, reads
+ * only pending rows and sorts those.
+ */
+export const LIST_CANDIDATE_IDS_SQL = `
+      SELECT delivery_id AS "deliveryId", thread_id AS "threadId"
+      FROM provider_turn_deliveries AS candidate
+      WHERE state = 'pending' AND +thread_id > ?
+        AND (not_before IS NULL OR not_before <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        AND ${deliveryOwnershipAvailable}
+        AND ${deliveryFifoAvailable}
+        AND NOT EXISTS (
+          SELECT 1 FROM provider_turn_deliveries AS steer
+          WHERE steer.thread_id = candidate.thread_id AND steer.state = 'pending'
+            AND json_extract(steer.event_json, '$.type') = 'thread.turn-steer-requested'
+            AND (json_extract(candidate.event_json, '$.type') != 'thread.turn-steer-requested'
+              OR steer.created_at < candidate.created_at
+              OR (steer.created_at = candidate.created_at AND steer.rowid < candidate.rowid))
+        )
+      ORDER BY +thread_id LIMIT ?`;
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const select = (where: string) =>
@@ -75,25 +100,10 @@ const make = Effect.gen(function* () {
     limit,
   }) =>
     sql
-      .unsafe<{ deliveryId: string; threadId: string }>(
-        `
-      SELECT delivery_id AS "deliveryId", thread_id AS "threadId"
-      FROM provider_turn_deliveries AS candidate
-      WHERE state = 'pending' AND thread_id > ?
-        AND (not_before IS NULL OR not_before <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        AND ${deliveryOwnershipAvailable}
-        AND ${deliveryFifoAvailable}
-        AND NOT EXISTS (
-          SELECT 1 FROM provider_turn_deliveries AS steer
-          WHERE steer.thread_id = candidate.thread_id AND steer.state = 'pending'
-            AND json_extract(steer.event_json, '$.type') = 'thread.turn-steer-requested'
-            AND (json_extract(candidate.event_json, '$.type') != 'thread.turn-steer-requested'
-              OR steer.created_at < candidate.created_at
-              OR (steer.created_at = candidate.created_at AND steer.rowid < candidate.rowid))
-        )
-      ORDER BY thread_id LIMIT ?`,
-        [afterThreadId, Math.min(64, Math.max(1, limit))],
-      )
+      .unsafe<{ deliveryId: string; threadId: string }>(LIST_CANDIDATE_IDS_SQL, [
+        afterThreadId,
+        Math.min(64, Math.max(1, limit)),
+      ])
       .pipe(
         Effect.flatMap(
           Schema.decodeUnknownEffect(

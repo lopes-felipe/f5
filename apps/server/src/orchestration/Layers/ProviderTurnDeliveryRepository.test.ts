@@ -13,7 +13,10 @@ import { Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
-import { ProviderTurnDeliveryRepositoryLive } from "./ProviderTurnDeliveryRepository.ts";
+import {
+  LIST_CANDIDATE_IDS_SQL,
+  ProviderTurnDeliveryRepositoryLive,
+} from "./ProviderTurnDeliveryRepository.ts";
 
 const layer = it.layer(
   ProviderTurnDeliveryRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
@@ -159,6 +162,35 @@ layer("bounded delivery ownership", (it) => {
       VALUES (${id}, ${thread}, ${id}, ${`message:${id}`}, 'pending', ${JSON.stringify(event)}, ${at}, ${at})`;
       return CommandId.makeUnsafe(id);
     });
+  it.effect("finds candidates from a state index, not by walking every thread's deliveries", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // Planner statistics as a long-lived profile has them: thousands of
+      // deliveries, two per thread, almost all in one state.
+      yield* sql`ANALYZE`;
+      yield* sql`DELETE FROM sqlite_stat1 WHERE tbl = 'provider_turn_deliveries'`;
+      for (const [index, stat] of [
+        ["idx_provider_turn_deliveries_boundary", "2135 2 1 1 1"],
+        ["idx_delivery_thread_state_due", "2135 2 2 2 1"],
+        ["idx_provider_turn_deliveries_unprojected", "2135 225 1 1"],
+        ["idx_provider_turn_deliveries_thread", "2135 2 1"],
+        ["idx_provider_turn_deliveries_actionable", "2135 225 225 2"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO sqlite_stat1 (tbl, idx, stat)
+          VALUES ('provider_turn_deliveries', ${index}, ${stat})
+        `;
+      }
+      yield* sql`ANALYZE sqlite_schema`;
+      const plan = yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${LIST_CANDIDATE_IDS_SQL}`,
+        ["", 64],
+      );
+      assert.match(plan[0]!.detail, /^SEARCH candidate USING INDEX \S+ \(state=\?\)$/u);
+      yield* sql`DELETE FROM sqlite_stat1`;
+      yield* sql`ANALYZE sqlite_schema`;
+    }),
+  );
   it.effect("bounds id pages, rotates past busy oldest threads and keeps claims exclusive", () =>
     Effect.gen(function* () {
       const repository = yield* ProviderTurnDeliveryRepository;
