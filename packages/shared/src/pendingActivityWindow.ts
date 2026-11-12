@@ -12,17 +12,29 @@ export function compareActivities(
   );
 }
 
-export function pendingActivityWindow<A extends { kind: string; payload?: unknown }>(
+export function isApprovalClosingActivity(activity: { kind: string }): boolean {
+  return (
+    activity.kind === "approval.resolved" || activity.kind === "provider.approval.respond.failed"
+  );
+}
+
+export function pendingApprovalActivities<A extends { kind: string; payload?: unknown }>(
   activities: ReadonlyArray<A>,
-  limit: number,
 ): A[] {
   const pending = new Map<string, A>();
   for (const activity of activities) {
     const payload = activity.payload as { requestId?: unknown } | null | undefined;
     if (typeof payload?.requestId !== "string") continue;
     if (activity.kind === "approval.requested") pending.set(payload.requestId, activity);
-    else if (activity.kind === "approval.resolved") pending.delete(payload.requestId);
+    else if (isApprovalClosingActivity(activity)) pending.delete(payload.requestId);
   }
-  const retained = new Set([...activities.slice(-limit), ...pending.values()]);
+  return [...pending.values()];
+}
+
+export function pendingActivityWindow<A extends { kind: string; payload?: unknown }>(
+  activities: ReadonlyArray<A>,
+  limit: number,
+): A[] {
+  const retained = new Set([...activities.slice(-limit), ...pendingApprovalActivities(activities)]);
   return activities.filter((activity) => retained.has(activity));
 }

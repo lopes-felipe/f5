@@ -112,6 +112,7 @@ export function PrSummaryTab({
                 key={pr.key}
                 pr={pr}
                 body={detail.body}
+                readingVersion={detailQuery.dataUpdatedAt}
                 canEdit={
                   !!pr.forgeCapabilities?.edit.changeRequest &&
                   !pr.repositoryArchived &&

@@ -1,4 +1,4 @@
-import { buildReplaceHunk } from "../fileChangeHunk";
+import { structuredPatch, formatPatch, FILE_HEADERS_ONLY } from "diff";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object"
@@ -24,13 +24,13 @@ export function acpFileChanges(content: unknown): ReadonlyArray<Record<string, u
             : undefined;
       if (!path) return [];
       const oldPath = typeof first?.oldPath === "string" ? first.oldPath : path;
-      const before = first?.operation === "add" ? "/dev/null" : JSON.stringify("a/" + oldPath);
-      const after = first?.operation === "delete" ? "/dev/null" : JSON.stringify("b/" + path);
+      const before = first?.operation === "add" ? "/dev/null" : "a/" + oldPath;
+      const after = first?.operation === "delete" ? "/dev/null" : "b/" + path;
       const text = patch.text.trimStart().startsWith("@@")
         ? "diff --git " +
-          JSON.stringify("a/" + oldPath) +
+          ("a/" + oldPath) +
           " " +
-          JSON.stringify("b/" + path) +
+          ("b/" + path) +
           "\n--- " +
           before +
           "\n+++ " +
@@ -42,8 +42,27 @@ export function acpFileChanges(content: unknown): ReadonlyArray<Record<string, u
     }
     if (typeof diff.path !== "string" || typeof diff.newText !== "string") return [];
     if (diff.oldText === diff.newText) return [];
-    return typeof diff.oldText === "string"
-      ? [{ path: diff.path, type: "update", diff: buildReplaceHunk(diff.oldText, diff.newText) }]
-      : [{ path: diff.path, type: "add", content: diff.newText }];
+    if (typeof diff.oldText !== "string")
+      return [{ path: diff.path, type: "add", content: diff.newText }];
+    // ACP sends complete files, unlike Claude's replacement snippets. Bound
+    // worst-case diff work and fall back to the tool card if computation aborts.
+    const patchFromContents = structuredPatch(
+      diff.path,
+      diff.path,
+      diff.oldText,
+      diff.newText,
+      undefined,
+      undefined,
+      { context: 3, maxEditLength: 100_000, timeout: 100 },
+    );
+    return !patchFromContents || patchFromContents.hunks.length === 0
+      ? []
+      : [
+          {
+            path: diff.path,
+            type: "update",
+            diff: formatPatch(patchFromContents, FILE_HEADERS_ONLY),
+          },
+        ];
   });
 }

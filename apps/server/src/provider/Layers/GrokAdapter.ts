@@ -16,6 +16,7 @@ import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAut
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
+import { PromptInactivityDeadline } from "../acp/PromptInactivityDeadline";
 import {
   acpElicitationDescriptor,
   acpElicitationResponse,
@@ -1135,6 +1136,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const nf = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
+                if (
+                  event._tag === "ContentDelta" ||
+                  event._tag === "PlanUpdated" ||
+                  event._tag === "AssistantItemStarted"
+                )
+                  ctx.antigravityTasks.noteParentProgress();
                 const computerCall =
                   event._tag === "ToolCallUpdated" && classifyAcpToolEvent(catalogs, event);
                 switch (event._tag) {
@@ -1524,23 +1531,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             (PROVIDER === "antigravity" ? 15 * 60_000 : undefined);
           let timedOut = false;
           const watchdog = Effect.gen(function* () {
-            let lastProgressAt = yield* Clock.currentTimeMillis;
+            const timer = new PromptInactivityDeadline(deadline!, yield* Clock.currentTimeMillis);
             while (true) {
               const now = yield* Clock.currentTimeMillis;
               const activity = prepared.acp.getPromptActivity
                 ? yield* prepared.acp.getPromptActivity
                 : undefined;
-              lastProgressAt = Math.max(lastProgressAt, activity?.lastProgressAt ?? 0);
-              if (
+              const paused = Boolean(
                 activity?.paused ||
                 prepared.context.pendingApprovals.size > 0 ||
                 prepared.context.pendingUserInputs.size > 0 ||
-                prepared.context.backgroundTasks.size > 0 ||
-                prepared.context.antigravityTasks.hasActive
-              ) {
-                lastProgressAt = now;
-              }
-              const remaining = lastProgressAt + deadline! - now;
+                prepared.context.backgroundTasks.size > 0,
+              );
+              const remaining = timer.remaining(
+                now,
+                activity?.lastProgressAt ?? 0,
+                paused,
+                prepared.context.antigravityTasks.inactivityPauseGeneration,
+              );
               if (remaining <= 0) {
                 timedOut = true;
                 return yield* new ProviderAdapterRequestError({
@@ -1549,7 +1557,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   detail: "Antigravity sent nothing for 15 minutes. Send a message to continue.",
                 });
               }
-              yield* Effect.sleep(Duration.millis(remaining));
+              // Sample pauses so their end grants a full inactivity interval.
+              yield* Effect.sleep(Duration.millis(Math.min(remaining, 1_000)));
             }
           });
           const prompt = prepared.acp

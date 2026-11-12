@@ -342,7 +342,7 @@ import { randomUUID } from "~/lib/utils";
 
 import { toastManager } from "./ui/toast";
 import { useProjectScriptMutations } from "~/hooks/useProjectScriptMutations";
-import { projectScriptIdFromCommand } from "~/projectScripts";
+import { projectScriptIdFromCommand, projectScriptTerminalOptions } from "~/projectScripts";
 import { AppTitlebar } from "./AppTitlebar";
 import { workflowDisplayType } from "../lib/workflowType";
 import { resolveThreadStatusPillForThread } from "../threadStatus";
@@ -3751,10 +3751,7 @@ export default memo(function ChatView({
         );
       }
       try {
-        await runTerminalCommand(script.command, {
-          ...options,
-          stopOnSettle: script.stopOnSettle ?? false,
-        });
+        await runTerminalCommand(script.command, projectScriptTerminalOptions(script, options));
       } catch (error) {
         setThreadError(
           activeThreadId,

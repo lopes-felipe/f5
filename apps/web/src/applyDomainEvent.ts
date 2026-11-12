@@ -1524,10 +1524,10 @@ function reduceDomainEvent(
           thread.commandExecutions,
           retainedTurnIds,
         );
-        const activities = retainThreadActivitiesAfterRevert(
-          thread.activities,
-          retainedTurnIds,
-        ).slice(-MAX_THREAD_ACTIVITIES);
+        const activities = pendingActivityWindow(
+          retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds),
+          MAX_THREAD_ACTIVITIES,
+        );
         const latestTurnSummary = turnDiffSummaries.at(-1) ?? null;
         const latestTurnStatus =
           latestTurnSummary?.status === "missing" || latestTurnSummary?.status === "error"

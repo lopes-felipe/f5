@@ -865,16 +865,19 @@ function mergeActivitiesFromTail(
     return { activities: mappedTailActivities, preservedOlderActivities: false };
   }
 
+  const incomingIds = new Set(mappedTailActivities.map((activity) => activity.id));
   const preservedOlderActivities = existing.activities.filter(
     (activity) =>
-      activity.kind !== "approval.requested" &&
+      !incomingIds.has(activity.id) &&
       compareActivityToCursor(activity, oldestLoadedActivityCursor) < 0,
   );
   if (preservedOlderActivities.length === 0) {
     return { activities: mappedTailActivities, preservedOlderActivities: false };
   }
 
-  const mergedActivities = [...preservedOlderActivities, ...mappedTailActivities];
+  const mergedActivities = [...preservedOlderActivities, ...mappedTailActivities].toSorted(
+    compareActivities,
+  );
   return {
     activities: arraysShallowEqual(mergedActivities, existing.activities)
       ? existing.activities

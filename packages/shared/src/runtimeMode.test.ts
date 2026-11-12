@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { runtimeModeCapabilities, effectiveRuntimeMode } from "./runtimeMode";
+import { runtimeModeCapabilities, runtimeModeUnsupportedReason } from "./runtimeMode";
 
 describe("runtimeModeCapabilities", () => {
-  it("uses supervised mode for stored Antigravity Auto threads", () => {
+  it("rejects unsupported Antigravity Auto consistently with scheduled tasks", () => {
     expect(runtimeModeCapabilities("antigravity").has("auto")).toBe(false);
-    expect(effectiveRuntimeMode("antigravity", "auto")).toBe("approval-required");
-    expect(effectiveRuntimeMode("antigravity", "full-access")).toBe("full-access");
-    expect(effectiveRuntimeMode("codex", "auto")).toBe("auto");
+    expect(runtimeModeUnsupportedReason("antigravity", "auto")).toBeDefined();
   });
   it("exposes the fail-closed provider capability matrix", () => {
     expect([...runtimeModeCapabilities("codex")]).toEqual([

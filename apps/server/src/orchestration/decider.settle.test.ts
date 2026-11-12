@@ -1,6 +1,7 @@
 import {
   CommandId,
   EventId,
+  ApprovalRequestId,
   ProjectId,
   ThreadId,
   type OrchestrationReadModel,
@@ -66,6 +67,30 @@ async function settleReason(overrides: Partial<OrchestrationThread>) {
 }
 
 describe("thread.settle", () => {
+  it("persists approval closure together with an accepted answer", async () => {
+    const requestId = ApprovalRequestId.makeUnsafe("request");
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: await readModelWith({}),
+        command: {
+          type: "thread.approval.respond",
+          commandId: CommandId.makeUnsafe("answer"),
+          threadId: THREAD,
+          requestId,
+          decision: "accept",
+          createdAt: NOW,
+        },
+      }),
+    );
+    const events = Array.isArray(result) ? result : [result];
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.approval-response-requested",
+      "thread.activity-appended",
+    ]);
+    expect(events[1]).toMatchObject({
+      payload: { activity: { kind: "approval.resolved", payload: { requestId } } },
+    });
+  });
   it("says which blocker to clear before a thread can be settled", async () => {
     expect(await settleReason({ pinnedAt: NOW })).toContain(
       "This thread is pinned. Unpin it before settling.",

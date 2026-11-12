@@ -86,7 +86,7 @@ import {
 import { describeMcpReloadFailure, MCP_RELOAD_RETRY_DELAYS_MS } from "../mcpReconcile.ts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
-import { runtimeModeUnsupportedReason, effectiveRuntimeMode } from "@t3tools/shared/runtimeMode";
+import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 import {
   Duration,
   Deferred,
@@ -1312,10 +1312,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           cwd: persistedCwd,
         });
 
-        const recoveredRuntimeMode = effectiveRuntimeMode(
-          input.binding.provider,
-          input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-        );
+        const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
         const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
           input.binding.provider,
           recoveredRuntimeMode,
@@ -1742,17 +1739,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               `Provider instance '${requestedInstanceId}' is disabled in settings.`,
             );
           }
-          const runtimeMode = effectiveRuntimeMode(resolvedProvider, parsed.runtimeMode);
           const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
             resolvedProvider,
-            runtimeMode,
+            parsed.runtimeMode,
           );
           if (unsupportedRuntimeMode) {
             return yield* toValidationError("ProviderService.startSession", unsupportedRuntimeMode);
           }
           const input = {
             ...parsed,
-            runtimeMode,
             threadId,
             provider: resolvedProvider,
             providerInstanceId: requestedInstanceId,

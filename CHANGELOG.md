@@ -8,7 +8,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
 - Project actions can opt into stopping when their thread settles, preserving terminal output. Older pending approvals stay answerable, PR description checkboxes save changes, and Git divergence refreshes after turns even with polling off.
-- Silent Antigravity turns stop after 15 minutes without progress, while open requests, tools and subagents pause the deadline. Stored Antigravity Auto threads use Supervised mode. Codex reports conversations held by another client, and ACP edits show every file's patch.
+- Silent Antigravity turns stop after 15 minutes without progress. Requests and tools pause the deadline; unobservable subagent batches receive a bounded grace period until the parent resumes. Antigravity continues to reject unsupported Auto mode. Codex reports conversations held by another client, and ACP edits show every file's patch.
 
 ## [0.1.8] - 2026-11-12
 

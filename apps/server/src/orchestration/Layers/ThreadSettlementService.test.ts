@@ -1,4 +1,5 @@
 import { GitManager } from "../../git/Services/GitManager.ts";
+import { TerminalManager } from "../../terminal/Services/Manager";
 import { GitManagerError } from "../../git/Errors.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -163,6 +164,29 @@ function run<A, E>(
     ),
   );
 }
+it.effect("selects settlement terminal cleanup rather than idle-only cleanup", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const closed = yield* Queue.unbounded<string>();
+      const service = yield* f.makeService.pipe(
+        Effect.provide(
+          Layer.mock(TerminalManager)({
+            listSessions: Effect.succeed([
+              { threadId, terminalId: "action", cwd: "/tmp", status: "running" as const },
+            ]),
+            closeOnSettleForThread: (id) =>
+              Queue.offer(closed, "settled:" + id).pipe(Effect.asVoid),
+            closeIdleForThread: (id) => Queue.offer(closed, "idle:" + id).pipe(Effect.asVoid),
+          }),
+        ),
+      );
+      yield* service.start;
+      for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+      yield* f.settle();
+      assert.equal(yield* Queue.take(closed), "settled:" + threadId);
+    }),
+  ),
+);
 it.effect("persists settlement and auto-settle preference in full and lightweight snapshots", () =>
   run((f) =>
     Effect.gen(function* () {

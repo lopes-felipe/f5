@@ -13,6 +13,7 @@ import { makeScheduledTaskStore, scheduleError } from "./scheduledTasks/Store.ts
 import { McpAppService } from "./mcpApps/McpAppService.ts";
 import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
 import { ThreadSettlementService } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { makeTurnGitStatusRefresh } from "./wsServer/turnGitStatusRefresh";
 import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
 import { PullRequestWatchService } from "./orchestration/Layers/PullRequestWatchService.ts";
 import { PR_WATCH_WS_METHODS, PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
@@ -3032,6 +3033,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
       }
 
+      const refreshTurnGitStatus = makeTurnGitStatusRefresh({
+        scope: subscriptionsScope,
+        resolveCwd: (threadId) =>
+          Effect.gen(function* () {
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === threadId);
+            const project = model.projects.find((project) => project.id === thread?.projectId);
+            return thread ? threadWorkspaceCwd(thread, project) : null;
+          }),
+        read: (cwd) =>
+          gitManager
+            .status({ cwd, includeRemote: false, includePullRequest: false })
+            .pipe(Effect.orElseSucceed(() => null)),
+        publish: (cwd, status) =>
+          pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status }),
+      });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           if (event.type.startsWith("project.")) profileReadCache = undefined;
@@ -3052,17 +3069,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
           if (event.type === "thread.turn-processing-quiesced") {
-            const model = yield* orchestrationEngine.getReadModel();
-            const thread = model.threads.find((thread) => thread.id === event.aggregateId);
-            const project = model.projects.find((project) => project.id === thread?.projectId);
-            const cwd = thread ? threadWorkspaceCwd(thread, project) : null;
-            if (cwd) {
-              const status = yield* gitManager
-                .status({ cwd, includeRemote: false, includePullRequest: false })
-                .pipe(Effect.orElseSucceed(() => null));
-              if (status)
-                yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status });
-            }
+            yield* refreshTurnGitStatus(event.payload.threadId);
           }
           if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
             yield* wakeUpstreamPorts(event.aggregateId);

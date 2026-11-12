@@ -1770,7 +1770,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command,
         threadId: command.threadId,
       });
-      return {
+      const requested: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1788,6 +1788,33 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           createdAt: command.createdAt,
         },
       };
+      // The database resolves an approval when the answer is accepted. Persist
+      // the same closing fact for live models, history and reconnect replay.
+      return [
+        requested,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+            metadata: { requestId: command.requestId },
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: EventId.makeUnsafe("approval-answer:" + command.commandId),
+              turnId: null,
+              tone: "info",
+              kind: "approval.resolved",
+              summary: "Approval answer submitted",
+              payload: { requestId: command.requestId, decision: command.decision },
+              createdAt: command.createdAt,
+            },
+          },
+        },
+      ];
     }
 
     case "thread.user-input.dismiss":

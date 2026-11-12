@@ -8,8 +8,13 @@ type TaskEvent = Pick<
 /** start_subagent completes when the batch launches, not when its agents finish. */
 export class AntigravityTasks {
   private readonly active = new Set<string>();
-  get hasActive(): boolean {
-    return this.active.size > 0;
+  private readonly awaitingParent = new Set<string>();
+  private generation = 0;
+  get inactivityPauseGeneration(): number | null {
+    return this.awaitingParent.size > 0 ? this.generation : null;
+  }
+  noteParentProgress(): void {
+    this.awaitingParent.clear();
   }
   update(tool: AcpToolCallState, raw: unknown): TaskEvent[] {
     const update = raw && typeof raw === "object" && "update" in raw ? raw.update : undefined;
@@ -33,6 +38,8 @@ export class AntigravityTasks {
     const events: TaskEvent[] = [];
     if (!this.active.has(tool.toolCallId)) {
       this.active.add(tool.toolCallId);
+      this.awaitingParent.add(tool.toolCallId);
+      this.generation++;
       events.push({
         type: "task.started",
         payload: { taskId, taskType: "subagent", description: "Antigravity subagent batch" },
@@ -42,6 +49,7 @@ export class AntigravityTasks {
       typeof tool.data.rawOutput === "string" ? tool.data.rawOutput.trim().slice(-8000) : "";
     if (tool.status === "failed") {
       this.active.delete(tool.toolCallId);
+      this.awaitingParent.delete(tool.toolCallId);
       events.push({
         type: "task.completed",
         payload: { taskId, status: "failed", ...(output ? { summary: output } : {}) },
@@ -66,6 +74,7 @@ export class AntigravityTasks {
       },
     }));
     this.active.clear();
+    this.awaitingParent.clear();
     return events;
   }
 }
