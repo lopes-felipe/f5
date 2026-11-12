@@ -1,6 +1,7 @@
 /**
- * Upstream ledger v7: pure parsing, validation, derived state, and operation
- * replay shared by the CI checker, the migration script, and the F5 server.
+ * Upstream ledger v8 (v7 files still decode): pure parsing, validation,
+ * derived state, and operation replay shared by the CI checker, the migration
+ * script, and the F5 server.
  *
  * Ledger-state files (`intervals/`, `legacy/`, `topics/`) are written only by
  * F5 through `canonicalJson`, so byte equality is content equality.
@@ -268,6 +269,19 @@ export function parseRules(text: string): ParsedRules {
     );
   if (!(rules.autoSkipConfidence >= 0 && rules.autoSkipConfidence <= 1))
     errors.push(`${RULES_PATH}: autoSkipConfidence must be between 0 and 1`);
+  if (rules.areas !== undefined && rules.schemaVersion < 2)
+    errors.push(`${RULES_PATH}: areas require schemaVersion 2`);
+  const areaNames = new Set<string>();
+  for (const area of rules.areas ?? []) {
+    if (!/^[a-z0-9-]+$/u.test(area.key)) errors.push(`${RULES_PATH}: invalid area key ${area.key}`);
+    if (!area.label.trim()) errors.push(`${RULES_PATH}: area ${area.key} has no label`);
+    for (const name of [area.key, ...area.aliases]) {
+      const normalized = name.trim().toLowerCase();
+      if (areaNames.has(normalized))
+        errors.push(`${RULES_PATH}: area name ${name} is used more than once`);
+      areaNames.add(normalized);
+    }
+  }
   return { rules, errors };
 }
 
@@ -394,6 +408,8 @@ export function validateTopic(topic: UpstreamTopic, rules: Rules | null): string
       errors.push(`${owner}: suggestion confidence must be between 0 and 1`);
     if (suggestion.f5Refs !== undefined && suggestion.status !== "equivalent")
       errors.push(`${owner}: suggestion f5Refs are allowed only with equivalent`);
+    if (suggestion.severity !== undefined && suggestion.kind !== "security")
+      errors.push(`${owner}: suggestion severity is allowed only with kind security`);
   }
   return errors;
 }

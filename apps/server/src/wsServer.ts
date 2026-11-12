@@ -4225,6 +4225,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).undoDecisions(stripRequestTag(request.body)),
         );
+      case UPSTREAM_PORTS_WS_METHODS.expireBacklog:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).expireBacklog(stripRequestTag(request.body)),
+        );
       case UPSTREAM_PORTS_WS_METHODS.run:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).run(stripRequestTag(request.body)),

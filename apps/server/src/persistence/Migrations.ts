@@ -1,6 +1,7 @@
 import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
+import Migration0156 from "./Migrations/156_UpstreamReclassifyRuns.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -190,6 +191,7 @@ import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 export const MIGRATIONS = {
   "154_DesktopActivityPendingIndex": Migration0154,
   "155_BackgroundWorkNativeParentSession": Migration0155,
+  "156_UpstreamReclassifyRuns": Migration0156,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.
