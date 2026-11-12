@@ -461,3 +461,94 @@ query ranks rows from index keys and reads payloads only for the rows it keeps. 
 (the gate is under 60 s) and grew the file by 38 MB. The retained-activities query fell from
 2.24 s (cold) to 0.38 s and returned the same 82,485 rows. The migration logs its build
 duration, so production builds report their own timing.
+
+## Startup scans and archived-thread activities, 2026-11-12
+
+Measured on APFS clones of a 5.9 GB Personal profile database (2,086 threads, 2,056 of them
+archived) with an engine-only harness: migrations, read-model hydrate, the worktree-setup
+startup query and the delivery sweep. The full server was not run against the clone, so
+`orchestration.runtime.start` is not measured end to end. Two cold samples (fresh clone) per
+side, same machine. The "before" value of the delivery sweep comes from the production log.
+
+| Measurement                             | Before        | After         |
+| --------------------------------------- | ------------- | ------------- |
+| Read-model hydrate, cold                | 11.7 – 12.0 s | 3.56 – 3.59 s |
+| Read-model hydrate, warm                | 3.0 – 3.3 s   | 1.0 s         |
+| Retained-activities query, cold         | 8.0 – 8.2 s   | under 0.25 s  |
+| Worktree-setup startup query, cold      | 7.8 – 7.9 s   | 2 – 3 ms      |
+| Delivery sweep (`listCandidateIds`)     | about 200 ms  | about 1 ms    |
+| Heap after GC                           | 416 MB        | 163 MB        |
+| `heapUsedDeltaBytes` in the hydrate log | 840 – 920 MB  | 275 – 285 MB  |
+| Activities held in memory               | 132,370       | 2,035         |
+
+Two partial indexes remove the scans: `idx_projection_thread_activities_worktree_setup`
+(`WHERE kind = 'worktree-setup'`) and `idx_provider_turn_deliveries_pending_thread`
+(`WHERE state = 'pending'`). SQLite uses a partial index only when the statement repeats the
+predicate as a literal, so both statements inline it; the delivery sweep also names its index
+with `INDEXED BY`, because the planner otherwise keeps the older thread index.
+On this database the first start after the upgrade pays once: 14.4 s to build the activities
+index and 5.4 s for `PRAGMA optimize`.
+
+Threads that are already archived when the server starts load without their activity history
+(`coldThreadActivities.ts`); only the `worktree-setup` activity is kept. The engine loads the
+rest from SQL, and keeps it, when a command names the thread, when an event reaches it, or
+when a caller asks through `ensureThreadActivities` (6 – 56 ms per thread here). Messages,
+plans and checkpoints of archived threads stay in memory: workflow services and the Codex
+history reconciliation read them without checking the archive state. They are what remains of
+the hydrate time (messages query about 1.85 s cold) and of the heap.
+
+## Stall after a database snapshot, 2026-11-12
+
+**Symptom.** Since hourly snapshots were retained, every hourly stall of 3 s or more in
+`logs/server.log` (4.3 – 9.1 s, on varying statements, reads and writes) starts 4 – 178 s
+after a snapshot was published.
+
+**Cause.** The first write to `state.sqlite` after it has been cloned. APFS makes the clone in
+about 4 ms and defers the bookkeeping to the first write into either file. That one `pwrite`
+took 1.7 – 1.9 s on the 5.9 GB file, with no SQLite involved; the next 200 writes took 2 ms
+together and `fsync` 13 ms. In F5 the first write is the checkpoint worker's next passive
+checkpoint, which runs once about 1,000 WAL frames have accumulated; that is the delay after
+the snapshot. While the write is in the kernel, every read of the same file that misses the
+page cache waits for it. The checkpoint runs in a worker, but the statements on the main
+connection that need an uncached page block the event loop for its duration. Statements served
+from the page cache are not delayed (3 ms at most in every trial).
+
+**Evidence.** All on scratch clones, never the live profile. Twelve-second windows with small
+scattered writes and reads on the main connection and a worker checkpointing every 400 writes,
+three repetitions:
+
+| Window                      | Longest checkpoint | Longest uncached statement |
+| --------------------------- | ------------------ | -------------------------- |
+| Nothing before it           | 30 – 142 ms        | up to 0.6 s                |
+| After a clone               | 1.6 – 2.7 s        | same as the checkpoint     |
+| After removing an old clone | 46 – 105 ms        | up to 1.2 s                |
+| After a clone and a removal | 2.8 – 7.1 s        | same as the checkpoint     |
+
+- `checkpoint_fullfsync` is not the cause: with it off the clone windows measure 1.8 – 2.3 s
+  and 2.2 – 7.1 s. Neither is `fsync`: with `synchronous = OFF` in the worker the checkpoint
+  after a clone still takes 1.7 – 5.5 s.
+- Removing old clones alone does not stall, but a removal next to a clone makes the first
+  write longer.
+- The cost follows the number of extents, not the file size. A sequentially written 1 GiB file
+  pays 30 ms on its first write after a clone; after 60,000 scattered page rewrites made while
+  a clone existed it pays about 200 ms. The profile database has 300,000 – 350,000 extents
+  averaging 18 – 21 KiB, close to the 16 KiB copy-on-write unit. Snapshots cause this
+  themselves: every page written while a clone exists gets a new extent, so the stall grows
+  with the age of the file.
+
+**Follow-up plan** (nothing below is implemented):
+
+1. Report the checkpoint duration from the worker and log it above 250 ms together with the
+   time since the last snapshot, so production confirms the mechanism and its size.
+2. Take the first write inside the snapshot step. `runDatabaseSnapshot` already holds the
+   writer in an async transaction while it clones; other SQL waits without blocking the event
+   loop. After the two clones and before the commit, ask the checkpoint worker for a passive
+   checkpoint and wait for it. The cost stays, but it becomes a wait for SQL work at a known
+   moment, not an event-loop stall up to three minutes later. To verify first: that the
+   checkpoint always has a frame to write, and that no statement runs on the main connection
+   during the transaction.
+3. Measure whether rewriting the file (`VACUUM`, or a full copy during storage maintenance)
+   brings the extent count and the first-write cost down, and for how long.
+4. If stalls remain after 2 and 3, take fewer snapshots or take them only while no turn is
+   running. Moving reads off the main thread (the gated SQLite worker track) removes the
+   event-loop stall for every cause, including this one.
