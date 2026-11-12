@@ -14,7 +14,9 @@ export function compareActivities(
 
 export function isApprovalClosingActivity(activity: { kind: string }): boolean {
   return (
-    activity.kind === "approval.resolved" || activity.kind === "provider.approval.respond.failed"
+    activity.kind === "approval.resolved" ||
+    activity.kind === "approval.response-submitted" ||
+    activity.kind === "provider.approval.respond.failed"
   );
 }
 

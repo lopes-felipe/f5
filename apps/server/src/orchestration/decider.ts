@@ -1807,7 +1807,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
               id: EventId.makeUnsafe("approval-answer:" + command.commandId),
               turnId: null,
               tone: "info",
-              kind: "approval.resolved",
+              kind: "approval.response-submitted",
               summary: "Approval answer submitted",
               payload: { requestId: command.requestId, decision: command.decision },
               createdAt: command.createdAt,

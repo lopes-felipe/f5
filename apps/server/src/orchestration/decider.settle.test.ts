@@ -88,7 +88,7 @@ describe("thread.settle", () => {
       "thread.activity-appended",
     ]);
     expect(events[1]).toMatchObject({
-      payload: { activity: { kind: "approval.resolved", payload: { requestId } } },
+      payload: { activity: { kind: "approval.response-submitted", payload: { requestId } } },
     });
   });
   it("says which blocker to clear before a thread can be settled", async () => {
