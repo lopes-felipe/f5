@@ -67,6 +67,7 @@ export function buildPortRevisionPrompt(input: {
         input.ledgerDir +
         "/, touch credentials or CI secrets, or push anywhere other than origin on this port branch.",
       "Implement fixes you agree with, explain disagreements in your reply, keep useful existing commits, and run the repository's required checks.",
+      "If the repository keeps a changelog and this PR changes user-visible behavior without an entry, add one, and keep an existing entry accurate after your fixes.",
     ].join("\n"),
     ...buildImplementationRevisionPromptSections({
       reviews: [

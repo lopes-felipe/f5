@@ -52,5 +52,6 @@ describe("port review prompts", () => {
     expect(prompt).toContain("Push to origin on this same branch");
     expect(prompt).toContain("Upstream-Topic: pr-1#2");
     expect(prompt).toContain("pull request is <state>");
+    expect(prompt).toContain("changes user-visible behavior without an entry, add one");
   });
 });

@@ -35,6 +35,7 @@ Use the reason keys in `rules.json`.
 ## Porting defaults
 
 - Final upstream behavior wins; never restore reverted behavior.
+- Every port PR that changes shipped code adds a top-level bullet under `## [Unreleased]` in `CHANGELOG.md` (the required `Changelog` check fails without one). Describe what an f5 user notices, under Added, Changed or Fixed; a grouped port may use one bullet per user-visible change. Only a port with no user-visible effect (refactor, tests, tooling) skips the entry, and says so in the PR so it can get the `no-changelog` label.
 - New automatic behavior ships off.
 - Keep f5 defaults for `autoResumeUsageLimitedThreads`, `resumeActiveTurnsAfterRestart`, `autoPullDefaultBranch` and `storageCleanup.enabled`.
 - Keep f5's Agents panel; port only fixes that improve it.

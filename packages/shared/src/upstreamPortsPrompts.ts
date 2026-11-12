@@ -270,6 +270,7 @@ export function buildPortPrompt(input: PortPromptInput): string {
           "   If it cannot apply here, end with: UPSTREAM-OUTCOME: not-applicable <one sentence>",
         ]),
     "2. Otherwise implement it completely with tests, following the repository instructions (AGENTS.md), and run the required checks.",
+    "   If the repository keeps a changelog (for example CHANGELOG.md with an Unreleased section), add an entry for every user-visible change in this port, written the way a user would notice it and following the repository's changelog rules. Write it for this repository's users; do not copy upstream's release notes.",
     portCommitSteps({
       trailers,
       ledgerDir: input.ledgerDir,

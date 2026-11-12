@@ -31,7 +31,9 @@ with a prompt that carries the topic's commits and the trailer that completes it
    current list.
 6. Open **Ready**, select topics and press `Shift+P` (**Start port**), choose **Queue selected…**,
    or click **Queue all matching Ready…** to include every matching topic, including unloaded
-   pages. Each thread opens in its own worktree on `f5/upstream-<topic>`.
+   pages. Each thread opens in its own worktree on `f5/upstream-<topic>`. The port prompt asks
+   for a changelog entry for every user-visible change when the repository keeps one, and the
+   review revision adds one if the PR still lacks it.
    **Code review after port** is checked initially. Choose **Reviewer A**, **Reviewer B** and
    **Consolidation** models and their options, or clear the checkbox to skip automated review.
 7. Merge the ledger pull request F5 opens (**Track upstream t3code changes (<date>)**) whenever
