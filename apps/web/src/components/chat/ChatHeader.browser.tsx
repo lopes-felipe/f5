@@ -48,6 +48,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     onOpenWorkflow: undefined,
     isGitRepo: true,
     openInCwd: null,
+    openInShortcutEnabled: true,
     activeProjectScripts: undefined,
     preferredScriptId: null,
     keybindings: [],
