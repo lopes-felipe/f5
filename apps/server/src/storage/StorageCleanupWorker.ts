@@ -56,7 +56,7 @@ import {
   resolveCodexLaunchHomes,
 } from "./codexMarketplaceStaging.ts";
 import { DiskSpaceMonitor } from "./DiskSpaceMonitor.ts";
-import { compactThreadEvents } from "./eventCompaction.ts";
+import { compactThreadEvents, compactWorkflowEvents } from "./eventCompaction.ts";
 import { AUTO_CONVERT_SKIP_PREFIX, StorageMaintenance } from "./StorageMaintenance.ts";
 
 /**
@@ -880,6 +880,28 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
 
   const compactDatabase = (operationId: string) =>
     Effect.gen(function* () {
+      // First, with a small share of the budget: it is cheap, and after an upgrade
+      // every thread is revisited, which can use the whole budget for several passes.
+      const workflows = yield* compactWorkflowEvents({
+        nowMs: Date.now(),
+        maxDurationMs: EVENT_COMPACTION_BUDGET_MS / 4,
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workflow event compaction failed", { cause }).pipe(
+            Effect.as({ eventsRemoved: 0, bytesRemoved: 0, complete: false }),
+          ),
+        ),
+      );
+      if (workflows.eventsRemoved > 0) {
+        yield* storageMaintenance.noteStorageMutated;
+        yield* recordStorageAutomationAudit({
+          operationId,
+          job: "event-compaction",
+          target: "planning workflow events",
+          result: "removed",
+          reason: `removed ${workflows.eventsRemoved} superseded workflow update(s), about ${workflows.bytesRemoved} bytes`,
+        });
+      }
       const compaction = yield* compactThreadEvents({
         nowMs: Date.now(),
         maxDurationMs: EVENT_COMPACTION_BUDGET_MS,
@@ -896,7 +918,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
           job: "event-compaction",
           target: "orchestration events",
           result: "removed",
-          reason: `compacted ${compaction.commandOutputsCompacted} command output(s) and ${compaction.messagesCompacted} message(s) in ${compaction.threadsCompacted} thread(s); removed ${compaction.eventsRemoved} event(s) and ${compaction.receiptsRemoved} receipt(s), about ${compaction.bytesRemoved} bytes`,
+          reason: `compacted ${compaction.commandOutputsCompacted} command output(s), ${compaction.messagesCompacted} message(s) and ${compaction.sessionUpdatesCompacted} token-estimate update(s) in ${compaction.threadsCompacted} thread(s); removed ${compaction.eventsRemoved} event(s) and ${compaction.receiptsRemoved} receipt(s), about ${compaction.bytesRemoved} bytes`,
         });
       }
       if (compaction.threadsFailed > 0 || compaction.groupsSkipped > 0) {
