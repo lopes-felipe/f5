@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
+
 ## [0.1.8] - 2026-11-12
 
 ### Added

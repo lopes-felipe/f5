@@ -93,18 +93,20 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
         <div className="line-clamp-3" title={status.message ?? defaultMessage}>
           {status.message ?? defaultMessage}
         </div>
-        <div className="mt-2 flex justify-end">
-          <Button
-            aria-label={`Refresh ${providerLabel} provider status`}
-            disabled={isRefreshing}
-            onClick={() => void refresh()}
-            size="xs"
-            variant="outline"
-          >
-            <RefreshCwIcon className={isRefreshing ? "animate-spin" : undefined} />
-            {isRefreshing ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
+        {status.status === "warning" || status.status === "error" ? (
+          <div className="mt-2 flex justify-end">
+            <Button
+              aria-label={`Refresh ${providerLabel} provider status`}
+              disabled={isRefreshing}
+              onClick={() => void refresh()}
+              size="xs"
+              variant="outline"
+            >
+              <RefreshCwIcon className={isRefreshing ? "animate-spin" : undefined} />
+              {isRefreshing ? "Refreshing..." : "Refresh"}
+            </Button>
+          </div>
+        ) : null}
       </AlertDescription>
       {onDismiss && (
         <AlertAction>

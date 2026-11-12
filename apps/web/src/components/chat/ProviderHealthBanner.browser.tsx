@@ -4,6 +4,7 @@ import type { ServerProvider } from "@t3tools/contracts";
 import { afterEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import { act } from "react";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { ProviderHealthBanner } from "./ProviderHealthBanner";
 
@@ -40,10 +41,15 @@ it.each(["warning", "error"] as const)(
       </QueryClientProvider>,
     );
     const button = page.getByRole("button", { name: "Refresh Work Codex provider status" });
-    await button.click();
+    const nativeButton = screen.container.querySelector("button")!;
+    await act(() => {
+      nativeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      // Both clicks reach React before it commits the disabled state.
+      expect(nativeButton.disabled).toBe(false);
+      nativeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     await expect.element(button).toBeDisabled();
     await expect.element(button).toHaveTextContent("Refreshing...");
-    screen.container.querySelector("button")!.click();
     expect(refreshProviders).toHaveBeenCalledTimes(1);
     expect(refreshProviders).toHaveBeenCalledWith({ instanceId: "codex-work" });
     resolve({ providers: [refreshed] });
@@ -55,6 +61,27 @@ it.each(["warning", "error"] as const)(
     await screen.unmount();
   },
 );
+
+it("keeps disabled provider notices without offering Refresh", async () => {
+  const screen = await render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProviderHealthBanner
+        status={
+          {
+            instanceId: "codex",
+            driver: "codex",
+            status: "disabled",
+            message: "Provider disabled",
+          } as ServerProvider
+        }
+      />
+    </QueryClientProvider>,
+  );
+  await expect.element(page.getByText("Provider disabled")).toBeVisible();
+  expect(screen.container.querySelector("button")).toBeNull();
+  expect(refreshProviders).not.toHaveBeenCalled();
+  await screen.unmount();
+});
 
 it("reports refresh errors and allows retrying", async () => {
   refreshProviders
