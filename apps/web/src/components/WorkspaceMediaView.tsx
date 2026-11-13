@@ -3,42 +3,30 @@ import { AssetTextView } from "./AssetTextView";
 import { isElectron } from "../env";
 import { useRightPanelStore } from "../rightPanelStore";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import type { ProjectId, ThreadId, ProjectIssueAssetUrlInput } from "@t3tools/contracts";
-import { isImagePreviewPath } from "@t3tools/shared/filePreview";
+import {
+  filePreviewKind,
+  officePreviewKind,
+  type FilePreviewKind,
+} from "@t3tools/shared/filePreview";
 import { readNativeApi } from "../nativeApi";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
+const OfficeViewer = lazy(() => import("./files/OfficeViewer"));
+const BinaryViewer = lazy(() => import("./files/BinaryViewer"));
+const FontViewer = lazy(() => import("./files/FontViewer"));
+const MermaidFileViewer = lazy(() => import("./files/MermaidFileViewer"));
+const PreviewImage = lazy(() =>
+  import("./files/PreviewImage").then((module) => ({ default: module.PreviewImage })),
+);
 
 export function workspaceMediaKind(
   name: string,
-): "image" | "html" | "pdf" | "video" | "audio" | "binary" | null {
-  const extension = name.split(".").at(-1)?.toLowerCase();
-  if (isImagePreviewPath(name)) return "image";
-  if (["html", "htm"].includes(extension ?? "")) return "html";
-  if (extension === "pdf") return "pdf";
-  if (["mp4", "webm", "mov"].includes(extension ?? "")) return "video";
-  if (["mp3", "wav", "ogg", "m4a"].includes(extension ?? "")) return "audio";
-  if (
-    [
-      "zip",
-      "gz",
-      "tar",
-      "7z",
-      "exe",
-      "dll",
-      "bin",
-      "docx",
-      "xlsx",
-      "heic",
-      "heif",
-      "woff",
-      "woff2",
-      "ttf",
-      "otf",
-    ].includes(extension ?? "")
-  )
-    return "binary";
-  return null;
+): Exclude<FilePreviewKind, "text" | "markdown" | "unsupported"> | "binary" | "table" | null {
+  const kind = filePreviewKind({ name });
+  if (kind === "text" && /\.(csv|tsv)$/iu.test(name)) return "table";
+  if (kind === "text" || kind === "markdown") return null;
+  return kind === "unsupported" ? "binary" : kind;
 }
 
 export function WorkspaceMediaView({
@@ -57,7 +45,8 @@ export function WorkspaceMediaView({
   const kind = workspaceMediaKind(name) ?? "binary";
   const [source, setSource] = useState(false);
   const isMarkdown = /\.(md|markdown)$/iu.test(name);
-  const isText = isMarkdown || /\.(txt|json|csv|css|js|ts|log)$/iu.test(name);
+  const isText = ["markdown", "text"].includes(filePreviewKind({ name }));
+  const officeKind = officePreviewKind({ name });
   const [actualSize, setActualSize] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const grant = useQuery({
@@ -86,6 +75,19 @@ export function WorkspaceMediaView({
   if (!grant.data) return <div className="p-4">Loading file…</div>;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-2">
+      <a className="self-end underline" href={grant.data} download={name}>
+        Download {name}
+      </a>
+      <Suspense fallback={<p role="status">Loading preview…</p>}>
+        {officeKind && (
+          <OfficeViewer key={grant.data} src={grant.data} name={name} kind={officeKind} />
+        )}
+        {(kind === "archive" || kind === "sqlite") && (
+          <BinaryViewer key={grant.data} src={grant.data} name={name} kind={kind} />
+        )}
+        {kind === "font" && <FontViewer key={grant.data} src={grant.data} name={name} />}
+        {kind === "mermaid" && <MermaidFileViewer key={grant.data} src={grant.data} />}
+      </Suspense>
       {actionError && <p role="alert">{actionError}</p>}
       {kind === "html" && isElectron && threadId && (
         <button
@@ -123,7 +125,7 @@ export function WorkspaceMediaView({
             relativePath,
           }}
         >
-          <AssetTextView url={grant.data} markdown={isMarkdown && !source} />
+          <AssetTextView url={grant.data} name={name} markdown={isMarkdown && !source} />
         </AssetDocumentContext.Provider>
       )}
       {kind === "binary" && !isText && (
@@ -161,14 +163,20 @@ export function WorkspaceMediaView({
           <button className="self-end" onClick={() => setActualSize(!actualSize)}>
             {actualSize ? "Fit" : "Actual size"}
           </button>
-          <img
-            alt={name}
-            src={grant.data}
-            referrerPolicy="no-referrer"
-            className={
-              actualSize ? "max-w-none self-start" : "max-h-full max-w-full object-contain"
-            }
-          />
+          {/\.(heic|heif|tif|tiff)$/iu.test(name) ? (
+            <Suspense fallback={<p>Decoding image…</p>}>
+              <PreviewImage key={grant.data} name={name} src={grant.data} />
+            </Suspense>
+          ) : (
+            <img
+              alt={name}
+              src={grant.data}
+              referrerPolicy="no-referrer"
+              className={
+                actualSize ? "max-w-none self-start" : "max-h-full max-w-full object-contain"
+              }
+            />
+          )}
         </>
       )}
       {((kind === "html" && !source) || kind === "pdf") && (

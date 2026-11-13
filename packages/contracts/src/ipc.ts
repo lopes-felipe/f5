@@ -813,6 +813,11 @@ export interface DesktopNotificationsBridge {
 }
 
 export interface DesktopBridge {
+  takeAppActivations?: () => Promise<
+    readonly import("./desktopAppActivation").DesktopAppActivationRequest[]
+  >;
+  onAppActivationsAvailable?: (listener: () => void) => () => void;
+  completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
   readonly notifications?: DesktopNotificationsBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;

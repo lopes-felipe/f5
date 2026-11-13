@@ -21,7 +21,8 @@ import { shutdownOnLauncherLoss } from "./launcherPipes";
  * @module CliConfig
  */
 import { Config, Data, Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/unstable/cli";
+import { openInDesktopApp } from "@t3tools/shared/desktopAppControl";
 import { NetService } from "@t3tools/shared/Net";
 import { legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 import {
@@ -808,9 +809,42 @@ const traceSummarizeCommand = Command.make("summarize", {
 const traceCommand = Command.make("trace", {}).pipe(
   Command.withSubcommands([traceSummarizeCommand]),
 );
+const appCommand = Command.make("app", {
+  path: Argument.string("path").pipe(Argument.optional),
+}).pipe(
+  Command.withDescription("Open a project in the running F5 desktop app."),
+  Command.withHandler(({ path: directory }) =>
+    Effect.gen(function* () {
+      const parent = yield* t3Base;
+      const base = yield* resolveBaseDir(
+        optionStringToTrimmedUndefined(parent.t3Home) ??
+          process.env.F5_HOME ??
+          process.env.T3CODE_HOME,
+      );
+      const state =
+        optionStringToTrimmedUndefined(parent.stateDir) ??
+        process.env.F5_STATE_DIR ??
+        process.env.T3CODE_STATE_DIR;
+      const stateDir = state
+        ? yield* resolveStateDir(state)
+        : (yield* Path.Path).join(base, "userdata");
+      yield* Effect.tryPromise({
+        try: () =>
+          openInDesktopApp(
+            stateDir,
+            Option.getOrElse(directory, () => process.cwd()),
+          ),
+        catch: (error) =>
+          new StartupError({
+            message: error instanceof Error ? error.message : "Cannot reach the desktop app.",
+          }),
+      });
+    }),
+  ),
+);
 
 export const t3Cli = t3Base.pipe(
   Command.withDescription("Run the F5 server."),
   Command.withHandler((input) => Effect.scoped(makeServerProgram(input))),
-  Command.withSubcommands([agentBridgeStdioCommand, traceCommand]),
+  Command.withSubcommands([agentBridgeStdioCommand, traceCommand, appCommand]),
 );

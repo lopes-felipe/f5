@@ -1,3 +1,4 @@
+import { pdfDocuments } from "../pdfDocuments.ts";
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import {
   applyAcpPlanMode,
@@ -172,6 +173,7 @@ interface PendingUserInput {
 }
 
 interface GrokSessionContext {
+  readonly supportsDocuments: boolean;
   readonly eventIdentity: ProviderAdapterSessionStartInput["mcpEventIdentity"];
   readonly historySessionOrigin: "fresh" | "resumed";
   readonly threadId: ThreadId;
@@ -1096,6 +1098,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           };
 
           const ctx: GrokSessionContext = {
+            supportsDocuments:
+              started.initializeResult.agentCapabilities?.promptCapabilities?.embeddedContext ===
+              true,
             eventIdentity: input.mcpEventIdentity,
             threadId: input.threadId,
             historySessionOrigin: "sessionId" in started.sessionSetupResult ? "fresh" : "resumed",
@@ -1475,6 +1480,34 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
                 ...imagePromptParts,
               ];
+              if (PROVIDER === "antigravity" && ctx.supportsDocuments) {
+                const documents = yield* Effect.tryPromise({
+                  try: () =>
+                    pdfDocuments({
+                      stateDir: serverConfig.stateDir,
+                      sessionKey: "antigravity:" + input.threadId,
+                      baseBytes: Buffer.byteLength(JSON.stringify(promptParts)),
+                      attachments: input.resolvedAttachments ?? [],
+                    }),
+                  catch: (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/prompt",
+                      detail: "Could not persist the document request budget.",
+                      cause,
+                    }),
+                });
+                promptParts.push(
+                  ...documents.map(({ data, uri }) => ({
+                    type: "resource" as const,
+                    resource: {
+                      uri,
+                      mimeType: "application/pdf",
+                      blob: data,
+                    },
+                  })),
+                );
+              }
 
               if (promptParts.length === 0) {
                 return yield* new ProviderAdapterValidationError({

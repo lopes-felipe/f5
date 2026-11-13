@@ -4,6 +4,26 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./video": {
+      "types": "./src/video.ts",
+      "import": "./src/video.ts"
+    },
+    "./desktopAppControl": {
+      "types": "./src/desktopAppControl.ts",
+      "import": "./src/desktopAppControl.ts"
+    },
+    "./imageDimensions": {
+      "types": "./src/imageDimensions.ts",
+      "import": "./src/imageDimensions.ts"
+    },
+    "./mediaPreview": {
+      "types": "./src/mediaPreview.ts",
+      "import": "./src/mediaPreview.ts"
+    },
+    "./delimitedPreview": {
+      "types": "./src/delimitedPreview.ts",
+      "import": "./src/delimitedPreview.ts"
+    },
     "./pendingActivityWindow": {
       "types": "./src/pendingActivityWindow.ts",
       "import": "./src/pendingActivityWindow.ts"

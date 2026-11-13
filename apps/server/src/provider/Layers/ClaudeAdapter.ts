@@ -297,6 +297,7 @@ import type {
   ProviderOneOffPromptResult,
 } from "../Services/ProviderAdapter.ts";
 import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import { pdfDocuments } from "../pdfDocuments.ts";
 import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.ts";
 import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import {
@@ -1958,6 +1959,8 @@ function buildUserMessageEffect(
   dependencies: {
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
+    readonly documentBudgetKey?: string;
+    readonly stateDir?: string;
     readonly activeModel?: string;
     readonly sessionModel?: string | undefined;
     readonly allowsWorkspaceEdits: boolean;
@@ -2039,6 +2042,30 @@ ${promptText}`
 
     if (text.length > 0) {
       sdkContent.push({ type: "text", text });
+    }
+    if (dependencies.stateDir && dependencies.documentBudgetKey) {
+      const documents = yield* Effect.tryPromise({
+        try: () =>
+          pdfDocuments({
+            stateDir: dependencies.stateDir!,
+            sessionKey: dependencies.documentBudgetKey!,
+            baseBytes: Buffer.byteLength(JSON.stringify(sdkContent)),
+            attachments: input.resolvedAttachments ?? [],
+          }),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: "Could not persist the document request budget.",
+            cause,
+          }),
+      });
+      sdkContent.unshift(
+        ...documents.map(({ data }) => ({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data },
+        })),
+      );
     }
     return buildUserMessage({ sdkContent, submissionSource: input.submissionSource });
   });
@@ -9542,6 +9569,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const message = yield* buildUserMessageEffect(input, {
           fileSystem,
           attachmentsDir: serverConfig.attachmentsDir,
+          stateDir: serverConfig.stateDir,
+          documentBudgetKey: "claude:" + input.threadId,
           ...(activeModel ? { activeModel, sessionModel: activeModel } : {}),
           allowsWorkspaceEdits,
           // A turn that names no model runs on the session model.
@@ -9683,6 +9712,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           const message = yield* buildUserMessageEffect(input, {
             fileSystem,
             attachmentsDir: serverConfig.attachmentsDir,
+            stateDir: serverConfig.stateDir,
+            documentBudgetKey: "claude:" + input.threadId,
             allowsWorkspaceEdits: context.configuredBase.permissionMode !== "plan",
             sessionModel: getClaudeSessionModel(context),
             reportedCapabilities: yield* reportedCapabilitiesFor(

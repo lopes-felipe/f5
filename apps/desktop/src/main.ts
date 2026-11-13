@@ -240,6 +240,7 @@ import {
 } from "./desktopNotifications";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 import { buildContextMenuTemplate } from "./contextMenuTemplate";
+import { startDesktopAppControl, type DesktopAppRequest } from "@t3tools/shared/desktopAppControl";
 
 const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
@@ -3585,6 +3586,63 @@ async function openProfileOnce(
 const PROMPT_LINK_SCHEME_FOR_BUILD = promptLinkSchemeFor(isDevelopment);
 const PROMPT_LINKS_AVAILABLE_CHANNEL = "desktop:prompt-links-available";
 const promptLinks = new PromptLinkInbox(PROMPT_LINK_SCHEME_FOR_BUILD);
+const appActivations = new Map<
+  string,
+  {
+    request: DesktopAppRequest;
+    profileId: string;
+    senderId?: number;
+    complete: (error?: string) => void;
+  }
+>();
+
+function activateProject(request: DesktopAppRequest): Promise<void> {
+  if (appActivations.has(request.id))
+    return Promise.reject(new Error("Duplicate desktop request."));
+  if (appActivations.size >= 32)
+    return Promise.reject(new Error("Too many pending desktop requests."));
+  const profileId = reopenTargetProfileId();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => complete("The desktop window did not open the project in time."),
+      15_000,
+    );
+    const complete = (error?: string) => {
+      clearTimeout(timer);
+      appActivations.delete(request.id);
+      if (error) reject(new Error(error));
+      else resolve();
+    };
+    appActivations.set(request.id, { request, profileId, senderId: -1, complete });
+    void openProfile(profileId)
+      .then((opened) => {
+        const entry = appActivations.get(request.id);
+        if (!entry) return;
+        if (!opened) {
+          complete("The desktop app is quitting.");
+          return;
+        }
+        const focused = BrowserWindow.getFocusedWindow();
+        const window =
+          focused && profileByWebContentsId.get(focused.webContents.id) === profileId
+            ? focused
+            : BrowserWindow.getAllWindows().find(
+                (candidate) => profileByWebContentsId.get(candidate.webContents.id) === profileId,
+              );
+        if (!window || window.isDestroyed()) {
+          complete("No desktop window is available.");
+          return;
+        }
+        entry.senderId = window.webContents.id;
+        if (process.platform === "darwin") app.focus({ steal: true });
+        window.focus();
+        window.webContents.send("desktop:app-activations-available");
+      })
+      .catch((error: unknown) =>
+        complete(error instanceof Error ? error.message : "Could not open the desktop window."),
+      );
+  });
+}
 
 function registerPromptLinkProtocol(): void {
   const entryScript = entryScriptInArgv(process.argv);
@@ -3751,6 +3809,27 @@ function registerIpcHandlers(): void {
     }
     // With several profiles, the user is told which one the link opened in.
     return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
+  });
+  ipcMain.handle("desktop:take-app-activations", (event) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    return [...appActivations.values()]
+      .filter((entry) => {
+        if (
+          entry.profileId !== runtime.profile.id ||
+          (entry.senderId !== undefined && entry.senderId !== event.sender.id)
+        )
+          return false;
+        entry.senderId = event.sender.id;
+        return true;
+      })
+      .map((entry) => entry.request);
+  });
+  ipcMain.handle("desktop:complete-app-activation", (event, id: string, error?: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    runtimeForRenderer(event.sender.id);
+    const entry = appActivations.get(id);
+    if (entry?.senderId === event.sender.id) entry.complete(error);
   });
   ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
     const profileId = authorizeAppMainFrame(event, "Notification");
@@ -4601,6 +4680,11 @@ async function bootstrap(): Promise<void> {
   await previewRuntime.initialize();
   initializeComputerSystem();
   registerIpcHandlers();
+  const stopAppControl = await startDesktopAppControl(STATE_DIR, activateProject);
+  app.once("will-quit", () => {
+    for (const entry of appActivations.values()) entry.complete("The desktop app is quitting.");
+    void stopAppControl();
+  });
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   configureBackendRequestAuthentication();
   writeDesktopLogHeader("bootstrap backend request authentication configured");

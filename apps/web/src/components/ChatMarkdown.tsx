@@ -3,6 +3,8 @@ import { useOpenLink } from "../hooks/useOpenLink";
 import { useExternalLinkContextMenu } from "../hooks/useExternalLinkContextMenu";
 import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
+import { ChatAssetAudio } from "./ChatAssetAudio";
+import { isWorkspaceAudioPreviewPath } from "@t3tools/shared/mediaPreview";
 import { createContext, useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
@@ -800,6 +802,12 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         ) : null;
       },
       a({ node: _node, href, children, ...props }) {
+        if (
+          href &&
+          isWorkspaceAudioPreviewPath(href) &&
+          (!/^[a-z]+:/iu.test(href) || /^file:/iu.test(href) || /^[a-z]:[\\/]/iu.test(href))
+        )
+          return <ChatAssetAudio src={href} cwd={cwd} />;
         // A thread reference only navigates; it never grants the agent access to the thread.
         const referencedThreadId = href ? threadIdOfThreadReferenceUrl(href) : null;
         if (referencedThreadId)

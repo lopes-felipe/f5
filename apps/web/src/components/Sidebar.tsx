@@ -25,7 +25,13 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import {
+  useCanGoBack,
+  useLocation,
+  useNavigate,
+  useParams,
+  useRouter,
+} from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
@@ -102,7 +108,12 @@ import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
 import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
-import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
+import {
+  SIDEBAR_NAV_ROW_CLASS_NAME,
+  SIDEBAR_VIEWS,
+  SidebarNav,
+  SidebarWorkspaceNavigation,
+} from "./sidebar/SidebarNav";
 import { useNotificationInboxPopover } from "../notificationCenter/inboxStore";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
@@ -197,6 +208,8 @@ export default function Sidebar() {
   const router = useRouter();
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
+  const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
+  const canGoBack = useCanGoBack();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const appSettings = useAppSettingsSelector(selectSidebarSettings);
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
@@ -1423,27 +1436,33 @@ export default function Sidebar() {
           <SidebarFooter className="p-2">
             <SidebarMenu>
               <SidebarMenuItem className="flex items-center gap-1">
-                {isOnSettings || isOnUsage ? (
+                {isOnSettings || isOnUsage || isOnPullRequests ? (
                   <SidebarMenuButton
                     className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                    onClick={() => window.history.back()}
+                    onClick={() => {
+                      if (canGoBack) window.history.back();
+                      else void navigate({ to: "/" });
+                    }}
                   >
                     <ArrowLeftIcon className="size-4" />
                     <span>Back</span>
                   </SidebarMenuButton>
                 ) : (
-                  <SidebarMenuButton
-                    className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                    onClick={() =>
-                      void navigate({
-                        to: "/settings",
-                        search: resolveSettingsNavigationSearch(router.state.location),
-                      })
-                    }
-                  >
-                    <SettingsIcon className="size-4" />
-                    <span>Settings</span>
-                  </SidebarMenuButton>
+                  <>
+                    <SidebarMenuButton
+                      className={SIDEBAR_NAV_ROW_CLASS_NAME}
+                      onClick={() =>
+                        void navigate({
+                          to: "/settings",
+                          search: resolveSettingsNavigationSearch(router.state.location),
+                        })
+                      }
+                    >
+                      <SettingsIcon className="size-4" />
+                      <span>Settings</span>
+                    </SidebarMenuButton>
+                    <SidebarWorkspaceNavigation />
+                  </>
                 )}
                 <Tooltip>
                   <TooltipTrigger

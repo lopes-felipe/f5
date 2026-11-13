@@ -6,11 +6,19 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Open a project in the running desktop app with `f5 app [path]` (or `t3 app [path]`). F5 adds or reuses the project, focuses its window, and starts a new thread.
+- Preview Word, Excel, PowerPoint, OpenDocument, EPUB, RTF and notebooks in the file viewer, along with fonts, Mermaid diagrams, archives and SQLite databases. HEIC and TIFF images are decoded locally.
+- Audio files shared by an agent play inline. Shared files open in the viewer, with a download option for formats without a preview.
+- Claude and Antigravity receive supported PDF attachments as native documents, including scanned pages, within size and page budgets that survive restarts.
+
 - Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
 - Code Review workflows detect the pull request named in the review instructions (a link, or `PR #123` in the project's GitHub repo), open the merged review with a link to it, and can post the merged review to the PR as a comment. Tick **Post merged review to the PR when it finishes** when starting the workflow, or use **Post to PR** on the workflow page. Posted comments end with a footer naming F5 and the reviewer and merge models.
 - Upstream ranks every topic in a lane (Security, Bugs, Perf, Features, Maintenance) with a 0–100 score, and the Inbox opens on a shortlist of the topics worth reviewing today. **Expire backlog…** and an optional **Expire after** setting skip unreviewed topics after a while (security topics never expire), **Areas** choose which features reach the shortlist, a weekly notification counts new features, and an opt-in **Auto-port** queues confident high and critical security fixes, and optionally high-impact bug fixes, after each run. Port threads now add a changelog entry for user-visible changes when the repository keeps a changelog. Every profile that opens the ledger must run this version first: the ledger and `upstream/rules.json` use new formats that older versions cannot read.
 
 ### Changed
+
+- Project settings include renaming, reviewed imports of actions from f5.json or t3.json, and a command palette shortcut. Imported actions start with automatic execution off. Settings, Usage and Pull Requests navigation live together in the sidebar footer, with a Back action on those pages.
+- Large text, CSV and TSV previews load in a worker and render only visible rows to keep the viewer responsive.
 
 - Thread action menus show icons and sections, with path, branch and thread ID under Copy. Nested menus work with the keyboard in the browser and desktop app.
 

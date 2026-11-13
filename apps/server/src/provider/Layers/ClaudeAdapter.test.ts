@@ -5402,6 +5402,50 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("supplies authorized PDF files as native document blocks", () => {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "claude-pdf-"));
+    const harness = makeHarness({ cwd: "/tmp/project-claude-pdf", stateDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(stateDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const bytes = Buffer.from(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count 1 /Kids [3 0 R] >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R >> endobj\n%%EOF",
+      );
+      const file = path.join(stateDir, "scan.pdf");
+      writeFileSync(file, bytes);
+      const attachment = {
+        type: "file" as const,
+        id: "scan-12345678-1234-1234-1234-123456789abc",
+        name: "scan.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: bytes.length,
+        localPath: file,
+      };
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Read the scan",
+        attachments: [],
+        resolvedAttachments: [attachment],
+      });
+      const message = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.isDefined(message);
+      assert.isTrue(JSON.stringify(message?.message.content).includes('"type":"document"'));
+      assert.isTrue(JSON.stringify(message?.message.content).includes(bytes.toString("base64")));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   for (const prompt of ["What's in this image?", "/review Describe this image"]) {
     it.effect(`places images before the final text block: ${prompt}`, () => {
       const stateDir = mkdtempSync(path.join(os.tmpdir(), "claude-attachments-"));
