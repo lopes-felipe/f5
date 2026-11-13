@@ -39,6 +39,10 @@ export interface ProjectionSnapshotQueryShape {
   readonly getRetainedThreadDetails?: (
     threadId: ThreadId,
   ) => Effect.Effect<RetainedThreadDetails, ProjectionRepositoryError>;
+  /** One thread's activities, bounded like the live read model keeps them. */
+  readonly getRetainedThreadActivities?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RetainedThreadDetails["activities"], ProjectionRepositoryError>;
 
   /**
    * Read the latest orchestration projection snapshot.
@@ -54,11 +58,15 @@ export interface ProjectionSnapshotQueryShape {
    *
    * Preserves full thread metadata while bounding historical collections to
    * the same limits enforced by the live projector.
+   *
+   * `skipDormantThreadActivities` leaves `activities` empty for archived
+   * threads with a stopped session, no pending or running turn and no worktree
+   * setup in progress. Only a caller that loads them on first use, with
+   * `getRetainedThreadActivities`, may ask for that.
    */
-  readonly getBootstrapSnapshot: () => Effect.Effect<
-    OrchestrationReadModel,
-    ProjectionRepositoryError
-  >;
+  readonly getBootstrapSnapshot: (options?: {
+    readonly skipDormantThreadActivities?: boolean;
+  }) => Effect.Effect<OrchestrationReadModel, ProjectionRepositoryError>;
 
   /**
    * Read the lightweight startup snapshot used for first paint.

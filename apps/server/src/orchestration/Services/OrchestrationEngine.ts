@@ -14,12 +14,16 @@ import type {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
+  ThreadId,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect, Scope, Stream } from "effect";
 
 import type { OrchestrationDispatchError, OrchestrationOverloadError } from "../Errors.ts";
-import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
+import type {
+  OrchestrationEventStoreError,
+  ProjectionRepositoryError,
+} from "../../persistence/Errors.ts";
 
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
@@ -48,6 +52,16 @@ export interface OrchestrationEngineShape {
    * @returns Effect containing the latest read model.
    */
   readonly getReadModel: () => Effect.Effect<OrchestrationReadModel, never, never>;
+
+  /**
+   * Load the activities of threads the engine started without (archived, idle
+   * ones; see `dormantThreads.ts`). Commands load the threads they name, so
+   * only code that reads `thread.activities` of a thread it did not just
+   * dispatch to needs this, before `getReadModel`. A no-op for loaded threads.
+   */
+  readonly loadThreadActivities?: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
    * Read a bounded page of persisted events after an exclusive sequence cursor.

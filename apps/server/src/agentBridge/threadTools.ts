@@ -383,8 +383,14 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
   );
   const snapshot = host.readSnapshot.pipe(hostError);
 
+  // Thread status and approval summaries read `activities`, which archived, idle threads
+  // start without.
+  const loadActivities = (threadIds: ReadonlyArray<ThreadId>) =>
+    (host.loadThreadActivities?.(threadIds) ?? Effect.void).pipe(hostError);
+
   const requireThread = (caller: AgentBridgeCaller, threadId: string) =>
-    snapshot.pipe(
+    loadActivities([ThreadId.makeUnsafe(threadId)]).pipe(
+      Effect.andThen(snapshot),
       Effect.flatMap((model) => {
         const thread = visibleThread(model, caller, threadId);
         return thread ? Effect.succeed({ model, thread }) : Effect.fail(notFound("Thread"));
@@ -848,7 +854,7 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
         const mine = input.createdByMe
           ? new Set(yield* store.listCreatedThreadIds(caller.client.id).pipe(storeError))
           : null;
-        const threads = model.threads
+        const listed = model.threads
           .filter(
             (thread) =>
               thread.deletedAt === null &&
@@ -858,6 +864,9 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
           )
           .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
           .slice(0, input.limit ?? 20);
+        yield* loadActivities(listed.map((thread) => thread.id));
+        const loaded = new Map((yield* snapshot).threads.map((thread) => [thread.id, thread]));
+        const threads = listed.map((thread) => loaded.get(thread.id) ?? thread);
         return {
           threads: threads.map((thread) => ({
             id: thread.id,

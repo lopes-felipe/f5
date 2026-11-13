@@ -22,6 +22,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
 - The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
 - Starting the server no longer reads every stored activity to find worktree setups a restart interrupted. On a large profile that read stalled the server for several seconds.
+- Starting the server no longer loads the activities of archived threads that are not running. A thread's activities load the first time it is opened or used. On a profile with 2,000 archived threads the server's orchestration state loaded in about a third of the time and used about 540 MB less memory. Set `F5_EAGER_THREAD_ACTIVITIES=1` to load everything at start as before.
 
 ## [0.1.8] - 2026-11-12
 

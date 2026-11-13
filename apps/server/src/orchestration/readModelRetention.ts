@@ -33,6 +33,8 @@ export const observeReadModelRetention = (
   },
   /** `heapUsed` sampled before hydrate; the log reports the change across it. */
   heapUsedBeforeBytes?: number,
+  /** Archived, idle threads whose activities were left in SQLite. */
+  dormantThreads = 0,
 ) => {
   let messages = 0;
   let characters = 0;
@@ -43,6 +45,7 @@ export const observeReadModelRetention = (
     }
   const fields = {
     threads: model.threads.length,
+    dormantThreads,
     messages,
     characters,
     ...(heapUsedBeforeBytes === undefined

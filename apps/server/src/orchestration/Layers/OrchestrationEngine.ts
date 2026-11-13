@@ -1,5 +1,6 @@
 import { makeCommitSideEffects } from "../commitSideEffects.ts";
 import { hydrateDeciderReadModel, withoutDeletedThreadDetails } from "../deciderReadModel.ts";
+import { referencedThreadIds, unloadedDormantThreadIds } from "../dormantThreads.ts";
 import { ProviderControlTarget } from "../../provider/controlTarget.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import {
@@ -18,7 +19,7 @@ import {
 import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
 import { assertWorktreeReady, WorktreeInspectionError } from "../../project/worktreeReadiness.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
-import type { OrchestrationReadModel, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { OrchestrationReadModel, ProjectId } from "@t3tools/contracts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import {
   CommandId,
@@ -26,6 +27,7 @@ import {
   MessageId,
   OrchestrationCommand,
   OrchestrationEvent,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   Cause,
@@ -38,6 +40,7 @@ import {
   Option,
   PubSub,
   Schema,
+  Semaphore,
   ServiceMap,
   Stream,
 } from "effect";
@@ -178,6 +181,29 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   let readModel = createEmptyReadModel(new Date().toISOString());
   const nativeReconciledThreads = new Set<string>();
   let hasDeletedThreads = false;
+  // Archived, idle threads that startup left without activities. One loads the
+  // first time a command or event names it, and stays loaded afterwards.
+  const loadRetainedActivities =
+    process.env.F5_EAGER_THREAD_ACTIVITIES === "1"
+      ? undefined
+      : projectionSnapshotQuery.getRetainedThreadActivities;
+  let dormantThreads: Set<string> = new Set();
+  // Held while the read model is replaced, so a load cannot be lost to a command in flight.
+  const readModelLock = Semaphore.makeUnsafe(1);
+  const loadDormantThreads = Effect.fnUntraced(function* (threadIds: ReadonlyArray<string>) {
+    if (!loadRetainedActivities) return;
+    for (const threadId of threadIds) {
+      if (!dormantThreads.has(threadId)) continue;
+      const activities = yield* loadRetainedActivities(ThreadId.makeUnsafe(threadId));
+      dormantThreads.delete(threadId);
+      readModel = {
+        ...readModel,
+        threads: readModel.threads.map((thread) =>
+          thread.id === threadId ? { ...thread, activities } : thread,
+        ),
+      };
+    }
+  });
 
   const controlNow = yield* ControlDeliveryClock;
   const admission = yield* makeCommandAdmission<CommandEnvelope>();
@@ -593,6 +619,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 ),
               )
             : [];
+        if (dormantThreads.size > 0) {
+          yield* loadDormantThreads(referencedThreadIds(envelope.command, dormantThreads));
+          commandReadModel = readModel;
+        }
         if (hasDeletedThreads && projectionSnapshotQuery.getRetainedThreadDetails)
           commandReadModel = yield* hydrateDeciderReadModel(
             readModel,
@@ -911,7 +941,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionSnapshotExit = yield* Effect.exit(
     withStartupPhaseTiming(
       "orchestration.snapshot.hydrate",
-      projectionSnapshotQuery.getBootstrapSnapshot(),
+      projectionSnapshotQuery.getBootstrapSnapshot({
+        skipDormantThreadActivities: loadRetainedActivities !== undefined,
+      }),
     ),
   );
   if (Exit.isSuccess(projectionSnapshotExit)) {
@@ -939,26 +971,32 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     });
   }
 
+  if (loadRetainedActivities && bootstrapSource === "projection-snapshot")
+    dormantThreads = unloadedDormantThreadIds(readModel);
+  const dormantThreadsAtStartup = dormantThreads.size;
+
   // Bootstrap the in-memory read model from projections when available, then
   // catch up from any newer persisted events.
   yield* Stream.runForEach(
     eventStore.readFromSequence(replayFromSequence, Number.MAX_SAFE_INTEGER),
     (event) =>
       Effect.gen(function* () {
+        if (dormantThreads.size > 0)
+          yield* loadDormantThreads(referencedThreadIds(event, dormantThreads));
         readModel = yield* projectEvent(readModel, event);
       }),
   );
 
   hasDeletedThreads = readModel.threads.some((thread) => thread.deletedAt !== null);
   if (hasDeletedThreads) readModel = withoutDeletedThreadDetails(readModel);
-  yield* observeReadModelRetention(readModel, heapUsedBeforeHydrate);
+  yield* observeReadModelRetention(readModel, heapUsedBeforeHydrate, dormantThreadsAtStartup);
 
   const worker = Effect.gen(function* () {
     for (;;) {
       const envelope = yield* admission.take;
       if (!envelope) return;
       yield* maintenanceLock
-        .withShared(processEnvelope(envelope))
+        .withShared(readModelLock.withPermits(1)(processEnvelope(envelope)))
         .pipe(Effect.ensuring(Effect.suspend(() => releaseEnvelopeAdmission(envelope))));
     }
   });
@@ -973,6 +1011,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const getReadModel: OrchestrationEngineShape["getReadModel"] = () =>
     Effect.sync((): OrchestrationReadModel => readModel);
+
+  const loadThreadActivities: NonNullable<OrchestrationEngineShape["loadThreadActivities"]> = (
+    threadIds,
+  ) =>
+    Effect.suspend(() =>
+      threadIds.some((threadId) => dormantThreads.has(threadId))
+        ? readModelLock.withPermits(1)(loadDormantThreads(threadIds))
+        : Effect.void,
+    );
 
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
@@ -1297,6 +1344,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       event.sequence < (stoppedSequences.get(event.aggregateId) ?? 0),
     inspectQueue: admission.snapshot,
     getReadModel,
+    loadThreadActivities,
     readEvents,
     dispatch,
     acquireMaintenanceLock: maintenanceLock.acquireExclusive,

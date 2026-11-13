@@ -125,6 +125,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
+import { loadThreadActivities } from "../dormantThreads.ts";
 import { commandExecutionIdForRuntimeItem } from "../commandExecutionIds.ts";
 import { isSupersedableToolUpdate, makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
@@ -4541,6 +4542,16 @@ const make = Effect.gen(function* () {
       // An item update decides per activity below; anything else closes the update window.
       if (incomingEvent.type !== "item.updated") yield* flushToolUpdates(incomingEvent.threadId);
       let event = incomingEvent;
+      // Handlers below read the thread's activities. A session normally starts with a command
+      // that already loaded them, so this is a no-op unless a runtime event arrives first.
+      yield* loadThreadActivities(orchestrationEngine, [incomingEvent.threadId]).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("provider runtime ingestion could not load thread activities", {
+            threadId: incomingEvent.threadId,
+            cause,
+          }),
+        ),
+      );
       const lookupStarted = probe ? performance.now() : 0;
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);

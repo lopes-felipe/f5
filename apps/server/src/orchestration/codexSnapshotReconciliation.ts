@@ -15,6 +15,7 @@ import type { ProviderThreadTurnSnapshot } from "../provider/Services/ProviderAd
 import type { ProviderServiceShape } from "../provider/Services/ProviderService.ts";
 import type { ProviderSessionDirectoryShape } from "../provider/Services/ProviderSessionDirectory.ts";
 import { commandExecutionIdForRuntimeItem } from "./commandExecutionIds.ts";
+import { loadThreadActivities } from "./dormantThreads.ts";
 import { truncateCommandTranscriptOutput } from "./outputTruncation.ts";
 import { makeHistoryRecoveredSessionSet } from "./providerTerminalLifecycle.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
@@ -430,6 +431,21 @@ export const reconcileCodexThreadSnapshots = (
           if (input.skipStoppedBindings && binding.status === "stopped") {
             return;
           }
+
+          // Recovery verifies provider items against this thread's recorded activities, and
+          // opening an archived thread reaches here before any command has loaded them.
+          const activitiesLoaded = yield* loadThreadActivities(dependencies.orchestrationEngine, [
+            threadId,
+          ]).pipe(
+            Effect.as(true),
+            Effect.catch((cause) =>
+              Effect.logWarning("codex snapshot reconciliation could not load thread activities", {
+                threadId,
+                cause,
+              }).pipe(Effect.as(false)),
+            ),
+          );
+          if (!activitiesLoaded) return;
 
           const currentThread = yield* getCurrentThread(threadId);
           if (!currentThread || currentThread.deletedAt !== null) {

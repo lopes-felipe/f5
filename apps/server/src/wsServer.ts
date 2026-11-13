@@ -395,6 +395,7 @@ import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
+import { loadThreadActivities } from "./orchestration/dormantThreads.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
@@ -3569,6 +3570,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
       Effect.mapError(toAgentBridgeHostError),
     ),
+    loadThreadActivities: (threadIds) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(({ orchestrationEngine }) =>
+          loadThreadActivities(orchestrationEngine, threadIds),
+        ),
+        Effect.mapError(toAgentBridgeHostError),
+      ),
     getThreadDetails: (threadId) =>
       projectionReadModelQuery
         .getThreadDetails({ threadId })
@@ -3882,6 +3890,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return;
         }
         const { orchestrationEngine, providerSessionDirectory } = runtimeOption.value;
+        // A thread a client opened is no longer dormant, whatever provider it uses.
+        yield* loadThreadActivities(orchestrationEngine, [params.threadId]);
         const reconciliation = yield* reconcileCodexThreadSnapshots(
           {
             orchestrationEngine,

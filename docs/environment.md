@@ -23,6 +23,7 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 | `F5_BACKUP_MIN_FREE_BYTES`         | Free disk space restore staging leaves; defaults to 512 MiB                                                                      |
 | `F5_RELEASE_REPOSITORY`            | Marketing site build: GitHub `owner/name` for download links; defaults to `lopes-felipe/f5`                                      |
 | `F5_TRUSTED_PROXIES`               | Reverse proxies on other hosts whose `X-Forwarded-*` headers are honored: comma-separated IP addresses or CIDR ranges            |
+| `F5_EAGER_THREAD_ACTIVITIES`       | Set to `1` to load every thread's activities at server start; archived threads that are not running otherwise load on first use  |
 | `T3CODE_PORT`                      | Server port                                                                                                                      |
 | `T3CODE_MODE`                      | Operating mode                                                                                                                   |
 | `T3CODE_AUTH_TOKEN`                | Authentication token for WebSocket connections                                                                                   |
