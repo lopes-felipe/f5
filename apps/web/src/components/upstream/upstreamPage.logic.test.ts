@@ -285,6 +285,12 @@ describe("upstream page logic", () => {
     });
   });
 
+  it("validates and keeps the queue tab", () => {
+    expect(validateUpstreamSearch({ queue: "needs-you", topic: "pr-3" })).toEqual({ queue: "needs-you", topic: "pr-3" });
+    expect(validateUpstreamSearch({ queue: "everything" })).toEqual({});
+    expect(compactUpstreamSearch({ list: "inbox", queue: "history" })).toEqual({ queue: "history" });
+  });
+
   it("summarizes the header state", () => {
     const relative = () => "5m ago";
     const next = () => "Tue 09:00";

@@ -183,21 +183,18 @@ layer("GitServiceLive", (it) => {
         const host = vi
           .spyOn(GitProcessEnvironment, "managedGitProcessEnvironment")
           .mockImplementation((environment) => policy(environment, "win32"));
-        try {
-          const result = yield* service.execute({
-            operation: "test.windowsLongPaths",
-            cwd: process.cwd(),
-            args: ["config", "--get", "--", "core.longpaths"],
-            ...(stdin === undefined ? {} : { stdin }),
-            allowNonZeroExit: true,
-          });
-          // The native runner also enforces policy. Assert Git's effective value,
-          // independent of whether one or both process layers applied it.
-          assert.equal(result.stdout.trim(), "true");
-        } finally {
-          host.mockRestore();
-        }
-      }),
+        yield* Effect.addFinalizer(() => Effect.sync(() => host.mockRestore()));
+        const result = yield* service.execute({
+          operation: "test.windowsLongPaths",
+          cwd: process.cwd(),
+          args: ["config", "--get", "--", "core.longpaths"],
+          ...(stdin === undefined ? {} : { stdin }),
+          allowNonZeroExit: true,
+        });
+        // The native runner also enforces policy. Assert Git's effective value,
+        // independent of whether one or both process layers applied it.
+        assert.equal(result.stdout.trim(), "true");
+      }).pipe(Effect.scoped),
   );
 
   it.effect("reports corrupt configuration counts as typed errors without echoing the value", () =>
