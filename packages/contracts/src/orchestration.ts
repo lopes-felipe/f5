@@ -1081,6 +1081,12 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(() => []),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
+  /**
+   * Set by the server's in-memory read model for a thread that was archived
+   * before startup: `activities` holds its worktree-setup activity only, and
+   * the rest is still in SQLite. Cleared once the server loads them.
+   */
+  activitiesOmitted: Schema.optional(Schema.Boolean),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
