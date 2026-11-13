@@ -12,7 +12,9 @@ import * as FS from "node:fs";
 import * as Path from "node:path";
 
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "latin1");
-const SNAPSHOT_NAME = /^snapshot-(\d{13})$/;
+/** Directory name of a published automatic snapshot; captures its creation time. */
+export const DATABASE_SNAPSHOT_NAME = /^snapshot-(\d{13})$/;
+const SNAPSHOT_NAME = DATABASE_SNAPSHOT_NAME;
 
 /** Whether `name` is the directory name of a published automatic snapshot. */
 export function isDatabaseSnapshotName(name: string): boolean {

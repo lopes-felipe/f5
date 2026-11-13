@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { allocatedBytes } from "./diskUsage.ts";
 import {
   estimateUnsharedBytes,
+  measureSnapshotRemoval,
   measureSnapshotUsage,
   readSnapshotUsageCache,
   snapshotChunkBytes,
@@ -223,6 +224,130 @@ describe("measureSnapshotUsage", () => {
     FS.mkdirSync(Path.join(dir.backupsDir, `snapshot-${T0 - HOUR}`));
     const result = await measureSnapshotUsage({ ...dir, chunkBytes: CHUNK });
     expect(result.entries.map((entry) => entry.path)).toEqual(dir.snapshots);
+  });
+
+  it("keeps the comparisons it finished when the time budget runs out", async () => {
+    const data = content(50);
+    const dir = makeStateDir([data, data, data, data], data);
+    const compared: string[] = [];
+    const slow = async (older: string) => {
+      compared.push(Path.basename(Path.dirname(older)));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return CHUNK;
+    };
+    // Time for the first comparison only.
+    const first = await measureSnapshotUsage({ ...dir, budgetMs: 250, compare: slow });
+    expect(compared).toEqual([Path.basename(dir.snapshots[0]!)]);
+    expect(first.entries.map((entry) => entry.path)).toEqual([dir.snapshots[0]]);
+    expect(first.failed).toEqual(dir.snapshots.slice(1));
+    expect(first.cache).toHaveLength(1);
+
+    // The next scan starts from the cached pair instead of from the beginning.
+    compared.length = 0;
+    const second = await measureSnapshotUsage({
+      ...dir,
+      cache: first.cache,
+      budgetMs: 250,
+      compare: slow,
+    });
+    expect(compared).toEqual([Path.basename(dir.snapshots[1]!)]);
+    expect(second.entries.map((entry) => entry.path)).toEqual(dir.snapshots.slice(0, 2));
+    expect(second.cache).toHaveLength(2);
+  });
+
+  it("stops a comparison that is still reading when the deadline passes", async () => {
+    const data = content(200);
+    const { olderFile, newerFile } = writePair(data, data);
+    await expect(
+      estimateUnsharedBytes(olderFile, newerFile, { chunkBytes: CHUNK, deadlineAt: Date.now() }),
+    ).rejects.toThrow("ran out of time");
+  });
+});
+
+describe("estimateUnsharedBytes against several files", () => {
+  it("counts only the chunks that none of the other files holds", async () => {
+    const root = makeRoot();
+    const base = content(100);
+    const write = (name: string, data: Buffer) => {
+      const path = Path.join(root, name);
+      FS.writeFileSync(path, data);
+      return path;
+    };
+    const file = write("file", base);
+    // Chunks 1 and 2 are gone from the first file, 2 and 3 from the second.
+    const first = write("first", rewriteChunks(base, [1, 2]));
+    const second = write("second", rewriteChunks(base, [2, 3]));
+    expect(await estimateUnsharedBytes(file, [first, second], { chunkBytes: CHUNK })).toBe(CHUNK);
+    expect(await estimateUnsharedBytes(file, [first], { chunkBytes: CHUNK })).toBe(2 * CHUNK);
+    expect(await estimateUnsharedBytes(file, [], { chunkBytes: CHUNK })).toBe(100 * CHUNK);
+  });
+});
+
+describe("measureSnapshotRemoval", () => {
+  const T0 = 1_790_000_000_000;
+
+  /** Snapshots A, B, C (oldest first) and a live database, as chunk rewrites of one base. */
+  function makeChain() {
+    const root = makeRoot();
+    const a = content(100);
+    // Chunk 5 changes between B and C: A and B share it, C does not have it.
+    // Chunk 9 changes between A and B, and chunk 20 after C.
+    const b = rewriteChunks(a, [9]);
+    const c = rewriteChunks(b, [5]);
+    const live = rewriteChunks(c, [20]);
+    const snapshots = [a, b, c].map((data, index) => {
+      const path = Path.join(root, "backups", `snapshot-${T0 + index * 3_600_000}`);
+      FS.mkdirSync(path, { recursive: true });
+      FS.writeFileSync(Path.join(path, "state.sqlite"), data);
+      return path;
+    });
+    const liveDbPath = Path.join(root, "state.sqlite");
+    FS.writeFileSync(liveDbPath, live);
+    const removal = (snapshotPath: string) =>
+      measureSnapshotRemoval({ snapshotPath, liveDbPath, chunkBytes: CHUNK });
+    return { backupsDir: Path.join(root, "backups"), liveDbPath, snapshots, removal };
+  }
+
+  it("frees nothing for a middle snapshot whose changed block an older snapshot still holds", async () => {
+    const chain = makeChain();
+    // The scan charges B one chunk (chunk 5, which C lacks), but A still holds it.
+    const usage = await measureSnapshotUsage({ ...chain, chunkBytes: CHUNK });
+    const allocated = allocatedBytes(FS.statSync(Path.join(chain.snapshots[1]!, "state.sqlite")));
+    expect(usage.entries[1]).toEqual({ path: chain.snapshots[1], sharedBytes: allocated - CHUNK });
+    expect(await chain.removal(chain.snapshots[1]!)).toBe(0);
+  });
+
+  it("adds up to the same total whichever order snapshots are removed in", async () => {
+    // A holds chunk 9 alone; A and B hold chunk 5 between them.
+    const oldestFirst = makeChain();
+    const freedOldestFirst: number[] = [];
+    for (const snapshot of oldestFirst.snapshots.slice(0, 2)) {
+      freedOldestFirst.push((await oldestFirst.removal(snapshot))!);
+      FS.rmSync(snapshot, { recursive: true });
+    }
+    expect(freedOldestFirst).toEqual([CHUNK, CHUNK]);
+
+    const middleFirst = makeChain();
+    const freedMiddleFirst: number[] = [];
+    for (const snapshot of [middleFirst.snapshots[1]!, middleFirst.snapshots[0]!]) {
+      freedMiddleFirst.push((await middleFirst.removal(snapshot))!);
+      FS.rmSync(snapshot, { recursive: true });
+    }
+    expect(freedMiddleFirst).toEqual([0, 2 * CHUNK]);
+  });
+
+  it("measures the newest snapshot against the live database", async () => {
+    const chain = makeChain();
+    // C differs from B in chunk 5 and from the live database in chunk 20.
+    expect(await chain.removal(chain.snapshots[2]!)).toBe(0);
+    FS.rmSync(chain.snapshots[1]!, { recursive: true });
+    FS.rmSync(chain.snapshots[0]!, { recursive: true });
+    expect(await chain.removal(chain.snapshots[2]!)).toBe(CHUNK);
+  });
+
+  it("returns null for a directory that is not a listed snapshot", async () => {
+    const chain = makeChain();
+    expect(await chain.removal(Path.join(chain.backupsDir, "snapshot-1790009999999"))).toBeNull();
   });
 });
 

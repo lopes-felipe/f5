@@ -166,8 +166,8 @@ export function StorageAutomationSettings() {
           <span className="block text-xs text-muted-foreground">
             Hourly copy-on-write copies of this profile’s database in its backups folder, keeping 24
             hourly and 7 daily copies. On APFS a copy only takes space for data that has changed
-            since, and the history is thinned when the disk has under 10 GB free. Skipped on volumes
-            that cannot clone files.
+            since, and the history is thinned while the disk stays under 10 GB free. Skipped on
+            volumes that cannot clone files.
           </span>
         </span>
         <Switch

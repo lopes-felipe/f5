@@ -236,8 +236,51 @@ it("removes a snapshot directory that an earlier cleanup left empty", async () =
   const f = await snapshotFixture();
   await FS.rm(Path.join(f.path, "state.sqlite"));
   await FS.rm(Path.join(f.path, "state.sqlite-wal"));
-  await executeStorageTask(await snapshotRemoval(f.path, f.root), []);
+  const result = (await executeStorageTask(
+    await snapshotRemoval(f.path, f.root),
+    [],
+  )) as StorageFileInspection;
+  // Nothing to free, but the caller has to know the target is gone.
+  expect(result).toMatchObject({ removedBytes: 0, removedDirectory: true });
   expect(await FS.readdir(f.root)).toEqual([]);
+});
+it("reports what removing a snapshot frees while the snapshots next to it are kept", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-storage-worker-"));
+  roots.push(root);
+  const backups = Path.join(root, "backups");
+  // Whole chunks on every platform's copy-on-write unit.
+  const block = 16 * 1024;
+  const pages = (rewritten: ReadonlyArray<number>) => {
+    const data = Buffer.alloc(16 * block, "page");
+    for (const index of rewritten) data.fill("old!", index * block, (index + 1) * block);
+    return data;
+  };
+  // Oldest first. The oldest and the middle one share block 5, which the
+  // newest no longer has; only the oldest still has block 9.
+  const versions = [pages([5, 9]), pages([5]), pages([])];
+  const snapshots: string[] = [];
+  for (const [index, data] of versions.entries()) {
+    const path = Path.join(backups, `snapshot-${1_790_000_000_000 + index * 3_600_000}`);
+    await FS.mkdir(path, { recursive: true });
+    await FS.writeFile(Path.join(path, "state.sqlite"), data);
+    snapshots.push(path);
+  }
+  await FS.writeFile(Path.join(root, "state.sqlite"), pages([]));
+
+  const middle = (await executeStorageTask(
+    await snapshotRemoval(snapshots[1]!, backups),
+    [],
+  )) as StorageFileInspection;
+  expect(middle.removedBytes).toBeGreaterThanOrEqual(16 * block);
+  expect(middle).toMatchObject({ reclaimedBytes: 0, removedDirectory: true });
+
+  // With the middle one gone, the oldest is the last holder of both blocks.
+  const oldest = (await executeStorageTask(
+    await snapshotRemoval(snapshots[0]!, backups),
+    [],
+  )) as StorageFileInspection;
+  expect(oldest).toMatchObject({ reclaimedBytes: 2 * block, removedDirectory: true });
+  expect(await FS.readdir(backups)).toEqual([Path.basename(snapshots[2]!)]);
 });
 it("leaves a snapshot directory in place while it still holds something", async () => {
   const f = await snapshotFixture();

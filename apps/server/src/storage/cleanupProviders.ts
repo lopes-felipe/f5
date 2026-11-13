@@ -9,7 +9,11 @@ import type {
   StorageDiscoverySettings,
 } from "@t3tools/contracts";
 import { formatByteSize } from "@t3tools/shared/byteSize";
-import { isDatabaseSnapshotName, listDatabaseSnapshots } from "../persistence/databaseFiles.ts";
+import {
+  DATABASE_SNAPSHOT_NAME,
+  isDatabaseSnapshotName,
+  listDatabaseSnapshots,
+} from "../persistence/databaseFiles.ts";
 import { runStorageTask, type StorageFileInspection } from "./storageWorker.ts";
 import { type FileIdentity } from "./diskUsage.ts";
 import {
@@ -35,8 +39,6 @@ export const MACHINE_CATEGORY_IDS: ReadonlySet<StorageCleanupCategoryId> = new S
   "electronDownloadCache",
   "nodeGypCache",
 ]);
-/** Directories written by storage/databaseSnapshots.ts. */
-const DATABASE_SNAPSHOT_DIR = /^snapshot-\d{13}$/;
 const DAY_MS = 86400_000;
 export interface CleanupFileReview {
   providerId: StorageCleanupCategoryId;
@@ -66,8 +68,8 @@ interface Provider {
   children?: RegExp;
   /** Matching children must be older than this; seven days unless set. */
   childMinAgeMs?: (name: string) => number;
-  /** Never offer the newest matching child (by name) for deletion. */
-  keepNewestChild?: boolean;
+  /** Never offer the newest database snapshot among the children for deletion. */
+  keepNewestSnapshot?: boolean;
 }
 /**
  * Whether a reviewed path may be removed without machine cleanup enabled:
@@ -135,9 +137,9 @@ export function cleanupProviders(input: {
         /^(?:state-before-[\w.-]+\.sqlite|daily-\d{13}-[a-f0-9-]{36}\.f5backup)$/.test(name),
       // Automatic database snapshots; storage/databaseSnapshots.ts prunes them itself.
       // The newest one is the copy most likely to be needed, so it is never offered.
-      children: DATABASE_SNAPSHOT_DIR,
+      children: DATABASE_SNAPSHOT_NAME,
       childMinAgeMs: () => 0,
-      keepNewestChild: true,
+      keepNewestSnapshot: true,
     },
     {
       id: "f5ApplicationLogs",
@@ -339,7 +341,6 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error("Cleanup root is not a real directory.");
   const candidates: string[] = [];
-  const children: string[] = [];
   if (provider.files || provider.children) {
     for (const entry of await FS.readdir(root, { withFileTypes: true })) {
       const path = Path.join(root, entry.name);
@@ -358,7 +359,6 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
               candidates.push(Path.join(path, name));
           }
         } else {
-          children.push(path);
           if (
             (await FS.lstat(path)).mtimeMs <
             Date.now() - (provider.childMinAgeMs?.(entry.name) ?? 7 * DAY_MS)
@@ -368,8 +368,11 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
       }
     }
   } else candidates.push(root);
-  if (provider.keepNewestChild && children.length > 0) {
-    const newest = children.toSorted().at(-1);
+  if (provider.keepNewestSnapshot) {
+    // The same rule as everywhere else decides what a snapshot is: a newer
+    // directory without a database must not take the protection from the
+    // newest real copy, and is itself offered for removal.
+    const newest = listDatabaseSnapshots(root)[0]?.path;
     return candidates.filter((path) => path !== newest);
   }
   return candidates;
@@ -381,6 +384,8 @@ export async function scanCleanupProviders(input: {
   settings: StorageDiscoverySettings;
   /** Keeps snapshot comparison results between scans; snapshots are immutable. */
   snapshotUsageCachePath?: string;
+  /** Time for one backups directory's comparisons; the worker's default when unset. */
+  snapshotUsageBudgetMs?: number;
   signal?: AbortSignal;
 }) {
   const categories: StorageCleanupCategoryUsage[] = [],
@@ -390,11 +395,9 @@ export async function scanCleanupProviders(input: {
    * A directory walk counts those bytes once per clone.
    */
   const sharedSnapshotBytes = new Map<string, number>();
-  const knownSnapshotUsage = input.snapshotUsageCachePath
+  let knownSnapshotUsage: ReadonlyArray<SnapshotUsageCacheEntry> = input.snapshotUsageCachePath
     ? await readSnapshotUsageCache(input.snapshotUsageCachePath)
     : [];
-  const currentSnapshotUsage: SnapshotUsageCacheEntry[] = [];
-  const comparedBackupsDirs: string[] = [];
   const withinBackupsDir = (directory: string, path: string) =>
     path.startsWith(directory + Path.sep);
   for (const provider of cleanupProviders({
@@ -415,27 +418,56 @@ export async function scanCleanupProviders(input: {
         // The newest snapshot is never a candidate, but it is still a clone
         // that a directory walk counts in full, so compare even without candidates.
         let snapshotUsage: SnapshotUsageResult | null = null;
-        if (provider.id === "f5Backups" && listDatabaseSnapshots(root).length > 0) {
-          snapshotUsage = await runStorageTask<SnapshotUsageResult>(
-            {
-              kind: "snapshotUsage",
-              backupsDir: root,
-              liveDbPath: Path.join(Path.dirname(root), "state.sqlite"),
-              cache: knownSnapshotUsage.filter((entry) => withinBackupsDir(root, entry.older)),
-            },
-            input.signal,
-          ).catch(() => null);
+        if (provider.id === "f5Backups") {
+          const known = knownSnapshotUsage.filter((entry) => withinBackupsDir(root, entry.older));
+          // Saves a worker start for a profile without snapshots. The worker
+          // listed this directory within its time bound a moment ago
+          // (providerCandidates above), so this read is not the one that stalls.
+          const hasSnapshots = (await FS.readdir(root).catch(() => [] as string[])).some(
+            isDatabaseSnapshotName,
+          );
+          snapshotUsage = hasSnapshots
+            ? await runStorageTask<SnapshotUsageResult>(
+                {
+                  kind: "snapshotUsage",
+                  backupsDir: root,
+                  liveDbPath: Path.join(Path.dirname(root), "state.sqlite"),
+                  cache: known,
+                  ...(input.snapshotUsageBudgetMs === undefined
+                    ? {}
+                    : { budgetMs: input.snapshotUsageBudgetMs }),
+                },
+                input.signal,
+              ).catch(() => null)
+            : { entries: [], failed: [], cache: [] };
           input.signal?.throwIfAborted();
           if (snapshotUsage) {
-            sharedSnapshotBytes.set(
-              root,
-              snapshotUsage.entries.reduce((sum, entry) => sum + entry.sharedBytes, 0),
-            );
-            currentSnapshotUsage.push(...snapshotUsage.cache);
-            comparedBackupsDirs.push(root);
+            if (snapshotUsage.entries.length > 0)
+              sharedSnapshotBytes.set(
+                root,
+                snapshotUsage.entries.reduce((sum, entry) => sum + entry.sharedBytes, 0),
+              );
+            // Store this directory's finished comparisons now: a later
+            // provider that is cancelled or fails must not cost them.
+            if (
+              input.snapshotUsageCachePath &&
+              JSON.stringify(known) !== JSON.stringify(snapshotUsage.cache)
+            ) {
+              knownSnapshotUsage = [
+                ...knownSnapshotUsage.filter((entry) => !withinBackupsDir(root, entry.older)),
+                ...snapshotUsage.cache,
+              ];
+              await writeSnapshotUsageCache(input.snapshotUsageCachePath, knownSnapshotUsage).catch(
+                () => {},
+              );
+            }
           }
         }
         if (!candidates.length) continue;
+        const oldestSnapshot = [
+          ...(snapshotUsage?.entries.map((entry) => entry.path) ?? []),
+          ...(snapshotUsage?.failed ?? []),
+        ].toSorted()[0];
         const inspections = await runStorageTask<
           Array<{ path: string; inspection?: StorageFileInspection; error?: string }>
         >(
@@ -486,6 +518,12 @@ export async function scanCleanupProviders(input: {
             snapshotEstimateMissing = true;
           const bytes =
             sharedBytes === undefined ? logicalBytes : Math.max(0, logicalBytes - sharedBytes);
+          // The figure counts what the next copy lacks. Part of that can still
+          // be held by an older snapshot, so only the oldest frees all of it alone.
+          const sharingNote =
+            path === oldestSnapshot
+              ? "not shared with newer copies"
+              : "not shared with newer copies (less is freed while an older snapshot is kept)";
           if (inspection.identity && inspection.fingerprint)
             reviews.set(path, {
               providerId: provider.id,
@@ -517,10 +555,9 @@ export async function scanCleanupProviders(input: {
                 ? (isSnapshot
                     ? sharedBytes === undefined
                       ? "Automatic database snapshot. It shares unchanged data with the live database, so deleting it may free less than shown · "
-                      : `Automatic database snapshot · ${formatByteSize(logicalBytes)} logical, about ${formatByteSize(bytes)} not shared with newer copies · `
-                    : candidates.filter(
-                          (other) => !DATABASE_SNAPSHOT_DIR.test(Path.basename(other)),
-                        ).length === 1
+                      : `Automatic database snapshot · ${formatByteSize(logicalBytes)} logical, about ${formatByteSize(bytes)} ${sharingNote} · `
+                    : candidates.filter((other) => !isDatabaseSnapshotName(Path.basename(other)))
+                          .length === 1
                       ? "Last recovery copy in this folder · "
                       : "Recovery copy · ") +
                   Math.max(
@@ -569,19 +606,6 @@ export async function scanCleanupProviders(input: {
       targets,
       warnings,
     });
-  }
-  if (input.snapshotUsageCachePath) {
-    // Directories that were compared now list exactly their current pairs;
-    // results for a directory that could not be compared this time are kept.
-    const next = [
-      ...currentSnapshotUsage,
-      ...knownSnapshotUsage.filter(
-        (entry) =>
-          !comparedBackupsDirs.some((directory) => withinBackupsDir(directory, entry.older)),
-      ),
-    ];
-    if (JSON.stringify(next) !== JSON.stringify(knownSnapshotUsage))
-      await writeSnapshotUsageCache(input.snapshotUsageCachePath, next).catch(() => {});
   }
   return { categories, reviews, sharedSnapshotBytes };
 }

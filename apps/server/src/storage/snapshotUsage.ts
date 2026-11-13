@@ -14,11 +14,20 @@
  * are replaced one way only, so a block shared with any newer copy is also
  * shared with the next one; the per-snapshot figures therefore add up to the
  * cost of the whole set, and the figures of the oldest N add up to what
- * deleting those N frees.
+ * deleting those N frees. Deleting a snapshot while an older one is kept
+ * frees less, because the two may share blocks that the next copy lacks;
+ * {@link measureSnapshotRemoval} gives that amount.
  *
  * The comparison works on chunks of the filesystem's copy-on-write unit and
  * samples large files, so the result is an estimate. It cannot see sharing
- * lost without a content change, such as a snapshot restored by a plain copy.
+ * lost without a content change: a snapshot restored or a profile moved by a
+ * plain copy, or a full `VACUUM` that leaves most pages where they were, is
+ * under-reported until retention replaces the snapshots taken before it.
+ *
+ * Everything here reads the live database through its own descriptors, and
+ * closing any descriptor of a file drops the process's POSIX locks on it.
+ * The process that holds the database open must never run this; it belongs
+ * in the storage worker child (`storageWorker.ts`).
  *
  * @module snapshotUsage
  */
@@ -53,6 +62,8 @@ export function snapshotChunkBytes(
 export interface SnapshotComparisonOptions {
   readonly chunkBytes?: number;
   readonly sampleChunks?: number;
+  /** `Date.now()` after which a comparison stops and rejects. */
+  readonly deadlineAt?: number;
 }
 
 /** A snapshot-to-snapshot result. Both files are immutable, so it stays valid while they exist. */
@@ -117,63 +128,69 @@ async function readChunk(
 }
 
 /**
- * Estimated bytes of `olderFile` whose content differs from `newerFile` at the
- * same offset, in whole chunks. A chunk that reaches past the end of the newer
- * file counts as different.
+ * Estimated bytes of `file` whose content, in whole chunks, none of `others`
+ * holds at the same offset. A chunk that reaches past the end of another file
+ * counts as different from it.
  */
 export async function estimateUnsharedBytes(
-  olderFile: string,
-  newerFile: string,
+  file: string,
+  others: string | ReadonlyArray<string>,
   options: SnapshotComparisonOptions = {},
 ): Promise<number> {
   const chunkBytes = options.chunkBytes ?? snapshotChunkBytes();
   const sampleChunks = options.sampleChunks ?? SNAPSHOT_SAMPLE_CHUNKS;
-  const older = await FS.open(olderFile, "r");
+  const handles: FS.FileHandle[] = [];
   try {
-    const newer = await FS.open(newerFile, "r");
-    try {
-      const olderSize = (await older.stat()).size;
-      const newerSize = (await newer.stat()).size;
-      const chunks = Math.ceil(olderSize / chunkBytes);
-      if (chunks === 0) return 0;
-      const sampled = chunks > sampleChunks;
-      const indexes = sampled
-        ? sampledChunkIndexes(chunks, sampleChunks)
-        : Array.from({ length: chunks }, (_, index) => index);
-      let differingChunks = 0;
-      let differingBytes = 0;
-      let cursor = 0;
-      // Scattered reads are far faster with several in flight than one at a time.
-      const reader = async () => {
-        const left = Buffer.allocUnsafe(chunkBytes);
-        const right = Buffer.allocUnsafe(chunkBytes);
-        while (cursor < indexes.length) {
-          const position = indexes[cursor++]! * chunkBytes;
-          const length = Math.min(chunkBytes, olderSize - position);
-          let same = position + length <= newerSize;
-          if (same) {
-            const [leftRead, rightRead] = await Promise.all([
-              readChunk(older, left, length, position),
-              readChunk(newer, right, length, position),
-            ]);
-            same =
-              leftRead === length &&
-              rightRead === length &&
-              left.subarray(0, length).equals(right.subarray(0, length));
-          }
-          if (!same) {
-            differingChunks += 1;
-            differingBytes += length;
-          }
+    for (const path of [file, ...(typeof others === "string" ? [others] : others)])
+      handles.push(await FS.open(path, "r"));
+    const [subject, ...compared] = handles as [FS.FileHandle, ...FS.FileHandle[]];
+    const size = (await subject.stat()).size;
+    const comparedSizes = await Promise.all(
+      compared.map(async (handle) => (await handle.stat()).size),
+    );
+    const chunks = Math.ceil(size / chunkBytes);
+    if (chunks === 0) return 0;
+    const sampled = chunks > sampleChunks;
+    const indexes = sampled
+      ? sampledChunkIndexes(chunks, sampleChunks)
+      : Array.from({ length: chunks }, (_, index) => index);
+    let differingChunks = 0;
+    let differingBytes = 0;
+    let cursor = 0;
+    // Scattered reads are far faster with several in flight than one at a time.
+    const reader = async () => {
+      const left = Buffer.allocUnsafe(chunkBytes);
+      const right = Buffer.allocUnsafe(chunkBytes);
+      while (cursor < indexes.length) {
+        if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt)
+          throw new Error("Snapshot comparison ran out of time.");
+        const position = indexes[cursor++]! * chunkBytes;
+        const length = Math.min(chunkBytes, size - position);
+        let held = false;
+        let leftRead: number | undefined;
+        for (const [index, other] of compared.entries()) {
+          if (position + length > comparedSizes[index]!) continue;
+          const [subjectRead, rightRead] = await Promise.all([
+            leftRead ?? readChunk(subject, left, length, position),
+            readChunk(other, right, length, position),
+          ]);
+          leftRead = subjectRead;
+          held =
+            leftRead === length &&
+            rightRead === length &&
+            left.subarray(0, length).equals(right.subarray(0, length));
+          if (held) break;
         }
-      };
-      await Promise.all(Array.from({ length: COMPARISON_READERS }, reader));
-      return sampled ? Math.round((differingChunks / indexes.length) * olderSize) : differingBytes;
-    } finally {
-      await newer.close();
-    }
+        if (!held) {
+          differingChunks += 1;
+          differingBytes += length;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: COMPARISON_READERS }, reader));
+    return sampled ? Math.round((differingChunks / indexes.length) * size) : differingBytes;
   } finally {
-    await older.close();
+    await Promise.all(handles.map((handle) => handle.close().catch(() => {})));
   }
 }
 
@@ -190,19 +207,31 @@ async function identityOf(path: string): Promise<FileIdentity | null> {
  * Compares every snapshot in `backupsDir` with its successor. Results for
  * snapshot pairs found in `cache` are reused; the newest snapshot is always
  * compared with the live database again, because that file keeps changing.
+ *
+ * With `budgetMs`, comparisons stop once the budget is spent and the
+ * snapshots not reached are reported as `failed`. The pairs that did finish
+ * are returned for the cache, so a volume too slow for one pass still gets
+ * through every pair over a few scans.
  */
 export async function measureSnapshotUsage(
   input: {
     readonly backupsDir: string;
     readonly liveDbPath: string;
     readonly cache?: ReadonlyArray<SnapshotUsageCacheEntry>;
+    readonly budgetMs?: number;
     /** Replaces the file comparison in tests. */
     readonly compare?: (olderFile: string, newerFile: string) => Promise<number>;
   } & SnapshotComparisonOptions,
 ): Promise<SnapshotUsageResult> {
+  const deadlineAt = input.budgetMs === undefined ? input.deadlineAt : Date.now() + input.budgetMs;
+  const expired = () => deadlineAt !== undefined && Date.now() >= deadlineAt;
   const compare =
     input.compare ??
-    ((olderFile: string, newerFile: string) => estimateUnsharedBytes(olderFile, newerFile, input));
+    ((olderFile: string, newerFile: string) =>
+      estimateUnsharedBytes(olderFile, newerFile, {
+        ...input,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      }));
   const oldestFirst = listDatabaseSnapshots(input.backupsDir).toReversed();
   const entries: SnapshotUsageEntry[] = [];
   const failed: string[] = [];
@@ -216,8 +245,10 @@ export async function measureSnapshotUsage(
       const olderIdentity = fileIdentity(olderStat);
       const newerIdentity = await identityOf(newer);
       let unsharedBytes: number;
-      if (newerIdentity === null) {
-        // Nothing newer to share with: the whole file is this snapshot's own.
+      if (newerIdentity === null || newerIdentity.dev !== olderIdentity.dev) {
+        // Nothing newer to share with, or a copy on another volume, which
+        // cannot share blocks however alike it reads: the whole file is this
+        // snapshot's own.
         unsharedBytes = olderStat.size;
       } else {
         const known = successor
@@ -229,6 +260,7 @@ export async function measureSnapshotUsage(
                 sameFileIdentity(entry.newerIdentity, newerIdentity),
             )
           : undefined;
+        if (!known && expired()) throw new Error("Snapshot comparison ran out of time.");
         unsharedBytes = known?.unsharedBytes ?? (await compare(older, newer));
         if (successor) cache.push({ older, olderIdentity, newer, newerIdentity, unsharedBytes });
       }
@@ -241,6 +273,42 @@ export async function measureSnapshotUsage(
     }
   }
   return { entries, failed, cache };
+}
+
+/**
+ * Estimated bytes of a snapshot's `state.sqlite` that removing that snapshot
+ * frees right now: the chunks that neither the next older snapshot nor the
+ * next newer copy holds. Null when the snapshot is not listed.
+ *
+ * A block a snapshot shares with any other copy is also shared with one of
+ * its two neighbours, so this is what one removal frees. Measured just before
+ * each removal, the amounts of several removals add up to what they free
+ * together, in any order.
+ */
+export async function measureSnapshotRemoval(
+  input: {
+    /** The snapshot directory. */
+    readonly snapshotPath: string;
+    readonly liveDbPath: string;
+  } & SnapshotComparisonOptions,
+): Promise<number | null> {
+  const oldestFirst = listDatabaseSnapshots(Path.dirname(input.snapshotPath)).toReversed();
+  const index = oldestFirst.findIndex((snapshot) => snapshot.path === input.snapshotPath);
+  if (index < 0) return null;
+  const databaseOf = (snapshot: { readonly path: string }) =>
+    Path.join(snapshot.path, "state.sqlite");
+  const subject = databaseOf(oldestFirst[index]!);
+  const device = (await storageLstat(subject)).dev;
+  const predecessor = oldestFirst[index - 1];
+  const successor = oldestFirst[index + 1];
+  const neighbours: string[] = [];
+  for (const path of [
+    ...(predecessor ? [databaseOf(predecessor)] : []),
+    successor ? databaseOf(successor) : input.liveDbPath,
+  ])
+    // A copy on another volume cannot share blocks, however alike it reads.
+    if ((await identityOf(path))?.dev === device) neighbours.push(path);
+  return estimateUnsharedBytes(subject, neighbours, input);
 }
 
 const CACHE_VERSION = 1;

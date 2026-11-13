@@ -5146,15 +5146,19 @@ const makeStorageMaintenance = Effect.gen(function* () {
           continue;
         }
         warnings.push(...(outcome.success.warnings ?? []));
-        if (outcome.success.removedBytes) {
+        const removedBytes = outcome.success.removedBytes ?? 0;
+        // An emptied snapshot directory has no bytes to remove, but it is gone.
+        if (removedBytes > 0 || outcome.success.removedDirectory) {
           markStorageMutation(request.operationId);
           perTargetReclaimed.push({
             id,
             path: review.path,
-            // A database snapshot frees only what newer copies do not share.
+            // A database snapshot frees only what the copies next to it do not
+            // share. The worker measures that when an older snapshot is kept;
+            // otherwise the scan's figure is what removal freed.
             reclaimedBytes: Math.min(
-              outcome.success.removedBytes,
-              review.reclaimBytes ?? outcome.success.removedBytes,
+              removedBytes,
+              outcome.success.reclaimedBytes ?? review.reclaimBytes ?? removedBytes,
             ),
             status: "Removed",
           });

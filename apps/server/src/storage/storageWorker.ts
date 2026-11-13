@@ -27,6 +27,8 @@ export type StorageWorkerTask =
       backupsDir: string;
       liveDbPath: string;
       cache: ReadonlyArray<import("./snapshotUsage.ts").SnapshotUsageCacheEntry>;
+      /** Time for comparisons; snapshots not reached are reported as failed. */
+      budgetMs?: number;
     }
   | {
       kind: "checkoutScan";
@@ -54,8 +56,22 @@ export interface StorageFileInspection {
   fingerprint?: string;
   bytes?: number;
   removedBytes?: number;
+  /**
+   * What the removal freed, when that is known to be less than `removedBytes`:
+   * a database snapshot shares blocks with the copies next to it.
+   */
+  reclaimedBytes?: number;
+  /** The target directory itself was removed (an emptied database snapshot). */
+  removedDirectory?: boolean;
   warnings?: Array<{ path: string; reason: string }>;
 }
+/**
+ * Below the snapshotUsage task's own timeout, so a slow volume returns the
+ * comparisons it finished instead of being killed with none of them kept.
+ */
+const SNAPSHOT_USAGE_BUDGET_MS = 90_000;
+/** One snapshot's comparison at removal; past it the scan's estimate is used. */
+const SNAPSHOT_REMOVAL_BUDGET_MS = 30_000;
 export interface StorageMeasurement {
   totalBytes: number;
   entries: number;
@@ -92,7 +108,10 @@ export async function executeStorageTask(
   if (task.kind === "repositories") return discoverRepositories(task.roots);
   if (task.kind === "snapshotUsage") {
     const { measureSnapshotUsage } = await import("./snapshotUsage.ts");
-    return measureSnapshotUsage(task);
+    return measureSnapshotUsage({
+      ...task,
+      budgetMs: task.budgetMs ?? SNAPSHOT_USAGE_BUDGET_MS,
+    });
   }
   if (task.kind === "checkoutScan") {
     const { scanCheckoutGarbage } = await import("./checkoutGarbage.ts");
@@ -210,6 +229,23 @@ export async function executeStorageTask(
   }
   let removedBytes = 0;
   const warnings: Array<{ path: string; reason: string }> = [];
+  // A database snapshot frees only what the snapshots next to it do not hold.
+  // The scan's figure assumed every older snapshot goes first, so measure
+  // against both neighbours as they are now, before the files are gone.
+  const snapshotDatabase =
+    task.providerId === "f5Backups" && isDatabaseSnapshotName(Path.basename(task.path))
+      ? Path.join(task.path, "state.sqlite")
+      : null;
+  let snapshotUnsharedBytes: number | null = null;
+  let snapshotDatabaseBytes: number | null = null;
+  if (snapshotDatabase && enumerated.files.some((file) => file.path === snapshotDatabase)) {
+    const { measureSnapshotRemoval } = await import("./snapshotUsage.ts");
+    snapshotUnsharedBytes = await measureSnapshotRemoval({
+      snapshotPath: task.path,
+      liveDbPath: Path.join(Path.dirname(Path.dirname(task.path)), "state.sqlite"),
+      deadlineAt: Date.now() + SNAPSHOT_REMOVAL_BUDGET_MS,
+    }).catch(() => null);
+  }
   let deletionRoot = task.path;
   let allowedRoot = task.allowedRoot;
   if (task.providerId === "bunDownloadCache") {
@@ -243,8 +279,10 @@ export async function executeStorageTask(
       allowedRoot,
       expectedIdentity: file.identity,
     });
-    if (outcome.kind === "removed") removedBytes += outcome.bytes;
-    else if (outcome.warning) warnings.push(outcome.warning);
+    if (outcome.kind === "removed") {
+      removedBytes += outcome.bytes;
+      if (file.path === snapshotDatabase) snapshotDatabaseBytes = outcome.bytes;
+    } else if (outcome.warning) warnings.push(outcome.warning);
   }
   if (deletionRoot !== task.path) {
     // Prune only ancestors of reviewed files, deepest first. Do not discover
@@ -284,11 +322,8 @@ export async function executeStorageTask(
   // An emptied snapshot directory is not a recovery copy, and one left behind
   // keeps being offered for cleanup. rmdir refuses a directory that gained a
   // file during cleanup.
-  if (
-    task.providerId === "f5Backups" &&
-    isDatabaseSnapshotName(Path.basename(task.path)) &&
-    warnings.length === 0
-  ) {
+  let removedDirectory = false;
+  if (snapshotDatabase && warnings.length === 0) {
     const validated = await validateDeletablePath({
       path: task.path,
       allowedRoot: task.allowedRoot,
@@ -296,16 +331,33 @@ export async function executeStorageTask(
       directoryIdentityOnly: true,
     });
     if (validated.kind === "validated" && validated.stat.isDirectory())
-      await FS.rmdir(task.path).catch((error: NodeJS.ErrnoException) => {
-        if (!["ENOTEMPTY", "EEXIST", "ENOENT"].includes(error.code ?? ""))
-          warnings.push({
-            path: task.path,
-            reason: "Retained snapshot directory: " + String(error),
-          });
-      });
+      removedDirectory = await FS.rmdir(task.path).then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (!["ENOTEMPTY", "EEXIST", "ENOENT"].includes(error.code ?? ""))
+            warnings.push({
+              path: task.path,
+              reason: "Retained snapshot directory: " + String(error),
+            });
+          return false;
+        },
+      );
   }
   // Preserve directories and files created during cleanup; never recursively remove a cache.
-  return { ...result, removedBytes, warnings };
+  return {
+    ...result,
+    removedBytes,
+    ...(snapshotUnsharedBytes !== null && snapshotDatabaseBytes !== null
+      ? {
+          reclaimedBytes: Math.max(
+            0,
+            removedBytes - Math.max(0, snapshotDatabaseBytes - snapshotUnsharedBytes),
+          ),
+        }
+      : {}),
+    ...(removedDirectory ? { removedDirectory } : {}),
+    warnings,
+  };
 }
 
 export async function measureStorageRoots(

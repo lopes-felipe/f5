@@ -7,10 +7,10 @@
  * so these run by default and keep 24 hourly and 7 daily copies.
  *
  * A clone only costs space as the live database diverges from it, but on a
- * busy profile that is a few hundred megabytes per hour. When the volume runs
- * low the history is thinned (see {@link retentionTierForFreeBytes}); new
- * snapshots are still taken, because a fresh clone is what keeps the retained
- * set cheap.
+ * busy profile that is a few hundred megabytes per hour. When the volume stays
+ * low for two snapshots in a row the history is thinned (see
+ * {@link steadyRetentionTier}); new snapshots are still taken, because a fresh
+ * clone is what keeps the retained set cheap.
  *
  * Consistency: the clones are taken while holding the write lock
  * (`BEGIN IMMEDIATE`). No commit can happen and the WAL cannot be reset while
@@ -53,14 +53,15 @@ const PARTIAL_SUFFIX = ".partial";
 
 /** How many of the newest snapshots, and the newest of how many recent days, to keep. */
 export interface SnapshotRetentionTier {
+  readonly name: "normal" | "low" | "critical";
   readonly hourly: number;
   readonly daily: number;
 }
 
 export const SNAPSHOT_RETENTION = {
-  normal: { hourly: 24, daily: 7 },
-  low: { hourly: 6, daily: 3 },
-  critical: { hourly: 2, daily: 0 },
+  normal: { name: "normal", hourly: 24, daily: 7 },
+  low: { name: "low", hourly: 6, daily: 3 },
+  critical: { name: "critical", hourly: 2, daily: 0 },
 } as const satisfies Record<string, SnapshotRetentionTier>;
 
 /**
@@ -73,6 +74,25 @@ export function retentionTierForFreeBytes(freeBytes: number | null): SnapshotRet
   if (freeBytes < CRITICAL_DISK_SPACE_BYTES) return SNAPSHOT_RETENTION.critical;
   if (freeBytes < LOW_DISK_SPACE_BYTES) return SNAPSHOT_RETENTION.low;
   return SNAPSHOT_RETENTION.normal;
+}
+
+/** Free space seen when each backups directory last published a snapshot. */
+const previousFreeBytes = new Map<string, number | null>();
+
+/**
+ * The tier to prune with, given this reading and the one taken at the previous
+ * snapshot. Pruning cannot be undone, so one low reading is not enough: a
+ * build or download that fills the disk at the top of an hour would otherwise
+ * delete most of the history. The history is thinned only as far as both
+ * readings call for, and not at all on the first reading after a start.
+ */
+export function steadyRetentionTier(
+  previous: number | null | undefined,
+  current: number | null,
+): SnapshotRetentionTier {
+  if (previous === undefined || previous === null || current === null)
+    return SNAPSHOT_RETENTION.normal;
+  return retentionTierForFreeBytes(Math.max(previous, current));
 }
 
 async function volumeFreeBytes(directory: string): Promise<number | null> {
@@ -93,7 +113,14 @@ export class DatabaseSnapshotError extends Data.TaggedError("DatabaseSnapshotErr
 }> {}
 
 export type DatabaseSnapshotResult =
-  | { readonly status: "published"; readonly path: string; readonly pruned: number }
+  | {
+      readonly status: "published";
+      readonly path: string;
+      readonly pruned: number;
+      /** The retention tier that was applied, and the free space it was chosen for. */
+      readonly retention: SnapshotRetentionTier["name"];
+      readonly freeBytes: number | null;
+    }
   | {
       readonly status: "skipped";
       readonly reason: "damaged" | "recent" | "missing" | "invalid-header";
@@ -158,7 +185,9 @@ export interface RunDatabaseSnapshotInput {
 
 /**
  * Snapshots to keep: the newest `tier.hourly`, plus the newest of each UTC day
- * for the last `tier.daily` days.
+ * for the last `tier.daily` days. Snapshots dated after `now` (the clock was
+ * set back) only count toward the newest `tier.hourly`: in the daily rule they
+ * would each claim a day, and take today's slot from the snapshots taken since.
  */
 export function selectRetainedSnapshots(
   snapshots: ReadonlyArray<DatabaseSnapshotEntry>,
@@ -167,9 +196,12 @@ export function selectRetainedSnapshots(
 ): Set<string> {
   const newestFirst = snapshots.toSorted((left, right) => right.createdAt - left.createdAt);
   const keep = new Set(newestFirst.slice(0, tier.hourly).map((entry) => entry.name));
+  if (tier.daily <= 0) return keep;
+  const windowStart = now - tier.daily * DAY_MS;
   const days = new Set<number>();
   for (const entry of newestFirst) {
-    if (entry.createdAt < now - tier.daily * DAY_MS) break;
+    if (entry.createdAt > now) continue;
+    if (entry.createdAt < windowStart) break;
     const day = Math.floor(entry.createdAt / DAY_MS);
     if (days.has(day)) continue;
     days.add(day);
@@ -192,11 +224,19 @@ async function removeLeftovers(directory: string) {
   }
 }
 
-async function prune(directory: string, now: number, tier: SnapshotRetentionTier): Promise<number> {
+async function prune(
+  directory: string,
+  now: number,
+  tier: SnapshotRetentionTier,
+  published: string,
+): Promise<number> {
   // Never discard a known-good copy while the live database is damaged.
   if (getDatabaseDamage() !== null) return 0;
   const snapshots = listDatabaseSnapshots(directory);
   const keep = selectRetainedSnapshots(snapshots, now, tier);
+  // Snapshots dated after `now` can fill every slot. The one just taken is the
+  // only copy of the current state, so it stays whatever the rules select.
+  keep.add(published);
   let pruned = 0;
   for (const snapshot of snapshots) {
     if (keep.has(snapshot.name)) continue;
@@ -267,14 +307,17 @@ export const runDatabaseSnapshot = (input: RunDatabaseSnapshotInput) =>
     }
 
     yield* Effect.promise(() => rename(partial, published));
-    const pruned = yield* Effect.promise(async () =>
-      prune(
-        directory,
-        now,
-        retentionTierForFreeBytes(await (input.freeBytes ?? volumeFreeBytes)(directory)),
-      ),
-    );
-    return { status: "published", path: published, pruned } as const;
+    const freeBytes = yield* Effect.promise(() => (input.freeBytes ?? volumeFreeBytes)(directory));
+    const tier = steadyRetentionTier(previousFreeBytes.get(directory), freeBytes);
+    previousFreeBytes.set(directory, freeBytes);
+    const pruned = yield* Effect.promise(() => prune(directory, now, tier, name));
+    return {
+      status: "published",
+      path: published,
+      pruned,
+      retention: tier.name,
+      freeBytes,
+    } as const;
   }).pipe(gate.withPermit);
 
 export const startDatabaseSnapshots = Effect.gen(function* () {
@@ -286,6 +329,13 @@ export const startDatabaseSnapshots = Effect.gen(function* () {
     const result = yield* runDatabaseSnapshot({ dbPath: config.dbPath, directory });
     if (result.status === "unsupported")
       yield* Effect.logInfo("database snapshots unsupported on this volume", { code: result.code });
+    // Thinning deletes recovery copies for good; leave a record of when and why.
+    if (result.status === "published" && result.retention !== "normal")
+      yield* Effect.logWarning("database snapshot history thinned for low disk space", {
+        retention: result.retention,
+        freeBytes: result.freeBytes,
+        pruned: result.pruned,
+      });
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("database snapshot failed", { cause: String(cause) }),
