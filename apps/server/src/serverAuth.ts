@@ -36,14 +36,27 @@ export interface ServerAuthOptions {
   readonly maxFailuresGlobal?: number;
   readonly allowedWebSocketOrigins?: ReadonlyArray<string>;
   /**
-   * Addresses and CIDR ranges of reverse proxies, besides loopback, whose `X-Forwarded-*`
-   * headers are honored. See {@link makeTrustedProxyCheck}.
+   * Addresses and CIDR ranges of reverse proxies. Only a listed proxy's `X-Forwarded-For` is
+   * believed, loopback included: a tunnel or a proxy that passes the header through looks the
+   * same from here, and its clients would choose their own address. `X-Forwarded-Proto` is
+   * honored from loopback as well as from listed proxies. See {@link makeTrustedProxyCheck}.
    */
   readonly trustedProxies?: ReadonlyArray<string>;
 }
 
 /** Whether a socket peer address is a reverse proxy whose forwarded headers are honored. */
 export type TrustedProxyCheck = (address: string) => boolean;
+
+/** Headers a proxy adds. A request that carries one did not come straight from a local client. */
+const FORWARDING_HEADERS = [
+  "forwarded",
+  "via",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-port",
+  "x-forwarded-proto",
+  "x-real-ip",
+] as const;
 
 export interface ServerAuth {
   readonly enabled: boolean;
@@ -72,7 +85,15 @@ export interface ServerAuth {
    * proxied request was refused.
    */
   readonly ignoredForwardedProtoPeer: (request: Http.IncomingMessage) => string | null;
+  /**
+   * Seconds until this request's bearer token will be checked again, when wrong tokens from
+   * its client have locked that client out; null otherwise. Lets a refusal say "wait" (429)
+   * instead of "wrong credential" (401), which a client holding the right token would misread.
+   */
+  readonly bearerRetryAfterSeconds: (request: Http.IncomingMessage) => number | null;
 }
+
+export const AUTH_RATE_LIMITED_MESSAGE = "Too many authentication attempts. Try again later.";
 
 export const REQUEST_HOST_NOT_ALLOWED_MESSAGE =
   "This F5 server has no auth token, so it only answers requests addressed to localhost. " +
@@ -218,9 +239,9 @@ function isLoopbackAddress(value: string): boolean {
 const MAX_FORWARDED_FOR_HOPS = 16;
 
 /**
- * Builds the check for which socket peers are reverse proxies: loopback always, plus the
- * given IP addresses and CIDR ranges (`10.0.0.5`, `172.16.0.0/12`, `fd00::/8`). Throws on an
- * entry that is neither.
+ * Builds the check for which socket peers are listed reverse proxies: the given IP addresses
+ * and CIDR ranges (`10.0.0.5`, `172.16.0.0/12`, `fd00::/8`, `127.0.0.1`). Loopback is not
+ * implied. Throws on an entry that is neither an address nor a range.
  */
 export function makeTrustedProxyCheck(entries: ReadonlyArray<string> = []): TrustedProxyCheck {
   const listed = new Net.BlockList();
@@ -245,7 +266,6 @@ export function makeTrustedProxyCheck(entries: ReadonlyArray<string> = []): Trus
   }
   return (address) => {
     const normalized = address.replace(/^::ffff:/u, "");
-    if (isLoopbackAddress(normalized)) return true;
     const family = Net.isIP(normalized);
     return family !== 0 && listed.check(normalized, family === 4 ? "ipv4" : "ipv6");
   };
@@ -262,11 +282,11 @@ function forwardedAddress(entry: string): string | null {
 }
 
 /**
- * The address of the client that made the request. For a direct connection that is the
- * socket peer. Behind trusted proxies it is the nearest `X-Forwarded-For` entry that is not
- * itself a trusted proxy: each proxy appends the address it saw, so entries are believed
- * from the right only as far as trusted proxies vouch for them, and anything a client
- * wrote into the header itself is never reached.
+ * The address of the client that made the request. For a direct connection, and for any peer
+ * that is not a listed proxy, that is the socket peer. Behind listed proxies it is the nearest
+ * `X-Forwarded-For` entry that is not itself a listed proxy: each proxy appends the address it
+ * saw, so entries are believed from the right only as far as listed proxies vouch for them,
+ * and anything a client wrote into the header itself is never reached.
  */
 function clientAddress(request: Http.IncomingMessage, isTrustedProxy: TrustedProxyCheck): string {
   const peer = sourceAddress(request);
@@ -286,6 +306,18 @@ function clientAddress(request: Http.IncomingMessage, isTrustedProxy: TrustedPro
   return client;
 }
 
+/**
+ * Whether the request came straight from a client on this machine: a loopback peer and no
+ * header a proxy adds. A proxy or tunnel on this machine is a loopback peer too, so the
+ * address alone does not say that. A tunnel that adds no header cannot be told apart.
+ */
+function isDirectLocalRequest(request: Http.IncomingMessage): boolean {
+  return (
+    isLoopbackAddress(sourceAddress(request)) &&
+    FORWARDING_HEADERS.every((name) => request.headers[name] === undefined)
+  );
+}
+
 /** The name in a Host header, without port, brackets or trailing dot; null when malformed. */
 function hostHeaderName(value: string): string | null {
   const host = value.trim().toLowerCase();
@@ -298,6 +330,10 @@ function hostHeaderName(value: string): string | null {
 /** Names that always resolve to this machine: loopback addresses, `localhost` and its subdomains. */
 function isLoopbackName(name: string): boolean {
   return name === "localhost" || name.endsWith(".localhost") || isLoopbackAddress(name);
+}
+
+function retryAfterSeconds(blockedUntil: number, timestamp: number): number {
+  return Math.max(1, Math.ceil((blockedUntil - timestamp) / 1_000));
 }
 
 function bearerToken(request: Http.IncomingMessage): string {
@@ -332,7 +368,12 @@ export function makeServerAuth(
       return normalized === null ? [] : [normalized];
     }),
   );
-  const isTrustedProxy = makeTrustedProxyCheck(options.trustedProxies);
+  // Whose X-Forwarded-For names the client: listed proxies only.
+  const isListedProxy = makeTrustedProxyCheck(options.trustedProxies);
+  // Whose X-Forwarded-Proto is honored. It decides the cookie's Secure flag and the scheme an
+  // Origin must use, nothing a limit depends on, so a proxy on this machine needs no listing.
+  const isTrustedProxy: TrustedProxyCheck = (address) =>
+    isLoopbackAddress(address) || isListedProxy(address);
   const usesTls = (request: Http.IncomingMessage) => requestUsesTls(request, isTrustedProxy);
   // Requests whose wrong token already counted, so one request is one failure.
   const countedTokenFailures = new WeakSet<Http.IncomingMessage>();
@@ -382,15 +423,25 @@ export function makeServerAuth(
     );
   };
 
-  const recordAuthFailure = (source: string, timestamp: number): number => {
+  const sourceBlockedUntil = (source: string, timestamp: number): number => {
+    pruneExpiredAuthFailures(timestamp);
+    return authFailuresBySource.get(source)?.blockedUntil ?? timestamp;
+  };
+
+  const recordSourceFailure = (source: string, timestamp: number): number => {
     const sourceFailures = nextFailureBucket(
       authFailuresBySource.get(source),
       timestamp,
       maxFailuresPerSource,
     );
     authFailuresBySource.set(source, sourceFailures);
+    return sourceFailures.blockedUntil;
+  };
+
+  const recordAuthFailure = (source: string, timestamp: number): number => {
+    const sourceBlocked = recordSourceFailure(source, timestamp);
     globalAuthFailures = nextFailureBucket(globalAuthFailures, timestamp, maxFailuresGlobal);
-    return Math.max(sourceFailures.blockedUntil, globalAuthFailures.blockedUntil);
+    return Math.max(sourceBlocked, globalAuthFailures.blockedUntil);
   };
 
   const respondRateLimited = (
@@ -398,12 +449,9 @@ export function makeServerAuth(
     blockedUntil: number,
     timestamp: number,
   ) => {
-    respond(
-      response,
-      429,
-      JSON.stringify({ error: "Too many authentication attempts. Try again later." }),
-      { "Retry-After": String(Math.max(1, Math.ceil((blockedUntil - timestamp) / 1_000))) },
-    );
+    respond(response, 429, JSON.stringify({ error: AUTH_RATE_LIMITED_MESSAGE }), {
+      "Retry-After": String(retryAfterSeconds(blockedUntil, timestamp)),
+    });
   };
 
   const pruneExpiredSessions = (now = Date.now()) => {
@@ -426,25 +474,37 @@ export function makeServerAuth(
   };
 
   /**
-   * A bearer token is a guess at the same secret a login is, so a wrong one from a remote
-   * client counts toward the same limits, and a locked-out client's token is not checked at
-   * all. Loopback clients are exempt: the desktop app reconnects from there, and a stale
-   * local client must not be able to lock it out.
+   * A bearer token is a guess at the same secret a login is, so a wrong one counts toward its
+   * client's limit, and a locked-out client's token is not checked at all.
+   *
+   * Only the per-client limit applies. The limit across all clients would let anyone who can
+   * reach the server keep every client with the right token out, by sending wrong ones.
+   *
+   * Requests straight from this machine are exempt: the desktop app reconnects from there,
+   * and a stale local client must not be able to lock it out. A request a local proxy
+   * forwards is not exempt, whatever address the proxy reports for it.
    */
   const hasValidBearer = (request: Http.IncomingMessage): boolean => {
     if (!enabled) return true;
     const presented = bearerToken(request);
     if (presented.length === 0) return false;
-    const source = clientAddress(request, isTrustedProxy);
-    const limited = !isLoopbackAddress(source);
+    const limited = !isDirectLocalRequest(request);
+    const source = clientAddress(request, isListedProxy);
     const timestamp = now();
-    if (limited && blockedUntilFor(source, timestamp) > timestamp) return false;
+    if (limited && sourceBlockedUntil(source, timestamp) > timestamp) return false;
     if (secretsEqual(expectedToken, presented)) return true;
     if (limited && !countedTokenFailures.has(request)) {
       countedTokenFailures.add(request);
-      recordAuthFailure(source, timestamp);
+      recordSourceFailure(source, timestamp);
     }
     return false;
+  };
+
+  const bearerRetryAfterSeconds: ServerAuth["bearerRetryAfterSeconds"] = (request) => {
+    if (!enabled || bearerToken(request).length === 0 || isDirectLocalRequest(request)) return null;
+    const timestamp = now();
+    const blockedUntil = sourceBlockedUntil(clientAddress(request, isListedProxy), timestamp);
+    return blockedUntil > timestamp ? retryAfterSeconds(blockedUntil, timestamp) : null;
   };
 
   const isAuthenticated = (request: Http.IncomingMessage): boolean =>
@@ -485,9 +545,10 @@ export function makeServerAuth(
       return true;
     }
 
-    // Behind a reverse proxy every client shares the proxy's address, so the limit follows
-    // the client the proxy reports. Otherwise one client's failures would lock out everyone.
-    const source = clientAddress(request, isTrustedProxy);
+    // Behind a listed reverse proxy every client shares the proxy's address, so the limit
+    // follows the client the proxy reports. Otherwise one client's failures would lock out
+    // everyone. Clients of an unlisted proxy share its address and its limit.
+    const source = clientAddress(request, isListedProxy);
     const requestStartedAt = now();
     const existingBlock = blockedUntilFor(source, requestStartedAt);
     if (existingBlock > requestStartedAt) {
@@ -548,10 +609,7 @@ export function makeServerAuth(
     // loopback so they cannot leak on remote URLs or proxy access logs. A
     // client that a local reverse proxy forwards for is not on loopback.
     const legacyToken = url.searchParams.get("token") ?? "";
-    return (
-      isLoopbackAddress(clientAddress(request, isTrustedProxy)) &&
-      secretsEqual(expectedToken, legacyToken)
-    );
+    return isDirectLocalRequest(request) && secretsEqual(expectedToken, legacyToken);
   };
 
   const isWebSocketOriginAllowed: ServerAuth["isWebSocketOriginAllowed"] = (request) => {
@@ -591,6 +649,7 @@ export function makeServerAuth(
       const peer = sourceAddress(request);
       return forwardedProto(request) !== undefined && !isTrustedProxy(peer) ? peer : null;
     },
+    bearerRetryAfterSeconds,
   };
 }
 

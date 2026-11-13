@@ -7,9 +7,9 @@ import {
   type ResolvedCliInvocation,
 } from "../../spawn/resolveCommand.ts";
 
-/** Muse requires the true-case canonical Windows root, including the verbatim prefix. */
+/** Muse validates native filesystem case; Windows also requires the verbatim prefix. */
 export async function museWorkspaceRoot(cwd: string, platform = process.platform): Promise<string> {
-  if (platform !== "win32") return cwd;
+  if (platform !== "win32") return realpath(cwd).catch(() => cwd);
   const canonical = await realpath(cwd).catch(() => cwd.replaceAll("/", "\\"));
   if (canonical.startsWith("\\\\?\\")) return canonical;
   return canonical.startsWith("\\\\") ? "\\\\?\\UNC\\" + canonical.slice(2) : "\\\\?\\" + canonical;

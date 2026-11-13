@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 import { userFacingCauseMessage } from "../../causeMessage.ts";
 import { makeWorkflowArchiveLifecycle } from "../workflowArchiveLifecycle.ts";
@@ -449,7 +450,7 @@ function upsertWorkflow(
 ) {
   return orchestrationEngine.dispatch({
     type: "project.code-review-workflow.upsert",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     projectId: workflow.projectId,
     workflow,
     updatedAt,
@@ -464,7 +465,7 @@ function dispatchWorkflowDeleteCompensation(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "project.code-review-workflow.delete",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     workflowId: input.workflowId,
     projectId: input.projectId,
     createdAt: input.createdAt,
@@ -481,7 +482,7 @@ function createReviewerThread(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: input.title,
@@ -553,7 +554,7 @@ function createConsolidationThread(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: "Review Merge",
@@ -979,7 +980,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         }
       }
 
-      const dispatchCommandId = CommandId.makeUnsafe(crypto.randomUUID());
+      const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
       const runningWorkflow = withConsolidationRunning(
         pendingWorkflow,
         consolidationThreadId,
@@ -1035,7 +1036,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       const dispatchCommandIds = new Map<ThreadId, CommandId>();
       for (const reviewer of pendingReviewers) {
         const reviewerThread = snapshot.threads.find((thread) => thread.id === reviewer.threadId);
-        const commandId = CommandId.makeUnsafe(crypto.randomUUID());
+        const commandId = CommandId.makeUnsafe(timeOrderedUuid());
         const outcome = yield* Effect.exit(
           startReviewerTurn({
             orchestrationEngine,
@@ -1786,7 +1787,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "project.code-review-workflow.create",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         workflowId,
         projectId: input.projectId,
         title: initialTitle,
@@ -1864,7 +1865,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       }
       yield* orchestrationEngine.dispatch({
         type: "project.code-review-workflow.delete",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         workflowId,
         projectId: workflow.projectId,
         createdAt: new Date().toISOString(),
@@ -2145,7 +2146,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
               });
               dispatchCommandId = retried.commandId;
             } else if (mode === "fresh") {
-              dispatchCommandId = CommandId.makeUnsafe(crypto.randomUUID());
+              dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
               yield* startReviewerTurn({
                 orchestrationEngine,
                 workflow: currentWorkflow,

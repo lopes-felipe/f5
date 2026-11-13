@@ -2,7 +2,11 @@ import { execFile } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 
 import { compareCliVersions } from "./cliVersion.ts";
-import { isDefaultClaudeBinary, resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
+import {
+  claudeCliSpawnEnvironment,
+  isDefaultClaudeBinary,
+  resolveClaudeCliInvocation,
+} from "./claudeSdkExecutable.ts";
 import { parseGenericCliVersion } from "./providerSnapshot.ts";
 
 /** First Claude Code release that honors `onFailure` on SDK hook matchers. */
@@ -71,7 +75,11 @@ export function readClaudeExecutableVersion(
     const child = execFile(
       invocation.file,
       [...invocation.args],
-      { env: environment, timeout: VERSION_TIMEOUT_MS, windowsHide: true },
+      {
+        env: claudeCliSpawnEnvironment(invocation, environment),
+        timeout: VERSION_TIMEOUT_MS,
+        windowsHide: true,
+      },
       (error, stdout, stderr) =>
         resolve(error ? undefined : (parseGenericCliVersion(`${stdout}\n${stderr}`) ?? undefined)),
     );

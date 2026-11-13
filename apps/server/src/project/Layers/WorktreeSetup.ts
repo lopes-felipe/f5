@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
@@ -94,7 +95,7 @@ interface Tracked {
 
 const nowIso = () => new Date().toISOString();
 const serverCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`server:worktree-setup:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:worktree-setup:${tag}:${timeOrderedUuid()}`);
 
 function clamp(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -182,6 +183,17 @@ function activitySummary(snapshot: WorktreeSetupSnapshot): string {
 const decodeSnapshotJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(WorktreeSetupSnapshotSchema),
 );
+
+/**
+ * Every worktree-setup activity, read once at startup. The kind is a SQL
+ * literal, not a parameter: SQLite uses the partial index
+ * `idx_projection_thread_activities_worktree_setup` only when the query text
+ * matches the index predicate, and without it this scans every activity.
+ */
+export const WORKTREE_SETUP_STARTUP_ROWS_SQL = `
+      SELECT thread_id AS "threadId", payload_json AS payload
+      FROM projection_thread_activities
+      WHERE kind = '${WORKTREE_SETUP_ACTIVITY_KIND.replaceAll("'", "''")}'`;
 
 export const makeWorktreeSetup = Effect.gen(function* () {
   const services = yield* Effect.services<
@@ -1332,7 +1344,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
 
       yield* input.persistAttachments.pipe(Effect.catch((error) => rollbackThread(error.message)));
 
-      const itemId = CommandId.makeUnsafe(crypto.randomUUID());
+      const itemId = CommandId.makeUnsafe(timeOrderedUuid());
       const startedAt = nowIso();
       const snapshot: WorktreeSetupSnapshot = {
         threadId,
@@ -1745,14 +1757,12 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       ),
     );
     yield* preparation.startup;
-    // A partial index holds only these activities; without it this read scans every
-    // activity. The kind is a literal so the index matches when the statement is
-    // compiled, not only if SQLite plans it again once a bound value is known.
-    const rows = yield* sql<{ readonly threadId: ThreadId; readonly payload: string }>`
-      SELECT thread_id AS "threadId", payload_json AS payload
-      FROM projection_thread_activities
-      WHERE kind = ${sql.literal(`'${WORKTREE_SETUP_ACTIVITY_KIND}'`)}
-    `.pipe(Effect.orElseSucceed(() => []));
+    const rows = yield* sql
+      .unsafe<{
+        readonly threadId: ThreadId;
+        readonly payload: string;
+      }>(WORKTREE_SETUP_STARTUP_ROWS_SQL)
+      .pipe(Effect.orElseSucceed(() => []));
     for (const row of rows) {
       const decoded = Option.getOrNull(decodeSnapshotJson(row.payload));
       if (decoded && (yield* finishLocalHandoff(row.threadId))) continue;

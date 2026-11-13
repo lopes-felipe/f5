@@ -233,6 +233,7 @@ import {
   filterReservedClaudeLaunchArgs,
 } from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import {
   buildMcpToolFilters,
   claudeDisallowedMcpToolNames,
@@ -2653,7 +2654,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const prepareRuntimeEvent = yield* makeAutomationRuntimeEventPreparer;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-    const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
+    // Time-ordered: command IDs derive from these (`provider:<event id>:<tag>`)
+    // and are indexed, so random IDs would rewrite random index pages.
+    const nextEventId = Effect.map(Random.nextUUIDv4, (id) =>
+      EventId.makeUnsafe(timeOrderedUuid(id)),
+    );
     // Runtime events are often emitted back to back (a tool's final
     // item.updated and item.completed); strictly increasing per-thread
     // timestamps keep their activities in emission order instead of tying on
@@ -5584,6 +5589,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const status = turnStatusFromResult(message);
         const gatewayUsageLimit =
           status === "failed" &&
+          rejectedLimits.length === 0 &&
           !permissionDenied &&
           !context.turnState.authenticationFailureMessage
             ? claudeGatewayUsageLimit(message, yield* nowIso)

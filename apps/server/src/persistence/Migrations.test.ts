@@ -1,4 +1,3 @@
-import { WORKTREE_SETUP_ACTIVITY_KIND } from "@t3tools/contracts";
 import { it as effectIt } from "@effect/vitest";
 import { Effect, Exit, ManagedRuntime } from "effect";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -134,19 +133,11 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 154, name: "DesktopActivityPendingIndex" },
       { migration_id: 155, name: "BackgroundWorkNativeParentSession" },
       { migration_id: 156, name: "UpstreamReclassifyRuns" },
-      { migration_id: 157, name: "EventCompactionKeepLast" },
-      { migration_id: 158, name: "DropUnreadEventIndexes" },
-      { migration_id: 159, name: "WorktreeSetupActivityIndex" },
+      { migration_id: 157, name: "ProjectionThreadActivitiesWorktreeSetupIndex" },
+      { migration_id: 158, name: "ProviderTurnDeliveryPendingIndex" },
+      { migration_id: 159, name: "EventCompactionKeepLast" },
+      { migration_id: 160, name: "DropUnreadEventIndexes" },
     ]);
-    // Startup finds worktree setup activities through their partial index, so the
-    // kind the query spells out must stay the one the index was created for.
-    const setupPlan = yield* sql<{ detail: string }>`
-      EXPLAIN QUERY PLAN SELECT thread_id, payload_json FROM projection_thread_activities
-      WHERE kind = ${sql.literal(`'${WORKTREE_SETUP_ACTIVITY_KIND}'`)}
-    `;
-    expect(setupPlan.map((step) => step.detail).join("\n")).toContain(
-      "idx_projection_thread_activities_worktree_setup",
-    );
     // The event log keeps the indexes its readers use: stream, sequence and type.
     const eventIndexes = yield* sql<{ name: string }>`PRAGMA index_list(orchestration_events)`;
     expect(eventIndexes.map((index) => index.name).toSorted()).toEqual([

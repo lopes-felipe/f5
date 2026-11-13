@@ -704,7 +704,7 @@ const authTokenFlag = Flag.string("auth-token").pipe(
 );
 const trustedProxiesFlag = Flag.string("trusted-proxy").pipe(
   Flag.withDescription(
-    "Comma-separated addresses or CIDR ranges of reverse proxies, besides loopback, whose X-Forwarded-* headers are honored (equivalent to F5_TRUSTED_PROXIES).",
+    "Comma-separated addresses or CIDR ranges of reverse proxies whose X-Forwarded-For names the client, and whose X-Forwarded-Proto is honored when they are on another host (equivalent to F5_TRUSTED_PROXIES).",
   ),
   Flag.optional,
 );
