@@ -34,17 +34,25 @@ describe("codeReviewWorkflowPrompts pull request target", () => {
     expect(buildCodeReviewReviewerPrompt(input)).not.toContain("F5 resolved the review target");
   });
 
-  it("requires the exact PR header line only when a PR resolved", () => {
+  it("asks for a layout whose title links the PR only when a PR resolved", () => {
     const input = {
       workflowId: "review-1",
       reviewPrompt: "Review PR 123",
       reviews: REVIEWS,
       consolidationSlot: CODEX_SLOT,
     };
-    expect(buildCodeReviewConsolidationPrompt({ ...input, pullRequest: PULL_REQUEST })).toContain(
-      "Begin the report with this exact first line: **Reviewed PR:** https://github.com/acme/widgets/pull/123",
+    const withPullRequest = buildCodeReviewConsolidationPrompt({
+      ...input,
+      pullRequest: PULL_REQUEST,
+    });
+    expect(withPullRequest).toContain(
+      "linking the pull request as [acme/widgets#123](https://github.com/acme/widgets/pull/123)",
     );
-    expect(buildCodeReviewConsolidationPrompt(input)).not.toContain("Reviewed PR");
+    expect(withPullRequest).toContain("**Verdict:**");
+    expect(withPullRequest).toContain("Write nothing before the title");
+    const withoutPullRequest = buildCodeReviewConsolidationPrompt(input);
+    expect(withoutPullRequest).toContain("Start with a `#` title that names what was reviewed.");
+    expect(withoutPullRequest).not.toContain("acme/widgets#123");
   });
 });
 

@@ -116,9 +116,9 @@ export function codeReviewPullRequestLabel(pullRequest: CodeReviewPullRequest): 
   return ref ? `${ref.repository}#${ref.number}` : pullRequest.url;
 }
 
-/** The exact first line the consolidation model is asked to write. */
-export function codeReviewReportHeaderLine(pullRequest: CodeReviewPullRequest): string {
-  return `**Reviewed PR:** ${pullRequest.url}`;
+/** The PR link the merge model is asked to put in the report's title. */
+export function codeReviewPullRequestMarkdownLink(pullRequest: CodeReviewPullRequest): string {
+  return `[${codeReviewPullRequestLabel(pullRequest)}](${pullRequest.url})`;
 }
 
 export function codeReviewPostFooter(slots: {
@@ -133,15 +133,21 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Whether the report's first line already links this PR (`…/pull/12` is not `…/pull/123`). */
-function reportOpensWithPullRequest(body: string, url: string): boolean {
-  const firstLine = body.split("\n", 1)[0] ?? "";
-  return new RegExp(`${escapeRegExp(url)}(?!\\d)`).test(firstLine);
+function linksPullRequest(line: string, url: string): boolean {
+  // `…/pull/12` must not match `…/pull/123`.
+  return new RegExp(`${escapeRegExp(url)}(?!\\d)`).test(line);
 }
 
+/** How many leading non-empty lines count as the report's opening. */
+const REPORT_OPENING_LINES = 4;
+
 /**
- * The merged review as shown and posted. A PR link header is added only when
- * the model left the PR URL out, so the report always names its target.
+ * The merged review as shown and posted.
+ *
+ * - Narration the model wrote before a title or header line that links the PR
+ *   ("I checked the claims and am now writing the report.") is dropped.
+ * - When the opening does not link the PR, a `**Reviewed PR:**` line is added,
+ *   below the title when the report starts with one.
  */
 export function formatCodeReviewReport(
   text: string,
@@ -150,12 +156,29 @@ export function formatCodeReviewReport(
     readonly footer?: string | undefined;
   },
 ): string {
-  const body = text.trim();
-  const pullRequest = options.pullRequest;
-  const header =
-    pullRequest && !reportOpensWithPullRequest(body, pullRequest.url)
-      ? `**Reviewed PR:** [${codeReviewPullRequestLabel(pullRequest)}](${pullRequest.url})\n\n`
-      : "";
   const footer = options.footer ? `\n\n---\n\n${options.footer}` : "";
-  return `${header}${body}${footer}`;
+  const pullRequest = options.pullRequest;
+  let body = text.trim();
+  if (!pullRequest) return `${body}${footer}`;
+
+  const lines = body.split("\n");
+  const anchor = lines.findIndex(
+    (line) =>
+      /^(#{1,3}\s|\*\*Reviewed PR:\*\*)/.test(line.trim()) &&
+      linksPullRequest(line, pullRequest.url),
+  );
+  if (anchor > 0) body = lines.slice(anchor).join("\n").trim();
+
+  const opening = body
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .slice(0, REPORT_OPENING_LINES);
+  if (opening.some((line) => linksPullRequest(line, pullRequest.url))) return `${body}${footer}`;
+
+  const header = `**Reviewed PR:** ${codeReviewPullRequestMarkdownLink(pullRequest)}`;
+  const [first = "", ...rest] = body.split("\n");
+  const withHeader = /^#\s/.test(first)
+    ? `${first}\n\n${header}\n\n${rest.join("\n").trim()}`
+    : `${header}\n\n${body}`;
+  return `${withHeader.trim()}${footer}`;
 }
