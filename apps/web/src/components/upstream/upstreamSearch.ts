@@ -6,6 +6,7 @@ import {
   ProjectId,
   type UpstreamDecidedBy,
   type UpstreamLane,
+  type UpstreamPortQueueView,
   type UpstreamSuggestionFilter,
   type UpstreamTopicList,
   type UpstreamTopicSort,
@@ -33,6 +34,8 @@ export interface UpstreamSearch {
   /** Who made the decision; `llm` is "Automatic only". */
   readonly by?: UpstreamDecidedBy;
   readonly sort?: UpstreamTopicSort;
+  /** The port queue tab shown instead of a topic list. */
+  readonly queue?: UpstreamPortQueueView;
 }
 
 const UPSTREAM_LIST_IDS: ReadonlyArray<UpstreamTopicList> = [
@@ -47,6 +50,7 @@ const SUGGESTIONS: ReadonlyArray<UpstreamSuggestionFilter> = ["port", "skip", "w
 const IMPACTS: ReadonlyArray<UpstreamUserImpact> = ["high", "medium", "low", "none"];
 const DECIDED_BY: ReadonlyArray<UpstreamDecidedBy> = ["user", "llm", "rule"];
 const SORTS: ReadonlyArray<UpstreamTopicSort> = ["score", "priority", "newest", "oldest", "confidence"];
+export const UPSTREAM_QUEUE_VIEWS: ReadonlyArray<UpstreamPortQueueView> = ["active", "needs-you", "history"];
 export const UPSTREAM_LANES: ReadonlyArray<UpstreamLane> = ["security", "bug", "perf", "feature", "maintenance"];
 const REASON_KEY_PATTERN = /^[a-z0-9:-]{1,100}$/u;
 
@@ -91,6 +95,7 @@ export function validateUpstreamSearch(search: Record<string, unknown>): Upstrea
     ...(isFlag(search.conflict) ? { conflict: true as const } : {}),
     ...(by ? { by } : {}),
     ...(oneOf(SORTS, search.sort) ? { sort: search.sort } : {}),
+    ...(oneOf(UPSTREAM_QUEUE_VIEWS, search.queue) ? { queue: search.queue } : {}),
   };
 }
 
@@ -111,5 +116,6 @@ export function compactUpstreamSearch(search: UpstreamSearch): UpstreamSearch {
     ...(search.conflict ? { conflict: true as const } : {}),
     ...(search.by ? { by: search.by } : {}),
     ...(search.sort ? { sort: search.sort } : {}),
+    ...(search.queue ? { queue: search.queue } : {}),
   };
 }

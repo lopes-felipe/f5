@@ -1,8 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { constants as fsConstants, copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Database } from "bun:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, ManagedRuntime } from "effect";
@@ -22,6 +20,7 @@ import { OrchestrationEngineLive } from "../src/orchestration/Layers/Orchestrati
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../src/orchestration/Services/OrchestrationEngine.ts";
+import { assertDatabaseOffline, createRepairBackup } from "./lib/offlineRepair.ts";
 
 interface Options {
   readonly apply: boolean;
@@ -59,47 +58,6 @@ function parseOptions(argv: ReadonlyArray<string>): Options {
   return { apply, stateDir };
 }
 
-function assertDatabaseOffline(dbPath: string): void {
-  try {
-    const output = execFileSync("lsof", ["-t", "--", dbPath], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-    if (output.length > 0) {
-      throw new Error(
-        `Refusing to repair an open database (${dbPath}); stop F5 first. Holder PIDs: ${output}`,
-      );
-    }
-  } catch (error) {
-    const status = (error as { status?: unknown }).status;
-    if (status === 1) return;
-    throw error;
-  }
-}
-
-async function createBackup(dbPath: string, stateDir: string): Promise<string> {
-  const backupDir = path.join(stateDir, "backups");
-  mkdirSync(backupDir, { recursive: true });
-  const timestamp = new Date().toISOString().replaceAll(":", "-");
-  const backupPath = path.join(backupDir, `state-before-stuck-turn-repair-${timestamp}.sqlite`);
-  const source = new Database(dbPath);
-  try {
-    const checkpoint = source.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as {
-      readonly busy: number;
-    };
-    if (checkpoint.busy !== 0) {
-      throw new Error("Could not checkpoint the F5 database before backup");
-    }
-  } finally {
-    source.close();
-  }
-  // APFS and other clone-capable filesystems make this copy-on-write, which
-  // avoids reading the entire database into memory or immediately consuming a
-  // second copy's worth of disk. Node falls back to a regular copy elsewhere.
-  copyFileSync(dbPath, backupPath, fsConstants.COPYFILE_FICLONE);
-  return backupPath;
-}
-
 const options = parseOptions(process.argv.slice(2));
 const dbPath = path.join(options.stateDir, "state.sqlite");
 const providerLogsDir = path.join(options.stateDir, "logs", "provider");
@@ -135,7 +93,7 @@ if (!options.apply || eligible.length === 0) {
   process.exitCode = 0;
 } else {
   assertDatabaseOffline(dbPath);
-  const backupPath = await createBackup(dbPath, options.stateDir);
+  const backupPath = createRepairBackup(dbPath, options.stateDir, "stuck-turn-repair");
   console.log(JSON.stringify({ backupPath }));
 
   const persistenceLayer = makeSqlitePersistenceLive(dbPath).pipe(

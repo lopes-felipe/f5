@@ -137,6 +137,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 158, name: "ProviderTurnDeliveryPendingIndex" },
       { migration_id: 159, name: "EventCompactionKeepLast" },
       { migration_id: 160, name: "DropUnreadEventIndexes" },
+      { migration_id: 161, name: "UsageNativeIdentity" },
     ]);
     // The event log keeps the indexes its readers use: stream, sequence and type.
     const eventIndexes = yield* sql<{ name: string }>`PRAGMA index_list(orchestration_events)`;
