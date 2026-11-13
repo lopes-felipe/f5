@@ -3677,7 +3677,7 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     expect(harness.getSnapshot().codeReviewWorkflows).toHaveLength(0);
   });
 
-  it("asks the merge model for the PR header line", async () => {
+  it("asks the merge model for a title that links the PR", async () => {
     const prHub = makeFakePrHub();
     const workflow = makeMergingWorkflow({
       consolidation: {
@@ -3704,7 +3704,7 @@ describe("CodeReviewWorkflowService pull request posting", () => {
         command.type === "thread.turn.start",
     );
     expect(mergeTurn?.message.text).toContain(
-      `Begin the report with this exact first line: **Reviewed PR:** ${PULL_REQUEST.url}`,
+      `linking the pull request as [acme/app#42](${PULL_REQUEST.url})`,
     );
   });
 
