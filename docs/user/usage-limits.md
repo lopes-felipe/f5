@@ -1,6 +1,7 @@
 # Usage and limits
 
-The Usage page shows two things. **Activity** covers the tokens, cost and turns F5 recorded.
+The Usage page shows two things. **Activity** covers the tokens, cost and turns F5 recorded,
+plus local Muse Code model-call history.
 **Limits** shows how much of each account's allowance is left.
 
 ![Usage → Activity with the usage-over-time chart](../images/usage-activity.webp)
@@ -23,13 +24,14 @@ previous page. Rebind them under **Usage** in **Settings → Keybindings**; they
 The URL keeps the tab, range and filters, so you can bookmark a view or share it.
 
 > [!NOTE]
-> These are different numbers. Activity counts only turns F5 ran. Account limits come from the
+> These are different numbers. Activity counts turns F5 ran and local Muse Code model calls. Account limits come from the
 > provider and include use outside F5. Cost is an estimate from token prices; your actual bill is
 > the provider's invoice, which F5 never sees.
 
 ## Activity
 
-Activity counts completed F5 turns. It does not include CLI sessions you ran outside F5. Metric
+Activity counts completed F5 turns and native Muse Code history, including CLI sessions run outside F5.
+Other providers' external CLI sessions are not included. Native model calls do not increase recorded turn counts. Metric
 cards compare each value with the previous period of the same length and show how much input was
 served from cache.
 
@@ -108,8 +110,28 @@ outcome is uncertain, a retry reuses the original key, even after a reload or re
 
 **Token coverage.** A field no turn reported shows "Unreported". A partly reported field shows "N
 of M recorded turns". Older cost-only history counts as legacy cost records. Cost recorded before
-per-project attribution appears as "Unattributed historical cost". Blank cache prices inherit the
+per-project attribution appears as "Usage without a project". Blank cache prices inherit the
 input price, and zero is a valid price.
+
+Muse Code also includes local native session history (including child sessions and automated
+reviews) from the home reported by the configured CLI, using that account's environment.
+Sessions recorded by F5 use durable per-turn native identities for deduplication; external
+sessions appear under **Usage without a project**. Copied inference envelopes count once.
+Native model calls contribute tokens and pricing without increasing the recorded turn count.
+Unknown models remain unpriced until you configure a custom price.
+The date and provider filters apply to native history. Project-filtered summaries do not scan
+external history, and disabled instances never launch Muse for Usage.
+History refreshes in the background when Usage is requested. Unchanged files are reused and
+only appended complete lines are parsed. Instances sharing a native home share one incremental
+reader. A refresh notice appears while it runs; failures retain the last successful snapshot,
+report the failed phase, and retry with increasing backoff up to ten minutes.
+
+Purging an F5 thread does not delete the separate Muse CLI history. If those native files
+remain on disk, their usage can appear under **Usage without a project** after a refresh.
+Removing the corresponding native session history stops that external contribution.
+Older facts with no retained native identity or terminal receipt cannot be matched safely
+to CLI sessions. Their overlapping native history may count twice; F5 does not guess an
+identity and discard unrelated CLI activity.
 
 **Other providers**
 

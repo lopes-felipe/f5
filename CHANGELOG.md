@@ -10,7 +10,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Preview Word, Excel, PowerPoint, OpenDocument, EPUB, RTF and notebooks in the file viewer, along with fonts, Mermaid diagrams, archives and SQLite databases. HEIC and TIFF images are decoded locally.
 - Audio files shared by an agent play inline. Shared files open in the viewer, with a download option for formats without a preview.
 - Claude and Antigravity receive supported PDF attachments as native documents, including scanned pages, within size and page budgets that survive restarts.
-
+- Usage includes local Muse Code history, including child sessions and automated reviews. Unknown models remain visible as unpriced and can use custom prices.
 - Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
 - Code Review workflows detect the pull request named in the review instructions (a link, or `PR #123` in the project's GitHub repo), open the merged review with a link to it, and can post the merged review to the PR as a comment. Tick **Post merged review to the PR when it finishes** when starting the workflow, or use **Post to PR** on the workflow page. Posted comments end with a footer naming F5 and the reviewer and merge models.
 - Upstream ranks every topic in a lane (Security, Bugs, Perf, Features, Maintenance) with a 0–100 score, and the Inbox opens on a shortlist of the topics worth reviewing today. **Expire backlog…** and an optional **Expire after** setting skip unreviewed topics after a while (security topics never expire), **Areas** choose which features reach the shortlist, a weekly notification counts new features, and an opt-in **Auto-port** queues confident high and critical security fixes, and optionally high-impact bug fixes, after each run. Port threads now add a changelog entry for user-visible changes when the repository keeps a changelog. Every profile that opens the ledger must run this version first: the ledger and `upstream/rules.json` use new formats that older versions cannot read.
@@ -19,9 +19,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Project settings include renaming, reviewed imports of actions from f5.json or t3.json, and a command palette shortcut. Imported actions start with automatic execution off. Settings, Usage and Pull Requests navigation live together in the sidebar footer, with a Back action on those pages.
 - Large text, CSV and TSV previews load in a worker and render only visible rows to keep the viewer responsive.
-
 - Thread action menus show icons and sections, with path, branch and thread ID under Copy. Nested menus work with the keyboard in the browser and desktop app.
-
+- Usage labels external session history and legacy unattributed costs as **Usage without a project**. Muse history refreshes incrementally, retains previous data on failure, reconciles cached calls against newly completed turns, and includes priced native calls in cost comparisons.
 - Database snapshot history is thinned when the disk runs low: 6 hourly and 3 daily copies with under 10 GB free, and only the newest 2 with under 2 GB free. Thinning starts only when two snapshots in a row find the disk that low, and the server log records what was removed. With more space the history stays at 24 hourly and 7 daily copies.
 - New events and commands get time-ordered IDs, so the database rewrites fewer index pages per hour and each snapshot holds less space.
 - F5 starts faster and uses less memory on profiles with many archived threads: their activity history now loads when a thread is used, not at startup. The first start after this update takes longer once while two database indexes are built (about 20 seconds on a 6 GB profile).
@@ -47,7 +46,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
 - The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
 - The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
-
 - Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
 - Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
 

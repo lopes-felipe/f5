@@ -56,6 +56,28 @@ const withReporting = (overrides: Partial<NonNullable<UsageMetrics["reporting"]>
   metrics({ reporting: { ...metrics().reporting!, ...overrides } });
 
 describe("tokenFieldDisplay", () => {
+  it("shows native tokens without inventing recorded turns", () => {
+    const native = metrics({
+      turnCount: 0,
+      nativeInferenceCount: 2,
+      totalTokens: 120,
+      reporting: {
+        recordedTurnCount: 0,
+        legacyCostEventCount: 0,
+        inputTokenTurnCount: 0,
+        outputTokenTurnCount: 0,
+        cacheReadTokenTurnCount: 0,
+        cacheWriteTokenTurnCount: 0,
+        totalTokenTurnCount: 0,
+      },
+    });
+    expect(tokenFieldDisplay(native, "totalTokens")).toMatchObject({
+      value: "120",
+      known: true,
+      complete: true,
+    });
+    expect(native.reporting?.recordedTurnCount).toBe(0);
+  });
   it("distinguishes unreported, reported zero, and partial values", () => {
     expect(tokenFieldDisplay(withReporting({ totalTokenTurnCount: 0 }), "totalTokens").value).toBe(
       "Unreported",
@@ -157,7 +179,31 @@ describe("deltas and cache rate", () => {
         ),
       ),
     ).toBeNull();
-    expect(costDelta(summary(current, { ...previous, pricedTurnCount: 0 }))).toBeNull();
+    expect(
+      costDelta(
+        summary(current, { ...previous, providerReportedCostUsd: null, pricedTurnCount: 0 }),
+      ),
+    ).toBeNull();
+  });
+
+  it("compares native-only estimated costs including a confirmed zero", () => {
+    const native = metrics({
+      turnCount: 0,
+      pricedTurnCount: 0,
+      nativeInferenceCount: 2,
+      providerReportedCostUsd: null,
+      estimatedCostUsd: 2,
+    });
+    expect(costDelta(summary(native, { ...native, estimatedCostUsd: 1 }))).toBe(
+      "+100% vs previous 7 days",
+    );
+    expect(costDelta(summary({ ...native, estimatedCostUsd: 0 }, native))).toBe(
+      "−100% vs previous 7 days",
+    );
+    expect(costDelta(summary(native, { ...native, estimatedCostUsd: 0 }))).toBe(
+      "New vs previous 7 days",
+    );
+    expect(costDelta(summary(native, { ...native, estimatedCostUsd: null }))).toBeNull();
   });
 
   it("computes cache rate over known composition with a coverage qualifier", () => {
