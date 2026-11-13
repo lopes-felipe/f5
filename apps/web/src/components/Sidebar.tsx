@@ -762,7 +762,7 @@ export default function Sidebar() {
           : [
               { id: "worktrees", label: "Worktrees…" },
               { id: "settle-idle", label: "Settle idle threads" },
-              { id: "icon", label: "Change project icon..." },
+              { id: "settings", label: "Project settings…" },
               { id: "change-path", label: "Change project path..." },
               { id: "rename", label: "Rename project" },
               { id: "delete", label: "Remove project", destructive: true },
@@ -787,10 +787,10 @@ export default function Sidebar() {
         await navigate({ to: "/worktrees", search: { projectId } });
         return;
       }
-      if (clicked === "icon") {
+      if (clicked === "settings") {
         await navigate({
           to: "/settings",
-          search: { category: "project", item: "project.icon", project: projectId },
+          search: { category: "project", project: projectId },
         });
         return;
       }
