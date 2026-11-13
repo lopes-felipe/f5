@@ -23,7 +23,7 @@ it("warns above the message threshold without truncating or replacing retained h
       level: "Warn",
       message: [
         "orchestration read model exceeds message warning threshold",
-        { threads: 1, messages: 200001, characters: 2400012 },
+        { threads: 1, dormantThreads: 0, messages: 200001, characters: 2400012 },
       ],
     },
   ]);
@@ -36,12 +36,16 @@ it("reports the heap change across hydrate when given the starting heap", async 
     logs.push(entry.message);
   });
   await Effect.runPromise(
-    observeReadModelRetention({ threads: [] }, process.memoryUsage().heapUsed).pipe(
+    observeReadModelRetention({ threads: [] }, process.memoryUsage().heapUsed, 3).pipe(
       Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
     ),
   );
-  const [message, fields] = logs[0] as [string, { heapUsedDeltaBytes: number }];
+  const [message, fields] = logs[0] as [
+    string,
+    { heapUsedDeltaBytes: number; dormantThreads: number },
+  ];
   expect(message).toBe("orchestration read model hydrated");
+  expect(fields.dormantThreads).toBe(3);
   // A collection during the call can make the change negative.
   expect(Number.isFinite(fields.heapUsedDeltaBytes)).toBe(true);
 });

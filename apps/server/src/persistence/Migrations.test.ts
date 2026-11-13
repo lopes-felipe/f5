@@ -137,6 +137,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 157, name: "EventCompactionKeepLast" },
       { migration_id: 158, name: "DropUnreadEventIndexes" },
       { migration_id: 159, name: "WorktreeSetupActivityIndex" },
+      { migration_id: 160, name: "DropUnreadReceiptIndexes" },
     ]);
     // Startup finds worktree setup activities through their partial index, so the
     // kind the query spells out must stay the one the index was created for.
@@ -154,6 +155,13 @@ const assertUpgrade = (version: PrecedingVersion) =>
       "idx_orch_events_stream_version",
       "idx_orch_events_type_occurred_at",
       "sqlite_autoindex_orchestration_events_1",
+    ]);
+    // Receipts are only ever found by command id, which the primary key serves.
+    const receiptIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(orchestration_command_receipts)`;
+    expect(receiptIndexes.map((index) => index.name)).toEqual([
+      "sqlite_autoindex_orchestration_command_receipts_1",
     ]);
     const activityIndexes = yield* sql<{
       name: string;
