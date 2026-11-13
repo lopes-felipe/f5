@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
 import { assertWorktreeReady, WorktreeNotReadyError } from "../../project/worktreeReadiness.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
@@ -108,7 +109,7 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
       git,
       {
         type: "thread.meta.update",
-        commandId: CommandId.makeUnsafe(`server:worktree-startup-cleanup:${crypto.randomUUID()}`),
+        commandId: CommandId.makeUnsafe(`server:worktree-startup-cleanup:${timeOrderedUuid()}`),
         threadId: thread.id,
         worktreePath: null,
       },

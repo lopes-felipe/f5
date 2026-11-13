@@ -1,5 +1,6 @@
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import { AGENT_AUTOMATION_SUPPORT } from "@t3tools/shared/agentAutomationSupport";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 /**
  * MuseAdapter — F5 provider adapter for Muse Code over the Muse Session
  * Protocol (MSP), through Meta's `@muse-code/sdk`.
@@ -266,7 +267,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
     ) =>
       Effect.gen(function* () {
         return {
-          eventId: EventId.make(yield* Random.nextUUIDv4),
+          eventId: EventId.make(timeOrderedUuid(yield* Random.nextUUIDv4)),
           createdAt: yield* nowIso,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,

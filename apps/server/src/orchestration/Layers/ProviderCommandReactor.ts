@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
 import { readMcpAppModelContext } from "../../mcpApps/McpAppContext.ts";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -237,7 +238,7 @@ function mapProviderSessionStatusToOrchestrationStatus(
 }
 
 const serverCommandId = (tag: string): CommandId =>
-  CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
 function threadMessageContextCharacters(thread: OrchestrationThread): number {
   return thread.messages.reduce(
@@ -552,7 +553,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("provider-failure-activity"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: "error",
         kind: input.kind,
         summary: input.summary,
@@ -579,7 +580,7 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("provider-context-reset-activity"),
         threadId: input.threadId,
         activity: {
-          id: EventId.makeUnsafe(crypto.randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           tone: "info",
           kind: "runtime.warning",
           summary: "Session context reset",
@@ -729,7 +730,7 @@ const make = Effect.gen(function* () {
           // One activity per delivery: a marker an ambiguous delivery kept can be
           // delivered again by a later turn.
           id: EventId.makeUnsafe(
-            `provider-handoff:${handoff.id}:${input.deliveryId ?? crypto.randomUUID()}`,
+            `provider-handoff:${handoff.id}:${input.deliveryId ?? timeOrderedUuid()}`,
           ),
           tone: "info",
           kind: PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,

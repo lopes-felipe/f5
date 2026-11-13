@@ -16,7 +16,7 @@ import {
   useComposerDraftStore,
 } from "~/composerDraftStore";
 import { getServerHttpOrigin } from "~/lib/serverHttpOrigin";
-import { cn } from "~/lib/utils";
+import { cn, newCommandId } from "~/lib/utils";
 import { rewindUi, type LandedRewind } from "~/rewindUi";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -103,7 +103,7 @@ export function RewindDraftPanel({
       // Resolving is idempotent per draft; cancelling gets a fresh id per click
       // so one rejected attempt can't block the next.
       commandId: CommandId.makeUnsafe(
-        intent === "cancel" ? crypto.randomUUID() : `rewind-draft:${draft.operationId}`,
+        intent === "cancel" ? newCommandId() : `rewind-draft:${draft.operationId}`,
       ),
       operationId: draft.operationId,
       threadId,
@@ -234,7 +234,7 @@ export function RewindDraftPanel({
       if (!api || !draft?.targetMessageId) return;
       await api.orchestration.dispatchCommand({
         type: "thread.conversation.revert",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: newCommandId(),
         operationId: draft.operationId,
         threadId,
         targetMessageId: draft.targetMessageId,

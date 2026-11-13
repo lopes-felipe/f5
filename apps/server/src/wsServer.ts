@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
@@ -1358,7 +1359,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       ? orchestrationEngine
                           .dispatch({
                             type: "thread.turn.interrupt",
-                            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                             threadId: ThreadId.makeUnsafe(interrupted.threadId),
                             createdAt: new Date().toISOString(),
                           })
@@ -1383,7 +1384,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       ? orchestrationEngine
                           .dispatch({
                             type: "thread.turn.interrupt",
-                            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                             threadId: ThreadId.makeUnsafe(killed.threadId),
                             createdAt: new Date().toISOString(),
                           })
@@ -3356,7 +3357,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         bootstrapProjectDefaultModel = DEFAULT_MODEL_BY_PROVIDER.codex;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           projectId: bootstrapProjectId,
           title: bootstrapProjectTitle,
           workspaceRoot: cwd,
@@ -3377,7 +3378,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const threadId = ThreadId.makeUnsafe(crypto.randomUUID());
         yield* orchestrationEngine.dispatch({
           type: "thread.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId,
           projectId: bootstrapProjectId,
           title: "New thread",
@@ -4642,7 +4643,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               ),
               markerId: recovery.expected.eventId,
               commandId: CommandId.makeUnsafe(
-                `server:history-accepted:${recovery.threadId}:${crypto.randomUUID()}`,
+                `server:history-accepted:${recovery.threadId}:${timeOrderedUuid()}`,
               ),
               createdAt: new Date().toISOString(),
             });

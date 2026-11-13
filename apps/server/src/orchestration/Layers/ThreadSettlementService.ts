@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { GitHubRequestPolicy } from "../../git/githubRequestPolicy.ts";
 import { GitHubCliError } from "../../git/Errors.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
@@ -117,7 +118,7 @@ export const makeThreadSettlementService = Effect.gen(function* () {
       Effect.flatMap((now) =>
         engine.dispatch({
           type: "thread.settle",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId: thread.id,
           createdAt: new Date(now).toISOString(),
           settledBy,
@@ -205,7 +206,7 @@ export const makeThreadSettlementService = Effect.gen(function* () {
       if (!(yield* readCandidate(thread)).hasQueuedWork) return;
       yield* engine.dispatch({
         type: "thread.unsettle",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         threadId,
         reason: "wake",
         createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),

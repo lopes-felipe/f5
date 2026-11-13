@@ -264,6 +264,10 @@
       "types": "./src/diskSpace.ts",
       "import": "./src/diskSpace.ts"
     },
+    "./ids": {
+      "types": "./src/ids.ts",
+      "import": "./src/ids.ts"
+    },
     "./downloadFilename": {
       "types": "./src/downloadFilename.ts",
       "import": "./src/downloadFilename.ts"

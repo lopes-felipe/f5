@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import {
   linkScheduledContinuation,
   freezeScheduledContinuationCommand,
@@ -637,7 +638,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             if (existing?.status === "failed") {
               // A poisoned command receipt cannot be reused for a manually retargeted turn.
               yield* rejectAcceptedMutation(decodeRow(existing));
-              const commandId = CommandId.makeUnsafe(randomUUID());
+              const commandId = CommandId.makeUnsafe(timeOrderedUuid());
               const messageId = MessageId.makeUnsafe(randomUUID());
               input = {
                 ...input,
@@ -1028,7 +1029,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             }
             yield* rejectAcceptedMutation(item);
             const at = now();
-            const commandId = CommandId.makeUnsafe(randomUUID());
+            const commandId = CommandId.makeUnsafe(timeOrderedUuid());
             const messageId = MessageId.makeUnsafe(
               nextQueuedMessageId(item.command.message.messageId, randomUUID()),
             );
@@ -1083,7 +1084,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             }
             yield* rejectAcceptedMutation(item);
             const at = now();
-            const commandId = CommandId.makeUnsafe(randomUUID());
+            const commandId = CommandId.makeUnsafe(timeOrderedUuid());
             const messageId = MessageId.makeUnsafe(
               nextQueuedMessageId(item.command.message.messageId, randomUUID()),
             );
@@ -1640,12 +1641,12 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               ),
             { concurrency: 1, discard: true },
           );
-        const commandId = CommandId.makeUnsafe(randomUUID());
+        const commandId = CommandId.makeUnsafe(timeOrderedUuid());
         const messageId = MessageId.makeUnsafe(
           nextQueuedMessageId(item.command.message.messageId, randomUUID()),
         );
-        const submissionId = CommandId.makeUnsafe(randomUUID());
-        const duplicateId = CommandId.makeUnsafe(randomUUID());
+        const submissionId = CommandId.makeUnsafe(timeOrderedUuid());
+        const duplicateId = CommandId.makeUnsafe(timeOrderedUuid());
         const attachments = yield* Effect.forEach(
           item.command.message.attachments,
           (attachment) =>

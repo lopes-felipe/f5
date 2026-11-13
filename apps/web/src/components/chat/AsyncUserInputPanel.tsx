@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  CommandId,
   type AttachmentUpload,
   type PendingUserInput,
   type ThreadId,
@@ -8,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { ArrowRightIcon } from "lucide-react";
 import { readNativeApi } from "~/nativeApi";
+import { newCommandId } from "~/lib/utils";
 import {
   type AsyncUserInputDraft,
   usePendingUserInputDraftStore,
@@ -99,7 +99,7 @@ export function AsyncUserInputPanel({
     setError(null);
     try {
       const base = {
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: newCommandId(),
         threadId,
         requestId: input.requestId,
         createdAt: new Date().toISOString(),

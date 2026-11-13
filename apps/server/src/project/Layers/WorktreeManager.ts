@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { listWorktreeInventory } from "../worktreeInventory.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
@@ -411,7 +412,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
           git,
           {
             type: "thread.meta.update",
-            commandId: CommandId.makeUnsafe(`server:worktree-adopt-branch:${crypto.randomUUID()}`),
+            commandId: CommandId.makeUnsafe(`server:worktree-adopt-branch:${timeOrderedUuid()}`),
             threadId: thread.id,
             branch: current.checkoutBranch,
             worktreePath: current.worktreePath,

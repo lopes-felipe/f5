@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
@@ -2745,7 +2746,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: CommandId.makeUnsafe(
-        `workflow-profile-failure:${input.threadId}:${input.turnId}:${crypto.randomUUID()}`,
+        `workflow-profile-failure:${input.threadId}:${input.turnId}:${timeOrderedUuid()}`,
       ),
       threadId: input.threadId,
       session: {
@@ -3784,7 +3785,7 @@ const make = Effect.gen(function* () {
     const chunk = commandExecution.bufferedOutput;
     yield* orchestrationEngine.dispatch({
       type: "thread.command-execution.output.append",
-      commandId: CommandId.makeUnsafe(`provider:cmd-output:${crypto.randomUUID()}`),
+      commandId: CommandId.makeUnsafe(`provider:cmd-output:${timeOrderedUuid()}`),
       threadId: commandExecution.threadId,
       commandExecutionId: commandExecution.id,
       chunk,
@@ -4294,7 +4295,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.proposed-plan.upsert",
       commandId: CommandId.makeUnsafe(
-        `provider:source-proposed-plan-implemented:${implementationThreadId}:${crypto.randomUUID()}`,
+        `provider:source-proposed-plan-implemented:${implementationThreadId}:${timeOrderedUuid()}`,
       ),
       threadId: sourceThread.id,
       proposedPlan: {

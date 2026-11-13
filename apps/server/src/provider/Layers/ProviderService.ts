@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
 import { captureRestartTurnMarkers } from "../../nextTurnQueue/restartMarkerCapture.ts";
@@ -2574,7 +2575,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               if (overflowImages.length)
                 yield* publishRuntimeEvent({
                   type: "runtime.warning",
-                  eventId: EventId.makeUnsafe(randomUUID()),
+                  eventId: EventId.makeUnsafe(timeOrderedUuid()),
                   provider: routed.adapter.provider,
                   threadId: input.threadId,
                   turnId: turn.turnId,
@@ -3875,7 +3876,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 if (result.errors.length > 0 && (input.warn !== false || result.restartRequired)) {
                   yield* publishRuntimeEvent({
                     type: "runtime.warning",
-                    eventId: EventId.makeUnsafe(randomUUID()),
+                    eventId: EventId.makeUnsafe(timeOrderedUuid()),
                     provider: selected.provider,
                     threadId: selected.threadId,
                     createdAt: new Date().toISOString(),

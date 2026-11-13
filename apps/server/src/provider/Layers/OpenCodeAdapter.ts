@@ -47,6 +47,7 @@ import type {
   QuestionRequest,
 } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -222,7 +223,7 @@ const buildEventBase = (input: {
 > =>
   Random.nextUUIDv4.pipe(
     Effect.map((uuid) => ({
-      eventId: EventId.make(uuid),
+      eventId: EventId.make(timeOrderedUuid(uuid)),
       provider: PROVIDER,
       ...(input.providerInstanceId !== undefined
         ? { providerInstanceId: input.providerInstanceId }

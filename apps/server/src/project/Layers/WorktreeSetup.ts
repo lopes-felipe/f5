@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
@@ -94,7 +95,7 @@ interface Tracked {
 
 const nowIso = () => new Date().toISOString();
 const serverCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`server:worktree-setup:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:worktree-setup:${tag}:${timeOrderedUuid()}`);
 
 function clamp(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -1343,7 +1344,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
 
       yield* input.persistAttachments.pipe(Effect.catch((error) => rollbackThread(error.message)));
 
-      const itemId = CommandId.makeUnsafe(crypto.randomUUID());
+      const itemId = CommandId.makeUnsafe(timeOrderedUuid());
       const startedAt = nowIso();
       const snapshot: WorktreeSetupSnapshot = {
         threadId,

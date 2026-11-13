@@ -70,6 +70,7 @@ import {
   SynchronizedRef,
 } from "effect";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { customModelSlug } from "@t3tools/shared/customModels";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as EffectAcpErrors from "effect-acp/errors";
@@ -348,7 +349,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-    const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.make(id));
+    const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.make(timeOrderedUuid(id)));
     const makeEventStamp = (ctx?: GrokSessionContext) => {
       const identity = ctx?.eventIdentity;
       return Effect.all({ eventId: nextEventId, createdAt: nowIso }).pipe(
