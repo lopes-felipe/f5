@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
@@ -2745,7 +2746,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: CommandId.makeUnsafe(
-        `workflow-profile-failure:${input.threadId}:${input.turnId}:${crypto.randomUUID()}`,
+        `workflow-profile-failure:${input.threadId}:${input.turnId}:${timeOrderedUuid()}`,
       ),
       threadId: input.threadId,
       session: {
@@ -3784,7 +3785,7 @@ const make = Effect.gen(function* () {
     const chunk = commandExecution.bufferedOutput;
     yield* orchestrationEngine.dispatch({
       type: "thread.command-execution.output.append",
-      commandId: CommandId.makeUnsafe(`provider:cmd-output:${crypto.randomUUID()}`),
+      commandId: CommandId.makeUnsafe(`provider:cmd-output:${timeOrderedUuid()}`),
       threadId: commandExecution.threadId,
       commandExecutionId: commandExecution.id,
       chunk,
@@ -4294,7 +4295,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.proposed-plan.upsert",
       commandId: CommandId.makeUnsafe(
-        `provider:source-proposed-plan-implemented:${implementationThreadId}:${crypto.randomUUID()}`,
+        `provider:source-proposed-plan-implemented:${implementationThreadId}:${timeOrderedUuid()}`,
       ),
       threadId: sourceThread.id,
       proposedPlan: {
@@ -5020,10 +5021,17 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" ||
         event.type === "turn.completed"
       ) {
+        const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+          threadId: thread.id,
+        });
+        const hasPendingTurnStart =
+          Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
         const reportedStatus = (() => {
           switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+            case "session.state.changed": {
+              const status = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              return hasPendingTurnStart && status === "ready" ? "starting" : status;
+            }
             case "turn.started":
               return "running";
             case "session.exited":
@@ -5034,7 +5042,7 @@ const make = Effect.gen(function* () {
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
               // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
+              return activeTurnId !== null ? "running" : hasPendingTurnStart ? "starting" : "ready";
           }
         })();
         // Providers can emit generic `ready` transitions for setup milestones

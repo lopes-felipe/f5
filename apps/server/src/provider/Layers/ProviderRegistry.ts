@@ -1,4 +1,5 @@
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
@@ -424,9 +425,11 @@ export const ProviderRegistryLive = Layer.effect(
             updatedKeys.add(key);
             mergedProviders.set(
               key,
-              options?.replace === true
-                ? provider
-                : mergeProviderSnapshot(mergedProviders.get(key), provider),
+              withUpdateRequiredModels(
+                options?.replace === true
+                  ? provider
+                  : mergeProviderSnapshot(mergedProviders.get(key), provider),
+              ),
             );
           }
 

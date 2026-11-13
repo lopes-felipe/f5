@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { registerShutdown } from "../../shutdown.ts";
 import { CommandId, type ProjectId } from "@t3tools/contracts";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
@@ -141,7 +142,7 @@ const make = Effect.gen(function* () {
         ) {
           yield* engine.dispatch({
             type: "project.skills.replace",
-            commandId: CommandId.makeUnsafe(`project-skills:${crypto.randomUUID()}`),
+            commandId: CommandId.makeUnsafe(`project-skills:${timeOrderedUuid()}`),
             projectId: project.id,
             skills: [...result.skills],
             updatedAt: new Date().toISOString(),

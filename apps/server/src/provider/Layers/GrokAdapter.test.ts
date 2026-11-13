@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, it, it as rootIt } from "@effect/vitest";
 import {
   ApprovalRequestId,
   GrokSettings,
@@ -14,7 +14,7 @@ import {
   type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
+import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
 import { vi } from "vitest";
 import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
@@ -341,6 +341,57 @@ const AntigravityAdapterTestLayer = Layer.effect(
 );
 
 it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
+  rootIt.live("retires a silent prompt and starts a fresh runtime on the next message", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-inactive-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {});
+      let starts = 0;
+      let live = 0;
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          promptInactivityTimeoutMs: 100,
+          makeRuntime: (input) =>
+            Effect.gen(function* () {
+              starts++;
+              live++;
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  live--;
+                }),
+              );
+              return yield* GrokAcpSupport.makeGrokAcpRuntime(input);
+            }),
+        },
+      );
+      const threadId = ThreadId.make("antigravity-inactive");
+      const input = {
+        threadId,
+        provider: "antigravity" as const,
+        cwd: process.cwd(),
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession(input);
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "silent-inactivity-test", attachments: [] })
+        .pipe(Effect.exit);
+      assert.isTrue(result._tag === "Failure");
+      assert.equal(
+        live,
+        0,
+        result._tag === "Failure" ? Cause.pretty(result.cause) : "unexpected success",
+      );
+      yield* adapter.startSession(input);
+      // Allow the normal fixture turn to finish without using the accelerated deadline.
+      yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
+      assert.equal(starts, 2);
+      yield* adapter.stopSession(threadId);
+      assert.equal(live, 0);
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
   it.effect("waits for the user's answer even in full-access mode", () =>
     Effect.gen(function* () {
       const adapter = yield* GrokAdapter;

@@ -12,13 +12,22 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Database snapshot history is thinned when the disk runs low: 6 hourly and 3 daily copies with under 10 GB free, and only the newest 2 with under 2 GB free. Thinning starts only when two snapshots in a row find the disk that low, and the server log records what was removed. With more space the history stays at 24 hourly and 7 daily copies.
+- New events and commands get time-ordered IDs, so the database rewrites fewer index pages per hour and each snapshot holds less space.
 - F5 starts faster and uses less memory on profiles with many archived threads: their activity history now loads when a thread is used, not at startup. The first start after this update takes longer once while two database indexes are built (about 20 seconds on a 6 GB profile).
 
 ### Fixed
 
+- Storage settings count automatic database snapshots at the space they actually hold. Snapshots are copy-on-write clones that share unchanged data with the live database, but each one was counted at the full database size, so nine copies of a 6 GB database showed as 57 GB while holding about 2.5 GB. Recovery backups, Total used and Reclaimable now use an estimate of the data that newer copies do not share, and each snapshot lists both sizes. The amount reported after a reclaim is measured against the snapshots that remain, so removing one from the middle of the history no longer claims space an older copy still holds.
+- Reclaiming a database snapshot removes its folder, and an empty leftover folder is reported as removed instead of skipped. Empty snapshot folders left by earlier cleanups are cleared, and no longer count as snapshots for retention or as the copy to restore from.
+- Opening a just-created thread waits for its details instead of bouncing to the start page while the sidebar catches up.
+- Editor discovery scans PATH directories once per scan, speeding up discovery on slow disks. Desktop preview uses a valid User-Agent and reload shortcuts target the focused page.
+- New approvals and questions wait until typing pauses before taking over the composer. Cursor stays in Normal mode unless Fast was selected, and model switches retain saved traits.
+- Threads stay Connecting while a turn starts, and checkout PR actions only show the thread branch's PR. The model picker names models unlocked by a CLI update.
 - Claude-launched Electron apps open normally, while configured JavaScript Claude entry points still run in the desktop app. Claude gateway and OpenCode usage-limit resets survive turn completion. OpenCode commands with nonzero exits show as failed, ACP retains final messages without a newline, and Muse uses canonical workspace paths and bounded, redacted failure text.
-
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+- Project actions can opt into stopping when their thread settles, preserving terminal output. Older pending approvals stay answerable, PR description checkboxes save changes, and Git divergence refreshes after turns even with polling off.
+- Silent Antigravity turns stop after 15 minutes without progress. Requests and tools pause the deadline; unobservable subagent batches receive a bounded grace period until the parent resumes. Antigravity continues to reject unsupported Auto mode. Codex reports conversations held by another client, and ACP edits show every file's patch.
 - A server started without an auth token answers only requests addressed to `localhost`, a `.localhost` name or a loopback address, so a web page whose hostname is re-pointed at this machine (DNS rebinding) can no longer reach it. A proxy or tunnel that presents another hostname needs `--auth-token`.
 - Agents, Git hooks, setup scripts and other processes F5 starts no longer inherit the backend's own auth token (`T3CODE_AUTH_TOKEN`).
 - A running turn stores its context-size estimate when it moves by 1% of the context window (at least 2,000 tokens) and when the turn settles, not after every model step. Long turns add far fewer events to the profile database.

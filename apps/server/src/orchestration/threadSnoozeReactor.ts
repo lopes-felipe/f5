@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { CommandId, type OrchestrationEvent, type ThreadId } from "@t3tools/contracts";
 import { Effect, Fiber, Stream, type Scope } from "effect";
 
@@ -59,7 +60,7 @@ export function startThreadSnoozeReactor(
               return orchestrationEngine
                 .dispatch({
                   type: "thread.unsnooze",
-                  commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                  commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                   threadId,
                   expectedSnoozedUntil: snoozedUntil,
                   createdAt,

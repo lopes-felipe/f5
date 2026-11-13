@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import type {
   PlanningWorkflow,
   CodeReviewWorkflow,
@@ -244,7 +245,7 @@ export const reconcileWorkflowArchives = (engine: OrchestrationEngineShape) =>
       yield* engine
         .dispatch({
           type: "project.workflow.archive",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           projectId: entry.workflow.projectId,
           workflowId: entry.workflow.id,
           workflowKind: entry.kind,
@@ -283,7 +284,7 @@ const setWorkflowArchived = (
     yield* engine
       .dispatch({
         type: archived ? "project.workflow.archive" : "project.workflow.unarchive",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         projectId: entry.workflow.projectId,
         workflowKind: kind,
         workflowId,

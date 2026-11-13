@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import type { NativeHistoryReconciliation } from "../ProviderNativeHistory.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -161,7 +162,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
       );
     const stamp = (ctx: PiContext, body: EventBody): ProviderRuntimeEvent =>
       ({
-        eventId: EventId.make(randomUUID()),
+        eventId: EventId.make(timeOrderedUuid()),
         provider: "pi",
         providerInstanceId: options.instanceId,
         threadId: ctx.threadId,

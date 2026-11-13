@@ -1,5 +1,6 @@
 import { ScheduledOrigin, WORKTREE_SETUP_ACTIVITY_KIND } from "@t3tools/contracts";
 import { boundedHistoryStreams } from "../historyWindow.ts";
+import { compareActivities } from "@t3tools/shared/pendingActivityWindow";
 import { ReadSqlClient } from "../../persistence/ReadSqlClient.ts";
 import { makeThreadFind } from "../threadFind.ts";
 import { SnapshotReadClients, withSnapshotRead } from "../../persistence/snapshotReadExecutor.ts";
@@ -364,9 +365,9 @@ export function retainedThreadActivitiesSql(
   threadId: string | null,
   options?: { readonly unarchivedOnly?: boolean },
 ) {
-  const liveThreads = options?.unarchivedOnly
-    ? sql`thread_id IN (SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL AND archived_at IS NULL)`
-    : sql`thread_id IN (SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL)`;
+  const liveThreadIds = options?.unarchivedOnly
+    ? sql`SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL AND archived_at IS NULL`
+    : sql`SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL`;
   return sql`
     WITH ranked_activities AS (
       SELECT
@@ -383,7 +384,7 @@ export function retainedThreadActivitiesSql(
             activity_id DESC
         ) AS row_number
       FROM projection_thread_activities
-      WHERE ${threadId === null ? liveThreads : sql`thread_id = ${threadId}`}
+      WHERE ${threadId === null ? sql`thread_id IN (${liveThreadIds})` : sql`thread_id = ${threadId}`}
     ),
     bounded_activities AS (
       SELECT *
@@ -411,11 +412,17 @@ export function retainedThreadActivitiesSql(
       activities.created_at AS "createdAt"
     FROM bounded_activities
     JOIN projection_thread_activities AS activities ON activities.rowid = bounded_activities.rid
+    UNION
+    SELECT activity_id AS "activityId", activities.thread_id AS "threadId", activities.turn_id AS "turnId",
+      tone, kind, summary, payload_json AS "payload", sequence, activities.created_at AS "createdAt"
+    FROM projection_pending_approvals pending
+    JOIN projection_thread_activities activities ON activities.thread_id = pending.thread_id
+      AND activities.kind = 'approval.requested'
+      AND json_extract(activities.payload_json, '$.requestId') = pending.request_id
+    WHERE pending.status = 'pending'
+      AND ${threadId === null ? sql`pending.thread_id IN (${liveThreadIds})` : sql`pending.thread_id = ${threadId}`}
     ORDER BY
-      activities.thread_id ASC,
-      activities.sequence ASC,
-      activities.created_at ASC,
-      activities.activity_id ASC
+      "threadId" ASC, sequence ASC, "createdAt" ASC, "activityId" ASC
   `;
 }
 
@@ -883,6 +890,7 @@ function historyContinuationCursors(params: {
 }
 
 function buildThreadTailDetailsResult(params: {
+  readonly pendingActivities?: ReadonlyArray<OrchestrationThreadActivity>;
   readonly scope: "getStartupSnapshot" | "getThreadTailDetails";
   readonly threadId: OrchestrationThreadTailDetails["threadId"];
   readonly thread: ProjectionThread | null;
@@ -898,12 +906,15 @@ function buildThreadTailDetailsResult(params: {
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadTailDetails, ProjectionRepositoryError> {
   const bounded = boundedHistoryStreams(params);
+  const pending = params.pendingActivities ?? [];
   params = bounded;
+  const activities = new Map(params.activities.map((activity) => [activity.id, activity]));
+  for (const activity of pending) activities.set(activity.id, activity);
   return decodeThreadTailDetails({
     threadId: params.threadId,
     messages: mapThreadDetailMessages(params.messages),
     checkpoints: params.checkpoints,
-    activities: params.activities,
+    activities: [...activities.values()].toSorted(compareActivities),
     commandExecutions: params.commandExecutions,
     proposedPlans: params.proposedPlans,
     tasks: params.thread?.tasks ?? [],
@@ -1393,6 +1404,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Request: Schema.NullOr(ThreadId),
     Result: ProjectionThreadActivityDbRowSchema,
     execute: (threadId) => retainedThreadActivitiesSql(sql, threadId),
+  });
+
+  const listPendingApprovalActivityRows = SqlSchema.findAll({
+    Request: ThreadId,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: (threadId) => sql`
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+      FROM projection_thread_activities
+      WHERE thread_id = ${threadId} AND kind = 'approval.requested'
+        AND json_extract(payload_json, '$.requestId') IN (
+          SELECT request_id FROM projection_pending_approvals
+          WHERE thread_id = ${threadId} AND status = 'pending'
+        )
+      ORDER BY sequence ASC, created_at ASC, activity_id ASC
+    `,
   });
 
   const listUnarchivedRetainedThreadActivityRows = SqlSchema.findAll({
@@ -2265,6 +2292,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             );
           return { activities, hasOlderActivities };
         }),
+        Effect.flatMap((result) =>
+          listPendingApprovalActivityRows(input.threadId).pipe(
+            Effect.map((pending) => ({
+              ...result,
+              pendingActivities: pending.map(toReadModelActivity),
+            })),
+          ),
+        ),
       );
   };
 
@@ -3140,6 +3175,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }
 
         const threadTailDetails = yield* buildThreadTailDetailsResult({
+          pendingActivities: activityResult.pendingActivities,
           scope: "getStartupSnapshot",
           threadId: detailThreadId,
           thread,
@@ -3224,6 +3260,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         });
 
         return yield* buildThreadTailDetailsResult({
+          pendingActivities: thread === null ? [] : activityResult.pendingActivities,
           scope: "getThreadTailDetails",
           threadId: input.threadId,
           thread,

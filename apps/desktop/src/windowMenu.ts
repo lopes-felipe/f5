@@ -1,5 +1,18 @@
 import type { MenuItemConstructorOptions } from "electron";
 
+/** Electron strips spaces when constructing its User-Agent product token. */
+export function desktopRuntimeName(development: boolean): string {
+  return development ? "F5 Dev" : "F5";
+}
+
+export function selectReloadContents<T>(
+  focused: T | null,
+  owner: T | undefined,
+  isPreview: (contents: T) => boolean,
+): T | undefined {
+  return focused && isPreview(focused) ? focused : owner;
+}
+
 /** Tab-close belongs to the renderer on every platform, including when no tab is open. */
 export function desktopWindowMenu(platform: NodeJS.Platform): MenuItemConstructorOptions {
   return {
