@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, readdirSync, statSync } from "node:fs";
 import * as NodePath from "node:path";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 import { Effect } from "effect";
@@ -17,9 +17,29 @@ export interface ResolvedCliInvocation {
 }
 
 export interface CommandResolutionOptions {
+  readonly pathDirectoryListings?: PathDirectoryListings | undefined;
   readonly platform?: NodeJS.Platform;
   readonly useCache?: boolean;
   readonly cwd?: string | undefined;
+}
+
+/** Scan-local listings; unreadable directories fall back to candidate probes. */
+export class PathDirectoryListings {
+  private readonly entries = new Map<string, { mtime: number; names: Set<string> }>();
+
+  names(directory: string): ReadonlySet<string> | undefined {
+    try {
+      const mtime = statSync(directory).mtimeMs;
+      const cached = this.entries.get(directory);
+      if (cached?.mtime === mtime) return cached.names;
+      const names = new Set(readdirSync(directory).map((name) => name.toLowerCase()));
+      this.entries.set(directory, { mtime, names });
+      return names;
+    } catch {
+      this.entries.delete(directory);
+      return undefined;
+    }
+  }
 }
 
 export class CommandNotFoundError extends Error {
@@ -170,6 +190,7 @@ function findExecutables(
   platform: NodeJS.Platform,
   cwd: string | undefined,
   firstOnly: boolean,
+  listings?: PathDirectoryListings,
 ): string[] {
   const pathExtensions =
     platform === "win32" ? resolveWindowsPathExtensions(env) : ([] as ReadonlyArray<string>);
@@ -193,7 +214,9 @@ function findExecutables(
   );
   const found: string[] = [];
   for (const pathEntry of pathEntries) {
+    const names = listings?.names(pathEntry);
     for (const candidate of candidates) {
+      if (names && !names.has(candidate.toLowerCase())) continue;
       const candidatePath = joinForPlatform(pathEntry, candidate, platform);
       if (isExecutableFile(candidatePath, platform)) {
         found.push(candidatePath);
@@ -216,7 +239,14 @@ export function resolveExecutables(
   env: NodeJS.ProcessEnv = process.env,
   options: Omit<CommandResolutionOptions, "useCache"> = {},
 ): string[] {
-  return findExecutables(command, env, options.platform ?? process.platform, options.cwd, false);
+  return findExecutables(
+    command,
+    env,
+    options.platform ?? process.platform,
+    options.cwd,
+    false,
+    options.pathDirectoryListings,
+  );
 }
 
 export function resolveExecutable(
@@ -233,7 +263,9 @@ export function resolveExecutable(
   }
   if (cached) resolutionCache.delete(cacheKey);
 
-  const resolved = findExecutables(command, env, platform, options.cwd, true)[0] ?? null;
+  const resolved =
+    findExecutables(command, env, platform, options.cwd, true, options.pathDirectoryListings)[0] ??
+    null;
 
   // Misses must self-heal immediately when a CLI is installed into an
   // existing PATH directory. Positive entries are bounded to avoid stale

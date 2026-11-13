@@ -494,6 +494,26 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
               No models found
             </ComboboxEmpty>
+            {selectedProvider !== "favorites" &&
+              props.providers
+                ?.filter((provider) => provider.driver === selectedProvider)
+                .flatMap((provider) =>
+                  (provider.updateRequiredModels ?? [])
+                    .filter((model) =>
+                      (model.name + " " + model.slug)
+                        .toLowerCase()
+                        .includes(searchQuery.trim().toLowerCase()),
+                    )
+                    .map((model) => (
+                      <p
+                        key={provider.instanceId + ":" + model.slug}
+                        className="px-3 py-1 text-xs text-muted-foreground"
+                      >
+                        Update {provider.driver === "claudeAgent" ? "Claude Code" : "Codex"} to v
+                        {model.minVersion} or newer to use {model.name}.
+                      </p>
+                    )),
+                )}
           </div>
         </Combobox>
       </div>

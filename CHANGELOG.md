@@ -16,6 +16,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Editor discovery scans PATH directories once per scan, speeding up discovery on slow disks. Desktop preview uses a valid User-Agent and reload shortcuts target the focused page.
+- New approvals and questions wait until typing pauses before taking over the composer. Cursor stays in Normal mode unless Fast was selected, and model switches retain saved traits.
+- Threads stay Connecting while a turn starts, and checkout PR actions only show the thread branch's PR. The model picker names models unlocked by a CLI update.
 - Claude-launched Electron apps open normally, while configured JavaScript Claude entry points still run in the desktop app. Claude gateway and OpenCode usage-limit resets survive turn completion. OpenCode commands with nonzero exits show as failed, ACP retains final messages without a newline, and Muse uses canonical workspace paths and bounded, redacted failure text.
 
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
