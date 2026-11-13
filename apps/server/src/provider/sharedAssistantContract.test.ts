@@ -10,8 +10,10 @@ import {
   buildCodexModeInstructions,
   buildInstructionProfile,
   buildSharedAssistantContractText,
+  CLAUDE_PLAN_MODE_EDITS,
   CLAUDE_SUPPLEMENT_VERSION,
   CODEX_ADDITIONAL_CONTEXT_MAX_BYTES,
+  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_SUPPLEMENT_VERSION,
   SHARED_ASSISTANT_CONTRACT_VERSION,
   splitUtf8Chunks,
@@ -547,11 +549,14 @@ describe("sharedAssistantContract", () => {
     });
   });
 
-  it("builds Claude plan-mode instructions with tool mapping and the host contract last", () => {
+  it("builds Claude plan-mode instructions in Claude's terms with the host contract last", () => {
     const plain = buildClaudePlanModeInstructions({});
     expect(plain).toContain("# Plan Mode (Conversational)");
-    expect(plain).toContain("means the AskUserQuestion tool");
-    expect(plain).toContain("ExitPlanMode");
+    expect(plain).toContain("using the AskUserQuestion tool");
+    expect(plain).toContain("Deliver the official plan with the ExitPlanMode tool");
+    expect(plain).toContain("load it with ToolSearch first");
+    // Codex's tools, its mode switch and its update_plan error do not apply to Claude.
+    expect(plain).not.toMatch(/request_user_input|update_plan|developer message/);
     expect(plain).not.toContain("# Workflow Read-Only Host Contract");
     // Claude Code adds its own wrapper; F5 must not add a second heading.
     expect(plain.startsWith("# Plan Mode (Conversational)")).toBe(true);
@@ -561,7 +566,16 @@ describe("sharedAssistantContract", () => {
     });
     expect(attended).toContain("Clarifying questions are supported");
     expect(attended.indexOf("# Workflow Read-Only Host Contract")).toBeGreaterThan(
-      attended.indexOf("means the AskUserQuestion tool"),
+      attended.indexOf("Deliver the official plan with the ExitPlanMode tool"),
     );
+  });
+
+  it("applies every Claude plan-mode edit to the shared body exactly once", () => {
+    // An edit that stops matching would ship Codex wording to Claude without failing anything else.
+    for (const [from, to] of CLAUDE_PLAN_MODE_EDITS) {
+      expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS.split(from)).toHaveLength(2);
+      expect(buildClaudePlanModeInstructions({})).toContain(to);
+    }
+    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).toContain("`request_user_input`");
   });
 });

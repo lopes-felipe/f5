@@ -13,6 +13,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+- Claude's Plan mode instructions name Claude's own tools (AskUserQuestion, ExitPlanMode, the task tools) and no longer warn about an `update_plan` error that only Codex returns. They also say to load ExitPlanMode through ToolSearch when Claude Code defers it.
 
 ## [0.1.8] - 2026-11-12
 
