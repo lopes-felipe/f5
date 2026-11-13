@@ -4,19 +4,22 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { runInNewContext } from "node:vm";
 import type { Worker as NodeWorker } from "node:worker_threads";
-import { Cause, Effect, Metric } from "effect";
+import { Cause, Effect, Logger, Metric } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it, vi } from "vitest";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import {
   checkpointWorkerSource,
+  SLOW_CHECKPOINT_LOG_MS,
   sqliteCheckpointBlocked,
+  sqliteCheckpointDuration,
   sqliteWalBytes,
 } from "./sqliteCheckpointWorker.ts";
 
 const workers = vi.hoisted(() => [] as NodeWorker[]);
 const failure = vi.hoisted(() => ({ enabled: false }));
 const paused = vi.hoisted(() => ({ enabled: false }));
+const slow = vi.hoisted(() => ({ enabled: false }));
 vi.mock("node:worker_threads", async (original) => {
   const actual = await original<typeof import("node:worker_threads")>();
   return {
@@ -31,7 +34,17 @@ vi.mock("node:worker_threads", async (original) => {
                   'require("node:worker_threads").parentPort.on("message", () => {});',
                   { eval: true },
                 ]
-              : args) as ConstructorParameters<typeof actual.Worker>),
+              : slow.enabled
+                ? [
+                    // Answers every request as if a checkpoint of 1,200 frames took 2.5 s.
+                    `const { parentPort } = require("node:worker_threads");
+                     parentPort.on("message", () => parentPort.postMessage({
+                       ack: true, walBytes: 4096, blocked: false,
+                       checkpointed: { durationMs: 2500, frames: 1200 },
+                     }));`,
+                    { eval: true },
+                  ]
+                : args) as ConstructorParameters<typeof actual.Worker>),
         );
         workers.push(this);
       }
@@ -52,6 +65,7 @@ const supportsNoop = (() => {
 
 const withClient = async <E>(
   run: (sql: SqlClient.SqlClient, filename: string) => Effect.Effect<void, E>,
+  logs?: unknown[],
 ) => {
   const directory = mkdtempSync(join(tmpdir(), "f5-checkpoint-"));
   const filename = join(directory, "state.sqlite");
@@ -63,7 +77,17 @@ const withClient = async <E>(
         yield* sql`PRAGMA journal_size_limit=134217728`;
         yield* sql`CREATE TABLE payload(value BLOB)`;
         yield* run(sql, filename);
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename, checkpointWorker: true }))),
+      }).pipe(
+        Effect.provide(NodeSqliteClient.layer({ filename, checkpointWorker: true })),
+        // Outermost, so the worker's log calls (forked with the client's services) reach it.
+        logs
+          ? Effect.provide(
+              Logger.layer([Logger.make(({ message }) => logs.push(message))], {
+                mergeWithExisting: false,
+              }),
+            )
+          : (effect) => effect,
+      ),
     );
   } finally {
     // Windows can refuse the delete while a just-terminated worker still holds the database open.
@@ -144,9 +168,17 @@ describe("SQLite checkpoint worker", () => {
     let checkpointed = 1500;
     let noopBusy = false;
     let busyTimeoutConfigured = false;
-    const messages: Array<{ blocked: boolean }> = [];
-    const passive = vi.fn(() => ({ log: 2000, checkpointed, busy: 0 }));
+    let clock = 10_000;
+    const messages: Array<{
+      blocked: boolean;
+      checkpointed: { durationMs: number; frames: number } | null;
+    }> = [];
+    const passive = vi.fn(() => {
+      clock += 2_500;
+      return { log: 2000, checkpointed, busy: 0 };
+    });
     runInNewContext(checkpointWorkerSource, {
+      Date: { now: () => clock },
       require: (module: string) => {
         if (module === "node:worker_threads")
           return {
@@ -155,7 +187,7 @@ describe("SQLite checkpoint worker", () => {
               on: (_event: string, callback: () => void) => {
                 receive = callback;
               },
-              postMessage: (message: { blocked: boolean }) => messages.push(message),
+              postMessage: (message: (typeof messages)[number]) => messages.push(message),
             },
           };
         if (module === "node:fs")
@@ -191,12 +223,17 @@ describe("SQLite checkpoint worker", () => {
     receive();
     expect(passive).not.toHaveBeenCalled();
     expect(messages.at(-1)?.blocked).toBe(false);
+    // No checkpoint ran, so none is reported.
+    expect(messages.at(-1)?.checkpointed).toBeNull();
     idle();
     expect(passive).toHaveBeenCalledTimes(1);
     expect(messages.at(-1)?.blocked).toBe(true);
+    // The one that ran reports its duration and the frames it had to move.
+    expect(messages.at(-1)?.checkpointed).toEqual({ durationMs: 2_500, frames: 500 });
     noopBusy = true;
     receive();
     expect(messages.at(-1)?.blocked).toBe(true);
+    expect(messages.at(-1)?.checkpointed).toBeNull();
     idle();
     expect(messages.at(-1)?.blocked).toBe(true);
     noopBusy = false;
@@ -266,6 +303,36 @@ describe("SQLite checkpoint worker", () => {
     },
     60_000,
   );
+
+  it("records each checkpoint's duration and logs a slow one", async () => {
+    expect(SLOW_CHECKPOINT_LOG_MS).toBeLessThanOrEqual(2_500);
+    const logs: unknown[] = [];
+    slow.enabled = true;
+    try {
+      await withClient(
+        (sql) =>
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO payload VALUES (zeroblob(1))`;
+            yield* until(
+              () =>
+                Metric.value(sqliteCheckpointDuration).pipe(
+                  Effect.map((state) => state.value === 2_500),
+                ),
+              "the checkpoint duration metric",
+            );
+            yield* until(
+              () => Effect.sync(() => JSON.stringify(logs).includes("slow sqlite checkpoint")),
+              "the slow checkpoint warning",
+            );
+          }),
+        logs,
+      );
+    } finally {
+      slow.enabled = false;
+    }
+    expect(JSON.stringify(logs)).toContain('"durationMs":2500');
+    expect(JSON.stringify(logs)).toContain('"frames":1200');
+  });
 
   it("hands checkpoints back when the worker crashes or cannot start", async () => {
     failure.enabled = true;
