@@ -1007,6 +1007,7 @@ export const UpstreamPortQueueEntry = Schema.Struct({
   result: Schema.NullOr(Schema.String),
   reason: Schema.NullOr(Schema.String),
   threadId: Schema.NullOr(ThreadId),
+  /** @deprecated Use `pr.url`; kept for older clients. */
   prUrl: Schema.NullOr(Schema.String),
   fileCount: NonNegativeInt,
   waitingOn: Schema.Array(

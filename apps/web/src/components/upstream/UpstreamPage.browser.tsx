@@ -468,7 +468,7 @@ it("opens the Queue view from the header chip and controls pause, resume and cle
   await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"active"');
   await expect
     .element(page.getByTestId("queue-status"))
-    .toHaveTextContent("Running 0 of 5 jobs · 2 queued jobs (10 topics) · 2 waiting on files");
+    .toHaveTextContent("0 of 5 port slots in use · 2 queued jobs (10 topics) · 2 waiting on files");
   await vi.waitFor(() => expect(api.getPortQueue).toHaveBeenCalledWith({ projectId, view: "active" }));
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
@@ -554,6 +554,83 @@ it("acts on queued jobs and opens their topics in the detail pane", async () => 
   await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"active"');
   await vi.waitFor(() => expect(api.getTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: "pr-3" })));
 });
+/** The Queue view with one job holding Topic C, which is Ready while the cached Inbox rows still say Inbox. */
+async function openQueueWithReadyTopic() {
+  api.getOverview.mockResolvedValue({
+    ...overview,
+    portQueue: { ...overview.portQueue, hasHistory: true, needsAttention: 1 },
+  });
+  api.getPortQueue.mockResolvedValue(
+    queuePage(
+      [
+        queueEntry({
+          status: "dropped",
+          bucket: "needs-attention",
+          result: "start-failed",
+          topics: [
+            {
+              topicId: "pr-3" as never,
+              title: "Topic C",
+              state: "ready",
+              epoch: 1,
+              superseded: false,
+              result: "start-failed",
+              bucket: "needs-attention",
+            },
+          ],
+        }),
+      ],
+      { active: 0, needsYou: 1, history: 0, inactive: 0 },
+    ),
+  );
+  const ready = inState(ROWS[2]!, "ready");
+  api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
+    revision: "r1",
+    repository: "https://github.com/pingdotgg/t3code.git",
+    row: topicId === "pr-3" ? ready : ROWS.find((entry) => entry.topic.id === topicId),
+    members: [],
+    related: [],
+    history: [],
+  }));
+  await setup({ project: projectId, list: "inbox" }, "Topic A", true);
+  await page.getByRole("button", { name: /^Queue/ }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"needs-you"');
+  await page.getByRole("listitem", { name: /^Needs attention: Topic C/ }).getByRole("button", { name: "Topic C" }).click();
+  await expect.element(page.getByRole("heading", { name: "Topic C" })).toBeVisible();
+}
+
+it("starts a port from the Queue view using the topic's own state", async () => {
+  await openQueueWithReadyTopic();
+  await page.getByRole("button", { name: "Start port…" }).click();
+  await expect.element(page.getByRole("dialog").getByRole("button", { name: "Start port" })).toBeVisible();
+  await expect.element(page.getByText("Only Ready or In progress topics can be ported.")).not.toBeInTheDocument();
+});
+
+it("keeps the decided topic open in the Queue view", async () => {
+  await openQueueWithReadyTopic();
+  await page.getByRole("button", { name: "Watch", exact: true }).click();
+  await vi.waitFor(() =>
+    expect(api.decide).toHaveBeenCalledWith(
+      expect.objectContaining({ topicIds: ["pr-3"], decision: { kind: "watch" } }),
+    ),
+  );
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"topic":"pr-3"');
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"needs-you"');
+});
+
+it("returns from the Queue view to the list with its filters and sort", async () => {
+  api.getOverview.mockResolvedValue({ ...overview, portQueue: { ...overview.portQueue, hasHistory: true } });
+  await setup({ project: projectId, list: "ready", lane: ["security"], sort: "newest" });
+  await page.getByRole("button", { name: /^Queue/ }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"active"');
+  await page.getByRole("button", { name: /^Queue/ }).click();
+  const search = page.getByTestId("search");
+  await expect.element(search).not.toHaveTextContent('"queue"');
+  await expect.element(search).toHaveTextContent('"list":"ready"');
+  await expect.element(search).toHaveTextContent('"lane":["security"]');
+  await expect.element(search).toHaveTextContent('"sort":"newest"');
+});
+
 const bulkButton = (name: string) =>
   page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name, exact: true });
 

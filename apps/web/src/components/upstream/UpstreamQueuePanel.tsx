@@ -150,7 +150,7 @@ export function UpstreamQueuePanel(props: {
     return numbers;
   }, [entries, view]);
 
-  const run =async (title: string, action: () => Promise<unknown>) => {
+  const run = async (title: string, action: () => Promise<unknown>) => {
     setBusy(true);
     try {
       await action();
@@ -166,19 +166,20 @@ export function UpstreamQueuePanel(props: {
   };
   const control = (input: UpstreamControlPortQueueInput) =>
     run("Could not update the port queue", () => ensureNativeApi().upstreamPorts.controlPortQueue(input));
-  const dequeue = (entry: UpstreamPortQueueEntry) =>
-    run("Could not remove from the queue", () =>
-      ensureNativeApi().upstreamPorts.dequeuePort({
-        projectId,
-        topicIds: entry.topics.filter((topic) => topic.bucket === "queued" || topic.bucket === "waiting").map(
-          (topic) => topic.topicId,
-        ) as never,
-      }),
+  const dequeue = (entry: UpstreamPortQueueEntry) => {
+    const topicIds = entry.topics
+      .filter((topic) => topic.bucket === "queued" || topic.bucket === "waiting")
+      .map((topic) => topic.topicId);
+    if (topicIds.length === 0) return;
+    void run("Could not remove from the queue", () =>
+      ensureNativeApi().upstreamPorts.dequeuePort({ projectId, topicIds }),
     );
+  };
 
   const disabled = props.readOnly || busy;
+  // Slots count every running port thread, including ports started by hand.
   const statusParts = [
-    `Running ${queue.running} of ${queue.concurrency} ${queue.concurrency === 1 ? "job" : "jobs"}`,
+    `${queue.running} of ${plural(queue.concurrency, "port slot")} in use`,
     queue.queuedThreads > 0
       ? `${plural(queue.queuedThreads, "queued job")} (${plural(queue.queuedTopics, "topic")})`
       : "Nothing queued",
@@ -249,8 +250,13 @@ export function UpstreamQueuePanel(props: {
           onValueChange={props.onViewChange}
           tabs={[
             { value: "active" as const, label: "Active", count: tabs?.active },
-            { value: "needs-you" as const, label: "Needs you", count: tabs?.needsYou, warn: true },
-            { value: "history" as const, label: "History", count: tabs?.history },
+            // Warn only when a job needs a decision; PRs awaiting review are routine.
+            { value: "needs-you" as const, label: "Needs you", count: tabs?.needsYou, warn: queue.needsAttention > 0 },
+            {
+              value: "history" as const,
+              label: "History",
+              count: tabs ? tabs.history + (includeInactive ? tabs.inactive : 0) : undefined,
+            },
           ].map((tab) => ({
             value: tab.value,
             label: tab.label,
@@ -289,7 +295,7 @@ export function UpstreamQueuePanel(props: {
           </div>
         )}
         {query.isPending && <p className="p-2 text-muted-foreground">Loading queue…</p>}
-        {query.data && entries.length === 0 && <EmptyView view={view} />}
+        {query.data && entries.length === 0 && <EmptyView view={view} running={queue.running} />}
         <ol aria-label="Port queue jobs" className="space-y-2">
           {entries.map((entry) => (
             <QueueJob
@@ -300,7 +306,7 @@ export function UpstreamQueuePanel(props: {
               disabled={disabled}
               onOpenTopic={props.onOpenTopic}
               onStartAnyway={() => void control({ projectId, action: "ignore-conflicts", entryId: entry.entryId })}
-              onRemove={() => void dequeue(entry)}
+              onRemove={() => dequeue(entry)}
               onRetry={props.onRetry}
             />
           ))}
@@ -333,10 +339,13 @@ export function UpstreamQueuePanel(props: {
   );
 }
 
-function EmptyView(props: { readonly view: UpstreamPortQueueView }) {
+function EmptyView(props: { readonly view: UpstreamPortQueueView; readonly running: number }) {
+  // Running slots also count ports started by hand, which are not queue jobs.
   const text =
     props.view === "active"
-      ? "Nothing is running or queued. Queue Ready topics from the Ready list."
+      ? props.running > 0
+        ? `No queued ports are running or waiting. ${plural(props.running, "port")} started outside the queue ${props.running === 1 ? "uses" : "use"} its slots.`
+        : "Nothing is running or queued. Queue Ready topics from the Ready list."
       : props.view === "needs-you"
         ? "No ports need a decision or review."
         : "No finished ports yet.";
@@ -412,7 +421,7 @@ function QueueJob(props: {
           {entry.fileCount > 0 && <span>{plural(entry.fileCount, "file")}</span>}
           <Menu>
             <MenuTrigger
-              render={<Button size="icon-xs" variant="ghost" aria-label="Job actions" disabled={props.disabled} />}
+              render={<Button size="icon-xs" variant="ghost" aria-label="Job actions" />}
             >
               <MoreHorizontalIcon />
             </MenuTrigger>
@@ -424,10 +433,21 @@ function QueueJob(props: {
                   <ExternalLinkIcon className="ms-auto size-3" />
                 </MenuItem>
               )}
-              {entry.bucket === "waiting" && <MenuItem onClick={props.onStartAnyway}>Start without waiting</MenuItem>}
-              {queued && <MenuItem onClick={props.onRemove}>Remove from queue</MenuItem>}
+              {/* Opening a thread or PR changes nothing, so only the queue actions follow read-only and busy. */}
+              {entry.bucket === "waiting" && (
+                <MenuItem disabled={props.disabled} onClick={props.onStartAnyway}>
+                  Start without waiting
+                </MenuItem>
+              )}
+              {queued && (
+                <MenuItem disabled={props.disabled} onClick={props.onRemove}>
+                  Remove from queue
+                </MenuItem>
+              )}
               {retryable.length > 0 && (
-                <MenuItem onClick={() => props.onRetry(retryable)}>Retry port…</MenuItem>
+                <MenuItem disabled={props.disabled} onClick={() => props.onRetry(retryable)}>
+                  Retry port…
+                </MenuItem>
               )}
               {!entry.threadId && !entry.pr && !queued && retryable.length === 0 && (
                 <MenuItem disabled>No actions</MenuItem>

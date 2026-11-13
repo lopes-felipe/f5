@@ -144,6 +144,11 @@ describe("bucketQueue", () => {
     ).toEqual([["omitted"], ["superseded"], ["superseded"]]);
   });
 
+  it("leaves out a topic that is no longer in the ledger", () => {
+    const entry = record({ topicIds: ["pr-gone"], topicResults: { "pr-gone": "no-outcome" } });
+    expect(bucketsOf([entry], context({}))).toEqual([["omitted"]]);
+  });
+
   it("separates waiting from queued and counts both as queued topics", () => {
     const waiting = record({ topicIds: ["pr-1"], status: "queued", threadId: null, result: null });
     const queued = record({ topicIds: ["pr-2"], status: "queued", threadId: null, result: null });

@@ -195,6 +195,12 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
       }),
     );
   return {
+    /** Bumped by every queue write; 0 before the first one. Keys caches derived from the queue. */
+    getQueueVersion: (projectId: string) =>
+      sql<{ queue_version: number }>`SELECT queue_version FROM upstream_port_queue_state
+      WHERE project_id = ${projectId}`.pipe(
+        Effect.map((rows) => Number(rows[0]?.queue_version ?? 0)),
+      ),
     /**
      * Topics queued by requests whose client request id starts with `prefix`,
      * recorded at or after `since`. Reads the immutable request records, so

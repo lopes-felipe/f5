@@ -145,6 +145,8 @@ export const UpstreamToolbar = forwardRef<
       readonly jobs: number;
       readonly needsAttention: number;
       readonly onOpen: () => void;
+      /** Returns to the list the queue was opened from, keeping its filters and sort. */
+      readonly onClose: () => void;
     } | null;
   }
 >(function UpstreamToolbar(props, searchRef) {
@@ -172,9 +174,10 @@ export const UpstreamToolbar = forwardRef<
       size="sm"
       value={queueActive ? [] : [props.list]}
       onValueChange={(values) => {
-        // Re-pressing the current list from the Queue view returns to it.
-        const next = (values[0] ?? (queueActive ? props.list : undefined)) as UpstreamTopicList | undefined;
-        if (next) props.onListChange(next);
+        const next = values[0] as UpstreamTopicList | undefined;
+        // From the Queue view, pressing the list it came from returns to it as it was.
+        if (queueActive && (next === undefined || next === props.list)) props.queue?.onClose();
+        else if (next) props.onListChange(next);
       }}
     >
       {UPSTREAM_LISTS.map((entry) => (
@@ -199,7 +202,7 @@ export const UpstreamToolbar = forwardRef<
       aria-current={queueActive ? "page" : undefined}
       onPressedChange={(pressed) => {
         if (pressed) props.queue?.onOpen();
-        else props.onListChange(props.list);
+        else props.queue?.onClose();
       }}
       className="gap-1.5"
     >

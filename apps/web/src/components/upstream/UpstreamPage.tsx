@@ -27,6 +27,7 @@ import {
   upstreamOverviewQueryOptions,
   upstreamProjectsQueryOptions,
   upstreamPortsQueryKeys,
+  upstreamTopicQueryOptions,
   upstreamTopicsQueryOptions,
   type UpstreamTopicFilter,
 } from "../../lib/upstreamPortsReactQuery";
@@ -189,11 +190,22 @@ export function UpstreamPage(props: {
 
   /** Topics leaving the list while their decision is in flight; refetches cannot bring them back meanwhile. */
   const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY_SET);
+  /**
+   * In the Queue view the only topic on screen is the one in the detail pane, so
+   * page actions (Start port, decisions, counts, focus) read its own row. The
+   * hidden list's cached rows would give them the wrong topics and states.
+   */
+  const queueTopicQuery = useQuery({
+    ...upstreamTopicQueryOptions(projectId ?? ("" as ProjectId), props.search.topic ?? null),
+    enabled: projectId !== null && queueView !== null && props.search.topic !== undefined,
+  });
+  const queueTopicRow = queueTopicQuery.data?.row;
   const rows = useMemo(() => {
+    if (queueView !== null) return queueTopicRow ? [queueTopicRow] : EMPTY_ROWS;
     if (!topicsQuery.data) return EMPTY_ROWS;
     const loaded = topicsQuery.data.pages.flatMap((page) => page.topics);
     return hidden.size === 0 ? loaded : loaded.filter((row) => !hidden.has(row.topic.id));
-  }, [topicsQuery.data, hidden]);
+  }, [topicsQuery.data, hidden, queueView, queueTopicRow]);
   const ids = useMemo(() => rows.map((row) => row.topic.id), [rows]);
 
   useEffect(() => {
@@ -362,7 +374,8 @@ export function UpstreamPage(props: {
     [matching, selected, ids, focused],
   );
   const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
-  const stateOf = useMemo(() => topicStates(rows, list), [rows, list]);
+  // Rows of a list are all in that list; the Queue view knows only the focused topic's state.
+  const stateOf = useMemo(() => topicStates(rows, queueView !== null ? "unknown" : list), [rows, list, queueView]);
   const loadedIds = useMemo(() => new Set(ids), [ids]);
   const unloadedCount = (topicIds: ReadonlyArray<string>) => topicIds.filter((id) => !loadedIds.has(id)).length;
   const total = firstPage?.total ?? (overview ? overview.counts[list] : 0);
@@ -473,7 +486,13 @@ export function UpstreamPage(props: {
       setHiddenIds(leaving, true);
       adjustOverviewCounts(projectId, moves);
       setSelected((current) => new Set([...current].filter((id) => !leaving.has(id))));
-      if (canMoveFocusAfterDecision(started, viewRef.current) && started.focused && leaving.has(started.focused))
+      // The Queue view keeps the decided topic open: the next topic of a hidden list means nothing there.
+      if (
+        queueView === null &&
+        canMoveFocusAfterDecision(started, viewRef.current) &&
+        started.focused &&
+        leaving.has(started.focused)
+      )
         setFocused(focusAfterRemoval(order, leaving, started.focused));
     }
 
@@ -816,6 +835,12 @@ export function UpstreamPage(props: {
       ...(queueView !== null && topic ? { topic } : {}),
     });
   };
+  /** Back to the list the queue was opened from, with its filters and sort. */
+  const closeQueue = () => {
+    if (!projectId) return;
+    const { queue: _queue, topic: _topic, ...rest } = searchRef.current;
+    onSearchChange({ ...rest, project: projectId, list });
+  };
 
   /** Reopening bumps the epoch, so running port threads stop counting; ask first when any is In progress. */
   const reopen = (topicIds: string[]) => {
@@ -1115,6 +1140,7 @@ export function UpstreamPage(props: {
                   jobs: overview.portQueue.running + overview.portQueue.queuedThreads,
                   needsAttention: overview.portQueue.needsAttention,
                   onOpen: () => openQueue(portQueueLandingView(overview.portQueue)),
+                  onClose: closeQueue,
                 }
               : null
           }

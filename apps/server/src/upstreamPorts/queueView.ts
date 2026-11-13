@@ -126,13 +126,14 @@ function topicBucket(
     return out(record.topicResults[topicId] === "canceled" ? "cancelled" : "omitted");
   if (record.status === "queued") return out(context.blocked(record) ? "waiting" : "queued");
   if (record.status === "started") return out("executing");
+  // A topic that left the ledger was not replaced by anything, so it is left out.
+  if (!row) return out("omitted");
   if (superseded || retried) return out("superseded");
   if (record.status === "dropped") {
     if (record.result === "canceled") return out("cancelled");
     if (record.result === "not-ready") return out("omitted");
     if (record.result === "epoch-changed") return out("superseded");
   }
-  if (!row) return out("omitted");
   if (context.onDefaultBranch(topicId, epoch)) return out("done");
   if (
     row.topic.decidedBy === "llm" &&

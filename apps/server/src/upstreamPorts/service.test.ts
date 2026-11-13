@@ -972,6 +972,43 @@ layer("upstream port queue", (it) => {
       const summary = (yield* service.getOverview(PROJECT_ID)).portQueue;
       assert.equal(summary.hasHistory, true);
       assert.equal(summary.needsAttention, 1);
+      // A later attempt at the same epoch supersedes the failed one.
+      const queue = makeQueueStore(yield* SqlClient.SqlClient);
+      const [failed] = yield* queue.listQueue(PROJECT_ID);
+      yield* queue.setQueueEntry({
+        ...failed!,
+        entryId: `${failed!.entryId}-retry`,
+        position: failed!.position + 1,
+        requestId: `${failed!.requestId}-retry`,
+        topicResults: { [ids[0]!]: "pr" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 0);
+      const retried = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.deepStrictEqual(
+        retried.entries.map((entry) => entry.bucket),
+        ["superseded", "awaiting-review"],
+      );
+      assert.equal(retried.counts.needsAttention, 0);
+      yield* queue.setQueueEntry({
+        ...failed!,
+        entryId: `${failed!.entryId}-retry`,
+        position: failed!.position + 1,
+        requestId: `${failed!.requestId}-retry`,
+        status: "dropped",
+        result: "canceled",
+        topicResults: { [ids[0]!]: "canceled" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 1);
+      // Deciding the topic by hand settles it: the queue stops asking for attention.
+      // Declining keeps the epoch (Watch would start a new one and supersede the entry).
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: [ids[0]!],
+        decision: { kind: "declined", reason: "Not for f5" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 0);
+      const resolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      assert.equal(resolved.bucket, "resolved");
     }),
   );
   it.effect("releases overlapping files after recording a settled not-applicable outcome", () =>
