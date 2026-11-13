@@ -1,4 +1,5 @@
 import { ScheduledOriginBadge } from "../scheduled/ScheduledOriginBadge";
+import { ContextMenuIcon } from "../ContextMenuIcon";
 import { ThreadSettlementControl } from "../thread/ThreadSettlementControl";
 import { ThreadAutomationsButton } from "../scheduled/ThreadAutomationsButton";
 import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
@@ -38,6 +39,9 @@ import {
   MenuItem,
   MenuPopup,
   MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
 import { Separator } from "../ui/separator";
@@ -521,22 +525,17 @@ export const ChatHeader = memo(function ChatHeader({
             <EllipsisIcon aria-hidden="true" className="size-4" />
           </MenuTrigger>
           <MenuPopup side="bottom" align="end">
-            {threadActionItems.map((item, index) => (
+            {threadActionItems.map((item) => (
               <ThreadActionMenuEntry
                 key={item.id}
                 item={item}
-                separatorBefore={
-                  item.separatorBefore === true ||
-                  (item.destructive === true &&
-                    index > 0 &&
-                    threadActionItems[index - 1]?.destructive !== true)
-                }
-                onSelect={() => {
-                  if (item.id === "rename") {
+                separatorBefore={item.separatorBefore === true}
+                onSelect={(id) => {
+                  if (id === "rename") {
                     setRenamingThreadId(activeThreadId);
                     return;
                   }
-                  onThreadAction(item.id);
+                  onThreadAction(id);
                 }}
               />
             ))}
@@ -601,18 +600,38 @@ function PanelMenuItem(props: { panel: PanelToggleSpec }) {
 function ThreadActionMenuEntry(props: {
   item: ThreadActionMenuItem;
   separatorBefore: boolean;
-  onSelect: () => void;
+  onSelect: (id: ThreadActionId) => void;
 }) {
   return (
     <>
       {props.separatorBefore ? <MenuSeparator /> : null}
-      <MenuItem
-        disabled={props.item.disabled}
-        variant={props.item.destructive ? "destructive" : "default"}
-        onClick={props.onSelect}
-      >
-        {props.item.label}
-      </MenuItem>
+      {props.item.children ? (
+        <MenuSub>
+          <MenuSubTrigger disabled={props.item.disabled}>
+            <ContextMenuIcon name={props.item.icon} />
+            {props.item.label}
+          </MenuSubTrigger>
+          <MenuSubPopup>
+            {props.item.children.map((item) => (
+              <ThreadActionMenuEntry
+                key={item.id}
+                item={item}
+                separatorBefore={item.separatorBefore === true}
+                onSelect={props.onSelect}
+              />
+            ))}
+          </MenuSubPopup>
+        </MenuSub>
+      ) : (
+        <MenuItem
+          disabled={props.item.disabled}
+          variant={props.item.destructive ? "destructive" : "default"}
+          onClick={() => props.onSelect(props.item.id)}
+        >
+          <ContextMenuIcon name={props.item.icon} />
+          {props.item.label}
+        </MenuItem>
+      )}
     </>
   );
 }

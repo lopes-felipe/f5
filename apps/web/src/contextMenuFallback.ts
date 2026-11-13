@@ -1,4 +1,5 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
+import { createIconElement } from "./contextMenuIcons";
 
 let activeDismiss: ((restoreFocus: boolean) => void) | null = null;
 
@@ -34,6 +35,15 @@ export function showContextMenuFallback<T extends string>(
     const y = position?.y ?? 0;
     menu.style.top = `${y}px`;
     menu.style.left = `${x}px`;
+    const levels: Array<{ menu: HTMLDivElement; trigger?: HTMLButtonElement }> = [{ menu }];
+    const closeAfter = (level: number) => {
+      while (levels.length > level + 1) {
+        const child = levels.pop()!;
+        child.trigger?.setAttribute("aria-expanded", "false");
+        child.menu.remove();
+      }
+    };
+    const containsFocus = () => levels.some(({ menu }) => menu.contains(document.activeElement));
 
     let disposed = false;
     function cleanup(result: T | null, restoreFocus = true) {
@@ -44,7 +54,8 @@ export function showContextMenuFallback<T extends string>(
       document.removeEventListener("focusin", onFocusIn);
       window.removeEventListener("blur", onWindowBlur);
       // Focus goes back to the row behind the menu only if the menu still holds it.
-      const shouldRestoreFocus = restoreFocus && menu.contains(document.activeElement);
+      const shouldRestoreFocus = restoreFocus && containsFocus();
+      closeAfter(0);
       overlay.remove();
       menu.remove();
       if (shouldRestoreFocus && opener?.isConnected) opener.focus({ preventScroll: true });
@@ -52,8 +63,8 @@ export function showContextMenuFallback<T extends string>(
     }
     const dismiss = (restoreFocus: boolean) => cleanup(null, restoreFocus);
 
-    const enabledItems = () =>
-      Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).filter(
+    const enabledItems = (container = levels.at(-1)!.menu) =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(
         (button) => !button.disabled,
       );
 
@@ -64,12 +75,29 @@ export function showContextMenuFallback<T extends string>(
         cleanup(null);
         return;
       }
-      if (!menu.contains(document.activeElement) || e.isComposing) return;
+      if (!containsFocus() || e.isComposing) return;
       if (e.altKey || e.ctrlKey || e.metaKey) return;
-      const buttons = enabledItems();
+      const currentLevel = levels.findIndex(({ menu }) => menu.contains(document.activeElement));
+      const buttons = enabledItems(levels[currentLevel]!.menu);
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
       let target: HTMLButtonElement | undefined;
       switch (e.key) {
+        case "ArrowRight":
+          if ((document.activeElement as HTMLElement).getAttribute("aria-haspopup") !== "menu")
+            return;
+          (document.activeElement as HTMLButtonElement).click();
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        case "ArrowLeft": {
+          if (currentLevel === 0) return;
+          const trigger = levels[currentLevel]!.trigger;
+          closeAfter(currentLevel - 1);
+          trigger?.focus({ preventScroll: true });
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         case "ArrowDown":
           target = buttons[(index + 1) % buttons.length];
           break;
@@ -95,36 +123,86 @@ export function showContextMenuFallback<T extends string>(
     }
     // Focus leaving the menu (F6, a click elsewhere, another window) closes it in place.
     const onFocusIn = (event: FocusEvent) => {
-      if (!menu.contains(event.target as Node)) cleanup(null, false);
+      if (!levels.some(({ menu }) => menu.contains(event.target as Node))) cleanup(null, false);
     };
     const onWindowBlur = () => cleanup(null, false);
 
     overlay.addEventListener("mousedown", () => cleanup(null));
 
-    for (const item of items) {
-      if (item.separatorBefore && menu.childElementCount > 0) {
-        const separator = document.createElement("div");
-        separator.setAttribute("role", "separator");
-        separator.className = "my-1 border-t border-border";
-        menu.appendChild(separator);
+    const populate = (
+      entries: readonly ContextMenuItem<T>[],
+      container: HTMLDivElement,
+      level: number,
+    ) => {
+      for (const item of entries) {
+        if (item.separatorBefore && container.childElementCount > 0) {
+          const separator = document.createElement("div");
+          separator.setAttribute("role", "separator");
+          separator.className = "my-1 border-t border-border";
+          container.appendChild(separator);
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        if (item.icon) {
+          const icon = createIconElement(item.icon, item.destructive ? "destructive" : "neutral");
+          if (icon) {
+            icon.setAttribute("aria-hidden", "true");
+            btn.appendChild(icon);
+          }
+        }
+        const label = document.createElement("span");
+        label.textContent = item.label;
+        btn.appendChild(label);
+        btn.setAttribute("role", "menuitem");
+        btn.tabIndex = -1;
+        btn.disabled = item.disabled === true;
+        btn.addEventListener("focus", () => closeAfter(level));
+        btn.addEventListener("mouseenter", () => {
+          if (!btn.disabled) btn.focus({ preventScroll: true });
+        });
+        const isDestructiveAction = item.destructive === true || item.id === "delete";
+        btn.className = isDestructiveAction
+          ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-destructive outline-none hover:bg-accent focus-visible:bg-accent cursor-default"
+          : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-popover-foreground outline-none hover:bg-accent focus-visible:bg-accent cursor-default";
+        if (item.disabled) {
+          btn.className =
+            "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-muted-foreground cursor-default";
+        }
+        if (item.children?.length) {
+          btn.setAttribute("aria-haspopup", "menu");
+          btn.setAttribute("aria-expanded", "false");
+          const chevron = createIconElement("chevron-right", "neutral");
+          if (chevron) {
+            chevron.setAttribute("aria-hidden", "true");
+            btn.appendChild(chevron);
+          }
+          const open = (focus: boolean) => {
+            if (btn.disabled || level >= 8) return;
+            closeAfter(level);
+            const child = document.createElement("div");
+            child.className = menu.className;
+            child.setAttribute("role", "menu");
+            child.setAttribute("aria-label", item.label);
+            const rect = btn.getBoundingClientRect();
+            populate(item.children!, child, level + 1);
+            document.body.appendChild(child);
+            levels.push({ menu: child, trigger: btn });
+            btn.setAttribute("aria-expanded", "true");
+            const bounds = child.getBoundingClientRect();
+            child.style.left = `${Math.max(4, rect.right + bounds.width > window.innerWidth ? rect.left - bounds.width : rect.right)}px`;
+            child.style.top = `${Math.max(4, Math.min(rect.top, window.innerHeight - bounds.height - 4))}px`;
+            if (focus) enabledItems(child)[0]?.focus({ preventScroll: true });
+          };
+          btn.addEventListener("click", () => open(true));
+          btn.addEventListener("mouseenter", () => open(false));
+        } else {
+          btn.addEventListener("mouseenter", () => closeAfter(level));
+          btn.addEventListener("click", () => cleanup(item.id));
+        }
+        container.appendChild(btn);
       }
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = item.label;
-      btn.setAttribute("role", "menuitem");
-      btn.tabIndex = -1;
-      btn.disabled = item.disabled === true;
-      const isDestructiveAction = item.destructive === true || item.id === "delete";
-      btn.className = isDestructiveAction
-        ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-destructive outline-none hover:bg-accent focus-visible:bg-accent cursor-default"
-        : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-popover-foreground outline-none hover:bg-accent focus-visible:bg-accent cursor-default";
-      if (item.disabled) {
-        btn.className =
-          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-muted-foreground cursor-default";
-      }
-      btn.addEventListener("click", () => cleanup(item.id));
-      menu.appendChild(btn);
-    }
+    };
+    populate(items, menu, 0);
 
     document.body.appendChild(overlay);
     document.body.appendChild(menu);

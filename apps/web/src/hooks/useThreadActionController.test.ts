@@ -25,6 +25,20 @@ describe("settlementErrorDetail", () => {
 });
 
 describe("buildThreadActionMenuItems", () => {
+  it("groups copy actions and preserves them in native submenus", () => {
+    const items = buildThreadActionMenuItems({
+      thread: { archivedAt: null, titleRegeneration: null, branch: "feature" },
+      pinned: false,
+      snoozed: false,
+    });
+    const copy = items.find((item) => item.id === "copy")!;
+    expect(copy.children?.map((item) => item.id)).toEqual([
+      "copy-path",
+      "copy-branch",
+      "copy-thread-id",
+    ]);
+    expect(nativeThreadActionMenuItems(items).find((item) => item.id === "copy")).toEqual(copy);
+  });
   it("adapts active thread actions to pin and snooze state", () => {
     const active = buildThreadActionMenuItems({
       thread: { archivedAt: null, titleRegeneration: null },
@@ -39,10 +53,9 @@ describe("buildThreadActionMenuItems", () => {
       "snooze:at:tomorrow:09:00",
       "snooze:at:next-week:09:00",
       "settle",
-      "archive",
       "mark-unread",
-      "copy-path",
-      "copy-thread-id",
+      "copy",
+      "archive",
       "delete",
     ]);
 
@@ -70,7 +83,7 @@ describe("buildThreadActionMenuItems", () => {
       ],
     });
     expect(items.filter((item) => item.id.startsWith("snooze:"))).toEqual([
-      { id: "snooze:after:30", label: "Snooze: In 30 minutes (10:30)" },
+      { id: "snooze:after:30", label: "Snooze: In 30 minutes (10:30)", icon: "clock" },
     ]);
   });
 
@@ -135,7 +148,7 @@ describe("scheduled thread actions", () => {
     expect(items.slice(0, 3)).toEqual([
       { id: "scheduled-origin", label: "Scheduled task: Daily check", disabled: true },
       { id: "edit-schedule", label: "Edit scheduled task…" },
-      { id: "rename", label: "Rename thread", separatorBefore: true },
+      { id: "rename", label: "Rename thread", separatorBefore: true, icon: "pencil" },
     ]);
     expect(nativeThreadActionMenuItems(items).slice(0, 3)).toEqual(items.slice(0, 3));
   });

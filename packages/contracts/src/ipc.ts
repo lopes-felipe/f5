@@ -534,6 +534,8 @@ export interface ContextMenuItem<T extends string = string> {
   destructive?: boolean;
   disabled?: boolean;
   separatorBefore?: boolean;
+  icon?: string;
+  children?: readonly ContextMenuItem<T>[];
 }
 
 export type DesktopUpdateChannel = "stable" | "beta";

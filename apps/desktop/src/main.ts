@@ -239,6 +239,7 @@ import {
   parseDesktopNotificationInput,
 } from "./desktopNotifications";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
+import { buildContextMenuTemplate } from "./contextMenuTemplate";
 
 const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
@@ -3822,16 +3823,7 @@ function registerIpcHandlers(): void {
       fileAction?: { editorTarget: string },
     ) => {
       if (fileAction) assertFileCaller(event);
-      const normalizedItems = items
-        .filter((item) => typeof item.id === "string" && typeof item.label === "string")
-        .map((item) => ({
-          id: item.id,
-          label: item.label,
-          destructive: item.destructive === true,
-          disabled: item.disabled === true,
-          separatorBefore: item.separatorBefore === true,
-        }));
-      if (normalizedItems.length === 0) {
+      if (items.length === 0) {
         return null;
       }
 
@@ -3843,32 +3835,18 @@ function registerIpcHandlers(): void {
       );
 
       return new Promise<string | null>((resolve) => {
-        const template: MenuItemConstructorOptions[] = [];
-        let hasInsertedDestructiveSeparator = false;
-        for (const item of normalizedItems) {
-          if (
-            template.length > 0 &&
-            (item.separatorBefore || (item.destructive && !hasInsertedDestructiveSeparator))
-          ) {
-            template.push({ type: "separator" });
-          }
-          if (item.destructive) hasInsertedDestructiveSeparator = true;
-          const itemOption: MenuItemConstructorOptions = {
-            label: item.label,
-            enabled: !item.disabled,
-            click: () => {
-              if (item.id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
-                fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
-              resolve(item.id);
-            },
-          };
-          if (item.destructive) {
-            const destructiveIcon = getDestructiveMenuIcon();
-            if (destructiveIcon) {
-              itemOption.icon = destructiveIcon;
-            }
-          }
-          template.push(itemOption);
+        const template = buildContextMenuTemplate(
+          items,
+          (id) => {
+            if (id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
+              fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
+            resolve(id);
+          },
+          getDestructiveMenuIcon() ?? undefined,
+        );
+        if (template.length === 0) {
+          resolve(null);
+          return;
         }
 
         const menu = Menu.buildFromTemplate(template);
