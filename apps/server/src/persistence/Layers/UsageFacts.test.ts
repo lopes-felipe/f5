@@ -313,16 +313,27 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository thread turns", (it) =>
         UPDATE projection_turn_usage_facts SET provider_name = 'retired-provider'
         WHERE turn_id = 'turn-gone'
       `;
+      // Asides record usage on the thread, oldest and newest here, but are not turns.
+      for (const [id, minute] of [
+        ["early", 0],
+        ["late", 6],
+      ] as const) {
+        yield* repository.record(
+          fact({ id, completedAt: at(minute), turnId: TurnId.makeUnsafe(`aside:${id}`) }),
+        );
+      }
 
       const all = yield* repository.listByThread({
         threadId: ThreadId.makeUnsafe("thread-1"),
         limit: 10,
       });
       assert.deepStrictEqual(
-        all.map((turn) => turn.turnId),
+        all.turns.map((turn) => turn.turnId),
         ["turn-a", "turn-b", "turn-c"],
       );
-      assert.deepStrictEqual(all[1], {
+      assert.equal(all.firstTurnId, "turn-a");
+      assert.equal(all.earlierTurnCount, 0);
+      assert.deepStrictEqual(all.turns[1], {
         turnId: TurnId.makeUnsafe("turn-b"),
         provider: "codex",
         model: "gpt-5.6",
@@ -335,13 +346,21 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository thread turns", (it) =>
 
       // The limit keeps the newest turns, still returned oldest first. The
       // unknown-provider row counts toward the limit before it is dropped.
+      // The window no longer starts at the thread's first turn.
       const newest = yield* repository.listByThread({
         threadId: ThreadId.makeUnsafe("thread-1"),
         limit: 3,
       });
       assert.deepStrictEqual(
-        newest.map((turn) => turn.turnId),
+        newest.turns.map((turn) => turn.turnId),
         ["turn-b", "turn-c"],
+      );
+      assert.equal(newest.firstTurnId, "turn-a");
+      assert.equal(newest.earlierTurnCount, 1);
+
+      assert.deepStrictEqual(
+        yield* repository.listByThread({ threadId: ThreadId.makeUnsafe("thread-9"), limit: 10 }),
+        { turns: [], firstTurnId: null, earlierTurnCount: 0 },
       );
 
       const plan = yield* sql<{ detail: string }>`

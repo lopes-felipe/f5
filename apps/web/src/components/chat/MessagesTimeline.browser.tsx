@@ -3872,6 +3872,7 @@ describe("MessagesTimeline row stability", () => {
     const rows = buildRows([user, missed, warm], cache);
     const miss = {
       turnId: TurnId.makeUnsafe("turn-missed"),
+      turnNumber: 2,
       state: "miss" as const,
       ratio: 0.02,
       cacheReadTokens: 10,

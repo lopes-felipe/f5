@@ -1,17 +1,9 @@
-import type {
-  MessageId,
-  ThreadId,
-  TurnId,
-  UsageThreadTurn,
-  UsageThreadTurns,
-} from "@t3tools/contracts";
+import type { MessageId, ThreadId, TurnId, UsageThreadTurns } from "@t3tools/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
 
 import {
   cacheMissesByAssistantMessageId,
-  decodeStringMap,
-  encodeStringMap,
   lastAssistantMessageIdByTurn,
   mergeThreadTurn,
   summarizeThreadCache,
@@ -23,18 +15,23 @@ import { useStableCallback } from "../hooks/useStableCallback";
 import { ensureNativeApi } from "../nativeApi";
 import type { ChatMessage } from "../types";
 import { useWsConnectionState } from "../wsConnectionState";
-import { usageQueryKeys, usageThreadTurnsQueryOptions } from "./usageReactQuery";
+import {
+  noteLiveThreadTurnFact,
+  usageQueryKeys,
+  usageThreadTurnsQueryOptions,
+} from "./usageReactQuery";
 
 /**
  * A thread's recorded per-turn usage, oldest first, for the prompt cache
  * indicator. Loaded each time the thread opens; facts recorded while it is
- * open are merged in from the domain event stream, and a reconnect reloads it
- * because events may have been missed. Null while disabled, loading, or failed.
+ * open are merged in from the domain event stream, including facts that land
+ * while a load is in flight, and a reconnect reloads it because events may
+ * have been missed. Null while disabled, loading, or failed.
  */
 export function useThreadCacheTurns(
   threadId: ThreadId | null,
   enabled: boolean,
-): ReadonlyArray<UsageThreadTurn> | null {
+): UsageThreadTurns | null {
   const client = useQueryClient();
   const connection = useWsConnectionState();
   const connected = connection.phase === "connected";
@@ -56,10 +53,11 @@ export function useThreadCacheTurns(
           ? event.payload.usageFact
           : undefined;
       if (!fact || fact.threadId !== threadId) return;
-      // Before the first load there is nothing to merge into; the load
-      // itself will include this fact.
+      // An in-flight load folds the fact into its response; loaded data takes
+      // it now. Before the first load there is no data to merge into.
+      noteLiveThreadTurnFact(fact);
       client.setQueryData<UsageThreadTurns>(queryKey, (current) =>
-        current ? { turns: mergeThreadTurn(current.turns, fact) } : current,
+        current ? mergeThreadTurn(current, fact) : current,
       );
     });
   }, [active, client, threadId]);
@@ -75,7 +73,7 @@ export function useThreadCacheTurns(
     }
   }, [active, client, connected, connection.connectedAt, threadId]);
 
-  return active ? (query.data?.turns ?? null) : null;
+  return active ? (query.data ?? null) : null;
 }
 
 export interface PromptCacheMeterView {
@@ -95,10 +93,29 @@ export interface ThreadPromptCacheView {
 const NO_MISSES: ReadonlyMap<MessageId, TurnCacheSummary> = new Map();
 
 /**
- * Everything the miss pills and the context meter read. Message objects change
- * on every streamed delta, so the message-derived maps are memoized on string
- * signatures: the results keep their identity until a turn starts or ends,
- * and the timeline's row cache stays valid while a reply streams.
+ * Changes when a turn can have started or ended: messages added at either
+ * end, or the newest message gaining a turn. A streamed delta replaces the
+ * newest message object without changing any of these, so the scans keyed on
+ * it run once per turn boundary instead of once per delta.
+ */
+export function turnBoundaryKey(messages: ReadonlyArray<ChatMessage>): string {
+  const first = messages[0];
+  const last = messages.at(-1);
+  return [
+    messages.length,
+    first?.id ?? "",
+    first?.createdAt ?? "",
+    last?.id ?? "",
+    last?.role ?? "",
+    last?.turnId ?? "",
+    last?.createdAt ?? "",
+  ].join("\n");
+}
+
+/**
+ * Everything the miss pills and the context meter read. The message-derived
+ * maps are recomputed only when `turnBoundaryKey` changes, so they keep their
+ * identity, and the timeline's row cache stays valid, while a reply streams.
  */
 export function useThreadPromptCache(input: {
   readonly threadId: ThreadId | null;
@@ -106,39 +123,47 @@ export function useThreadPromptCache(input: {
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly onSelectMessage: (messageId: MessageId) => void;
 }): ThreadPromptCacheView {
-  const turns = useThreadCacheTurns(input.threadId, input.enabled);
-  const startsKey = turns ? encodeStringMap(turnStartTimes(input.messages)) : null;
-  const replyKey = turns ? encodeStringMap(lastAssistantMessageIdByTurn(input.messages)) : null;
-  const summary = useMemo(
+  const history = useThreadCacheTurns(input.threadId, input.enabled);
+  const boundaryKey = history ? turnBoundaryKey(input.messages) : null;
+  // Read through a ref so the scans below depend on the key, not on each
+  // message array a delta produces.
+  const messagesRef = useRef(input.messages);
+  messagesRef.current = input.messages;
+  const derived = useMemo(
     () =>
-      turns && startsKey !== null
-        ? summarizeThreadCache(turns, decodeStringMap<TurnId, string>(startsKey))
-        : null,
-    [startsKey, turns],
+      boundaryKey === null
+        ? null
+        : {
+            starts: turnStartTimes(messagesRef.current),
+            replyByTurn: lastAssistantMessageIdByTurn(messagesRef.current),
+          },
+    [boundaryKey],
   );
-  const replyByTurn = useMemo(
-    () => (replyKey === null ? null : decodeStringMap<TurnId, MessageId>(replyKey)),
-    [replyKey],
+  const summary = useMemo(
+    () => (history && derived ? summarizeThreadCache(history, derived.starts) : null),
+    [derived, history],
   );
   const missByAssistantMessageId = useMemo(
     () =>
-      summary && replyByTurn ? cacheMissesByAssistantMessageId(summary, replyByTurn) : NO_MISSES,
-    [replyByTurn, summary],
+      summary && derived
+        ? cacheMissesByAssistantMessageId(summary, derived.replyByTurn)
+        : NO_MISSES,
+    [derived, summary],
   );
   const onSelectMessage = useStableCallback(input.onSelectMessage);
   const meter = useMemo(
     () =>
-      summary && replyByTurn && summary.turns.length > 0
+      summary && derived && summary.turns.length > 0
         ? {
             summary,
-            canSelectTurn: (turnId: TurnId) => replyByTurn.has(turnId),
+            canSelectTurn: (turnId: TurnId) => derived.replyByTurn.has(turnId),
             onSelectTurn: (turnId: TurnId) => {
-              const messageId = replyByTurn.get(turnId);
+              const messageId = derived.replyByTurn.get(turnId);
               if (messageId) onSelectMessage(messageId);
             },
           }
         : null,
-    [onSelectMessage, replyByTurn, summary],
+    [derived, onSelectMessage, summary],
   );
   return { missByAssistantMessageId, meter };
 }

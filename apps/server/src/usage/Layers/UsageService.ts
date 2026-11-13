@@ -354,7 +354,7 @@ const make = Effect.gen(function* () {
   const getThreadTurns: UsageServiceShape["getThreadTurns"] = (input) =>
     repository
       .listByThread({ threadId: input.threadId, limit: USAGE_THREAD_TURNS_LIMIT })
-      .pipe(Effect.map((turns) => ({ turns })));
+      .pipe(Effect.mapError(() => new UsageQueryError({ message: "Turn usage is unavailable." })));
 
   const sampler = makeQuotaSampler({
     listInstances: registry.listInstances,

@@ -45,7 +45,7 @@ export interface UsageServiceShape {
   ) => Effect.Effect<ClaudeUsageAnalysis, UsageQueryError>;
   readonly getThreadTurns: (
     input: UsageGetThreadTurnsInput,
-  ) => Effect.Effect<UsageThreadTurns, ProjectionRepositoryError>;
+  ) => Effect.Effect<UsageThreadTurns, UsageQueryError>;
 }
 
 export class UsageService extends ServiceMap.Service<UsageService, UsageServiceShape>()(

@@ -5,11 +5,14 @@ import {
   UsageThreadTurns as UsageThreadTurnsSchema,
   type ProjectId,
   type ThreadId,
+  type UsageThreadTurns,
+  type UsageTurnFact,
   type UsageRange,
   type ProviderKind,
 } from "@t3tools/contracts";
 import { queryOptions, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { Schema } from "effect";
+import { mergeThreadTurn } from "../components/chat/cacheIndicator.logic";
 import { ensureNativeApi } from "../nativeApi";
 import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
@@ -43,6 +46,35 @@ export function decodeUsageThreadTurns(value: unknown) {
   return Schema.decodeUnknownSync(UsageThreadTurnsSchema)(value);
 }
 
+// Facts recorded while a thread's history request is in flight, per request.
+// The server may have read its rows before the projector wrote such a fact,
+// and the response replaces whatever was merged into the cache meanwhile.
+const inFlightThreadFacts = new Map<ThreadId, Set<UsageTurnFact[]>>();
+
+/** Hands a live fact to every in-flight history request for its thread. */
+export function noteLiveThreadTurnFact(fact: UsageTurnFact): void {
+  for (const buffer of inFlightThreadFacts.get(fact.threadId) ?? []) buffer.push(fact);
+}
+
+async function fetchThreadTurns(
+  threadId: ThreadId,
+  context: Parameters<typeof rpcQueryContext>[0],
+): Promise<UsageThreadTurns> {
+  const buffer: UsageTurnFact[] = [];
+  const buffers = inFlightThreadFacts.get(threadId) ?? new Set();
+  inFlightThreadFacts.set(threadId, buffers.add(buffer));
+  try {
+    const history = decodeUsageThreadTurns(
+      await ensureNativeApi().usage.getThreadTurns({ threadId }, rpcQueryContext(context)),
+    );
+    // Merging is idempotent, so facts the response already holds are no-ops.
+    return buffer.reduce(mergeThreadTurn, history);
+  } finally {
+    buffers.delete(buffer);
+    if (buffers.size === 0) inFlightThreadFacts.delete(threadId);
+  }
+}
+
 /** One thread's recorded turn usage; live facts are merged in by `useThreadCacheTurns`. */
 export function usageThreadTurnsQueryOptions(input: {
   readonly threadId: ThreadId;
@@ -50,13 +82,7 @@ export function usageThreadTurnsQueryOptions(input: {
 }) {
   return queryOptions({
     queryKey: usageQueryKeys.threadTurns(input.threadId),
-    queryFn: async (context) =>
-      decodeUsageThreadTurns(
-        await ensureNativeApi().usage.getThreadTurns(
-          { threadId: input.threadId },
-          rpcQueryContext(context),
-        ),
-      ),
+    queryFn: (context) => fetchThreadTurns(input.threadId, context),
     meta: rpcQueryMeta("refresh-background"),
     // Facts are merged live only while the thread is open, so reopening it
     // refetches what was recorded meanwhile. Focus adds nothing the live

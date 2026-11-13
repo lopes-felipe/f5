@@ -53,6 +53,7 @@ import {
   type TaskItem,
   ThreadId,
   TurnId,
+  USAGE_ASIDE_TURN_ID_PREFIX,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -6259,7 +6260,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "aside-usage"),
             threadId: thread.id,
             usageFact: {
-              turnId: TurnId.makeUnsafe("aside:" + event.eventId),
+              turnId: TurnId.makeUnsafe(USAGE_ASIDE_TURN_ID_PREFIX + event.eventId),
               threadId: thread.id,
               projectId: thread.projectId,
               provider: event.provider,

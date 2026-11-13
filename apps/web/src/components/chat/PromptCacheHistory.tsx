@@ -12,18 +12,27 @@ const BAR_TONE: Record<TurnCacheState, string> = {
   warm: "bg-success",
   miss: "bg-warning",
   "cold-start": "bg-muted-foreground/60",
+  uncached: "bg-border",
   unreported: "bg-border",
 };
 
-/** The newest turns that fit the popup's width; older ones scroll off the left. */
+/**
+ * Only the newest turns get a bar; older ones are left out, and their count is
+ * shown instead. Bars shrink to share the row, so at the popup's width each
+ * stays a few pixels wide and the newest is never clipped.
+ */
 const MAX_BARS = 40;
 
-function barLabel(turn: TurnCacheSummary, index: number): string {
-  const position = `Turn ${index + 1}`;
+const STATE_SUFFIX: Partial<Record<TurnCacheState, string>> = {
+  miss: ", cache miss",
+  "cold-start": ", first turn",
+  uncached: ", caching not in use",
+};
+
+function barLabel(turn: TurnCacheSummary): string {
+  const position = `Turn ${turn.turnNumber}`;
   if (turn.ratio === null) return `${position}: no cache data`;
-  const state =
-    turn.state === "miss" ? ", cache miss" : turn.state === "cold-start" ? ", first turn" : "";
-  return `${position}: ${formatCacheRatio(turn.ratio)} from cache${state}`;
+  return `${position}: ${formatCacheRatio(turn.ratio)} from cache${STATE_SUFFIX[turn.state] ?? ""}`;
 }
 
 function lastTurnText(turn: TurnCacheSummary): string {
@@ -32,6 +41,7 @@ function lastTurnText(turn: TurnCacheSummary): string {
     return turn.idleMs === null ? "miss" : `miss · idle ${formatIdle(turn.idleMs)}`;
   }
   if (turn.state === "cold-start") return "first turn";
+  if (turn.state === "uncached") return "caching not in use";
   return `${formatCacheRatio(turn.ratio)} from cache`;
 }
 
@@ -42,15 +52,14 @@ function lastTurnText(turn: TurnCacheSummary): string {
  */
 export function PromptCacheHistory(props: { view: PromptCacheMeterView }) {
   const { summary, canSelectTurn, onSelectTurn } = props.view;
-  const offset = Math.max(0, summary.turns.length - MAX_BARS);
-  const shown = summary.turns.slice(offset);
+  const shown = summary.turns.slice(-MAX_BARS);
+  const hiddenTurns = (shown[0]?.turnNumber ?? 1) - 1;
   const last = summary.last;
   return (
     <div data-slot="prompt-cache-history" className="space-y-1.5">
       <p className="font-medium text-foreground">Prompt cache · this thread</p>
       <div className="flex h-6 items-end gap-0.5" role="group" aria-label="Prompt cache per turn">
-        {shown.map((turn, shownIndex) => {
-          const index = offset + shownIndex;
+        {shown.map((turn) => {
           const selectable = canSelectTurn(turn.turnId);
           const height = turn.ratio === null ? 0.25 : Math.max(0.12, turn.ratio);
           return (
@@ -58,11 +67,11 @@ export function PromptCacheHistory(props: { view: PromptCacheMeterView }) {
               key={turn.turnId}
               type="button"
               data-cache-state={turn.state}
-              aria-label={barLabel(turn, index)}
-              title={barLabel(turn, index)}
+              aria-label={barLabel(turn)}
+              title={barLabel(turn)}
               disabled={!selectable}
               onClick={() => onSelectTurn(turn.turnId)}
-              className="group/bar flex h-full w-2 shrink-0 items-end rounded-xs outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:cursor-pointer"
+              className="group/bar flex h-full min-w-0 max-w-2 flex-1 items-end rounded-xs outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:cursor-pointer"
             >
               <span
                 aria-hidden="true"
@@ -77,7 +86,11 @@ export function PromptCacheHistory(props: { view: PromptCacheMeterView }) {
         })}
       </div>
       <p className="text-muted-foreground">
-        One bar per turn, oldest first. Click a bar to jump to that turn.
+        One bar per turn, oldest first
+        {hiddenTurns > 0
+          ? ` (${hiddenTurns} earlier ${hiddenTurns === 1 ? "turn" : "turns"} not shown)`
+          : ""}
+        . Click a bar to jump to that turn.
       </p>
       {summary.overallRatio !== null ? (
         <p className="flex justify-between gap-3 text-muted-foreground">

@@ -10,6 +10,7 @@ import type { TurnCacheSummary } from "./cacheIndicator.logic";
 
 const turn: TurnCacheSummary = {
   turnId: TurnId.makeUnsafe("t2"),
+  turnNumber: 2,
   state: "miss",
   ratio: 0.03,
   cacheReadTokens: 3_000,

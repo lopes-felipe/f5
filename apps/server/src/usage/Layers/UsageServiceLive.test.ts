@@ -403,6 +403,7 @@ it.layer(SqliteClient.layerMemory())("UsageService thread turns", (it) => {
       yield* Migration0071;
       yield* Migration0073;
       yield* Migration0116;
+      yield* Migration0161;
       const facts = yield* UsageFactRepository;
       yield* facts.record(fact("thread-late", "2026-08-12T10:05:00.000Z", { cacheReadTokens: 70 }));
       yield* facts.record(fact("thread-early", "2026-08-12T10:00:00.000Z"));
@@ -419,8 +420,9 @@ it.layer(SqliteClient.layerMemory())("UsageService thread turns", (it) => {
           result.turns.map((turn) => `${turn.turnId}:${turn.cacheReadTokens}`),
           ["turn-thread-early:0", "turn-thread-late:70"],
         );
+        assert.equal(result.firstTurnId, "turn-thread-early");
         const empty = yield* usage.getThreadTurns({ threadId: ThreadId.makeUnsafe("thread-z") });
-        assert.deepStrictEqual(empty, { turns: [] });
+        assert.deepStrictEqual(empty, { turns: [], firstTurnId: null, earlierTurnCount: 0 });
       }).pipe(Effect.provide(serviceLayer));
     }).pipe(Effect.provide(UsageFactRepositoryLive)),
   );

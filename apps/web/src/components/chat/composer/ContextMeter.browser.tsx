@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import { TurnId, type UsageThreadTurn } from "@t3tools/contracts";
+import { TurnId, type UsageThreadTurn, type UsageThreadTurns } from "@t3tools/contracts";
 
 import type { PromptCacheMeterView } from "../../../lib/useThreadCacheTurns";
 import { summarizeThreadCache } from "../cacheIndicator.logic";
@@ -25,6 +25,14 @@ function cacheTurn(id: string, overrides: Partial<UsageThreadTurn> = {}): UsageT
     cacheWriteTokens: 90,
     completedAt: minute(Number(id.slice(1))),
     ...overrides,
+  };
+}
+
+function history(turns: ReadonlyArray<UsageThreadTurn>, earlierTurnCount = 0): UsageThreadTurns {
+  return {
+    turns,
+    firstTurnId: earlierTurnCount === 0 ? (turns[0]?.turnId ?? null) : TurnId.makeUnsafe("t0"),
+    earlierTurnCount,
   };
 }
 
@@ -113,7 +121,7 @@ describe("ContextMeter", () => {
       cacheTurn("t3"),
     ];
     const view = (overrides: Partial<PromptCacheMeterView> = {}): PromptCacheMeterView => ({
-      summary: summarizeThreadCache(turns, new Map()),
+      summary: summarizeThreadCache(history(turns), new Map()),
       // t1's reply is older than the loaded history.
       canSelectTurn: (turnId) => turnId !== "t1",
       onSelectTurn,
@@ -154,7 +162,7 @@ describe("ContextMeter", () => {
           tokenUsage={tokenUsage}
           promptCache={view({
             summary: summarizeThreadCache(
-              missed,
+              history(missed),
               new Map([[TurnId.makeUnsafe("t4"), minute(190)]]),
             ),
           })}
@@ -174,12 +182,47 @@ describe("ContextMeter", () => {
     }
   });
 
+  it("fits the newest turns in the popup and numbers them from the thread's start", async () => {
+    // 60 loaded turns after 500 earlier ones: the newest 40 get bars.
+    const turns = Array.from({ length: 60 }, (_, index) => cacheTurn(`t${501 + index}`));
+    const screen = await render(
+      <ContextMeter
+        tokenUsage={usage({ estimatedContextTokens: 38_000, modelContextWindowTokens: 200_000 })}
+        promptCache={{
+          summary: summarizeThreadCache(history(turns, 500), new Map()),
+          canSelectTurn: () => true,
+          onSelectTurn: () => {},
+        }}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: /Context window occupancy/ }).hover();
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll('[data-slot="prompt-cache-history"] button')).toHaveLength(
+          40,
+        );
+      });
+      const panel = document.querySelector<HTMLElement>('[data-slot="prompt-cache-history"]')!;
+      const bars = [...panel.querySelectorAll<HTMLButtonElement>("button")];
+      expect(bars[0]!.getAttribute("aria-label")).toBe("Turn 521: 90% from cache");
+      expect(bars.at(-1)!.getAttribute("aria-label")).toBe("Turn 560: 90% from cache");
+      expect(panel.textContent).toContain("(520 earlier turns not shown)");
+      // The newest bar sits inside the popup instead of being clipped.
+      const area = panel.getBoundingClientRect();
+      const newest = bars.at(-1)!.getBoundingClientRect();
+      expect(newest.width).toBeGreaterThan(0);
+      expect(newest.right).toBeLessThanOrEqual(area.right + 0.5);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("stays visible for cache history when the context size is unknown", async () => {
     const screen = await render(
       <ContextMeter
         tokenUsage={usage()}
         promptCache={{
-          summary: summarizeThreadCache([cacheTurn("t1")], new Map()),
+          summary: summarizeThreadCache(history([cacheTurn("t1")]), new Map()),
           canSelectTurn: () => true,
           onSelectTurn: () => {},
         }}

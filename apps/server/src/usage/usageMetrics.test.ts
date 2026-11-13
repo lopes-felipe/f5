@@ -112,3 +112,21 @@ it("does not fill partial Claude main-agent usage from modelUsage", () => {
   expect(usage.outputTokens).toBeNull();
   expect(usage.cacheReadTokens).toBeNull();
 });
+
+it("adds Pi cache reads and writes to a derived total, as for Claude", () => {
+  const usage = normalizeTurnUsage({
+    ...baseEvent,
+    provider: "pi",
+    payload: {
+      state: "completed",
+      usage: {
+        input_tokens: 40,
+        output_tokens: 10,
+        cache_read_input_tokens: 60,
+        cache_creation_input_tokens: 5,
+      },
+    },
+  });
+  expect(usage.totalTokens).toBe(115);
+  expect(usage.tokenProvenance).toBe("derived-from-provider-fields");
+});

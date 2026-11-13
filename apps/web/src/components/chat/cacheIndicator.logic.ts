@@ -1,8 +1,11 @@
 import {
+  isAsideUsageTurnId,
+  providerReportsCacheOutsideInput,
   USAGE_THREAD_TURNS_LIMIT,
   type MessageId,
   type TurnId,
   type UsageThreadTurn,
+  type UsageThreadTurns,
   type UsageTurnFact,
 } from "@t3tools/contracts";
 
@@ -17,12 +20,17 @@ export const CACHE_IDLE_FLOOR_MS = 5 * 60_000;
  * - `warm`: at least half the input came from the cache.
  * - `miss`: less than half did, after the thread's first recorded turn.
  * - `cold-start`: the thread's first recorded turn, which always writes the cache.
+ * - `uncached`: the turn neither read nor wrote the cache, so caching was not
+ *   in use (disabled, stripped by a gateway, or a prompt below the minimum).
+ *   Only providers that report cache writes can tell this apart from a miss.
  * - `unreported`: the provider sent no cache counts for the turn.
  */
-export type TurnCacheState = "warm" | "miss" | "cold-start" | "unreported";
+export type TurnCacheState = "warm" | "miss" | "cold-start" | "uncached" | "unreported";
 
 export interface TurnCacheSummary {
   readonly turnId: TurnId;
+  /** 1 for the thread's first recorded turn, counting turns before the loaded window. */
+  readonly turnNumber: number;
   readonly state: TurnCacheState;
   /** Share of input read from the cache, 0..1. Null when unreported. */
   readonly ratio: number | null;
@@ -56,14 +64,14 @@ interface TurnCacheCounts {
 }
 
 /**
- * Claude reports cache reads and writes outside `input_tokens`; Codex and the
- * other OpenAI-style providers report cached input as part of it. The server's
- * usage totals make the same split.
+ * Claude and Pi report cache reads and writes outside `input_tokens`; Codex
+ * and the other OpenAI-style providers report cached input as part of it. The
+ * server's usage totals use the same split.
  */
 function cacheCounts(turn: UsageThreadTurn): TurnCacheCounts | null {
   const { inputTokens, cacheReadTokens } = turn;
   if (inputTokens === null || cacheReadTokens === null) return null;
-  if (turn.provider === "claudeAgent") {
+  if (providerReportsCacheOutsideInput(turn.provider)) {
     const cacheWrite = turn.cacheWriteTokens ?? 0;
     const denominator = inputTokens + cacheReadTokens + cacheWrite;
     if (denominator === 0) return null;
@@ -73,7 +81,8 @@ function cacheCounts(turn: UsageThreadTurn): TurnCacheCounts | null {
       cacheWrite,
       uncachedInput: inputTokens,
       denominator,
-      rewritten: turn.cacheWriteTokens ?? inputTokens,
+      // Everything sent without a hit: written to the cache or not cached at all.
+      rewritten: inputTokens + cacheWrite,
     };
   }
   if (inputTokens === 0) return null;
@@ -109,14 +118,21 @@ export function turnStartTimes(messages: ReadonlyArray<ChatMessage>): Map<TurnId
   return starts;
 }
 
+/**
+ * `history` is a window of the thread's newest turns; `firstTurnId` names the
+ * thread's actual first turn, so the oldest turn in a window that has moved
+ * past it is still judged like any other.
+ */
 export function summarizeThreadCache(
-  turns: ReadonlyArray<UsageThreadTurn>,
+  history: UsageThreadTurns,
   turnStarts: ReadonlyMap<TurnId, string>,
 ): ThreadCacheSummary {
+  const { turns, firstTurnId, earlierTurnCount } = history;
   let readTotal = 0;
   let denominatorTotal = 0;
   const summaries = turns.map((turn, index): TurnCacheSummary => {
     const counts = cacheCounts(turn);
+    const turnNumber = earlierTurnCount + index + 1;
     const previous = index > 0 ? turns[index - 1]! : null;
     const startedAt = turnStarts.get(turn.turnId);
     const gap =
@@ -125,6 +141,7 @@ export function summarizeThreadCache(
     if (!counts) {
       return {
         turnId: turn.turnId,
+        turnNumber,
         state: "unreported",
         ratio: null,
         cacheReadTokens: turn.cacheReadTokens ?? 0,
@@ -138,10 +155,21 @@ export function summarizeThreadCache(
     }
     readTotal += counts.cacheRead;
     denominatorTotal += counts.denominator;
+    const cachingUnused =
+      providerReportsCacheOutsideInput(turn.provider) &&
+      counts.cacheRead === 0 &&
+      counts.cacheWrite === 0;
     const state: TurnCacheState =
-      counts.ratio >= CACHE_MISS_RATIO ? "warm" : index === 0 ? "cold-start" : "miss";
+      counts.ratio >= CACHE_MISS_RATIO
+        ? "warm"
+        : cachingUnused
+          ? "uncached"
+          : turn.turnId === firstTurnId
+            ? "cold-start"
+            : "miss";
     return {
       turnId: turn.turnId,
+      turnNumber,
       state,
       ratio: counts.ratio,
       cacheReadTokens: counts.cacheRead,
@@ -186,16 +214,16 @@ export function cacheMissesByAssistantMessageId(
 }
 
 /**
- * Folds a just-recorded fact into a thread's turns the way the server stores
- * it: an older fact never replaces a newer one for the same turn, and only the
- * newest `USAGE_THREAD_TURNS_LIMIT` turns are kept.
+ * Folds a just-recorded fact into a thread's history the way the server
+ * stores and lists it: asides are not turns, an older fact never replaces a
+ * newer one for the same turn, and only the newest `USAGE_THREAD_TURNS_LIMIT`
+ * turns are kept, the rest counted as earlier turns.
  */
-export function mergeThreadTurn(
-  turns: ReadonlyArray<UsageThreadTurn>,
-  fact: UsageTurnFact,
-): ReadonlyArray<UsageThreadTurn> {
+export function mergeThreadTurn(history: UsageThreadTurns, fact: UsageTurnFact): UsageThreadTurns {
+  if (isAsideUsageTurnId(fact.turnId)) return history;
+  const { turns } = history;
   const existing = turns.find((turn) => turn.turnId === fact.turnId);
-  if (existing && existing.completedAt > fact.completedAt) return turns;
+  if (existing && existing.completedAt > fact.completedAt) return history;
   const next: UsageThreadTurn = {
     turnId: fact.turnId,
     provider: fact.provider,
@@ -210,31 +238,22 @@ export function mergeThreadTurn(
     (left, right) =>
       left.completedAt.localeCompare(right.completedAt) || left.turnId.localeCompare(right.turnId),
   );
-  return merged.length > USAGE_THREAD_TURNS_LIMIT
-    ? merged.slice(merged.length - USAGE_THREAD_TURNS_LIMIT)
-    : merged;
+  const overflow = Math.max(0, merged.length - USAGE_THREAD_TURNS_LIMIT);
+  return {
+    turns: overflow > 0 ? merged.slice(overflow) : merged,
+    // The thread's first fact can only be recorded live into an empty history.
+    firstTurnId:
+      history.firstTurnId ??
+      (history.earlierTurnCount === 0 && turns.length === 0 ? fact.turnId : null),
+    earlierTurnCount: history.earlierTurnCount + overflow,
+  };
 }
 
-/**
- * A map as one string, so a memo keyed on it survives message objects that
- * streaming replaces without changing any entry. Ids and ISO timestamps never
- * contain tabs or newlines.
- */
-export function encodeStringMap(map: ReadonlyMap<string, string>): string {
-  let encoded = "";
-  for (const [key, value] of map) encoded += `${key}\t${value}\n`;
-  return encoded;
-}
-
-export function decodeStringMap<K extends string, V extends string>(encoded: string): Map<K, V> {
-  const map = new Map<K, V>();
-  for (const line of encoded.split("\n")) {
-    if (!line) continue;
-    const tab = line.indexOf("\t");
-    map.set(line.slice(0, tab) as K, line.slice(tab + 1) as V);
-  }
-  return map;
-}
+export const EMPTY_THREAD_TURNS: UsageThreadTurns = {
+  turns: [],
+  firstTurnId: null,
+  earlierTurnCount: 0,
+};
 
 /** "12m", "3h", "2d": the rough gap shown beside a miss. */
 export function formatIdle(ms: number): string {

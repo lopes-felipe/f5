@@ -6,6 +6,7 @@ import {
   TurnId,
   USAGE_THREAD_TURNS_LIMIT,
   type UsageThreadTurn,
+  type UsageThreadTurns,
   type UsageTurnFact,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
@@ -13,8 +14,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../../types";
 import {
   cacheMissesByAssistantMessageId,
-  decodeStringMap,
-  encodeStringMap,
+  EMPTY_THREAD_TURNS,
   formatCacheRatio,
   formatIdle,
   lastAssistantMessageIdByTurn,
@@ -55,6 +55,11 @@ function codexTurn(id: string, overrides: Partial<UsageThreadTurn> = {}): UsageT
   };
 }
 
+/** A complete history: the window starts at the thread's first turn. */
+function history(turns: ReadonlyArray<UsageThreadTurn>): UsageThreadTurns {
+  return { turns, firstTurnId: turns[0]?.turnId ?? null, earlierTurnCount: 0 };
+}
+
 function message(
   id: string,
   role: ChatMessage["role"],
@@ -75,16 +80,33 @@ const noStarts = new Map<TurnId, string>();
 
 describe("summarizeThreadCache ratios", () => {
   it("counts Claude cache reads and writes outside input", () => {
-    const [turn] = summarizeThreadCache([claudeTurn("a")], noStarts).turns;
+    const [turn] = summarizeThreadCache(history([claudeTurn("a")]), noStarts).turns;
     // 900 / (10 + 900 + 90)
     expect(turn!.ratio).toBeCloseTo(0.9);
     expect(turn!.uncachedInputTokens).toBe(10);
-    expect(turn!.rewrittenTokens).toBe(90);
+    // Everything sent without a hit: uncached input plus what was written.
+    expect(turn!.rewrittenTokens).toBe(100);
     expect(turn!.state).toBe("warm");
   });
 
+  it("counts Pi like Claude, since Pi reports cache outside input", () => {
+    // 60K read, 40K new: 60%, which the OpenAI-style formula would call 100%.
+    const turns = [
+      claudeTurn("a"),
+      claudeTurn("b", {
+        provider: "pi",
+        inputTokens: 40_000,
+        cacheReadTokens: 60_000,
+        cacheWriteTokens: 0,
+      }),
+    ];
+    const pi = summarizeThreadCache(history(turns), noStarts).turns[1]!;
+    expect(pi.ratio).toBeCloseTo(0.6);
+    expect(pi.uncachedInputTokens).toBe(40_000);
+  });
+
   it("counts Codex cached input inside input", () => {
-    const [turn] = summarizeThreadCache([codexTurn("a")], noStarts).turns;
+    const [turn] = summarizeThreadCache(history([codexTurn("a")]), noStarts).turns;
     expect(turn!.ratio).toBeCloseTo(0.8);
     expect(turn!.uncachedInputTokens).toBe(200);
     expect(turn!.rewrittenTokens).toBe(200);
@@ -92,35 +114,57 @@ describe("summarizeThreadCache ratios", () => {
 
   it("puts the miss line just below one half", () => {
     const summary = summarizeThreadCache(
-      [
+      history([
         claudeTurn("first"),
         // 50 / (50 + 0 + 50) = 0.5 exactly: warm.
         claudeTurn("half", { inputTokens: 50, cacheReadTokens: 50, cacheWriteTokens: 0 }),
         // 499 / 1000: a miss.
         codexTurn("below", { inputTokens: 1_000, cacheReadTokens: 499 }),
-      ],
+      ]),
       noStarts,
     );
     expect(summary.turns.map((turn) => turn.state)).toEqual(["warm", "warm", "miss"]);
   });
 
-  it("never calls the first recorded turn a miss", () => {
+  it("never calls the thread's first turn a miss", () => {
     const summary = summarizeThreadCache(
-      [claudeTurn("a", { cacheReadTokens: 0, cacheWriteTokens: 5_000 }), claudeTurn("b")],
+      history([claudeTurn("a", { cacheReadTokens: 0, cacheWriteTokens: 5_000 }), claudeTurn("b")]),
       noStarts,
     );
     expect(summary.turns[0]!.state).toBe("cold-start");
     expect(summary.turns[1]!.state).toBe("warm");
   });
 
+  it("judges the oldest loaded turn normally once the window has moved past the first", () => {
+    const missed = claudeTurn("t501", { cacheReadTokens: 0, cacheWriteTokens: 5_000 });
+    const summary = summarizeThreadCache(
+      { turns: [missed, claudeTurn("t502")], firstTurnId: turnId("t1"), earlierTurnCount: 500 },
+      noStarts,
+    );
+    expect(summary.turns[0]!.state).toBe("miss");
+    expect(summary.turns.map((turn) => turn.turnNumber)).toEqual([501, 502]);
+  });
+
+  it("does not call a Claude turn that neither read nor wrote the cache a miss", () => {
+    const summary = summarizeThreadCache(
+      history([
+        claudeTurn("a"),
+        claudeTurn("off", { inputTokens: 4_000, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+      ]),
+      noStarts,
+    );
+    expect(summary.turns[1]!.state).toBe("uncached");
+    expect(summary.turns[1]!.rewrittenTokens).toBe(4_000);
+  });
+
   it("marks turns without cache counts or input as unreported", () => {
     const summary = summarizeThreadCache(
-      [
+      history([
         claudeTurn("a"),
         claudeTurn("null-read", { cacheReadTokens: null }),
         codexTurn("null-input", { inputTokens: null }),
         codexTurn("no-input", { inputTokens: 0, cacheReadTokens: 0 }),
-      ],
+      ]),
       noStarts,
     );
     expect(summary.turns.map((turn) => turn.state)).toEqual([
@@ -135,15 +179,15 @@ describe("summarizeThreadCache ratios", () => {
 
   it("weights the overall ratio by input and skips unreported turns", () => {
     const summary = summarizeThreadCache(
-      [
+      history([
         claudeTurn("a", { inputTokens: 0, cacheReadTokens: 900, cacheWriteTokens: 100 }),
         codexTurn("b", { inputTokens: 1_000, cacheReadTokens: 0 }),
         codexTurn("c", { cacheReadTokens: null }),
-      ],
+      ]),
       noStarts,
     );
     expect(summary.overallRatio).toBeCloseTo(900 / 2_000);
-    expect(summarizeThreadCache([], noStarts)).toEqual({
+    expect(summarizeThreadCache(EMPTY_THREAD_TURNS, noStarts)).toEqual({
       turns: [],
       overallRatio: null,
       last: null,
@@ -162,10 +206,10 @@ describe("idle gaps", () => {
       [turnId("b"), minute(4)],
       [turnId("c"), minute(10 + 180)],
     ]);
-    const summary = summarizeThreadCache(turns, starts);
+    const summary = summarizeThreadCache(history(turns), starts);
     expect(summary.turns.map((turn) => turn.idleMs)).toEqual([null, null, 180 * 60_000]);
 
-    const atFloor = summarizeThreadCache(turns, new Map([[turnId("b"), minute(5)]]));
+    const atFloor = summarizeThreadCache(history(turns), new Map([[turnId("b"), minute(5)]]));
     expect(atFloor.turns[1]!.idleMs).toBe(5 * 60_000);
   });
 
@@ -197,7 +241,10 @@ describe("idle gaps", () => {
 describe("cacheMissesByAssistantMessageId", () => {
   it("keys each missed turn by the turn's last assistant message", () => {
     const summary = summarizeThreadCache(
-      [claudeTurn("t1"), claudeTurn("t2", { cacheReadTokens: 0, cacheWriteTokens: 1_000 })],
+      history([
+        claudeTurn("t1"),
+        claudeTurn("t2", { cacheReadTokens: 0, cacheWriteTokens: 1_000 }),
+      ]),
       noStarts,
     );
     const messageIdByTurn = lastAssistantMessageIdByTurn([
@@ -235,13 +282,14 @@ describe("mergeThreadTurn", () => {
   });
 
   it("inserts in completion order and replaces the same turn", () => {
-    const turns = [
+    const start = history([
       claudeTurn("a", { completedAt: minute(1) }),
       claudeTurn("c", { completedAt: minute(9) }),
-    ];
-    const merged = mergeThreadTurn(turns, fact("b"));
-    expect(merged.map((turn) => turn.turnId)).toEqual(["a", "b", "c"]);
-    expect(merged[1]).toEqual({
+    ]);
+    const merged = mergeThreadTurn(start, fact("b"));
+    expect(merged.turns.map((turn) => turn.turnId)).toEqual(["a", "b", "c"]);
+    expect(merged.firstTurnId).toBe("a");
+    expect(merged.turns[1]).toEqual({
       turnId: "b",
       provider: "claudeAgent",
       model: "claude-opus-5-5",
@@ -255,42 +303,39 @@ describe("mergeThreadTurn", () => {
       merged,
       fact("b", { cacheReadTokens: 99, completedAt: minute(6) }),
     );
-    expect(replaced.map((turn) => [turn.turnId, turn.cacheReadTokens])).toEqual([
+    expect(replaced.turns.map((turn) => [turn.turnId, turn.cacheReadTokens])).toEqual([
       ["a", 900],
       ["b", 99],
       ["c", 900],
     ]);
   });
 
-  it("ignores an older fact for a turn it already has", () => {
-    const turns = [claudeTurn("a", { completedAt: minute(5) })];
-    expect(mergeThreadTurn(turns, fact("a", { completedAt: minute(1) }))).toBe(turns);
+  it("ignores asides and older facts for a turn it already has", () => {
+    const start = history([claudeTurn("a", { completedAt: minute(5) })]);
+    expect(mergeThreadTurn(start, fact("a", { completedAt: minute(1) }))).toBe(start);
+    expect(mergeThreadTurn(start, fact("aside:event-1", { completedAt: minute(9) }))).toBe(start);
   });
 
-  it("keeps only the newest turns", () => {
+  it("takes the first live fact of an empty thread as its first turn", () => {
+    const merged = mergeThreadTurn(EMPTY_THREAD_TURNS, fact("first"));
+    expect(merged.firstTurnId).toBe("first");
+    // It read 3 of 8 input tokens from cache, which is exempt as the first turn.
+    expect(summarizeThreadCache(merged, noStarts).turns[0]!.state).toBe("cold-start");
+  });
+
+  it("keeps only the newest turns and counts the rest as earlier", () => {
     const turns = Array.from({ length: USAGE_THREAD_TURNS_LIMIT }, (_, index) =>
       claudeTurn(`t${String(index).padStart(4, "0")}`, { completedAt: minute(index) }),
     );
     const merged = mergeThreadTurn(
-      turns,
+      history(turns),
       fact("newest", { completedAt: minute(USAGE_THREAD_TURNS_LIMIT + 1) }),
     );
-    expect(merged).toHaveLength(USAGE_THREAD_TURNS_LIMIT);
-    expect(merged[0]!.turnId).toBe("t0001");
-    expect(merged.at(-1)!.turnId).toBe("newest");
-  });
-});
-
-describe("string map encoding", () => {
-  it("round-trips entries in order", () => {
-    const map = new Map([
-      ["turn-b", "2026-11-13T10:00:00.000Z"],
-      ["turn-a", "2026-11-13T09:00:00.000Z"],
-    ]);
-    const encoded = encodeStringMap(map);
-    expect(encodeStringMap(new Map(map))).toBe(encoded);
-    expect([...decodeStringMap(encoded)]).toEqual([...map]);
-    expect(decodeStringMap("").size).toBe(0);
+    expect(merged.turns).toHaveLength(USAGE_THREAD_TURNS_LIMIT);
+    expect(merged.turns[0]!.turnId).toBe("t0001");
+    expect(merged.turns.at(-1)!.turnId).toBe("newest");
+    expect(merged.firstTurnId).toBe("t0000");
+    expect(merged.earlierTurnCount).toBe(1);
   });
 });
 
