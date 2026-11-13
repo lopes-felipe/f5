@@ -5,8 +5,10 @@ export async function readBoundedPreview(
 ): Promise<ArrayBuffer> {
   const response = await fetch(src, { signal });
   if (!response.ok || !response.body) throw new Error("File is unavailable.");
-  if (Number(response.headers.get("content-length")) > limit)
+  if (Number(response.headers.get("content-length")) > limit) {
+    await response.body.cancel();
     throw new Error("File exceeds the preview size limit.");
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array<ArrayBuffer>[] = [];
   let size = 0;
@@ -20,7 +22,10 @@ export async function readBoundedPreview(
     }
     return await new Blob(chunks).arrayBuffer();
   } finally {
-    await reader.cancel();
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
