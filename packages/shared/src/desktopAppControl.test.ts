@@ -17,6 +17,7 @@ afterEach(async () => {
 it("uses the same address across temp environments and state-directory aliases", async () => {
   const { root } = await fixture();
   const original = desktopAppControlAddress(root);
+  expect(desktopAppControlAddress("~/")).toEqual(desktopAppControlAddress(os.homedir()));
   vi.stubEnv("TMPDIR", "/different/shell/temp");
   vi.stubEnv("TMP", "/different/shell/temp");
   vi.stubEnv("TEMP", "/different/shell/temp");

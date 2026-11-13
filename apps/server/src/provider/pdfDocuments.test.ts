@@ -87,6 +87,15 @@ it("reclaims only the deleted thread's budget records", async () => {
   await deletePdfDocumentBudgets(input.stateDir, "deleted");
   expect(await fs.readdir(path.join(input.stateDir, "provider-document-budgets"))).toHaveLength(1);
 });
+it("preserves a corrupt budget and safely falls back to paths", async () => {
+  const input = await fixture();
+  await pdfDocuments(input);
+  const directory = path.join(input.stateDir, "provider-document-budgets");
+  const file = path.join(directory, (await fs.readdir(directory))[0]!);
+  await writeFile(file, "corrupt");
+  expect(await pdfDocuments(input)).toEqual([]);
+  expect(await fs.readFile(file, "utf8")).toBe("corrupt");
+});
 it("sends PDFs as ACP resources only with embedded-context capability", async () => {
   const input = await fixture();
   expect(await acpPdfDocuments(input, false)).toEqual([]);

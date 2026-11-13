@@ -86,6 +86,24 @@ it("reports failures to the CLI", async () => {
     await view.unmount();
   }
 });
+it("does not create a project or draft after the main-process deadline expires", async () => {
+  state.requests = [{ id: "expired", path: "/repo" }];
+  bridge();
+  window.desktopBridge!.isAppActivationPending = async () => false;
+  const view = await render(<DesktopAppActivationCoordinator />);
+  try {
+    await vi.waitFor(() =>
+      expect(state.complete).toHaveBeenCalledWith(
+        "expired",
+        "Desktop activation expired. Retry to reuse the project.",
+      ),
+    );
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.start).not.toHaveBeenCalled();
+  } finally {
+    await view.unmount();
+  }
+});
 it("drains new activations after an effect is replaced during an in-flight read", async () => {
   let release!: (value: { snapshot: object }) => void;
   state.snapshot.mockImplementationOnce(

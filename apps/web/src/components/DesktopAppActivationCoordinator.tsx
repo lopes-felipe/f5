@@ -51,7 +51,7 @@ export function DesktopAppActivationCoordinator() {
                 (value) => paths.get(value) ?? value,
               );
               const projectId = project?.id ?? newProjectId();
-              if ((await bridge.isAppActivationPending?.(request.id)) === false)
+              if ((await bridge.isAppActivationPending?.(request.id)) === false || disposed)
                 throw new Error("Desktop activation expired. Retry to reuse the project.");
               if (!project) {
                 await api.orchestration.dispatchCommand({
@@ -68,7 +68,7 @@ export function DesktopAppActivationCoordinator() {
               if (disposed)
                 throw new Error("Desktop activation was interrupted. Retry to reuse the project.");
               useStore.getState().setProjectExpanded(projectId, true);
-              if ((await bridge.isAppActivationPending?.(request.id)) === false)
+              if ((await bridge.isAppActivationPending?.(request.id)) === false || disposed)
                 throw new Error("Desktop activation expired. Retry to reuse the project.");
               const draft = await startThread(projectId);
               if (!draft) throw new Error("Could not start a new thread.");

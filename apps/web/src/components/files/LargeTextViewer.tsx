@@ -50,6 +50,7 @@ export default function LargeTextViewer(props: {
   const wordWrap = useClientSettings((settings) => settings.diffWordWrap);
   useEffect(() => {
     setError(null);
+    setNotice(null);
     setMeta(null);
     setPages(new Map());
     const controller = new AbortController();
