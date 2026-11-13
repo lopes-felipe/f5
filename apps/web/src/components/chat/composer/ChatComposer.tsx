@@ -58,6 +58,7 @@ import type {
 import { ComposerFooterControls } from "./ComposerFooterControls";
 import { ComposerPrimaryAction } from "./ComposerPrimaryAction";
 import { ContextMeter } from "./ContextMeter";
+import type { PromptCacheMeterView } from "../../../lib/useThreadCacheTurns";
 import { contextUsageSummaryLine, type ComposerTokenUsage } from "./contextMeter.logic";
 import { composerSendShortcutLabel } from "./sendShortcut";
 import { isMacPlatform } from "~/lib/utils";
@@ -116,6 +117,8 @@ export interface ChatComposerProps {
   ) => void;
 
   tokenUsage: ComposerTokenUsage;
+  /** The thread's prompt cache history for the context meter; null hides it. */
+  promptCache?: PromptCacheMeterView | null;
   pendingInteraction: ComposerPendingInteraction;
   onEditorFocus?: () => void;
   onEditorBlur?: () => void;
@@ -177,6 +180,7 @@ export function ChatComposer({
   onComposerMenuItemHighlighted,
   onSelectComposerItem,
   tokenUsage,
+  promptCache = null,
   pendingInteraction,
   onEditorFocus,
   onEditorBlur,
@@ -906,7 +910,7 @@ export function ChatComposer({
                             {sendShortcutLabel} to send
                           </span>
                         ) : null}
-                        <ContextMeter tokenUsage={tokenUsage} />
+                        <ContextMeter tokenUsage={tokenUsage} promptCache={promptCache} />
                       </>
                     )
                   }

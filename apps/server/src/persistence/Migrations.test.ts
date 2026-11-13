@@ -138,7 +138,8 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 159, name: "EventCompactionKeepLast" },
       { migration_id: 160, name: "DropUnreadEventIndexes" },
       { migration_id: 161, name: "UsageNativeIdentity" },
-      { migration_id: 162, name: "DropUnreadReceiptIndexes" },
+      { migration_id: 162, name: "UsageFactsThreadIndex" },
+      { migration_id: 163, name: "DropUnreadReceiptIndexes" },
     ]);
     // Receipts are only ever found by command id, which the primary key serves.
     const receiptIndexes = yield* sql<{
@@ -155,6 +156,14 @@ const assertUpgrade = (version: PrecedingVersion) =>
       "idx_orch_events_type_occurred_at",
       "sqlite_autoindex_orchestration_events_1",
     ]);
+    const usageFactIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(projection_turn_usage_facts)`;
+    expect(
+      usageFactIndexes.some(
+        (index) => index.name === "projection_turn_usage_facts_thread_completed_idx",
+      ),
+    ).toBe(true);
     const activityIndexes = yield* sql<{
       name: string;
     }>`PRAGMA index_list(projection_thread_activities)`;

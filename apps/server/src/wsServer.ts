@@ -358,6 +358,12 @@ import {
 } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
 import {
+  readServerHealth,
+  recordSlowRpcRoute,
+  SLOW_RPC_ROUTE_MS,
+  startEventLoopDelayMonitor,
+} from "./observability/serverHealth.ts";
+import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
@@ -371,6 +377,14 @@ import {
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
+import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
+import {
+  answerFromTable,
+  mergeRouteTables,
+  routePromise,
+  tableAnswers,
+} from "./wsServer/routes/routeTable.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import {
@@ -849,7 +863,6 @@ const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 const CurrentRpcMethod = ServiceMap.Reference<string | null>("f5/ws/CurrentRpcMethod", {
   defaultValue: () => null,
 });
-const SLOW_RPC_ROUTE_LOG_MS = 1_000;
 const LARGE_RPC_RESPONSE_LOG_BYTES = 1024 * 1024;
 
 /**
@@ -1247,6 +1260,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
   const githubLogin = new GithubDeviceLogin(githubAccount, resolveGithubOAuthClientId(process.env));
   yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
+  const stopEventLoopDelayMonitor = startEventLoopDelayMonitor();
+  yield* Effect.addFinalizer(() => Effect.sync(stopEventLoopDelayMonitor));
   const githubCliImport = new GithubCliImport({
     account: githubAccount,
     // Profile state dirs live under the F5 home (parent of Default's state dir).
@@ -1258,12 +1273,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     launcherDir: githubLauncherDir(serverConfig.stateDir),
   });
   const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
-  const profileCall = <A>(operation: () => Promise<A>) =>
-    Effect.tryPromise({
-      try: operation,
-      catch: (cause) =>
-        new RouteRequestError({ message: cause instanceof Error ? cause.message : String(cause) }),
-    });
+  const profileCall = routePromise;
   const computeProfiles = async () => {
     const snapshot = await profilesStore.list(activeProfile.id);
     const providers = await Effect.runPromise(providerRegistry.getProviders);
@@ -4155,6 +4165,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       });
 
+  // Routes that live in their own modules. `routeRequest` answers from here
+  // before its switch; see `wsServer/routes/routeTable.ts`.
+  const routeTable = mergeRouteTables(
+    githubAccountRoutes({
+      login: githubLogin,
+      account: githubAccount,
+      cliImport: githubCliImport,
+    }),
+    providerAccountRoutes(accountService),
+  );
+
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
     if (typeof requestCwd === "string") {
@@ -4165,35 +4186,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
       if (refusal) return yield* new RouteRequestError({ message: refusal });
     }
+    if (tableAnswers(routeTable, request.body)) {
+      return yield* answerFromTable(routeTable, request.body, ws);
+    }
     switch (request.body._tag) {
-      case WS_METHODS.githubLoginStart:
-        return yield* profileCall(() => githubLogin.start());
-      case WS_METHODS.githubLoginStatus:
-        return githubLogin.status(request.body.handle);
-      case WS_METHODS.githubLoginCancel:
-        return githubLogin.cancel(request.body.handle);
-      case WS_METHODS.githubAccountSet: {
-        const { host, token } = request.body;
-        // Browser sign-in is github.com-only; a token save for that host supersedes it.
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubAccount.set(host, token));
-      }
-      case WS_METHODS.githubAccountRemove: {
-        const { host } = request.body;
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubAccount.remove(host));
-      }
-      case WS_METHODS.githubAccountStatus: {
-        const { host } = request.body;
-        return yield* profileCall(() => githubAccount.status(host));
-      }
-      case WS_METHODS.githubAccountCliCandidates:
-        return yield* profileCall(() => githubCliImport.candidates());
-      case WS_METHODS.githubAccountCliImport: {
-        const { host, login } = request.body;
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubCliImport.import({ host, login }));
-      }
       case WS_METHODS.profilesList:
         return yield* profileCall(readProfiles);
       case WS_METHODS.profilesCreate: {
@@ -4225,27 +4221,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.profilesDelete: {
         const id = request.body.profileId;
         return yield* profileCall(() => profilesStore.remove(id));
-      }
-      case WS_METHODS.providerAccountLoginStart: {
-        const id = request.body.instanceId;
-        const method = request.body.method;
-        return yield* profileCall(() => accountService.start(id, false, ws, method));
-      }
-      case WS_METHODS.providerAccountLogout: {
-        const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.start(id, true, ws));
-      }
-      case WS_METHODS.providerAccountInput: {
-        const { handle, data } = request.body;
-        return yield* profileCall(async () => accountService.input(handle, data, ws));
-      }
-      case WS_METHODS.providerAccountCancel: {
-        const { handle } = request.body;
-        return yield* profileCall(() => accountService.cancel(handle, ws));
-      }
-      case WS_METHODS.providerAccountStatus: {
-        const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.status(id));
       }
 
       case AGENT_BRIDGE_WS_METHODS.setSchedulingGrant:
@@ -4735,6 +4710,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* usageService.getQuotaHistory.pipe(
           Effect.mapError((error) => new RouteRequestError({ message: error.message })),
         );
+      }
+
+      case USAGE_WS_METHODS.getThreadTurns: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .getThreadTurns(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
 
       case USAGE_WS_METHODS.analyzeClaudeUsage: {
@@ -6734,6 +6716,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         // Lets a client holding requests notice readiness even if a push is lost.
         return { runtime: currentRuntimeReadiness() };
 
+      case WS_METHODS.serverGetHealth:
+        return readServerHealth();
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -8129,13 +8114,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     );
     const routeMs = Date.now() - routeStartedAt;
-    if (routeMs >= SLOW_RPC_ROUTE_LOG_MS)
+    if (routeMs >= SLOW_RPC_ROUTE_MS) {
+      recordSlowRpcRoute(method, routeMs, lane);
       yield* Effect.logInfo("slow rpc route", {
         method,
         lane,
         durationMs: routeMs,
         admission: admission.snapshot(),
       });
+    }
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse(
         {

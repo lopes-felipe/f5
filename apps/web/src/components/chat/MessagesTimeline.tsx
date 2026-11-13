@@ -115,6 +115,8 @@ import { PromptLinkCopyButton } from "../promptLinks/PromptLinkCopyButton";
 import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
+import { PromptCacheMissPill } from "./PromptCacheMissPill";
+import type { TurnCacheSummary } from "./cacheIndicator.logic";
 import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
@@ -296,6 +298,7 @@ function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
 const RowEnteringContext = createContext<ReadonlyMap<string, number>>(new Map());
 
 const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {};
+const EMPTY_CACHE_MISSES: ReadonlyMap<MessageId, TurnCacheSummary> = new Map();
 
 interface MessagesTimelineProps {
   nativeSessionCapabilities?:
@@ -326,6 +329,8 @@ interface MessagesTimelineProps {
   completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
+  /** Turns that missed the prompt cache, keyed by the reply whose footer flags it. */
+  cacheMissByAssistantMessageId?: ReadonlyMap<MessageId, TurnCacheSummary>;
   expandedWorkGroups: Record<string, number>;
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
   /**
@@ -494,6 +499,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   completionSummary,
   turnDiffSummaryByAssistantMessageId,
   turnDiffSummaryByTurnId,
+  cacheMissByAssistantMessageId = EMPTY_CACHE_MISSES,
   expandedWorkGroups,
   onToggleWorkGroup,
   workGroupCollapseOverrides = EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES,
@@ -1391,6 +1397,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         revertPopover,
         revertImpact,
         turnDiffSummaryByAssistantMessageId,
+        cacheMissByAssistantMessageId,
         changedFilesPresentationOverrides,
         newestTurnDiffId,
         expandedCommandExecutions,
@@ -1408,6 +1415,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       ),
     };
   }, [
+    cacheMissByAssistantMessageId,
     changedFilesPresentationOverrides,
     expandedCommandExecutions,
     expandedWorkGroups,
@@ -4202,6 +4210,8 @@ type TimelineRowExternals =
       /** The last assistant message in the timeline: its code blocks never fold. */
       /** Part of the latest turn, whose code blocks never fold. */
       inLatestTurn: boolean;
+      /** Set on a turn's last reply when the turn missed the prompt cache. */
+      cacheMiss: TurnCacheSummary | undefined;
     }
   | { kind: "command"; expanded: boolean }
   | { kind: "working"; ribbonActive: boolean }
@@ -4871,15 +4881,18 @@ function AssistantMessageRowContent(props: {
           data-assistant-quote-exclude
           className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
         >
-          <p className="text-2xs text-muted-foreground tabular-nums">
-            <LiveMessageMeta
-              createdAt={row.message.createdAt}
-              durationStart={row.durationStart}
-              completedAt={row.message.completedAt}
-              streaming={row.message.streaming}
-              timestampFormat={timestampFormat}
-            />
-          </p>
+          <div className="flex min-w-0 items-center">
+            <p className="text-2xs text-muted-foreground tabular-nums">
+              <LiveMessageMeta
+                createdAt={row.message.createdAt}
+                durationStart={row.durationStart}
+                completedAt={row.message.completedAt}
+                streaming={row.message.streaming}
+                timestampFormat={timestampFormat}
+              />
+            </p>
+            {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+          </div>
           {/* Always laid out, only faded: hovering never shifts the row. */}
           <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
             {settledText ? <MessageCopyButton text={rawText} /> : null}
@@ -5431,6 +5444,7 @@ export interface TimelineRowExternalsInputs {
   revertPopover: { messageId: MessageId; presetRestoreFiles?: boolean } | null;
   revertImpact: TimelineRevertImpact | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  cacheMissByAssistantMessageId: ReadonlyMap<MessageId, TurnCacheSummary>;
   changedFilesPresentationOverrides: Readonly<Record<string, ChangedFilesPresentation>>;
   newestTurnDiffId: TurnId | null;
   expandedCommandExecutions: Readonly<Record<string, boolean>>;
@@ -5524,6 +5538,7 @@ function describeTimelineRowExternals(
           : undefined;
         const isNewest =
           turnSummary !== undefined && turnSummary.turnId === inputs.newestTurnDiffId;
+        const cacheMiss = inputs.cacheMissByAssistantMessageId.get(row.message.id);
         return {
           version: [
             "assistant",
@@ -5531,6 +5546,7 @@ function describeTimelineRowExternals(
             presentationOverride ?? "",
             isNewest ? "newest" : "older",
             inLatestTurn ? "latest-turn" : "earlier-turn",
+            timelineObjectVersion(cacheMiss),
           ].join(":"),
           build: () => ({
             kind: "assistant-message",
@@ -5538,6 +5554,7 @@ function describeTimelineRowExternals(
             presentationOverride,
             isNewest,
             inLatestTurn,
+            cacheMiss,
           }),
         };
       }

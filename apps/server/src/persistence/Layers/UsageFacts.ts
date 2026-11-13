@@ -1,5 +1,11 @@
-import { isKnownProviderKind, UsageTurnFact } from "@t3tools/contracts";
-import { Effect, Layer } from "effect";
+import {
+  isKnownProviderKind,
+  TurnId,
+  USAGE_ASIDE_TURN_ID_PREFIX,
+  UsageThreadTurn,
+  UsageTurnFact,
+} from "@t3tools/contracts";
+import { Effect, Layer, Option, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
@@ -14,6 +20,10 @@ import {
   type UsageFactRepositoryShape,
   type UsageScopeTitle,
 } from "../Services/UsageFacts.ts";
+
+// A row that fails the contract (a stray model string, say) is skipped rather
+// than failing the whole thread's history.
+const decodeThreadTurn = Schema.decodeUnknownOption(UsageThreadTurn);
 
 interface TitleDbRow {
   readonly id: string;
@@ -377,6 +387,56 @@ const make = Effect.gen(function* () {
       };
     }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.readScopeTitles")));
 
+  const listByThread: UsageFactRepositoryShape["listByThread"] = (input) =>
+    Effect.gen(function* () {
+      // Asides are recorded on the thread but are not conversation turns.
+      const conversationTurn = sql`thread_id = ${input.threadId}
+        AND turn_id NOT LIKE ${`${USAGE_ASIDE_TURN_ID_PREFIX}%`}`;
+      const rows = yield* sql<{ readonly provider: string }>`
+        SELECT * FROM (
+          SELECT
+            turn_id AS "turnId",
+            provider_name AS "provider",
+            model,
+            input_tokens AS "inputTokens",
+            output_tokens AS "outputTokens",
+            cache_read_tokens AS "cacheReadTokens",
+            cache_write_tokens AS "cacheWriteTokens",
+            completed_at AS "completedAt"
+          FROM projection_turn_usage_facts
+          WHERE ${conversationTurn}
+          ORDER BY completed_at DESC, turn_id DESC
+          LIMIT ${input.limit}
+        )
+        ORDER BY "completedAt" ASC, "turnId" ASC
+      `;
+      const [thread] = yield* sql<{
+        readonly firstTurnId: string | null;
+        readonly turnCount: number;
+      }>`
+        SELECT
+          (
+            SELECT turn_id FROM projection_turn_usage_facts
+            WHERE ${conversationTurn}
+            ORDER BY completed_at ASC, turn_id ASC
+            LIMIT 1
+          ) AS "firstTurnId",
+          (SELECT COUNT(*) FROM projection_turn_usage_facts WHERE ${conversationTurn})
+            AS "turnCount"
+      `;
+      const turns = rows.flatMap((row): Array<UsageThreadTurn> => {
+        if (!isKnownProviderKind(row.provider)) return [];
+        const turn = decodeThreadTurn(row);
+        return Option.isSome(turn) ? [turn.value] : [];
+      });
+      return {
+        turns,
+        firstTurnId: thread?.firstTurnId ? TurnId.makeUnsafe(thread.firstTurnId) : null,
+        // Counted before undecodable rows are dropped, so labels keep their place.
+        earlierTurnCount: Math.max(0, (thread?.turnCount ?? 0) - rows.length),
+      };
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.listByThread")));
+
   return {
     record,
     readMuseRecordedIntervals: museRecordedIntervals(sql).pipe(
@@ -387,6 +447,7 @@ const make = Effect.gen(function* () {
     summarizeBuckets,
     summarizeByScope,
     readScopeTitles,
+    listByThread,
   } satisfies UsageFactRepositoryShape;
 });
 

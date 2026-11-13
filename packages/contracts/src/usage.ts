@@ -17,6 +17,7 @@ export const USAGE_WS_METHODS = {
   consumeResetCredit: "usage.consumeResetCredit",
   getQuotaHistory: "usage.getQuotaHistory",
   analyzeClaudeUsage: "usage.analyzeClaudeUsage",
+  getThreadTurns: "usage.getThreadTurns",
 } as const;
 
 export const UsageRange = Schema.Literals(["24h", "7d", "30d", "90d"]);
@@ -56,6 +57,57 @@ export const UsageTurnFact = Schema.Struct({
   startedAt: Schema.optional(IsoDateTime),
 });
 export type UsageTurnFact = typeof UsageTurnFact.Type;
+
+/**
+ * Usage of a Codex aside is recorded on its parent thread under a turn id with
+ * this prefix. An aside is not a conversation turn.
+ */
+export const USAGE_ASIDE_TURN_ID_PREFIX = "aside:";
+
+export function isAsideUsageTurnId(turnId: string): boolean {
+  return turnId.startsWith(USAGE_ASIDE_TURN_ID_PREFIX);
+}
+
+/**
+ * Whether a provider reports cache reads and writes outside its input token
+ * count, Anthropic style. The others report cached input as part of input,
+ * OpenAI style. Pi normalizes every model to the Anthropic split.
+ */
+export function providerReportsCacheOutsideInput(provider: string): boolean {
+  return provider === "claudeAgent" || provider === "pi";
+}
+
+/** At most this many turns come back from `usage.getThreadTurns`, newest kept. */
+export const USAGE_THREAD_TURNS_LIMIT = 500;
+
+export const UsageGetThreadTurnsInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type UsageGetThreadTurnsInput = typeof UsageGetThreadTurnsInput.Type;
+
+/** One turn's recorded token counts; the per-turn prompt cache indicator reads these. */
+export const UsageThreadTurn = Schema.Struct({
+  turnId: TurnId,
+  provider: ProviderKind,
+  model: Schema.NullOr(TrimmedNonEmptyString),
+  inputTokens: Schema.NullOr(NonNegativeInt),
+  outputTokens: Schema.NullOr(NonNegativeInt),
+  cacheReadTokens: Schema.NullOr(NonNegativeInt),
+  cacheWriteTokens: Schema.NullOr(NonNegativeInt),
+  completedAt: IsoDateTime,
+});
+export type UsageThreadTurn = typeof UsageThreadTurn.Type;
+
+/** A thread's newest conversation turns. Asides are left out. */
+export const UsageThreadTurns = Schema.Struct({
+  /** Oldest first. */
+  turns: Schema.Array(UsageThreadTurn),
+  /** The thread's first recorded turn, which may be older than `turns`. Null when none. */
+  firstTurnId: Schema.NullOr(TurnId),
+  /** Recorded turns older than the oldest one in `turns`. */
+  earlierTurnCount: NonNegativeInt,
+});
+export type UsageThreadTurns = typeof UsageThreadTurns.Type;
 
 /**
  * Exact model ID to the model its usage counts as, such as a preview slug to

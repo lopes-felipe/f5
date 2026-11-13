@@ -1,4 +1,4 @@
-import { ThreadFindBar, type ThreadFindMatch } from "./chat/ThreadFindBar";
+import { ThreadFindBar } from "./chat/ThreadFindBar";
 import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
 import { settleListScroll } from "./chat/settleListScroll";
 import { ThreadFindContext } from "./chat/threadFindContext";
@@ -408,6 +408,7 @@ import { ChatStatusAnnouncer, deriveChatStatusOutcome } from "./chat/ChatStatusA
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
 import { JumpToLatestButton, timelineTailSnapshot } from "./chat/JumpToLatestButton";
 import { TimelineNavigationStatusBanner } from "./chat/TimelineNavigationStatus";
+import { useThreadFind } from "./chat/useThreadFind";
 import { useTimelineNavigation } from "./chat/useTimelineNavigation";
 import { ComposerDock, ComposerDockColumn } from "./chat/composer/ComposerDock";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, ComposerTray } from "./chat/composer/ComposerTray";
@@ -515,6 +516,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty";
 import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
+import { useThreadPromptCache } from "../lib/useThreadCacheTurns";
 import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
   isImageOnlyBootstrapPrompt,
@@ -803,6 +805,7 @@ function selectChatViewSettings(settings: AppSettings) {
     sendShortcut: settings.sendShortcut,
     showAgentCommandTranscripts: settings.showAgentCommandTranscripts,
     showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
+    showPromptCacheIndicator: settings.showPromptCacheIndicator,
     showProviderRuntimeMetadata: settings.showProviderRuntimeMetadata,
     tasksPanelAutoOpen: settings.tasksPanelAutoOpen,
     timestampFormat: settings.timestampFormat,
@@ -832,20 +835,6 @@ export default memo(function ChatView({
   focusTimelineEntryId: routeFocusTimelineEntryId,
   focusTimelineEntryKind = "message",
 }: ChatViewProps) {
-  const [findOpenThreadId, setFindOpenThreadId] = useState<ThreadId | null>(null);
-  const [findSelection, setFindSelection] = useState<{
-    threadId: ThreadId;
-    match: ThreadFindMatch;
-    requestId: number | null;
-  } | null>(null);
-  const findMatch = findSelection?.threadId === threadId ? findSelection.match : null;
-  useEffect(() => {
-    const open = (event: Event) => {
-      if ((event as CustomEvent<ThreadId>).detail === threadId) setFindOpenThreadId(threadId);
-    };
-    window.addEventListener("f5:find-thread", open);
-    return () => window.removeEventListener("f5:find-thread", open);
-  }, [threadId]);
   const testRenderCountProps = useTestRenderCountProps();
   const nextTurnQueueState = useNextTurnQueueStore(
     (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
@@ -1185,39 +1174,23 @@ export default memo(function ChatView({
   });
   const navigateTimeline = timelineNavigation.navigate;
   const cancelTimelineNavigation = timelineNavigation.cancel;
-  const cancelTimelineRequest = timelineNavigation.cancelRequest;
-  const retryNavigationRequest = timelineNavigation.retry;
-  // The navigation request serving the current find match. A retry moves it to
-  // the new request id, so the match row's range report is still accepted.
-  const findTicketRef = useRef<{ id: number } | null>(null);
-  const cancelFindNavigation = useCallback(() => {
-    const ticket = findTicketRef.current;
-    if (ticket) cancelTimelineRequest(ticket.id);
-  }, [cancelTimelineRequest]);
-  const retryTimelineNavigation = useCallback(() => {
-    const retried = retryNavigationRequest();
-    if (!retried) return;
-    const ticket = findTicketRef.current;
-    if (ticket?.id !== retried.previousId) return;
-    ticket.id = retried.id;
-    setFindSelection((current) =>
-      current?.requestId === retried.previousId ? { ...current, requestId: retried.id } : current,
-    );
-  }, [retryNavigationRequest]);
+  const threadFind = useThreadFind({ threadId, navigation: timelineNavigation });
+  const findMatch = threadFind.match;
+  const clearFindMatch = threadFind.clearMatch;
   // Jumps that are not a find result take over from the active match; the
   // find query stays, so Previous/Next pick it back up.
   const navigateToTimelineEntry = useCallback(
     (entryId: string, position: number) => {
-      setFindSelection(null);
+      clearFindMatch();
       navigateTimeline(entryId, { position });
     },
-    [navigateTimeline],
+    [clearFindMatch, navigateTimeline],
   );
   const jumpToLatest = useCallback(() => {
     cancelTimelineNavigation();
-    setFindSelection(null);
+    clearFindMatch();
     scrollToEnd(true);
-  }, [cancelTimelineNavigation, scrollToEnd]);
+  }, [cancelTimelineNavigation, clearFindMatch, scrollToEnd]);
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
 
   const terminalState = useTerminalStateStore((state) =>
@@ -2982,22 +2955,7 @@ export default memo(function ChatView({
   const retryOlderTimelineHistory = useCallback(() => {
     if (historyThreadId !== null) void retryThreadHistoryBackfill(queryClient, historyThreadId);
   }, [historyThreadId, queryClient]);
-  const openThreadFind = useCallback(() => setFindOpenThreadId(threadId), [threadId]);
-  const findRequestId = findSelection?.threadId === threadId ? findSelection.requestId : null;
-  const handleFindSelectedRange = timelineNavigation.handleSelectedRange;
-  const threadFindValue = useMemo(
-    () =>
-      findMatch
-        ? {
-            entryId: findMatch.entryId,
-            query: findMatch.query,
-            occurrence: findMatch.occurrence,
-            requestId: findRequestId,
-            onSelectedRange: handleFindSelectedRange,
-          }
-        : null,
-    [findMatch, findRequestId, handleFindSelectedRange],
-  );
+  const openThreadFind = threadFind.open;
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
     for (const summary of turnDiffSummaries) {
@@ -3013,6 +2971,12 @@ export default memo(function ChatView({
     }
     return byTurnId;
   }, [turnDiffSummaries]);
+  const promptCache = useThreadPromptCache({
+    threadId: isServerThread ? threadId : null,
+    enabled: settings.showPromptCacheIndicator,
+    messages: timelineMessages,
+    onSelectMessage: (messageId) => navigateToTimelineEntry(messageId, 0.5),
+  });
   const diffFilePathsByTurnId = useMemo(() => {
     const pathsByTurnId = new Map<TurnId, Set<string>>();
     for (const summary of turnDiffSummaries) {
@@ -4624,7 +4588,7 @@ export default memo(function ChatView({
       ) {
         event.preventDefault();
         event.stopPropagation();
-        setFindOpenThreadId(threadId);
+        openThreadFind();
         document.querySelector<HTMLInputElement>('input[aria-label="Find in thread"]')?.focus();
         return;
       }
@@ -4887,6 +4851,7 @@ export default memo(function ChatView({
     phase,
     toggleInteractionMode,
     jumpToLatest,
+    openThreadFind,
     showScrollToBottom,
     settings.sendShortcut,
     terminalState.terminalOpen,
@@ -8473,38 +8438,13 @@ export default memo(function ChatView({
             />
           </AppTitlebar>
 
-          {findOpenThreadId === activeThread.id && isServerThread ? (
+          {threadFind.openThreadId === activeThread.id && isServerThread ? (
             <ThreadFindBar
               key={activeThread.id}
               threadId={activeThread.id}
-              onMatch={async (match, signal) => {
-                if (signal.aborted) return;
-                if (!match) {
-                  cancelFindNavigation();
-                  setFindSelection(null);
-                  return;
-                }
-                // A plan result is injected into the timeline first, so it is
-                // awaited in the row map rather than loaded as history.
-                const ticket = {
-                  id: navigateTimeline(match.entryId, {
-                    load: match.kind === "message",
-                    position: 0.3,
-                    placeRange: true,
-                  }),
-                };
-                findTicketRef.current = ticket;
-                // The search is aborted when the query or index changes or the
-                // bar closes; its jump (or that jump's retry) must not land later.
-                signal.addEventListener("abort", () => cancelTimelineRequest(ticket.id), {
-                  once: true,
-                });
-                setFindSelection({ threadId: activeThread.id, match, requestId: ticket.id });
-              }}
+              onMatch={(match, signal) => threadFind.selectMatch(activeThread.id, match, signal)}
               onClose={() => {
-                cancelFindNavigation();
-                setFindOpenThreadId(null);
-                setFindSelection(null);
+                threadFind.close();
                 focusComposer();
               }}
             />
@@ -8567,7 +8507,7 @@ export default memo(function ChatView({
                   }
                 />
                 {shouldRenderTimeline ? (
-                  <ThreadFindContext value={threadFindValue}>
+                  <ThreadFindContext value={threadFind.contextValue}>
                     <MessagesTimeline
                       key={activeThread.id}
                       threadId={activeThread.id}
@@ -8590,6 +8530,7 @@ export default memo(function ChatView({
                       completionSummary={completionSummary}
                       turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
                       turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
+                      cacheMissByAssistantMessageId={promptCache.missByAssistantMessageId}
                       expandedWorkGroups={expandedWorkGroups}
                       onToggleWorkGroup={onToggleWorkGroup}
                       workGroupCollapseOverrides={workGroupCollapseOverrides}
@@ -8651,7 +8592,7 @@ export default memo(function ChatView({
                 )}
                 <TimelineNavigationStatusBanner
                   status={timelineNavigation.status}
-                  onRetry={retryTimelineNavigation}
+                  onRetry={threadFind.retryNavigation}
                   onDismiss={cancelTimelineNavigation}
                 />
 
@@ -8854,6 +8795,7 @@ export default memo(function ChatView({
                         provider: activeThread.session?.provider ?? null,
                         tokenUsageSource: activeThread.session?.tokenUsageSource,
                       }}
+                      promptCache={promptCache.meter}
                       pendingInteraction={composerPendingInteraction}
                       modelControls={composerModelControls}
                       modeControls={composerModeControls}
