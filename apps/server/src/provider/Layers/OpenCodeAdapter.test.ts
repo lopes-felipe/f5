@@ -831,6 +831,48 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("retains Claude's reported reset in an OpenCode session error", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("claude-limit");
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "work",
+        attachments: [],
+        model: "anthropic/claude-sonnet-4",
+      });
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "runtime.error"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      while (!runtimeMock.state.emitEvent) yield* sleep(1);
+      runtimeMock.state.emitEvent!({
+        type: "session.error",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          error: {
+            name: "UnknownError",
+            data: {
+              message:
+                "You've hit your weekly limit · resets 9pm Resets at 2026-11-02T20:00:00.000Z.",
+            },
+          },
+        },
+      });
+      const captured = Array.from(yield* Fiber.join(events).pipe(Effect.timeout("2 seconds")));
+      for (const event of captured) {
+        if (event.type === "turn.completed" || event.type === "runtime.error") {
+          assert.ok(event.turnId);
+          assert.equal(event.payload.usageLimit?.resetsAt, "2026-11-02T20:00:00.000Z");
+        }
+      }
+      assert.ok(captured.some((event) => event.type === "turn.completed"));
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   for (const terminal of ["idle", "error"] as const) {
     it.effect(`records interruption when ${terminal} arrives before abort finishes`, () =>
       Effect.gen(function* () {
@@ -1213,6 +1255,14 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           metadata: {},
           time: { start: 1, end: 2 },
         },
+        {
+          status: "completed",
+          input,
+          output: "Command failed",
+          title: "pwd",
+          metadata: { exit: 1 },
+          time: { start: 1, end: 2 },
+        },
         { status: "error", input, error: "failed", time: { start: 2, end: 3 } },
       ]) {
         runtimeMock.state.emitEvent!({
@@ -1225,7 +1275,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
               messageID: "message-tools",
               type: "tool",
               callID: state.status === "error" ? "failed-call" : "working-call",
-              tool: "bash",
+              tool: "shell",
               state,
             },
           },
@@ -1262,6 +1312,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           ["item.started", "working-call", "inProgress"],
           ["item.updated", "working-call", "inProgress"],
           ["item.completed", "working-call", "completed"],
+          ["item.completed", "working-call", "failed"],
           ["item.completed", "failed-call", "failed"],
         ],
       );
