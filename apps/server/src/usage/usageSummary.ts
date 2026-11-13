@@ -26,6 +26,8 @@ import type { UsageBucketPlan } from "./usageBuckets.ts";
 export const TOP_THREAD_LIMIT = 10;
 
 interface MutableMetrics {
+  nativeInferenceCount: number;
+  unpricedNativeInferenceCount: number;
   turnCount: number;
   reportedTokenTurnCount: number;
   inputTokens: number;
@@ -62,6 +64,8 @@ function emptyComposition(): MutableComposition {
 
 function emptyMetrics(): MutableMetrics {
   return {
+    nativeInferenceCount: 0,
+    unpricedNativeInferenceCount: 0,
     turnCount: 0,
     reportedTokenTurnCount: 0,
     inputTokens: 0,
@@ -86,8 +90,11 @@ function emptyMetrics(): MutableMetrics {
 }
 
 function addMetrics(target: MutableMetrics, row: UsageAggregateRow): void {
+  target.nativeInferenceCount += row.nativeInferenceCount ?? 0;
+  target.unpricedNativeInferenceCount += row.unpricedNativeInferenceCount ?? 0;
   target.reportedCostTurnCount += row.providerReportedCostUsd === null ? 0 : row.pricedTurnCount;
-  target.estimatedTurnCount += row.estimatedCostUsd !== undefined ? row.turnCount : 0;
+  target.estimatedTurnCount +=
+    row.estimatedCostUsd !== undefined ? row.turnCount + (row.nativeInferenceCount ?? 0) : 0;
   target.estimatedCostUsd += row.estimatedCostUsd ?? 0;
   target.turnCount += row.turnCount;
   target.reportedTokenTurnCount += row.reportedTokenTurnCount;
@@ -110,6 +117,12 @@ function addMetrics(target: MutableMetrics, row: UsageAggregateRow): void {
 
 function freezeMetrics(metrics: MutableMetrics): UsageMetrics {
   return {
+    ...(metrics.nativeInferenceCount > 0
+      ? {
+          nativeInferenceCount: metrics.nativeInferenceCount,
+          unpricedNativeInferenceCount: metrics.unpricedNativeInferenceCount,
+        }
+      : {}),
     turnCount: metrics.turnCount,
     reportedTokenTurnCount: metrics.reportedTokenTurnCount,
     inputTokens: metrics.inputTokens,
@@ -190,7 +203,7 @@ export function applyPriceOverride<Row extends UsageAggregateRow>(
     override &&
     row.providerReportedCostUsd === null &&
     (row.estimationEligibleTurnCount ?? row.reportedTokenTurnCount) === row.turnCount &&
-    row.turnCount > 0;
+    (row.turnCount > 0 || (row.nativeInferenceCount ?? 0) > 0);
   if (!canEstimate) return row;
   const claude = row.provider === "claudeAgent";
   return {
@@ -205,6 +218,7 @@ export function applyPriceOverride<Row extends UsageAggregateRow>(
       1_000_000,
     pricedTurnCount: row.turnCount,
     unpricedTurnCount: 0,
+    ...(row.nativeInferenceCount ? { unpricedNativeInferenceCount: 0 } : {}),
   };
 }
 
@@ -221,7 +235,7 @@ export function aggregateUsageMetrics(
 function addComposition(target: MutableComposition, row: UsageAggregateRow): void {
   // Only partitions with a known total contribute, so unknown-total rows
   // cannot inflate the stacked composition.
-  if (row.totalTokenTurnCount === 0) return;
+  if (row.totalTokenTurnCount === 0 && !row.nativeInferenceCount) return;
   const claude = row.provider === "claudeAgent";
   const segments: UsageTokenComposition = {
     uncachedInputTokens: claude
@@ -303,7 +317,9 @@ export function buildUsageSummary(input: {
     .map(([provider]) => provider)
     .sort();
   const providersMissingCost = Array.from(providerAggregate.entries())
-    .filter(([, metrics]) => metrics.unpricedTurnCount > 0)
+    .filter(
+      ([, metrics]) => metrics.unpricedTurnCount > 0 || metrics.unpricedNativeInferenceCount > 0,
+    )
     .map(([provider]) => provider)
     .sort();
 
