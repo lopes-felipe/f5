@@ -179,9 +179,10 @@ export const makeThreadSettlementService = Effect.gen(function* () {
       return { settled: false, deferred: true };
     }).pipe(Effect.mapError(failure));
   const closeIdleTerminals = (threadId: ThreadId, settledAt: string) => {
-    if (Option.isNone(terminal) || !terminal.value.closeIdleForThread) return Effect.void;
+    if (Option.isNone(terminal)) return Effect.void;
     const manager = terminal.value;
-    const close = manager.closeIdleForThread;
+    const close = manager.closeOnSettleForThread ?? manager.closeIdleForThread;
+    if (!close) return Effect.void;
     return Effect.scoped(
       Effect.gen(function* () {
         const sessions = yield* manager.listSessions;

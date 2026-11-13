@@ -1,4 +1,5 @@
 import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
+import { pendingActivityWindow } from "@t3tools/shared/pendingActivityWindow";
 import { resolveTurnAssistantMessage } from "@t3tools/shared/turnAssistantMessage";
 import { updateThreadPullRequestLinks } from "@t3tools/shared/sourceControl";
 import { recordMessageAppend, recordMessageListChange } from "./lib/streamingTextRevision";
@@ -568,9 +569,10 @@ function upsertActivity(
       ? [...activities, nextActivity]
       : activities.map((entry, index) => (index === existingIndex ? nextActivity : entry));
 
-  const orderedActivities = nextActivities
-    .toSorted(compareThreadActivities)
-    .slice(-MAX_THREAD_ACTIVITIES);
+  const orderedActivities = pendingActivityWindow(
+    nextActivities.toSorted(compareThreadActivities),
+    MAX_THREAD_ACTIVITIES,
+  );
   return arraysShallowEqual(orderedActivities, activities) ? activities : orderedActivities;
 }
 
@@ -1522,10 +1524,10 @@ function reduceDomainEvent(
           thread.commandExecutions,
           retainedTurnIds,
         );
-        const activities = retainThreadActivitiesAfterRevert(
-          thread.activities,
-          retainedTurnIds,
-        ).slice(-MAX_THREAD_ACTIVITIES);
+        const activities = pendingActivityWindow(
+          retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds),
+          MAX_THREAD_ACTIVITIES,
+        );
         const latestTurnSummary = turnDiffSummaries.at(-1) ?? null;
         const latestTurnStatus =
           latestTurnSummary?.status === "missing" || latestTurnSummary?.status === "error"

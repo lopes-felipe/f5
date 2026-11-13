@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { AcpPermissionRequest, AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
+import { acpFileChanges } from "./AcpFileChanges";
 
 type AcpAdapterRawSource = Extract<
   RuntimeEventRawSource,
@@ -169,6 +170,7 @@ export function makeAcpToolCallEvent(input: {
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
   const runtimeStatus = runtimeItemStatusFromAcpToolStatus(input.toolCall.status);
+  const changes = acpFileChanges(input.toolCall.data.content);
   return {
     type:
       input.toolCall.status === "completed" || input.toolCall.status === "failed"
@@ -184,7 +186,9 @@ export function makeAcpToolCallEvent(input: {
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
       ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),
-      ...(Object.keys(input.toolCall.data).length > 0 ? { data: input.toolCall.data } : {}),
+      ...(Object.keys(input.toolCall.data).length > 0
+        ? { data: { ...input.toolCall.data, ...(changes.length > 0 ? { changes } : {}) } }
+        : {}),
     },
     raw: {
       source: "acp.jsonrpc",

@@ -240,6 +240,22 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
+  it.effect("removes the auth token from its own environment once the config holds it", () =>
+    Effect.gen(function* () {
+      const previous = process.env.T3CODE_AUTH_TOKEN;
+      process.env.T3CODE_AUTH_TOKEN = "inherited-by-every-child";
+      try {
+        yield* runCli(["--auth-token", "token-secret"]);
+
+        assert.equal(resolvedConfig?.authToken, "token-secret");
+        assert.isUndefined(process.env.T3CODE_AUTH_TOKEN);
+      } finally {
+        if (previous === undefined) delete process.env.T3CODE_AUTH_TOKEN;
+        else process.env.T3CODE_AUTH_TOKEN = previous;
+      }
+    }),
+  );
+
   it.effect("prefers F5_STATE_DIR over legacy T3CODE_STATE_DIR", () =>
     Effect.gen(function* () {
       yield* runCli([], {

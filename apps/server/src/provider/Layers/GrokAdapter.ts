@@ -16,6 +16,7 @@ import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAut
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
+import { PromptInactivityDeadline } from "../acp/PromptInactivityDeadline";
 import {
   acpElicitationDescriptor,
   acpElicitationResponse,
@@ -53,6 +54,8 @@ import {
 } from "@t3tools/contracts";
 import {
   DateTime,
+  Clock,
+  Duration,
   Deferred,
   Effect,
   Exit,
@@ -127,6 +130,8 @@ const PROVIDER: ProviderKind = "grok";
 const GROK_RESUME_VERSION = 1 as const;
 
 export interface GrokAdapterLiveOptions {
+  /** Antigravity silent-prompt deadline; configurable for deterministic tests. */
+  readonly promptInactivityTimeoutMs?: number;
   /** Certification/test seam; production drivers leave this unset. */
   readonly automationCatalogVerification?: { preview?: boolean; computer?: boolean };
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
@@ -1132,6 +1137,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const nf = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
+                if (
+                  event._tag === "ContentDelta" ||
+                  event._tag === "PlanUpdated" ||
+                  event._tag === "AssistantItemStarted"
+                )
+                  ctx.antigravityTasks.noteParentProgress();
                 const computerCall =
                   event._tag === "ToolCallUpdated" && classifyAcpToolEvent(catalogs, event);
                 switch (event._tag) {
@@ -1516,7 +1527,42 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
 
         return yield* Effect.gen(function* () {
-          const result = yield* prepared.acp
+          const deadline =
+            options?.promptInactivityTimeoutMs ??
+            (PROVIDER === "antigravity" ? 15 * 60_000 : undefined);
+          let timedOut = false;
+          const watchdog = Effect.gen(function* () {
+            const timer = new PromptInactivityDeadline(deadline!, yield* Clock.currentTimeMillis);
+            while (true) {
+              const now = yield* Clock.currentTimeMillis;
+              const activity = prepared.acp.getPromptActivity
+                ? yield* prepared.acp.getPromptActivity
+                : undefined;
+              const paused = Boolean(
+                activity?.paused ||
+                prepared.context.pendingApprovals.size > 0 ||
+                prepared.context.pendingUserInputs.size > 0 ||
+                prepared.context.backgroundTasks.size > 0,
+              );
+              const remaining = timer.remaining(
+                now,
+                activity?.lastProgressAt ?? 0,
+                paused,
+                prepared.context.antigravityTasks.inactivityPauseGeneration,
+              );
+              if (remaining <= 0) {
+                timedOut = true;
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/prompt",
+                  detail: "Antigravity sent nothing for 15 minutes. Send a message to continue.",
+                });
+              }
+              // Sample pauses so their end grants a full inactivity interval.
+              yield* Effect.sleep(Duration.millis(Math.min(remaining, 1_000)));
+            }
+          });
+          const prompt = prepared.acp
             .prompt({
               prompt: prepared.promptParts,
             })
@@ -1532,6 +1578,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ),
               ),
             );
+          const result = yield* (
+            deadline === undefined ? prompt : Effect.raceFirst(prompt, watchdog)
+          ).pipe(
+            Effect.onError(() =>
+              timedOut
+                ? withThreadLock(
+                    input.threadId,
+                    Effect.suspend(() =>
+                      sessions.get(input.threadId) === prepared.context && !prepared.context.stopped
+                        ? stopSessionInternal(
+                            prepared.context,
+                            "Antigravity sent nothing for 15 minutes. F5 stopped the stalled agent. Send a message to continue.",
+                          )
+                        : Effect.void,
+                    ),
+                  ).pipe(Effect.uninterruptible)
+                : Effect.void,
+            ),
+          );
 
           return yield* withThreadLock(
             input.threadId,

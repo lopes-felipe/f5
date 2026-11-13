@@ -1367,6 +1367,17 @@ describe("WebSocket Server", () => {
     expect(tailResponse.result).toEqual(
       expect.objectContaining({
         threadId,
+        thread: expect.objectContaining({
+          id: threadId,
+          projectId,
+          title: "Tail Reconcile Thread",
+          deletedAt: null,
+          archivedAt: null,
+          messages: [],
+          activities: [],
+          checkpoints: [],
+          proposedPlans: [],
+        }),
         messages: [],
         checkpoints: [],
         hasOlderMessages: false,
@@ -1375,6 +1386,12 @@ describe("WebSocket Server", () => {
     );
 
     await vi.waitFor(() => expect(readThreadStarted).toBe(true), { timeout: 1_000 });
+
+    const missingResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadTailDetails, {
+      threadId: asThreadId("missing-route-thread"),
+    });
+    expect(missingResponse.error).toBeUndefined();
+    expect(missingResponse.result).toMatchObject({ thread: null });
   });
 
   it("logs outbound websocket push events in dev mode", async () => {
@@ -1986,6 +2003,40 @@ describe("WebSocket Server", () => {
     });
     expect(renewed.result).toEqual([null]);
     expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it("refuses a rebound hostname when no auth token is set", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    // What a browser sends after attacker.example's DNS answer is switched to 127.0.0.1:
+    // Origin and Host agree, so the same-origin check alone would accept it.
+    const rebound = {
+      Host: `attacker.example:${port}`,
+      Origin: `http://attacker.example:${port}`,
+    };
+
+    await expect(connectWs(port, undefined, 1, rebound)).rejects.toThrow(
+      "WebSocket connection failed",
+    );
+    const status = (path: string, headers: Record<string, string>) =>
+      new Promise<number>((resolve, reject) => {
+        const request = Http.request({ hostname: "127.0.0.1", port, path, headers }, (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+        request.once("error", reject);
+        request.end();
+      });
+    expect(await status("/", rebound)).toBe(403);
+    expect(await status("/api/bootstrap", rebound)).toBe(403);
+    expect(await status("/api/bootstrap", { Host: `localhost:${port}` })).toBe(200);
+
+    const [localWs] = await connectAndAwaitWelcome(port, undefined, {
+      Host: `localhost:${port}`,
+      Origin: `http://localhost:${port}`,
+    });
+    connections.push(localWs);
   });
 
   it("rejects websocket connections without a valid auth token", async () => {

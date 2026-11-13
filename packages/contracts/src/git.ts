@@ -1,5 +1,6 @@
 import { FilesystemPath } from "./baseSchemas";
 import { Option, Schema } from "effect";
+import { GitStatusResult } from "./gitInspectionResults";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
 export * from "./gitInspectionResults";
@@ -174,6 +175,7 @@ export type GitRunStackedActionResult = typeof GitRunStackedActionResult.Type;
 
 export const GitStatusInvalidatedPayload = Schema.Struct({
   cwd: Schema.NullOr(FilesystemPath),
+  status: Schema.optional(GitStatusResult),
 });
 export type GitStatusInvalidatedPayload = typeof GitStatusInvalidatedPayload.Type;
 

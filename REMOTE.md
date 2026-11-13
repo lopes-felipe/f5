@@ -44,6 +44,10 @@ ports, keeping origins separate is up to you.
 - Tokens must be at least 24 bytes. Generate one; don't use a password.
 - Reverse proxies should keep the original `Host` header and set `X-Forwarded-Proto: https`, so F5
   marks the session cookie `Secure`.
+- Without `--auth-token`, F5 answers only requests addressed to `localhost`, a `.localhost` name or
+  a loopback address, and rejects any other `Host` with 403. This stops a web page from reaching
+  the server by re-pointing its own hostname at your machine (DNS rebinding). A proxy or tunnel
+  that presents another hostname needs a token.
 
 <details>
 <summary>Details and limits</summary>

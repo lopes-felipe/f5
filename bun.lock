@@ -65,6 +65,7 @@
         "croner": "10.0.1",
         "cronstrue": "3.37.0",
         "cross-spawn": "7.0.6",
+        "diff": "8.0.3",
         "effect": "catalog:",
         "node-pty": "^1.1.0",
         "open": "^10.1.0",

@@ -80,6 +80,7 @@ export interface NewProjectScriptInput {
   icon: ProjectScriptIcon;
   runOnWorktreeCreate: boolean;
   runOnWorktreeSettle?: boolean;
+  stopOnSettle?: boolean;
   /** False when the agent waits for the setup script to finish. */
   async: boolean;
   keybinding: string | null;
@@ -179,6 +180,7 @@ export default function ProjectScriptDialog({
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [runOnWorktreeCreate, setRunOnWorktreeCreate] = useState(false);
   const [runOnWorktreeSettle, setRunOnWorktreeSettle] = useState(false);
+  const [stopOnSettle, setStopOnSettle] = useState(false);
   const [agentWaits, setAgentWaits] = useState(false);
   const [keybinding, setKeybinding] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -195,6 +197,7 @@ export default function ProjectScriptDialog({
       setIconPickerOpen(false);
       setRunOnWorktreeCreate(editingScript?.runOnWorktreeCreate ?? false);
       setRunOnWorktreeSettle(editingScript?.runOnWorktreeSettle ?? false);
+      setStopOnSettle(editingScript?.stopOnSettle ?? false);
       setAgentWaits(editingScript?.async === false);
       setKeybinding(
         editingScript
@@ -311,6 +314,7 @@ export default function ProjectScriptDialog({
           icon,
           runOnWorktreeCreate,
           ...(runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
+          stopOnSettle,
           async: !agentWaits,
           keybinding: keybindingRule?.key ?? null,
         } satisfies NewProjectScriptInput;
@@ -338,6 +342,7 @@ export default function ProjectScriptDialog({
       pendingScriptCommand,
       runOnWorktreeCreate,
       runOnWorktreeSettle,
+      stopOnSettle,
       agentWaits,
     ],
   );
@@ -466,6 +471,13 @@ export default function ProjectScriptDialog({
                   aria-label="Run on worktree settlement"
                   checked={runOnWorktreeSettle}
                   onCheckedChange={setRunOnWorktreeSettle}
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm">
+                <span>Stop this action when the thread settles</span>
+                <Switch
+                  checked={stopOnSettle}
+                  onCheckedChange={(checked) => setStopOnSettle(Boolean(checked))}
                 />
               </label>
               {runOnWorktreeCreate ? (

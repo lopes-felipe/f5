@@ -27,6 +27,9 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
   }
 
   let clearedCount = 0;
+  // Counted, not listed: a long-lived profile keeps thousands of these and every startup
+  // repeats them. The per-thread lines stay available at Debug.
+  let preservedCount = 0;
   for (const thread of candidates) {
     const worktreePath = thread.worktreePath;
     if (worktreePath === null) {
@@ -86,11 +89,13 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
           );
         }
       }
-      if (!probe.exists || readiness === null || readiness._tag === "Failure")
-        yield* Effect.logInfo("preserving recorded worktree for recovery", {
+      if (!probe.exists || readiness === null || readiness._tag === "Failure") {
+        preservedCount += 1;
+        yield* Effect.logDebug("preserving recorded worktree for recovery", {
           threadId: thread.id,
           worktreePath,
         });
+      }
       continue;
     }
 
@@ -125,6 +130,12 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
     );
   }
 
+  if (preservedCount > 0) {
+    yield* Effect.logInfo("preserving recorded worktrees for recovery", {
+      preservedCount,
+      scannedCount: candidates.length,
+    });
+  }
   if (clearedCount > 0) {
     yield* Effect.logInfo("stale worktree cleanup complete", {
       clearedCount,

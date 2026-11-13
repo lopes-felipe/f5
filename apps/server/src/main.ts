@@ -49,7 +49,7 @@ import {
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { Server } from "./wsServer";
 import { ServerLoggerLive } from "./serverLogger";
-import { MIN_REMOTE_AUTH_TOKEN_BYTES } from "./serverAuth";
+import { MIN_REMOTE_AUTH_TOKEN_BYTES, SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
@@ -141,7 +141,7 @@ const CliEnvConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
-  authToken: Config.string("T3CODE_AUTH_TOKEN").pipe(
+  authToken: Config.string(SERVER_AUTH_TOKEN_ENV).pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
@@ -290,6 +290,10 @@ const ServerConfigLive = (input: CliInput) => {
       const derivedPaths = yield* deriveServerPaths({ baseDir, defaultStateDir, profile });
       const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
       const authToken = trimToUndefined(Option.getOrUndefined(input.authToken) ?? env.authToken);
+      // ServerConfig holds the token from here on. Many spawn sites pass `process.env` straight
+      // through (Git and its hooks, setup scripts, maintenance workers), so drop the variable
+      // from this process instead of relying on each of them to filter it.
+      delete process.env[SERVER_AUTH_TOKEN_ENV];
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
         env.autoBootstrapProjectFromCwd ?? mode === "web",

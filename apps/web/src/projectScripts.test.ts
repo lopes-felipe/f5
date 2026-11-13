@@ -5,9 +5,19 @@ import {
   nextProjectScriptId,
   primaryProjectScript,
   projectScriptIdFromCommand,
+  projectScriptTerminalOptions,
 } from "./projectScripts";
 
 describe("projectScripts helpers", () => {
+  it("isolates opted-in actions and preserves their launch environment", () => {
+    expect(
+      projectScriptTerminalOptions(
+        { stopOnSettle: true },
+        { preferNewTerminal: false, cwd: "/repo", env: { PORT: "3000" } },
+      ),
+    ).toEqual({ stopOnSettle: true, preferNewTerminal: true, cwd: "/repo", env: { PORT: "3000" } });
+    expect(projectScriptTerminalOptions({})).toEqual({ stopOnSettle: false });
+  });
   it("builds and parses script run commands", () => {
     const command = commandForProjectScript("lint");
     expect(command).toBe("script.lint.run");

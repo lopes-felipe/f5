@@ -1,3 +1,4 @@
+import { pendingActivityWindow } from "@t3tools/shared/pendingActivityWindow";
 import {
   reconcileNativeHistoryProjection,
   retainNativeTurnRows,
@@ -1596,12 +1597,13 @@ export function projectEvent(
             return nextBase;
           }
 
-          const activities = [
-            ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-            payload.activity,
-          ]
-            .toSorted(compareThreadActivities)
-            .slice(-MAX_THREAD_ACTIVITIES);
+          const activities = pendingActivityWindow(
+            [
+              ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
+              payload.activity,
+            ].toSorted(compareThreadActivities),
+            MAX_THREAD_ACTIVITIES,
+          );
           // The live reasoning status is upserted often; it must not reorder
           // threads or mark them unread.
           const touchesRecency = payload.activity.kind !== REASONING_STATUS_ACTIVITY_KIND;
