@@ -332,11 +332,11 @@ function buildFixture(snapshot: OrchestrationReadModel = createSnapshot()): Test
   return {
     snapshot,
     serverConfig: createBaseServerConfig(),
+    // Tests select their route explicitly. The shared socket replays this
+    // welcome across mounts, so a default bootstrap target would override Home.
     welcome: {
       cwd: "/repo/project",
       projectName: "Project",
-      bootstrapProjectId: PROJECT_ID,
-      bootstrapThreadId: THREAD_ID,
     },
   };
 }
@@ -427,11 +427,6 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       oldestLoadedCheckpointTurnCount: thread?.checkpoints[0]?.checkpointTurnCount ?? null,
       oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
-      // As the server answers: the thread's metadata, or null when it has no such thread.
-      // The thread route waits for one of the two before it leaves an unlisted thread.
-      thread: thread
-        ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
-        : null,
     };
   }
   if (tag === ORCHESTRATION_WS_METHODS.getThreadHistoryPage) {
@@ -3373,7 +3368,7 @@ describe("Thread sidebar", () => {
     const snoozedTitle = "Snoozed implementation";
     const mounted = await mountApp({
       width: 1_400,
-      initialEntries: ["/"],
+      initialEntries: [`/${THREAD_ID}`],
       configureFixture: (nextFixture) => {
         nextFixture.snapshot = createSnapshot([
           createSnapshotThread({
