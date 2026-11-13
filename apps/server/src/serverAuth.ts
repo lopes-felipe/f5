@@ -13,6 +13,8 @@ const MAX_AUTH_FAILURES_PER_SOURCE = 5;
 const MAX_AUTH_FAILURES_GLOBAL = 100;
 
 export const MIN_REMOTE_AUTH_TOKEN_BYTES = 24;
+/** Environment variable that carries the backend's WebSocket/HTTP credential into the server. */
+export const SERVER_AUTH_TOKEN_ENV = "T3CODE_AUTH_TOKEN";
 
 interface SessionRecord {
   readonly expiresAt: number;
@@ -44,7 +46,20 @@ export interface ServerAuth {
   readonly isHttpRequestAuthenticated: (request: Http.IncomingMessage) => boolean;
   readonly isWebSocketRequestAuthenticated: (request: Http.IncomingMessage, url: URL) => boolean;
   readonly isWebSocketOriginAllowed: (request: Http.IncomingMessage) => boolean;
+  /**
+   * False when a token-less server is addressed under a name that is not loopback.
+   *
+   * Without a token the origin check is the only barrier, and it compares the Origin with the
+   * request's own Host. A page on `attacker.example:<port>` whose DNS answer is switched to
+   * 127.0.0.1 (DNS rebinding) sends matching values for both, so the Host itself must be one a
+   * loopback listener can legitimately be reached under. A token makes the name irrelevant.
+   */
+  readonly isRequestHostAllowed: (request: Http.IncomingMessage) => boolean;
 }
+
+export const REQUEST_HOST_NOT_ALLOWED_MESSAGE =
+  "This F5 server has no auth token, so it only answers requests addressed to localhost. " +
+  "Start it with --auth-token to reach it under another name.";
 
 function parseCookies(header: string | undefined): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
@@ -169,6 +184,20 @@ function sourceAddress(request: Http.IncomingMessage): string {
 function isLoopbackAddress(value: string): boolean {
   const normalized = value.replace(/^::ffff:/u, "");
   return normalized === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(normalized);
+}
+
+/** The name in a Host header, without port, brackets or trailing dot; null when malformed. */
+function hostHeaderName(value: string): string | null {
+  const host = value.trim().toLowerCase();
+  const bracketed = /^\[([0-9a-f:.]+)\](?::\d{1,5})?$/u.exec(host);
+  if (bracketed) return bracketed[1] ?? null;
+  const name = /^([a-z0-9.-]+)(?::\d{1,5})?$/u.exec(host)?.[1]?.replace(/\.$/u, "");
+  return name ? name : null;
+}
+
+/** Names that always resolve to this machine: loopback addresses, `localhost` and its subdomains. */
+function isLoopbackName(name: string): boolean {
+  return name === "localhost" || name.endsWith(".localhost") || isLoopbackAddress(name);
 }
 
 function bearerToken(request: Http.IncomingMessage): string {
@@ -414,12 +443,22 @@ export function makeServerAuth(
     );
   };
 
+  const isRequestHostAllowed: ServerAuth["isRequestHostAllowed"] = (request) => {
+    if (enabled) return true;
+    // Only browsers can be rebound, and they always send Host.
+    const header = request.headers.host;
+    if (header === undefined) return true;
+    const name = hostHeaderName(header);
+    return name !== null && isLoopbackName(name);
+  };
+
   return {
     enabled,
     handleHttpRequest,
     isHttpRequestAuthenticated: isAuthenticated,
     isWebSocketRequestAuthenticated,
     isWebSocketOriginAllowed,
+    isRequestHostAllowed,
   };
 }
 

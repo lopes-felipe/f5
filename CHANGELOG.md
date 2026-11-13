@@ -22,6 +22,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Claude-launched Electron apps open normally, while configured JavaScript Claude entry points still run in the desktop app. Claude gateway and OpenCode usage-limit resets survive turn completion. OpenCode commands with nonzero exits show as failed, ACP retains final messages without a newline, and Muse uses canonical workspace paths and bounded, redacted failure text.
 
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+- A server started without an auth token answers only requests addressed to `localhost`, a `.localhost` name or a loopback address, so a web page whose hostname is re-pointed at this machine (DNS rebinding) can no longer reach it. A proxy or tunnel that presents another hostname needs `--auth-token`.
+- Agents, Git hooks, setup scripts and other processes F5 starts no longer inherit the backend's own auth token (`T3CODE_AUTH_TOKEN`).
+- A running turn stores its context-size estimate when it moves by 1% of the context window (at least 2,000 tokens) and when the turn settles, not after every model step. Long turns add far fewer events to the profile database.
+- The server log counts recorded worktrees kept for recovery once per start, and Upstream reports a failed pull-request evidence read once per pass, not once per thread.
 
 ## [0.1.8] - 2026-11-12
 
