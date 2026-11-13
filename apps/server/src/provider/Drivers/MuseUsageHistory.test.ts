@@ -1,13 +1,18 @@
 import { assert, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { UsageTurnFact, MuseSettings } from "@t3tools/contracts";
+import { UsageTurnFact, MuseSettings, EventId } from "@t3tools/contracts";
+import Migration0124 from "../../persistence/Migrations/124_ProviderTerminalRetry.ts";
+import { ProviderTerminalEventRepository } from "../../persistence/Services/ProviderTerminalEvents.ts";
+import { ProviderTerminalEventRepositoryLive } from "../../persistence/Layers/ProviderTerminalEvents.ts";
+import { Layer } from "effect";
 import { vi } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TestClock from "effect/testing/TestClock";
 import * as MspTransport from "../msp/MspTransport.ts";
 import * as MspRuntime from "../msp/MspSessionRuntime.ts";
 import { realpath } from "node:fs/promises";
+import path from "node:path";
 import { makeMuseUsageHistory } from "./MuseUsageHistory.ts";
 import * as SqliteClient from "../../persistence/NodeSqliteClient.ts";
 import Migration0001 from "../../persistence/Migrations/001_OrchestrationEvents.ts";
@@ -16,10 +21,10 @@ import Migration0005 from "../../persistence/Migrations/005_Projections.ts";
 import Migration0068 from "../../persistence/Migrations/068_UsageFacts.ts";
 import Migration0073 from "../../persistence/Migrations/073_UsageFactRecordedAt.ts";
 import Migration0074 from "../../persistence/Migrations/074_ProviderTerminalEvents.ts";
-import Migration0159 from "../../persistence/Migrations/159_UsageNativeIdentity.ts";
+import Migration0161 from "../../persistence/Migrations/161_UsageNativeIdentity.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
-import { museRecordedIntervals } from "./MuseUsageHistory.ts";
+import { museRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
 
 const fact = Schema.decodeUnknownSync(UsageTurnFact)({
   turnId: "native-turn",
@@ -46,7 +51,7 @@ const migrate = Effect.gen(function* () {
   yield* Migration0068;
   yield* Migration0073;
   yield* Migration0074;
-  yield* Migration0159;
+  yield* Migration0161;
 });
 
 it.effect("discovers the configured native home and closes without opening a session", () =>
@@ -79,7 +84,15 @@ it.effect("discovers the configured native home and closes without opening a ses
       XDG_DATA_HOME: "/configured/data",
       MUSE_NO_AUTO_UPDATE: "1",
     });
-    assert.include(transport.mock.calls[0]?.[0].binaryPath, "/bin/custom-muse");
+    assert.include(transport.mock.calls[0]?.[0].binaryPath, path.join("bin", "custom-muse"));
+    const alias = yield* makeMuseUsageHistory(
+      Schema.decodeUnknownSync(MuseSettings)({}),
+      { XDG_DATA_HOME: "/configured/data" },
+      true,
+    );
+    yield* alias.refresh;
+    while ((yield* alias.getSnapshot).status === "refreshing") yield* Effect.yieldNow;
+    assert.strictEqual((yield* alias.getSnapshot).records, snapshot.records);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -115,6 +128,45 @@ it.effect("closes discovery transport when the Muse handshake never resolves", (
 
 it.layer(SqliteClient.layerMemory())("Muse durable history identity", (it) => {
   it.effect(
+    "recovers a delayed turn's persisted start and ignores unknown bounds or absent token coverage",
+    () =>
+      Effect.gen(function* () {
+        yield* migrate;
+        const sql = yield* SqlClient.SqlClient;
+        const repository = yield* UsageFactRepository;
+        yield* sql`INSERT INTO projection_turns
+        (thread_id, turn_id, state, requested_at, started_at, checkpoint_files_json)
+        VALUES ('thread', 'delayed', 'completed', '2026-08-01T11:59:00.000Z', '2026-08-01T12:00:00.000Z', '[]')`;
+        yield* repository.record({
+          ...fact,
+          turnId: Schema.decodeUnknownSync(UsageTurnFact)({ ...fact, turnId: "delayed" }).turnId,
+          nativeSessionId: "delayed-session",
+        });
+        assert.equal(
+          (yield* museRecordedIntervals(sql)).find((row) => row.sessionId === "delayed-session")
+            ?.startedAt,
+          "2026-08-01T12:00:00.000Z",
+        );
+        yield* repository.record({ ...fact, nativeSessionId: "unknown-bound" });
+        yield* repository.record({
+          ...fact,
+          turnId: Schema.decodeUnknownSync(UsageTurnFact)({ ...fact, turnId: "no-usage" }).turnId,
+          nativeSessionId: "no-usage",
+          startedAt: "2026-08-01T12:00:00.000Z",
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null,
+        });
+        assert.isFalse(
+          (yield* museRecordedIntervals(sql)).some((row) =>
+            ["unknown-bound", "no-usage"].includes(row.sessionId),
+          ),
+        );
+        yield* sql`DELETE FROM projection_turn_usage_facts`;
+        yield* sql`DELETE FROM projection_turns`;
+      }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+  it.effect(
     "retains identity after session replacement, runtime deletion, turn rollback and fact replay",
     () =>
       Effect.gen(function* () {
@@ -148,14 +200,22 @@ it.layer(SqliteClient.layerMemory())("Muse receipt migration", (it) => {
         const sql = yield* SqlClient.SqlClient;
         const repository = yield* UsageFactRepository;
         yield* repository.record(fact);
-        yield* sql`INSERT INTO provider_terminal_events
-        (event_id, thread_id, turn_id, event_type, event_json, received_at)
-        VALUES ('receipt', 'thread', 'native-turn', 'turn.completed',
-          '{"resumeCursor":{"mspSessionId":"old-session"}}', '2026-08-01')`;
+        yield* Migration0124;
+        const receipts = yield* ProviderTerminalEventRepository;
+        yield* receipts.record({
+          type: "turn.completed",
+          eventId: EventId.makeUnsafe("receipt"),
+          provider: "muse",
+          threadId: fact.threadId,
+          turnId: fact.turnId,
+          createdAt: fact.completedAt,
+          resumeCursor: { mspSessionId: "old-session" },
+          payload: { state: "completed", usage: { inputTokens: 100, outputTokens: 20 } },
+        });
         yield* sql`INSERT INTO projection_turns
         (thread_id, turn_id, state, requested_at, started_at, checkpoint_files_json)
         VALUES ('thread', 'native-turn', 'completed', '2026-08-01T11:59:00.000Z', '2026-08-01T12:00:00.000Z', '[]')`;
-        yield* Migration0159;
+        yield* Migration0161;
         yield* sql`DELETE FROM projection_turns`;
         yield* sql`DELETE FROM provider_terminal_events`;
         assert.deepEqual(yield* museRecordedIntervals(sql), [
@@ -165,6 +225,10 @@ it.layer(SqliteClient.layerMemory())("Muse receipt migration", (it) => {
             endedAt: fact.completedAt,
           },
         ]);
-      }).pipe(Effect.provide(UsageFactRepositoryLive)),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(UsageFactRepositoryLive, ProviderTerminalEventRepositoryLive),
+        ),
+      ),
   );
 });

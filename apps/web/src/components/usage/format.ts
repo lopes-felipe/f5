@@ -194,8 +194,7 @@ export function tokenDelta(summary: UsageSummary): string | null {
 
 export function costDelta(summary: UsageSummary): string | null {
   const previous = summary.previousMetrics;
-  if (!previous || summary.metrics.pricedTurnCount === 0 || previous.pricedTurnCount === 0)
-    return null;
+  if (!previous || isCostUnknown(summary.metrics) || isCostUnknown(previous)) return null;
   return formatDelta(totalCost(summary.metrics), totalCost(previous), rangeLabel(summary.range));
 }
 

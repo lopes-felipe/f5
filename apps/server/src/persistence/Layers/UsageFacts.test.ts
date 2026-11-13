@@ -8,7 +8,7 @@ import Migration0005 from "../Migrations/005_Projections.ts";
 import Migration0068 from "../Migrations/068_UsageFacts.ts";
 import Migration0071 from "../Migrations/071_UsageEventTimeIndex.ts";
 import Migration0073 from "../Migrations/073_UsageFactRecordedAt.ts";
-import Migration0159 from "../Migrations/159_UsageNativeIdentity.ts";
+import Migration0161 from "../Migrations/161_UsageNativeIdentity.ts";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import { UsageFactRepository } from "../Services/UsageFacts.ts";
 import { makeUsageBucketStatements, UsageFactRepositoryLive } from "./UsageFacts.ts";
@@ -19,7 +19,7 @@ const migrate = Effect.gen(function* () {
   yield* Migration0068;
   yield* Migration0071;
   yield* Migration0073;
-  yield* Migration0159;
+  yield* Migration0161;
 });
 
 const insertLegacyCost = (input: {

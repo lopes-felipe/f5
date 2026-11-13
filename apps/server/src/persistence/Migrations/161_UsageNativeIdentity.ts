@@ -10,6 +10,10 @@ export default Effect.gen(function* () {
     yield* sql`ALTER TABLE projection_turn_usage_facts ADD COLUMN native_session_id TEXT`;
   if (!columns.some((column) => column.name === "started_at"))
     yield* sql`ALTER TABLE projection_turn_usage_facts ADD COLUMN started_at TEXT`;
+  yield* sql`CREATE INDEX IF NOT EXISTS projection_usage_native_intervals
+    ON projection_turn_usage_facts(native_session_id, started_at, completed_at)
+    WHERE provider_name = 'muse' AND native_session_id IS NOT NULL
+      AND started_at IS NOT NULL AND total_tokens IS NOT NULL`;
   // Terminal receipts retain the original session cursor even after session replacement.
   // Do not infer identity from today's provider_session_runtime row.
   const receipts =

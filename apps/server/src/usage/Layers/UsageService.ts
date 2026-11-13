@@ -21,7 +21,8 @@ import { buildQuotaHistory, QUOTA_HISTORY_LOOKBACK_MS } from "../quotaHistory.ts
 import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 import type { AccountUsageErrorCode } from "@t3tools/contracts";
-import { museHistoryBuckets } from "../museHistory.ts";
+import { externalMuseHistory, museHistoryBuckets } from "../museHistory.ts";
+import { recordedMusePredicate } from "../museRecordedIntervals.ts";
 
 const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
   unsupported: "This Claude version cannot analyze usage.",
@@ -216,18 +217,32 @@ const make = Effect.gen(function* () {
         yield* Effect.forEach(capabilities, (capability) => capability.refresh);
       const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
       const sources = new Set<string>();
-      const nativeHistory = snapshots.flatMap((snapshot) => {
-        if (!snapshot.source || sources.has(snapshot.source)) return [];
-        sources.add(snapshot.source);
-        return snapshot.records;
-      });
+      const cachedHistory = snapshots
+        .toSorted((a, b) => (b.refreshedAt ?? 0) - (a.refreshedAt ?? 0))
+        .flatMap((snapshot) => {
+          if (!snapshot.source || sources.has(snapshot.source)) return [];
+          sources.add(snapshot.source);
+          return snapshot.records;
+        });
+      // Reconcile every summary against fresh facts. A turn may have completed
+      // since this snapshot was scanned, including while later refreshes fail.
+      const nativeHistory = externalMuseHistory(
+        cachedHistory,
+        recordedMusePredicate(
+          cachedHistory.length ? yield* repository.readMuseRecordedIntervals : [],
+        ),
+      );
       const nativeHistoryStatus = snapshots.some((snapshot) => snapshot.status === "refreshing")
         ? ("refreshing" as const)
         : snapshots.some((snapshot) => snapshot.status === "error")
           ? ("error" as const)
-          : snapshots.length
+          : snapshots.some((snapshot) => snapshot.status === "ready")
             ? ("ready" as const)
             : ("idle" as const);
+      const nativeHistoryError =
+        nativeHistoryStatus === "error"
+          ? snapshots.find((snapshot) => snapshot.errorMessage)?.errorMessage
+          : undefined;
       const readBuckets: typeof repository.summarizeBuckets = (input) =>
         repository
           .summarizeBuckets(input)
@@ -253,11 +268,9 @@ const make = Effect.gen(function* () {
               ? { hiddenProviders: request.hiddenProviders }
               : {}),
           })),
-          ...nativeHistory
-            .filter(
-              (record) => record.timestamp >= plan.startedAt && record.timestamp < plan.endedAt,
-            )
-            .map((record) => ({ ...record.row, threadId: null, projectId: null })),
+          ...museHistoryBuckets(nativeHistory, [
+            { key: "scope", startAt: plan.startedAt, endAt: plan.endedAt },
+          ]).map((row) => ({ ...row, threadId: null, projectId: null })),
         ],
         modelAliases,
       );
@@ -325,6 +338,7 @@ const make = Effect.gen(function* () {
           previousBuckets,
         }),
         nativeHistoryStatus,
+        ...(nativeHistoryError ? { nativeHistoryError } : {}),
       };
     });
 

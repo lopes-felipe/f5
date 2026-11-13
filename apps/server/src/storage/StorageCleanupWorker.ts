@@ -56,7 +56,11 @@ import {
   resolveCodexLaunchHomes,
 } from "./codexMarketplaceStaging.ts";
 import { DiskSpaceMonitor } from "./DiskSpaceMonitor.ts";
-import { compactThreadEvents } from "./eventCompaction.ts";
+import {
+  compactThreadEvents,
+  compactWorkflowEvents,
+  type WorkflowEventCompactionResult,
+} from "./eventCompaction.ts";
 import { AUTO_CONVERT_SKIP_PREFIX, StorageMaintenance } from "./StorageMaintenance.ts";
 
 /**
@@ -880,9 +884,56 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
 
   const compactDatabase = (operationId: string) =>
     Effect.gen(function* () {
+      // Both compactions hold the server's one SQLite connection, so they share one budget.
+      // Workflows go first, with at most a quarter of it: they are cheap, and after an upgrade
+      // every thread is revisited, which can use the whole budget for several passes.
+      const startedAtMs = Date.now();
+      const workflows = yield* compactWorkflowEvents({
+        nowMs: startedAtMs,
+        maxDurationMs: EVENT_COMPACTION_BUDGET_MS / 4,
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workflow event compaction failed", { cause }).pipe(
+            Effect.as({
+              eventsRemoved: 0,
+              bytesRemoved: 0,
+              complete: false,
+              futureDatedEvent: null,
+            } satisfies WorkflowEventCompactionResult),
+          ),
+        ),
+      );
+      if (workflows.eventsRemoved > 0) {
+        yield* storageMaintenance.noteStorageMutated;
+        yield* recordStorageAutomationAudit({
+          operationId,
+          job: "event-compaction",
+          target: "planning workflow events",
+          result: "removed",
+          reason: `removed ${workflows.eventsRemoved} superseded workflow update(s), about ${workflows.bytesRemoved} bytes`,
+        });
+      }
+      if (workflows.futureDatedEvent !== null) {
+        // Nothing is lost, but nothing after this event is compacted until its time has passed.
+        const { sequence, occurredAt } = workflows.futureDatedEvent;
+        yield* Effect.logWarning("workflow event compaction is waiting on a future-dated event", {
+          sequence,
+          occurredAt,
+        });
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "event-compaction",
+            target: "planning workflow events",
+            result: "skipped",
+            reason: `event ${sequence} is dated ${occurredAt}, in the future; workflow updates after it wait until an hour past that time`,
+          },
+          { skipIfRepeated: true },
+        );
+      }
       const compaction = yield* compactThreadEvents({
         nowMs: Date.now(),
-        maxDurationMs: EVENT_COMPACTION_BUDGET_MS,
+        maxDurationMs: Math.max(0, EVENT_COMPACTION_BUDGET_MS - (Date.now() - startedAtMs)),
       });
       if (
         compaction.eventsRemoved > 0 ||
@@ -896,7 +947,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
           job: "event-compaction",
           target: "orchestration events",
           result: "removed",
-          reason: `compacted ${compaction.commandOutputsCompacted} command output(s) and ${compaction.messagesCompacted} message(s) in ${compaction.threadsCompacted} thread(s); removed ${compaction.eventsRemoved} event(s) and ${compaction.receiptsRemoved} receipt(s), about ${compaction.bytesRemoved} bytes`,
+          reason: `compacted ${compaction.commandOutputsCompacted} command output(s), ${compaction.messagesCompacted} message(s) and ${compaction.sessionUpdatesCompacted} token-estimate update(s) in ${compaction.threadsCompacted} thread(s); removed ${compaction.eventsRemoved} event(s) and ${compaction.receiptsRemoved} receipt(s), about ${compaction.bytesRemoved} bytes`,
         });
       }
       if (compaction.threadsFailed > 0 || compaction.groupsSkipped > 0) {

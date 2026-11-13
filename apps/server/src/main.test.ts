@@ -544,6 +544,28 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
+  it.effect("reads trusted proxies from the flag or the environment and rejects bad ones", () =>
+    Effect.gen(function* () {
+      yield* runCli(["--trusted-proxy", "10.0.0.5, 172.16.0.0/12"], {
+        T3CODE_NO_BROWSER: "true",
+        F5_TRUSTED_PROXIES: "192.0.2.1",
+      });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, ["10.0.0.5", "172.16.0.0/12"]);
+
+      yield* runCli([], { T3CODE_NO_BROWSER: "true", F5_TRUSTED_PROXIES: "192.0.2.1" });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, ["192.0.2.1"]);
+
+      yield* runCli([], { T3CODE_NO_BROWSER: "true" });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, []);
+      assert.equal(start.mock.calls.length, 3);
+
+      yield* runCli(["--trusted-proxy", "proxy.example"], { T3CODE_NO_BROWSER: "true" }).pipe(
+        Effect.catch(() => Effect.void),
+      );
+      assert.equal(start.mock.calls.length, 3);
+    }),
+  );
+
   it.effect("supports CLI and env for bootstrap/log websocket toggles", () =>
     Effect.gen(function* () {
       yield* runCli(["--auto-bootstrap-project-from-cwd"], {

@@ -488,6 +488,7 @@ describe("UsageDashboardView", () => {
             previousMetrics: metrics({
               totalTokens: 1_000,
               pricedTurnCount: 0,
+              providerReportedCostUsd: null,
               reporting: { ...metrics().reporting!, totalTokenTurnCount: 1 },
             }),
           })}

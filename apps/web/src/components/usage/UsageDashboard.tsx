@@ -605,8 +605,8 @@ export function UsageDashboardView(props: {
       ) : null}
       {summary.nativeHistoryStatus === "error" ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Muse Code history could not refresh. Previously loaded history is retained; the next
-          refresh will retry.
+          {summary.nativeHistoryError ?? "Muse Code history could not refresh."} Previously loaded
+          history is retained. Failed refreshes retry with increasing backoff, up to ten minutes.
         </p>
       ) : null}
       {summary.metrics.nativeInferenceCount ? (

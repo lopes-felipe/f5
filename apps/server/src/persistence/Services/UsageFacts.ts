@@ -87,6 +87,10 @@ export interface UsageScopeTitles {
 }
 
 export interface UsageFactRepositoryShape {
+  readonly readMuseRecordedIntervals: Effect.Effect<
+    ReadonlyArray<import("../../usage/museRecordedIntervals.ts").MuseRecordedInterval>,
+    ProjectionRepositoryError
+  >;
   readonly record: (fact: UsageTurnFact) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly readCoverageStartedAt: Effect.Effect<IsoDateTime, ProjectionRepositoryError>;
   readonly readUsageMetadata: Effect.Effect<UsageMetadata, ProjectionRepositoryError>;

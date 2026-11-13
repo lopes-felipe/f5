@@ -90,7 +90,7 @@ it.effect("retains the last successful scan on failure and reuses successful dis
     const failed = yield* capability.getSnapshot;
     assert.equal(failed.status, "error");
     assert.strictEqual(failed.records, first.records);
-    yield* TestClock.adjust("30 seconds");
+    yield* TestClock.adjust("60 seconds");
     yield* capability.refresh;
     yield* settle(capability);
     assert.equal((yield* capability.getSnapshot).status, "ready");
@@ -117,5 +117,39 @@ it.effect("does not discover or scan disabled instances", () =>
     yield* capability.refresh;
     assert.equal((yield* capability.getSnapshot).status, "idle");
     assert.equal(calls, 0);
+  }),
+);
+
+it.effect("backs off repeated discovery failures and exposes a safe actionable reason", () =>
+  Effect.gen(function* () {
+    let attempts = 0;
+    const capability = yield* makeNativeHistoryCapability({
+      enabled: true,
+      discover: Effect.suspend(() => {
+        attempts++;
+        return Effect.fail(
+          Object.assign(new Error("private provider diagnostic"), { code: "EACCES" }),
+        );
+      }),
+      scan: () => Effect.succeed([]),
+    });
+    yield* capability.refresh;
+    yield* settle(capability);
+    assert.include((yield* capability.getSnapshot).errorMessage, "discovery failed");
+    assert.include((yield* capability.getSnapshot).errorMessage, "permission denied");
+    assert.notInclude((yield* capability.getSnapshot).errorMessage, "private provider diagnostic");
+    yield* capability.refresh;
+    assert.equal(attempts, 1);
+    yield* TestClock.adjust("30 seconds");
+    yield* capability.refresh;
+    yield* settle(capability);
+    assert.equal(attempts, 2);
+    yield* TestClock.adjust("30 seconds");
+    yield* capability.refresh;
+    assert.equal(attempts, 2);
+    yield* TestClock.adjust("30 seconds");
+    yield* capability.refresh;
+    yield* settle(capability);
+    assert.equal(attempts, 3);
   }),
 );

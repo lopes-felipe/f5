@@ -5,6 +5,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
 
 import { toPersistenceSqlError } from "../Errors.ts";
+import { museRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
 import {
   UsageFactRepository,
   type BucketUsageSummaryRow,
@@ -239,7 +240,17 @@ const make = Effect.gen(function* () {
   });
 
   const record: UsageFactRepositoryShape["record"] = (fact) =>
-    recordQuery(fact).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
+    Effect.gen(function* () {
+      if (fact.nativeSessionId && !fact.startedAt) {
+        const turns = yield* sql<{ startedAt: string }>`
+          SELECT COALESCE(started_at, requested_at) AS "startedAt" FROM projection_turns
+          WHERE thread_id = ${fact.threadId} AND turn_id = ${fact.turnId} LIMIT 1
+        `;
+        const startedAt = turns[0]?.startedAt;
+        if (startedAt) return yield* recordQuery({ ...fact, startedAt });
+      }
+      return yield* recordQuery(fact);
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
 
   const readUsageMetadata: UsageFactRepositoryShape["readUsageMetadata"] = sql<{
     readonly coverageStartedAt: string;
@@ -368,6 +379,9 @@ const make = Effect.gen(function* () {
 
   return {
     record,
+    readMuseRecordedIntervals: museRecordedIntervals(sql).pipe(
+      Effect.mapError(toPersistenceSqlError("UsageFactRepository.readMuseRecordedIntervals")),
+    ),
     readCoverageStartedAt,
     readUsageMetadata,
     summarizeBuckets,

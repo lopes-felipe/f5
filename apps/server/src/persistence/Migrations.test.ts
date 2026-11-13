@@ -135,7 +135,17 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 156, name: "UpstreamReclassifyRuns" },
       { migration_id: 157, name: "ProjectionThreadActivitiesWorktreeSetupIndex" },
       { migration_id: 158, name: "ProviderTurnDeliveryPendingIndex" },
-      { migration_id: 159, name: "UsageNativeIdentity" },
+      { migration_id: 159, name: "EventCompactionKeepLast" },
+      { migration_id: 160, name: "DropUnreadEventIndexes" },
+      { migration_id: 161, name: "UsageNativeIdentity" },
+    ]);
+    // The event log keeps the indexes its readers use: stream, sequence and type.
+    const eventIndexes = yield* sql<{ name: string }>`PRAGMA index_list(orchestration_events)`;
+    expect(eventIndexes.map((index) => index.name).toSorted()).toEqual([
+      "idx_orch_events_stream_sequence",
+      "idx_orch_events_stream_version",
+      "idx_orch_events_type_occurred_at",
+      "sqlite_autoindex_orchestration_events_1",
     ]);
     const activityIndexes = yield* sql<{
       name: string;

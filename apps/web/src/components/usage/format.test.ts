@@ -179,7 +179,31 @@ describe("deltas and cache rate", () => {
         ),
       ),
     ).toBeNull();
-    expect(costDelta(summary(current, { ...previous, pricedTurnCount: 0 }))).toBeNull();
+    expect(
+      costDelta(
+        summary(current, { ...previous, providerReportedCostUsd: null, pricedTurnCount: 0 }),
+      ),
+    ).toBeNull();
+  });
+
+  it("compares native-only estimated costs including a confirmed zero", () => {
+    const native = metrics({
+      turnCount: 0,
+      pricedTurnCount: 0,
+      nativeInferenceCount: 2,
+      providerReportedCostUsd: null,
+      estimatedCostUsd: 2,
+    });
+    expect(costDelta(summary(native, { ...native, estimatedCostUsd: 1 }))).toBe(
+      "+100% vs previous 7 days",
+    );
+    expect(costDelta(summary({ ...native, estimatedCostUsd: 0 }, native))).toBe(
+      "−100% vs previous 7 days",
+    );
+    expect(costDelta(summary(native, { ...native, estimatedCostUsd: 0 }))).toBe(
+      "New vs previous 7 days",
+    );
+    expect(costDelta(summary(native, { ...native, estimatedCostUsd: null }))).toBeNull();
   });
 
   it("computes cache rate over known composition with a coverage qualifier", () => {
