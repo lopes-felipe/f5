@@ -35,7 +35,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { gitStatusQueryOptions } from "../lib/gitReactQuery";
-import { resolveThreadPullRequests } from "../lib/threadPullRequests";
+import { resolveThreadPullRequests, threadBranchPullRequest } from "../lib/threadPullRequests";
 import {
   linkedPullRequestLookupCwd,
   useLinkedPullRequestStates,
@@ -348,9 +348,7 @@ export default function Sidebar() {
     const pending = new Set<ThreadId>();
     for (const target of threadGitTargets) {
       const status = target.cwd ? statusByCwd.get(target.cwd) : undefined;
-      const branchMatches =
-        target.branch !== null && status?.branch !== null && status?.branch === target.branch;
-      map.set(target.threadId, branchMatches ? (status?.pr ?? null) : null);
+      map.set(target.threadId, threadBranchPullRequest(target.branch, status));
       if (target.branch !== null && target.cwd !== null && pendingCwds.has(target.cwd)) {
         pending.add(target.threadId);
       }

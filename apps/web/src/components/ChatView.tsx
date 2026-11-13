@@ -1,4 +1,5 @@
 import { ThreadFindBar, type ThreadFindMatch } from "./chat/ThreadFindBar";
+import { useComposerTypingGuard } from "./chat/useComposerTypingGuard";
 import { settleListScroll } from "./chat/settleListScroll";
 import { ThreadFindContext } from "./chat/threadFindContext";
 import { queuedTurnLabel } from "./chat/NextTurnQueuePanel.logic";
@@ -2360,12 +2361,19 @@ export default memo(function ChatView({
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
   );
+  const typingGuard = useComposerTypingGuard(threadId, [
+    ...pendingApprovals.map((request) => request.requestId),
+    ...pendingUserInputs.map((request) => request.requestId),
+  ]);
   // The projected list is complete only once the server thread's details loaded.
   const pendingUserInputsLoaded =
     serverThread?.detailsLoaded === true && serverThread.pendingUserInputs !== undefined;
   // Provider forms render in their own panel and never feed the question drafts.
   const blockingUserInputs = pendingUserInputs.filter(
-    (input) => !input.elicitation && isBlockingUserInput(input),
+    (input) =>
+      !typingGuard.heldRequestIds.has(input.requestId) &&
+      !input.elicitation &&
+      isBlockingUserInput(input),
   );
   const elicitationInputs = pendingUserInputs.filter((input) => input.elicitation);
   const activePendingUserInput = blockingUserInputs[0] ?? null;
@@ -2532,7 +2540,8 @@ export default memo(function ChatView({
     interactionMode === "plan" &&
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
-  const activePendingApproval = pendingApprovals[0] ?? null;
+  const activePendingApproval =
+    pendingApprovals.find((request) => !typingGuard.heldRequestIds.has(request.requestId)) ?? null;
   const recoveryEpoch = useRecoveryStateStore((store) => store.recoveryEpoch);
   const serverAcknowledgedPendingTurnDispatch = useMemo(
     () =>
@@ -5527,9 +5536,13 @@ export default memo(function ChatView({
   const onSend = async (
     e?: { preventDefault: () => void },
     intent: SendIntent = "auto",
-    onAdmitted?: () => void,
+    onAdmittedCallback?: () => void,
   ) => {
     e?.preventDefault();
+    const onAdmitted = () => {
+      typingGuard.onSend();
+      onAdmittedCallback?.();
+    };
     if (wsInteractionBlocked) {
       toastManager.add({
         type: "info",
@@ -5728,7 +5741,7 @@ export default memo(function ChatView({
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
-        ...(onAdmitted ? { onAdmitted } : {}),
+        onAdmitted,
       });
       return;
     }
@@ -7483,6 +7496,7 @@ export default memo(function ChatView({
         setIsModelPickerOpen(true);
         return;
       }
+      typingGuard.onDraftChange();
       promptRef.current = nextPrompt;
       setPrompt(nextPrompt, mentions);
       if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
@@ -7502,6 +7516,7 @@ export default memo(function ChatView({
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
       composerTerminalContexts,
+      typingGuard.onDraftChange,
       isPendingTurnDispatchBlocked,
       onChangeActivePendingUserInputCustomAnswer,
       setPrompt,
@@ -8805,6 +8820,8 @@ export default memo(function ChatView({
                       </ComposerTray>
                     </ComposerStatusStripHostProvider>
                     <ChatComposer
+                      onEditorFocus={typingGuard.onFocus}
+                      onEditorBlur={typingGuard.onBlur}
                       redesignEnabled={composerRedesign}
                       getTimeline={getComposerTimeline}
                       composerFormRef={composerFormRef}

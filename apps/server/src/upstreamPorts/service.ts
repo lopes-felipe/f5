@@ -3350,6 +3350,9 @@ export function makeUpstreamPortsService(
         });
         const outcomes = yield* readOutcomes(context, model, ids, snapshot);
         const summaries = yield* linkSummaries(context, ids, model, outcomes);
+        // Reported once per pass and distinct cause: while GitHub requests wait for a retry
+        // window every thread fails the same way, and a warning each floods the log.
+        const evidenceFailures = new Map<string, { failures: number; threadId: string }>();
         for (const threadId of ids) {
           const thread = model.threads.find(
             (thread) => thread.id === threadId && thread.deletedAt === null,
@@ -3436,9 +3439,13 @@ export function makeUpstreamPortsService(
                         })
                         .pipe(
                           Effect.tapError((error) =>
-                            Effect.logWarning("upstreamPorts.outcome.prEvidence.failed", {
-                              threadId,
-                              detail: describe(error),
+                            Effect.sync(() => {
+                              const detail = describe(error);
+                              const seen = evidenceFailures.get(detail);
+                              evidenceFailures.set(detail, {
+                                failures: (seen?.failures ?? 0) + 1,
+                                threadId: seen?.threadId ?? threadId,
+                              });
                             }),
                           ),
                           Effect.orElseSucceed(() => null),
@@ -3634,6 +3641,13 @@ export function makeUpstreamPortsService(
                 : null,
           });
         }
+        for (const [detail, failure] of evidenceFailures)
+          yield* Effect.logWarning("upstreamPorts.outcome.prEvidence.failed", {
+            detail,
+            failures: failure.failures,
+            // The first thread affected, as a starting point for the logs of that thread.
+            threadId: failure.threadId,
+          });
       });
 
     const baseEvidence = new Map<string, { at: string | null; error: string | null }>();

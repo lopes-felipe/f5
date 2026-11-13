@@ -377,7 +377,11 @@ import {
   getCurrentStartupPhase,
   withStartupPhaseTiming,
 } from "./startupTiming.ts";
-import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
+import {
+  isPrivateHttpPath,
+  makeServerAuth,
+  REQUEST_HOST_NOT_ALLOWED_MESSAGE,
+} from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import {
@@ -2082,6 +2086,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
     void Effect.runPromise(
       Effect.gen(function* () {
+        // Before anything else, static files included: a rebound page must not load the app
+        // under its own origin either.
+        if (!serverAuth.isRequestHostAllowed(req)) {
+          respond(
+            403,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify({ error: REQUEST_HOST_NOT_ALLOWED_MESSAGE }),
+          );
+          return;
+        }
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
         // Workspace asset handles are capabilities: the URL is the credential, so
         // they skip session auth but still need CORS for the renderer's fetch().
@@ -8124,6 +8138,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       url = new URL(request.url ?? "/", `http://localhost:${port}`);
     } catch {
       rejectUpgrade(socket, 400, "Invalid WebSocket URL");
+      return;
+    }
+
+    if (!serverAuth.isRequestHostAllowed(request)) {
+      rejectUpgrade(socket, 403, REQUEST_HOST_NOT_ALLOWED_MESSAGE);
       return;
     }
 

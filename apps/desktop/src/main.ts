@@ -8,7 +8,13 @@ import {
   zoomAppContents,
   type AppZoomDirection,
 } from "./appZoom";
-import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
+import {
+  desktopCloseWindowItem,
+  desktopRuntimeName,
+  desktopWindowMenu,
+  selectAppMenuWindow,
+  selectReloadContents,
+} from "./windowMenu";
 import {
   BackendOutputTail,
   STARTUP_FAILURE_RESTART_ATTEMPTS,
@@ -2500,6 +2506,18 @@ function zoomMainWindow(direction: AppZoomDirection): void {
   }
 }
 
+function reloadFocusedContents(ignoreCache: boolean): void {
+  const focused = electronWebContents.getFocusedWebContents();
+  const target = selectReloadContents(
+    focused,
+    BrowserWindow.getFocusedWindow()?.webContents,
+    isPreviewGuestWebContents,
+  );
+  if (!target || target.isDestroyed()) return;
+  if (ignoreCache) target.reloadIgnoringCache();
+  else target.reload();
+}
+
 function dispatchMenuAction(action: string): void {
   const existingWindow = selectAppMenuWindow(
     BrowserWindow.getFocusedWindow(),
@@ -2618,9 +2636,9 @@ function configureApplicationMenu(): void {
 
   if (process.platform === "darwin") {
     template.push({
-      label: app.name,
+      label: APP_DISPLAY_NAME,
       submenu: [
-        { role: "about" },
+        { role: "about", label: `About ${APP_DISPLAY_NAME}` },
         {
           label: "Check for Updates...",
           click: () => handleCheckForUpdatesMenuClick(),
@@ -2634,7 +2652,7 @@ function configureApplicationMenu(): void {
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
-        { role: "hide" },
+        { role: "hide", label: `Hide ${APP_DISPLAY_NAME}` },
         { role: "hideOthers" },
         { role: "unhide" },
         { type: "separator" },
@@ -2679,8 +2697,12 @@ function configureApplicationMenu(): void {
     {
       label: "View",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
+        { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedContents(false) },
+        {
+          label: "Force Reload",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => reloadFocusedContents(true),
+        },
         { role: "toggleDevTools" },
         { type: "separator" },
         ...appZoomMenu(zoomMainWindow),
@@ -2750,7 +2772,7 @@ function resolveUserDataPath(): string {
 }
 
 function configureAppIdentity(): void {
-  app.setName(APP_DISPLAY_NAME);
+  app.setName(desktopRuntimeName(isDevelopment));
   const commitHash = resolveAboutCommitHash();
   app.setAboutPanelOptions({
     applicationName: APP_DISPLAY_NAME,

@@ -7,6 +7,7 @@ import {
   codeSpan,
   collectOccurrences,
   contextFromEnv,
+  describeReportedFailure,
   type Gh,
   issueMarker,
   LEDGER_AUTHOR,
@@ -221,6 +222,51 @@ describe("collectOccurrences", () => {
       attempt: 1,
       errors: ["Error: timed out"],
     });
+  });
+
+  it("names a timeout that the JSON report recorded as a placeholder stack", () => {
+    const placeholder =
+      "Error: STACK_TRACE_ERROR\n    at task (file:///D:/a/f5/f5/node_modules/@vitest/runner/dist/index.js:1139:27)";
+    const directory = artifacts();
+    writeReport(
+      directory,
+      "reports-windows-server-unit-Windows-1-1",
+      { packageName: "suites", event: "server-unit-2" },
+      failedReport({
+        testResults: [
+          {
+            ...failedReport().testResults[0],
+            assertionResults: [
+              {
+                status: "failed",
+                ancestorTitles: ["group"],
+                title: "hangs",
+                duration: 30_012.4,
+                failureMessages: [placeholder, "AssertionError: expected 1 to be 2"],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    writeReport(
+      directory,
+      "reports-windows-server-unit-Windows-1-2",
+      { packageName: "suites", event: "server-unit-2" },
+      { success: true, testResults: [] },
+    );
+    expect(collectOccurrences(directory, context({ runAttempt: 2 }))[0]?.errors).toEqual([
+      "Test or hook timed out after 30012 ms. Vitest's JSON report keeps no message or location for a timeout.",
+      "AssertionError: expected 1 to be 2",
+    ]);
+
+    expect(describeReportedFailure(placeholder, undefined)).toBe(
+      "Test or hook timed out. Vitest's JSON report keeps no message or location for a timeout.",
+    );
+    // Only the placeholder at the start of a stack is a timeout.
+    const mention = "AssertionError: expected 'Error: STACK_TRACE_ERROR' to be 'ok'";
+    expect(describeReportedFailure(mention, 5)).toBe(mention);
+    expect(describeReportedFailure(undefined, 5)).toBeUndefined();
   });
 
   it("reads earlier attempts only when a rerun turned the run green", () => {
