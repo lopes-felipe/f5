@@ -76429,12 +76429,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-13T14:42:20.880Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9190",
+      "reason": "Declined by f5 product policy",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-17539"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
