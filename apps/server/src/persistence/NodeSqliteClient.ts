@@ -30,6 +30,7 @@ import {
   sqlConnectionWaitDuration,
   sqlExecutionDuration,
 } from "../observability/Metrics.ts";
+import { recordSlowSqlStatement, SLOW_SQL_STATEMENT_MS } from "../observability/serverHealth.ts";
 
 import { startCheckpointWorker } from "./sqliteCheckpointWorker.ts";
 import { reportDatabaseCorruption } from "./databaseHealth.ts";
@@ -59,7 +60,8 @@ const recordExecution = (
     Duration.millis(durationMs),
   );
   // SQL shape only: expandedSQL and bound parameters can contain private content.
-  return durationMs > 100
+  if (durationMs > SLOW_SQL_STATEMENT_MS) recordSlowSqlStatement(sourceSQL, durationMs);
+  return durationMs > SLOW_SQL_STATEMENT_MS
     ? Effect.andThen(
         metric,
         Effect.logWarning("slow sql statement", {

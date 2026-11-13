@@ -1,5 +1,6 @@
 import {
   ProjectId,
+  providerReportsCacheOutsideInput,
   ThreadId,
   type IsoDateTime,
   type ProviderKind,
@@ -205,7 +206,7 @@ export function applyPriceOverride<Row extends UsageAggregateRow>(
     (row.estimationEligibleTurnCount ?? row.reportedTokenTurnCount) === row.turnCount &&
     (row.turnCount > 0 || (row.nativeInferenceCount ?? 0) > 0);
   if (!canEstimate) return row;
-  const claude = row.provider === "claudeAgent";
+  const claude = providerReportsCacheOutsideInput(row.provider);
   return {
     ...row,
     estimatedCostUsd:
@@ -236,7 +237,7 @@ function addComposition(target: MutableComposition, row: UsageAggregateRow): voi
   // Only partitions with a known total contribute, so unknown-total rows
   // cannot inflate the stacked composition.
   if (row.totalTokenTurnCount === 0 && !row.nativeInferenceCount) return;
-  const claude = row.provider === "claudeAgent";
+  const claude = providerReportsCacheOutsideInput(row.provider);
   const segments: UsageTokenComposition = {
     uncachedInputTokens: claude
       ? row.inputTokens

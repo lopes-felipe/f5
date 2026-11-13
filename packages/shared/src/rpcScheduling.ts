@@ -352,6 +352,7 @@ export const RPC_METHOD_POLICY = {
   "server.checkProviderUpdates": MUTATION,
   "server.getClaudeTranscriptRepair": READ_RT,
   "server.getConfig": READ,
+  "server.getHealth": READ,
   "server.getProjectSettings": READ,
   "server.getProviderInventory": READ,
   "server.saveProviderFeedback": long(false, 130_000),
@@ -428,6 +429,7 @@ export const RPC_METHOD_POLICY = {
   "usage.getAccounts": READ_RT,
   "usage.getQuotaHistory": MUTATION_RT,
   "usage.getSummary": READ_RT,
+  "usage.getThreadTurns": READ_RT,
 
   "workflowPlatform.createRun": MUTATION_RT,
   "workflowPlatform.inspectRun": READ_RT,

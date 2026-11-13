@@ -9,7 +9,7 @@ import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v7";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
-export const CLAUDE_SUPPLEMENT_VERSION = "v12";
+export const CLAUDE_SUPPLEMENT_VERSION = "v13";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -344,10 +344,58 @@ export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode>${
 
 // Claude Code wraps `planModeInstructions` with its own read-only preamble and
 // ExitPlanMode footer, and injects it only while the permission mode is plan.
-// The shared body names Codex tools, so map them for Claude first.
-const CLAUDE_PLAN_MODE_TOOL_MAPPING = `In Claude Code, \`request_user_input\` means the AskUserQuestion tool, \`update_plan\` means the task-tracking tools (TodoWrite or the Task tools), and the final plan is delivered through ExitPlanMode (a \`<proposed_plan>\` block in your reply is also captured).`;
+// The shared body is written for Codex: its tools, its mode switch, and an
+// `update_plan` error Claude never sees. These edits put Claude's own terms in
+// place, so Claude does not have to translate while it reads. The shared body
+// stays the single source; a test requires every edit to match exactly once.
+export const CLAUDE_PLAN_MODE_EDITS: ReadonlyArray<readonly [from: string, to: string]> = [
+  [
+    "You are in **Plan Mode** until a developer message explicitly ends it.",
+    "You are in **Plan Mode** until the host changes the permission mode.",
+  ],
+  [
+    `## Plan Mode vs update_plan tool
 
-const CLAUDE_PLAN_MODE_INSTRUCTIONS = `${PLAN_MODE_INSTRUCTIONS_BODY}\n\n${CLAUDE_PLAN_MODE_TOOL_MAPPING}`;
+Plan Mode is a collaboration mode that can involve requesting user input and eventually issuing a \`<proposed_plan>\` block.
+
+Separately, \`update_plan\` is a checklist/progress/TODOs tool; it does not enter or exit Plan Mode. Do not confuse it with Plan mode or try to use it while in Plan mode. If you try to use \`update_plan\` in Plan mode, it will return an error.`,
+    `## Plan Mode vs task tracking
+
+Plan Mode is a collaboration mode that can involve asking the user questions and eventually delivering a plan.
+
+Separately, the task-tracking tools (TodoWrite or the Task tools) are a progress checklist; they do not enter or exit Plan Mode.`,
+  ],
+  [
+    "* Strongly prefer using the `request_user_input` tool to ask any questions.",
+    "* Strongly prefer using the AskUserQuestion tool to ask any questions.",
+  ],
+  [
+    "Use the `request_user_input` tool only for decisions",
+    "Use the AskUserQuestion tool only for decisions",
+  ],
+  [
+    "When you present the official plan, wrap it in a `<proposed_plan>` block so the client can render it specially:",
+    "Deliver the official plan with the ExitPlanMode tool, as Claude Code's own plan-mode instructions describe. If ExitPlanMode is not among your tools, it is deferred: load it with ToolSearch first. A `<proposed_plan>` block in your reply is also captured. If you use one:",
+  ],
+  [
+    "The user can easily switch out of Plan mode and request implementation if you have included a `<proposed_plan>` block in your response.",
+    "The user can easily switch out of Plan mode and request implementation once you have delivered the plan.",
+  ],
+  // The two limits below hold for a plan however it is delivered, not only for a block.
+  [
+    "Only produce at most one `<proposed_plan>` block per turn, and only when you are presenting a complete spec.",
+    "Deliver at most one plan per turn, and only when you are presenting a complete spec.",
+  ],
+  [
+    "If the user stays in Plan mode and asks for revisions after a prior `<proposed_plan>`, any new `<proposed_plan>` must be a complete replacement.",
+    "If the user stays in Plan mode and asks for revisions after a prior plan, any new plan must be a complete replacement.",
+  ],
+];
+
+const CLAUDE_PLAN_MODE_INSTRUCTIONS = CLAUDE_PLAN_MODE_EDITS.reduce(
+  (body, [from, to]) => body.replace(from, () => to),
+  PLAN_MODE_INSTRUCTIONS_BODY,
+);
 
 // The append is static across mode switches (Claude Code changes modes through
 // its permission mode, not new developer instructions), so it must not claim a

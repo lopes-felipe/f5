@@ -208,6 +208,7 @@ import type {
 } from "./providerInventory";
 import type {
   ServerConfig,
+  ServerHealth,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
   ServerKeybindingMutationResult,
@@ -237,8 +238,10 @@ import type {
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
+  UsageGetThreadTurnsInput,
   UsageSummary,
   UsageQuotaHistory,
+  UsageThreadTurns,
 } from "./usage";
 import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitation";
 import type {
@@ -1225,6 +1228,8 @@ export interface NativeApi {
     }>;
     undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;
     getConfig: () => Promise<ServerConfig>;
+    /** Slow routes, slow SQL statements and event-loop delay since the server started. */
+    getHealth: () => Promise<ServerHealth>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
@@ -1424,6 +1429,11 @@ export interface NativeApi {
     getQuotaHistory: () => Promise<UsageQuotaHistory>;
     /** Scan local Claude transcripts for usage recommendations (up to a minute). */
     analyzeClaudeUsage: (input: UsageAnalyzeClaudeUsageInput) => Promise<ClaudeUsageAnalysis>;
+    /** One thread's recorded per-turn token counts, oldest first. */
+    getThreadTurns: (
+      input: UsageGetThreadTurnsInput,
+      context?: NativeRequestContext,
+    ) => Promise<UsageThreadTurns>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {

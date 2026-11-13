@@ -1,8 +1,9 @@
-import type {
-  ProviderKind,
-  ProviderRuntimeEvent,
-  UsageCostProvenance,
-  UsageTokenProvenance,
+import {
+  providerReportsCacheOutsideInput,
+  type ProviderKind,
+  type ProviderRuntimeEvent,
+  type UsageCostProvenance,
+  type UsageTokenProvenance,
 } from "@t3tools/contracts";
 
 type UnknownRecord = Record<string, unknown>;
@@ -151,10 +152,10 @@ function deriveTotalTokens(
   },
 ): number | undefined {
   const values = [metrics.inputTokens, metrics.outputTokens];
-  // Claude reports cache reads/writes outside input_tokens. OpenAI-compatible
-  // providers report cached input as a subset of input tokens, so adding it
-  // there would double count consumption.
-  if (provider === "claudeAgent") {
+  // Claude and Pi report cache reads/writes outside input_tokens. OpenAI-
+  // compatible providers report cached input as a subset of input tokens, so
+  // adding it there would double count consumption.
+  if (providerReportsCacheOutsideInput(provider)) {
     values.push(metrics.cacheReadTokens, metrics.cacheWriteTokens);
   }
   const present = values.filter((value): value is number => value !== undefined);

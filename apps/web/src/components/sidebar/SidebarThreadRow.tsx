@@ -53,6 +53,8 @@ import {
 import { useSidebarPeekTrigger } from "./SidebarPeekCard";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { useSidebarTreeRowProps } from "./sidebarTreeRow";
+import type { WorkflowSidebarStepState } from "./sidebarWorkflowGroups";
+import { WorkflowStepGlyph } from "./WorkflowStepGlyph";
 
 /**
  * Which list a row lives in. Each list keeps its own affordances:
@@ -84,6 +86,8 @@ export interface SidebarThreadRowProps {
   displayTitle?: string | undefined;
   /** A workflow child's workflow title, for its peek card. */
   workflowTitle?: string | undefined;
+  /** A workflow child's full step label for its peek card, when the row shows a short one. */
+  workflowRoleLabel?: string | undefined;
   /** Extra trailing content before the timestamp (model chip, project name). */
   trailingMeta?: ReactNode;
   threadStatus: ThreadStatusPill | null;
@@ -92,7 +96,29 @@ export interface SidebarThreadRowProps {
   isUnread: boolean;
   isRenaming: boolean;
   actions: SidebarThreadActions;
+  /**
+   * A workflow child's step: its state fills the leading slot in place of the thread's
+   * unread-style statuses. The deliverable (the workflow's PR thread) shows its PR there.
+   */
+  workflowStep?: SidebarWorkflowStepProps | undefined;
 }
+
+export interface SidebarWorkflowStepProps {
+  state: WorkflowSidebarStepState;
+  isDeliverable: boolean;
+}
+
+/**
+ * Thread statuses a workflow child still shows: they need someone or say it is running.
+ * "Plan Ready" and an unseen "Completed" describe hand-offs the workflow already made.
+ */
+const WORKFLOW_CHILD_STATUS_LABELS: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Pending Approval",
+  "Awaiting Input",
+  "Working",
+  "Connecting",
+  "Failed",
+]);
 
 /** Hover-revealed controls also reveal on keyboard focus and coarse pointers (F5). */
 export const SIDEBAR_ROW_REVEAL_CLASS_NAME =
@@ -155,6 +181,27 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     (state) => selectable && state.selectedThreadIds.has(thread.id),
   );
   const isHighlighted = isActive || isSelected;
+  const isWorkflowChild = section === "workflow";
+  const workflowStep = isWorkflowChild ? props.workflowStep : undefined;
+  const workflowStatus =
+    isWorkflowChild && threadStatus && WORKFLOW_CHILD_STATUS_LABELS.has(threadStatus.label)
+      ? threadStatus
+      : null;
+  // The deliverable's PR stays reachable through code review and Apply Reviews, which keep
+  // its step active (or failed); a thread no step names (a skipped step's) keeps its PR too.
+  const showsWorkflowPr =
+    isWorkflowChild &&
+    !workflowStatus &&
+    prStatus !== null &&
+    (workflowStep === undefined ||
+      (workflowStep.isDeliverable && workflowStep.state !== "pending"));
+  // Steps run unattended, so unread is no signal there: only a step that is running, needs
+  // someone, or is the deliverable stands out.
+  const workflowEmphasis =
+    workflowStatus !== null ||
+    workflowStep?.isDeliverable === true ||
+    workflowStep?.state === "active" ||
+    workflowStep?.state === "error";
   // Recent rows behave like a project's active rows; only one of the two views renders.
   const activeLike = section === "active" || section === "recent";
   const testId =
@@ -236,7 +283,8 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     {
       kind: "thread",
       threadId: thread.id,
-      roleLabel: section === "workflow" ? props.displayTitle : undefined,
+      roleLabel:
+        section === "workflow" ? (props.workflowRoleLabel ?? props.displayTitle) : undefined,
       workflowTitle: section === "workflow" ? props.workflowTitle : undefined,
       indicators: { threadStatus, prStatus, isUnread },
     },
@@ -275,9 +323,10 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           resolveThreadRowClassName({
             isActive,
             isSelected,
-            isUnread: section !== "archived" && isUnread,
+            isUnread: section !== "archived" && !isWorkflowChild && isUnread,
           }),
           section !== "attention" && SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+          workflowEmphasis && !isHighlighted && "text-foreground",
           // Done work recedes until it is hovered or focused; an open or selected archived
           // row keeps its normal colors.
           section === "settled" && SIDEBAR_DONE_ROW_CLASS_NAME,
@@ -340,11 +389,26 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             />
           ) : section === "snoozed" ? (
             <MoonIcon aria-label="Snoozed" className="size-3.5 text-faint-foreground" />
+          ) : isWorkflowChild ? (
+            workflowStatus ? (
+              <ThreadStatusPillBadge pill={workflowStatus} variant="icon" live={false} />
+            ) : showsWorkflowPr ? (
+              <SidebarThreadPrStatus
+                prStatus={prStatus}
+                settled={false}
+                onOpen={(event, url) => actions.openPrLink(event, url)}
+              />
+            ) : workflowStep ? (
+              <WorkflowStepGlyph state={workflowStep.state} />
+            ) : (
+              <WorkflowStepGlyph state={null} />
+            )
           ) : threadStatus ? (
             <ThreadStatusPillBadge pill={threadStatus} variant="icon" live={false} />
           ) : null}
         </span>
-        {section !== "snoozed" && prStatus ? (
+        {/* A workflow child's PR, if any, is its leading glyph, so every title starts level. */}
+        {section !== "snoozed" && !isWorkflowChild && prStatus ? (
           <SidebarThreadPrStatus
             prStatus={prStatus}
             settled={section === "settled"}

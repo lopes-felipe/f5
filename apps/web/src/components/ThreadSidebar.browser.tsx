@@ -4028,6 +4028,327 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("groups an expanded workflow's steps by phase, each led by its step state", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "outline-branch-a" as ThreadId,
+      b: "outline-branch-b" as ThreadId,
+      merge: "outline-merge" as ThreadId,
+      impl: "outline-impl" as ThreadId,
+      reviewA: "outline-review-a" as ThreadId,
+      reviewB: "outline-review-b" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId, status: "completed" | "error") => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status,
+      error: status === "error" ? "Reviewer crashed" : null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${ids.b}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.entries(ids).map(([role, id]) =>
+              createSnapshotThread({
+                id,
+                title: `Outline ${role} thread`,
+                // Never visited since its turn finished: unread outside a workflow.
+                latestTurn: {
+                  turnId: `${id}-turn` as never,
+                  state: "completed",
+                  requestedAt: at,
+                  startedAt: at,
+                  completedAt: at,
+                  assistantMessageId: null,
+                },
+                // Branch A's saved plan reads "Plan Ready" outside a workflow.
+                ...(role === "a" ? createPlanReadyOverrides("outline-a") : {}),
+              }),
+            ),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-outline",
+              title: "Outline workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: null,
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [
+                  codeReview(ids.reviewA, "completed"),
+                  codeReview(ids.reviewB, "error"),
+                ],
+                status: "error",
+                error: "Reviewer crashed",
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 536,
+                    title: "Outline implementation",
+                    url: "https://github.com/acme/repo/pull/536",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open",
+                  },
+                },
+              }
+            : null;
+      },
+    });
+    const phaseRow = (phaseId: string) =>
+      document.querySelector<HTMLElement>(`[data-testid="workflow-phase-row-${phaseId}"]`);
+    const leadOf = (row: HTMLElement) => row.firstElementChild as HTMLElement;
+
+    try {
+      // The open thread's phase is expanded; Revision reruns the authors, so no row of its own.
+      const authoring = await waitForElement(
+        () => phaseRow("authoring"),
+        "Authoring should render as a phase row.",
+      );
+      expect(authoring.getAttribute("aria-expanded")).toBe("true");
+      expect(authoring.textContent).toContain("Authoring");
+      expect(phaseRow("revision")).toBeNull();
+      const branchA = await waitForSidebarThreadRow("Branch A");
+      expect(
+        leadOf(branchA)
+          .querySelector("[data-workflow-step-state]")
+          ?.getAttribute("data-workflow-step-state"),
+      ).toBe("completed");
+      expect(branchA.textContent).not.toContain("Plan Ready");
+      // Unread outside a workflow, but steps run unattended: no bold.
+      expect(branchA.className).not.toContain("font-medium");
+
+      // A phase with one step is that step's row.
+      expect(phaseRow("merge")).toBeNull();
+      await waitForSidebarThreadRow("Merge");
+
+      // The phase with a failed step opens by default and leads with the error.
+      const codeReviewPhase = phaseRow("code-review")!;
+      expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("true");
+      expect(
+        leadOf(codeReviewPhase).getAttribute("data-workflow-step-state") ??
+          codeReviewPhase
+            .querySelector("[data-workflow-step-state]")
+            ?.getAttribute("data-workflow-step-state"),
+      ).toBe("error");
+      const reviewB = await waitForSidebarThreadRow("Code Review B");
+      expect(reviewB.className).toContain("text-foreground");
+
+      // The implementation thread's PR is its leading glyph; no other step shows a PR, so
+      // every title starts at the same x.
+      const implementation = await waitForSidebarThreadRow("Implementation");
+      await vi.waitFor(() =>
+        expect(
+          leadOf(implementation).querySelector('button[aria-label*="PR open"]'),
+        ).not.toBeNull(),
+      );
+      const titleLeft = (row: HTMLElement) =>
+        [...row.children]
+          .find((child) => child.textContent?.trim() && child !== leadOf(row))!
+          .getBoundingClientRect().left;
+      expect(branchA.querySelector('button[aria-label*="PR open"]')).toBeNull();
+      expect(titleLeft(implementation)).toBe(titleLeft(querySidebarThreadRowByTitle("Merge")!));
+
+      // Click and Left/Right fold the phase, even with the open thread inside.
+      authoring.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+      expect(authoring.getAttribute("aria-expanded")).toBe("false");
+      authoring.focus();
+      authoring.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+      await waitForSidebarThreadRow("Branch A");
+      authoring.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the implementation PR during code review and a folded phase's approval in view", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "review-stage-branch-a" as ThreadId,
+      b: "review-stage-branch-b" as ThreadId,
+      merge: "review-stage-merge" as ThreadId,
+      impl: "review-stage-impl" as ThreadId,
+      reviewA: "review-stage-review-a" as ThreadId,
+      reviewB: "review-stage-review-b" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId) => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status: "running" as const,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.entries(ids).map(([role, id]) =>
+              createSnapshotThread({
+                id,
+                title: `Review stage ${role} thread`,
+                ...(role === "reviewA"
+                  ? {
+                      activities: [
+                        {
+                          id: "review-stage-approval" as never,
+                          tone: "approval",
+                          kind: "approval.requested",
+                          summary: "Needs approval",
+                          payload: { requestId: "review-stage-request", requestKind: "command" },
+                          turnId: null,
+                          createdAt: at,
+                        },
+                      ],
+                    }
+                  : {}),
+              }),
+            ),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-review-stage",
+              title: "Review stage workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: null,
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [codeReview(ids.reviewA), codeReview(ids.reviewB)],
+                status: "code_reviews_requested",
+                error: null,
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) => {
+          // The default details carry no activities; keep Review A's approval when the sidebar
+          // prefetches its details.
+          if (
+            body._tag === ORCHESTRATION_WS_METHODS.getThreadTailDetails &&
+            body.threadId === ids.reviewA
+          ) {
+            const thread = nextFixture.snapshot.threads.find((entry) => entry.id === ids.reviewA);
+            return {
+              type: "result",
+              result: {
+                ...(resolveWsRpc(body) as Record<string, unknown>),
+                activities: thread?.activities ?? [],
+              },
+            };
+          }
+          return body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 537,
+                    title: "Review stage implementation",
+                    url: "https://github.com/acme/repo/pull/537",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open",
+                  },
+                },
+              }
+            : null;
+        };
+      },
+    });
+
+    try {
+      const workflowRow = await waitForSidebarThreadRow("Review stage workflow");
+      if (!document.querySelector('[data-testid="workflow-phase-row-code-review"]')) {
+        workflowRow
+          .querySelector<HTMLButtonElement>('button[aria-label="Expand Review stage workflow"]')
+          ?.click();
+      }
+      // Code review keeps the implementation step active; its PR still leads the row.
+      // The workflow row's phase summary also says "Implementation", so find the step's row.
+      const implementationRow = () =>
+        document.querySelector<HTMLElement>(`[data-sidebar-row="thread:workflow:${ids.impl}"]`);
+      await vi.waitFor(() =>
+        expect(
+          (implementationRow()?.firstElementChild as HTMLElement | undefined)?.querySelector(
+            'button[aria-label*="PR open"]',
+          ) ?? null,
+        ).not.toBeNull(),
+      );
+
+      // Folding the phase keeps the waiting approval visible on the phase row.
+      const codeReviewPhase = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="workflow-phase-row-code-review"]'),
+        "Code Review should render as a phase row.",
+      );
+      await vi.waitFor(() => expect(codeReviewPhase.textContent).toContain("Pending Approval"));
+      expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("true");
+      codeReviewPhase.click();
+      await vi.waitFor(() => expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("false"));
+      expect(querySidebarThreadRowByTitle("Code Review A")).toBeNull();
+      expect(codeReviewPhase.textContent).toContain("Pending Approval");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows a finished workflow's PR state, and its step line always opens a thread", async () => {
     seedAppSettings({ sidebarOlderThreadDays: 7 });
     const at = "2026-03-11T12:00:00.000Z";

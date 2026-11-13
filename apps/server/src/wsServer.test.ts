@@ -8,6 +8,7 @@ import {
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  ServerHealth,
   ThreadId,
   WS_CHANNELS,
   WS_METHODS,
@@ -15,7 +16,8 @@ import {
   type OrchestrationThread,
   type WebSocketResponse,
 } from "@t3tools/contracts";
-import { Deferred, Effect, Layer, Option, Scope, Stream } from "effect";
+import { Deferred, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
+import { recordSlowRpcRoute, resetServerHealthForTest } from "./observability/serverHealth.ts";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import * as Http from "node:http";
@@ -246,6 +248,18 @@ describe("WebSocket Server", () => {
       projectName: "project",
       profile: { isDefault: true, slug: "default", isActive: true },
     });
+  });
+
+  it("answers a method that lives in a route table rather than the switch", async () => {
+    h.server = await createTestServer({ cwd: "/test/project" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.githubLoginStatus, {});
+    expect(response.error).toBeUndefined();
+    expect(response.result).toMatchObject({ state: "idle" });
   });
 
   it("writes rpc and websocket observability records when enabled", async () => {
@@ -845,6 +859,7 @@ describe("WebSocket Server", () => {
             getAccounts: () => Effect.succeed([]),
             getQuotaHistory: Effect.die("unused quota history"),
             analyzeClaudeUsage: () => Effect.die("unused usage analysis"),
+            getThreadTurns: () => Effect.die("unused thread turns"),
           }),
           Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
           Layer.succeed(skillSyncModule.ProjectSkillSyncService, {
@@ -1263,6 +1278,7 @@ describe("WebSocket Server", () => {
           getAccounts: () => Effect.succeed([]),
           getQuotaHistory: Effect.die("unused quota history"),
           analyzeClaudeUsage: () => Effect.die("unused usage analysis"),
+          getThreadTurns: () => Effect.die("unused thread turns"),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>
@@ -1436,6 +1452,33 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       runtime: expect.objectContaining({ state: expect.stringMatching(/^(starting|ready)$/) }),
     });
+  });
+
+  it("answers server.getHealth with slow operations recorded since start", async () => {
+    h.server = await createTestServer();
+    const address = h.server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+    // The tallies are process-wide, so this test leaves none behind for the next.
+    resetServerHealthForTest();
+    try {
+      recordSlowRpcRoute("test.slowRoute", 4_321);
+      recordSlowRpcRoute("test.signIn", 120_000, "long");
+
+      const response = await sendRequest(ws, WS_METHODS.serverGetHealth);
+      expect(response.error).toBeUndefined();
+      const health = Schema.decodeUnknownSync(ServerHealth)(response.result);
+      expect(health.slowRoutes).toContainEqual(
+        expect.objectContaining({ name: "test.slowRoute", count: 1, totalMs: 4_321 }),
+      );
+      // Requests that are long by design stay out of the ranking.
+      expect(health.slowRoutes.map((route) => route.name)).not.toContain("test.signIn");
+      // The server samples event loop delay for as long as it runs.
+      expect(health.eventLoopDelay).not.toBeNull();
+    } finally {
+      resetServerHealthForTest();
+    }
   });
 
   it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {
