@@ -111,6 +111,16 @@ of M recorded turns". Older cost-only history counts as legacy cost records. Cos
 per-project attribution appears as "Unattributed historical cost". Blank cache prices inherit the
 input price, and zero is a valid price.
 
+Muse Code also includes local native session history (including child sessions and automated
+reviews) from the home reported by the configured CLI, using that account's environment.
+Sessions recorded by F5 use their existing usage facts; other native sessions appear without
+project attribution. Copied inference envelopes count once. Unknown models remain unpriced
+until you configure a custom price. The date and provider filters also apply to native history.
+
+ChatGPT plan-sharing limits show a notice in the thread. Personal limits link to ChatGPT Usage
+settings; workspace limits offer **Copy request for admin**, which copies text for you to send
+to your workspace admin. These limits do not schedule an automatic quota-reset retry.
+
 **Other providers**
 
 | Provider    | Supported credentials                                                                                                                                                                                                                                                                                                                                             |

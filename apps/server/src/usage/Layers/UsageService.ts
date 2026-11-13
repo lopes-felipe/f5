@@ -21,6 +21,7 @@ import { buildQuotaHistory, QUOTA_HISTORY_LOOKBACK_MS } from "../quotaHistory.ts
 import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 import type { AccountUsageErrorCode } from "@t3tools/contracts";
+import { externalMuseHistory, museHistoryBuckets } from "../museHistory.ts";
 
 const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
   unsupported: "This Claude version cannot analyze usage.",
@@ -203,19 +204,49 @@ const make = Effect.gen(function* () {
         ...(request.hiddenProviders?.length ? { hiddenProviders: request.hiddenProviders } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
       };
+      const instances = yield* registry.listInstances;
+      const nativeHistory =
+        (request.provider && request.provider !== "muse") ||
+        request.hiddenProviders?.includes("muse")
+          ? []
+          : externalMuseHistory(
+              (yield* Effect.forEach(
+                instances,
+                (instance) => instance.usageHistory ?? Effect.succeed([]),
+                { concurrency: 2 },
+              )).flat(),
+            );
+      const readBuckets: typeof repository.summarizeBuckets = (input) =>
+        repository
+          .summarizeBuckets(input)
+          .pipe(
+            Effect.map((rows) => [
+              ...rows,
+              ...(!input.projectId ? museHistoryBuckets(nativeHistory, input.buckets) : []),
+            ]),
+          );
       // SQLite executes synchronously, so these reads run sequentially.
       const metadata = yield* repository.readUsageMetadata;
       const rows = applyModelAliases(
-        yield* repository.summarizeBuckets({ buckets: plan.buckets, ...filters }),
+        yield* readBuckets({ buckets: plan.buckets, ...filters }),
         modelAliases,
       );
       const scopeRows = applyModelAliases(
-        yield* repository.summarizeByScope({
-          startedAt: plan.startedAt,
-          endedAt: plan.endedAt,
-          ...(request.provider ? { provider: request.provider } : {}),
-          ...(request.hiddenProviders?.length ? { hiddenProviders: request.hiddenProviders } : {}),
-        }),
+        [
+          ...(yield* repository.summarizeByScope({
+            startedAt: plan.startedAt,
+            endedAt: plan.endedAt,
+            ...(request.provider ? { provider: request.provider } : {}),
+            ...(request.hiddenProviders?.length
+              ? { hiddenProviders: request.hiddenProviders }
+              : {}),
+          })),
+          ...nativeHistory
+            .filter(
+              (record) => record.timestamp >= plan.startedAt && record.timestamp < plan.endedAt,
+            )
+            .map((record) => ({ ...record.row, threadId: null, projectId: null })),
+        ],
         modelAliases,
       );
       const selectedProjectId = request.projectId ?? null;
@@ -232,7 +263,7 @@ const make = Effect.gen(function* () {
       const previousMetrics = previous
         ? aggregateUsageMetrics(
             applyModelAliases(
-              yield* repository.summarizeBuckets({
+              yield* readBuckets({
                 buckets: [
                   { key: "previous", startAt: previous.startedAt, endAt: previous.endedAt },
                 ],
@@ -258,10 +289,7 @@ const make = Effect.gen(function* () {
             if (!buckets) return null;
             return buildPreviousBuckets({
               buckets,
-              rows: applyModelAliases(
-                yield* repository.summarizeBuckets({ buckets, ...filters }),
-                modelAliases,
-              ),
+              rows: applyModelAliases(yield* readBuckets({ buckets, ...filters }), modelAliases),
               priceOverrides,
             });
           })

@@ -1,11 +1,50 @@
 import { describe, expect, it } from "vitest";
+import {
+  chatGptUsageLimitCode,
+  CHATGPT_USAGE_LIMIT_CODE,
+  CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+} from "@t3tools/shared/usageLimit";
 
 import {
+  codexFailureMessage,
   detectCodexUsageLimit,
   formatCodexUnsupportedModelError,
+  formatCodexUsageError,
   isUnsupportedCodexModelError,
   resolveCodexCompletionErrorInfo,
 } from "./codexErrors.ts";
+
+it("retains sharing details across a matching completion and drops them for a replacement failure", () => {
+  const previous = {
+    message: "429",
+    additionalDetails: CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+    errorInfo: "other",
+  };
+  expect(chatGptUsageLimitCode(codexFailureMessage("429", undefined, previous)!)).toBe(
+    CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+  );
+  expect(codexFailureMessage("503", undefined, previous)).toBe("503");
+  expect(codexFailureMessage("429", undefined, previous, "httpConnectionFailed")).toBe("429");
+});
+
+it.each([CHATGPT_USAGE_LIMIT_CODE, CHATGPT_WORKSPACE_USAGE_LIMIT_CODE])(
+  "keeps %s actionable without scheduling a quota reset",
+  (code) => {
+    const message = '429: {"error":{"code":"' + code + '"}}';
+    expect(chatGptUsageLimitCode(message)).toBe(code);
+    expect(
+      formatCodexUsageError(message, undefined, "2026-10-01T00:00:00Z", "usageLimitReached"),
+    ).toBe(message);
+    expect(
+      detectCodexUsageLimit({
+        message,
+        errorInfo: "usageLimitReached",
+        at: "2026-10-01T00:00:00Z",
+      }),
+    ).toBeNull();
+    expect(chatGptUsageLimitCode(code + "_unrelated")).toBeNull();
+  },
+);
 
 describe("Codex unsupported model errors", () => {
   it.each([

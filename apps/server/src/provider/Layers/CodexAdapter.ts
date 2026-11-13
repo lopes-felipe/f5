@@ -38,6 +38,7 @@ import { resolveAgentBrowserPolicy } from "../../mcp/browserAccess";
 import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
+  codexFailureMessage,
   formatCodexUsageError,
   detectCodexUsageLimit,
   mergeCodexLimitSnapshot,
@@ -1544,9 +1545,14 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "turn/completed") {
-    const rawErrorMessage = asString(asObject(turn?.error)?.message);
+    const rawErrorMessage = codexFailureMessage(
+      asString(asObject(turn?.error)?.message),
+      asString(asObject(turn?.error)?.additionalDetails),
+      previousFailure,
+      asObject(turn?.error)?.codexErrorInfo,
+    );
     const errorInfo = resolveCodexCompletionErrorInfo({
-      message: rawErrorMessage,
+      message: asString(asObject(turn?.error)?.message),
       errorInfo: asObject(turn?.error)?.codexErrorInfo,
       previous: previousFailure,
     });
@@ -2379,8 +2385,12 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "error") {
-    const message =
-      asString(asObject(payload?.error)?.message) ?? event.message ?? "Provider runtime error";
+    const message = [
+      asString(asObject(payload?.error)?.message) ?? event.message ?? "Provider runtime error",
+      asString(asObject(payload?.error)?.additionalDetails),
+    ]
+      .filter(Boolean)
+      .join("\n");
     const willRetry = payload?.willRetry === true;
     const usageLimit = willRetry
       ? null
@@ -3686,6 +3696,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   evidence: {
                     message: asString(error?.message) ?? event.message ?? "",
                     errorInfo: error?.codexErrorInfo,
+                    ...(asString(error?.additionalDetails)
+                      ? { additionalDetails: asString(error?.additionalDetails) }
+                      : {}),
                   },
                 });
               }

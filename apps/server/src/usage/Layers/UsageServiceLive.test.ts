@@ -27,8 +27,77 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { UsageService } from "../Services/UsageService.ts";
 import { emptyAccountSection, makeAccountUsageCapability } from "./AccountUsageService.ts";
 import { UsageServiceLive } from "./UsageService.ts";
+import { parseMuseHistoryLine } from "../museHistory.ts";
 
 const instanceId = ProviderInstanceId.make("claude-live");
+
+it.layer(SqliteClient.layerMemory())("Muse history summary integration", (it) => {
+  it.effect(
+    "merges native history once across accounts and applies date, provider and project filters",
+    () =>
+      Effect.gen(function* () {
+        yield* Migration0001;
+        yield* Migration0005;
+        yield* Migration0068;
+        yield* Migration0071;
+        yield* Migration0073;
+        yield* Migration0116;
+        yield* TestClock.setTime(Date.parse("2026-08-20T23:59:00.000Z"));
+        const record = parseMuseHistoryLine(
+          JSON.stringify({
+            schema_version: 1,
+            payload_schema_version: 3,
+            record_type: "event",
+            payload_type: "runtime.session",
+            id: "review",
+            recorded_at: Date.parse("2026-08-20T12:00:00Z") * 1000,
+            stream: { kind: "session", id: "child" },
+            payload: {
+              event: {
+                kind: "automated_review_completed",
+                model: "unpriced-muse",
+                usage: { input_tokens: 100, output_tokens: 20 },
+              },
+            },
+          }),
+        )!;
+        const instance = { usageHistory: Effect.succeed([record]) } as unknown as ProviderInstance;
+        const registry = {
+          listInstances: Effect.succeed([instance, instance]),
+        } as unknown as typeof ProviderInstanceRegistry.Service;
+        yield* Effect.gen(function* () {
+          const usage = yield* UsageService;
+          const all = yield* usage.getSummary({ range: "24h", timeZone: "UTC" });
+          assert.equal(all.metrics.totalTokens, 120);
+          assert.equal(all.metrics.unpricedTurnCount, 1);
+          assert.equal(
+            all.buckets.reduce((sum, bucket) => sum + bucket.metrics.totalTokens, 0),
+            120,
+          );
+          for (const filter of [
+            { provider: "codex" as const },
+            { hiddenProviders: ["muse" as const] },
+            { projectId: ProjectId.make("other-project") },
+          ]) {
+            const filtered = yield* usage.getSummary({ range: "24h", timeZone: "UTC", ...filter });
+            assert.equal(filtered.metrics.totalTokens, 0);
+          }
+        }).pipe(
+          Effect.provide(
+            UsageServiceLive.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(ProviderInstanceRegistry, registry),
+                  ServerSettingsService.layerTest(),
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+  );
+});
+
 let probeFails = false;
 
 const available = (fetchedAt: string): AccountUsageSection => ({

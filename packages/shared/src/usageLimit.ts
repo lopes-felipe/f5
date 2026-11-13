@@ -1,5 +1,20 @@
 import type { AccountUsageSection, CodexAccountRateLimitWindow } from "@t3tools/contracts";
 
+export const CHATGPT_USAGE_LIMIT_CODE = "subscription_sharing_usage_limit_exceeded";
+export const CHATGPT_WORKSPACE_USAGE_LIMIT_CODE =
+  "subscription_sharing_workplace_individual_usage_limit_exceeded";
+export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";
+export const CHATGPT_WORKSPACE_ADMIN_REQUEST =
+  "I've reached the limit for using my ChatGPT plan in F5. Could you increase our workspace's usage limits so I can continue?\n\nGo to admin.openai.com → Workspace → Usage limits. Thank you!";
+
+/** These sharing limits need a user/admin action, not a Codex quota reset. */
+export function chatGptUsageLimitCode(message: string): string | null {
+  for (const code of [CHATGPT_WORKSPACE_USAGE_LIMIT_CODE, CHATGPT_USAGE_LIMIT_CODE]) {
+    if (new RegExp(String.raw`\b${code}\b`).test(message)) return code;
+  }
+  return null;
+}
+
 /** A usage-limit continue waits this long past the reset. */
 export const USAGE_RESUME_BUFFER_MS = 60_000;
 /** Scheduled continues must start within this horizon. */

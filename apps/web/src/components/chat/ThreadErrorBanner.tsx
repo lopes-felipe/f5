@@ -1,4 +1,12 @@
-import { memo } from "react";
+import { memo, useState } from "react";
+import {
+  chatGptUsageLimitCode,
+  CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+  CHATGPT_WORKSPACE_ADMIN_REQUEST,
+  CHATGPT_USAGE_URL,
+} from "@t3tools/shared/usageLimit";
+import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
+import { Button } from "../ui/button";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { CircleAlertIcon, XIcon } from "lucide-react";
 import { ExpandableErrorText } from "./ExpandableErrorText";
@@ -28,16 +36,56 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   occurredAt?: string | null;
   onDismiss?: () => void;
 }) {
+  const [copyStatus, setCopyStatus] = useState<{ error: string; message: string } | null>(null);
   if (!error) return null;
+  const code = chatGptUsageLimitCode(error);
+  const workspaceLimit = code === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
   return (
-    <Alert variant="error">
+    <Alert variant={code ? "warning" : "error"}>
       <CircleAlertIcon />
       <AlertDescription className="min-w-0" title={error}>
-        <ExpandableErrorText
-          key={error}
-          text={error}
-          collapsedText={getThreadErrorBannerMessage(error)}
-        />
+        {code ? (
+          <div className="space-y-2">
+            <p className="font-medium">ChatGPT usage limit reached</p>
+            <p>
+              {workspaceLimit
+                ? "You've reached your workspace's limit for using your ChatGPT plan in other apps. Copy a request to ask your workspace admin for increased usage limits."
+                : "Review your usage settings in ChatGPT."}
+            </p>
+            {workspaceLimit ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  void writeTextToClipboard(CHATGPT_WORKSPACE_ADMIN_REQUEST).then(
+                    () =>
+                      setCopyStatus({
+                        error,
+                        message: "Request copied. Send it to your workspace admin.",
+                      }),
+                    () =>
+                      setCopyStatus({ error, message: "Could not copy the request. Try again." }),
+                  );
+                }}
+              >
+                Copy request for admin
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                render={<a href={CHATGPT_USAGE_URL} target="_blank" rel="noreferrer" />}
+              >
+                Manage usage
+              </Button>
+            )}
+            {copyStatus?.error === error ? <p role="status">{copyStatus.message}</p> : null}
+          </div>
+        ) : (
+          <ExpandableErrorText
+            key={error}
+            text={error}
+            collapsedText={getThreadErrorBannerMessage(error)}
+          />
+        )}
         {occurredAt ? (
           <time className="mt-1 block text-2xs text-muted-foreground" dateTime={occurredAt}>
             {new Date(occurredAt).toLocaleString()}
