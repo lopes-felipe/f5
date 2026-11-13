@@ -896,7 +896,8 @@ it.layer(layer)("compactWorkflowEvents", (it) => {
       yield* append("project.workflow-upserted", "workflow-b", "B2");
       const newestOfB = yield* append("project.workflow-upserted", "workflow-b", "B3");
       const deleted = yield* append("project.workflow-deleted", "workflow-a", "");
-      yield* append("project.workflow-upserted", "workflow-a", "A4");
+      // The first event after a deletion counts as the first again.
+      const recreated = yield* append("project.workflow-upserted", "workflow-a", "A4");
       const newestOfA = yield* append("project.workflow-upserted", "workflow-a", "A5");
       yield* pipeline.bootstrap;
       const before = { projected: yield* projected, replayed: yield* replayed };
@@ -906,7 +907,7 @@ it.layer(layer)("compactWorkflowEvents", (it) => {
       ]);
 
       const first = yield* run();
-      assert.deepInclude(first, { eventsRemoved: 3, complete: true });
+      assert.deepInclude(first, { eventsRemoved: 2, complete: true, futureDatedEvent: null });
       assert.isAbove(first.bytesRemoved, 0);
       assert.deepStrictEqual(yield* workflowEvents, [
         created,
@@ -914,6 +915,7 @@ it.layer(layer)("compactWorkflowEvents", (it) => {
         beforeDeletion,
         newestOfB,
         deleted,
+        recreated,
         newestOfA,
       ]);
       assert.deepStrictEqual(yield* replayed, before.replayed);
@@ -948,6 +950,7 @@ it.layer(layer)("compactWorkflowEvents", (it) => {
         firstOfB,
         beforeDeletion,
         deleted,
+        recreated,
         recent,
         afterRecent,
       ]);
@@ -963,6 +966,78 @@ it.layer(layer)("compactWorkflowEvents", (it) => {
       assert.deepInclude(yield* compactWorkflowEvents({ nowMs: Date.now(), maxDurationMs: -1 }), {
         eventsRemoved: 0,
         complete: false,
+      });
+    }),
+  );
+
+  it.effect("forgets a deleted workflow and reports a future-dated event holding the scan", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* OrchestrationEventStore;
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      yield* reset;
+      yield* seed;
+      const append = (
+        type: "project.workflow-upserted" | "project.workflow-deleted",
+        id: string,
+        occurredAt = at,
+      ) =>
+        store
+          .append({
+            ...base(),
+            occurredAt,
+            aggregateKind: "project",
+            aggregateId: projectId,
+            type,
+            payload:
+              type === "project.workflow-deleted"
+                ? { projectId, workflowId: id, deletedAt: at }
+                : { projectId, workflow: planningWorkflow(id, id) },
+          } as Omit<OrchestrationEvent, "sequence">)
+          .pipe(Effect.map((stored) => stored.sequence));
+      const run = (nowMs: number) => compactWorkflowEvents({ nowMs, maxDurationMs: 60_000 });
+      const workflowRows = sql<{ readonly groupKey: string }>`
+        SELECT group_key AS "groupKey" FROM orchestration_event_keep_last
+        WHERE group_key LIKE 'workflow:%' ORDER BY group_key
+      `.pipe(Effect.map((rows) => rows.map((row) => row.groupKey)));
+      const nowMs = Date.now();
+
+      yield* append("project.workflow-upserted", "workflow-a");
+      yield* append("project.workflow-upserted", "workflow-b");
+      yield* append("project.workflow-upserted", "workflow-a");
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(nowMs), { eventsRemoved: 0, futureDatedEvent: null });
+      assert.deepStrictEqual(yield* workflowRows, ["workflow:workflow-a", "workflow:workflow-b"]);
+
+      yield* append("project.workflow-deleted", "workflow-a");
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(nowMs), { eventsRemoved: 0, futureDatedEvent: null });
+      assert.deepStrictEqual(yield* workflowRows, ["workflow:workflow-b"]);
+
+      // An event from the last hour holds the scan too, but that is not worth reporting.
+      const recent = yield* append(
+        "project.workflow-upserted",
+        "workflow-b",
+        new Date(nowMs - 60_000).toISOString(),
+      );
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(nowMs), { eventsRemoved: 0, futureDatedEvent: null });
+      yield* sql`DELETE FROM orchestration_events WHERE sequence = ${recent}`;
+
+      const occurredAt = new Date(nowMs + 3 * 60 * 60 * 1_000).toISOString();
+      const future = yield* append("project.workflow-upserted", "workflow-b", occurredAt);
+      yield* append("project.workflow-upserted", "workflow-b");
+      yield* pipeline.bootstrap;
+      const held = yield* run(nowMs);
+      assert.deepInclude(held, { eventsRemoved: 0, complete: true });
+      assert.deepStrictEqual(held.futureDatedEvent, { sequence: future, occurredAt });
+
+      // Once its date is an hour past, the scan moves on (the update after it replaces it)
+      // and stops reporting it.
+      assert.deepInclude(yield* run(nowMs + 5 * 60 * 60 * 1_000), {
+        eventsRemoved: 1,
+        complete: true,
+        futureDatedEvent: null,
       });
     }),
   );

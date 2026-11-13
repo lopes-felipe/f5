@@ -784,6 +784,11 @@ export interface WorkflowEventCompactionResult {
   readonly bytesRemoved: number;
   /** False when the time budget ran out before the scan reached the newest eligible event. */
   readonly complete: boolean;
+  /**
+   * The event the scan stopped at because it is dated after `nowMs` (clock skew, restored
+   * data); null otherwise. Updates after it are not compacted until an hour past that date.
+   */
+  readonly futureDatedEvent: { readonly sequence: number; readonly occurredAt: string } | null;
 }
 
 /**
@@ -796,11 +801,16 @@ export interface WorkflowEventCompactionResult {
  * workflow removes the remembered one and remembers the new one. Creation and
  * deletion forget it, so a workflow's first event and its last update before a
  * deletion stay, and an update with no earlier event of its workflow (a log
- * that starts mid-history) is treated as the first.
+ * that starts mid-history) is treated as the first. A deletion also drops the
+ * workflow's row, so the table holds one row per workflow that still exists.
+ * Workflow events are never removed any other way: a thread purge deletes only
+ * that thread's own events.
  *
  * Only events every projector has applied and that are an hour old are read;
  * the scan stops at the first that is not, so events are always handled in
- * order. Each page commits its removals together with the scan position.
+ * order. An event dated in the future therefore holds the scan until its date
+ * has passed, which the result reports. Each page commits its removals
+ * together with the scan position.
  */
 export const compactWorkflowEvents = (input: {
   readonly nowMs: number;
@@ -814,6 +824,8 @@ export const compactWorkflowEvents = (input: {
     const stopped = () => getDatabaseDamage() !== null || Date.now() > deadlineMs;
     const projectedThrough = yield* readProjectedThrough;
     const cutoff = new Date(input.nowMs - EVENT_COMPACTION_IDLE_MS).toISOString();
+    const nowIso = new Date(input.nowMs).toISOString();
+    let futureDatedEvent: WorkflowEventCompactionResult["futureDatedEvent"] = null;
     const keptKey = (workflowId: string) => `workflow:${workflowId}`;
     const position = yield* sql<{ readonly sequence: number | null }>`
       SELECT kept_sequence AS "sequence" FROM orchestration_event_keep_last
@@ -822,7 +834,12 @@ export const compactWorkflowEvents = (input: {
     let cursor = position[0]?.sequence ?? 0;
 
     while (true) {
-      if (stopped()) return { ...totals, complete: false } satisfies WorkflowEventCompactionResult;
+      if (stopped())
+        return {
+          ...totals,
+          complete: false,
+          futureDatedEvent,
+        } satisfies WorkflowEventCompactionResult;
       // No payload columns here: the type index answers this without touching a payload.
       const page = yield* sql<{ readonly sequence: number; readonly occurredAt: string }>`
         SELECT sequence, occurred_at AS "occurredAt"
@@ -837,6 +854,8 @@ export const compactWorkflowEvents = (input: {
       `;
       const tooRecent = page.findIndex((row) => row.occurredAt >= cutoff);
       const ready = tooRecent === -1 ? page : page.slice(0, tooRecent);
+      const blocking = tooRecent === -1 ? undefined : page[tooRecent];
+      if (blocking && blocking.occurredAt > nowIso) futureDatedEvent = blocking;
       if (ready.length === 0) break;
       const rows = yield* sql<{
         readonly sequence: number;
@@ -878,6 +897,11 @@ export const compactWorkflowEvents = (input: {
               counts.events += gone.length;
               counts.bytes += gone[0]?.payloadBytes ?? 0;
             }
+            if (row.eventType === WORKFLOW_DELETED_EVENT) {
+              // Nothing more is expected for a deleted workflow, so its row goes too.
+              yield* sql`DELETE FROM orchestration_event_keep_last WHERE group_key = ${key}`;
+              continue;
+            }
             yield* sql`
               INSERT INTO orchestration_event_keep_last (group_key, kept_sequence)
               VALUES (${key}, ${next})
@@ -898,5 +922,9 @@ export const compactWorkflowEvents = (input: {
       if (tooRecent !== -1) break;
       yield* Effect.yieldNow;
     }
-    return { ...totals, complete: true } satisfies WorkflowEventCompactionResult;
+    return {
+      ...totals,
+      complete: true,
+      futureDatedEvent,
+    } satisfies WorkflowEventCompactionResult;
   });
