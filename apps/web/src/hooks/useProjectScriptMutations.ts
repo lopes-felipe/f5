@@ -70,7 +70,7 @@ export function useProjectScriptMutations(project: ProjectScriptMutationTarget |
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
         ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
-        stopOnSettle: input.stopOnSettle ?? false,
+        ...(input.stopOnSettle ? { stopOnSettle: true } : {}),
         ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
       const nextScripts = input.runOnWorktreeCreate
@@ -103,16 +103,17 @@ export function useProjectScriptMutations(project: ProjectScriptMutationTarget |
       const {
         async: _previousAsync,
         runOnWorktreeSettle: _previousSettle,
-        ...existingWithoutAsync
+        stopOnSettle: _previousStopOnSettle,
+        ...existingWithoutOptionalFlags
       } = existingScript;
       const updatedScript: ProjectScript = {
-        ...existingWithoutAsync,
+        ...existingWithoutOptionalFlags,
         name: input.name,
         command: input.command,
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
         ...(input.runOnWorktreeSettle ? { runOnWorktreeSettle: true } : {}),
-        stopOnSettle: input.stopOnSettle ?? false,
+        ...(input.stopOnSettle ? { stopOnSettle: true } : {}),
         ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
       const nextScripts = project.scripts.map((script) =>
