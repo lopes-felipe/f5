@@ -373,7 +373,12 @@ import {
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
-import { answerFromTable, routePromise, tableAnswers } from "./wsServer/routes/routeTable.ts";
+import {
+  answerFromTable,
+  mergeRouteTables,
+  routePromise,
+  tableAnswers,
+} from "./wsServer/routes/routeTable.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import {
@@ -4155,14 +4160,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   // Routes that live in their own modules. `routeRequest` answers from here
   // before its switch; see `wsServer/routes/routeTable.ts`.
-  const routeTable = {
-    ...githubAccountRoutes({
+  const routeTable = mergeRouteTables(
+    githubAccountRoutes({
       login: githubLogin,
       account: githubAccount,
       cliImport: githubCliImport,
     }),
-    ...providerAccountRoutes(accountService),
-  };
+    providerAccountRoutes(accountService),
+  );
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;

@@ -44,6 +44,24 @@ export const answerFromTable = <Method extends RouteMethod, R>(
   // cannot follow that pairing through an indexed lookup.
   (table[body._tag as Method] as unknown as RouteHandler<RouteMethod, R>)(body, ws);
 
+/**
+ * One table from two that own different methods. A method both own is a type
+ * error where the tables are known statically, and throws when the server
+ * builds its table otherwise: with a plain object spread the later table would
+ * win and nothing would say so. Nest calls to merge more than two.
+ */
+export const mergeRouteTables = <A extends RouteMethod, B extends RouteMethod, RA, RB>(
+  first: RouteTable<A, RA>,
+  second: RouteTable<B, RB> &
+    ([A & B] extends [never] ? unknown : { readonly methodOwnedByBothTables: A & B }),
+): RouteTable<A | B, RA | RB> => {
+  const shared = Object.keys(second).filter((method) => Object.hasOwn(first, method));
+  if (shared.length > 0) {
+    throw new Error(`Route tables both answer: ${shared.join(", ")}`);
+  }
+  return { ...first, ...second } as RouteTable<A | B, RA | RB>;
+};
+
 /** Runs a promise-returning operation; a rejection becomes the route's error message. */
 export const routePromise = <A>(operation: () => Promise<A>) =>
   Effect.tryPromise({

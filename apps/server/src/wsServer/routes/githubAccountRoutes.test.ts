@@ -96,6 +96,20 @@ it("leaves the browser sign-in alone for other hosts", async () => {
   ]);
 });
 
+it("starts a browser sign-in and lists the accounts gh holds", async () => {
+  const { calls, answer } = makeRoutes();
+  await expect(Effect.runPromise(answer({ _tag: WS_METHODS.githubLoginStart }))).resolves.toEqual({
+    available: true,
+    state: "pending",
+    handle: "attempt-1",
+  });
+  await expect(
+    Effect.runPromise(answer({ _tag: WS_METHODS.githubAccountCliCandidates })),
+  ).resolves.toEqual({ ghAvailable: true, accounts: [] });
+  // Neither touches a sign-in that is already running.
+  expect(calls).toEqual([]);
+});
+
 it("passes the sign-in handle through to status and cancel", async () => {
   const { calls, answer } = makeRoutes();
   await expect(
