@@ -250,6 +250,18 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("answers a method that lives in a route table rather than the switch", async () => {
+    h.server = await createTestServer({ cwd: "/test/project" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.githubLoginStatus, {});
+    expect(response.error).toBeUndefined();
+    expect(response.result).toMatchObject({ state: "idle" });
+  });
+
   it("writes rpc and websocket observability records when enabled", async () => {
     const stateDir = makeTempDir("t3code-ws-observability-");
     h.server = await createTestServer({
