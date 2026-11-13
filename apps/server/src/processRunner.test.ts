@@ -7,6 +7,18 @@ import { describe, expect, it, vi } from "vitest";
 import { runProcess, terminateRunningProcesses } from "./processRunner";
 
 describe("runProcess", () => {
+  it("preserves fast Git command output with explicitly empty stdin", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 16 }, () =>
+        runProcess("git", ["--version"], { stdin: "", timeoutMs: 5000, env: process.env }),
+      ),
+    );
+    for (const result of results) {
+      expect(result.code).toBe(0);
+      expect(result.stdout).toMatch(/^git version /);
+    }
+  });
+
   it.each(["error", "tail"] as const)(
     "streams complete output with bounded diagnostic tails in %s mode",
     async (outputMode) => {
