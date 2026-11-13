@@ -361,8 +361,11 @@ layer("upstream port queue", (it) => {
           const unresolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries.find(
             (entry) => entry.status === "queued",
           )!;
-          assert.lengthOf(unresolved.waitingOn, 2);
-          assert.isTrue(unresolved.waitingOn.every((blocker) => blocker.needsAttention));
+          // Both batch topics block, but the thread is listed once.
+          assert.lengthOf(unresolved.waitingOn, 1);
+          assert.lengthOf(unresolved.waitingOn[0]!.topicTitles, 2);
+          assert.equal(unresolved.waitingOn[0]!.threadId, threadId);
+          assert.isTrue(unresolved.waitingOn[0]!.needsAttention);
           fixture.gh.prs.push(pr);
           fixture.clock.now = new Date(fixture.clock.now.getTime() + 16_000);
           yield* service.testing.dispatchQueue(PROJECT_ID);
@@ -916,6 +919,27 @@ layer("upstream port queue", (it) => {
       assert.equal(progress.counts.queued, 9);
       assert.equal(progress.entries[0]!.fileCount, 1);
       assert.equal(progress.entries[1]!.waitingOn.length, 1);
+      assert.deepStrictEqual(progress.viewCounts, {
+        active: 10,
+        needsYou: 0,
+        history: 0,
+        inactive: 0,
+      });
+      const active = yield* service.getPortQueue({
+        projectId: PROJECT_ID,
+        view: "active",
+        limit: 2,
+      });
+      assert.deepStrictEqual(
+        active.entries.map((entry) => entry.bucket),
+        ["executing", "waiting"],
+      );
+      assert.isNotNull(active.entries[0]!.thread);
+      assert.equal(active.nextCursor, "2");
+      assert.lengthOf(
+        (yield* service.getPortQueue({ projectId: PROJECT_ID, view: "history" })).entries,
+        0,
+      );
     }),
   );
 
@@ -934,7 +958,20 @@ layer("upstream port queue", (it) => {
       assert.equal(progress.counts.executing, 0);
       assert.equal(progress.counts.needsAttention, 1);
       assert.equal(progress.entries[0]!.topics[0]!.result, "no-outcome");
-      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hasHistory, true);
+      assert.equal(progress.entries[0]!.bucket, "needs-attention");
+      assert.equal(progress.viewCounts.needsYou, 1);
+      const needsYou = yield* service.getPortQueue({ projectId: PROJECT_ID, view: "needs-you" });
+      assert.deepStrictEqual(
+        needsYou.entries.map((entry) => entry.entryId),
+        [progress.entries[0]!.entryId],
+      );
+      assert.lengthOf(
+        (yield* service.getPortQueue({ projectId: PROJECT_ID, view: "active" })).entries,
+        0,
+      );
+      const summary = (yield* service.getOverview(PROJECT_ID)).portQueue;
+      assert.equal(summary.hasHistory, true);
+      assert.equal(summary.needsAttention, 1);
     }),
   );
   it.effect("releases overlapping files after recording a settled not-applicable outcome", () =>

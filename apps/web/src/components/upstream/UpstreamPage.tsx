@@ -6,6 +6,7 @@ import {
   type UpstreamDecision,
   type UpstreamOverview,
   type UpstreamPortLinkSummary,
+  type UpstreamPortQueueView,
   type UpstreamResolvePublicationInput,
   type UpstreamRunKind,
   type UpstreamRunTriage,
@@ -46,6 +47,8 @@ import {
 } from "./UpstreamDialogs";
 import { UpstreamConfigEmptyState } from "./UpstreamConfigEmptyState";
 import { UpstreamHeader } from "./UpstreamHeader";
+import { portQueueLandingView } from "./UpstreamPortQueue";
+import { UpstreamQueuePanel } from "./UpstreamQueuePanel";
 import { UpstreamListEmpty } from "./UpstreamListEmpty";
 import { UpstreamTopicDetail } from "./UpstreamTopicDetail";
 import { useSaveUpstreamSettings } from "./useSaveUpstreamSettings";
@@ -154,6 +157,8 @@ export function UpstreamPage(props: {
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
   const { save: saveUpstreamSettings } = useSaveUpstreamSettings(projectId);
   const list = props.search.list ?? "inbox";
+  /** The port queue tab shown in place of the topic list, if any. */
+  const queueView = props.search.queue ?? null;
   const sort = props.search.sort ?? null;
   // Keyed by value: the router hands back new arrays for unchanged filters.
   const filterKey = JSON.stringify(filterFromSearch(props.search, list));
@@ -167,7 +172,7 @@ export function UpstreamPage(props: {
   const overview = overviewQuery.data;
   const topicsQuery = useInfiniteQuery({
     ...upstreamTopicsQueryOptions(projectId ?? ("" as ProjectId), list, filter, sort),
-    enabled: projectId !== null && Boolean(overview?.config),
+    enabled: projectId !== null && Boolean(overview?.config) && queueView === null,
   });
   const firstPage = topicsQuery.data?.pages[0];
   const overviewQueuedTopicIds = overview?.portQueue.queuedTopicIds;
@@ -278,12 +283,13 @@ export function UpstreamPage(props: {
   };
 
   useEffect(() => {
-    if (topicsQuery.isPending) return;
+    // The Queue view opens topics that need not be in any loaded list.
+    if (queueView !== null || topicsQuery.isPending) return;
     if (focused !== null && focused === requestedRef.current) return;
     const next = reconcileFocus(ids, focused, lastIndex.current);
     if (next !== focused && (next !== null || focused !== null)) setFocused(next);
     if (next) lastIndex.current = ids.indexOf(next);
-  }, [ids, focused, setFocused, topicsQuery.isPending]);
+  }, [ids, focused, setFocused, topicsQuery.isPending, queueView]);
 
   /** Replaces the selection with loaded rows only. */
   const selectLoaded = useCallback((next: ReadonlySet<string>) => {
@@ -797,6 +803,19 @@ export function UpstreamPage(props: {
   const changeList = (next: UpstreamTopicState) => {
     if (projectId) onSearchChange({ project: projectId, list: next });
   };
+  /** Shows the port queue in place of the list; the list stays in the URL to return to. */
+  const openQueue = (view: UpstreamPortQueueView) => {
+    if (!projectId) return;
+    const { topic, ...rest } = searchRef.current;
+    onSearchChange({
+      ...rest,
+      project: projectId,
+      list,
+      queue: view,
+      // Keep the open topic only while moving between queue tabs.
+      ...(queueView !== null && topic ? { topic } : {}),
+    });
+  };
 
   /** Reopening bumps the epoch, so running port threads stop counting; ask first when any is In progress. */
   const reopen = (topicIds: string[]) => {
@@ -1054,6 +1073,7 @@ export function UpstreamPage(props: {
           onExpireBacklog={expireBacklog}
           onRefresh={() => void invalidateUpstreamPorts(queryClient, { files: true })}
           onResolvePublication={resolvePublication}
+          onOpenQueue={openQueue}
         />
         <UpstreamAttention
           overview={overview}
@@ -1088,12 +1108,33 @@ export function UpstreamPage(props: {
                 }
               : null
           }
+          queue={
+            overview.portQueue.hasHistory || queueView !== null
+              ? {
+                  active: queueView !== null,
+                  jobs: overview.portQueue.running + overview.portQueue.queuedThreads,
+                  needsAttention: overview.portQueue.needsAttention,
+                  onOpen: () => openQueue(portQueueLandingView(overview.portQueue)),
+                }
+              : null
+          }
         />
       </header>
       <div className="flex min-h-0 flex-1">
         <section className="flex min-h-0 w-1/2 min-w-80 flex-col border-r">
-          {/* Loaded rows stay through a failed background refetch. */}
-          {topicsQuery.error && !topicsQuery.data ? (
+          {queueView !== null ? (
+            <UpstreamQueuePanel
+              projectId={projectId}
+              overview={overview}
+              readOnly={readOnly}
+              view={queueView}
+              onViewChange={openQueue}
+              focusedTopic={focused}
+              onOpenTopic={(topicId) => onSearchChange({ ...searchRef.current, project: projectId, topic: topicId })}
+              onRetry={(topicIds) => setPortRequest({ ids: topicIds, note: null })}
+            />
+          ) : /* Loaded rows stay through a failed background refetch. */
+          topicsQuery.error && !topicsQuery.data ? (
             <div role="alert" className="space-y-2 p-4 text-sm">
               <p className="text-destructive-foreground">{String(topicsQuery.error)}</p>
               <Button size="sm" variant="outline" onClick={() => void topicsQuery.refetch()}>
@@ -1195,6 +1236,8 @@ export function UpstreamPage(props: {
               onUnlink={unlink}
               onOpenTopic={openTopic}
             />
+          ) : queueView !== null ? (
+            <p className="p-6 text-sm text-muted-foreground">Select a topic in a job to see its details.</p>
           ) : (
             <p className="p-6 text-sm text-muted-foreground">
               Select a topic. Use <Kbd>j</Kbd> and <Kbd>k</Kbd> to move

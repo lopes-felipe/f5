@@ -1,6 +1,12 @@
 import "../../index.css";
 import { readAppSettingsSnapshot } from "../../appSettings";
-import { DEFAULT_UNIFIED_SETTINGS, ProjectId, type UpstreamOverview, type UpstreamTopicRow } from "@t3tools/contracts";
+import {
+  DEFAULT_UNIFIED_SETTINGS,
+  ProjectId,
+  type UpstreamOverview,
+  type UpstreamPortQueueEntry,
+  type UpstreamTopicRow,
+} from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
@@ -153,6 +159,7 @@ const overview = {
     running: 0,
     concurrency: 5,
     waitingOnFiles: 0,
+    needsAttention: 0,
     paused: false,
     pausedReason: null,
     hold: null,
@@ -182,6 +189,52 @@ const topicsPage = (topics: ReadonlyArray<UpstreamTopicRow>, total = topics.leng
   nextCursor: null,
   total,
   facets: FACETS,
+});
+
+const queueEntry = (overrides: Partial<UpstreamPortQueueEntry> = {}): UpstreamPortQueueEntry =>
+  ({
+    entryId: "entry-1",
+    position: 0,
+    topics: [
+      { topicId: "pr-1", title: "Topic A", state: "ready", epoch: 1, superseded: false, result: null, bucket: "queued" },
+    ],
+    status: "queued",
+    bucket: "queued",
+    createdAt: new Date().toISOString(),
+    finishedAt: null,
+    result: null,
+    reason: null,
+    threadId: null,
+    thread: null,
+    prUrl: null,
+    pr: null,
+    fileCount: 2,
+    waitingOn: [],
+    ignoreConflicts: false,
+    ...overrides,
+  }) as never;
+const queuePage = (
+  entries: ReadonlyArray<UpstreamPortQueueEntry>,
+  viewCounts = { active: entries.length, needsYou: 0, history: 0, inactive: 0 },
+) => ({
+  entries,
+  nextCursor: null,
+  counts: {
+    queued: 0,
+    executing: 0,
+    awaitingReview: 0,
+    recorded: 0,
+    needsAttention: 0,
+    omitted: 0,
+    cancelled: 0,
+    done: 0,
+    resolved: 0,
+    superseded: 0,
+  },
+  viewCounts,
+  doneOnDefaultBranch: 0,
+  baseEvidenceAt: null,
+  baseRefreshError: null,
 });
 
 /** Stands in for the router: the search params live in state and are shown for assertions. */
@@ -219,22 +272,7 @@ beforeEach(() => {
   api.enqueuePort.mockResolvedValue({ queuedTopicIds: ["pr-1"], queuedThreads: 1, skipped: [] });
   api.dequeuePort.mockResolvedValue({ revision: "r1" });
   api.controlPortQueue.mockResolvedValue({ revision: "r1" });
-  api.getPortQueue.mockResolvedValue({
-    entries: [],
-    nextCursor: null,
-    counts: {
-      queued: 2,
-      executing: 0,
-      awaitingReview: 0,
-      recorded: 0,
-      needsAttention: 0,
-      omitted: 0,
-      cancelled: 0,
-    },
-    doneOnDefaultBranch: 0,
-    baseEvidenceAt: null,
-    baseRefreshError: null,
-  });
+  api.getPortQueue.mockResolvedValue(queuePage([]));
   api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
     revision: "r1",
     repository: "https://github.com/pingdotgg/t3code.git",
@@ -402,7 +440,7 @@ it("queues selected IDs beyond loaded pages and removes queued topics", async ()
     truncated: false,
   });
   await setup({ project: projectId, list: "ready" }, "Topic A", true);
-  await expect.element(page.getByRole("button", { name: /Queue · 0\/5 running · 1 topic in 1 queued job$/ })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Port queue: 0/5 running · 1 queued" })).toBeVisible();
   await expect.element(page.getByText("Queued", { exact: true })).toBeVisible();
   await selectAllMatching(250);
   await bulkButton("Queue selected…").click();
@@ -414,10 +452,10 @@ it("queues selected IDs beyond loaded pages and removes queued topics", async ()
   await vi.waitFor(() => expect(api.dequeuePort).toHaveBeenCalledWith({ projectId, topicIds }));
 });
 
-it("shows the queue panel and controls pause, resume and clear", async () => {
+it("opens the Queue view from the header chip and controls pause, resume and clear", async () => {
   let value = {
     ...overview,
-    portQueue: { ...overview.portQueue, queuedTopics: 10, queuedThreads: 2, waitingOnFiles: 2 },
+    portQueue: { ...overview.portQueue, hasHistory: true, queuedTopics: 10, queuedThreads: 2, waitingOnFiles: 2 },
   };
   api.getOverview.mockResolvedValue(value);
   api.controlPortQueue.mockImplementation(async ({ action }: { action: string }) => {
@@ -426,26 +464,95 @@ it("shows the queue panel and controls pause, resume and clear", async () => {
     return { revision: "r1" };
   });
   await setup();
-  await page.getByRole("button", { name: /Queue · 0\/5 running · 10 topics in 2 queued jobs/ }).click();
-  await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
-  await expect.element(page.getByText(/2 of 2 queued jobs are waiting on earlier ports/)).toBeVisible();
+  await page.getByRole("button", { name: "Port queue: 0/5 running · 2 queued" }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"active"');
+  await expect
+    .element(page.getByTestId("queue-status"))
+    .toHaveTextContent("Running 0 of 5 jobs · 2 queued jobs (10 topics) · 2 waiting on files");
+  await vi.waitFor(() => expect(api.getPortQueue).toHaveBeenCalledWith({ projectId, view: "active" }));
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
-  await page.getByRole("button", { name: "Clear queue", exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Clear queue", exact: true }).click();
+  await page.getByRole("button", { name: "Clear queued (2)", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Clear queued", exact: true }).click();
   await vi.waitFor(() => expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "clear" }));
+  // Choosing a list leaves the Queue view.
+  await page.getByRole("group", { name: "Topic lists" }).getByRole("button", { name: /^Ready/ }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"list":"ready"');
+  await expect.element(page.getByTestId("search")).not.toHaveTextContent('"queue"');
 });
 
-it("reopens queue history after execution has finished and the page reloads", async () => {
-  api.getOverview.mockResolvedValue({
-    ...overview, portQueue: { ...overview.portQueue, hasHistory: true },
-  });
+it("hides the chip with only history but keeps the Queue toggle, with history tabs", async () => {
+  api.getOverview.mockResolvedValue({ ...overview, portQueue: { ...overview.portQueue, hasHistory: true } });
+  api.getPortQueue.mockResolvedValue(
+    queuePage(
+      [queueEntry({ status: "finished", bucket: "done", finishedAt: new Date().toISOString(), threadId: "t-1" as never, thread: { title: "Port git fixes", status: "completed" } })],
+      { active: 0, needsYou: 0, history: 1, inactive: 4 },
+    ),
+  );
   await setup();
-  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 topics in 0 queued jobs/ }).click();
-  await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
-  await userEvent.keyboard("{Escape}");
-  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 topics in 0 queued jobs/ }).click();
-  await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: /^Port queue:/ })).not.toBeInTheDocument();
+  await page.getByRole("button", { name: /^Queue/ }).click();
+  await page.getByRole("tab", { name: /History/ }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"history"');
+  await expect.element(page.getByRole("button", { name: "Port git fixes" })).toBeVisible();
+  await page.getByText("Show cancelled and superseded (4)").click();
+  await vi.waitFor(() =>
+    expect(api.getPortQueue).toHaveBeenCalledWith({ projectId, view: "history", includeInactive: true }),
+  );
+});
+
+it("acts on queued jobs and opens their topics in the detail pane", async () => {
+  api.getOverview.mockResolvedValue({
+    ...overview,
+    portQueue: { ...overview.portQueue, hasHistory: true, queuedTopics: 2, queuedThreads: 2, waitingOnFiles: 1 },
+  });
+  api.getPortQueue.mockResolvedValue(
+    queuePage([
+      queueEntry({
+        entryId: "waiting",
+        bucket: "waiting",
+        topics: [
+          { topicId: "pr-1" as never, title: "Topic A", state: "ready", epoch: 1, superseded: false, result: null, bucket: "waiting" },
+        ],
+        waitingOn: [
+          {
+            topicId: "pr-9" as never,
+            threadId: "t-9" as never,
+            prUrl: "https://github.com/o/f5/pull/655",
+            prNumber: 655,
+            needsAttention: true,
+            threadTitle: "Port git fixes",
+            topicTitles: ["Git fix 1", "Git fix 2"],
+          },
+        ],
+      }),
+      queueEntry({
+        entryId: "queued",
+        position: 1,
+        topics: [
+          { topicId: "pr-3" as never, title: "Topic C", state: "ready", epoch: 1, superseded: false, result: null, bucket: "queued" },
+        ],
+      }),
+    ]),
+  );
+  await setup({ project: projectId, list: "inbox" });
+  await page.getByRole("button", { name: /^Queue/ }).click();
+  const waiting = page.getByRole("listitem", { name: /^Waiting on files: Topic A/ });
+  await expect.element(waiting.getByRole("button", { name: "Port git fixes" })).toBeVisible();
+  await expect.element(waiting.getByText("#655")).toBeVisible();
+  await expect.element(waiting.getByText("Blocker needs attention")).toBeVisible();
+  await waiting.getByRole("button", { name: "Start anyway" }).click();
+  await vi.waitFor(() =>
+    expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "ignore-conflicts", entryId: "waiting" }),
+  );
+  const queued = page.getByRole("listitem", { name: /^Queued #2: Topic C/ });
+  await queued.getByRole("button", { name: "Job actions" }).click();
+  await page.getByRole("menuitem", { name: "Remove from queue" }).click();
+  await vi.waitFor(() => expect(api.dequeuePort).toHaveBeenCalledWith({ projectId, topicIds: ["pr-3"] }));
+  await queued.getByRole("button", { name: "Topic C" }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"topic":"pr-3"');
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"queue":"active"');
+  await vi.waitFor(() => expect(api.getTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: "pr-3" })));
 });
 const bulkButton = (name: string) =>
   page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name, exact: true });

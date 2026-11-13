@@ -444,6 +444,8 @@ export const UpstreamOverview = Schema.Struct({
     running: NonNegativeInt,
     concurrency: PositiveInt,
     waitingOnFiles: NonNegativeInt,
+    /** Jobs with a topic that needs a decision. */
+    needsAttention: NonNegativeInt,
     paused: Schema.Boolean,
     pausedReason: Schema.NullOr(Schema.String),
     hold: Schema.NullOr(
@@ -944,9 +946,37 @@ export const UpstreamPortQueueStatus = Schema.Literals([
   "dropped",
 ]);
 export type UpstreamPortQueueStatus = typeof UpstreamPortQueueStatus.Type;
+/**
+ * Where one queued topic stands. `waiting` is a queued entry held back by
+ * another port's files; `resolved` means the topic was decided outside the
+ * queue; `superseded` means a later attempt or a new epoch replaced it.
+ */
+export const UpstreamPortQueueBucket = Schema.Literals([
+  "queued",
+  "waiting",
+  "executing",
+  "needs-attention",
+  "awaiting-review",
+  "done",
+  "recorded",
+  "resolved",
+  "superseded",
+  "omitted",
+  "cancelled",
+]);
+export type UpstreamPortQueueBucket = typeof UpstreamPortQueueBucket.Type;
+export const UpstreamPortQueueView = Schema.Literals(["active", "needs-you", "history"]);
+export type UpstreamPortQueueView = typeof UpstreamPortQueueView.Type;
 export const UpstreamGetPortQueueInput = Schema.Struct({
   projectId: ProjectId,
   statuses: Schema.optionalKey(Schema.Array(UpstreamPortQueueStatus)),
+  /**
+   * One tab of the queue, filtered and ordered before paging. Omitted, entries
+   * come back in queue position order with no filtering.
+   */
+  view: Schema.optionalKey(UpstreamPortQueueView),
+  /** History only: also list jobs that were cancelled, omitted or superseded. */
+  includeInactive: Schema.optionalKey(Schema.Boolean),
   cursor: Schema.optionalKey(Schema.String),
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
 });
@@ -962,9 +992,18 @@ export const UpstreamPortQueueEntry = Schema.Struct({
       epoch: PositiveInt,
       superseded: Schema.Boolean,
       result: Schema.NullOr(Schema.String),
+      bucket: UpstreamPortQueueBucket,
     }),
   ),
   status: UpstreamPortQueueStatus,
+  /** The most severe bucket among the entry's topics. */
+  bucket: UpstreamPortQueueBucket,
+  createdAt: Schema.String,
+  finishedAt: Schema.NullOr(Schema.String),
+  thread: Schema.NullOr(
+    Schema.Struct({ title: Schema.NullOr(Schema.String), status: Schema.NullOr(Schema.String) }),
+  ),
+  pr: Schema.NullOr(Schema.Struct({ number: Schema.NullOr(PositiveInt), url: Schema.String })),
   result: Schema.NullOr(Schema.String),
   reason: Schema.NullOr(Schema.String),
   threadId: Schema.NullOr(ThreadId),
@@ -976,6 +1015,10 @@ export const UpstreamPortQueueEntry = Schema.Struct({
       threadId: Schema.NullOr(ThreadId),
       prUrl: Schema.NullOr(Schema.String),
       needsAttention: Schema.optionalKey(Schema.Boolean),
+      threadTitle: Schema.NullOr(Schema.String),
+      prNumber: Schema.NullOr(PositiveInt),
+      /** Every blocking topic in that thread; blockers are listed once per thread. */
+      topicTitles: Schema.Array(Schema.String),
     }),
   ),
   ignoreConflicts: Schema.Boolean,
@@ -992,7 +1035,18 @@ export const UpstreamGetPortQueueResult = Schema.Struct({
     needsAttention: NonNegativeInt,
     omitted: NonNegativeInt,
     cancelled: NonNegativeInt,
+    done: NonNegativeInt,
+    resolved: NonNegativeInt,
+    superseded: NonNegativeInt,
   }),
+  /** Jobs per tab. `inactive` counts the history jobs hidden without `includeInactive`. */
+  viewCounts: Schema.Struct({
+    active: NonNegativeInt,
+    needsYou: NonNegativeInt,
+    history: NonNegativeInt,
+    inactive: NonNegativeInt,
+  }),
+  /** Equals `counts.done`; kept for older clients. */
   doneOnDefaultBranch: NonNegativeInt,
   baseEvidenceAt: Schema.NullOr(Schema.String),
   baseRefreshError: Schema.NullOr(Schema.String),

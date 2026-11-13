@@ -215,10 +215,6 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
     setLastDigestAt: (projectId: string, at: string) =>
       sql`INSERT INTO upstream_budget_state(project_id,last_digest_at) VALUES (${projectId},${at})
       ON CONFLICT(project_id) DO UPDATE SET last_digest_at = excluded.last_digest_at`,
-    hasQueueHistory: (projectId: string) =>
-      sql`SELECT 1 FROM upstream_port_queue WHERE project_id = ${projectId} LIMIT 1`.pipe(
-        Effect.map((rows) => rows.length > 0),
-      ),
     listQueue,
     setQueueEntry,
     getQueueState,
