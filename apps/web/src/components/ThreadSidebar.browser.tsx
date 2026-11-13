@@ -4263,8 +4263,23 @@ describe("Thread sidebar", () => {
             }),
           ],
         };
-        nextFixture.resolveWsRequest = (body) =>
-          body._tag === WS_METHODS.gitStatus
+        nextFixture.resolveWsRequest = (body) => {
+          // The default details carry no activities; keep Review A's approval when the sidebar
+          // prefetches its details.
+          if (
+            body._tag === ORCHESTRATION_WS_METHODS.getThreadTailDetails &&
+            body.threadId === ids.reviewA
+          ) {
+            const thread = nextFixture.snapshot.threads.find((entry) => entry.id === ids.reviewA);
+            return {
+              type: "result",
+              result: {
+                ...(resolveWsRpc(body) as Record<string, unknown>),
+                activities: thread?.activities ?? [],
+              },
+            };
+          }
+          return body._tag === WS_METHODS.gitStatus
             ? {
                 type: "result",
                 result: {
@@ -4285,6 +4300,7 @@ describe("Thread sidebar", () => {
                 },
               }
             : null;
+        };
       },
     });
 
@@ -4296,12 +4312,14 @@ describe("Thread sidebar", () => {
           ?.click();
       }
       // Code review keeps the implementation step active; its PR still leads the row.
-      const implementation = await waitForSidebarThreadRow("Implementation");
+      // The workflow row's phase summary also says "Implementation", so find the step's row.
+      const implementationRow = () =>
+        document.querySelector<HTMLElement>(`[data-sidebar-row="thread:workflow:${ids.impl}"]`);
       await vi.waitFor(() =>
         expect(
-          (implementation.firstElementChild as HTMLElement).querySelector(
+          (implementationRow()?.firstElementChild as HTMLElement | undefined)?.querySelector(
             'button[aria-label*="PR open"]',
-          ),
+          ) ?? null,
         ).not.toBeNull(),
       );
 
