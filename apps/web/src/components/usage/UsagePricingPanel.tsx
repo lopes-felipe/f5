@@ -15,7 +15,7 @@ import { Input } from "../ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "../ui/input-group";
 import { Label } from "../ui/label";
 import { Skeleton } from "../ui/skeleton";
-import { providerLabel, totalCost } from "./format";
+import { providerLabel, totalCost, unpricedRecordCount } from "./format";
 import { type UsageColumn, type UsageSort, UsageSection, UsageTable } from "./kit";
 import { useUsageSettingsSave } from "./UsagePriceDialog";
 
@@ -44,7 +44,7 @@ export function pricingModelRows(
       provider: entry.provider,
       model: entry.model,
       turns: (existing?.turns ?? 0) + entry.metrics.turnCount,
-      unpricedTurnCount: (existing?.unpricedTurnCount ?? 0) + entry.metrics.unpricedTurnCount,
+      unpricedTurnCount: (existing?.unpricedTurnCount ?? 0) + unpricedRecordCount(entry.metrics),
       costUsd: (existing?.costUsd ?? 0) + totalCost(entry.metrics),
       override: overrideFor(entry.provider, entry.model),
     });
@@ -72,7 +72,7 @@ export function pricingModelRows(
 export function unpricedModelCount(summary: UsageSummary | undefined): number {
   const models = new Set<string>();
   for (const entry of summary?.byProvider ?? [])
-    if (entry.model !== null && entry.metrics.unpricedTurnCount > 0)
+    if (entry.model !== null && unpricedRecordCount(entry.metrics) > 0)
       models.add(`${entry.provider}\u0000${entry.model}`);
   return models.size;
 }
