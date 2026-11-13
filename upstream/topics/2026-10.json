@@ -67636,12 +67636,14 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-13T11:27:13.201Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27892",
       "relatedTopics": [
         "pr-26859"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "thread details",
