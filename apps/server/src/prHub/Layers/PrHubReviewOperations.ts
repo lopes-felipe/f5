@@ -39,6 +39,12 @@ import { mapGitHubCliError } from "../../sourceControl/GitHubSourceControlProvid
 import { SourceControlProviderError } from "../../sourceControl/SourceControlProvider.ts";
 import type { PrHubServiceShape } from "../Services/PrHubService.ts";
 import {
+  canViewerCommentOnPullRequest,
+  graphqlErrorMessage,
+  PR_COMMENT_PERMISSION_PULL_REQUEST_FIELDS,
+  PR_COMMENT_PERMISSION_REPOSITORY_FIELDS,
+} from "../commentPermission.ts";
+import {
   PrHubReviewOperations,
   type PrHubReviewContext,
   type PrHubReviewMethods,
@@ -332,7 +338,7 @@ function create(
         const result = yield* provider.query({
           cwd,
           host: pr.host,
-          document: `query F5CommentPermission($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { isArchived pullRequest(number:$number) { state viewerCanComment } } }`,
+          document: `query F5CommentPermission($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { ${PR_COMMENT_PERMISSION_REPOSITORY_FIELDS} pullRequest(number:$number) { ${PR_COMMENT_PERMISSION_PULL_REQUEST_FIELDS} } } }`,
           variables: {
             owner: owner.repo.split("/")[0]!,
             name: owner.repo.split("/")[1]!,
@@ -344,23 +350,42 @@ function create(
             data: Schema.Struct({
               repository: Schema.Struct({
                 isArchived: Schema.Boolean,
+                viewerPermission: Schema.NullOr(Schema.String),
                 pullRequest: Schema.Struct({
                   state: Schema.String,
-                  viewerCanComment: Schema.Boolean,
+                  locked: Schema.Boolean,
                 }),
               }),
             }),
           }),
         )(result).pipe(
-          Effect.mapError(() => prHubActionError("Comment permissions could not be verified.")),
+          Effect.mapError(() => {
+            const detail = graphqlErrorMessage(result);
+            return prHubActionError(
+              detail
+                ? `Comment permissions could not be verified: ${detail}`
+                : "Comment permissions could not be verified.",
+            );
+          }),
         );
         const repo = decoded.data.repository;
+        if (repo.isArchived)
+          return yield* prHubActionError(
+            "This repository is archived. Its pull requests are read-only.",
+          );
+        if (repo.pullRequest.state !== "OPEN")
+          return yield* prHubActionError(
+            `This pull request is ${repo.pullRequest.state.toLowerCase()}. F5 only comments on open pull requests.`,
+          );
         if (
-          repo.isArchived ||
-          repo.pullRequest.state !== "OPEN" ||
-          !repo.pullRequest.viewerCanComment
+          !canViewerCommentOnPullRequest({
+            locked: repo.pullRequest.locked,
+            viewerPermission: repo.viewerPermission,
+          })
         )
-          return yield* prHubActionError("You cannot comment on this PR in its current state.");
+          return yield* prHubActionError(
+            "This conversation is locked. Only people with write access can comment.",
+          );
       });
       return { owner, request: dependencies.request, verify };
     });

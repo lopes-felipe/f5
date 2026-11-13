@@ -401,6 +401,11 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     const thread = fixture.snapshot.threads.find((t) => t.id === threadId);
     return {
       threadId,
+      // Match the server: null confirms the thread is absent, so the thread
+      // route redirects home instead of waiting for metadata that never comes.
+      thread: thread
+        ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+        : null,
       messages: thread?.messages ?? [],
       checkpoints: thread?.checkpoints ?? [],
       commandExecutions: [],
@@ -422,6 +427,11 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       oldestLoadedCheckpointTurnCount: thread?.checkpoints[0]?.checkpointTurnCount ?? null,
       oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
+      // As the server answers: the thread's metadata, or null when it has no such thread.
+      // The thread route waits for one of the two before it leaves an unlisted thread.
+      thread: thread
+        ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+        : null,
     };
   }
   if (tag === ORCHESTRATION_WS_METHODS.getThreadHistoryPage) {
