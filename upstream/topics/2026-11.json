@@ -130,9 +130,11 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-13T11:23:34.068Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "c-71a1c49b75a2",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -32437,12 +32439,14 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-13T11:23:41.579Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33548",
       "relatedTopics": [
         "pr-24599"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -36036,9 +36040,11 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
+      "decidedAt": "2026-11-13T11:23:30.846Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34524",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
