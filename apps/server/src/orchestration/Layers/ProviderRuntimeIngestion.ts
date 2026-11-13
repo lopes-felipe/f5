@@ -6153,7 +6153,10 @@ const make = Effect.gen(function* () {
               providerInstanceId:
                 event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-              activeTurnId: eventTurnId ?? null,
+              activeTurnId:
+                activeTurnId === null && thread.session?.usageLimit?.turnId === eventTurnId
+                  ? null
+                  : (eventTurnId ?? null),
               lastError: runtimeErrorMessage,
               lastErrorId: event.eventId,
               usageLimit: toOrchestrationUsageLimit(event.payload.usageLimit, event, thread),

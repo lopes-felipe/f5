@@ -146,7 +146,7 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
             message:
               mode === "throttled"
                 ? "API error 429: Rate limit exceeded."
-                : "Model request refused.",
+                : "Model request refused. api_key=abc123",
             retryable: false,
             ...(mode === "throttled" ? {} : { quota: { limitKind: "tierLimit", resetsAtMs } }),
           },
@@ -180,6 +180,8 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
           assert.isUndefined(terminal?.payload.usageLimit);
           assert.isUndefined(error);
         } else {
+          assert.equal(terminal?.payload.errorMessage, "Model request refused. api_key=[REDACTED]");
+          assert.equal(error?.payload.message, terminal?.payload.errorMessage);
           assert.equal(terminal?.payload.usageLimit?.resetsAt, new Date(resetsAtMs).toISOString());
           assert.deepEqual(error?.payload.usageLimit, terminal?.payload.usageLimit);
         }
@@ -189,6 +191,32 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
       }),
     );
   }
+
+  it.effect("bounds and redacts session-close reasons on terminal and exit events", () =>
+    Effect.gen(function* () {
+      const harness = yield* MuseHarness;
+      const { events, stop } = yield* collect(harness.adapter);
+      const threadId = ThreadId.make("muse-closed-error");
+      yield* start(harness, threadId);
+      yield* harness.adapter.sendTurn({ threadId, input: "go" });
+      const host = harness.hosts.at(-1)!;
+      host.notify("turn/started", { turnId: "turn-1" });
+      host.notify("session/closed", { reason: "api_key=abc123 " + "x".repeat(5000) });
+      for (
+        let attempt = 0;
+        attempt < 100 && !events.some((event) => event.type === "session.exited");
+        attempt++
+      )
+        yield* tick(10);
+      const terminal = events.find((event) => event.type === "turn.completed");
+      const exited = events.find((event) => event.type === "session.exited");
+      assert.equal(terminal?.payload.errorMessage?.length, 4096);
+      assert.equal(exited?.payload.reason, terminal?.payload.errorMessage);
+      assert.include(exited?.payload.reason ?? "", "api_key=[REDACTED]");
+      assert.notInclude(exited?.payload.reason ?? "", "abc123");
+      yield* stop;
+    }),
+  );
 
   it.effect("drains final MSP output before its single terminal lifecycle event", () =>
     Effect.scoped(

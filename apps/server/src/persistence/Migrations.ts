@@ -2,9 +2,10 @@ import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
 import Migration0156 from "./Migrations/156_UpstreamReclassifyRuns.ts";
-import Migration0157 from "./Migrations/157_EventCompactionKeepLast.ts";
-import Migration0158 from "./Migrations/158_DropUnreadEventIndexes.ts";
-import Migration0159 from "./Migrations/159_WorktreeSetupActivityIndex.ts";
+import Migration0157 from "./Migrations/157_ProjectionThreadActivitiesWorktreeSetupIndex.ts";
+import Migration0158 from "./Migrations/158_ProviderTurnDeliveryPendingIndex.ts";
+import Migration0159 from "./Migrations/159_EventCompactionKeepLast.ts";
+import Migration0160 from "./Migrations/160_DropUnreadEventIndexes.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -195,9 +196,10 @@ export const MIGRATIONS = {
   "154_DesktopActivityPendingIndex": Migration0154,
   "155_BackgroundWorkNativeParentSession": Migration0155,
   "156_UpstreamReclassifyRuns": Migration0156,
-  "157_EventCompactionKeepLast": Migration0157,
-  "158_DropUnreadEventIndexes": Migration0158,
-  "159_WorktreeSetupActivityIndex": Migration0159,
+  "157_ProjectionThreadActivitiesWorktreeSetupIndex": Migration0157,
+  "158_ProviderTurnDeliveryPendingIndex": Migration0158,
+  "159_EventCompactionKeepLast": Migration0159,
+  "160_DropUnreadEventIndexes": Migration0160,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.
