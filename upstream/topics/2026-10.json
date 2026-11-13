@@ -52906,9 +52906,13 @@
     },
     {
       "createdAt": "2026-10-26T14:50:59.216Z",
+      "decidedAt": "2026-11-13T14:44:21.959Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24865",
-      "status": "inbox",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
