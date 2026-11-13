@@ -57,7 +57,7 @@ const deliveryFifoAvailable = `(json_extract(candidate.event_json, '$.type') = '
 
 /**
  * One page of the delivery sweep. Most rows are terminal and the sweep must
- * not visit them, so it reads the pending-only partial index (migration 157).
+ * not visit them, so it reads the pending-only partial index (migration 158).
  * The planner rates that index no better than the whole-table thread indexes,
  * hence INDEXED BY; `state = 'pending'` must stay a literal for it to apply.
  */

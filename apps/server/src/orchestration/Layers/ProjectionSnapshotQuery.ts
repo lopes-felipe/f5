@@ -558,9 +558,13 @@ function buildThreadSnapshot(params: {
   readonly includeDetailFields: boolean;
   /** Archived threads' plans were not loaded; flag them so clients do not read `[]` as none. */
   readonly omitArchivedPlans?: boolean;
+  /** Archived threads hold their worktree-setup activity only; flag them likewise. */
+  readonly omitArchivedActivities?: boolean;
 }): OrchestrationThread {
   const { row, includeDetailFields } = params;
   const plansOmitted = params.omitArchivedPlans === true && row.archivedAt !== null;
+  const activitiesOmitted =
+    params.omitArchivedActivities === true && row.archivedAt !== null && row.deletedAt === null;
   const detailRow = includeDetailFields && "tasks" in row && "compaction" in row ? row : null;
   return {
     id: row.threadId,
@@ -613,6 +617,7 @@ function buildThreadSnapshot(params: {
     tasksUpdatedAt: detailRow?.tasksUpdatedAt ?? null,
     tasksTracking: detailRow?.tasksTracking ?? null,
     activities: params.activitiesByThread.get(row.threadId) ?? [],
+    ...(activitiesOmitted ? { activitiesOmitted: true } : {}),
     checkpoints: params.checkpointsByThread.get(row.threadId) ?? [],
     compaction: detailRow?.compaction ?? null,
     sessionNotes: detailRow?.sessionNotes ?? null,
@@ -2605,24 +2610,25 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           })
         : ([] as ReadonlyArray<Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>>);
-      const archivedSetupActivityRows =
+      const archivedActivitiesOmitted =
         params.includeActivities &&
         params.historyLoadMode === "retained" &&
-        params.omitArchivedActivities
-          ? yield* withTimedLog({
-              kind: "query",
-              scope: params.scope,
-              name: "listArchivedThreadSetupActivities",
-              effect: listArchivedThreadSetupActivityRows(undefined).pipe(
-                Effect.mapError(
-                  toPersistenceSqlOrDecodeError(
-                    `ProjectionSnapshotQuery.${params.scope}:listArchivedThreadSetupActivities:query`,
-                    `ProjectionSnapshotQuery.${params.scope}:listArchivedThreadSetupActivities:decodeRows`,
-                  ),
+        params.omitArchivedActivities === true;
+      const archivedSetupActivityRows = archivedActivitiesOmitted
+        ? yield* withTimedLog({
+            kind: "query",
+            scope: params.scope,
+            name: "listArchivedThreadSetupActivities",
+            effect: listArchivedThreadSetupActivityRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  `ProjectionSnapshotQuery.${params.scope}:listArchivedThreadSetupActivities:query`,
+                  `ProjectionSnapshotQuery.${params.scope}:listArchivedThreadSetupActivities:decodeRows`,
                 ),
               ),
-            })
-          : [];
+            ),
+          })
+        : [];
       const activitiesTruncated =
         params.historyLoadMode === "retained" &&
         loadedActivityRows.length > MAX_READ_MODEL_ACTIVITIES;
@@ -2897,6 +2903,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpointsByThread,
           includeDetailFields: params.includeDetailFields,
           ...(params.omitArchivedPlans ? { omitArchivedPlans: true } : {}),
+          ...(archivedActivitiesOmitted ? { omitArchivedActivities: true } : {}),
         }),
       );
       const draftsByThread = yield* loadRewindDrafts(null);
@@ -3387,10 +3394,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getRetainedThreadActivities = (threadId: ThreadId) =>
+    listRetainedThreadActivityRows(threadId).pipe(
+      Effect.map((rows) => rows.map(toReadModelActivity)),
+      Effect.mapError((error) =>
+        isPersistenceError(error)
+          ? error
+          : toPersistenceSqlError("ProjectionSnapshotQuery.getRetainedThreadActivities")(error),
+      ),
+    );
+
   return {
     searchThread,
     getSnapshot,
     getRetainedThreadDetails,
+    getRetainedThreadActivities,
     getBootstrapSnapshot,
     getStartupSnapshot,
     getThreadTailDetails,
@@ -3449,6 +3467,13 @@ export const OrchestrationProjectionSnapshotQueryLive = Layer.effect(
           "foreground",
           "getRetainedThreadDetails",
           front.getRetainedThreadDetails(threadId),
+        ),
+      getRetainedThreadActivities: (threadId) =>
+        run(
+          foreground,
+          "foreground",
+          "getRetainedThreadActivities",
+          front.getRetainedThreadActivities(threadId),
         ),
       // Full startup reads must finish even on databases that exceed the interactive budget.
       getBootstrapSnapshot: (options) =>

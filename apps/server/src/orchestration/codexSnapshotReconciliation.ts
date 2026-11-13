@@ -467,6 +467,8 @@ export const reconcileCodexThreadSnapshots = (
               dependencies.orchestrationEngine.ensureThreadActivities?.([threadId]) ?? Effect.void
             );
             const verifiedThread = (yield* getCurrentThread(threadId)) ?? currentThread;
+            // The load failed: nothing can be verified against partial activities.
+            if (verifiedThread.activitiesOmitted) return;
             // Every item must be verifiable before anything is written: partial
             // repair is never proof that the whole stream was recovered.
             const classification = classifyIncompleteTurnItems(

@@ -1,9 +1,5 @@
 import { makeCommitSideEffects } from "../commitSideEffects.ts";
-import {
-  commandThreadIds,
-  hydrateDeciderReadModel,
-  withoutDeletedThreadDetails,
-} from "../deciderReadModel.ts";
+import { hydrateDeciderReadModel, withoutDeletedThreadDetails } from "../deciderReadModel.ts";
 import { coldThreadIdsOf, eventThreadId, withThreadActivities } from "../coldThreadActivities.ts";
 import { ProviderControlTarget } from "../../provider/controlTarget.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
@@ -191,33 +187,70 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   let hasDeletedThreads = false;
   // Threads whose activity history is still only in SQLite (coldThreadActivities.ts).
   const coldThreadIds = new Set<ThreadId>();
-  // Command processing and on-demand loads both replace `readModel`; one at a
-  // time, so a load cannot be overwritten by a command that started before it.
+  // A command reads `readModel`, works on a copy and replaces it; an on-demand
+  // load replaces it too. Each holds this permit from its first read to its
+  // write, so neither overwrites the other with a model it read earlier.
   const readModelWrites = Semaphore.makeUnsafe(1);
 
+  type ColdLoadReason = "event" | "replay" | "on-demand";
+
   /**
-   * Loads the retained activities of the cold threads among `threadIds` and
-   * keeps them for the rest of the run. Callers hold `readModelWrites`.
+   * Reads the retained activities of the cold threads among `threadIds`. A
+   * deleted thread holds no history in memory, so it gets none and reads nothing.
    */
-  const warmThreads = (threadIds: Iterable<ThreadId>) =>
+  const readColdThreadActivities = (threadIds: Iterable<ThreadId>) =>
     Effect.gen(function* () {
-      const read = projectionSnapshotQuery.getRetainedThreadDetails;
-      if (!read || coldThreadIds.size === 0) return;
       const loaded = new Map<ThreadId, OrchestrationThread["activities"]>();
+      const read = projectionSnapshotQuery.getRetainedThreadActivities;
+      if (!read || coldThreadIds.size === 0) return loaded;
       for (const threadId of new Set(threadIds)) {
         if (!coldThreadIds.has(threadId)) continue;
-        loaded.set(threadId, (yield* read(threadId)).activities);
+        const thread = readModel.threads.find((entry) => entry.id === threadId);
+        loaded.set(threadId, !thread || thread.deletedAt !== null ? [] : yield* read(threadId));
       }
-      if (loaded.size === 0) return;
-      readModel = withThreadActivities(readModel, loaded);
-      for (const threadId of loaded.keys()) coldThreadIds.delete(threadId);
+      return loaded;
     });
 
   /**
-   * Publishes the read model that results from `events`. An event can reach a
-   * cold thread that no command named, such as a workflow restoring its
-   * threads; SQLite already holds the event, so its activities load from there.
-   * A failed load leaves the thread cold and the next touch retries it.
+   * Puts loaded activities into `readModel`, for the threads that are still
+   * cold, and keeps them for the rest of the run. Callers hold `readModelWrites`.
+   * Each load is logged with its reason: the memory saved at startup lasts
+   * only while archived threads stay cold.
+   */
+  const keepColdThreadActivities = (
+    loaded: ReadonlyMap<ThreadId, OrchestrationThread["activities"]>,
+    reason: ColdLoadReason,
+  ) =>
+    Effect.suspend(() => {
+      const fresh = new Map([...loaded].filter(([threadId]) => coldThreadIds.has(threadId)));
+      if (fresh.size === 0) return Effect.void;
+      readModel = withThreadActivities(readModel, fresh);
+      let activities = 0;
+      for (const [threadId, entries] of fresh) {
+        coldThreadIds.delete(threadId);
+        activities += entries.length;
+      }
+      return Effect.logInfo("loaded activities of threads archived before startup", {
+        reason,
+        threads: fresh.size,
+        activities,
+        coldThreads: coldThreadIds.size,
+      });
+    });
+
+  /** Reads and keeps in one step. Callers hold `readModelWrites`. */
+  const warmThreads = (threadIds: Iterable<ThreadId>, reason: ColdLoadReason) =>
+    readColdThreadActivities(threadIds).pipe(
+      Effect.flatMap((loaded) => keepColdThreadActivities(loaded, reason)),
+    );
+
+  /**
+   * Publishes the read model that results from `events`. A cold thread an
+   * event reached was projected from its partial activities, so they are
+   * replaced by what SQLite holds, which includes the event. This covers a
+   * command on the thread and an event no command named, such as a workflow
+   * restoring its threads. A failed load leaves the thread cold, still flagged
+   * `activitiesOmitted`, and the next event or reader retries it.
    */
   const publishReadModel = (
     next: OrchestrationReadModel,
@@ -227,7 +260,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       hasDeletedThreads ||= events.some((event) => event.type === "thread.deleted");
       readModel = hasDeletedThreads ? withoutDeletedThreadDetails(next) : next;
       if (coldThreadIds.size === 0) return;
-      yield* warmThreads(events.flatMap((event) => eventThreadId(event) ?? [])).pipe(
+      yield* warmThreads(
+        events.flatMap((event) => eventThreadId(event) ?? []),
+        "event",
+      ).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to load activities for a cold thread after commit", {
             cause,
@@ -649,11 +685,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 ),
               )
             : [];
-        // The decision and its projection run on the thread's full activities.
-        if (coldThreadIds.size > 0) {
-          yield* warmThreads(commandThreadIds(envelope.command));
-          commandReadModel = readModel;
-        }
         if (hasDeletedThreads && projectionSnapshotQuery.getRetainedThreadDetails)
           commandReadModel = yield* hydrateDeciderReadModel(
             readModel,
@@ -965,7 +996,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";
   const heapUsedBeforeHydrate = process.memoryUsage().heapUsed;
   // Archived threads start cold only when their activities can be loaded later.
-  const omitArchivedActivities = projectionSnapshotQuery.getRetainedThreadDetails !== undefined;
+  const omitArchivedActivities = projectionSnapshotQuery.getRetainedThreadActivities !== undefined;
   const projectionSnapshotExit = yield* Effect.exit(
     withStartupPhaseTiming(
       "orchestration.snapshot.hydrate",
@@ -1007,11 +1038,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     eventStore.readFromSequence(replayFromSequence, Number.MAX_SAFE_INTEGER),
     (event) =>
       Effect.gen(function* () {
-        // The projections do not hold this event yet, so a cold thread's stored
-        // activities are exactly what the snapshot would have loaded for it.
+        // A cold thread gets its stored activities before the event is applied.
+        // The projections may already hold the event; applying it again
+        // replaces the same activity, so the result is the same either way.
         const threadId = eventThreadId(event);
         if (threadId !== null && coldThreadIds.has(threadId))
-          yield* warmThreads([threadId]).pipe(
+          yield* warmThreads([threadId], "replay").pipe(
             Effect.catch((cause) =>
               Effect.logWarning("failed to load activities for a cold thread during replay", {
                 threadId,
@@ -1035,8 +1067,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     for (;;) {
       const envelope = yield* admission.take;
       if (!envelope) return;
+      // `processEnvelope` reads `readModel` when it is called, so it is called
+      // only once the permit is held.
       yield* maintenanceLock
-        .withShared(readModelWrites.withPermit(processEnvelope(envelope)))
+        .withShared(readModelWrites.withPermit(Effect.suspend(() => processEnvelope(envelope))))
         .pipe(Effect.ensuring(Effect.suspend(() => releaseEnvelopeAdmission(envelope))));
     }
   });
@@ -1044,16 +1078,31 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const ensureThreadActivities: NonNullable<OrchestrationEngineShape["ensureThreadActivities"]> = (
     threadIds,
   ) =>
-    threadIds.some((threadId) => coldThreadIds.has(threadId))
-      ? readModelWrites.withPermit(warmThreads(threadIds)).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to load activities for a cold thread on demand", {
-              threadIds,
-              cause,
-            }),
+    Effect.suspend(() => {
+      if (!threadIds.some((threadId) => coldThreadIds.has(threadId))) return Effect.void;
+      // The read runs outside the permit, so commands do not wait on it. A
+      // commit in the meantime can have changed a thread's stored activities
+      // without loading them (its own load failed); then they are read again
+      // under the permit.
+      const sequence = readModel.snapshotSequence;
+      return readColdThreadActivities(threadIds).pipe(
+        Effect.flatMap((loaded) =>
+          readModelWrites.withPermit(
+            Effect.suspend(() =>
+              readModel.snapshotSequence === sequence
+                ? keepColdThreadActivities(loaded, "on-demand")
+                : warmThreads(threadIds, "on-demand"),
+            ),
           ),
-        )
-      : Effect.void;
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to load activities for a cold thread on demand", {
+            threadIds,
+            cause,
+          }),
+        ),
+      );
+    });
   yield* Effect.forkScoped(worker);
   yield* Effect.log("orchestration engine started").pipe(
     Effect.annotateLogs({

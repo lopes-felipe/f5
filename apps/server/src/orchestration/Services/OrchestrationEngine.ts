@@ -46,10 +46,10 @@ export interface OrchestrationEngineShape {
   /**
    * Read the current in-memory orchestration read model.
    *
-   * A thread that was archived before the server started has only its
-   * worktree-setup activity here until a command or event touches it. Call
-   * `ensureThreadActivities` first when reading `activities` for a thread
-   * that may be archived and that nothing has dispatched to.
+   * A thread that was archived before the server started is flagged
+   * `activitiesOmitted` and has only its worktree-setup activity here until an
+   * event reaches it. Call `ensureThreadActivities` before reading the
+   * `activities` of a thread that carries the flag.
    *
    * @returns Effect containing the latest read model.
    */
@@ -57,7 +57,9 @@ export interface OrchestrationEngineShape {
 
   /**
    * Load the retained activities of these threads into the read model, if
-   * they are not there yet. A failed load is logged and leaves them as is.
+   * they are not there yet. A failed load is logged and leaves the thread
+   * flagged `activitiesOmitted`; check the flag where incomplete activities
+   * would lead to a wrong write.
    */
   readonly ensureThreadActivities?: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<void>;
 

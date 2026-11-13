@@ -490,12 +490,18 @@ On this database the first start after the upgrade pays once: 14.4 s to build th
 index and 5.4 s for `PRAGMA optimize`.
 
 Threads that are already archived when the server starts load without their activity history
-(`coldThreadActivities.ts`); only the `worktree-setup` activity is kept. The engine loads the
-rest from SQL, and keeps it, when a command names the thread, when an event reaches it, or
-when a caller asks through `ensureThreadActivities` (6 – 56 ms per thread here). Messages,
-plans and checkpoints of archived threads stay in memory: workflow services and the Codex
-history reconciliation read them without checking the archive state. They are what remains of
-the hydrate time (messages query about 1.85 s cold) and of the heap.
+(`coldThreadActivities.ts`); only the `worktree-setup` activity is kept, and the thread is
+flagged `activitiesOmitted`. The engine loads the rest from SQL, and keeps it, when an event
+reaches the thread or when a reader asks through `ensureThreadActivities` (6 – 56 ms per thread
+here). Messages, plans and checkpoints of archived threads stay in memory: workflow services
+and the Codex history reconciliation read them without checking the archive state. They are
+what remains of the hydrate time (messages query about 1.85 s cold) and of the heap.
+
+The heap figure is from the harness, where nothing touches an archived thread after startup.
+In the full server every load is logged as `loaded activities of threads archived before
+startup` with its reason (`event`, `replay` or `on-demand`) and the number of threads still
+cold, next to `coldThreads` in the `orchestration read model hydrated` line. Compare the two
+to see how much of the saving a running server keeps.
 
 ## Stall after a database snapshot, 2026-11-12
 

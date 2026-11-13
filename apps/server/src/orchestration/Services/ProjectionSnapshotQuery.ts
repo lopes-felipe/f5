@@ -39,6 +39,10 @@ export interface ProjectionSnapshotQueryShape {
   readonly getRetainedThreadDetails?: (
     threadId: ThreadId,
   ) => Effect.Effect<RetainedThreadDetails, ProjectionRepositoryError>;
+  /** The activities part of `getRetainedThreadDetails`, without messages and plans. */
+  readonly getRetainedThreadActivities?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RetainedThreadDetails["activities"], ProjectionRepositoryError>;
 
   /**
    * Read the latest orchestration projection snapshot.
@@ -56,8 +60,9 @@ export interface ProjectionSnapshotQueryShape {
    * the same limits enforced by the live projector.
    *
    * `omitArchivedActivities` leaves archived threads with their worktree-setup
-   * activity only. The engine sets it and loads the rest on demand through
-   * `getRetainedThreadDetails`; other callers get every thread's activities.
+   * activity only and flags them `activitiesOmitted`. The engine sets it and
+   * loads the rest on demand through `getRetainedThreadActivities`; other
+   * callers get every thread's activities.
    */
   readonly getBootstrapSnapshot: (options?: {
     readonly omitArchivedActivities?: boolean;

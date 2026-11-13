@@ -145,6 +145,43 @@ layer("Agent Bridge thread tools", (it) => {
     }),
   );
 
+  it.effect("loads the activities of a thread archived before startup before its status", () =>
+    Effect.gen(function* () {
+      const { host, run } = yield* setup();
+      const approval = {
+        id: "approval-1",
+        kind: "approval.requested",
+        tone: "approval",
+        summary: "Run a command",
+        payload: { requestId: "request-1", requestKind: "command" },
+        turnId: null,
+        sequence: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      const cold = () =>
+        thread("t-cold", "exposed", {
+          archivedAt: "2026-01-01T00:00:00.000Z",
+          activitiesOmitted: true,
+        });
+      host.storedActivities.set("t-cold", [approval] as never);
+
+      host.threads = [cold()];
+      const listed = yield* run("list_threads", {});
+      assert.strictEqual(listed.ok && listed.value.threads[0].status, "awaiting-approval");
+
+      host.threads = [cold()];
+      const read = yield* run("get_thread", { threadId: "t-cold" });
+      assert.strictEqual(read.ok && read.value.status, "awaiting-approval");
+      assert.strictEqual(read.ok && read.value.pendingApprovals.length, 1);
+
+      // A load that fails leaves the flag; the status is then read without approvals.
+      host.threads = [cold()];
+      host.storedActivities.clear();
+      const unloaded = yield* run("get_thread", { threadId: "t-cold" });
+      assert.strictEqual(unloaded.ok && unloaded.value.status, "idle");
+    }),
+  );
+
   it.effect("creates supervised threads and refuses providers without supervised mode", () =>
     Effect.gen(function* () {
       const { host, run } = yield* setup();

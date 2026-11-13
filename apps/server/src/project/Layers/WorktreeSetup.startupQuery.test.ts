@@ -15,12 +15,10 @@ layer("worktree setup startup query", (it) => {
       const plan = yield* sql.unsafe<{ detail: string }>(
         `EXPLAIN QUERY PLAN ${WORKTREE_SETUP_STARTUP_ROWS_SQL}`,
       );
-      assert.deepEqual(
-        plan.map((row) => row.detail),
-        [
-          "SCAN projection_thread_activities USING INDEX idx_projection_thread_activities_worktree_setup",
-        ],
-      );
+      // The wording of a plan row differs between SQLite builds; the index name does not.
+      const details = plan.map((row) => row.detail);
+      assert.lengthOf(details, 1);
+      assert.include(details[0], "idx_projection_thread_activities_worktree_setup");
     }),
   );
 
