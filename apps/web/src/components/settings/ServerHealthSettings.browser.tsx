@@ -29,6 +29,7 @@ const health: ServerHealth = {
       lastAt: new Date().toISOString(),
     },
   ],
+  slowStatementsCollected: true,
   slowStatements: [],
 };
 
@@ -83,6 +84,33 @@ it("reads again on Refresh", async () => {
   await expect
     .element(page.getByRole("row", { name: /SELECT \* FROM projection_threads/ }))
     .toHaveTextContent("900ms");
+});
+
+it("says statements are not measured when the server does not time them", async () => {
+  state.read.mockResolvedValue({ ...health, slowStatementsCollected: false });
+  await mount();
+  await expect
+    .element(
+      page.getByText(
+        "Not measured. This server runs under Bun, and statements are timed only under Node.",
+      ),
+    )
+    .toBeInTheDocument();
+  await expect.element(page.getByText("None since the server started.")).not.toBeInTheDocument();
+});
+
+it("lists two statements that are cut to the same text", async () => {
+  const statement = (totalMs: number) => ({
+    name: "SELECT column_name, column_name, column_name…",
+    count: 1,
+    totalMs,
+    maxMs: totalMs,
+    lastAt: new Date().toISOString(),
+  });
+  state.read.mockResolvedValue({ ...health, slowStatements: [statement(900), statement(400)] });
+  await mount();
+  await expect.element(page.getByRole("row", { name: /900ms/ })).toBeInTheDocument();
+  await expect.element(page.getByRole("row", { name: /400ms/ })).toBeInTheDocument();
 });
 
 it("says so when the server cannot be read", async () => {

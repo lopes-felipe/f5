@@ -448,6 +448,21 @@ distinct entries and reports the 20 with the largest total. These are the same
 events the server log records as `slow rpc route` and `slow sql statement`;
 nothing is persisted, so a restart clears them.
 
+Three things the card leaves out or adjusts:
+
+- Routes on the long lane (`long(...)` in `rpcScheduling.ts`: sign-ins, provider
+  updates, worktree preparation) are logged and not ranked, because they are
+  slow by design and would outrank everything else.
+- Statements are timed by the Node SQLite driver. Under Bun (`bun run dev`)
+  neither the log line nor the card has them, and the card says so.
+- Event-loop delay is sampled from when the server is created, so time blocked
+  while the database opens and migrates is not in it. Node's histogram includes
+  its 20 ms sampling interval, which is subtracted; Bun's does not.
+
+Statements are grouped by their whole text with whitespace collapsed and
+placeholder lists of any length written `(?, …)`; the card shows the first 240
+characters.
+
 Trace export retains at most 4,096 records and 4 MiB, including an in-flight
 batch. It sends one request at a time, bounds individual exports and requests,
 and drops failed batches with backoff. Metrics snapshots export serially. The

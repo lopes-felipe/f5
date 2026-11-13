@@ -474,8 +474,10 @@ export const ServerHealth = Schema.Struct({
   ),
   slowRouteThresholdMs: NonNegativeInt,
   slowStatementThresholdMs: NonNegativeInt,
-  /** Largest total time first. */
+  /** Largest total time first. Requests that are long by design are left out. */
   slowRoutes: Schema.Array(ServerHealthSlowOperation),
+  /** False when this server's SQLite driver does not time statements (under Bun). */
+  slowStatementsCollected: Schema.Boolean,
   slowStatements: Schema.Array(ServerHealthSlowOperation),
 });
 export type ServerHealth = typeof ServerHealth.Type;

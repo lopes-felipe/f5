@@ -17,7 +17,7 @@ import {
   type WebSocketResponse,
 } from "@t3tools/contracts";
 import { Deferred, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
-import { recordSlowRpcRoute } from "./observability/serverHealth.ts";
+import { recordSlowRpcRoute, resetServerHealthForTest } from "./observability/serverHealth.ts";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import * as Http from "node:http";
@@ -1446,16 +1446,25 @@ describe("WebSocket Server", () => {
     if (!address || typeof address === "string") throw new Error("No server address");
     const [ws] = await connectAndAwaitWelcome(address.port);
     connections.push(ws);
-    recordSlowRpcRoute("test.slowRoute", 4_321);
+    // The tallies are process-wide, so this test leaves none behind for the next.
+    resetServerHealthForTest();
+    try {
+      recordSlowRpcRoute("test.slowRoute", 4_321);
+      recordSlowRpcRoute("test.signIn", 120_000, "long");
 
-    const response = await sendRequest(ws, WS_METHODS.serverGetHealth);
-    expect(response.error).toBeUndefined();
-    const health = Schema.decodeUnknownSync(ServerHealth)(response.result);
-    expect(health.slowRoutes).toContainEqual(
-      expect.objectContaining({ name: "test.slowRoute", count: 1, totalMs: 4_321 }),
-    );
-    // The server samples event loop delay for as long as it runs.
-    expect(health.eventLoopDelay).not.toBeNull();
+      const response = await sendRequest(ws, WS_METHODS.serverGetHealth);
+      expect(response.error).toBeUndefined();
+      const health = Schema.decodeUnknownSync(ServerHealth)(response.result);
+      expect(health.slowRoutes).toContainEqual(
+        expect.objectContaining({ name: "test.slowRoute", count: 1, totalMs: 4_321 }),
+      );
+      // Requests that are long by design stay out of the ranking.
+      expect(health.slowRoutes.map((route) => route.name)).not.toContain("test.signIn");
+      // The server samples event loop delay for as long as it runs.
+      expect(health.eventLoopDelay).not.toBeNull();
+    } finally {
+      resetServerHealthForTest();
+    }
   });
 
   it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {

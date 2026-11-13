@@ -8,7 +8,10 @@ export const serverQueryKeys = {
   health: () => ["server", "health"] as const,
 };
 
-/** Read on demand: the card refetches when it opens and when Refresh is pressed. */
+/**
+ * Read on demand: once each time the card mounts (Settings > General opens) and
+ * when Refresh is pressed. Never on a timer or on window focus.
+ */
 export function serverHealthQueryOptions() {
   return queryOptions({
     queryKey: serverQueryKeys.health(),

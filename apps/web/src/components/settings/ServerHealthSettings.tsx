@@ -40,8 +40,9 @@ function SlowOperations(props: {
               </tr>
             </thead>
             <tbody>
-              {props.operations.map((operation) => (
-                <tr key={operation.name} className="border-t border-border align-top">
+              {/* Two long statements can be cut to the same text, so the name is not a key. */}
+              {props.operations.map((operation, index) => (
+                <tr key={index} className="border-t border-border align-top">
                   {/* `max-w-0 w-full` gives the name what the number columns leave, in both tables. */}
                   <td
                     className={cn(
@@ -106,7 +107,7 @@ export function ServerHealthSettings() {
   return (
     <SettingsCard
       title="Server health"
-      description="What has been slow since the F5 server started. A long event loop delay means the server was busy and everything else waited, including streaming and terminals."
+      description="What has been slow since the F5 server started. A long event loop delay means the server was busy and everything else waited, including streaming and terminals. Requests that are meant to run long, such as sign-ins, provider updates and preparing a worktree, are left out."
       searchTarget="general.server-health"
       actions={
         <Button
@@ -133,7 +134,11 @@ export function ServerHealthSettings() {
             <SlowOperations
               title={`Database statements slower than ${formatThreshold(health.data.slowStatementThresholdMs)}`}
               nameHeading="Statement"
-              empty="None since the server started."
+              empty={
+                health.data.slowStatementsCollected
+                  ? "None since the server started."
+                  : "Not measured. This server runs under Bun, and statements are timed only under Node."
+              }
               operations={health.data.slowStatements}
               monospace
             />

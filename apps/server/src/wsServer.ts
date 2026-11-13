@@ -8140,7 +8140,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
     const routeMs = Date.now() - routeStartedAt;
     if (routeMs >= SLOW_RPC_ROUTE_MS) {
-      recordSlowRpcRoute(method, routeMs);
+      recordSlowRpcRoute(method, routeMs, lane);
       yield* Effect.logInfo("slow rpc route", {
         method,
         lane,
