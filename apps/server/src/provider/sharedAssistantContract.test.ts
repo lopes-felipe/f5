@@ -536,7 +536,7 @@ describe("sharedAssistantContract", () => {
   it("exposes stable version metadata", () => {
     expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v7");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
-    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v12");
+    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v13");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
       contractVersion: "v7",
       providerSupplementVersion: "v4",
@@ -544,7 +544,7 @@ describe("sharedAssistantContract", () => {
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
       contractVersion: "v7",
-      providerSupplementVersion: "v12",
+      providerSupplementVersion: "v13",
       strategy: "claude.append_system_prompt",
     });
   });
@@ -572,10 +572,19 @@ describe("sharedAssistantContract", () => {
 
   it("applies every Claude plan-mode edit to the shared body exactly once", () => {
     // An edit that stops matching would ship Codex wording to Claude without failing anything else.
+    // The edits apply in order, so each is checked against the text the earlier ones left:
+    // an edit whose replacement created or removed a later edit's match fails here.
+    let running = CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS;
     for (const [from, to] of CLAUDE_PLAN_MODE_EDITS) {
-      expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS.split(from)).toHaveLength(2);
-      expect(buildClaudePlanModeInstructions({})).toContain(to);
+      expect(running.split(from)).toHaveLength(2);
+      running = running.replace(from, () => to);
     }
+    const claude = buildClaudePlanModeInstructions({});
+    // No later edit rewrote an earlier replacement.
+    for (const [, to] of CLAUDE_PLAN_MODE_EDITS) expect(claude).toContain(to);
+    // Every plan rule Claude gets covers a plan sent through ExitPlanMode too.
+    expect(claude).toContain("Deliver at most one plan per turn");
+    expect(claude).toContain("any new plan must be a complete replacement");
     expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).toContain("`request_user_input`");
   });
 });

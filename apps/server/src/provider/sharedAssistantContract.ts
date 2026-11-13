@@ -9,7 +9,7 @@ import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v7";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
-export const CLAUDE_SUPPLEMENT_VERSION = "v12";
+export const CLAUDE_SUPPLEMENT_VERSION = "v13";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -380,6 +380,15 @@ Separately, the task-tracking tools (TodoWrite or the Task tools) are a progress
   [
     "The user can easily switch out of Plan mode and request implementation if you have included a `<proposed_plan>` block in your response.",
     "The user can easily switch out of Plan mode and request implementation once you have delivered the plan.",
+  ],
+  // The two limits below hold for a plan however it is delivered, not only for a block.
+  [
+    "Only produce at most one `<proposed_plan>` block per turn, and only when you are presenting a complete spec.",
+    "Deliver at most one plan per turn, and only when you are presenting a complete spec.",
+  ],
+  [
+    "If the user stays in Plan mode and asks for revisions after a prior `<proposed_plan>`, any new `<proposed_plan>` must be a complete replacement.",
+    "If the user stays in Plan mode and asks for revisions after a prior plan, any new plan must be a complete replacement.",
   ],
 ];
 
