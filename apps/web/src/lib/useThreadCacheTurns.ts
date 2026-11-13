@@ -42,6 +42,9 @@ export function useThreadCacheTurns(
       threadId: threadId ?? ("" as ThreadId),
       enabled: active && connected,
     }),
+    // Only the data is read. Loading, error and retry transitions must not
+    // re-render the conversation that hosts this hook.
+    notifyOnChangeProps: ["data"],
   });
 
   useEffect(() => {
