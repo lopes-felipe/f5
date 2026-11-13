@@ -33379,12 +33379,14 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-13T11:23:44.757Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33758",
       "relatedTopics": [
         "pr-33260"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -33516,12 +33518,14 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-13T11:23:51.803Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33800",
       "relatedTopics": [
         "pr-25579"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "usage",
