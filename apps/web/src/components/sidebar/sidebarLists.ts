@@ -256,9 +256,12 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
       ),
     ]),
   );
-  const projectWorkflows = sortWorkflowEntriesByActivity(
-    unsortedProjectWorkflows,
-    (entry) => workflowThreadsByKey.get(workflowEntryKey(entry)) ?? [],
+  const projectWorkflows = sortWorkflowEntriesByActivity(unsortedProjectWorkflows, (entry) =>
+    workflowActivityAt({
+      updatedAt: entry.workflow.updatedAt,
+      threads: workflowThreadsByKey.get(workflowEntryKey(entry)) ?? [],
+      finished: workflowMetaByKey.get(workflowEntryKey(entry))?.overallState === "completed",
+    }),
   );
 
   const persistedProjectThreads = threads.filter(
@@ -384,19 +387,14 @@ export function orderThreadsByPipeline<T extends ThreadListItem>(
 }
 
 /**
- * Newest activity first. Active workflows go by their threads' activity (`threadsOf`), since
- * `updatedAt` moves on bookkeeping writes; archived ones, listed without threads, by `updatedAt`.
+ * Newest activity first. Active workflows pass `activityOf` (see `workflowActivityAt`), since
+ * `updatedAt` moves on bookkeeping writes; archived ones, listed without threads, use it.
  */
 function sortWorkflowEntriesByActivity(
   workflows: ReadonlyArray<SidebarWorkflowEntry>,
-  threadsOf?: (entry: SidebarWorkflowEntry) => ReadonlyArray<ThreadListItem>,
+  activityOf: (entry: SidebarWorkflowEntry) => string = (entry) => entry.workflow.updatedAt,
 ): SidebarWorkflowEntry[] {
-  const activityAt = new Map(
-    workflows.map((entry) => [
-      entry,
-      threadsOf ? workflowActivityAt(entry.workflow, threadsOf(entry)) : entry.workflow.updatedAt,
-    ]),
-  );
+  const activityAt = new Map(workflows.map((entry) => [entry, activityOf(entry)]));
   return workflows.toSorted(
     (left, right) =>
       activityAt.get(right)!.localeCompare(activityAt.get(left)!) ||

@@ -95,17 +95,25 @@ export function collectRecentSidebarItems<T extends ThreadListItem>(
       });
     }
     for (const entry of lists.projectWorkflows) {
+      const key = workflowEntryKey(entry);
+      const overallState = lists.workflowMetaByKey.get(key)?.overallState ?? "pending";
+      const activity = {
+        updatedAt: entry.workflow.updatedAt,
+        threads: lists.workflowThreadsByKey.get(key) ?? [],
+        finished: overallState === "completed",
+      };
       items.push({
         kind: "workflow",
-        key: workflowEntryKey(entry),
+        key,
         projectId,
         entry,
-        activityAt: workflowActivityAt(
-          entry.workflow,
-          lists.workflowThreadsByKey.get(workflowEntryKey(entry)) ?? [],
-        ),
-        overallState:
-          lists.workflowMetaByKey.get(workflowEntryKey(entry))?.overallState ?? "pending",
+        activityAt: workflowActivityAt(activity),
+        // As for threads: the live activity picks the day while the summary key lags.
+        bucketAt: workflowActivityAt({
+          ...activity,
+          activityOf: (thread) => liveSidebarActivityAt(thread, liveActivityHours),
+        }),
+        overallState,
       });
     }
   }

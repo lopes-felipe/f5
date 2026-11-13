@@ -89,6 +89,34 @@ describe("groupWorkflowThreadsByPhase", () => {
     expect(reviews?.state).toBe("completed");
   });
 
+  it("counts steps without a thread yet, so a half-started phase isn't done", () => {
+    const [crossReview] = groupWorkflowThreadsByPhase(
+      [
+        // A's thread finished; B's thread hasn't been created yet.
+        phase("cross-review", "Cross-review", "active", [
+          step("Cross-review A", "completed", "a"),
+          step("Cross-review B", "pending", null),
+        ]),
+      ],
+      [thread("a")],
+      () => "unused",
+    );
+    expect(crossReview).toMatchObject({ kind: "phase", state: "active" });
+
+    const [reviews] = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "pending", [
+          step("Review A Cross", "completed", "rac"),
+          step("Review B Cross", "completed", "rbc"),
+          step("Review A Self", "pending", null),
+        ]),
+      ],
+      [thread("rac"), thread("rbc")],
+      () => "unused",
+    );
+    expect(reviews).toMatchObject({ kind: "phase", state: "pending" });
+  });
+
   it("keeps an earlier state when the later step naming the thread is still pending", () => {
     const [group] = groupWorkflowThreadsByPhase(
       [
@@ -175,18 +203,39 @@ describe("workflowGroupState", () => {
 });
 
 describe("workflowActivityAt", () => {
-  it("uses the newest thread activity over a fresher updatedAt", () => {
+  const bumped = "2026-11-13T00:00:00.000Z";
+  const threads = [
+    thread("a", "2026-10-19T00:00:00.000Z"),
+    thread("b", "2026-10-20T00:00:00.000Z"),
+  ];
+
+  it("ignores a fresher updatedAt once the workflow is finished", () => {
+    expect(workflowActivityAt({ updatedAt: bumped, threads, finished: true })).toBe(
+      "2026-10-20T00:00:00.000Z",
+    );
+  });
+
+  it("counts updatedAt while unfinished, e.g. waiting on a step with no thread yet", () => {
+    expect(workflowActivityAt({ updatedAt: bumped, threads, finished: false })).toBe(bumped);
     expect(
-      workflowActivityAt({ updatedAt: "2026-11-13T00:00:00.000Z" }, [
-        thread("a", "2026-10-19T00:00:00.000Z"),
-        thread("b", "2026-10-20T00:00:00.000Z"),
-      ]),
+      workflowActivityAt({ updatedAt: "2026-10-01T00:00:00.000Z", threads, finished: false }),
     ).toBe("2026-10-20T00:00:00.000Z");
   });
 
+  it("reads each thread's time through activityOf, for live activity", () => {
+    // The summary keeps a stale lastInteractionAt while the activity order holds.
+    const live = "2026-11-12T23:00:00.000Z";
+    expect(
+      workflowActivityAt({
+        updatedAt: bumped,
+        threads,
+        finished: true,
+        activityOf: (entry) => (entry.id === "a" ? live : entry.lastInteractionAt),
+      }),
+    ).toBe(live);
+  });
+
   it("falls back to updatedAt before the workflow has threads", () => {
-    expect(workflowActivityAt({ updatedAt: "2026-11-13T00:00:00.000Z" }, [])).toBe(
-      "2026-11-13T00:00:00.000Z",
-    );
+    expect(workflowActivityAt({ updatedAt: bumped, threads: [], finished: true })).toBe(bumped);
   });
 });

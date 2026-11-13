@@ -86,15 +86,24 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
   const groups: WorkflowSidebarGroup<T>[] = [];
   for (const phase of phases) {
     const rows: WorkflowSidebarRow<T>[] = [];
+    // Steps of this phase without a row (no thread yet, or a snoozed one) still count toward
+    // its state, so a phase whose second half hasn't started doesn't read as done.
+    const rowlessStates: WorkflowSidebarStepState[] = [];
     let hasThreadStep = false;
     for (const step of phase.steps) {
-      if (step.threadId === null) continue;
+      if (step.threadId === null) {
+        rowlessStates.push(step.state);
+        continue;
+      }
       hasThreadStep = true;
       if (claimed.has(step.threadId)) continue;
       claimed.add(step.threadId);
       // Snoozed threads are left out of the workflow's list.
       const thread = threadById.get(step.threadId);
-      if (!thread) continue;
+      if (!thread) {
+        rowlessStates.push(step.state);
+        continue;
+      }
       rows.push({
         thread,
         label: shortWorkflowStepLabel(phase.label, step.label),
@@ -107,7 +116,13 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
         kind: "phase",
         id: phase.id,
         label: phase.label,
-        state: workflowGroupState(rows.map((row) => row.stepState)),
+        // The phase's own state counts too: an active phase whose next thread doesn't exist
+        // yet stays active. Rows carry later reruns (Authoring runs again during Revision).
+        state: workflowGroupState([
+          phase.state,
+          ...rows.map((row) => row.stepState),
+          ...rowlessStates,
+        ]),
         rows,
       });
     } else if (!hasThreadStep) {
@@ -136,25 +151,37 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
   return groups;
 }
 
+type ActivityThread = { readonly id: ThreadId; readonly lastInteractionAt: string };
+
 /**
- * When a workflow last did something: its newest thread activity, else its own update time.
- * `workflow.updatedAt` alone moves on bookkeeping writes long after the work, so a finished
- * workflow would read "just now" and never age out of view.
+ * When a workflow last did something. A finished workflow goes by its newest thread activity
+ * (else its update time): `workflow.updatedAt` moves on bookkeeping writes long after the
+ * work, so it would read "just now" and never age out of view. An unfinished workflow also
+ * counts `updatedAt`, which moves when it advances to a step with no thread yet (a queued
+ * implementation, a retry). `activityOf` reads a thread's time, e.g. its live activity,
+ * since summaries keep a stale `lastInteractionAt` while the activity order holds.
  */
-export function workflowActivityAt(
-  workflow: { readonly updatedAt: string },
-  threads: ReadonlyArray<{ readonly lastInteractionAt: string }>,
-): string {
-  return newestThreadActivityAt(threads) ?? workflow.updatedAt;
+export function workflowActivityAt<T extends ActivityThread>(input: {
+  readonly updatedAt: string;
+  readonly threads: readonly T[];
+  readonly finished: boolean;
+  readonly activityOf?: ((thread: T) => string) | undefined;
+}): string {
+  const activityOf = input.activityOf ?? ((thread: T) => thread.lastInteractionAt);
+  let newest: string | null = null;
+  for (const thread of input.threads) {
+    const at = activityOf(thread);
+    if (newest === null || at > newest) newest = at;
+  }
+  if (newest === null) return input.updatedAt;
+  return input.finished || newest > input.updatedAt ? newest : input.updatedAt;
 }
 
-/** The newest `lastInteractionAt` among `threads`, or null when there are none. */
-export function newestThreadActivityAt(
-  threads: ReadonlyArray<{ readonly lastInteractionAt: string }>,
-): string | null {
-  let newest: string | null = null;
+/** The thread with the newest `lastInteractionAt`, or null when there are none. */
+export function newestActivityThread<T extends ActivityThread>(threads: readonly T[]): T | null {
+  let newest: T | null = null;
   for (const thread of threads) {
-    if (newest === null || thread.lastInteractionAt > newest) newest = thread.lastInteractionAt;
+    if (newest === null || thread.lastInteractionAt > newest.lastInteractionAt) newest = thread;
   }
   return newest;
 }

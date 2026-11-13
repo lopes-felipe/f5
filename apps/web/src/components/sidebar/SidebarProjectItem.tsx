@@ -324,10 +324,12 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
       // Only finished workflows fold; a pending or running one stays in view.
       getActivityAt: (entry) =>
         workflowMeta(entry)?.overallState === "completed"
-          ? workflowActivityAt(
-              entry.workflow,
-              workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [],
-            )
+          ? workflowActivityAt({
+              updatedAt: entry.workflow.updatedAt,
+              threads: workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [],
+              finished: true,
+              activityOf: (thread) => liveSidebarActivityAt(thread, props.liveActivityHours),
+            })
           : null,
     },
   );

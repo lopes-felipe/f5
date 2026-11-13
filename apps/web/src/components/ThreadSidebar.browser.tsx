@@ -4064,7 +4064,6 @@ describe("Thread sidebar", () => {
                   completedAt: at,
                   assistantMessageId: null,
                 },
-                lastVisitedAt: null,
                 // Branch A's saved plan reads "Plan Ready" outside a workflow.
                 ...(role === "a" ? createPlanReadyOverrides("outline-a") : {}),
               }),
@@ -4189,6 +4188,139 @@ describe("Thread sidebar", () => {
         new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
       );
       await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the implementation PR during code review and a folded phase's approval in view", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "review-stage-branch-a" as ThreadId,
+      b: "review-stage-branch-b" as ThreadId,
+      merge: "review-stage-merge" as ThreadId,
+      impl: "review-stage-impl" as ThreadId,
+      reviewA: "review-stage-review-a" as ThreadId,
+      reviewB: "review-stage-review-b" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId) => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status: "running" as const,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.entries(ids).map(([role, id]) =>
+              createSnapshotThread({
+                id,
+                title: `Review stage ${role} thread`,
+                ...(role === "reviewA"
+                  ? {
+                      activities: [
+                        {
+                          id: "review-stage-approval" as never,
+                          tone: "approval",
+                          kind: "approval.requested",
+                          summary: "Needs approval",
+                          payload: { requestId: "review-stage-request", requestKind: "command" },
+                          turnId: null,
+                          createdAt: at,
+                        },
+                      ],
+                    }
+                  : {}),
+              }),
+            ),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-review-stage",
+              title: "Review stage workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: null,
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [codeReview(ids.reviewA), codeReview(ids.reviewB)],
+                status: "code_reviews_requested",
+                error: null,
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 537,
+                    title: "Review stage implementation",
+                    url: "https://github.com/acme/repo/pull/537",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open",
+                  },
+                },
+              }
+            : null;
+      },
+    });
+
+    try {
+      const workflowRow = await waitForSidebarThreadRow("Review stage workflow");
+      if (!document.querySelector('[data-testid="workflow-phase-row-code-review"]')) {
+        workflowRow
+          .querySelector<HTMLButtonElement>('button[aria-label="Expand Review stage workflow"]')
+          ?.click();
+      }
+      // Code review keeps the implementation step active; its PR still leads the row.
+      const implementation = await waitForSidebarThreadRow("Implementation");
+      await vi.waitFor(() =>
+        expect(
+          (implementation.firstElementChild as HTMLElement).querySelector(
+            'button[aria-label*="PR open"]',
+          ),
+        ).not.toBeNull(),
+      );
+
+      // Folding the phase keeps the waiting approval visible on the phase row.
+      const codeReviewPhase = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="workflow-phase-row-code-review"]'),
+        "Code Review should render as a phase row.",
+      );
+      await vi.waitFor(() => expect(codeReviewPhase.textContent).toContain("Pending Approval"));
+      expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("true");
+      codeReviewPhase.click();
+      await vi.waitFor(() => expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("false"));
+      expect(querySidebarThreadRowByTitle("Code Review A")).toBeNull();
+      expect(codeReviewPhase.textContent).toContain("Pending Approval");
     } finally {
       await mounted.cleanup();
     }

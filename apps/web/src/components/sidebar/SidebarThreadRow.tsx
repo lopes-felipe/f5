@@ -187,11 +187,14 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
     isWorkflowChild && threadStatus && WORKFLOW_CHILD_STATUS_LABELS.has(threadStatus.label)
       ? threadStatus
       : null;
-  const showsDeliverablePr =
+  // The deliverable's PR stays reachable through code review and Apply Reviews, which keep
+  // its step active (or failed); a thread no step names (a skipped step's) keeps its PR too.
+  const showsWorkflowPr =
+    isWorkflowChild &&
     !workflowStatus &&
-    workflowStep?.isDeliverable === true &&
-    workflowStep.state === "completed" &&
-    prStatus !== null;
+    prStatus !== null &&
+    (workflowStep === undefined ||
+      (workflowStep.isDeliverable && workflowStep.state !== "pending"));
   // Steps run unattended, so unread is no signal there: only a step that is running, needs
   // someone, or is the deliverable stands out.
   const workflowEmphasis =
@@ -389,7 +392,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           ) : isWorkflowChild ? (
             workflowStatus ? (
               <ThreadStatusPillBadge pill={workflowStatus} variant="icon" live={false} />
-            ) : showsDeliverablePr ? (
+            ) : showsWorkflowPr ? (
               <SidebarThreadPrStatus
                 prStatus={prStatus}
                 settled={false}
@@ -397,7 +400,9 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
               />
             ) : workflowStep ? (
               <WorkflowStepGlyph state={workflowStep.state} />
-            ) : null
+            ) : (
+              <WorkflowStepGlyph state={null} />
+            )
           ) : threadStatus ? (
             <ThreadStatusPillBadge pill={threadStatus} variant="icon" live={false} />
           ) : null}
