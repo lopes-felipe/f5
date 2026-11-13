@@ -46,7 +46,10 @@ export function useThreadFind({
   const ticketRef = useRef<{ id: number } | null>(null);
   const cancelNavigation = useCallback(() => {
     const ticket = ticketRef.current;
-    if (ticket) cancelRequest(ticket.id);
+    if (!ticket) return;
+    // Forgotten here, so a later retry of some other jump can never be taken for this one.
+    ticketRef.current = null;
+    cancelRequest(ticket.id);
   }, [cancelRequest]);
 
   const open = useCallback(() => setOpenThreadId(threadId), [threadId]);

@@ -120,6 +120,46 @@ it("clears the match and cancels its jump when the search finds nothing", async 
   expect(hook.result.current.contextValue).toBeNull();
 });
 
+it("drops the match for another timeline jump and leaves the bar open and its jump alone", async () => {
+  const { navigation, hook } = await mount();
+  await hook.act(() => hook.result.current.open());
+  await hook.act(() =>
+    hook.result.current.selectMatch(threadA, needle, new AbortController().signal),
+  );
+
+  await hook.act(() => hook.result.current.clearMatch());
+  expect(hook.result.current.match).toBeNull();
+  expect(hook.result.current.contextValue).toBeNull();
+  expect(hook.result.current.openThreadId).toBe(threadA);
+  expect(navigation.cancelRequest).not.toHaveBeenCalled();
+});
+
+it("forgets a closed bar's jump, so a later retry is not taken for it", async () => {
+  const { navigation, hook } = await mount();
+  await hook.act(() =>
+    hook.result.current.selectMatch(threadA, needle, new AbortController().signal),
+  );
+  await hook.act(() => hook.result.current.close());
+  expect(navigation.cancelRequest.mock.calls).toEqual([[1]]);
+
+  // A second close has nothing left to cancel.
+  await hook.act(() => hook.result.current.close());
+  expect(navigation.cancelRequest.mock.calls).toEqual([[1]]);
+});
+
+it("keeps a result for another thread until that thread is the one rendered", async () => {
+  const { hook } = await mount();
+  await hook.act(() =>
+    hook.result.current.selectMatch(threadB, needle, new AbortController().signal),
+  );
+  expect(hook.result.current.match).toBeNull();
+  expect(hook.result.current.contextValue).toBeNull();
+
+  await hook.rerender({ threadId: threadB });
+  expect(hook.result.current.match).toEqual(needle);
+  expect(hook.result.current.contextValue?.requestId).toBe(1);
+});
+
 it("shows neither the bar's match nor its highlight on another thread", async () => {
   const { hook } = await mount();
   await hook.act(() => hook.result.current.open());
