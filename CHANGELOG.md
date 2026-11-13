@@ -18,8 +18,6 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
-- Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
 - Storage settings count automatic database snapshots at the space they actually hold. Snapshots are copy-on-write clones that share unchanged data with the live database, but each one was counted at the full database size, so nine copies of a 6 GB database showed as 57 GB while holding about 2.5 GB. Recovery backups, Total used and Reclaimable now use an estimate of the data that newer copies do not share, and each snapshot lists both sizes. The amount reported after a reclaim is measured against the snapshots that remain, so removing one from the middle of the history no longer claims space an older copy still holds.
 - Reclaiming a database snapshot removes its folder, and an empty leftover folder is reported as removed instead of skipped. Empty snapshot folders left by earlier cleanups are cleared, and no longer count as snapshots for retention or as the copy to restore from.
 - Opening a just-created thread waits for its details instead of bouncing to the start page while the sidebar catches up.
@@ -39,6 +37,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
 - The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
 - The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
+
+- Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
+- Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
 
 ## [0.1.8] - 2026-11-12
 
