@@ -65207,9 +65207,11 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-11-13T11:28:15.866Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26767",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "sidebar",
