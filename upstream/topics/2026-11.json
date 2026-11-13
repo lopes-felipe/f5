@@ -26988,12 +26988,14 @@
     },
     {
       "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-13T11:25:19.753Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-31379",
       "relatedTopics": [
         "pr-31764"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "scheduled tasks",
@@ -29628,9 +29630,11 @@
     },
     {
       "createdAt": "2026-11-08T11:05:32.990Z",
+      "decidedAt": "2026-11-13T11:25:26.669Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-32833",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "preview browser",
@@ -30842,12 +30846,14 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
+      "decidedAt": "2026-11-13T11:25:16.866Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33147",
       "relatedTopics": [
         "pr-29607"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
