@@ -135,6 +135,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 156, name: "UpstreamReclassifyRuns" },
       { migration_id: 157, name: "ProjectionThreadActivitiesWorktreeSetupIndex" },
       { migration_id: 158, name: "ProviderTurnDeliveryPendingIndex" },
+      { migration_id: 159, name: "UsageNativeIdentity" },
     ]);
     const activityIndexes = yield* sql<{
       name: string;

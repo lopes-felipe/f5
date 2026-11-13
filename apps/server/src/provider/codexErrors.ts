@@ -1,5 +1,4 @@
 import type { RuntimeUsageLimit } from "@t3tools/contracts";
-import { chatGptUsageLimitCode } from "@t3tools/shared/usageLimit";
 import { resetDate } from "../usage/accountUsageJson.ts";
 import { usageLimitFromWindows, usageLimitMessage } from "./usageLimitMessages.ts";
 const UNSUPPORTED_MODEL_RECOVERY_HINT =
@@ -58,7 +57,6 @@ export function formatCodexUsageError(
   at: string,
   errorInfo?: unknown,
 ): string {
-  if (chatGptUsageLimitCode(message)) return message;
   const exhausted = (snapshot ? exhaustedCodexWindows(snapshot) : [])
     .filter((window) => window.resetsAt !== null && Date.parse(window.resetsAt) > Date.parse(at))
     .sort((left, right) => Date.parse(right.resetsAt!) - Date.parse(left.resetsAt!))[0];
@@ -157,29 +155,6 @@ function codexExhaustionHttpStatus(errorInfo: unknown): unknown {
 export interface CodexTerminalFailureEvidence {
   readonly message: string;
   readonly errorInfo: unknown;
-  readonly additionalDetails?: string | undefined;
-}
-
-export function codexFailureMessage(
-  message: string | undefined,
-  additionalDetails: string | undefined,
-  previous?: CodexTerminalFailureEvidence,
-  errorInfo?: unknown,
-): string | undefined {
-  const matching =
-    previous &&
-    (message === undefined || message === previous.message) &&
-    (errorInfo === undefined ||
-      errorInfo === null ||
-      codexErrorInfoCode(errorInfo) === codexErrorInfoCode(previous.errorInfo));
-  return (
-    [
-      message ?? (matching ? previous.message : undefined),
-      additionalDetails ?? (matching ? previous.additionalDetails : undefined),
-    ]
-      .filter(Boolean)
-      .join("\n") || undefined
-  );
 }
 
 /**
@@ -215,7 +190,6 @@ export function detectCodexUsageLimit(input: {
   /** Live account updates observed during this turn are provider evidence. */
   snapshotNotBefore?: string;
 }): RuntimeUsageLimit | null {
-  if (chatGptUsageLimitCode(input.message)) return null;
   if (/\b(?:warning|retrying|will retry|authentication|unauthorized)\b/i.test(input.message))
     return null;
   const freshSnapshots = (input.snapshots ?? [])

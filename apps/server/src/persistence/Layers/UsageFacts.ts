@@ -195,6 +195,7 @@ const make = Effect.gen(function* () {
         completed_at,
         recorded_at,
         source_event_id
+        , native_session_id, started_at
       ) VALUES (
         ${fact.turnId},
         ${fact.threadId},
@@ -213,6 +214,7 @@ const make = Effect.gen(function* () {
         ${fact.completedAt},
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
         ${fact.sourceEventId}
+        , ${fact.nativeSessionId ?? null}, ${fact.startedAt ?? null}
       )
       ON CONFLICT (turn_id) DO UPDATE SET
         thread_id = excluded.thread_id,
@@ -229,7 +231,9 @@ const make = Effect.gen(function* () {
         token_provenance = excluded.token_provenance,
         cost_provenance = excluded.cost_provenance,
         completed_at = excluded.completed_at,
-        source_event_id = excluded.source_event_id
+        source_event_id = excluded.source_event_id,
+        native_session_id = COALESCE(excluded.native_session_id, projection_turn_usage_facts.native_session_id),
+        started_at = COALESCE(excluded.started_at, projection_turn_usage_facts.started_at)
       WHERE excluded.completed_at >= projection_turn_usage_facts.completed_at
     `,
   });

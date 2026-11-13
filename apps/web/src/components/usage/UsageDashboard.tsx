@@ -154,6 +154,7 @@ function CoverageNotes({ summary }: { summary: UsageSummary }) {
     !summary.coverage.partialHistory &&
     summary.coverage.tokenUnreportedTurnCount === 0 &&
     summary.coverage.costUnreportedTurnCount === 0 &&
+    !summary.metrics.unpricedNativeInferenceCount &&
     !legacyOnly
   )
     return null;
@@ -319,7 +320,10 @@ function ProvidersModelsSection(props: {
       render: (entry) => (
         <span className="inline-flex items-center gap-2">
           {costLabel(entry.metrics)}
-          {entry.model !== null && entry.metrics.unpricedTurnCount > 0 && props.onSetPrice ? (
+          {entry.model !== null &&
+          (entry.metrics.unpricedTurnCount > 0 ||
+            (entry.metrics.unpricedNativeInferenceCount ?? 0) > 0) &&
+          props.onSetPrice ? (
             <Button
               size="xs"
               variant="ghost"
@@ -401,7 +405,8 @@ export function UsageDashboardView(props: {
   const noRecords =
     summary.metrics.reporting != null &&
     summary.metrics.reporting.recordedTurnCount === 0 &&
-    summary.metrics.reporting.legacyCostEventCount === 0;
+    summary.metrics.reporting.legacyCostEventCount === 0 &&
+    !summary.metrics.nativeInferenceCount;
   const unpriced = unpricedModelCount(summary);
   const status = coverageStatus(summary);
 
@@ -468,8 +473,8 @@ export function UsageDashboardView(props: {
           <AlertTriangleIcon aria-hidden="true" />
           <AlertDescription className="text-xs text-foreground">
             {unpriced === 1
-              ? "1 model has unpriced turns, so cost is understated."
-              : `${unpriced} models have unpriced turns, so cost is understated.`}
+              ? "1 model has unpriced usage, so cost is understated."
+              : `${unpriced} models have unpriced usage, so cost is understated.`}
           </AlertDescription>
           <AlertAction>
             <Button size="xs" variant="outline" onClick={props.onReviewPrices}>
@@ -486,7 +491,7 @@ export function UsageDashboardView(props: {
           detail={
             total.detail ??
             (summary.metrics.reporting
-              ? `${records.count} recorded turns`
+              ? `${records.count} recorded turns${summary.metrics.nativeInferenceCount ? " · " + summary.metrics.nativeInferenceCount + " native model calls" : ""}`
               : `${summary.metrics.reportedTokenTurnCount} of ${summary.metrics.turnCount} usage records reported tokens`)
           }
           delta={tokenDelta(summary)}
@@ -520,7 +525,11 @@ export function UsageDashboardView(props: {
         <StatTile
           label="Cost"
           value={costLabel(summary.metrics)}
-          detail={`${summary.metrics.pricedTurnCount} priced · ${summary.metrics.unpricedTurnCount} unpriced`}
+          detail={
+            summary.metrics.nativeInferenceCount
+              ? `${summary.metrics.pricedTurnCount} priced turns · ${summary.metrics.unpricedTurnCount} unpriced turns · ${summary.metrics.unpricedNativeInferenceCount ?? 0} unpriced model calls`
+              : `${summary.metrics.pricedTurnCount} priced · ${summary.metrics.unpricedTurnCount} unpriced`
+          }
           delta={costDelta(summary)}
           icon={CoinsIcon}
         />
@@ -589,6 +598,23 @@ export function UsageDashboardView(props: {
         />
       ) : null}
       <CoverageNotes summary={summary} />
+      {summary.nativeHistoryStatus === "refreshing" ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Refreshing Muse Code history…
+        </p>
+      ) : null}
+      {summary.nativeHistoryStatus === "error" ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Muse Code history could not refresh. Previously loaded history is retained; the next
+          refresh will retry.
+        </p>
+      ) : null}
+      {summary.metrics.nativeInferenceCount ? (
+        <p className="text-xs text-muted-foreground">
+          {summary.metrics.nativeInferenceCount} native Muse model calls included. Model calls are
+          separate from recorded turns.
+        </p>
+      ) : null}
       {props.accounts ? <AccountUsageCards accounts={props.accounts} range={props.range} /> : null}
       <AboutTheseNumbers notes={[HEADER_NOTE, status, CLAUDE_HISTORY_NOTE]} />
     </div>

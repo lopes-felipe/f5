@@ -31,11 +31,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { externalMuseHistory, readMuseHistory } from "../../usage/museHistory.ts";
-import { makeMspTransport } from "../msp/MspTransport.ts";
-import { openMspHost } from "../msp/MspSessionRuntime.ts";
-import { MUSE_SERVE_ARGS } from "@t3tools/shared/museProtocolManifest";
-import { expandHomePath } from "../../pathExpansion.ts";
+import { makeMuseUsageHistory } from "./MuseUsageHistory.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("muse");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -73,70 +69,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         continuation: { groupKey: continuationIdentity.continuationKey },
       });
       const effectiveConfig = { ...config, enabled } satisfies MuseSettings;
-      let discoveredHome: string | undefined;
-      const readHistory = yield* Effect.cachedWithTTL(
-        Effect.scoped(
-          Effect.gen(function* () {
-            if (!discoveredHome) {
-              const transport = yield* makeMspTransport({
-                binaryPath: expandHomePath(config.binaryPath || "muse"),
-                args: [
-                  ...MUSE_SERVE_ARGS,
-                  "--disable-shell",
-                  "--disable-write",
-                  "--no-session-log",
-                ],
-                cwd: process.cwd(),
-                environment: { ...processEnv, MUSE_NO_AUTO_UPDATE: "1" },
-              });
-              const host = yield* Effect.acquireRelease(
-                Effect.tryPromise(() =>
-                  openMspHost({ transport: transport.transport, clientVersion: serverVersion }),
-                ),
-                (host) => Effect.promise(() => host.close().catch(() => undefined)),
-              );
-              discoveredHome = host.initializeResult.museHome;
-            }
-            if (!discoveredHome) return [];
-            return yield* Effect.tryPromise((signal) => readMuseHistory(discoveredHome!, signal));
-          }),
-        ).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.timeoutOption("30 seconds"),
-          Effect.map((result) => (result._tag === "Some" ? result.value : [])),
-          Effect.orElseSucceed(() => []),
-        ),
-        "30 seconds",
-      );
-      const usageHistory = Effect.gen(function* () {
-        const records = yield* readHistory;
-        const sessions =
-          sql._tag === "Some"
-            ? yield* sql.value<{ sessionId: string | null; startedAt: string; endedAt: string }>`
-              SELECT json_extract(r.resume_cursor_json, '$.mspSessionId') AS "sessionId",
-                COALESCE(t.started_at, t.requested_at) AS "startedAt", f.completed_at AS "endedAt"
-              FROM provider_session_runtime r
-              JOIN projection_turn_usage_facts f ON f.thread_id = r.thread_id
-              JOIN projection_turns t ON t.turn_id = f.turn_id AND t.thread_id = f.thread_id
-              WHERE r.provider_name = 'muse' AND f.provider_name = 'muse'
-            `
-            : [];
-        const bySession = new Map<string, Array<(typeof sessions)[number]>>();
-        for (const session of sessions) {
-          if (!session.sessionId) continue;
-          const intervals = bySession.get(session.sessionId) ?? [];
-          intervals.push(session);
-          bySession.set(session.sessionId, intervals);
-        }
-        return externalMuseHistory(records, (record) =>
-          (bySession.get(record.sessionId) ?? []).some(
-            (session) =>
-              session.sessionId === record.sessionId &&
-              record.timestamp >= session.startedAt &&
-              record.timestamp <= session.endedAt,
-          ),
-        );
-      }).pipe(Effect.orElseSucceed(() => []));
+      const usageHistory = yield* makeMuseUsageHistory(config, processEnv, enabled);
 
       const adapter = yield* makeMuseAdapter(effectiveConfig, {
         instanceId,

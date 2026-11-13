@@ -113,13 +113,14 @@ input price, and zero is a valid price.
 
 Muse Code also includes local native session history (including child sessions and automated
 reviews) from the home reported by the configured CLI, using that account's environment.
-Sessions recorded by F5 use their existing usage facts; other native sessions appear without
-project attribution. Copied inference envelopes count once. Unknown models remain unpriced
-until you configure a custom price. The date and provider filters also apply to native history.
-
-ChatGPT plan-sharing limits show a notice in the thread. Personal limits link to ChatGPT Usage
-settings; workspace limits offer **Copy request for admin**, which copies text for you to send
-to your workspace admin. These limits do not schedule an automatic quota-reset retry.
+Sessions recorded by F5 use durable per-turn native identities for deduplication; external
+sessions appear under **Usage without a project**. Copied inference envelopes count once.
+Native model calls contribute tokens and pricing without increasing the recorded turn count.
+Unknown models remain unpriced until you configure a custom price.
+The date and provider filters apply to native history. Project-filtered summaries do not scan
+external history, and disabled instances never launch Muse for Usage.
+History refreshes in the background when Usage is requested. A refresh notice appears while
+it runs; a failed refresh retains the last successful snapshot and reports the failure.
 
 **Other providers**
 

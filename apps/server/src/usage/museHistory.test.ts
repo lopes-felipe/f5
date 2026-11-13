@@ -7,6 +7,7 @@ import {
   museHistoryBuckets,
   parseMuseHistoryLine,
   readMuseHistory,
+  scanMuseHistory,
 } from "./museHistory.ts";
 import { aggregateUsageMetrics } from "./usageSummary.ts";
 
@@ -45,7 +46,8 @@ describe("Muse native usage", () => {
       cacheWriteTokens: 10,
       totalTokens: 120,
     });
-    expect(aggregateUsageMetrics([record.row]).unpricedTurnCount).toBe(1);
+    expect(aggregateUsageMetrics([record.row]).unpricedNativeInferenceCount).toBe(1);
+    expect(aggregateUsageMetrics([record.row]).turnCount).toBe(0);
     expect(
       aggregateUsageMetrics(
         [record.row],
@@ -125,6 +127,15 @@ describe("Muse native usage", () => {
         JSON.stringify(entry()) + "\n" + JSON.stringify(entry("next")) + "\n",
       );
       expect(await readMuseHistory(home)).toHaveLength(2);
+      const grouped = await scanMuseHistory(home, () => false);
+      expect(grouped).toHaveLength(1);
+      expect(grouped[0]?.row).toMatchObject({
+        nativeInferenceCount: 2,
+        turnCount: 0,
+        totalTokens: 240,
+      });
+      const external = await scanMuseHistory(home, (record) => record.key === "next");
+      expect(external[0]?.row).toMatchObject({ nativeInferenceCount: 1, totalTokens: 120 });
     } finally {
       await rm(home, { recursive: true, force: true });
     }

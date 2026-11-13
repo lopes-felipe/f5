@@ -56,6 +56,28 @@ const withReporting = (overrides: Partial<NonNullable<UsageMetrics["reporting"]>
   metrics({ reporting: { ...metrics().reporting!, ...overrides } });
 
 describe("tokenFieldDisplay", () => {
+  it("shows native tokens without inventing recorded turns", () => {
+    const native = metrics({
+      turnCount: 0,
+      nativeInferenceCount: 2,
+      totalTokens: 120,
+      reporting: {
+        recordedTurnCount: 0,
+        legacyCostEventCount: 0,
+        inputTokenTurnCount: 0,
+        outputTokenTurnCount: 0,
+        cacheReadTokenTurnCount: 0,
+        cacheWriteTokenTurnCount: 0,
+        totalTokenTurnCount: 0,
+      },
+    });
+    expect(tokenFieldDisplay(native, "totalTokens")).toMatchObject({
+      value: "120",
+      known: true,
+      complete: true,
+    });
+    expect(native.reporting?.recordedTurnCount).toBe(0);
+  });
   it("distinguishes unreported, reported zero, and partial values", () => {
     expect(tokenFieldDisplay(withReporting({ totalTokenTurnCount: 0 }), "totalTokens").value).toBe(
       "Unreported",

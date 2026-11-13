@@ -317,6 +317,59 @@ afterEach(() => {
 });
 
 describe("UsageDashboardView", () => {
+  it("shows native model calls separately from turns while refreshing history", async () => {
+    const native = metrics({
+      turnCount: 0,
+      reportedTokenTurnCount: 0,
+      nativeInferenceCount: 2,
+      unpricedNativeInferenceCount: 2,
+      pricedTurnCount: 0,
+      unpricedTurnCount: 0,
+      providerReportedCostUsd: null,
+      totalTokens: 120,
+      reporting: {
+        recordedTurnCount: 0,
+        legacyCostEventCount: 0,
+        inputTokenTurnCount: 0,
+        outputTokenTurnCount: 0,
+        cacheReadTokenTurnCount: 0,
+        cacheWriteTokenTurnCount: 0,
+        totalTokenTurnCount: 0,
+      },
+    });
+    const screen = await render(
+      <UsageDashboardView
+        summary={summary({
+          nativeHistoryStatus: "refreshing",
+          metrics: native,
+          byProvider: [{ provider: "muse", model: "unknown-muse", metrics: native }],
+          projectScope: {
+            selectedProjectId: null,
+            byProject: [{ projectId: null, title: null, deleted: false, metrics: native }],
+            topThreads: [],
+            threadCount: 0,
+          },
+        })}
+        range="7d"
+        onRangeChange={() => {}}
+        fetching={false}
+      />,
+    );
+    try {
+      await expect.element(page.getByText("Refreshing Muse Code history…")).toBeVisible();
+      await expect
+        .element(
+          page.getByText(
+            "2 native Muse model calls included. Model calls are separate from recorded turns.",
+          ),
+        )
+        .toBeVisible();
+      await expect.element(page.getByText("Usage without a project")).toBeVisible();
+      await expect.element(page.getByText("unknown-muse")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
   it("labels provider-reported values and keeps missing values unreported", async () => {
     const onRangeChange = vi.fn();
     const screen = await render(
@@ -461,7 +514,7 @@ describe("UsageDashboardView", () => {
     );
     try {
       await expect.element(page.getByRole("button", { name: "Alpha" })).toBeVisible();
-      await expect.element(page.getByText("Unattributed historical cost")).toBeVisible();
+      await expect.element(page.getByText("Usage without a project")).toBeVisible();
       await expect
         .element(page.getByRole("button", { name: "Unknown project (deleted)" }))
         .toBeVisible();
@@ -563,7 +616,7 @@ describe("UsageDashboardView", () => {
       expect(projectRows().map((row) => [row[0], row.at(-1)])).toEqual([
         ["Alpha", "75%"],
         ["Beta", "25%"],
-        ["Unattributed historical cost", "0%"],
+        ["Usage without a project", "0%"],
       ]);
       expect(models()).toEqual(["gpt-5.6", "claude-opus", "cursor-agent"]);
 
@@ -573,7 +626,7 @@ describe("UsageDashboardView", () => {
       expect(projectRows().map((row) => [row[0], row.at(-1)])).toEqual([
         ["Beta", "75%"],
         ["Alpha", "25%"],
-        ["Unattributed historical cost", ""],
+        ["Usage without a project", ""],
       ]);
       expect(models()).toEqual(["claude-opus", "gpt-5.6", "cursor-agent"]);
     } finally {

@@ -21,7 +21,7 @@ import { buildQuotaHistory, QUOTA_HISTORY_LOOKBACK_MS } from "../quotaHistory.ts
 import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 import type { AccountUsageErrorCode } from "@t3tools/contracts";
-import { externalMuseHistory, museHistoryBuckets } from "../museHistory.ts";
+import { museHistoryBuckets } from "../museHistory.ts";
 
 const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
   unsupported: "This Claude version cannot analyze usage.",
@@ -205,17 +205,29 @@ const make = Effect.gen(function* () {
         ...(request.projectId ? { projectId: request.projectId } : {}),
       };
       const instances = yield* registry.listInstances;
-      const nativeHistory =
+      const capabilities =
         (request.provider && request.provider !== "muse") ||
         request.hiddenProviders?.includes("muse")
           ? []
-          : externalMuseHistory(
-              (yield* Effect.forEach(
-                instances,
-                (instance) => instance.usageHistory ?? Effect.succeed([]),
-                { concurrency: 2 },
-              )).flat(),
+          : instances.flatMap((instance) =>
+              instance.enabled && instance.usageHistory ? [instance.usageHistory] : [],
             );
+      if (!request.projectId)
+        yield* Effect.forEach(capabilities, (capability) => capability.refresh);
+      const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
+      const sources = new Set<string>();
+      const nativeHistory = snapshots.flatMap((snapshot) => {
+        if (!snapshot.source || sources.has(snapshot.source)) return [];
+        sources.add(snapshot.source);
+        return snapshot.records;
+      });
+      const nativeHistoryStatus = snapshots.some((snapshot) => snapshot.status === "refreshing")
+        ? ("refreshing" as const)
+        : snapshots.some((snapshot) => snapshot.status === "error")
+          ? ("error" as const)
+          : snapshots.length
+            ? ("ready" as const)
+            : ("idle" as const);
       const readBuckets: typeof repository.summarizeBuckets = (input) =>
         repository
           .summarizeBuckets(input)
@@ -300,17 +312,20 @@ const make = Effect.gen(function* () {
           project.id === null ? [] : [project.id],
         ),
       });
-      return buildUsageSummary({
-        priceOverrides,
-        request,
-        now,
-        coverageStartedAt: metadata.coverageStartedAt,
-        plan,
-        rows,
-        projectScope: buildUsageProjectScope({ aggregation, selectedProjectId, titles }),
-        previousMetrics,
-        previousBuckets,
-      });
+      return {
+        ...buildUsageSummary({
+          priceOverrides,
+          request,
+          now,
+          coverageStartedAt: metadata.coverageStartedAt,
+          plan,
+          rows,
+          projectScope: buildUsageProjectScope({ aggregation, selectedProjectId, titles }),
+          previousMetrics,
+          previousBuckets,
+        }),
+        nativeHistoryStatus,
+      };
     });
 
   const getQuotaHistory: UsageServiceShape["getQuotaHistory"] = Effect.gen(function* () {

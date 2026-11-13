@@ -51,6 +51,9 @@ export const UsageTurnFact = Schema.Struct({
   costProvenance: UsageCostProvenance,
   completedAt: IsoDateTime,
   sourceEventId: TrimmedNonEmptyString,
+  /** Immutable native identity captured at completion, independent of runtime projections. */
+  nativeSessionId: Schema.optional(TrimmedNonEmptyString),
+  startedAt: Schema.optional(IsoDateTime),
 });
 export type UsageTurnFact = typeof UsageTurnFact.Type;
 
@@ -92,6 +95,8 @@ export const UsageFieldReporting = Schema.Struct({
 export type UsageFieldReporting = typeof UsageFieldReporting.Type;
 
 export const UsageMetrics = Schema.Struct({
+  nativeInferenceCount: Schema.optional(NonNegativeInt),
+  unpricedNativeInferenceCount: Schema.optional(NonNegativeInt),
   turnCount: NonNegativeInt,
   reportedTokenTurnCount: NonNegativeInt,
   inputTokens: NonNegativeInt,
@@ -240,6 +245,7 @@ export const CodexAccountUsage = Schema.Struct({
 export type CodexAccountUsage = typeof CodexAccountUsage.Type;
 
 export const UsageSummary = Schema.Struct({
+  nativeHistoryStatus: Schema.optional(Schema.Literals(["idle", "refreshing", "ready", "error"])),
   range: UsageRange,
   timeZone: TrimmedNonEmptyString,
   generatedAt: IsoDateTime,

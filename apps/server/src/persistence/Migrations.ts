@@ -1,4 +1,5 @@
 import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
+import Migration0159 from "./Migrations/159_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
 import Migration0156 from "./Migrations/156_UpstreamReclassifyRuns.ts";
@@ -191,6 +192,7 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "159_UsageNativeIdentity": Migration0159,
   "154_DesktopActivityPendingIndex": Migration0154,
   "155_BackgroundWorkNativeParentSession": Migration0155,
   "156_UpstreamReclassifyRuns": Migration0156,

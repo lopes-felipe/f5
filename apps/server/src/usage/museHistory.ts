@@ -77,17 +77,19 @@ export function parseMuseHistoryLine(line: string): MuseHistoryRecord | null {
       cacheWriteTokens: write,
       totalTokens: input + output,
       providerReportedCostUsd: null,
-      turnCount: 1,
-      reportedTokenTurnCount: 1,
+      nativeInferenceCount: 1,
+      unpricedNativeInferenceCount: 1,
+      turnCount: 0,
+      reportedTokenTurnCount: 0,
       pricedTurnCount: 0,
-      unpricedTurnCount: 1,
-      recordedTurnCount: 1,
+      unpricedTurnCount: 0,
+      recordedTurnCount: 0,
       legacyCostEventCount: 0,
-      inputTokenTurnCount: 1,
-      outputTokenTurnCount: 1,
-      cacheReadTokenTurnCount: 1,
-      cacheWriteTokenTurnCount: 1,
-      totalTokenTurnCount: 1,
+      inputTokenTurnCount: 0,
+      outputTokenTurnCount: 0,
+      cacheReadTokenTurnCount: 0,
+      cacheWriteTokenTurnCount: 0,
+      totalTokenTurnCount: 0,
     },
   };
 }
@@ -96,6 +98,7 @@ export function parseMuseHistoryLine(line: string): MuseHistoryRecord | null {
 export async function readMuseHistory(
   home: string,
   signal?: AbortSignal,
+  visit?: (record: MuseHistoryRecord) => void,
 ): Promise<MuseHistoryRecord[]> {
   const records: MuseHistoryRecord[] = [];
   const directories = [path.join(home, "sessions")];
@@ -127,7 +130,10 @@ export async function readMuseHistory(
         })) {
           if (!line.terminated || !line.text) continue;
           const record = parseMuseHistoryLine(line.text);
-          if (record) records.push(record);
+          if (record) {
+            if (visit) visit(record);
+            else records.push(record);
+          }
         }
       } finally {
         await file.close();
@@ -135,6 +141,71 @@ export async function readMuseHistory(
     }
   }
   return records;
+}
+
+/** Keep aggregate rows per UTC minute/model; retain only minimal identity data for deduplication. */
+export async function scanMuseHistory(
+  home: string,
+  isRecorded: (record: MuseHistoryRecord) => boolean,
+  signal?: AbortSignal,
+): Promise<MuseHistoryRecord[]> {
+  const totals = new Map<string, MuseHistoryRecord>();
+  type Counters = { group: string; input: number; output: number; read: number; write: number };
+  const seen = new Map<string, Counters | null>();
+  const add = (counters: Counters, sign: number) => {
+    const record = totals.get(counters.group)!;
+    const row = record.row;
+    totals.set(counters.group, {
+      ...record,
+      row: {
+        ...row,
+        inputTokens: row.inputTokens + sign * counters.input,
+        outputTokens: row.outputTokens + sign * counters.output,
+        cacheReadTokens: row.cacheReadTokens + sign * counters.read,
+        cacheWriteTokens: row.cacheWriteTokens + sign * counters.write,
+        totalTokens: row.totalTokens + sign * (counters.input + counters.output),
+        nativeInferenceCount: (row.nativeInferenceCount ?? 0) + sign,
+        unpricedNativeInferenceCount: (row.unpricedNativeInferenceCount ?? 0) + sign,
+      },
+    });
+  };
+  await readMuseHistory(home, signal, (record) => {
+    const previous = seen.get(record.key);
+    if (isRecorded(record)) {
+      if (previous) add(previous, -1);
+      seen.set(record.key, null);
+      return;
+    }
+    if (seen.has(record.key)) return;
+    const timestamp = record.timestamp.slice(0, 16) + ":00.000Z";
+    const group = JSON.stringify([timestamp, record.row.model]);
+    const { row } = record;
+    if (!totals.has(group))
+      totals.set(group, {
+        ...record,
+        timestamp,
+        row: {
+          ...row,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 0,
+          nativeInferenceCount: 0,
+          unpricedNativeInferenceCount: 0,
+        },
+      });
+    const counters = {
+      group,
+      input: row.inputTokens,
+      output: row.outputTokens,
+      read: row.cacheReadTokens,
+      write: row.cacheWriteTokens,
+    };
+    seen.set(record.key, counters);
+    add(counters, 1);
+  });
+  return [...totals.values()].filter((record) => (record.row.nativeInferenceCount ?? 0) > 0);
 }
 
 /** Copied envelopes count once; native F5 sessions already have persisted usage facts. */

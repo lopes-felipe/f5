@@ -33,6 +33,8 @@ export interface UsageBucketSummaryInput {
  * `totalTokenTurnCount > 0` has a known total for every turn it covers.
  */
 export interface UsageAggregateRow {
+  readonly nativeInferenceCount?: number;
+  readonly unpricedNativeInferenceCount?: number;
   readonly provider: string;
   readonly model: string | null;
   readonly estimationEligibleTurnCount?: number;

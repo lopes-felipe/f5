@@ -87,9 +87,7 @@ export interface ProviderInstance {
   >;
   readonly accountUsage?: AccountUsageCapability;
   /** Native history not already represented by this instance's F5 usage facts. */
-  readonly usageHistory?: Effect.Effect<
-    ReadonlyArray<import("../usage/museHistory.ts").MuseHistoryRecord>
-  >;
+  readonly usageHistory?: import("../usage/nativeHistory.ts").NativeHistoryCapability;
   /** Claude only: on-demand local usage scan, sharing the account-probe permits. */
   readonly analyzeClaudeUsage?: (
     permits: import("effect/Semaphore").Semaphore,
