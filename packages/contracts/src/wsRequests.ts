@@ -621,6 +621,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverReportClientDiagnostics, ReportClientDiagnosticsInput),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverGetHealth, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),

@@ -439,6 +439,15 @@ and protobuf HTTP protocols are supported. `OTEL_SDK_DISABLED=true` disables
 observability, and `OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none`
 disable external export per signal. Export is inactive without a destination.
 
+The Server health card below it needs no collector. `server.getHealth` returns
+what `observability/serverHealth.ts` has counted since the server process
+started: RPC routes that took 1 s or longer, SQL statements slower than 100 ms
+(statement text with placeholders, never bound values), each with a count, total
+and worst time, plus memory use and event-loop delay. Each list keeps at most 200
+distinct entries and reports the 20 with the largest total. These are the same
+events the server log records as `slow rpc route` and `slow sql statement`;
+nothing is persisted, so a restart clears them.
+
 Trace export retains at most 4,096 records and 4 MiB, including an in-flight
 batch. It sends one request at a time, bounds individual exports and requests,
 and drops failed batches with backoff. Metrics snapshots export serially. The

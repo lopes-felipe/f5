@@ -845,6 +845,7 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.serverUndoClaudeTranscriptRepair, input),
       getConfig: async () =>
         decodeServerConfig(await transport.request(WS_METHODS.serverGetConfig)),
+      getHealth: () => transport.request(WS_METHODS.serverGetHealth),
       getProjectSettings: requestMethod(WS_METHODS.serverGetProjectSettings),
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),

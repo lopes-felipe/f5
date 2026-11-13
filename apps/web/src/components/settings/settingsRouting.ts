@@ -364,6 +364,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "general.diagnostics": {
     category: "general",
   },
+  "general.server-health": {
+    category: "general",
+  },
   "general.sidebar-preview": {
     category: "general",
   },

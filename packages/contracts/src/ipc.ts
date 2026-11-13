@@ -208,6 +208,7 @@ import type {
 } from "./providerInventory";
 import type {
   ServerConfig,
+  ServerHealth,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
   ServerKeybindingMutationResult,
@@ -1216,6 +1217,8 @@ export interface NativeApi {
     }>;
     undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;
     getConfig: () => Promise<ServerConfig>;
+    /** Slow routes, slow SQL statements and event-loop delay since the server started. */
+    getHealth: () => Promise<ServerHealth>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;

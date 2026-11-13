@@ -8,6 +8,7 @@ import {
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  ServerHealth,
   ThreadId,
   WS_CHANNELS,
   WS_METHODS,
@@ -15,7 +16,8 @@ import {
   type OrchestrationThread,
   type WebSocketResponse,
 } from "@t3tools/contracts";
-import { Deferred, Effect, Layer, Option, Scope, Stream } from "effect";
+import { Deferred, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
+import { recordSlowRpcRoute } from "./observability/serverHealth.ts";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import * as Http from "node:http";
@@ -1436,6 +1438,24 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       runtime: expect.objectContaining({ state: expect.stringMatching(/^(starting|ready)$/) }),
     });
+  });
+
+  it("answers server.getHealth with slow operations recorded since start", async () => {
+    h.server = await createTestServer();
+    const address = h.server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+    recordSlowRpcRoute("test.slowRoute", 4_321);
+
+    const response = await sendRequest(ws, WS_METHODS.serverGetHealth);
+    expect(response.error).toBeUndefined();
+    const health = Schema.decodeUnknownSync(ServerHealth)(response.result);
+    expect(health.slowRoutes).toContainEqual(
+      expect.objectContaining({ name: "test.slowRoute", count: 1, totalMs: 4_321 }),
+    );
+    // The server samples event loop delay for as long as it runs.
+    expect(health.eventLoopDelay).not.toBeNull();
   });
 
   it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {

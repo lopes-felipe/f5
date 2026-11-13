@@ -1,5 +1,6 @@
 import { DiagnosticsSettings } from "../DiagnosticsSettings";
 import { KeepAwakeSettings } from "../KeepAwakeSettings";
+import { ServerHealthSettings } from "../ServerHealthSettings";
 import {
   SIDEBAR_OLDER_THREAD_DAYS_OPTIONS,
   type SidebarOlderThreadDays,
@@ -313,6 +314,7 @@ export function GeneralSettings() {
         />
       </SettingsCard>
       <DiagnosticsSettings />
+      <ServerHealthSettings />
     </>
   );
 }
