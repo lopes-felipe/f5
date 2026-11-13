@@ -1230,6 +1230,8 @@ export function createWsNativeApi(): NativeApi {
         transport
           .request(ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow, input)
           .then(decodeRetryWorkflowResult),
+      postCodeReviewWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow, input),
       retryInvestigationWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow, input),
       startImplementation: (input) =>

@@ -3573,6 +3573,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
       Effect.mapError(toAgentBridgeHostError),
     ),
+    ensureThreadActivities: (threadIds) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(
+          ({ orchestrationEngine }) =>
+            orchestrationEngine.ensureThreadActivities?.(threadIds) ?? Effect.void,
+        ),
+        Effect.ignore,
+      ),
     getThreadDetails: (threadId) =>
       projectionReadModelQuery
         .getThreadDetails({ threadId })
@@ -4244,6 +4252,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case UPSTREAM_PORTS_WS_METHODS.undoDecisions:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).undoDecisions(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.expireBacklog:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).expireBacklog(stripRequestTag(request.body)),
         );
       case UPSTREAM_PORTS_WS_METHODS.run:
         return yield* upstreamRoute(
@@ -5172,6 +5184,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
+      }
+
+      case ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow: {
+        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        return yield* codeReviewWorkflowService
+          .postWorkflow(body)
+          .pipe(Effect.mapError((cause) => new RouteRequestError({ message: cause.message })));
       }
 
       case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {

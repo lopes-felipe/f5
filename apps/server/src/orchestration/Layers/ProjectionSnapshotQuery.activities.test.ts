@@ -125,6 +125,21 @@ it.layer(SqlitePersistenceMemory)("retained thread activities query", (it) => {
       const rows = yield* retainedThreadActivitiesSql(sql, ThreadId.makeUnsafe("pending-1"));
       assert.equal(rows.length, MAX_THREAD_ACTIVITIES + 1);
       assert.isTrue(rows.some((row) => row.activityId === oldest[0]!.activityId));
+      assert.deepStrictEqual(
+        yield* retainedThreadActivitiesSql(sql, null, { unarchivedOnly: true }),
+        rows,
+      );
+      yield* sql`UPDATE projection_threads SET archived_at='2026-10-02T00:00:00.000Z' WHERE thread_id='pending-1'`;
+      // Cold startup skips archived approvals, but opening the thread still recovers them.
+      assert.deepStrictEqual(
+        yield* retainedThreadActivitiesSql(sql, null, { unarchivedOnly: true }),
+        [],
+      );
+      assert.deepStrictEqual(yield* retainedThreadActivitiesSql(sql, null), rows);
+      assert.deepStrictEqual(
+        yield* retainedThreadActivitiesSql(sql, ThreadId.makeUnsafe("pending-1")),
+        rows,
+      );
       yield* sql`UPDATE projection_pending_approvals SET status='resolved' WHERE request_id='approval-old'`;
       yield* sql`UPDATE projection_threads SET deleted_at='2026-10-02T00:00:00.000Z' WHERE thread_id='pending-1'`;
     }),

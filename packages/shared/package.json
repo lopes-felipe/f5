@@ -32,6 +32,10 @@
       "types": "./src/upstreamPortsGrouping.ts",
       "import": "./src/upstreamPortsGrouping.ts"
     },
+    "./upstreamPortsScore": {
+      "types": "./src/upstreamPortsScore.ts",
+      "import": "./src/upstreamPortsScore.ts"
+    },
     "./nativeHistoryReconciliation": {
       "types": "./src/nativeHistoryReconciliation.ts",
       "import": "./src/nativeHistoryReconciliation.ts"
@@ -163,6 +167,10 @@
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"
+    },
+    "./codeReviewPullRequest": {
+      "types": "./src/codeReviewPullRequest.ts",
+      "import": "./src/codeReviewPullRequest.ts"
     },
     "./cliArgs": {
       "types": "./src/cliArgs.ts",

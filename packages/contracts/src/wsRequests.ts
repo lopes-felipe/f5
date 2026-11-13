@@ -114,6 +114,7 @@ import {
   UpstreamControlPortQueueActionInput,
   UpstreamIgnorePortConflictsInput,
   UpstreamUndoDecisionsInput,
+  UpstreamExpireBacklogInput,
   UpstreamUnlinkPortInput,
   UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
@@ -212,6 +213,7 @@ import {
   OrchestrationGetThreadTailDetailsInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationSkipDocumentReaderPassInput,
@@ -504,6 +506,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow,
     OrchestrationRetryCodeReviewWorkflowInput,
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow,
+    OrchestrationPostCodeReviewWorkflowInput,
   ),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow,
@@ -841,6 +847,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.decide, UpstreamDecideInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.acceptSuggestions, UpstreamAcceptSuggestionsInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.undoDecisions, UpstreamUndoDecisionsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.expireBacklog, UpstreamExpireBacklogInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.run, UpstreamRunInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.startPort, UpstreamStartPortInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.previewPortGroups, UpstreamPreviewPortGroupsInput),

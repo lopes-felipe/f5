@@ -1,4 +1,5 @@
 import {
+  type UpstreamAreaPolicy,
   type UpstreamPortQueueTarget,
   type ProjectId,
   type UpstreamDecideResult,
@@ -63,6 +64,7 @@ import {
   canMoveFocusAfterDecision,
   decisionBatches,
   decisionToastTitle,
+  expireBacklogSummary,
   extendSelection,
   filterFromSearch,
   focusAfterRemoval,
@@ -80,10 +82,12 @@ import {
   promptLimitError,
   reconcileFocus,
   runDisabledReason,
+  runKindLabel,
   selectRange,
   toggleId,
   topicCount,
   topicStates,
+  unclassifiedNote,
   UNDO_STACK_MAX,
   UNDO_WINDOW_MS,
   undoKeptTitle,
@@ -102,11 +106,14 @@ export type { UpstreamSearch };
 
 const EMPTY_ROWS: ReadonlyArray<UpstreamTopicRow> = [];
 const EMPTY_SET: ReadonlySet<string> = new Set();
+const EMPTY_AREA_POLICY: Readonly<Record<string, UpstreamAreaPolicy>> = {};
+/** The age "Expire backlog…" uses while automatic expiry is off. */
+const DEFAULT_EXPIRE_BACKLOG_DAYS = 14;
 
 function describeRun(run: UpstreamOverview["lastRun"]): string | null {
   if (!run) return null;
   const parts = [
-    `${run.kind === "retriage" ? "Re-triage run" : run.kind === "legacy" ? "Legacy run" : "Last run"} ${run.status}`,
+    `${run.kind === "upstream" ? "Last run" : runKindLabel(run.kind)} ${run.status}`,
     formatRelativeTimeLabel(run.finishedAt ?? run.startedAt),
     `${run.commitCount} commits`,
     `${run.inboxCount} to review`,
@@ -149,7 +156,7 @@ export function UpstreamPage(props: {
   const list = props.search.list ?? "inbox";
   const sort = props.search.sort ?? null;
   // Keyed by value: the router hands back new arrays for unchanged filters.
-  const filterKey = JSON.stringify(filterFromSearch(props.search));
+  const filterKey = JSON.stringify(filterFromSearch(props.search, list));
   const filter: UpstreamTopicFilter = useMemo(() => JSON.parse(filterKey) as UpstreamTopicFilter, [filterKey]);
   const filtered = hasActiveFilters(props.search);
 
@@ -640,6 +647,53 @@ export function UpstreamPage(props: {
     });
   };
 
+  /** Previews the expiry with a dry run, confirms, then expires with an Undo toast. */
+  const expireBacklog = () => {
+    if (!projectId) return;
+    const olderThanDays =
+      projectSettings.data?.settings.upstreamPorts?.budget?.expireAfterDays ?? DEFAULT_EXPIRE_BACKLOG_DAYS;
+    void withBusy("Could not preview the expiry", async () => {
+      const preview = await ensureNativeApi().upstreamPorts.expireBacklog({ projectId, dryRun: true, olderThanDays });
+      if (preview.count === 0) {
+        toastManager.add({
+          type: "info",
+          title: `No Inbox topic has waited ${olderThanDays} days or more`,
+          ...(preview.unclassified > 0 ? { description: unclassifiedNote(preview.unclassified) } : {}),
+        });
+        return;
+      }
+      const summary = expireBacklogSummary(preview, olderThanDays);
+      setConfirm({
+        title: summary.title,
+        description: summary.description,
+        confirmLabel: "Expire",
+        onConfirm: () =>
+          void withBusy("Could not expire the backlog", async () => {
+            const result = await ensureNativeApi().upstreamPorts.expireBacklog({
+              projectId,
+              dryRun: false,
+              olderThanDays,
+            });
+            if (result.undoToken && result.count > 0)
+              offerUndo({
+                id: crypto.randomUUID(),
+                projectId,
+                token: result.undoToken,
+                title: `Expired ${topicCount(result.count)}`,
+                expiresAt: Date.now() + UNDO_WINDOW_MS,
+              });
+            if (result.stoppedEarly)
+              toastManager.add({
+                type: "warning",
+                title: `Expiry stopped after ${topicCount(result.count)}`,
+                description: result.stoppedEarly,
+              });
+            await invalidateUpstreamPorts(queryClient);
+          }),
+      });
+    });
+  };
+
   const resolvePublicationNow = (action: UpstreamResolvePublicationInput["action"]) => {
     if (!projectId) return;
     void withBusy("Publication action failed", async () => {
@@ -997,6 +1051,7 @@ export function UpstreamPage(props: {
           busy={busy}
           refreshing={overviewQuery.isFetching}
           onRun={runNow}
+          onExpireBacklog={expireBacklog}
           onRefresh={() => void invalidateUpstreamPorts(queryClient, { files: true })}
           onResolvePublication={resolvePublication}
         />
@@ -1125,6 +1180,7 @@ export function UpstreamPage(props: {
               projectId={projectId}
               topicId={focused}
               overview={overview}
+              areaPolicy={projectSettings.data?.settings.upstreamPorts?.areaPolicy ?? EMPTY_AREA_POLICY}
               readOnly={readOnly}
               busy={busy}
               pending={pending.has(focused)}

@@ -1,5 +1,6 @@
 import type {
   ProjectId,
+  UpstreamAreaPolicy,
   UpstreamDecision,
   UpstreamOverview,
   UpstreamPortLinkSummary,
@@ -26,6 +27,9 @@ import {
   canAcceptSuggestion,
   equivalentFromLink,
   formatConfidence,
+  laneBadgeVariant,
+  laneChipLabel,
+  scoreBreakdown,
   suggestionBadgeVariant,
   suggestionChipLabel,
   suggestionVerb,
@@ -67,6 +71,8 @@ export function UpstreamTopicDetail(props: {
   readonly onCopyPrompt: () => void;
   readonly onUnlink: (link: UpstreamPortLinkSummary) => void;
   readonly onOpenTopic: (topicId: string, state: UpstreamTopicState) => void;
+  /** The user's area follow list, for the score breakdown. */
+  readonly areaPolicy: Readonly<Record<string, UpstreamAreaPolicy>>;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -101,8 +107,16 @@ export function UpstreamTopicDetail(props: {
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-semibold">{topic.title}</h2>
           <Badge variant="outline">{UPSTREAM_STATE_LABELS[state]}</Badge>
+          <Badge variant={laneBadgeVariant(detail.row)}>{laneChipLabel(detail.row)}</Badge>
           {topic.epoch > 1 && <Badge variant="outline">epoch {topic.epoch}</Badge>}
         </div>
+        <p className="text-xs text-muted-foreground tabular-nums" aria-label="Score breakdown">
+          {scoreBreakdown(
+            detail.row,
+            props.areaPolicy,
+            detail.members.map((member) => member.subject),
+          )}
+        </p>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <button
             type="button"

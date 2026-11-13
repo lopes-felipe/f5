@@ -1,4 +1,62 @@
 {
+  "areas": [
+    { "aliases": ["agent", "subagents", "delegation"], "key": "agents", "label": "Agents" },
+    { "aliases": ["approval"], "key": "approvals", "label": "Approvals" },
+    { "aliases": ["checkpoint"], "key": "checkpoints", "label": "Checkpoints" },
+    { "aliases": ["tooling"], "key": "cli", "label": "CLI" },
+    {
+      "aliases": ["command palette", "command-palette", "keybindings"],
+      "key": "commands",
+      "label": "Command palette and keybindings"
+    },
+    { "aliases": ["chat", "markdown"], "key": "composer", "label": "Composer" },
+    {
+      "aliases": ["connection", "environments", "ssh"],
+      "key": "connections",
+      "label": "Connections"
+    },
+    { "aliases": ["updates", "startup"], "key": "desktop", "label": "Desktop" },
+    { "aliases": ["diff", "projects"], "key": "files", "label": "Files and projects" },
+    { "aliases": ["forge"], "key": "forges", "label": "Forges" },
+    { "aliases": [], "key": "git", "label": "Git" },
+    { "aliases": [], "key": "mcp", "label": "MCP" },
+    { "aliases": ["notification"], "key": "notifications", "label": "Notifications" },
+    { "aliases": ["reliability", "logging"], "key": "observability", "label": "Observability" },
+    { "aliases": [], "key": "orchestration", "label": "Orchestration" },
+    { "aliases": ["panel"], "key": "panels", "label": "Panels" },
+    { "aliases": ["perf"], "key": "performance", "label": "Performance" },
+    { "aliases": [], "key": "persistence", "label": "Persistence" },
+    { "aliases": ["pr hub", "pull requests"], "key": "pr-hub", "label": "PR hub" },
+    {
+      "aliases": ["preview", "preview browser", "browser"],
+      "key": "preview-browser",
+      "label": "Preview browser"
+    },
+    {
+      "aliases": [
+        "acp",
+        "antigravity",
+        "claude",
+        "codex",
+        "cursor",
+        "model picker",
+        "model-picker",
+        "opencode",
+        "pi"
+      ],
+      "key": "providers",
+      "label": "Providers"
+    },
+    { "aliases": ["auth"], "key": "security", "label": "Security" },
+    { "aliases": [], "key": "server", "label": "Server" },
+    { "aliases": ["onboarding", "themes"], "key": "settings", "label": "Settings" },
+    { "aliases": [], "key": "sidebar", "label": "Sidebar" },
+    { "aliases": [], "key": "terminal", "label": "Terminal" },
+    { "aliases": ["thread"], "key": "threads", "label": "Threads" },
+    { "aliases": ["ui", "accessibility", "web"], "key": "timeline", "label": "Timeline and UI" },
+    { "aliases": [], "key": "usage", "label": "Usage" },
+    { "aliases": ["worktree"], "key": "worktrees", "label": "Worktrees" }
+  ],
   "autoSkip": [
     {
       "pathPrefixes": [
@@ -51,9 +109,13 @@
     "release-ci",
     "maintenance",
     "reverted",
-    "declined-by-policy"
+    "declined-by-policy",
+    "aged-out",
+    "area-ignored"
   ],
   "reasonLabels": {
+    "aged-out": "Expired unreviewed",
+    "area-ignored": "Area not followed",
     "not-applicable": "Not applicable to f5",
     "declined-by-policy": "Declined by f5 product policy",
     "devices": "Devices and simulators only",
@@ -65,7 +127,7 @@
     "release-ci": "Upstream release or CI only",
     "reverted": "Reverted upstream"
   },
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "upstreamOnlySubsystems": [
     "auth-scopes",
     "tiptap-composer",

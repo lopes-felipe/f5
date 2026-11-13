@@ -5566,6 +5566,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const status = turnStatusFromResult(message);
         const gatewayUsageLimit =
           status === "failed" &&
+          rejectedLimits.length === 0 &&
           !permissionDenied &&
           !context.turnState.authenticationFailureMessage
             ? claudeGatewayUsageLimit(message, yield* nowIso)

@@ -13,7 +13,11 @@ import { PendingUserInput } from "./userInput";
 import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
 import { SourceControlPullRequestRef } from "./sourceControl";
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
-import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
+import {
+  CodeReviewPullRequest,
+  CodeReviewWorkflow,
+  CodeReviewWorkflowId,
+} from "./codeReviewWorkflow";
 import { InvestigationWorkflow, InvestigationWorkflowId } from "./investigationWorkflow";
 import { ProviderModelOptions, ProviderOptionSelections } from "./model";
 import {
@@ -91,6 +95,7 @@ export const ORCHESTRATION_WS_METHODS = {
   unarchiveCodeReviewWorkflow: "orchestration.unarchiveCodeReviewWorkflow",
   deleteCodeReviewWorkflow: "orchestration.deleteCodeReviewWorkflow",
   retryCodeReviewWorkflow: "orchestration.retryCodeReviewWorkflow",
+  postCodeReviewWorkflow: "orchestration.postCodeReviewWorkflow",
   createInvestigationWorkflow: "orchestration.createInvestigationWorkflow",
   archiveInvestigationWorkflow: "orchestration.archiveInvestigationWorkflow",
   unarchiveInvestigationWorkflow: "orchestration.unarchiveInvestigationWorkflow",
@@ -1077,6 +1082,12 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(() => []),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
+  /**
+   * Set by the server's in-memory read model for a thread that was archived
+   * before startup: `activities` holds its worktree-setup activity only, and
+   * the rest is still in SQLite. Cleared once the server loads them.
+   */
+  activitiesOmitted: Schema.optional(Schema.Boolean),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -1222,6 +1233,8 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   reviewerB: WorkflowModelSlot,
   consolidation: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
+  pullRequest: Schema.optional(Schema.NullOr(CodeReviewPullRequest)),
+  autoPost: Schema.optional(Schema.Boolean),
   reviewerThreadIdA: ThreadId,
   reviewerThreadIdB: ThreadId,
   createdAt: IsoDateTime,
@@ -3384,6 +3397,8 @@ export const OrchestrationCreateCodeReviewWorkflowInput = Schema.Struct({
   reviewerB: WorkflowModelSlot,
   consolidation: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+  /** Post the merged review to the detected GitHub pull request when it finishes. */
+  autoPost: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationCreateCodeReviewWorkflowInput =
   typeof OrchestrationCreateCodeReviewWorkflowInput.Type;
@@ -3490,6 +3505,25 @@ export const OrchestrationRetryCodeReviewWorkflowInput = Schema.Struct({
 });
 export type OrchestrationRetryCodeReviewWorkflowInput =
   typeof OrchestrationRetryCodeReviewWorkflowInput.Type;
+
+export const OrchestrationPostCodeReviewWorkflowInput = Schema.Struct({
+  workflowId: CodeReviewWorkflowId,
+  /**
+   * When an earlier post's outcome is unknown, abandon it and post again
+   * instead of re-verifying it. The earlier comment may already be on GitHub.
+   */
+  allowPossibleDuplicate: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
+});
+export type OrchestrationPostCodeReviewWorkflowInput =
+  typeof OrchestrationPostCodeReviewWorkflowInput.Type;
+
+export const OrchestrationPostCodeReviewWorkflowResult = Schema.Struct({
+  status: Schema.Literal("started"),
+});
+export type OrchestrationPostCodeReviewWorkflowResult =
+  typeof OrchestrationPostCodeReviewWorkflowResult.Type;
 
 export const OrchestrationRetryInvestigationWorkflowInput = Schema.Struct({
   workflowId: InvestigationWorkflowId,
@@ -3640,6 +3674,10 @@ export const OrchestrationRpcSchemas = {
   retryCodeReviewWorkflow: {
     input: OrchestrationRetryCodeReviewWorkflowInput,
     output: OrchestrationRetryWorkflowResult,
+  },
+  postCodeReviewWorkflow: {
+    input: OrchestrationPostCodeReviewWorkflowInput,
+    output: OrchestrationPostCodeReviewWorkflowResult,
   },
   retryInvestigationWorkflow: {
     input: OrchestrationRetryInvestigationWorkflowInput,

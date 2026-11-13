@@ -1,5 +1,9 @@
 import { useWorkflowDetails, WorkflowDetailsStatus } from "../../hooks/useWorkflowDetails";
 import type { ThreadId } from "@t3tools/contracts";
+import {
+  codeReviewPullRequestLabel,
+  formatCodeReviewReport,
+} from "@t3tools/shared/codeReviewPullRequest";
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -9,6 +13,7 @@ import { readNativeApi } from "../../nativeApi";
 import { useThreadsByIds } from "../../threadSelectors";
 import { threadIdsForCodeReviewWorkflow } from "./codeReviewWorkflowUtils";
 import ChatMarkdown from "../ChatMarkdown";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -24,6 +29,7 @@ import { toastManager } from "../ui/toast";
 import {
   canRetryConsolidation,
   canRetryFailedReviewers,
+  codeReviewPostAction,
   collectCodeReviewWorkflowErrors,
   statusLabel,
 } from "./codeReviewWorkflowView.logic";
@@ -50,10 +56,13 @@ interface DuplicateRisk {
 
 const EMPTY_WORKFLOW_THREAD_IDS: readonly ThreadId[] = [];
 
+type ConfirmPostKind = "post" | "post-again" | "post-anyway";
+
 export function CodeReviewWorkflowView(props: { workflowId: string }) {
   const navigate = useNavigate();
-  const [busy, setBusy] = useState<"retry" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"retry" | "delete" | "post" | null>(null);
   const [duplicateRisk, setDuplicateRisk] = useState<DuplicateRisk | null>(null);
+  const [confirmPost, setConfirmPost] = useState<ConfirmPostKind | null>(null);
   const detail = useWorkflowDetails("codeReview", props.workflowId);
   const workflow = detail.workflow;
   // Only this workflow's threads: unrelated streaming does not re-render the view.
@@ -94,6 +103,14 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
               .toReversed()
               .find((message) => message.role === "assistant" && !message.streaming)?.text
           : null) ?? null);
+  const pullRequest = workflow.pullRequest ?? null;
+  const mergedReviewText = consolidatedText
+    ? formatCodeReviewReport(consolidatedText, { pullRequest })
+    : null;
+  const postAction = codeReviewPostAction(workflow);
+  const pullRequestLabel = pullRequest
+    ? codeReviewPullRequestLabel(pullRequest)
+    : "the pull request";
   const showRetryFailed = canRetryFailedReviewers(workflow);
   const showRetryMerge = canRetryConsolidation(workflow);
 
@@ -126,6 +143,32 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
     }
   };
 
+  const handlePost = async (allowPossibleDuplicate = false) => {
+    const api = readNativeApi();
+    if (!api) {
+      toastManager.add({
+        type: "error",
+        title: "Posting is unavailable while disconnected.",
+      });
+      return;
+    }
+    setBusy("post");
+    try {
+      await api.orchestration.postCodeReviewWorkflow({
+        workflowId: workflow.id,
+        allowPossibleDuplicate,
+      });
+      setConfirmPost(null);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: error instanceof Error ? error.message : "Failed to post the merged review.",
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleDelete = async () => {
     const api = readNativeApi();
     if (!api) {
@@ -142,6 +185,35 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
 
   const actions = (
     <>
+      {postAction?.kind === "posted" && postAction.commentUrl ? (
+        <Button
+          variant="outline"
+          render={<OpenLinkAnchor href={postAction.commentUrl} target="_blank" rel="noreferrer" />}
+        >
+          Posted
+        </Button>
+      ) : postAction ? (
+        <Button
+          variant="outline"
+          onClick={() =>
+            postAction.kind === "check"
+              ? void handlePost()
+              : setConfirmPost(postAction.kind === "post-again" ? "post-again" : "post")
+          }
+          disabled={busy !== null || postAction.kind === "posting" || postAction.kind === "posted"}
+        >
+          {postAction.label}
+        </Button>
+      ) : null}
+      {postAction?.kind === "check" ? (
+        <Button
+          variant="outline"
+          onClick={() => setConfirmPost("post-anyway")}
+          disabled={busy !== null}
+        >
+          Post anyway
+        </Button>
+      ) : null}
       {showRetryFailed ? (
         <Button
           variant="outline"
@@ -193,9 +265,9 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
             </div>
           </WorkflowArtifactSection>
         ) : null}
-        {consolidatedText ? (
+        {mergedReviewText ? (
           <WorkflowArtifactSection title="Merged Review">
-            <ChatMarkdown text={consolidatedText} cwd={undefined} />
+            <ChatMarkdown text={mergedReviewText} cwd={undefined} />
           </WorkflowArtifactSection>
         ) : null}
         <WorkflowInputSection
@@ -203,6 +275,19 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
           text={workflow.reviewPrompt}
           defaultOpen={!consolidatedText}
         >
+          {pullRequest ? (
+            <p className="mt-2 text-ui text-muted-foreground">
+              Pull request:{" "}
+              <OpenLinkAnchor
+                href={pullRequest.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-foreground underline"
+              >
+                {codeReviewPullRequestLabel(pullRequest)}
+              </OpenLinkAnchor>
+            </p>
+          ) : null}
           {workflow.branch ? (
             <p className="mt-2 text-ui text-muted-foreground">
               Branch: <span className="font-mono">{workflow.branch}</span>
@@ -243,6 +328,46 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
               disabled={busy === "retry"}
             >
               Retry anyway
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <AlertDialog
+        open={confirmPost !== null}
+        onOpenChange={(open) => {
+          if (!open && busy !== "post") setConfirmPost(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmPost === "post-anyway"
+                ? "Post anyway?"
+                : confirmPost === "post-again"
+                  ? "Post the new merged review?"
+                  : `Post the merged review to ${pullRequestLabel}?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmPost === "post-anyway"
+                ? `GitHub may already have the earlier comment on ${pullRequestLabel}. Posting abandons that attempt and can leave a duplicate comment.`
+                : confirmPost === "post-again"
+                  ? `An earlier merged review is already posted to ${pullRequestLabel}. Posting adds a second comment; the earlier one stays.`
+                  : "F5 posts it as a comment from your GitHub account. Everyone who can see the pull request can read it."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy === "post"} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              onClick={() => void handlePost(confirmPost === "post-anyway")}
+              disabled={busy === "post"}
+            >
+              {confirmPost === "post-anyway"
+                ? "Post anyway"
+                : confirmPost === "post-again"
+                  ? "Post again"
+                  : "Post"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
