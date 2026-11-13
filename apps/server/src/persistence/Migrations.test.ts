@@ -133,6 +133,8 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 154, name: "DesktopActivityPendingIndex" },
       { migration_id: 155, name: "BackgroundWorkNativeParentSession" },
       { migration_id: 156, name: "UpstreamReclassifyRuns" },
+      { migration_id: 157, name: "ProjectionThreadActivitiesWorktreeSetupIndex" },
+      { migration_id: 158, name: "ProviderTurnDeliveryPendingIndex" },
     ]);
     const activityIndexes = yield* sql<{
       name: string;

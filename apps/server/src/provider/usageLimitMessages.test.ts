@@ -2,6 +2,7 @@ import type { UsageAccount } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
   claudeGatewayUsageLimit,
+  openCodeClaudeUsageLimit,
   claudeLimitState,
   usageLimitMessage,
   usageLimitFromWindows,
@@ -15,6 +16,39 @@ import {
 } from "./codexErrors.ts";
 
 describe("provider usage-limit messages", () => {
+  it("retains Claude plan limits through OpenCode and ignores unrelated reset text", () => {
+    expect(
+      openCodeClaudeUsageLimit(
+        "You've hit your weekly limit · resets 9pm Resets at 2026-11-02T20:00:00.000Z.",
+      )?.resetsAt,
+    ).toBe("2026-11-02T20:00:00.000Z");
+    expect(openCodeClaudeUsageLimit("You've hit your session limit")?.resetsAt).toBeNull();
+    expect(
+      openCodeClaudeUsageLimit("Request failed. Resets at 2026-11-02T20:00:00Z."),
+    ).toBeUndefined();
+  });
+  it.each([
+    { cooldown: "1h2m3s", seconds: 3723 },
+    { cooldown: "4m 6s", seconds: 246 },
+    { cooldown: "", seconds: 0 },
+  ])("reads a direct Claude gateway 429 cooldown ($cooldown)", ({ cooldown, seconds }) => {
+    const at = "2026-11-02T12:00:00.000Z";
+    const limit = claudeGatewayUsageLimit(
+      {
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: 429,
+        result:
+          "API Error: Request rejected (429) · cooling down" +
+          (cooldown ? " (reset after " + cooldown + ")" : ""),
+      },
+      at,
+    );
+    expect(limit?.resetsAt).toBe(
+      seconds ? new Date(Date.parse(at) + seconds * 1000).toISOString() : undefined,
+    );
+  });
   const reset = Date.parse("2026-09-29T12:00:00Z") / 1000;
   it.each([
     { cooldown: "4m 6s", seconds: 246 },

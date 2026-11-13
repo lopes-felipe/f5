@@ -37,6 +37,11 @@ export type ThreadActivityAppendCommand = Extract<
 
 export interface AgentBridgeHostShape {
   readonly readSnapshot: Effect.Effect<OrchestrationReadModel, AgentBridgeHostError>;
+  /**
+   * Loads the activities of threads the snapshot flags `activitiesOmitted`
+   * (archived before startup). Thread status reads open approvals from them.
+   */
+  readonly ensureThreadActivities?: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<void>;
   readonly getThreadDetails: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationThreadDetails, AgentBridgeHostError>;
