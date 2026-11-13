@@ -1367,6 +1367,17 @@ describe("WebSocket Server", () => {
     expect(tailResponse.result).toEqual(
       expect.objectContaining({
         threadId,
+        thread: expect.objectContaining({
+          id: threadId,
+          projectId,
+          title: "Tail Reconcile Thread",
+          deletedAt: null,
+          archivedAt: null,
+          messages: [],
+          activities: [],
+          checkpoints: [],
+          proposedPlans: [],
+        }),
         messages: [],
         checkpoints: [],
         hasOlderMessages: false,
@@ -1375,6 +1386,12 @@ describe("WebSocket Server", () => {
     );
 
     await vi.waitFor(() => expect(readThreadStarted).toBe(true), { timeout: 1_000 });
+
+    const missingResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadTailDetails, {
+      threadId: asThreadId("missing-route-thread"),
+    });
+    expect(missingResponse.error).toBeUndefined();
+    expect(missingResponse.result).toMatchObject({ thread: null });
   });
 
   it("logs outbound websocket push events in dev mode", async () => {

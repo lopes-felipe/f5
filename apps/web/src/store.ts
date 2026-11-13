@@ -1513,7 +1513,26 @@ export function syncThreadTailDetails(
 ): AppState {
   const existingThread = state.threads.find((thread) => thread.id === threadId);
   if (!existingThread) {
-    return state;
+    const thread = details.thread;
+    if (
+      !thread ||
+      thread.id !== threadId ||
+      thread.deletedAt !== null ||
+      thread.archivedAt !== null ||
+      details.detailSequence < state.lastAppliedSequence
+    ) {
+      return state;
+    }
+    // Seed only missing metadata; normal tail hydration and buffered-event replay
+    // still own the detail fields. Never overwrite a newer shell entry.
+    return syncThreadTailDetails(
+      {
+        ...state,
+        threads: [...state.threads, buildThreadFromReadModel(thread, undefined, undefined)],
+      },
+      threadId,
+      details,
+    );
   }
   const detailBuffer = state.detailEventBufferByThreadId.get(threadId);
   const bufferedEvents = detailBuffer?.events ?? [];

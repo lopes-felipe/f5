@@ -16,6 +16,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Opening a just-created thread waits for its details instead of bouncing to the start page while the sidebar catches up.
+
 - Editor discovery scans PATH directories once per scan, speeding up discovery on slow disks. Desktop preview uses a valid User-Agent and reload shortcuts target the focused page.
 - New approvals and questions wait until typing pauses before taking over the composer. Cursor stays in Normal mode unless Fast was selected, and model switches retain saved traits.
 - Threads stay Connecting while a turn starts, and checkout PR actions only show the thread branch's PR. The model picker names models unlocked by a CLI update.
