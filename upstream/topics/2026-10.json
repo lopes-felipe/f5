@@ -67877,12 +67877,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-13T11:27:37.834Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28057",
+      "reason": "Declined by f5 product policy",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-25869"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
