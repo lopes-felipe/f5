@@ -34,7 +34,8 @@ it.each([false, true])(
           );
           const runtime = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(context));
           yield* runtime.handleRequestPermission((request) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
+              expect((yield* runtime.getPromptActivity!).paused).toBe(true);
               approvals.push(parsePermissionRequest(request));
               return { outcome: { outcome: "selected" as const, optionId: "allow" } };
             }),

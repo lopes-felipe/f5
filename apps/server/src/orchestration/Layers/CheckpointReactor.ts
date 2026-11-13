@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { AcceptedShutdownWork, registerShutdown } from "../../shutdown.ts";
 import { pruneCheckpointRefs } from "../../checkpointing/pruneCheckpointRefs.ts";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
@@ -69,7 +70,7 @@ function checkpointStatusFromRuntime(status: string | undefined): "ready" | "mis
 }
 
 const serverCommandId = (tag: string): CommandId =>
-  CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
@@ -128,7 +129,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("checkpoint-revert-failure"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: "error",
         kind: "checkpoint.revert.failed",
         summary: "Checkpoint revert failed",
@@ -154,7 +155,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("checkpoint-capture-failure"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: input.checkpointSaved ? "info" : "error",
         kind: "checkpoint.capture.failed",
         summary: input.checkpointSaved
@@ -432,7 +433,7 @@ const make = Effect.gen(function* () {
       commandId: serverCommandId("checkpoint-captured-activity"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: "info",
         kind: "checkpoint.captured",
         summary: "Checkpoint captured",

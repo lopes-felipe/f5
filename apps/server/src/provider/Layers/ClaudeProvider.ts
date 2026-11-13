@@ -50,6 +50,7 @@ import { compareCliVersions } from "../cliVersion.ts";
 import { makeClaudeEnvironment, readClaudeSettingsBaseUrl } from "../Drivers/ClaudeHome.ts";
 import {
   resolveClaudeCliInvocation,
+  claudeCliSpawnEnvironment,
   resolveClaudeSdkExecutableOptions,
 } from "../claudeSdkExecutable.ts";
 import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
@@ -688,7 +689,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
         : new CommandNotFoundError(claudeSettings.binaryPath, String(cause)),
   });
   const command = ChildProcess.make(invocation.file, [...invocation.args], {
-    env: claudeEnvironment,
+    env: claudeCliSpawnEnvironment(invocation, claudeEnvironment),
     ...(cwd ? { cwd } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);

@@ -101,6 +101,46 @@ describe("server authentication", () => {
     ).toBe(true);
   });
 
+  it("answers a token-less server only under loopback names", () => {
+    const request = (host: string | undefined) =>
+      ({
+        headers: host === undefined ? {} : { host },
+        socket: { remoteAddress: "127.0.0.1" },
+      }) as unknown as Http.IncomingMessage;
+    const open = makeServerAuth(undefined);
+
+    for (const host of [
+      "localhost",
+      "localhost:3773",
+      "LOCALHOST.:3773",
+      "work.localhost:3773",
+      "127.0.0.1:3773",
+      "127.8.9.10",
+      "[::1]:3773",
+      // Non-browser clients may omit Host; only browsers can be rebound.
+      undefined,
+    ]) {
+      expect(open.isRequestHostAllowed(request(host)), String(host)).toBe(true);
+    }
+    for (const host of [
+      "attacker.example:3773",
+      "attacker.example",
+      "localhost.attacker.example:3773",
+      "127.0.0.1.attacker.example",
+      "notlocalhost:3773",
+      "192.168.1.42:3773",
+      "[fe80::1]:3773",
+      "",
+      "local host",
+    ]) {
+      expect(open.isRequestHostAllowed(request(host)), host).toBe(false);
+    }
+
+    // With a token the name no longer matters: the credential authorizes the request.
+    const remote = makeServerAuth("correct-token-correct-token");
+    expect(remote.isRequestHostAllowed(request("f5.tailnet.example:3773"))).toBe(true);
+  });
+
   it("allows configured websocket origins without weakening same-origin checks", () => {
     const auth = makeServerAuth("correct-token", {
       allowedWebSocketOrigins: ["t3://app", "http://localhost:5173"],

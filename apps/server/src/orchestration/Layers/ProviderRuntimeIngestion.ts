@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
@@ -266,6 +267,35 @@ const REASONING_HEADING_REGEX = /^\s*\*\*([^*\n]{1,200}?)\*\*/;
 // tokens since the last dispatch (or when it drops, signalling a new thinking
 // block within the same turn).
 const THINKING_TOKENS_DISPATCH_THRESHOLD = 500;
+// Providers report context usage after every model step, and each report used to become a
+// durable `thread.session.set` (about a fifth of a long-lived profile's event log). While a
+// turn runs, a report is persisted only once it moves the stored estimate by this much; the
+// latest unpersisted one is carried by the next lifecycle dispatch, so a settled turn still
+// stores the exact final value.
+const CONTEXT_TOKENS_DISPATCH_MIN_DELTA = 2_000;
+const CONTEXT_TOKENS_DISPATCH_WINDOW_FRACTION = 0.01;
+export const contextTokensDispatchThreshold = (modelContextWindowTokens: number | null) =>
+  Math.max(
+    CONTEXT_TOKENS_DISPATCH_MIN_DELTA,
+    Math.round((modelContextWindowTokens ?? 0) * CONTEXT_TOKENS_DISPATCH_WINDOW_FRACTION),
+  );
+interface PendingContextTokens {
+  readonly estimatedContextTokens: number;
+  readonly tokenUsageSource: "provider" | "estimated";
+  /** The stored estimate this report was held against. */
+  readonly storedContextTokens: number;
+}
+/**
+ * A held report is only current while the stored estimate is the one it was held against.
+ * Anything else that moved the estimate since (a compaction, for example) is newer.
+ */
+const currentPendingContextTokens = (
+  pending: PendingContextTokens | null,
+  thread: Pick<OrchestrationThread, "estimatedContextTokens">,
+) =>
+  pending !== null && pending.storedContextTokens === (thread.estimatedContextTokens ?? null)
+    ? pending
+    : null;
 const PROFILED_WORKFLOW_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
 // Tool items that never complete are evicted oldest first past this many.
 const MAX_TRACKED_TOOL_UPDATES = 512;
@@ -2716,7 +2746,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: CommandId.makeUnsafe(
-        `workflow-profile-failure:${input.threadId}:${input.turnId}:${crypto.randomUUID()}`,
+        `workflow-profile-failure:${input.threadId}:${input.turnId}:${timeOrderedUuid()}`,
       ),
       threadId: input.threadId,
       session: {
@@ -2856,6 +2886,14 @@ const make = Effect.gen(function* () {
     capacity: LAST_THINKING_TOKENS_BY_THREAD_CACHE_CAPACITY,
     timeToLive: LAST_THINKING_TOKENS_BY_THREAD_TTL,
     lookup: () => Effect.succeed(0),
+  });
+
+  // Per-thread context-token report that was not persisted on its own (see
+  // CONTEXT_TOKENS_DISPATCH_MIN_DELTA). Cleared when it is persisted or superseded.
+  const pendingContextTokensByThread = yield* Cache.make<ThreadId, PendingContextTokens | null>({
+    capacity: LAST_THINKING_TOKENS_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: LAST_THINKING_TOKENS_BY_THREAD_TTL,
+    lookup: () => Effect.succeed(null),
   });
 
   // One upserted `reasoning.status` record per turn. The stored sequence and
@@ -3747,7 +3785,7 @@ const make = Effect.gen(function* () {
     const chunk = commandExecution.bufferedOutput;
     yield* orchestrationEngine.dispatch({
       type: "thread.command-execution.output.append",
-      commandId: CommandId.makeUnsafe(`provider:cmd-output:${crypto.randomUUID()}`),
+      commandId: CommandId.makeUnsafe(`provider:cmd-output:${timeOrderedUuid()}`),
       threadId: commandExecution.threadId,
       commandExecutionId: commandExecution.id,
       chunk,
@@ -4257,7 +4295,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.proposed-plan.upsert",
       commandId: CommandId.makeUnsafe(
-        `provider:source-proposed-plan-implemented:${implementationThreadId}:${crypto.randomUUID()}`,
+        `provider:source-proposed-plan-implemented:${implementationThreadId}:${timeOrderedUuid()}`,
       ),
       threadId: sourceThread.id,
       proposedPlan: {
@@ -4983,10 +5021,17 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" ||
         event.type === "turn.completed"
       ) {
+        const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+          threadId: thread.id,
+        });
+        const hasPendingTurnStart =
+          Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
         const reportedStatus = (() => {
           switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+            case "session.state.changed": {
+              const status = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              return hasPendingTurnStart && status === "ready" ? "starting" : status;
+            }
             case "turn.started":
               return "running";
             case "session.exited":
@@ -4997,7 +5042,7 @@ const make = Effect.gen(function* () {
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
               // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
+              return activeTurnId !== null ? "running" : hasPendingTurnStart ? "starting" : "ready";
           }
         })();
         // Providers can emit generic `ready` transitions for setup milestones
@@ -5065,20 +5110,33 @@ const make = Effect.gen(function* () {
           }
           const turnCostUsd =
             event.type === "turn.completed" ? event.payload?.totalCostUsd : undefined;
+          // This dispatch carries the latest context-token report that was not persisted on
+          // its own, so no separate event is needed for it.
+          const heldContextTokens = yield* Cache.get(pendingContextTokensByThread, thread.id);
+          if (heldContextTokens !== null) {
+            yield* Cache.set(pendingContextTokensByThread, thread.id, null);
+          }
+          const pendingContextTokens = currentPendingContextTokens(heldContextTokens, thread);
           const providerReportedContextTokens =
             event.type === "turn.completed" ? extractTurnCompletedContextTokens(event) : undefined;
-          const estimatedContextTokens = mergeProviderReportedContextTokens({
-            provider: event.provider,
-            eventType: "turn.completed",
-            providerReportedContextTokens,
-            previousEstimatedContextTokens: thread.estimatedContextTokens ?? null,
-          });
+          const estimatedContextTokens =
+            mergeProviderReportedContextTokens({
+              provider: event.provider,
+              eventType: "turn.completed",
+              providerReportedContextTokens,
+              previousEstimatedContextTokens:
+                pendingContextTokens?.estimatedContextTokens ??
+                thread.estimatedContextTokens ??
+                null,
+            }) ?? pendingContextTokens?.estimatedContextTokens;
           const tokenUsageSource =
             estimatedContextTokens === undefined
               ? undefined
-              : estimatedContextTokens === providerReportedContextTokens
-                ? ("provider" as const)
-                : ("estimated" as const);
+              : providerReportedContextTokens === undefined
+                ? pendingContextTokens?.tokenUsageSource
+                : estimatedContextTokens === providerReportedContextTokens
+                  ? ("provider" as const)
+                  : ("estimated" as const);
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -5104,7 +5162,10 @@ const make = Effect.gen(function* () {
             yield* orchestrationEngine.dispatch({
               ...command,
               session: retainIncompleteHistoryError(
-                command.session,
+                // Without a pending report this repeats the command's own values.
+                estimatedContextTokens !== undefined
+                  ? { ...command.session, estimatedContextTokens, tokenUsageSource }
+                  : command.session,
                 thread.session,
                 incompleteHistory,
                 now,
@@ -5302,15 +5363,52 @@ const make = Effect.gen(function* () {
         const normalizedContextTokens = event.payload.contextTokens;
         const providerReportedContextTokens =
           normalizedContextTokens ?? extractThreadTokenUsageContextTokens(event.payload?.usage);
+        const storedContextTokens = thread.estimatedContextTokens ?? null;
+        const pendingContextTokens = currentPendingContextTokens(
+          yield* Cache.get(pendingContextTokensByThread, thread.id),
+          thread,
+        );
         const estimatedContextTokens = mergeProviderReportedContextTokens({
           provider: event.provider,
           eventType: "thread.token-usage.updated",
           providerReportedContextTokens,
-          previousEstimatedContextTokens: thread.estimatedContextTokens ?? null,
+          // An unpersisted report is still the previous value this one builds on.
+          previousEstimatedContextTokens:
+            pendingContextTokens?.estimatedContextTokens ?? storedContextTokens,
           authoritativeSnapshot: normalizedContextTokens !== undefined,
         });
         const modelContextWindowTokens = event.payload.modelContextWindowTokens;
-        if (estimatedContextTokens !== undefined || modelContextWindowTokens !== undefined) {
+        const tokenUsageSource =
+          estimatedContextTokens === providerReportedContextTokens
+            ? ("provider" as const)
+            : ("estimated" as const);
+        // Only a running turn is certain to end in a lifecycle dispatch that carries the
+        // report; a changed source or context window is persisted at once.
+        const persistedLater =
+          estimatedContextTokens !== undefined &&
+          storedContextTokens !== null &&
+          thread.session?.status === "running" &&
+          thread.session.activeTurnId !== null &&
+          thread.session.tokenUsageSource === tokenUsageSource &&
+          (modelContextWindowTokens === undefined ||
+            modelContextWindowTokens === thread.session.modelContextWindowTokens) &&
+          Math.abs(estimatedContextTokens - storedContextTokens) <
+            contextTokensDispatchThreshold(
+              modelContextWindowTokens ?? thread.session.modelContextWindowTokens ?? null,
+            );
+        if (estimatedContextTokens !== undefined) {
+          yield* Cache.set(
+            pendingContextTokensByThread,
+            thread.id,
+            persistedLater
+              ? { estimatedContextTokens, tokenUsageSource, storedContextTokens }
+              : null,
+          );
+        }
+        if (
+          !persistedLater &&
+          (estimatedContextTokens !== undefined || modelContextWindowTokens !== undefined)
+        ) {
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "thread-token-usage-set"),
@@ -5327,13 +5425,7 @@ const make = Effect.gen(function* () {
               lastErrorId: thread.session?.lastErrorId ?? null,
               lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
               ...(estimatedContextTokens !== undefined
-                ? {
-                    estimatedContextTokens,
-                    tokenUsageSource:
-                      estimatedContextTokens === providerReportedContextTokens
-                        ? ("provider" as const)
-                        : ("estimated" as const),
-                  }
+                ? { estimatedContextTokens, tokenUsageSource }
                 : {}),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
               updatedAt: now,
@@ -6069,7 +6161,10 @@ const make = Effect.gen(function* () {
               providerInstanceId:
                 event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-              activeTurnId: eventTurnId ?? null,
+              activeTurnId:
+                activeTurnId === null && thread.session?.usageLimit?.turnId === eventTurnId
+                  ? null
+                  : (eventTurnId ?? null),
               lastError: runtimeErrorMessage,
               lastErrorId: event.eventId,
               usageLimit: toOrchestrationUsageLimit(event.payload.usageLimit, event, thread),

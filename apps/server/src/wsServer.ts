@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
@@ -13,6 +14,7 @@ import { makeScheduledTaskStore, scheduleError } from "./scheduledTasks/Store.ts
 import { McpAppService } from "./mcpApps/McpAppService.ts";
 import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
 import { ThreadSettlementService } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { makeTurnGitStatusRefresh } from "./wsServer/turnGitStatusRefresh";
 import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
 import { PullRequestWatchService } from "./orchestration/Layers/PullRequestWatchService.ts";
 import { PR_WATCH_WS_METHODS, PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
@@ -376,7 +378,11 @@ import {
   getCurrentStartupPhase,
   withStartupPhaseTiming,
 } from "./startupTiming.ts";
-import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
+import {
+  isPrivateHttpPath,
+  makeServerAuth,
+  REQUEST_HOST_NOT_ALLOWED_MESSAGE,
+} from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import {
@@ -1353,7 +1359,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       ? orchestrationEngine
                           .dispatch({
                             type: "thread.turn.interrupt",
-                            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                             threadId: ThreadId.makeUnsafe(interrupted.threadId),
                             createdAt: new Date().toISOString(),
                           })
@@ -1378,7 +1384,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       ? orchestrationEngine
                           .dispatch({
                             type: "thread.turn.interrupt",
-                            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                             threadId: ThreadId.makeUnsafe(killed.threadId),
                             createdAt: new Date().toISOString(),
                           })
@@ -2081,6 +2087,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
     void Effect.runPromise(
       Effect.gen(function* () {
+        // Before anything else, static files included: a rebound page must not load the app
+        // under its own origin either.
+        if (!serverAuth.isRequestHostAllowed(req)) {
+          respond(
+            403,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify({ error: REQUEST_HOST_NOT_ALLOWED_MESSAGE }),
+          );
+          return;
+        }
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
         // Workspace asset handles are capabilities: the URL is the credential, so
         // they skip session auth but still need CORS for the renderer's fetch().
@@ -3032,6 +3048,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
       }
 
+      const refreshTurnGitStatus = makeTurnGitStatusRefresh({
+        scope: subscriptionsScope,
+        resolveCwd: (threadId) =>
+          Effect.gen(function* () {
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === threadId);
+            const project = model.projects.find((project) => project.id === thread?.projectId);
+            return thread ? threadWorkspaceCwd(thread, project) : null;
+          }),
+        read: (cwd) =>
+          gitManager
+            .status({ cwd, includeRemote: false, includePullRequest: false })
+            .pipe(Effect.orElseSucceed(() => null)),
+        publish: (cwd, status) =>
+          pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status }),
+      });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           if (event.type.startsWith("project.")) profileReadCache = undefined;
@@ -3051,6 +3083,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               );
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.type === "thread.turn-processing-quiesced") {
+            yield* refreshTurnGitStatus(event.payload.threadId);
+          }
           if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
             yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
@@ -3322,7 +3357,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         bootstrapProjectDefaultModel = DEFAULT_MODEL_BY_PROVIDER.codex;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           projectId: bootstrapProjectId,
           title: bootstrapProjectTitle,
           workspaceRoot: cwd,
@@ -3343,7 +3378,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const threadId = ThreadId.makeUnsafe(crypto.randomUUID());
         yield* orchestrationEngine.dispatch({
           type: "thread.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId,
           projectId: bootstrapProjectId,
           title: "New thread",
@@ -3553,6 +3588,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
       Effect.mapError(toAgentBridgeHostError),
     ),
+    ensureThreadActivities: (threadIds) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(
+          ({ orchestrationEngine }) =>
+            orchestrationEngine.ensureThreadActivities?.(threadIds) ?? Effect.void,
+        ),
+        Effect.ignore,
+      ),
     getThreadDetails: (threadId) =>
       projectionReadModelQuery
         .getThreadDetails({ threadId })
@@ -4600,7 +4643,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               ),
               markerId: recovery.expected.eventId,
               commandId: CommandId.makeUnsafe(
-                `server:history-accepted:${recovery.threadId}:${crypto.randomUUID()}`,
+                `server:history-accepted:${recovery.threadId}:${timeOrderedUuid()}`,
               ),
               createdAt: new Date().toISOString(),
             });
@@ -4738,7 +4781,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               threadId: body.threadId,
               reason: "ws:getThreadTailDetails",
             });
-            return yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const details = yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === body.threadId);
+            // Keep the response bounded even when the runtime retains full history.
+            return {
+              ...details,
+              thread: thread
+                ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+                : null,
+            };
           }),
           summarize: (result) => ({
             detailSequence: result.detailSequence,
@@ -8096,6 +8149,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       url = new URL(request.url ?? "/", `http://localhost:${port}`);
     } catch {
       rejectUpgrade(socket, 400, "Invalid WebSocket URL");
+      return;
+    }
+
+    if (!serverAuth.isRequestHostAllowed(request)) {
+      rejectUpgrade(socket, 403, REQUEST_HOST_NOT_ALLOWED_MESSAGE);
       return;
     }
 

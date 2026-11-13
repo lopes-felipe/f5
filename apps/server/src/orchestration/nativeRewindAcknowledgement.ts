@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { CommandId, type NativeOperationRecord } from "@t3tools/contracts";
 import { Effect } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -22,7 +23,7 @@ export function finishAcknowledgedNativeRewind(
     if (!pending.length) return;
     yield* engine.dispatch({
       type: "thread.rewind-draft.resolve",
-      commandId: CommandId.makeUnsafe(`native-ack:${crypto.randomUUID()}`),
+      commandId: CommandId.makeUnsafe(`native-ack:${timeOrderedUuid()}`),
       threadId: record.threadId,
       operationId,
       intent: "cancel",

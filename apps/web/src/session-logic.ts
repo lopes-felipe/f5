@@ -1,4 +1,5 @@
 import { readMcpAppView, type McpAppView } from "@t3tools/shared/mcpApp";
+import { isApprovalClosingActivity } from "@t3tools/shared/pendingActivityWindow";
 import { HtmlRenderReference } from "@t3tools/contracts";
 import { recordBrowserWork } from "./lib/performanceCounters";
 import { messageListStructure } from "./lib/streamingTextRevision";
@@ -449,16 +450,7 @@ export function derivePendingApprovals(
       continue;
     }
 
-    if (activity.kind === "approval.resolved" && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.approval.respond.failed" &&
-      requestId &&
-      detail?.includes("Unknown pending permission request")
-    ) {
+    if (isApprovalClosingActivity(activity) && requestId) {
       openByRequestId.delete(requestId);
       continue;
     }

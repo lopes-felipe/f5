@@ -1,4 +1,5 @@
 import { CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { type CxOptions, cx } from "class-variance-authority";
 import { extendTailwindMerge } from "tailwind-merge";
 import * as Random from "effect/Random";
@@ -30,7 +31,8 @@ export function randomUUID(): string {
   return Effect.runSync(Random.nextUUIDv4);
 }
 
-export const newCommandId = (): CommandId => CommandId.makeUnsafe(randomUUID());
+/** Time-ordered: command IDs are indexed on the server, where random keys scatter writes. */
+export const newCommandId = (): CommandId => CommandId.makeUnsafe(timeOrderedUuid(randomUUID()));
 
 export const newProjectId = (): ProjectId => ProjectId.makeUnsafe(randomUUID());
 

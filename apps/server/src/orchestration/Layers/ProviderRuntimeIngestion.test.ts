@@ -688,6 +688,25 @@ describe("ProviderRuntimeIngestion", () => {
     expect(terminal.session?.activeTurnId).toBeNull();
     expect(terminal.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
     expect(refreshes).toBe(1);
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("post-terminal-limit-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("limited-turn"),
+      createdAt: "2026-10-01T00:00:00Z",
+      payload: {
+        message: "usage limit reached",
+        usageLimit: { ...usageLimit, resetsAt: "2026-10-01T03:00:00Z" },
+      },
+    });
+    const afterError = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.lastErrorId === "post-terminal-limit-error",
+    );
+    expect(afterError.session?.activeTurnId).toBeNull();
+    expect(afterError.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
   });
 
   it.each([false, true])(
@@ -896,6 +915,71 @@ describe("ProviderRuntimeIngestion", () => {
         expect(thread.session?.status).toBe("running");
       }
       expect(refreshes).toBe(1);
+    },
+  );
+
+  it.each(["session.started", "session.state.changed", "thread.started"] as const)(
+    "keeps a pending turn starting through %s",
+    async (type) => {
+      const harness = await createHarness();
+      const threadId = asThreadId("thread-1");
+      const createdAt = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("pending-turn-request"),
+          threadId,
+          message: {
+            messageId: asMessageId("pending-user"),
+            role: "user",
+            text: "Work",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("pending-turn-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+      harness.emit({
+        type,
+        eventId: asEventId("pending-ready"),
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        ...(type === "session.state.changed" ? { payload: { state: "ready" as const } } : {}),
+      });
+      await harness.drain();
+      const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0]!;
+      expect(thread.session?.status).toBe("starting");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("pending-started"),
+        provider: "codex",
+        threadId,
+        turnId: asTurnId("started-turn"),
+        createdAt: new Date().toISOString(),
+      });
+      expect(
+        (await waitForThread(harness.engine, (entry) => entry.session?.status === "running"))
+          .session?.activeTurnId,
+      ).toBe("started-turn");
     },
   );
 
@@ -2676,6 +2760,145 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.estimatedContextTokens).toBe(900);
     expect(thread.session?.tokenUsageSource).toBe("provider");
     expect(thread.estimatedContextTokens).toBe(900);
+  });
+
+  it("persists small context-token reports of a running turn with its next lifecycle event", async () => {
+    const harness = await createHarness();
+    const usage = (eventId: string, totalTokens: number) =>
+      harness.emit({
+        type: "thread.token-usage.updated",
+        eventId: asEventId(eventId),
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        payload: { usage: { total_tokens: totalTokens } },
+      });
+    const sessionSetCount = async () =>
+      (
+        await Effect.runPromise(
+          Stream.runCollect(harness.engine.readEvents(0)).pipe(
+            Effect.map((events) => Array.from(events)),
+          ),
+        )
+      ).filter((event) => event.type === "thread.session-set").length;
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-usage-turn-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-usage-coalesce"),
+      createdAt: new Date().toISOString(),
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.activeTurnId === "turn-usage-coalesce",
+    );
+
+    // The first report has nothing stored to compare with, so it is persisted.
+    usage("evt-usage-first", 50_000);
+    await waitForThread(harness.engine, (entry) => entry.estimatedContextTokens === 50_000);
+    const afterFirst = await sessionSetCount();
+
+    // Below the threshold (2,000 tokens here): held, not persisted.
+    usage("evt-usage-small-1", 50_700);
+    usage("evt-usage-small-2", 51_400);
+    await harness.drain();
+    expect((await waitForThread(harness.engine, () => true)).estimatedContextTokens).toBe(50_000);
+    expect(await sessionSetCount()).toBe(afterFirst);
+
+    // Past the threshold: persisted at once.
+    usage("evt-usage-large", 53_000);
+    await waitForThread(harness.engine, (entry) => entry.estimatedContextTokens === 53_000);
+    expect(await sessionSetCount()).toBe(afterFirst + 1);
+
+    // Held again, then carried by the event that settles the turn.
+    usage("evt-usage-small-3", 53_600);
+    await harness.drain();
+    const completedAt = new Date().toISOString();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-usage-turn-completed"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAt,
+      turnId: asTurnId("turn-usage-coalesce"),
+      payload: { state: "completed" },
+    });
+    const settled = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.updatedAt === completedAt && entry.session?.status === "ready",
+    );
+    expect(settled.estimatedContextTokens).toBe(53_600);
+    expect(settled.session?.tokenUsageSource).toBe("provider");
+    expect(await sessionSetCount()).toBe(afterFirst + 2);
+  });
+
+  it("drops a held context-token report once something else moves the stored estimate", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-usage-superseded");
+    const usage = (eventId: string, totalTokens: number) =>
+      harness.emit({
+        type: "thread.token-usage.updated",
+        eventId: asEventId(eventId),
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        payload: { usage: { total_tokens: totalTokens } },
+      });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-superseded-turn-started"),
+      provider: "codex",
+      threadId,
+      turnId,
+      createdAt: new Date().toISOString(),
+    });
+    await waitForThread(harness.engine, (entry) => entry.session?.activeTurnId === turnId);
+    usage("evt-superseded-first", 180_000);
+    await waitForThread(harness.engine, (entry) => entry.estimatedContextTokens === 180_000);
+    usage("evt-superseded-held", 180_900);
+    await harness.drain();
+
+    // A compaction, for example: the stored estimate changes without a runtime report.
+    const compactedAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("superseding-estimate"),
+        threadId,
+        createdAt: compactedAt,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          estimatedContextTokens: 30_000,
+          tokenUsageSource: "estimated",
+          updatedAt: compactedAt,
+        },
+      }),
+    );
+
+    const completedAt = new Date().toISOString();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-superseded-turn-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: completedAt,
+      turnId,
+      payload: { state: "completed" },
+    });
+    const settled = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.updatedAt === completedAt && entry.session?.status === "ready",
+    );
+    expect(settled.estimatedContextTokens).toBe(30_000);
   });
 
   it("throttles high-frequency thinking-token frames into coalesced session updates", async () => {

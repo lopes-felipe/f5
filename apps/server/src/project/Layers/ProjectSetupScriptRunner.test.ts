@@ -265,6 +265,7 @@ describe("ProjectSetupScriptRunnerLive", () => {
       cwd: "/repo/project/.worktrees/thread-1",
     });
     expect(terminal.open).toHaveBeenCalledWith({
+      stopOnSettle: false,
       threadId: ThreadId.makeUnsafe("thread-1"),
       terminalId: "setup-setup",
       cwd: "/repo/project/.worktrees/thread-1",

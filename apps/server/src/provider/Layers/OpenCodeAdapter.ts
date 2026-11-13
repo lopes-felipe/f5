@@ -7,6 +7,7 @@ import {
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { loadOpenCodeCommands } from "../opencodeRuntime.ts";
 import { leadingSlashCommandName } from "../nativeCommandInput.ts";
+import { openCodeClaudeUsageLimit } from "../usageLimitMessages.ts";
 import {
   EventId,
   type OpenCodeSettings,
@@ -46,6 +47,7 @@ import type {
   QuestionRequest,
 } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -221,7 +223,7 @@ const buildEventBase = (input: {
 > =>
   Random.nextUUIDv4.pipe(
     Effect.map((uuid) => ({
-      eventId: EventId.make(uuid),
+      eventId: EventId.make(timeOrderedUuid(uuid)),
       provider: PROVIDER,
       ...(input.providerInstanceId !== undefined
         ? { providerInstanceId: input.providerInstanceId }
@@ -248,7 +250,7 @@ const buildEventBase = (input: {
 function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
   const normalized = toolName.toLowerCase();
   if (normalized === "todowrite" || normalized === "todoread") return "dynamic_tool_call";
-  if (normalized.includes("bash") || normalized.includes("command")) {
+  if (normalized === "shell" || normalized.includes("bash") || normalized.includes("command")) {
     return "command_execution";
   }
   if (
@@ -1064,7 +1066,12 @@ export function makeOpenCodeAdapter(
             const detail = detailFromToolPart(part);
             const payload = {
               itemType,
-              ...(part.state.status === "error"
+              ...(part.state.status === "error" ||
+              (part.state.status === "completed" &&
+                itemType === "command_execution" &&
+                [part.state.metadata.exit, part.state.metadata.exitCode].some(
+                  (code) => typeof code === "number" && code !== 0,
+                ))
                 ? { status: "failed" as const }
                 : part.state.status === "completed"
                   ? { status: "completed" as const }
@@ -1238,6 +1245,7 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
+          const usageLimit = openCodeClaudeUsageLimit(message);
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
           updateProviderSession(
@@ -1260,7 +1268,11 @@ export function makeOpenCodeAdapter(
                 ? { type: "turn.aborted" as const, payload: { reason: "Interrupted by user." } }
                 : {
                     type: "turn.completed" as const,
-                    payload: { state: "failed" as const, errorMessage: message },
+                    payload: {
+                      state: "failed" as const,
+                      errorMessage: message,
+                      ...(usageLimit ? { usageLimit } : {}),
+                    },
                   }),
             });
           }
@@ -1269,6 +1281,7 @@ export function makeOpenCodeAdapter(
             ...(yield* buildEventBase({
               ...context.eventIdentity,
               threadId: context.session.threadId,
+              turnId: activeTurnId,
               raw: event,
             })),
             type: "runtime.error",
@@ -1276,6 +1289,7 @@ export function makeOpenCodeAdapter(
               message,
               class: "provider_error",
               detail: event.properties.error,
+              ...(usageLimit ? { usageLimit } : {}),
             },
           });
           break;

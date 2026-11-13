@@ -957,7 +957,17 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
     },
     enabled: Boolean(threadId) && !detailsLoaded,
     gcTime: 30_000,
-    staleTime: Infinity,
+    // Revalidate cached absence when navigating back to an unlisted thread.
+    staleTime: threadExists ? Infinity : 0,
+    // A tail older than the shell cannot seed missing metadata safely.
+    // Retry until a current tail arrives, without polling listed threads.
+    refetchInterval: (query) =>
+      !threadExists &&
+      query.state.data?.thread &&
+      !query.state.data.thread.deletedAt &&
+      !query.state.data.thread.archivedAt
+        ? 1_000
+        : false,
   });
 
   useEffect(() => {

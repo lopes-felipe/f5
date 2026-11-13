@@ -50,6 +50,7 @@ export interface TerminalSessionState {
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
   runtimeEnv: Record<string, string> | null;
+  stopOnSettle: boolean;
 }
 
 export interface ShellCandidate {
@@ -122,6 +123,7 @@ export interface TerminalManagerShape {
   readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
   /** Fresh process probe; preserves active processes, new input and terminal history. */
   readonly closeIdleForThread?: (threadId: string) => Effect.Effect<void, TerminalError>;
+  readonly closeOnSettleForThread?: (threadId: string) => Effect.Effect<void, TerminalError>;
 
   /**
    * Live terminal sessions with their working directory. Worktree cleanup and

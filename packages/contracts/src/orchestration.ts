@@ -310,6 +310,7 @@ export const ProjectScript = Schema.Struct({
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
   runOnWorktreeSettle: Schema.optional(Schema.Boolean),
+  stopOnSettle: Schema.optional(Schema.Boolean),
   /**
    * Whether the agent may start while this setup script still runs. Absent
    * means true, so scripts saved before the option existed keep running in
@@ -1081,6 +1082,12 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(() => []),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
+  /**
+   * Set by the server's in-memory read model for a thread that was archived
+   * before startup: `activities` holds its worktree-setup activity only, and
+   * the rest is still in SQLite. Cleared once the server loads them.
+   */
+  activitiesOmitted: Schema.optional(Schema.Boolean),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -3127,6 +3134,8 @@ export type OrchestrationGetThreadTailDetailsInput =
 
 export const OrchestrationThreadTailDetails = Schema.Struct({
   threadId: ThreadId,
+  /** Route fallback when the shell has not listed this thread yet. Null confirms absence. */
+  thread: Schema.optional(Schema.NullOr(OrchestrationThread)),
   messages: Schema.Array(OrchestrationMessage),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   activities: Schema.Array(OrchestrationThreadActivity).pipe(Schema.withDecodingDefault(() => [])),
