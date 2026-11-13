@@ -54,6 +54,7 @@ import {
 } from "../../sourceControl/SourceControlProvider.ts";
 import { discoverSourceControlProviderIdentities } from "../../sourceControl/discovery.ts";
 import { PrHubService, type PrHubServiceShape } from "../Services/PrHubService.ts";
+import { canViewerCommentOnPullRequest } from "../commentPermission.ts";
 import {
   decodeGitHubPrDetail,
   decodeGitHubPrTimeline,
@@ -904,7 +905,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                       .query({
                         cwd,
                         host: pr.host,
-                        document: `query F5WritePolicy($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { isArchived viewerPermission pullRequest(number:$number) { id state viewerCanComment viewerCanUpdate baseRefName baseRefOid headRefOid mergeable mergeStateStatus reviewDecision ${PR_HUB_BRANCH_REQUIREMENTS_FIELDS}
+                        document: `query F5WritePolicy($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { isArchived viewerPermission pullRequest(number:$number) { id state locked viewerCanUpdate baseRefName baseRefOid headRefOid mergeable mergeStateStatus reviewDecision ${PR_HUB_BRANCH_REQUIREMENTS_FIELDS}
                     commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { totalCount pageInfo { hasNextPage endCursor } nodes { ... on CheckRun { name conclusion status detailsUrl checkSuite { app { databaseId } } } ... on StatusContext { context state targetUrl } } } } } } }
                     reviewThreads(first:100) { totalCount pageInfo { hasNextPage endCursor } nodes { isResolved } }
                   } } }`,
@@ -923,7 +924,10 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                       live?.state !== "OPEN" ||
                       (action === "update" || action === "merge"
                         ? live.viewerCanUpdate !== true
-                        : live.viewerCanComment !== true)
+                        : !canViewerCommentOnPullRequest({
+                            locked: live.locked,
+                            viewerPermission: repo.viewerPermission,
+                          }))
                     )
                       return yield* denied();
                     const expected = input.expectedComparison;
