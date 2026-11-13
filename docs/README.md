@@ -58,6 +58,7 @@ to override it. The inherited `T3CODE_*` variables still work; see [`NOTICE.md`]
 | [Agent Bridge](agent-bridge.md)                   | Internal reference for the hidden Agent Bridge and Bots |
 | [Scripts](scripts.md)                             | Repository scripts, including screenshot capture        |
 | [CI quality gates](ci.md)                         | What CI checks                                          |
+| [Prerelease dependency pins](dependency-pins.md)  | What is pinned to a prerelease and the plan to move     |
 | [Releasing F5](release.md)                        | Release process and CLI archives                        |
 | [Encyclopedia](encyclopedia.md)                   | Glossary of domain terms                                |
 | [Design direction](design/direction.md)           | Visual and interaction direction                        |
