@@ -174,11 +174,21 @@ layer("Agent Bridge thread tools", (it) => {
       assert.strictEqual(read.ok && read.value.status, "awaiting-approval");
       assert.strictEqual(read.ok && read.value.pendingApprovals.length, 1);
 
-      // A load that fails leaves the flag; the status is then read without approvals.
+      // A load that fails leaves the flag: the tools fail rather than report a
+      // status computed without the approvals.
       host.threads = [cold()];
       host.storedActivities.clear();
-      const unloaded = yield* run("get_thread", { threadId: "t-cold" });
-      assert.strictEqual(unloaded.ok && unloaded.value.status, "idle");
+      for (const [name, args] of [
+        ["get_thread", { threadId: "t-cold" }],
+        ["list_threads", {}],
+      ] as const) {
+        const unloaded = yield* run(name, args);
+        assert.strictEqual(
+          !unloaded.ok && unloaded.error.message,
+          "F5 could not read this thread's activity. Try again.",
+        );
+        assert.strictEqual(!unloaded.ok && unloaded.error.retryAfterSeconds, 1);
+      }
     }),
   );
 

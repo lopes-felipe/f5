@@ -386,15 +386,21 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
   /**
    * The same threads with their activities loaded. A thread archived before
    * startup is flagged `activitiesOmitted` until something loads them, and
-   * its status would miss an open approval.
+   * its status would miss an open approval. A load that fails is an error
+   * the caller can retry, not a status computed without the approvals.
    */
   const withActivities = (threads: ReadonlyArray<OrchestrationThread>) =>
     Effect.gen(function* () {
       const omitted = threads.filter((thread) => thread.activitiesOmitted);
-      if (omitted.length === 0 || !host.ensureThreadActivities) return threads;
-      yield* host.ensureThreadActivities(omitted.map((thread) => thread.id));
+      if (omitted.length === 0) return threads;
+      yield* host.ensureThreadActivities?.(omitted.map((thread) => thread.id)) ?? Effect.void;
       const loaded = new Map((yield* snapshot).threads.map((thread) => [thread.id, thread]));
-      return threads.map((thread) => loaded.get(thread.id) ?? thread);
+      const current = threads.map((thread) => loaded.get(thread.id) ?? thread);
+      if (current.some((thread) => thread.activitiesOmitted))
+        return yield* toolError("F5 could not read this thread's activity. Try again.", {
+          retryAfterSeconds: 1,
+        });
+      return current;
     });
 
   const requireThread = (caller: AgentBridgeCaller, threadId: string) =>
