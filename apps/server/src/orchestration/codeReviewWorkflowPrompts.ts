@@ -1,5 +1,5 @@
 import type { CodeReviewPullRequest, WorkflowModelSlot } from "@t3tools/contracts";
-import { codeReviewReportHeaderLine } from "@t3tools/shared/codeReviewPullRequest";
+import { codeReviewPullRequestMarkdownLink } from "@t3tools/shared/codeReviewPullRequest";
 
 import type { WorkflowRetryContext } from "./workflowPromptFragments.ts";
 import { joinPromptSections, providerGuidanceSection } from "./workflowSharedUtils.ts";
@@ -77,11 +77,18 @@ Your job:
 - Rank findings by severity.
 - Resolve disagreements by choosing the stronger technical assessment.
 - Keep only high-signal findings.
-- Return one unified code review report.${
+- Return one unified code review report.
+
+Report layout:
+- Start with a \`#\` title that names what was reviewed${
       input.pullRequest
-        ? `\n- Begin the report with this exact first line: ${codeReviewReportHeaderLine(input.pullRequest)}`
+        ? `, linking the pull request as ${codeReviewPullRequestMarkdownLink(input.pullRequest)}`
         : ""
-    }
+    }.
+- Under the title, add short **Target:** (what was reviewed, with commits when known), **Verdict:** (one line) and **Verification:** (what was run or checked, as bullets) lines.
+- Group findings under severity headings (\`## High\`, \`## Medium\`, \`## Low\`), omitting empty ones.
+- Number each finding and give it a short bold title followed by its \`file_path:line_number\`. Put the evidence, impact and fix in bullets, not long paragraphs.
+- Write nothing before the title: no narration about what you checked or are about to write.
 
 ${reviewSections.join("\n\n")}
 
