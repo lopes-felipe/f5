@@ -21,6 +21,8 @@ import { buildQuotaHistory, QUOTA_HISTORY_LOOKBACK_MS } from "../quotaHistory.ts
 import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 import type { AccountUsageErrorCode } from "@t3tools/contracts";
+import { externalMuseHistory, museHistoryBuckets } from "../museHistory.ts";
+import { recordedMusePredicate } from "../museRecordedIntervals.ts";
 
 const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
   unsupported: "This Claude version cannot analyze usage.",
@@ -203,19 +205,73 @@ const make = Effect.gen(function* () {
         ...(request.hiddenProviders?.length ? { hiddenProviders: request.hiddenProviders } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
       };
+      const instances = yield* registry.listInstances;
+      const capabilities =
+        (request.provider && request.provider !== "muse") ||
+        request.hiddenProviders?.includes("muse")
+          ? []
+          : instances.flatMap((instance) =>
+              instance.enabled && instance.usageHistory ? [instance.usageHistory] : [],
+            );
+      if (!request.projectId)
+        yield* Effect.forEach(capabilities, (capability) => capability.refresh);
+      const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
+      const sources = new Set<string>();
+      const cachedHistory = snapshots
+        .toSorted((a, b) => (b.refreshedAt ?? 0) - (a.refreshedAt ?? 0))
+        .flatMap((snapshot) => {
+          if (!snapshot.source || sources.has(snapshot.source)) return [];
+          sources.add(snapshot.source);
+          return snapshot.records;
+        });
+      // Reconcile every summary against fresh facts. A turn may have completed
+      // since this snapshot was scanned, including while later refreshes fail.
+      const nativeHistory = externalMuseHistory(
+        cachedHistory,
+        recordedMusePredicate(
+          cachedHistory.length ? yield* repository.readMuseRecordedIntervals : [],
+        ),
+      );
+      const nativeHistoryStatus = snapshots.some((snapshot) => snapshot.status === "refreshing")
+        ? ("refreshing" as const)
+        : snapshots.some((snapshot) => snapshot.status === "error")
+          ? ("error" as const)
+          : snapshots.some((snapshot) => snapshot.status === "ready")
+            ? ("ready" as const)
+            : ("idle" as const);
+      const nativeHistoryError =
+        nativeHistoryStatus === "error"
+          ? snapshots.find((snapshot) => snapshot.errorMessage)?.errorMessage
+          : undefined;
+      const readBuckets: typeof repository.summarizeBuckets = (input) =>
+        repository
+          .summarizeBuckets(input)
+          .pipe(
+            Effect.map((rows) => [
+              ...rows,
+              ...(!input.projectId ? museHistoryBuckets(nativeHistory, input.buckets) : []),
+            ]),
+          );
       // SQLite executes synchronously, so these reads run sequentially.
       const metadata = yield* repository.readUsageMetadata;
       const rows = applyModelAliases(
-        yield* repository.summarizeBuckets({ buckets: plan.buckets, ...filters }),
+        yield* readBuckets({ buckets: plan.buckets, ...filters }),
         modelAliases,
       );
       const scopeRows = applyModelAliases(
-        yield* repository.summarizeByScope({
-          startedAt: plan.startedAt,
-          endedAt: plan.endedAt,
-          ...(request.provider ? { provider: request.provider } : {}),
-          ...(request.hiddenProviders?.length ? { hiddenProviders: request.hiddenProviders } : {}),
-        }),
+        [
+          ...(yield* repository.summarizeByScope({
+            startedAt: plan.startedAt,
+            endedAt: plan.endedAt,
+            ...(request.provider ? { provider: request.provider } : {}),
+            ...(request.hiddenProviders?.length
+              ? { hiddenProviders: request.hiddenProviders }
+              : {}),
+          })),
+          ...museHistoryBuckets(nativeHistory, [
+            { key: "scope", startAt: plan.startedAt, endAt: plan.endedAt },
+          ]).map((row) => ({ ...row, threadId: null, projectId: null })),
+        ],
         modelAliases,
       );
       const selectedProjectId = request.projectId ?? null;
@@ -232,7 +288,7 @@ const make = Effect.gen(function* () {
       const previousMetrics = previous
         ? aggregateUsageMetrics(
             applyModelAliases(
-              yield* repository.summarizeBuckets({
+              yield* readBuckets({
                 buckets: [
                   { key: "previous", startAt: previous.startedAt, endAt: previous.endedAt },
                 ],
@@ -258,10 +314,7 @@ const make = Effect.gen(function* () {
             if (!buckets) return null;
             return buildPreviousBuckets({
               buckets,
-              rows: applyModelAliases(
-                yield* repository.summarizeBuckets({ buckets, ...filters }),
-                modelAliases,
-              ),
+              rows: applyModelAliases(yield* readBuckets({ buckets, ...filters }), modelAliases),
               priceOverrides,
             });
           })
@@ -272,17 +325,21 @@ const make = Effect.gen(function* () {
           project.id === null ? [] : [project.id],
         ),
       });
-      return buildUsageSummary({
-        priceOverrides,
-        request,
-        now,
-        coverageStartedAt: metadata.coverageStartedAt,
-        plan,
-        rows,
-        projectScope: buildUsageProjectScope({ aggregation, selectedProjectId, titles }),
-        previousMetrics,
-        previousBuckets,
-      });
+      return {
+        ...buildUsageSummary({
+          priceOverrides,
+          request,
+          now,
+          coverageStartedAt: metadata.coverageStartedAt,
+          plan,
+          rows,
+          projectScope: buildUsageProjectScope({ aggregation, selectedProjectId, titles }),
+          previousMetrics,
+          previousBuckets,
+        }),
+        nativeHistoryStatus,
+        ...(nativeHistoryError ? { nativeHistoryError } : {}),
+      };
     });
 
   const getQuotaHistory: UsageServiceShape["getQuotaHistory"] = Effect.gen(function* () {
