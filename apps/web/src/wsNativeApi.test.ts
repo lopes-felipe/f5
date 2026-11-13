@@ -769,6 +769,30 @@ describe("wsNativeApi", () => {
     expect(config.settings).toBe(settings);
   });
 
+  it("rejects a server health answer in a shape this build does not know", async () => {
+    const health = {
+      startedAt: "2026-01-01T00:00:00.000Z",
+      uptimeMs: 1_000,
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      eventLoopDelay: null,
+      slowRouteThresholdMs: 1_000,
+      slowStatementThresholdMs: 100,
+      slowRoutes: [],
+      slowStatementsCollected: true,
+      slowStatements: [],
+    };
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    requestMock.mockResolvedValueOnce(health);
+    await expect(createWsNativeApi().server.getHealth()).resolves.toEqual(health);
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetHealth);
+
+    // The card reads `slowRoutes.length`; without the list the request fails, not the render.
+    requestMock.mockResolvedValueOnce({ ...health, slowRoutes: undefined });
+    await expect(createWsNativeApi().server.getHealth()).rejects.toThrow();
+  });
+
   it("drops unknown commands from keybinding mutation results", async () => {
     const shortcut = {
       key: "j",

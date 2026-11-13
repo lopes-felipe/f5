@@ -5,7 +5,21 @@ import { ensureNativeApi } from "~/nativeApi";
 export const serverQueryKeys = {
   all: ["server"] as const,
   config: () => ["server", "config"] as const,
+  health: () => ["server", "health"] as const,
 };
+
+/**
+ * Read on demand: once each time the card mounts (Settings > General opens) and
+ * when Refresh is pressed. Never on a timer or on window focus.
+ */
+export function serverHealthQueryOptions() {
+  return queryOptions({
+    queryKey: serverQueryKeys.health(),
+    queryFn: () => ensureNativeApi().server.getHealth(),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
 
 export function serverConfigQueryOptions() {
   return queryOptions({

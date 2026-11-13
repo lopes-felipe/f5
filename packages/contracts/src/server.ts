@@ -450,3 +450,34 @@ export const ReportClientDiagnosticsInput = Schema.Struct({
   ),
 });
 export type ReportClientDiagnosticsInput = typeof ReportClientDiagnosticsInput.Type;
+
+/** One slow RPC route or SQL statement shape, totalled since the server started. */
+export const ServerHealthSlowOperation = Schema.Struct({
+  /** The RPC method, or the statement text without bound values. */
+  name: Schema.String,
+  count: NonNegativeInt,
+  totalMs: NonNegativeInt,
+  maxMs: NonNegativeInt,
+  lastAt: IsoDateTime,
+});
+export type ServerHealthSlowOperation = typeof ServerHealthSlowOperation.Type;
+
+/** What `server.getHealth` returns. Everything is counted since the server process started. */
+export const ServerHealth = Schema.Struct({
+  startedAt: IsoDateTime,
+  uptimeMs: NonNegativeInt,
+  rssBytes: NonNegativeInt,
+  heapUsedBytes: NonNegativeInt,
+  /** How late the server's event loop ran; null when it is not being sampled. */
+  eventLoopDelay: Schema.NullOr(
+    Schema.Struct({ p50Ms: NonNegativeInt, p99Ms: NonNegativeInt, maxMs: NonNegativeInt }),
+  ),
+  slowRouteThresholdMs: NonNegativeInt,
+  slowStatementThresholdMs: NonNegativeInt,
+  /** Largest total time first. Requests that are long by design are left out. */
+  slowRoutes: Schema.Array(ServerHealthSlowOperation),
+  /** False when this server's SQLite driver does not time statements (under Bun). */
+  slowStatementsCollected: Schema.Boolean,
+  slowStatements: Schema.Array(ServerHealthSlowOperation),
+});
+export type ServerHealth = typeof ServerHealth.Type;

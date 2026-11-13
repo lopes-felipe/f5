@@ -53,6 +53,7 @@ import {
   ServerConfigUpdatedPayload,
   type ServerConfig,
   ServerConfigForwardCompatibleFields,
+  ServerHealth,
   ServerKeybindingMutationResult,
   type DiskSpaceStatus,
   type StorageStatus,
@@ -131,6 +132,10 @@ const decodeServerConfigForwardCompatibleFields = Schema.decodeUnknownSync(
   ServerConfigForwardCompatibleFields,
 );
 const decodeKeybindingMutationResult = Schema.decodeUnknownSync(ServerKeybindingMutationResult);
+// `server.getHealth` shipped without a protocol bump, so a server of another
+// version can answer in another shape. The card reads nested fields; a shape it
+// does not know must fail the request, not the render.
+const decodeServerHealth = Schema.decodeUnknownSync(ServerHealth);
 
 function decodeServerConfig(result: unknown): ServerConfig {
   return {
@@ -845,6 +850,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.serverUndoClaudeTranscriptRepair, input),
       getConfig: async () =>
         decodeServerConfig(await transport.request(WS_METHODS.serverGetConfig)),
+      getHealth: async () =>
+        decodeServerHealth(await transport.request(WS_METHODS.serverGetHealth)),
       getProjectSettings: requestMethod(WS_METHODS.serverGetProjectSettings),
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),

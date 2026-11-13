@@ -358,6 +358,12 @@ import {
 } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
 import {
+  readServerHealth,
+  recordSlowRpcRoute,
+  SLOW_RPC_ROUTE_MS,
+  startEventLoopDelayMonitor,
+} from "./observability/serverHealth.ts";
+import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
@@ -849,7 +855,6 @@ const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 const CurrentRpcMethod = ServiceMap.Reference<string | null>("f5/ws/CurrentRpcMethod", {
   defaultValue: () => null,
 });
-const SLOW_RPC_ROUTE_LOG_MS = 1_000;
 const LARGE_RPC_RESPONSE_LOG_BYTES = 1024 * 1024;
 
 /**
@@ -1247,6 +1252,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
   const githubLogin = new GithubDeviceLogin(githubAccount, resolveGithubOAuthClientId(process.env));
   yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
+  const stopEventLoopDelayMonitor = startEventLoopDelayMonitor();
+  yield* Effect.addFinalizer(() => Effect.sync(stopEventLoopDelayMonitor));
   const githubCliImport = new GithubCliImport({
     account: githubAccount,
     // Profile state dirs live under the F5 home (parent of Default's state dir).
@@ -6741,6 +6748,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         // Lets a client holding requests notice readiness even if a push is lost.
         return { runtime: currentRuntimeReadiness() };
 
+      case WS_METHODS.serverGetHealth:
+        return readServerHealth();
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -8136,13 +8146,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     );
     const routeMs = Date.now() - routeStartedAt;
-    if (routeMs >= SLOW_RPC_ROUTE_LOG_MS)
+    if (routeMs >= SLOW_RPC_ROUTE_MS) {
+      recordSlowRpcRoute(method, routeMs, lane);
       yield* Effect.logInfo("slow rpc route", {
         method,
         lane,
         durationMs: routeMs,
         admission: admission.snapshot(),
       });
+    }
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse(
         {
