@@ -21228,9 +21228,11 @@
     },
     {
       "createdAt": "2026-11-05T11:02:07.777Z",
+      "decidedAt": "2026-11-13T11:26:08.229Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29803",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -22576,9 +22578,13 @@
     },
     {
       "createdAt": "2026-11-06T08:58:00.915Z",
+      "decidedAt": "2026-11-13T11:26:01.071Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-30000",
-      "status": "inbox",
+      "reason": "Declined by f5 product policy",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
