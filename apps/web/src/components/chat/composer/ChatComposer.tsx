@@ -117,6 +117,8 @@ export interface ChatComposerProps {
 
   tokenUsage: ComposerTokenUsage;
   pendingInteraction: ComposerPendingInteraction;
+  onEditorFocus?: () => void;
+  onEditorBlur?: () => void;
   modelControls: ComposerModelControls;
   modeControls: ComposerModeControls;
   sendControls: ComposerSendControls;
@@ -176,6 +178,8 @@ export function ChatComposer({
   onSelectComposerItem,
   tokenUsage,
   pendingInteraction,
+  onEditorFocus,
+  onEditorBlur,
   modelControls,
   modeControls,
   sendControls,
@@ -436,6 +440,20 @@ export function ChatComposer({
           className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) shrink-0"
           aria-label={collapsed ? "Message composer (collapsed)" : "Message composer"}
           data-chat-composer-form="true"
+          onFocusCapture={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-testid="composer-editor"]')
+            )
+              onEditorFocus?.();
+          }}
+          onBlurCapture={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-testid="composer-editor"]')
+            )
+              onEditorBlur?.();
+          }}
           data-composer-collapsed={collapsed ? "true" : "false"}
           {...(expanded ? { [EXPANDED_COMPOSER_ATTRIBUTE]: "true" } : {})}
           style={

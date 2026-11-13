@@ -4984,10 +4984,17 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" ||
         event.type === "turn.completed"
       ) {
+        const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+          threadId: thread.id,
+        });
+        const hasPendingTurnStart =
+          Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
         const reportedStatus = (() => {
           switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+            case "session.state.changed": {
+              const status = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              return hasPendingTurnStart && status === "ready" ? "starting" : status;
+            }
             case "turn.started":
               return "running";
             case "session.exited":
@@ -4998,7 +5005,7 @@ const make = Effect.gen(function* () {
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
               // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
+              return activeTurnId !== null ? "running" : hasPendingTurnStart ? "starting" : "ready";
           }
         })();
         // Providers can emit generic `ready` transitions for setup milestones

@@ -38,7 +38,11 @@ import {
   linkedPullRequestLookupCwd,
   useLinkedPullRequestStates,
 } from "../hooks/useLinkedPullRequestStates";
-import { resolveThreadPullRequests, type ThreadPullRequestItem } from "../lib/threadPullRequests";
+import {
+  resolveThreadPullRequests,
+  threadBranchPullRequest,
+  type ThreadPullRequestItem,
+} from "../lib/threadPullRequests";
 import { useStore } from "../store";
 import { selectThreadById } from "../threadSelectors";
 import {
@@ -332,6 +336,9 @@ export default function GitActionsControl({
   const threadPullRequestLinks = useStore((state) =>
     isServerThread ? selectThreadById(state, activeThreadId)?.pullRequests : undefined,
   );
+  const threadBranch = useStore((state) =>
+    isServerThread ? (selectThreadById(state, activeThreadId)?.branch ?? null) : null,
+  );
   const pullRequestLookupCwd = useStore((state) => {
     const thread = isServerThread ? selectThreadById(state, activeThreadId) : undefined;
     return linkedPullRequestLookupCwd(
@@ -351,11 +358,18 @@ export default function GitActionsControl({
   const threadPullRequests = useMemo(
     () =>
       resolveThreadPullRequests({
-        branchPr: gitStatusForActions?.pr ?? null,
+        branchPr: threadBranchPullRequest(threadBranch, gitStatusForActions),
         links: threadPullRequestLinks,
         linkState: (url) => linkedPullRequestState(pullRequestLookupCwd, url),
       }),
-    [gitStatusForActions?.pr, linkedPullRequestState, pullRequestLookupCwd, threadPullRequestLinks],
+    [
+      gitStatusForActions?.pr,
+      gitStatusForActions?.branch,
+      threadBranch,
+      linkedPullRequestState,
+      pullRequestLookupCwd,
+      threadPullRequestLinks,
+    ],
   );
   const pullRequestWatches = useThreadPullRequestWatches(isServerThread ? activeThreadId : null);
   const [isLinkPullRequestOpen, setIsLinkPullRequestOpen] = useState(false);
