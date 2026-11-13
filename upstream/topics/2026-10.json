@@ -44543,11 +44543,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-13T15:37:18.791Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23361",
-      "status": "port",
+      "reason": "F5 has no managed ChatGPT subscription-sharing authentication.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
