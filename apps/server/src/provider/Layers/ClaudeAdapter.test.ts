@@ -381,6 +381,7 @@ function emitClaudeTaskStarted(
     readonly description?: string;
     readonly sessionId?: string;
     readonly uuid?: string;
+    readonly backgrounded?: boolean;
   },
 ): void {
   query.emit({
@@ -389,6 +390,7 @@ function emitClaudeTaskStarted(
     task_id: input.taskId,
     tool_use_id: input.toolUseId,
     task_type: "bash",
+    ...(input.backgrounded !== undefined ? { is_backgrounded: input.backgrounded } : {}),
     description: input.description ?? "Run background command",
     session_id: input.sessionId ?? BACKGROUND_SESSION_ID,
     uuid: input.uuid ?? `task-started-${input.taskId}`,
@@ -16381,6 +16383,246 @@ it.effect("fails MCP sign-in cleanly when the Claude runtime lacks mcpAuthentica
     assert.include(error.message, "does not support MCP sign-in");
   }).pipe(Effect.provide(harness.layer));
 });
+
+for (const terminalFirst of [false, true]) {
+  it.effect(
+    `keeps background launch result correlation across turns (terminalFirst=${terminalFirst})`,
+    () => {
+      const h = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+        const turn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Run" });
+        emitBashToolStart(h.query, { toolUseId: "late-shell" });
+        emitClaudeTaskStarted(h.query, {
+          taskId: "late-task",
+          toolUseId: "late-shell",
+          backgrounded: true,
+        });
+        emitBackgroundToolResult(h.query, { taskId: "late-task", toolUseId: "late-shell" });
+        emitClaudeSuccessResult(h.query);
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+              ),
+            ),
+          ),
+        );
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Next" });
+        const notify = () =>
+          emitClaudeTaskUpdated(h.query, {
+            taskId: "late-task",
+            patch: { status: "completed" },
+            uuid: crypto.randomUUID(),
+          });
+        const result = () =>
+          h.query.emit({
+            type: "user",
+            session_id: BACKGROUND_SESSION_ID,
+            parent_tool_use_id: null,
+            uuid: crypto.randomUUID(),
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "late-shell",
+                  content: "actual output\n",
+                },
+              ],
+            },
+          } as unknown as SDKMessage);
+        if (terminalFirst) notify();
+        result();
+        if (!terminalFirst) notify();
+        notify();
+        result();
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "content.delta" && event.payload.delta === "actual output\n",
+              ),
+            ),
+          ),
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        yield* Fiber.interrupt(listener);
+        const output = events.filter(
+          (event) => event.type === "content.delta" && event.payload.delta === "actual output\n",
+        );
+        assert.equal(output.length, 1);
+        assert.equal(output[0]?.turnId, turn.turnId);
+        const completed = events.filter(
+          (event) => event.type === "item.completed" && event.itemId === "late-shell",
+        );
+        assert.equal(completed.length, 1);
+        assert.equal(completed[0]?.turnId, turn.turnId);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+}
+
+for (const terminal of ["task_notification", "task_updated"] as const) {
+  for (const backgrounded of [false, true]) {
+    for (const resultFirst of [false, true]) {
+      for (const failed of [false, true]) {
+        it.effect(
+          `preserves ${failed ? "failed" : "successful"} Bash output (${terminal}, background=${backgrounded}, resultFirst=${resultFirst})`,
+          () => {
+            const h = makeHarness();
+            return Effect.gen(function* () {
+              const adapter = yield* ClaudeAdapter;
+              const events: ProviderRuntimeEvent[] = [];
+              const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+                Effect.sync(() => {
+                  events.push(event);
+                }),
+              ).pipe(Effect.forkChild);
+              yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+              const turn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Run command" });
+              emitBashToolStart(h.query, { toolUseId: "output-call" });
+              emitClaudeTaskStarted(h.query, {
+                taskId: "output-task",
+                toolUseId: "output-call",
+                backgrounded,
+              });
+              const output = "stdout line\nstderr line\n";
+              const result = () =>
+                h.query.emit({
+                  type: "user",
+                  session_id: BACKGROUND_SESSION_ID,
+                  uuid: crypto.randomUUID(),
+                  parent_tool_use_id: null,
+                  message: {
+                    role: "user",
+                    content: [
+                      {
+                        type: "tool_result",
+                        tool_use_id: "output-call",
+                        content: output,
+                        is_error: failed,
+                      },
+                    ],
+                  },
+                } as unknown as SDKMessage);
+              const notify = () => {
+                if (terminal === "task_updated")
+                  emitClaudeTaskUpdated(h.query, {
+                    taskId: "output-task",
+                    patch: { status: failed ? "failed" : "completed" },
+                    uuid: crypto.randomUUID(),
+                  });
+                else
+                  h.query.emit({
+                    type: "system",
+                    subtype: "task_notification",
+                    task_id: "output-task",
+                    status: failed ? "failed" : "completed",
+                    output_file: "",
+                    summary: "Finished",
+                    session_id: BACKGROUND_SESSION_ID,
+                    uuid: crypto.randomUUID(),
+                  } as unknown as SDKMessage);
+              };
+              if (resultFirst) result();
+              notify();
+              notify();
+              if (!backgrounded) {
+                // Exercise both terminal forms, including the updated-first ordering.
+                if (terminal === "task_updated")
+                  h.query.emit({
+                    type: "system",
+                    subtype: "task_notification",
+                    task_id: "output-task",
+                    status: failed ? "failed" : "completed",
+                    output_file: "",
+                    summary: "Finished",
+                    session_id: BACKGROUND_SESSION_ID,
+                    uuid: crypto.randomUUID(),
+                  } as unknown as SDKMessage);
+                else
+                  emitClaudeTaskUpdated(h.query, {
+                    taskId: "output-task",
+                    patch: { status: failed ? "failed" : "completed" },
+                    uuid: crypto.randomUUID(),
+                  });
+              }
+              if (backgrounded && !resultFirst) {
+                // The output may arrive after the launching turn has ended.
+                emitClaudeSuccessResult(h.query);
+                yield* Effect.promise(() =>
+                  vi.waitFor(() =>
+                    assert.ok(
+                      events.some(
+                        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              if (!resultFirst) result();
+              yield* Effect.promise(() =>
+                vi.waitFor(() =>
+                  assert.ok(
+                    events.some(
+                      (event) => event.type === "content.delta" && event.payload.delta === output,
+                    ),
+                    JSON.stringify(
+                      events.map((event) => ({
+                        type: event.type,
+                        itemId: event.itemId,
+                        payload: event.payload,
+                      })),
+                    ),
+                  ),
+                ),
+              );
+              result(); // Replayed results must not append twice.
+              yield* adapter.stopSession(THREAD_ID);
+              yield* Fiber.interrupt(listener);
+              const completions = events.filter(
+                (event) => event.type === "item.completed" && event.itemId === "output-call",
+              );
+              assert.equal(completions.length, 1);
+              if (!backgrounded)
+                assert.equal(
+                  events.filter(
+                    (event) =>
+                      event.type === "task.completed" && event.payload.taskId === "output-task",
+                  ).length,
+                  1,
+                );
+              assert.equal(completions[0]?.turnId, turn.turnId);
+              if (completions[0]?.type === "item.completed") {
+                assert.equal(completions[0].payload.status, failed ? "failed" : "completed");
+                if (!backgrounded)
+                  assert.notInclude(
+                    JSON.stringify(completions[0].payload.data),
+                    "backgroundTaskId",
+                  );
+              }
+              const outputs = events.filter(
+                (event) => event.type === "content.delta" && event.payload.delta === output,
+              );
+              assert.equal(outputs.length, 1);
+              assert.equal(outputs[0]?.turnId, turn.turnId);
+            }).pipe(Effect.provide(h.layer));
+          },
+        );
+      }
+    }
+  }
+}
 
 for (const terminal of ["task_notification", "task_updated"] as const) {
   for (const toolName of ["AskUserQuestion", "Bash"] as const) {

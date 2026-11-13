@@ -35,6 +35,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - New approvals and questions wait until typing pauses before taking over the composer. Cursor stays in Normal mode unless Fast was selected, and model switches retain saved traits.
 - Threads stay Connecting while a turn starts, and checkout PR actions only show the thread branch's PR. The model picker names models unlocked by a CLI update.
 - Claude-launched Electron apps open normally, while configured JavaScript Claude entry points still run in the desktop app. Claude gateway and OpenCode usage-limit resets survive turn completion. OpenCode commands with nonzero exits show as failed, ACP retains final messages without a newline, and Muse uses canonical workspace paths and bounded, redacted failure text.
+- Commenting on, reviewing and merging pull requests from PR Hub no longer fails with "Comment permissions could not be verified" or "no longer writable": F5 asked GitHub for a permission field that does not exist. Code Review merged reviews now open with a title that links the reviewed PR and follow a consistent layout (target, verdict, severity sections), without the model's narration or a repeated PR header.
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
 - Project actions can opt into stopping when their thread settles, preserving terminal output. Older pending approvals stay answerable, PR description checkboxes save changes, and Git divergence refreshes after turns even with polling off.
 - Silent Antigravity turns stop after 15 minutes without progress. Requests and tools pause the deadline; unobservable subagent batches receive a bounded grace period until the parent resumes. Antigravity continues to reject unsupported Auto mode. Codex reports conversations held by another client, and ACP edits show every file's patch.
@@ -42,6 +43,13 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Agents, Git hooks, setup scripts and other processes F5 starts no longer inherit the backend's own auth token (`T3CODE_AUTH_TOKEN`).
 - A running turn stores its context-size estimate when it moves by 1% of the context window (at least 2,000 tokens) and when the turn settles, not after every model step. Long turns add far fewer events to the profile database.
 - The server log counts recorded worktrees kept for recovery once per start, and Upstream reports a failed pull-request evidence read once per pass, not once per thread.
+- Behind a reverse proxy listed with `--trusted-proxy` (`F5_TRUSTED_PROXIES`), the failed-login limit applies to each client the proxy reports in `X-Forwarded-For`, so one client's wrong tokens no longer lock out everyone else. A proxy on the same machine must be listed too (`--trusted-proxy 127.0.0.1`); unlisted, its clients keep sharing one limit. Wrong bearer tokens now count toward their client's limit, and a locked-out client gets `429` with `Retry-After`; requests straight from the same machine stay exempt. `X-Forwarded-Proto` is honored only from a proxy on the same machine or a listed one, so a TLS proxy on another host must now be listed.
+- Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
+- The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
+- The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
+
+- Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
+- Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
 
 ## [0.1.8] - 2026-11-12
 

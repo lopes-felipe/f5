@@ -50,7 +50,11 @@ import {
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { Server } from "./wsServer";
 import { ServerLoggerLive } from "./serverLogger";
-import { MIN_REMOTE_AUTH_TOKEN_BYTES, SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
+import {
+  makeTrustedProxyCheck,
+  MIN_REMOTE_AUTH_TOKEN_BYTES,
+  SERVER_AUTH_TOKEN_ENV,
+} from "./serverAuth";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
@@ -70,6 +74,7 @@ interface CliInput {
   readonly devUrl: Option.Option<URL>;
   readonly noBrowser: Option.Option<boolean>;
   readonly authToken: Option.Option<string>;
+  readonly trustedProxies?: Option.Option<string>;
   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
   readonly logWebSocketEvents: Option.Option<boolean>;
 }
@@ -143,6 +148,10 @@ const CliEnvConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   authToken: Config.string(SERVER_AUTH_TOKEN_ENV).pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  trustedProxies: Config.string("F5_TRUSTED_PROXIES").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
@@ -325,6 +334,22 @@ const ServerConfigLive = (input: CliInput) => {
         });
       }
 
+      const trustedProxies = (
+        (input.trustedProxies ? Option.getOrUndefined(input.trustedProxies) : undefined) ??
+        env.trustedProxies ??
+        ""
+      )
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      try {
+        makeTrustedProxyCheck(trustedProxies);
+      } catch (cause) {
+        return yield* new StartupError({
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+
       const config: ServerConfigShape = {
         profile: {
           id: profile.id,
@@ -345,6 +370,7 @@ const ServerConfigLive = (input: CliInput) => {
         devUrl,
         noBrowser,
         authToken,
+        trustedProxies,
         autoBootstrapProjectFromCwd,
         logWebSocketEvents,
         observabilityEnabled: env.observabilityEnabled ?? false,
@@ -677,6 +703,12 @@ const authTokenFlag = Flag.string("auth-token").pipe(
   Flag.withAlias("token"),
   Flag.optional,
 );
+const trustedProxiesFlag = Flag.string("trusted-proxy").pipe(
+  Flag.withDescription(
+    "Comma-separated addresses or CIDR ranges of reverse proxies whose X-Forwarded-For names the client, and whose X-Forwarded-Proto is honored when they are on another host (equivalent to F5_TRUSTED_PROXIES).",
+  ),
+  Flag.optional,
+);
 const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
   Flag.withDescription(
     "Create a project for the current working directory on startup when missing.",
@@ -704,6 +736,7 @@ const t3Base = Command.make("t3", {
   devUrl: devUrlFlag,
   noBrowser: noBrowserFlag,
   authToken: authTokenFlag,
+  trustedProxies: trustedProxiesFlag,
   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
   logWebSocketEvents: logWebSocketEventsFlag,
 });

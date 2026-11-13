@@ -379,6 +379,7 @@ import {
   withStartupPhaseTiming,
 } from "./startupTiming.ts";
 import {
+  AUTH_RATE_LIMITED_MESSAGE,
   isPrivateHttpPath,
   makeServerAuth,
   REQUEST_HOST_NOT_ALLOWED_MESSAGE,
@@ -474,11 +475,21 @@ const isServerNotRunningError = (error: Error): boolean => {
   );
 };
 
-function rejectUpgrade(socket: Duplex, statusCode: number, message: string): void {
+function rejectUpgrade(
+  socket: Duplex,
+  statusCode: number,
+  message: string,
+  headers: Readonly<Record<string, string>> = {},
+): void {
+  const reason =
+    statusCode === 401 ? "Unauthorized" : statusCode === 429 ? "Too Many Requests" : "Bad Request";
   socket.end(
-    `HTTP/1.1 ${statusCode} ${statusCode === 401 ? "Unauthorized" : "Bad Request"}\r\n` +
+    `HTTP/1.1 ${statusCode} ${reason}\r\n` +
       "Connection: close\r\n" +
       "Content-Type: text/plain\r\n" +
+      Object.entries(headers)
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("") +
       `Content-Length: ${Buffer.byteLength(message)}\r\n` +
       "\r\n" +
       message,
@@ -1080,6 +1091,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
       ...(devUrl ? [devUrl.origin] : []),
     ],
+    ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
   const availableEditors = resolveAvailableEditors();
 
@@ -2190,13 +2202,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return;
         }
         if (isPrivatePath && !serverAuth.isHttpRequestAuthenticated(req)) {
+          // A locked-out client is told to wait, so it does not take its token for a wrong one.
+          const retryAfter = serverAuth.bearerRetryAfterSeconds(req);
           respond(
-            401,
+            retryAfter === null ? 401 : 429,
             {
               "Cache-Control": "no-store",
               "Content-Type": "application/json; charset=utf-8",
+              ...(retryAfter === null ? {} : { "Retry-After": `${retryAfter}` }),
             },
-            JSON.stringify({ error: "Authentication required." }),
+            JSON.stringify({
+              error: retryAfter === null ? "Authentication required." : AUTH_RATE_LIMITED_MESSAGE,
+            }),
           );
           return;
         }
@@ -2485,6 +2502,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               workspaceAssetAuthorizer,
               checkedInProjectFileService,
               req,
+              serverAuth.externalRequestOrigin,
             ),
           )
         ) {
@@ -8158,12 +8176,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }
 
     if (!serverAuth.isWebSocketOriginAllowed(request)) {
-      rejectUpgrade(socket, 403, "WebSocket origin is not allowed");
+      // The usual cause behind a TLS proxy on another host: its X-Forwarded-Proto is not
+      // believed, so the https Origin does not match. Say so instead of a bare refusal.
+      const ignoredPeer = serverAuth.ignoredForwardedProtoPeer(request);
+      rejectUpgrade(
+        socket,
+        403,
+        ignoredPeer === null
+          ? "WebSocket origin is not allowed"
+          : `WebSocket origin is not allowed. X-Forwarded-Proto from ${ignoredPeer} was ignored; ` +
+              "if that is your reverse proxy, start F5 with --trusted-proxy.",
+      );
       return;
     }
 
     if (!serverAuth.isWebSocketRequestAuthenticated(request, url)) {
-      rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      // A locked-out client is told to wait, so it does not take its token for a wrong one.
+      const retryAfter = serverAuth.bearerRetryAfterSeconds(request);
+      if (retryAfter === null) rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      else
+        rejectUpgrade(socket, 429, AUTH_RATE_LIMITED_MESSAGE, { "Retry-After": `${retryAfter}` });
       return;
     }
 

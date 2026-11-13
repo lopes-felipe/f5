@@ -37,6 +37,7 @@
     "check:dependencies": "node scripts/check-dependencies.ts",
     "postinstall": "node apps/desktop/node_modules/electron/install.js && node scripts/check-dependencies.ts --record-install",
     "repair:stuck-turns": "bun apps/server/scripts/repair-stuck-turns.ts",
+    "repair:claude-command-output": "bun apps/server/scripts/repair-claude-command-output.ts",
     "typecheck": "node node_modules/turbo/bin/turbo run typecheck",
     "lint": "node node_modules/oxlint/bin/oxlint --report-unused-disable-directives",
     "test": "node node_modules/turbo/bin/turbo run test --concurrency=2 --continue=always",
