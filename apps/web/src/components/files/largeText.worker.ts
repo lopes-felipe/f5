@@ -15,6 +15,7 @@ let size = 0;
 let delimiter: "," | "\t" | null = null;
 let complete = false;
 let columns = 1;
+let encodingNotice = false;
 function reply(value: TextPreviewResult) {
   self.postMessage(value, { transfer: [] });
 }
@@ -39,7 +40,20 @@ async function read(start: number, end: number) {
     if (part.start >= end) break;
     parts.push(part.blob.slice(Math.max(0, start - part.start), end - part.start));
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(await new Blob(parts).arrayBuffer());
+  const bytes = await new Blob(parts).arrayBuffer();
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    if (!encodingNotice) {
+      encodingNotice = true;
+      reply({
+        type: "notice",
+        message:
+          "This file is not valid UTF-8. Some characters are shown as replacement characters.",
+      });
+    }
+    return new TextDecoder().decode(bytes);
+  }
 }
 async function page(index: number) {
   const start = index * PREVIEW_PAGE_ROWS;

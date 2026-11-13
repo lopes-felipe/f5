@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, stat, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, realpath, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createConnection } from "node:net";
@@ -11,7 +11,40 @@ import {
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+it("uses the same address across temp environments and state-directory aliases", async () => {
+  const { root } = await fixture();
+  const original = desktopAppControlAddress(root);
+  vi.stubEnv("TMPDIR", "/different/shell/temp");
+  vi.stubEnv("TMP", "/different/shell/temp");
+  vi.stubEnv("TEMP", "/different/shell/temp");
+  expect(desktopAppControlAddress(path.relative(process.cwd(), root))).toEqual(original);
+  const alias = path.join(root, "alias");
+  await symlink(root, alias, "junction");
+  expect(desktopAppControlAddress(alias)).toEqual(original);
+});
+it("preserves request IDs when the project disappears before server validation", async () => {
+  const { root } = await fixture();
+  cleanups.push(await startDesktopAppControl(root, async () => {}));
+  const socket = createConnection(desktopAppControlAddress(root).address);
+  try {
+    const reply = new Promise<string>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.once("data", (data) => resolve(data.toString()));
+    });
+    socket.write(
+      JSON.stringify({ id: "missing-project", path: path.join(root, "missing") }) + "\n",
+    );
+    expect(JSON.parse(await reply)).toMatchObject({
+      id: "missing-project",
+      ok: false,
+      error: expect.stringContaining("ENOENT"),
+    });
+  } finally {
+    socket.destroy();
+  }
 });
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "f5-app-test-"));

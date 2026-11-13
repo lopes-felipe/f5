@@ -1138,7 +1138,13 @@ function OpenCommandPaletteDialog(props: {
     title: "Project settings",
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/settings", search: { category: "projects" } });
+      await navigate({
+        to: "/settings",
+        search: {
+          category: "projects",
+          ...(currentProjectId ? { project: currentProjectId } : {}),
+        },
+      });
     },
   });
 

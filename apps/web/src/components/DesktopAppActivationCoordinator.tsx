@@ -28,17 +28,31 @@ export function DesktopAppActivationCoordinator() {
           for (const request of requests) {
             let error: string | undefined;
             try {
-              if (disposed) throw new Error("The desktop window was closed.");
+              if (disposed)
+                throw new Error("Desktop activation was interrupted. Retry to reuse the project.");
               const api = ensureNativeApi();
               const { snapshot } = await api.orchestration.getStartupSnapshot();
               useStore.getState().syncStartupSnapshot(snapshot);
-              if (disposed) throw new Error("The desktop window was closed.");
+              if (disposed)
+                throw new Error("Desktop activation was interrupted. Retry to reuse the project.");
+              const originals = [
+                request.path,
+                ...useStore.getState().projects.map((project) => project.cwd),
+              ];
+              const resolved = await bridge.resolveActivationPaths?.(originals);
+              if (disposed)
+                throw new Error("Desktop activation was interrupted. Retry to reuse the project.");
+              const paths = new Map(
+                originals.map((value, index) => [value, resolved?.[index] ?? value]),
+              );
               const project = findActivationProject(
                 useStore.getState().projects,
                 request.path,
-                bridge.resolveRealPath,
+                (value) => paths.get(value) ?? value,
               );
               const projectId = project?.id ?? newProjectId();
+              if ((await bridge.isAppActivationPending?.(request.id)) === false)
+                throw new Error("Desktop activation expired. Retry to reuse the project.");
               if (!project) {
                 await api.orchestration.dispatchCommand({
                   type: "project.create",
@@ -51,8 +65,11 @@ export function DesktopAppActivationCoordinator() {
                 const result = await api.orchestration.getStartupSnapshot();
                 useStore.getState().syncStartupSnapshot(result.snapshot);
               }
-              if (disposed) throw new Error("The desktop window was closed.");
+              if (disposed)
+                throw new Error("Desktop activation was interrupted. Retry to reuse the project.");
               useStore.getState().setProjectExpanded(projectId, true);
+              if ((await bridge.isAppActivationPending?.(request.id)) === false)
+                throw new Error("Desktop activation expired. Retry to reuse the project.");
               const draft = await startThread(projectId);
               if (!draft) throw new Error("Could not start a new thread.");
             } catch (cause) {

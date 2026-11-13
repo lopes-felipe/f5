@@ -3,8 +3,10 @@ import "../../index.css";
 import { afterEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import JSZip from "jszip";
+import { page } from "vitest/browser";
 import { WorkspaceMediaView } from "../WorkspaceMediaView";
 import { sanitizeDocumentHtml } from "./DocumentPages";
+import NotebookPreview from "./NotebookPreview";
 
 const files = vi.hoisted(() => new Map<string, string>());
 vi.mock("../../nativeApi", async (original) => ({
@@ -39,6 +41,41 @@ async function open(name: string, data: BlobPart, type = "application/octet-stre
   );
   return view;
 }
+it("offers access to notebook HTML beyond the live iframe limit", async () => {
+  await page.viewport(1200, 4000);
+  const view = await render(
+    <div style={{ height: 2500, display: "flex" }}>
+      <NotebookPreview
+        notebook={{
+          type: "notebook",
+          language: "python",
+          cells: [
+            {
+              kind: "code",
+              source: "",
+              outputs: Array.from({ length: 20 }, (_, i) => ({
+                kind: "html" as const,
+                text: "<p>Output " + i + "</p>",
+              })),
+            },
+          ],
+        }}
+      />
+    </div>,
+  );
+  cleanups.push(() => view.unmount());
+  cleanups.unshift(() => page.viewport(1200, 800));
+  await vi.waitFor(() => expect(document.querySelectorAll("iframe").length).toBe(16));
+  const last = document.querySelector<HTMLElement>('[data-notebook-output="0-19"]')!;
+  last.querySelector<HTMLButtonElement>("button")!.click();
+  await vi.waitFor(() => expect(last.querySelector("iframe")).not.toBeNull());
+  expect(document.querySelectorAll("iframe").length).toBeLessThanOrEqual(16);
+});
+it("previews non-UTF-8 files with a decoding notice", async () => {
+  await open("legacy.csv", new Uint8Array([97, 44, 98, 10, 99, 44, 233, 10]));
+  await vi.waitFor(() => expect(document.body.textContent).toContain("not valid UTF-8"));
+  expect(document.querySelector('[role="table"]')).not.toBeNull();
+});
 it("virtualizes large text and delimited data in real workers", async () => {
   await open(
     "rows.csv",

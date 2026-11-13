@@ -106,7 +106,10 @@ it("drains new activations after an effect is replaced during an in-flight read"
     state.requests.push({ id: "new", path: "/new" });
     release({ snapshot: {} });
     await vi.waitFor(() => expect(state.complete).toHaveBeenCalledWith("new", undefined));
-    expect(state.complete).toHaveBeenCalledWith("old", "The desktop window was closed.");
+    expect(state.complete).toHaveBeenCalledWith(
+      "old",
+      "Desktop activation was interrupted. Retry to reuse the project.",
+    );
     expect(state.dispatch).toHaveBeenCalledOnce();
   } finally {
     await view.unmount();

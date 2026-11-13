@@ -38,6 +38,7 @@ export default function LargeTextViewer(props: {
   readonly revealRequestId?: number;
 }) {
   const [meta, setMeta] = useState<Extract<TextPreviewResult, { type: "meta" }> | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [pages, setPages] = useState(new Map<number, string[][]>());
   const [error, setError] = useState<string | null>(null);
   const worker = useRef<Worker | null>(null);
@@ -84,7 +85,9 @@ export default function LargeTextViewer(props: {
       worker.current = engine;
       engine.addEventListener("message", (event: MessageEvent<TextPreviewResult>) => {
         const result = event.data;
-        if (result.type === "copy") {
+        if (result.type === "notice") {
+          setNotice(result.message);
+        } else if (result.type === "copy") {
           copyPending.current?.resolve(result.text);
           copyPending.current = null;
         } else if (result.type === "error") {
@@ -218,6 +221,7 @@ export default function LargeTextViewer(props: {
           ? ` · ${meta.sizeBytes === 0 ? "0 bytes" : formatAttachmentSize(meta.sizeBytes)}`
           : " · Indexing…"}
       </div>
+      {notice ? <FileSurfaceNotice>{notice}</FileSurfaceNotice> : null}
       {!meta.complete ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
           <FileSurfaceNotice>Loading the rest of the file…</FileSurfaceNotice>

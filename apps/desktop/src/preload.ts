@@ -185,8 +185,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
   },
   takePromptLinks: () => ipcRenderer.invoke("desktop:take-prompt-links"),
-  resolveRealPath: (value) => ipcRenderer.sendSync("desktop:resolve-real-path", value),
+  resolveActivationPaths: (values) =>
+    ipcRenderer.invoke("desktop:resolve-activation-paths", values),
   takeAppActivations: () => ipcRenderer.invoke("desktop:take-app-activations"),
+  isAppActivationPending: (id) => ipcRenderer.invoke("desktop:is-app-activation-pending", id),
   completeAppActivation: (id, error) =>
     ipcRenderer.invoke("desktop:complete-app-activation", id, error),
   onAppActivationsAvailable: (listener) => {

@@ -3,13 +3,32 @@ import { createConnection, createServer } from "node:net";
 import { chmod, lstat, mkdir, realpath, stat, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { realpathSync } from "node:fs";
+
+export function canonicalDesktopStateDir(value: string): string {
+  const expanded =
+    value === "~"
+      ? os.homedir()
+      : value.startsWith("~/") || value.startsWith("~\\")
+        ? path.join(os.homedir(), value.slice(2))
+        : value;
+  const absolute = path.resolve(expanded);
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
 
 export function desktopAppControlAddress(stateDir: string): {
   address: string;
   directory: string | null;
 } {
-  const hash = createHash("sha256").update(path.resolve(stateDir)).digest("hex").slice(0, 24);
-  const directory = path.join(os.tmpdir(), `f5-app-${process.getuid?.() ?? hash}`);
+  const hash = createHash("sha256")
+    .update(canonicalDesktopStateDir(stateDir))
+    .digest("hex")
+    .slice(0, 24);
+  const directory = path.join("/tmp", `f5-app-${process.getuid?.() ?? hash}`);
   return process.platform === "win32"
     ? { address: `\\\\.\\pipe\\f5-app-${hash}`, directory: null }
     : { address: path.join(directory, `${hash}.sock`), directory };
@@ -40,7 +59,12 @@ export async function openInDesktopApp(
     const socket = createConnection(desktopAppControlAddress(stateDir).address);
     let buffer = "";
     const timer = setTimeout(
-      () => finish(new Error("The desktop app did not respond in time.")),
+      () =>
+        finish(
+          new Error(
+            "The desktop app did not respond in time. Activation may still complete; retrying will reuse the project.",
+          ),
+        ),
       17_000,
     );
     const finish = (error?: Error) => {
@@ -68,10 +92,12 @@ export async function openInDesktopApp(
         finish(new Error("Invalid desktop response."));
       }
     });
-    socket.once("error", () =>
+    socket.once("error", (error: NodeJS.ErrnoException) =>
       finish(
         new Error(
-          "No F5 desktop app is running for this state directory. Start it, then run f5 app again.",
+          "No F5 desktop app could be reached for this state directory (" +
+            (error.code ?? error.message) +
+            "). Start it, then run f5 app again.",
         ),
       ),
     );
@@ -138,8 +164,10 @@ export async function startDesktopAppControl(
       handled = true;
       void (async () => {
         let request: DesktopAppRequest | undefined;
+        let responseId: string | undefined;
         try {
           const input = JSON.parse(buffer.slice(0, buffer.indexOf("\n")));
+          if (typeof input?.id === "string" && input.id.length <= 100) responseId = input.id;
           if (
             typeof input.id !== "string" ||
             input.id.length > 100 ||
@@ -155,7 +183,7 @@ export async function startDesktopAppControl(
         } catch (error) {
           socket.end(
             JSON.stringify({
-              id: request?.id,
+              id: responseId,
               ok: false,
               error: error instanceof Error ? error.message : "Activation failed.",
             }) + "\n",

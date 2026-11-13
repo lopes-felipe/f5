@@ -3602,7 +3602,10 @@ function activateProject(request: DesktopAppRequest): Promise<void> {
   const profileId = reopenTargetProfileId();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
-      () => complete("The desktop window did not open the project in time."),
+      () =>
+        complete(
+          "Desktop activation is taking longer than expected and may still complete. Retry to reuse the project.",
+        ),
       15_000,
     );
     const complete = (error?: string) => {
@@ -3699,13 +3702,21 @@ function reopenApplication(): void {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.on("desktop:resolve-real-path", (event, value: unknown) => {
-    try {
-      authorizeAppMainFrame(event, "Resolve project path");
-      event.returnValue = typeof value === "string" ? FS.realpathSync.native(value) : null;
-    } catch {
-      event.returnValue = null;
+  ipcMain.handle("desktop:is-app-activation-pending", (event, id: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    const entry = appActivations.get(id);
+    return entry?.profileId === runtime.profile.id && entry.senderId === event.sender.id;
+  });
+  ipcMain.handle("desktop:resolve-activation-paths", async (event, values: unknown) => {
+    authorizeAppMainFrame(event, "Resolve activation paths");
+    if (!Array.isArray(values) || values.length > 10_000) throw new Error("Invalid paths");
+    const fs = await import("node:fs/promises");
+    const result: (string | null)[] = [];
+    for (const value of values) {
+      result.push(typeof value === "string" ? await fs.realpath(value).catch(() => null) : null);
     }
+    return result;
   });
   ipcMain.handle("desktop:reveal-window", (event) => {
     revealSenderWindow(

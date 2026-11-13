@@ -31,7 +31,10 @@ export function ProjectActionsSettings() {
       const cwd = selectedProject!.cwd;
       const file = await api.projects
         .readFile({ cwd, relativePath: "f5.json" })
-        .catch(() => api.projects.readFile({ cwd, relativePath: "t3.json" }));
+        .catch((error: unknown) => {
+          if (!/\bENOENT\b|file not found|no such file/i.test(String(error))) throw error;
+          return api.projects.readFile({ cwd, relativePath: "t3.json" });
+        });
       if (file.truncated) throw new Error("Project configuration is too large to inspect.");
       return { name: file.relativePath, scripts: parseProjectFileScripts(file.contents) };
     },
@@ -153,7 +156,7 @@ export function ProjectActionsSettings() {
             return (
               <div key={index} className="rounded-md border border-border p-3">
                 <p className="text-sm">{script.name}</p>
-                <pre className="my-2 overflow-auto text-xs">{script.command}</pre>
+                <pre className="my-2 overflow-auto text-xs">{visibleCommand(script.command)}</pre>
                 <Button
                   size="sm"
                   variant="outline"
@@ -188,5 +191,14 @@ export function ProjectActionsSettings() {
         )}
       </div>
     </section>
+  );
+}
+
+/** Surface invisible direction/format controls without changing the imported command. */
+export function visibleCommand(command: string): string {
+  return command.replace(
+    /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu,
+    (character) =>
+      "[U+" + character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0") + "]",
   );
 }

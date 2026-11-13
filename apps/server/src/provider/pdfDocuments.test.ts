@@ -7,6 +7,7 @@ import {
   acpPdfDocuments,
   deletePdfDocumentBudgets,
   estimateClaudePdfPages,
+  estimateClaudePdfPagesAsync,
   pdfDocuments,
 } from "./pdfDocuments";
 import type { ProviderResolvedAttachment } from "./Services/ProviderAdapter";
@@ -21,6 +22,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const roots: string[] = [];
+it("yields to the event loop while scanning a large PDF comment", async () => {
+  const data = Buffer.concat([
+    Buffer.from("%PDF-1.7\n%"),
+    Buffer.alloc(2 * 1024 * 1024, 120),
+    Buffer.from("\n"),
+    pdf,
+  ]);
+  let progressed = false;
+  setImmediate(() => {
+    progressed = true;
+  });
+  expect(await estimateClaudePdfPagesAsync(data)).toBe(1);
+  expect(progressed).toBe(true);
+});
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });

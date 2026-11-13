@@ -45,6 +45,7 @@ export default function NotebookPreview(props: {
   readonly sizeBytes?: number | undefined;
 }) {
   const [visible, setVisible] = useState(20);
+  const [requestedOutput, setRequestedOutput] = useState<string | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const [outputView, setOutputView] = useState(() => ({
     mounted: new Set<string>(),
@@ -69,7 +70,13 @@ export default function NotebookPreview(props: {
           else candidates.delete(entry.target);
         }
         // Bound browsing contexts even when a cell contains hundreds of tiny HTML outputs.
-        const next = [...candidates.keys()].slice(0, 16);
+        const ordered = [...root.querySelectorAll("[data-notebook-output]")].filter((node) =>
+          candidates.has(node),
+        );
+        const requested = ordered.find((node) => candidates.get(node) === requestedOutput);
+        const next = (
+          requested ? [requested, ...ordered.filter((node) => node !== requested)] : ordered
+        ).slice(0, 16);
         const measured = active
           .filter((node) => !next.includes(node))
           .map(
@@ -89,7 +96,7 @@ export default function NotebookPreview(props: {
     );
     for (const node of root.querySelectorAll("[data-notebook-output]")) observer.observe(node);
     return () => observer.disconnect();
-  }, [outputCount]);
+  }, [outputCount, requestedOutput]);
   return (
     <>
       <div
@@ -140,7 +147,15 @@ export default function NotebookPreview(props: {
                   }}
                 >
                   {output.kind === "html" ? (
-                    !outputView.mounted.has(`${index}-${outputIndex}`) ? null : (
+                    !outputView.mounted.has(`${index}-${outputIndex}`) ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setRequestedOutput(`${index}-${outputIndex}`)}
+                      >
+                        Show HTML output
+                      </Button>
+                    ) : (
                       <DocumentPages
                         html={output.text}
                         name={`Cell ${index + 1} HTML output`}

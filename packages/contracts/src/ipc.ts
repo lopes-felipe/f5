@@ -850,6 +850,8 @@ export interface DesktopBridge {
   revealWindow?: () => Promise<void>;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
+  resolveActivationPaths?: (paths: readonly string[]) => Promise<(string | null)[]>;
+  isAppActivationPending?: (id: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

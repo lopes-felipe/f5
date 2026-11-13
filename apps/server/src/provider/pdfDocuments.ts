@@ -91,7 +91,7 @@ export async function pdfDocuments(input: {
           }
           if (offset > remaining || offset !== info.size) continue;
           const data = bytes.subarray(0, offset);
-          const pages = estimateClaudePdfPages(data);
+          const pages = await estimateClaudePdfPagesAsync(data);
           if (pages === null || pages + used.pages > 100) continue;
           used.pages += pages;
           used.bytes += 4 * Math.ceil(data.length / 3) + 128;
@@ -126,7 +126,22 @@ export async function pdfDocuments(input: {
   }
 }
 
-export const estimateClaudePdfPages = (bytes: Buffer): number | null => {
+export function estimateClaudePdfPages(bytes: Buffer): number | null {
+  const scan = scanPdfPages(bytes);
+  for (;;) {
+    const next = scan.next();
+    if (next.done) return next.value;
+  }
+}
+export async function estimateClaudePdfPagesAsync(bytes: Buffer): Promise<number | null> {
+  const scan = scanPdfPages(bytes);
+  for (;;) {
+    const next = scan.next();
+    if (next.done) return next.value;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+function* scanPdfPages(bytes: Buffer): Generator<void, number | null> {
   if (bytes.length > 20 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== "%PDF-") return null;
   if (!bytes.subarray(-1024).includes("%%EOF")) return null;
   let pages = 0;
@@ -136,10 +151,18 @@ export const estimateClaudePdfPages = (bytes: Buffer): number | null => {
   let previous = "";
   const delimiter = (byte: number) =>
     byte <= 32 || "()<>[]{}/%".includes(String.fromCharCode(byte));
+  let nextYield = 0;
   for (let i = 0; i < bytes.length; ) {
+    if (i >= nextYield) {
+      nextYield = i + 32768;
+      yield;
+    }
     const byte = bytes[i]!;
     if (byte === 37) {
-      while (i < bytes.length && bytes[i] !== 10 && bytes[i] !== 13) i++;
+      while (i < bytes.length && bytes[i] !== 10 && bytes[i] !== 13) {
+        i++;
+        if (i % 32768 === 0) yield;
+      }
       continue;
     }
     if (byte <= 32) {
@@ -154,6 +177,7 @@ export const estimateClaudePdfPages = (bytes: Buffer): number | null => {
     if (byte === 40) {
       let depth = 1;
       for (i++; i < bytes.length && depth > 0; i++) {
+        if (i % 32768 === 0) yield;
         if (bytes[i] === 92) i++;
         else if (bytes[i] === 40) depth++;
         else if (bytes[i] === 41) depth--;
@@ -212,4 +236,4 @@ export const estimateClaudePdfPages = (bytes: Buffer): number | null => {
     previous = token;
   }
   return catalog && pageTree && pages > 0 && count === pages ? pages : null;
-};
+}
