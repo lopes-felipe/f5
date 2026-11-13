@@ -13,7 +13,10 @@ import { Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
-import { ProviderTurnDeliveryRepositoryLive } from "./ProviderTurnDeliveryRepository.ts";
+import {
+  LIST_CANDIDATE_IDS_SQL,
+  ProviderTurnDeliveryRepositoryLive,
+} from "./ProviderTurnDeliveryRepository.ts";
 
 const layer = it.layer(
   ProviderTurnDeliveryRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
@@ -236,5 +239,18 @@ layer("bounded delivery ownership", (it) => {
       VALUES ('receipt-thread', 'accepted-turn', 'completed', '2026-01-01', '2026-01-02', '[]')`;
         assert.equal((yield* repository.claim(following, []))?.state, "sending");
       }),
+  );
+  it.effect("sweeps candidates from the pending-only index", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const plan = yield* sql.unsafe<{ detail: string }>(
+        `EXPLAIN QUERY PLAN ${LIST_CANDIDATE_IDS_SQL}`,
+        ["", 64],
+      );
+      const candidate = plan.find((row) => / candidate /.test(row.detail));
+      assert.include(candidate?.detail, "idx_provider_turn_deliveries_pending_thread");
+      // The page is ordered by the index, never sorted afterwards.
+      assert.isFalse(plan.some((row) => row.detail.includes("TEMP B-TREE")));
+    }),
   );
 });

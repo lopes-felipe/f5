@@ -3193,6 +3193,9 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
+      // The output path comes from the merge turn's file-change activity, which a
+      // thread archived before startup has not loaded yet.
+      yield* orchestrationEngine.ensureThreadActivities?.([threadId]) ?? Effect.void;
       const latestReadModel = yield* orchestrationEngine.getReadModel();
       const latestMergeThread =
         latestReadModel.threads.find((entry) => entry.id === threadId) ?? thread;

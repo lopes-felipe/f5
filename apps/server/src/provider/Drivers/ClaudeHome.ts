@@ -100,6 +100,11 @@ export const makeClaudeProcessEnvironment = Effect.fn("makeClaudeProcessEnvironm
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const cleanEnv = stripClaudeHostSessionEnvironment(baseEnv, platform);
+  // The desktop's Node mode must not leak into Electron apps launched by Claude.
+  for (const key of Object.keys(cleanEnv)) {
+    if ((platform === "win32" ? key.toUpperCase() : key) === "ELECTRON_RUN_AS_NODE")
+      delete cleanEnv[key];
+  }
   // Account environment already includes instance values; reapply explicit overrides
   // after stripping inherited host session identity.
   for (const variable of instanceEnvironment ?? []) {

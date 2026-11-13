@@ -184,6 +184,17 @@ const decodeSnapshotJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(WorktreeSetupSnapshotSchema),
 );
 
+/**
+ * Every worktree-setup activity, read once at startup. The kind is a SQL
+ * literal, not a parameter: SQLite uses the partial index
+ * `idx_projection_thread_activities_worktree_setup` only when the query text
+ * matches the index predicate, and without it this scans every activity.
+ */
+export const WORKTREE_SETUP_STARTUP_ROWS_SQL = `
+      SELECT thread_id AS "threadId", payload_json AS payload
+      FROM projection_thread_activities
+      WHERE kind = '${WORKTREE_SETUP_ACTIVITY_KIND.replaceAll("'", "''")}'`;
+
 export const makeWorktreeSetup = Effect.gen(function* () {
   const services = yield* Effect.services<
     | OrchestrationEngineService
@@ -1746,11 +1757,12 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       ),
     );
     yield* preparation.startup;
-    const rows = yield* sql<{ readonly threadId: ThreadId; readonly payload: string }>`
-      SELECT thread_id AS "threadId", payload_json AS payload
-      FROM projection_thread_activities
-      WHERE kind = ${WORKTREE_SETUP_ACTIVITY_KIND}
-    `.pipe(Effect.orElseSucceed(() => []));
+    const rows = yield* sql
+      .unsafe<{
+        readonly threadId: ThreadId;
+        readonly payload: string;
+      }>(WORKTREE_SETUP_STARTUP_ROWS_SQL)
+      .pipe(Effect.orElseSucceed(() => []));
     for (const row of rows) {
       const decoded = Option.getOrNull(decodeSnapshotJson(row.payload));
       if (decoded && (yield* finishLocalHandoff(row.threadId))) continue;

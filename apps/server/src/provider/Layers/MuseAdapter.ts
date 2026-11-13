@@ -17,6 +17,7 @@ import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
 import { museWorkspaceRoot } from "../msp/MusePaths.ts";
+import { redactProviderFailureText } from "../failureText.ts";
 
 import {
   MuseGapFillError,
@@ -115,6 +116,8 @@ import { type MuseAdapterShape } from "../Services/MuseAdapter.ts";
 import { writeProviderEventLog, type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "muse" as const;
+// Defense in depth: ProviderService also redacts failures before ingestion.
+const museFailureText = (text: string) => redactProviderFailureText(text).slice(0, 4096);
 const MUSE_RESUME_VERSION = 1 as const;
 const CURSOR_PERSIST_INTERVAL_MS = 5_000;
 const CANCEL_SETTLE_TIMEOUT_MS = 10_000;
@@ -418,6 +421,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        const reason = exit.reason === undefined ? undefined : museFailureText(exit.reason);
         if (sessions.get(ctx.threadId) === ctx) sessions.delete(ctx.threadId);
         for (const pending of ctx.approvals.values()) {
           yield* offer({
@@ -447,7 +451,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
             payload: {
               state: exit.exitKind === "error" ? "failed" : "cancelled",
               stopReason: exit.exitKind === "error" ? "error" : "cancelled",
-              ...(exit.reason ? { errorMessage: exit.reason } : {}),
+              ...(reason ? { errorMessage: reason } : {}),
             },
           });
         }
@@ -457,7 +461,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           resumeCursor: resumeCursorOf(ctx),
           payload: {
             exitKind: exit.exitKind,
-            ...(exit.reason ? { reason: exit.reason } : {}),
+            ...(reason ? { reason } : {}),
             recoverable: ctx.handle.host.durability.kind === "durable",
           },
         });
@@ -746,13 +750,14 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         }
         endTurn(ctx, turnId);
         const state = museTurnState(outcome.terminal);
-        const message = outcome.errorMessage ?? outcome.reason;
+        const failureText = outcome.errorMessage ?? outcome.reason;
+        const message = failureText === undefined ? undefined : museFailureText(failureText);
         const usageLimit =
           state === "failed"
             ? museUsageLimit(
                 ctx.latestSubscriptionUsage,
                 Date.parse(yield* nowIso),
-                message,
+                failureText,
                 outcome.quota,
               )
             : undefined;
@@ -776,7 +781,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
             ...(usageLimit ? { usageLimit } : {}),
             stopReason: outcome.reason ?? outcome.terminal,
             ...(outcome.usage ? { usage: outcome.usage } : {}),
-            ...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
+            ...(outcome.errorMessage ? { errorMessage: message } : {}),
           },
         });
         settleTurnWaiters(ctx, turnId);
