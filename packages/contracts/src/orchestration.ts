@@ -3134,6 +3134,8 @@ export type OrchestrationGetThreadTailDetailsInput =
 
 export const OrchestrationThreadTailDetails = Schema.Struct({
   threadId: ThreadId,
+  /** Route fallback when the shell has not listed this thread yet. Null confirms absence. */
+  thread: Schema.optional(Schema.NullOr(OrchestrationThread)),
   messages: Schema.Array(OrchestrationMessage),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   activities: Schema.Array(OrchestrationThreadActivity).pipe(Schema.withDecodingDefault(() => [])),

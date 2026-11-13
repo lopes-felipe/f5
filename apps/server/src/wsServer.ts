@@ -4780,7 +4780,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               threadId: body.threadId,
               reason: "ws:getThreadTailDetails",
             });
-            return yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const details = yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === body.threadId);
+            // Keep the response bounded even when the runtime retains full history.
+            return {
+              ...details,
+              thread: thread
+                ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+                : null,
+            };
           }),
           summarize: (result) => ({
             detailSequence: result.detailSequence,

@@ -302,6 +302,68 @@ function makeThreadDetails(
   };
 }
 
+describe("unlisted thread detail hydration", () => {
+  const threadId = ThreadId.makeUnsafe("thread-1");
+  const emptyState = () => ({ ...makeState(makeThread()), threads: [] });
+
+  it("opens a thread from detail before it appears in the shell", () => {
+    const details = makeThreadDetails({
+      thread: makeReadModelThread({ title: "Just created" }),
+      messages: [
+        {
+          id: MessageId.makeUnsafe("detail-message"),
+          role: "user",
+          text: "Hello",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-02T00:00:00Z",
+          updatedAt: "2026-01-02T00:00:00Z",
+        },
+      ],
+    });
+    const state = syncThreadTailDetails(emptyState(), threadId, details);
+    expect(state.threads).toHaveLength(1);
+    expect(state.threads[0]).toMatchObject({
+      id: threadId,
+      title: "Just created",
+      detailsLoaded: true,
+    });
+    expect(state.threads[0]?.messages.map((message) => message.id)).toEqual(["detail-message"]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    makeReadModelThread({ deletedAt: "2026-01-02T00:00:00Z" }),
+    makeReadModelThread({ archivedAt: "2026-01-02T00:00:00Z" }),
+    makeReadModelThread({ id: ThreadId.makeUnsafe("another-thread") }),
+  ])("does not seed missing, removed, or mismatched threads: %j", (thread) => {
+    const state = emptyState();
+    expect(syncThreadTailDetails(state, threadId, makeThreadDetails({ thread }))).toBe(state);
+  });
+
+  it("does not resurrect a thread from a tail older than the shell", () => {
+    const state = { ...emptyState(), lastAppliedSequence: 3 };
+    expect(
+      syncThreadTailDetails(
+        state,
+        threadId,
+        makeThreadDetails({ thread: makeReadModelThread({}) }),
+      ),
+    ).toBe(state);
+  });
+
+  it("preserves newer shell metadata when an earlier detail request finishes", () => {
+    const state = makeState(makeThread({ title: "Newer shell title" }));
+    const next = syncThreadTailDetails(
+      state,
+      threadId,
+      makeThreadDetails({ thread: makeReadModelThread({ title: "Earlier title" }) }),
+    );
+    expect(next.threads[0]?.title).toBe("Newer shell title");
+  });
+});
+
 function makeEvent<TType extends OrchestrationEvent["type"]>(
   type: TType,
   payload: Extract<OrchestrationEvent, { type: TType }>["payload"],
