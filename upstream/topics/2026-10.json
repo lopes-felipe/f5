@@ -1,6 +1,6 @@
 {
   "month": "2026-10",
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "topics": [
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
@@ -14767,11 +14767,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-13T11:18:09.790Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17271",
-      "status": "port",
+      "reason": "F5 has no SSH remote-project/editor-opening flow.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "editors",
@@ -19430,14 +19432,24 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-12T18:48:06.955Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/nextTurnQueue/restartMarkerCapture.ts:55",
+          "apps/server/src/nextTurnQueue/restartTurns.ts:59"
+        ],
+        "f5Refs": [
+          "10ddc5487f646d50264b0b8a72b098a2a1b07829"
+        ]
+      },
       "id": "pr-18461",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-17723"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
@@ -29583,11 +29595,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-13T11:15:18.689Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/hooks/useSwitchDraftProject.ts:293",
+          "apps/web/src/hooks/useSwitchDraftProject.ts:308"
+        ],
+        "f5Refs": [
+          "e14b0b7353e55a6c66dd347a6101751eb81ef839"
+        ]
+      },
       "id": "pr-20519",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
