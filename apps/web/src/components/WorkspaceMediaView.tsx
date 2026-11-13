@@ -12,6 +12,7 @@ import {
 } from "@t3tools/shared/filePreview";
 import { readNativeApi } from "../nativeApi";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
+import { downloadAsset } from "../lib/downloadAsset";
 const OfficeViewer = lazy(() => import("./files/OfficeViewer"));
 const BinaryViewer = lazy(() => import("./files/BinaryViewer"));
 const FontViewer = lazy(() => import("./files/FontViewer"));
@@ -26,7 +27,9 @@ export function workspaceMediaKind(
   const kind = filePreviewKind({ name });
   if (kind === "text" && /\.(csv|tsv)$/iu.test(name)) return "table";
   if (kind === "text" || kind === "markdown") return null;
-  return kind === "unsupported" ? "binary" : kind;
+  if (kind === "unsupported")
+    return /\.(7z|rar|exe|dll|bin|doc|xls|ppt)$/iu.test(name) ? "binary" : null;
+  return kind;
 }
 
 export function WorkspaceMediaView({
@@ -49,6 +52,7 @@ export function WorkspaceMediaView({
   const officeKind = officePreviewKind({ name });
   const [actualSize, setActualSize] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const grant = useQuery({
     queryKey: ["workspace-media", identity, projectId, threadId, relativePath],
     queryFn: async () => {
@@ -75,9 +79,21 @@ export function WorkspaceMediaView({
   if (!grant.data) return <div className="p-4">Loading file…</div>;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-2">
-      <a className="self-end underline" href={grant.data} download={name}>
-        Download {name}
-      </a>
+      <button
+        className="self-end underline"
+        disabled={downloading}
+        onClick={() => {
+          setDownloading(true);
+          setActionError(null);
+          void downloadAsset(grant.data, name)
+            .catch((error: unknown) =>
+              setActionError(error instanceof Error ? error.message : "Download failed."),
+            )
+            .finally(() => setDownloading(false));
+        }}
+      >
+        {downloading ? "Downloading…" : "Download " + name}
+      </button>
       <Suspense fallback={<p role="status">Loading preview…</p>}>
         {officeKind && (
           <OfficeViewer key={grant.data} src={grant.data} name={name} kind={officeKind} />
@@ -131,9 +147,6 @@ export function WorkspaceMediaView({
       {kind === "binary" && !isText && (
         <div className="p-4">
           <p>Binary file</p>
-          <a className="underline" href={grant.data} target="_blank" rel="noreferrer">
-            Download {name}
-          </a>
           {isElectron && projectId && threadId && (
             <button
               className="ml-3 underline"

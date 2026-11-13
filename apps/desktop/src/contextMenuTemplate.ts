@@ -8,13 +8,12 @@ export function buildContextMenuTemplate(
   destructiveIcon?: MenuItemConstructorOptions["icon"],
   depth = 0,
 ): MenuItemConstructorOptions[] {
-  if (depth > 8) return [];
+  if (depth > 8 || !Array.isArray(entries)) return [];
   const template: MenuItemConstructorOptions[] = [];
   let explicitSection = false;
   let destructiveSection = false;
   for (const item of entries) {
-    if (typeof item.id !== "string" || typeof item.label !== "string") continue;
-    if (item.separatorBefore) explicitSection = true;
+    if (!item || typeof item.id !== "string" || typeof item.label !== "string") continue;
     if (
       template.length > 0 &&
       (item.separatorBefore || (item.destructive && !destructiveSection && !explicitSection))
@@ -31,6 +30,7 @@ export function buildContextMenuTemplate(
       ...(item.destructive && destructiveIcon ? { icon: destructiveIcon } : {}),
       ...(children ? { submenu: children } : { click: () => select(item.id) }),
     });
+    explicitSection = item.separatorBefore === true;
   }
   return template;
 }

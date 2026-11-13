@@ -1454,7 +1454,7 @@ describe("Thread sidebar", () => {
                 disabled: true,
               },
               { id: "edit-schedule", label: "Edit scheduled task…" },
-              { id: "rename", label: "Rename thread", separatorBefore: true },
+              { id: "rename", label: "Rename thread", separatorBefore: true, icon: "pencil" },
             ]),
           );
         } else {
@@ -1662,13 +1662,16 @@ describe("Thread sidebar", () => {
     seedAppSettings({ onboardingLiteStatus: "dismissed" });
     const emptySnapshot = createEmptySnapshot();
     const startupResponse = createDeferred<WsRequestResolution>();
+    let socket: TestWsClient | undefined;
     const mounted = await mountApp({
       width: 1_400,
       initialEntries: ["/"],
       configureFixture: (nextFixture) => {
         nextFixture.snapshot = emptySnapshot;
-        nextFixture.resolveWsRequest = (body) => {
+        nextFixture.welcome = { cwd: "/repo/project", projectName: "Project" };
+        nextFixture.resolveWsRequest = (body, client) => {
           if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            socket = client;
             return startupResponse.promise;
           }
           return null;
@@ -1688,6 +1691,17 @@ describe("Thread sidebar", () => {
       expect(document.body.textContent).not.toContain("No projects yet");
       expect(document.body.textContent).not.toContain("Add a project to get started.");
 
+      // The shared transport can replay a previous fixture's bootstrap thread.
+      // Publish this empty server's welcome before completing its recovery.
+      await vi.waitFor(() => expect(socket).toBeDefined());
+      socket!.send(
+        JSON.stringify({
+          type: "push",
+          sequence: 3,
+          channel: WS_CHANNELS.serverWelcome,
+          data: { ...fixture.welcome, bootstrap: serverBootstrapFixture },
+        }),
+      );
       startupResponse.resolve({
         type: "result",
         result: {
@@ -2320,15 +2334,7 @@ describe("Thread sidebar", () => {
       const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
         button.getAttribute("aria-label"),
       );
-      expect(navLabels).toEqual([
-        "Home",
-        "Search threads",
-        "Pull requests",
-        "Scheduled",
-        "Usage",
-        "Projects",
-        "Recent",
-      ]);
+      expect(navLabels).toEqual(["Home", "Search threads", "Scheduled", "Projects", "Recent"]);
       // The notifications bell lives in the title bar, beside the profile switcher.
       const bell = document.querySelector('[data-testid="sidebar-notifications"]');
       expect(bell).toBeInstanceOf(HTMLElement);
@@ -2363,11 +2369,15 @@ describe("Thread sidebar", () => {
       );
       await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
-      const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
+      const usageButton = document.querySelector<HTMLButtonElement>(
+        '[data-sidebar="footer"] [aria-label="Usage"]',
+      )!;
       expect(usageButton.hasAttribute("aria-current")).toBe(false);
       usageButton.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
-      await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-sidebar="footer"]')?.textContent).toContain("Back"),
+      );
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
       expect(navigation.textContent).not.toContain("Bots");
 
@@ -4580,7 +4590,7 @@ describe("Thread sidebar", () => {
       );
       const badge = await waitForElement(
         () =>
-          [...navigation.querySelectorAll<HTMLElement>("span")].find(
+          [...document.querySelectorAll<HTMLElement>('[data-sidebar="footer"] span')].find(
             (span) => span.textContent === "1.2k",
           ) ?? null,
         "The Pull requests badge should render.",

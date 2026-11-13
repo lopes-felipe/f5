@@ -210,7 +210,6 @@ export function SidebarNav(props: {
   onSearchQueryChange: (query: string) => void;
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
-  pullRequestsShortcutLabel: string | null;
   view: SidebarView;
   onViewChange: (view: SidebarView) => void;
 }) {
@@ -289,7 +288,11 @@ export function SidebarNav(props: {
   );
 }
 /** Workspace utilities live together in the sidebar footer. */
-export function SidebarWorkspaceNavigation() {
+export function SidebarWorkspaceNavigation({
+  pullRequestsShortcutLabel,
+}: {
+  pullRequestsShortcutLabel: string | null;
+}) {
   const navigate = useNavigate();
   const count = usePrHubNeedsYouCount();
   return (
@@ -297,6 +300,7 @@ export function SidebarWorkspaceNavigation() {
       <NavIconButton
         icon={GitPullRequestIcon}
         label="Pull requests"
+        shortcutLabel={pullRequestsShortcutLabel}
         isActive={false}
         badge={{ count, label: "need you", tone: "warning" }}
         onSelect={() => void navigate({ to: "/pull-requests" })}

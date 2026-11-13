@@ -3,6 +3,23 @@ import { buildContextMenuTemplate } from "./contextMenuTemplate";
 import type { MenuItemConstructorOptions } from "electron";
 
 describe("native context menus", () => {
+  it("rejects malformed menu input and separates a later destructive section", () => {
+    expect(buildContextMenuTemplate(null as never, vi.fn())).toEqual([]);
+    const result = buildContextMenuTemplate(
+      [
+        { id: "rename", label: "Rename", separatorBefore: true },
+        { id: "copy", label: "Copy" },
+        { id: "delete", label: "Delete", destructive: true },
+      ],
+      vi.fn(),
+    );
+    expect(result.map((item) => item.type ?? item.label)).toEqual([
+      "Rename",
+      "Copy",
+      "separator",
+      "Delete",
+    ]);
+  });
   it("preserves nested leaf selection and disabled states", () => {
     const select = vi.fn();
     const template = buildContextMenuTemplate(

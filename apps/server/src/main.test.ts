@@ -122,7 +122,7 @@ it.layer(testLayer)("server CLI command", (it) => {
         }),
       );
       yield* runCli(["--state-dir", root, "app", root]);
-      assert.deepEqual(opened, [FS.realpathSync(root)]);
+      assert.deepEqual(opened, [FS.realpathSync.native(root)]);
       assert.equal(start.mock.calls.length, 0);
     }),
   );

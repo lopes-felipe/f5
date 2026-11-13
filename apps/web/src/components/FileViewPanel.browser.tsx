@@ -81,6 +81,38 @@ beforeEach(() => {
   noteWsConnectionOpened();
   noteWsSynchronized();
 });
+it.each(["source.zig", "flake.nix", "main.tf", "config.hcl", "schema.proto", "script"])(
+  "keeps unknown text file %s readable and editable",
+  async (name) => {
+    route.fileViewPath = name;
+    api.getConfig.mockResolvedValue({ availableEditors: ["vscode"], keybindings: [] });
+    api.readFile.mockResolvedValue({
+      relativePath: name,
+      contents: "source text",
+      byteLength: 11,
+      truncated: false,
+      contentSha256: "a".repeat(64),
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = await render(
+      <QueryClientProvider client={client}>
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      await expect
+        .poll(() => api.readFile.mock.calls.some(([input]) => input.relativePath === name))
+        .toBe(true);
+      await expect
+        .element(view.getByRole("button", { name: "Edit file", exact: true }))
+        .toBeEnabled();
+      expect(document.body.textContent).not.toContain("Binary file");
+    } finally {
+      await view.unmount();
+      client.clear();
+    }
+  },
+);
 
 it.each([
   ["src/app.ts", "/repo/src/app.ts", "/repo", "src/app.ts"],

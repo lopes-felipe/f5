@@ -85,6 +85,7 @@ export async function openInDesktopApp(
 export async function startDesktopAppControl(
   stateDir: string,
   activate: (request: DesktopAppRequest) => Promise<void>,
+  onError: (error: unknown) => void = () => {},
 ): Promise<() => Promise<void>> {
   const { address, directory } = desktopAppControlAddress(stateDir);
   if (directory) {
@@ -116,6 +117,10 @@ export async function startDesktopAppControl(
   }
   const sockets = new Set<ReturnType<typeof createConnection>>();
   const server = createServer((socket) => {
+    socket.on("error", (error) => {
+      onError(error);
+      socket.destroy();
+    });
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     socket.setEncoding("utf8");
@@ -159,6 +164,7 @@ export async function startDesktopAppControl(
       })();
     });
   });
+  server.on("error", onError);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(address, () => {

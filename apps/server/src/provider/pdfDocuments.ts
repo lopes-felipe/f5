@@ -4,6 +4,33 @@ import path from "node:path";
 import type { ProviderResolvedAttachment } from "./Services/ProviderAdapter";
 
 const locks = new Map<string, Promise<unknown>>();
+export async function acpPdfDocuments(
+  input: Parameters<typeof pdfDocuments>[0],
+  embeddedContext: boolean,
+) {
+  if (!embeddedContext) return [];
+  return (await pdfDocuments(input)).map(({ data, uri }) => ({
+    type: "resource" as const,
+    resource: { uri, mimeType: "application/pdf", blob: data },
+  }));
+}
+function budgetFile(stateDir: string, sessionKey: string) {
+  return path.join(
+    stateDir,
+    "provider-document-budgets",
+    createHash("sha256").update(sessionKey).digest("hex") + ".json",
+  );
+}
+/** Deletion is final; wait for any reservation before reclaiming its small budget record. */
+export async function deletePdfDocumentBudgets(stateDir: string, threadId: string): Promise<void> {
+  for (const provider of ["claude", "antigravity"]) {
+    const file = budgetFile(stateDir, provider + ":" + threadId);
+    await locks.get(file)?.catch(() => {});
+    await fs.unlink(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+}
 /** Persist a conservative upper bound before delivery: retries and process loss never undercount. */
 export async function pdfDocuments(input: {
   stateDir: string;
@@ -11,11 +38,15 @@ export async function pdfDocuments(input: {
   baseBytes: number;
   attachments: readonly ProviderResolvedAttachment[];
 }): Promise<{ data: string; uri: string }[]> {
-  const file = path.join(
-    input.stateDir,
-    "provider-document-budgets",
-    createHash("sha256").update(input.sessionKey).digest("hex") + ".json",
-  );
+  if (
+    !input.attachments.some(
+      (attachment) =>
+        attachment.type === "file" &&
+        attachment.mimeType.split(";", 1)[0]?.trim().toLowerCase() === "application/pdf",
+    )
+  )
+    return [];
+  const file = budgetFile(input.stateDir, input.sessionKey);
   const prior = locks.get(file) ?? Promise.resolve();
   const operation = prior
     .catch(() => {})
@@ -34,7 +65,6 @@ export async function pdfDocuments(input: {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return [];
       }
-      used.bytes += input.baseBytes;
       const result: { data: string; uri: string }[] = [];
       for (const attachment of input.attachments) {
         if (
@@ -44,7 +74,7 @@ export async function pdfDocuments(input: {
           continue;
         const remaining = Math.min(
           20 * 1024 * 1024,
-          Math.floor(((28 * 1024 * 1024 - used.bytes - 1024) * 3) / 4),
+          Math.floor(((28 * 1024 * 1024 - used.bytes - input.baseBytes - 1024) * 3) / 4),
         );
         if (used.pages >= 100 || remaining <= 0) break;
         const handle = await fs.open(attachment.localPath, "r").catch(() => null);
@@ -77,6 +107,7 @@ export async function pdfDocuments(input: {
           await handle.close();
         }
       }
+      if (!result.length) return [];
       await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
       const temporary = file + "." + randomUUID();
       try {
@@ -89,7 +120,7 @@ export async function pdfDocuments(input: {
     });
   locks.set(file, operation);
   try {
-    return await operation;
+    return await operation.catch(() => []);
   } finally {
     if (locks.get(file) === operation) locks.delete(file);
   }

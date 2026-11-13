@@ -138,5 +138,5 @@ it("previews OpenDocument text in an inert document", async () => {
 it("keeps a download available when a decoded image is invalid", async () => {
   await open("broken.tiff", "broken");
   await vi.waitFor(() => expect(document.body.textContent).toContain("TIFF"), { timeout: 15_000 });
-  expect(document.querySelector('a[download="broken.tiff"]')).not.toBeNull();
+  expect(document.querySelector("button")?.textContent).toContain("Download broken.tiff");
 });

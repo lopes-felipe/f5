@@ -13,6 +13,7 @@ export function DesktopAppActivationCoordinator() {
   const createThread = useCreateProjectBackedDraftThread();
   const startThread = useStableCallback(createThread);
   const running = useRef(false);
+  const wake = useRef<(() => void) | null>(null);
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (!ready || !bridge?.takeAppActivations) return;
@@ -27,9 +28,11 @@ export function DesktopAppActivationCoordinator() {
           for (const request of requests) {
             let error: string | undefined;
             try {
+              if (disposed) throw new Error("The desktop window was closed.");
               const api = ensureNativeApi();
               const { snapshot } = await api.orchestration.getStartupSnapshot();
               useStore.getState().syncStartupSnapshot(snapshot);
+              if (disposed) throw new Error("The desktop window was closed.");
               const project = findActivationProject(
                 useStore.getState().projects,
                 request.path,
@@ -61,16 +64,19 @@ export function DesktopAppActivationCoordinator() {
         }
       } finally {
         running.current = false;
+        if (disposed) wake.current?.();
       }
     };
     const run = () => {
       void take().catch(() => {});
     };
+    wake.current = run;
     run();
     const unsubscribe = bridge.onAppActivationsAvailable?.(run);
     window.addEventListener("focus", run);
     return () => {
       disposed = true;
+      if (wake.current === run) wake.current = null;
       unsubscribe?.();
       window.removeEventListener("focus", run);
     };

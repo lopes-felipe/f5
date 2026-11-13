@@ -1,4 +1,4 @@
-import { pdfDocuments } from "../pdfDocuments.ts";
+import { acpPdfDocuments } from "../pdfDocuments.ts";
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import {
   applyAcpPlanMode,
@@ -1480,15 +1480,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
                 ...imagePromptParts,
               ];
-              if (PROVIDER === "antigravity" && ctx.supportsDocuments) {
+              if (PROVIDER === "antigravity") {
                 const documents = yield* Effect.tryPromise({
                   try: () =>
-                    pdfDocuments({
-                      stateDir: serverConfig.stateDir,
-                      sessionKey: "antigravity:" + input.threadId,
-                      baseBytes: Buffer.byteLength(JSON.stringify(promptParts)),
-                      attachments: input.resolvedAttachments ?? [],
-                    }),
+                    acpPdfDocuments(
+                      {
+                        stateDir: serverConfig.stateDir,
+                        sessionKey: "antigravity:" + input.threadId,
+                        baseBytes: Buffer.byteLength(JSON.stringify(promptParts)),
+                        attachments: input.resolvedAttachments ?? [],
+                      },
+                      ctx.supportsDocuments,
+                    ),
                   catch: (cause) =>
                     new ProviderAdapterRequestError({
                       provider: PROVIDER,
@@ -1497,16 +1500,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       cause,
                     }),
                 });
-                promptParts.push(
-                  ...documents.map(({ data, uri }) => ({
-                    type: "resource" as const,
-                    resource: {
-                      uri,
-                      mimeType: "application/pdf",
-                      blob: data,
-                    },
-                  })),
-                );
+                promptParts.push(...documents);
               }
 
               if (promptParts.length === 0) {

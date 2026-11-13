@@ -4,9 +4,18 @@ import { useStore } from "../store";
 import { useThreadSummaries } from "../threadSelectors";
 import { readNativeApi } from "../nativeApi";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
+import type { ReactNode } from "react";
 
 /** Native controls become playable on loadedmetadata, including unknown-duration streams. */
-export function ChatAssetAudio({ src, cwd }: { src: string; cwd: string | undefined }) {
+export function ChatAssetAudio({
+  src,
+  cwd,
+  children,
+}: {
+  src: string;
+  cwd: string | undefined;
+  children: ReactNode;
+}) {
   const projects = useStore((state) => state.projects);
   const threads = useThreadSummaries();
   const target = resolveChatAssetTarget(src, cwd, projects, threads);
@@ -25,10 +34,21 @@ export function ChatAssetAudio({ src, cwd }: { src: string; cwd: string | undefi
     },
     staleTime: 25 * 60 * 1000,
   });
-  if (query.isError) return <span role="alert">Audio unavailable</span>;
   return (
-    <span className="inline-flex max-w-full align-middle">
-      <audio aria-label={src.split(/[\\/]/).at(-1)} src={query.data} controls preload="metadata" />
+    <span className="inline-flex max-w-full flex-wrap items-center gap-2 align-middle">
+      {children}
+      {query.isError ? (
+        <span role="alert">Audio unavailable</span>
+      ) : (
+        query.data && (
+          <audio
+            aria-label={src.split(/[\\/]/).at(-1)}
+            src={query.data}
+            controls
+            preload="metadata"
+          />
+        )
+      )}
     </span>
   );
 }

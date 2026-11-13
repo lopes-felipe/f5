@@ -1265,7 +1265,6 @@ export default function Sidebar() {
           onSearchQueryChange={setSidebarSearchQuery}
           onOpenCommandPalette={handleOpenCommandPalette}
           commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-          pullRequestsShortcutLabel={pullRequestsShortcutLabel}
           view={sidebarView}
           onViewChange={setSidebarView}
         />
@@ -1461,7 +1460,9 @@ export default function Sidebar() {
                       <SettingsIcon className="size-4" />
                       <span>Settings</span>
                     </SidebarMenuButton>
-                    <SidebarWorkspaceNavigation />
+                    <SidebarWorkspaceNavigation
+                      pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+                    />
                   </>
                 )}
                 <Tooltip>

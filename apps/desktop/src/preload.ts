@@ -185,6 +185,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
   },
   takePromptLinks: () => ipcRenderer.invoke("desktop:take-prompt-links"),
+  resolveRealPath: (value) => ipcRenderer.sendSync("desktop:resolve-real-path", value),
   takeAppActivations: () => ipcRenderer.invoke("desktop:take-app-activations"),
   completeAppActivation: (id, error) =>
     ipcRenderer.invoke("desktop:complete-app-activation", id, error),

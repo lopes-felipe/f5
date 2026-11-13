@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, rm, stat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createConnection } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   desktopAppControlAddress,
@@ -43,4 +44,33 @@ it("reports renderer failures and refuses SSH without contacting the app", async
 it("reports an absent desktop without starting a server", async () => {
   const { root, project } = await fixture();
   await expect(openInDesktopApp(root, project, {})).rejects.toThrow("No F5 desktop app");
+});
+it("survives a client disconnecting before the activation acknowledgement", async () => {
+  const { root, project } = await fixture();
+  let complete!: () => void;
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  let calls = 0;
+  cleanups.push(
+    await startDesktopAppControl(root, async () => {
+      if (++calls === 1) {
+        started();
+        await gate;
+      }
+    }),
+  );
+  const client = createConnection(desktopAppControlAddress(root).address);
+  client.on("error", () => {});
+  await new Promise<void>((resolve) => client.once("connect", resolve));
+  client.write(JSON.stringify({ id: "disconnect-test", path: await realpath(project) }) + "\n");
+  await ready;
+  client.destroy();
+  complete();
+  await openInDesktopApp(root, project, {});
+  expect(calls).toBe(2);
 });

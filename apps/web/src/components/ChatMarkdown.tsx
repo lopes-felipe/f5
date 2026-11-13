@@ -802,12 +802,6 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         ) : null;
       },
       a({ node: _node, href, children, ...props }) {
-        if (
-          href &&
-          isWorkspaceAudioPreviewPath(href) &&
-          (!/^[a-z]+:/iu.test(href) || /^file:/iu.test(href) || /^[a-z]:[\\/]/iu.test(href))
-        )
-          return <ChatAssetAudio src={href} cwd={cwd} />;
         // A thread reference only navigates; it never grants the agent access to the thread.
         const referencedThreadId = href ? threadIdOfThreadReferenceUrl(href) : null;
         if (referencedThreadId)
@@ -877,12 +871,19 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           />
         );
         // `[validates the input](src/a.ts:12)` keeps its prose next to the chip.
-        return isMarkdownFileLinkLabel(nodeToPlainText(children), meta) ? (
+        const labeledChip = isMarkdownFileLinkLabel(nodeToPlainText(children), meta) ? (
           chip
         ) : (
           <span>
             {children} {chip}
           </span>
+        );
+        return isWorkspaceAudioPreviewPath(href) ? (
+          <ChatAssetAudio src={href} cwd={cwd}>
+            {labeledChip}
+          </ChatAssetAudio>
+        ) : (
+          labeledChip
         );
       },
       pre({ node, children, ...props }) {
