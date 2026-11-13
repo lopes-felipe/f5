@@ -349,6 +349,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.collapse-work-logs": {
     category: "conversation",
   },
+  "conversation.prompt-cache": {
+    category: "conversation",
+  },
   "conversation.inline-diffs": {
     category: "conversation",
   },

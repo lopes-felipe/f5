@@ -845,6 +845,7 @@ describe("WebSocket Server", () => {
             getAccounts: () => Effect.succeed([]),
             getQuotaHistory: Effect.die("unused quota history"),
             analyzeClaudeUsage: () => Effect.die("unused usage analysis"),
+            getThreadTurns: () => Effect.die("unused thread turns"),
           }),
           Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
           Layer.succeed(skillSyncModule.ProjectSkillSyncService, {
@@ -1263,6 +1264,7 @@ describe("WebSocket Server", () => {
           getAccounts: () => Effect.succeed([]),
           getQuotaHistory: Effect.die("unused quota history"),
           analyzeClaudeUsage: () => Effect.die("unused usage analysis"),
+          getThreadTurns: () => Effect.die("unused thread turns"),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>

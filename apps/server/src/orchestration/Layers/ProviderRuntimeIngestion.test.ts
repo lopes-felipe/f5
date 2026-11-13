@@ -370,6 +370,7 @@ describe("ProviderRuntimeIngestion", () => {
               getSummary: () => Effect.die("unused"),
               getQuotaHistory: Effect.die("unused"),
               analyzeClaudeUsage: () => Effect.die("unused"),
+              getThreadTurns: () => Effect.die("unused"),
             })
           : Layer.empty,
       ),

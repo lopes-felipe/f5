@@ -12,6 +12,7 @@ import {
   AGENTS_WS_METHODS,
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
+  USAGE_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
@@ -1323,6 +1324,10 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // The prompt cache indicator's history: a thread with no recorded turns.
+  if (tag === USAGE_WS_METHODS.getThreadTurns) {
+    return { turns: [], firstTurnId: null, earlierTurnCount: 0 };
+  }
   // `null` means the provider history is complete; `{}` would show the recovery banner.
   if (tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) return null;
   // The chat header lists the conversation's automations from the shared task list.

@@ -9,6 +9,7 @@ import Migration0068 from "../Migrations/068_UsageFacts.ts";
 import Migration0071 from "../Migrations/071_UsageEventTimeIndex.ts";
 import Migration0073 from "../Migrations/073_UsageFactRecordedAt.ts";
 import Migration0161 from "../Migrations/161_UsageNativeIdentity.ts";
+import Migration0162 from "../Migrations/162_UsageFactsThreadIndex.ts";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import { UsageFactRepository } from "../Services/UsageFacts.ts";
 import { makeUsageBucketStatements, UsageFactRepositoryLive } from "./UsageFacts.ts";
@@ -287,6 +288,89 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository scope titles", (it) =>
         { id: "thread-blank", title: null, deleted: false, projectId: "project-live" },
         { id: "thread-missing", title: null, deleted: true, projectId: null },
       ]);
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("UsageFactRepository thread turns", (it) => {
+  it.effect("lists one thread's newest turns oldest first and skips unknown providers", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* migrate;
+      yield* Migration0162;
+      const repository = yield* UsageFactRepository;
+      const at = (minute: number) =>
+        `2026-08-12T10:${String(minute).padStart(2, "0")}:00.000Z` as const;
+      // Recorded out of order so the result order comes from completed_at.
+      yield* repository.record(fact({ id: "b", completedAt: at(2), cacheWriteTokens: 5 }));
+      yield* repository.record(fact({ id: "a", completedAt: at(1) }));
+      yield* repository.record(fact({ id: "c", completedAt: at(3) }));
+      yield* repository.record(
+        fact({ id: "other", completedAt: at(4), threadId: ThreadId.makeUnsafe("thread-2") }),
+      );
+      yield* repository.record(fact({ id: "gone", completedAt: at(5) }));
+      yield* sql`
+        UPDATE projection_turn_usage_facts SET provider_name = 'retired-provider'
+        WHERE turn_id = 'turn-gone'
+      `;
+      // Asides record usage on the thread, oldest and newest here, but are not turns.
+      for (const [id, minute] of [
+        ["early", 0],
+        ["late", 6],
+      ] as const) {
+        yield* repository.record(
+          fact({ id, completedAt: at(minute), turnId: TurnId.makeUnsafe(`aside:${id}`) }),
+        );
+      }
+
+      const all = yield* repository.listByThread({
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        limit: 10,
+      });
+      assert.deepStrictEqual(
+        all.turns.map((turn) => turn.turnId),
+        ["turn-a", "turn-b", "turn-c"],
+      );
+      assert.equal(all.firstTurnId, "turn-a");
+      assert.equal(all.earlierTurnCount, 0);
+      assert.deepStrictEqual(all.turns[1], {
+        turnId: TurnId.makeUnsafe("turn-b"),
+        provider: "codex",
+        model: "gpt-5.6",
+        inputTokens: 80,
+        outputTokens: 20,
+        cacheReadTokens: 40,
+        cacheWriteTokens: 5,
+        completedAt: at(2),
+      });
+
+      // The limit keeps the newest turns, still returned oldest first. The
+      // unknown-provider row counts toward the limit before it is dropped.
+      // The window no longer starts at the thread's first turn.
+      const newest = yield* repository.listByThread({
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        limit: 3,
+      });
+      assert.deepStrictEqual(
+        newest.turns.map((turn) => turn.turnId),
+        ["turn-b", "turn-c"],
+      );
+      assert.equal(newest.firstTurnId, "turn-a");
+      assert.equal(newest.earlierTurnCount, 1);
+
+      assert.deepStrictEqual(
+        yield* repository.listByThread({ threadId: ThreadId.makeUnsafe("thread-9"), limit: 10 }),
+        { turns: [], firstTurnId: null, earlierTurnCount: 0 },
+      );
+
+      const plan = yield* sql<{ detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT turn_id FROM projection_turn_usage_facts
+        WHERE thread_id = 'thread-1' ORDER BY completed_at DESC LIMIT 500
+      `;
+      assert.isTrue(
+        plan.some((row) => row.detail.includes("projection_turn_usage_facts_thread_completed_idx")),
+      );
     }).pipe(Effect.provide(UsageFactRepositoryLive)),
   );
 });

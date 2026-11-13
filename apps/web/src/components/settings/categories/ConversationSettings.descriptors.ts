@@ -123,6 +123,13 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
       ["activity", "tools", "summary"],
     ],
     [
+      "prompt-cache",
+      "Show prompt cache misses",
+      "Flag turns that re-sent their context instead of reading it from the cache.",
+      "Show prompt cache misses",
+      ["cache", "tokens", "usage", "cost"],
+    ],
+    [
       "inline-diffs",
       "Show file diffs inline",
       "Display complete diffs for file changes in chat.",

@@ -237,8 +237,10 @@ import type {
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
+  UsageGetThreadTurnsInput,
   UsageSummary,
   UsageQuotaHistory,
+  UsageThreadTurns,
 } from "./usage";
 import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitation";
 import type {
@@ -1415,6 +1417,11 @@ export interface NativeApi {
     getQuotaHistory: () => Promise<UsageQuotaHistory>;
     /** Scan local Claude transcripts for usage recommendations (up to a minute). */
     analyzeClaudeUsage: (input: UsageAnalyzeClaudeUsageInput) => Promise<ClaudeUsageAnalysis>;
+    /** One thread's recorded per-turn token counts, oldest first. */
+    getThreadTurns: (
+      input: UsageGetThreadTurnsInput,
+      context?: NativeRequestContext,
+    ) => Promise<UsageThreadTurns>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {
