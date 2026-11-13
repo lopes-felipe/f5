@@ -45,6 +45,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
 - The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
 - The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
+- Claude's Plan mode instructions name Claude's own tools (AskUserQuestion, ExitPlanMode, the task tools) and no longer warn about an `update_plan` error that only Codex returns. They also say to load ExitPlanMode through ToolSearch when Claude Code defers it.
 
 - Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
 - Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
