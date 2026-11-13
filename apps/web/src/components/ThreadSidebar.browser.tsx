@@ -427,11 +427,6 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       oldestLoadedCheckpointTurnCount: thread?.checkpoints[0]?.checkpointTurnCount ?? null,
       oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
-      // As the server answers: the thread's metadata, or null when it has no such thread.
-      // The thread route waits for one of the two before it leaves an unlisted thread.
-      thread: thread
-        ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
-        : null,
     };
   }
   if (tag === ORCHESTRATION_WS_METHODS.getThreadHistoryPage) {
