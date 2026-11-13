@@ -6,6 +6,7 @@ import {
   type ProviderKind,
   type ServerProvider,
   type UsageRange,
+  USAGE_THREAD_TURNS_LIMIT,
 } from "@t3tools/contracts";
 import { Clock, Effect, Layer, Schema } from "effect";
 
@@ -350,6 +351,11 @@ const make = Effect.gen(function* () {
     return buildQuotaHistory(rows, new Date(now));
   }).pipe(Effect.mapError(() => new UsageQueryError({ message: "Quota history is unavailable." })));
 
+  const getThreadTurns: UsageServiceShape["getThreadTurns"] = (input) =>
+    repository
+      .listByThread({ threadId: input.threadId, limit: USAGE_THREAD_TURNS_LIMIT })
+      .pipe(Effect.map((turns) => ({ turns })));
+
   const sampler = makeQuotaSampler({
     listInstances: registry.listInstances,
     listAccountKeys: Effect.gen(function* () {
@@ -379,6 +385,7 @@ const make = Effect.gen(function* () {
     refreshAccount,
     getQuotaHistory,
     analyzeClaudeUsage,
+    getThreadTurns,
   } satisfies UsageServiceShape;
 });
 

@@ -579,6 +579,12 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
   ),
+  // Flag turns that missed the provider's prompt cache, and show the thread's
+  // cache history in the context meter tooltip.
+  showPromptCacheIndicator: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
   workLogMode: Schema.Literals(WORK_LOG_MODE_OPTIONS).pipe(
     Schema.withConstructorDefault(() => Option.some("essential" as const)),
     Schema.withDecodingDefault(() => "essential" as const),

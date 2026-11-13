@@ -1068,6 +1068,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(USAGE_WS_METHODS.getSummary, input, context),
       getQuotaHistory: () => transport.request(USAGE_WS_METHODS.getQuotaHistory, {}),
       analyzeClaudeUsage: (input) => transport.request(USAGE_WS_METHODS.analyzeClaudeUsage, input),
+      getThreadTurns: (input, context) =>
+        transport.request(USAGE_WS_METHODS.getThreadTurns, input, context),
     },
     nativeOperations: {
       markRead: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.markRead, input),

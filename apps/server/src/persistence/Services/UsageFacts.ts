@@ -1,4 +1,11 @@
-import type { IsoDateTime, ProjectId, ProviderKind, UsageTurnFact } from "@t3tools/contracts";
+import type {
+  IsoDateTime,
+  ProjectId,
+  ProviderKind,
+  ThreadId,
+  UsageThreadTurn,
+  UsageTurnFact,
+} from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
 
@@ -106,6 +113,11 @@ export interface UsageFactRepositoryShape {
     readonly threadIds: ReadonlyArray<string>;
     readonly projectIds: ReadonlyArray<string>;
   }) => Effect.Effect<UsageScopeTitles, ProjectionRepositoryError>;
+  /** The thread's newest `limit` turns, oldest first. Unknown providers are dropped. */
+  readonly listByThread: (input: {
+    readonly threadId: ThreadId;
+    readonly limit: number;
+  }) => Effect.Effect<ReadonlyArray<UsageThreadTurn>, ProjectionRepositoryError>;
 }
 
 export class UsageFactRepository extends ServiceMap.Service<

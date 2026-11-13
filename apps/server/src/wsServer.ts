@@ -4737,6 +4737,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case USAGE_WS_METHODS.getThreadTurns: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService.getThreadTurns(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: `Unable to load turn usage: ${error.message}`,
+              }),
+          ),
+        );
+      }
+
       case USAGE_WS_METHODS.analyzeClaudeUsage: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* usageService

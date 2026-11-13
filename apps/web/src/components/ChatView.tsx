@@ -515,6 +515,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty";
 import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
+import { useThreadPromptCache } from "../lib/useThreadCacheTurns";
 import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
   isImageOnlyBootstrapPrompt,
@@ -803,6 +804,7 @@ function selectChatViewSettings(settings: AppSettings) {
     sendShortcut: settings.sendShortcut,
     showAgentCommandTranscripts: settings.showAgentCommandTranscripts,
     showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
+    showPromptCacheIndicator: settings.showPromptCacheIndicator,
     showProviderRuntimeMetadata: settings.showProviderRuntimeMetadata,
     tasksPanelAutoOpen: settings.tasksPanelAutoOpen,
     timestampFormat: settings.timestampFormat,
@@ -3013,6 +3015,12 @@ export default memo(function ChatView({
     }
     return byTurnId;
   }, [turnDiffSummaries]);
+  const promptCache = useThreadPromptCache({
+    threadId: isServerThread ? threadId : null,
+    enabled: settings.showPromptCacheIndicator,
+    messages: timelineMessages,
+    onSelectMessage: (messageId) => navigateToTimelineEntry(messageId, 0.5),
+  });
   const diffFilePathsByTurnId = useMemo(() => {
     const pathsByTurnId = new Map<TurnId, Set<string>>();
     for (const summary of turnDiffSummaries) {
@@ -8590,6 +8598,7 @@ export default memo(function ChatView({
                       completionSummary={completionSummary}
                       turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
                       turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
+                      cacheMissByAssistantMessageId={promptCache.missByAssistantMessageId}
                       expandedWorkGroups={expandedWorkGroups}
                       onToggleWorkGroup={onToggleWorkGroup}
                       workGroupCollapseOverrides={workGroupCollapseOverrides}
@@ -8854,6 +8863,7 @@ export default memo(function ChatView({
                         provider: activeThread.session?.provider ?? null,
                         tokenUsageSource: activeThread.session?.tokenUsageSource,
                       }}
+                      promptCache={promptCache.meter}
                       pendingInteraction={composerPendingInteraction}
                       modelControls={composerModelControls}
                       modeControls={composerModeControls}

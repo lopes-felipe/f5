@@ -17,6 +17,7 @@ export const USAGE_WS_METHODS = {
   consumeResetCredit: "usage.consumeResetCredit",
   getQuotaHistory: "usage.getQuotaHistory",
   analyzeClaudeUsage: "usage.analyzeClaudeUsage",
+  getThreadTurns: "usage.getThreadTurns",
 } as const;
 
 export const UsageRange = Schema.Literals(["24h", "7d", "30d", "90d"]);
@@ -56,6 +57,33 @@ export const UsageTurnFact = Schema.Struct({
   startedAt: Schema.optional(IsoDateTime),
 });
 export type UsageTurnFact = typeof UsageTurnFact.Type;
+
+/** At most this many turns come back from `usage.getThreadTurns`, newest kept. */
+export const USAGE_THREAD_TURNS_LIMIT = 500;
+
+export const UsageGetThreadTurnsInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type UsageGetThreadTurnsInput = typeof UsageGetThreadTurnsInput.Type;
+
+/** One turn's recorded token counts; the per-turn prompt cache indicator reads these. */
+export const UsageThreadTurn = Schema.Struct({
+  turnId: TurnId,
+  provider: ProviderKind,
+  model: Schema.NullOr(TrimmedNonEmptyString),
+  inputTokens: Schema.NullOr(NonNegativeInt),
+  outputTokens: Schema.NullOr(NonNegativeInt),
+  cacheReadTokens: Schema.NullOr(NonNegativeInt),
+  cacheWriteTokens: Schema.NullOr(NonNegativeInt),
+  completedAt: IsoDateTime,
+});
+export type UsageThreadTurn = typeof UsageThreadTurn.Type;
+
+export const UsageThreadTurns = Schema.Struct({
+  /** Oldest first. */
+  turns: Schema.Array(UsageThreadTurn),
+});
+export type UsageThreadTurns = typeof UsageThreadTurns.Type;
 
 /**
  * Exact model ID to the model its usage counts as, such as a preview slug to

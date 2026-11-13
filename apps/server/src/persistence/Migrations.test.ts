@@ -138,6 +138,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 159, name: "EventCompactionKeepLast" },
       { migration_id: 160, name: "DropUnreadEventIndexes" },
       { migration_id: 161, name: "UsageNativeIdentity" },
+      { migration_id: 162, name: "UsageFactsThreadIndex" },
     ]);
     // The event log keeps the indexes its readers use: stream, sequence and type.
     const eventIndexes = yield* sql<{ name: string }>`PRAGMA index_list(orchestration_events)`;
@@ -147,6 +148,14 @@ const assertUpgrade = (version: PrecedingVersion) =>
       "idx_orch_events_type_occurred_at",
       "sqlite_autoindex_orchestration_events_1",
     ]);
+    const usageFactIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(projection_turn_usage_facts)`;
+    expect(
+      usageFactIndexes.some(
+        (index) => index.name === "projection_turn_usage_facts_thread_completed_idx",
+      ),
+    ).toBe(true);
     const activityIndexes = yield* sql<{
       name: string;
     }>`PRAGMA index_list(projection_thread_activities)`;

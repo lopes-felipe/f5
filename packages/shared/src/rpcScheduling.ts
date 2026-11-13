@@ -428,6 +428,7 @@ export const RPC_METHOD_POLICY = {
   "usage.getAccounts": READ_RT,
   "usage.getQuotaHistory": MUTATION_RT,
   "usage.getSummary": READ_RT,
+  "usage.getThreadTurns": READ_RT,
 
   "workflowPlatform.createRun": MUTATION_RT,
   "workflowPlatform.inspectRun": READ_RT,

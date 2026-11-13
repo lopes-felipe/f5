@@ -2,7 +2,9 @@ import {
   UsageSummary as UsageSummarySchema,
   UsageAccounts,
   UsageQuotaHistory as UsageQuotaHistorySchema,
+  UsageThreadTurns as UsageThreadTurnsSchema,
   type ProjectId,
+  type ThreadId,
   type UsageRange,
   type ProviderKind,
 } from "@t3tools/contracts";
@@ -34,7 +36,36 @@ export const usageQueryKeys = {
     ] as const,
   accounts: ["usage", "accounts"] as const,
   quotaHistory: ["usage", "quota-history"] as const,
+  threadTurns: (threadId: ThreadId) => ["usage", "thread-turns", threadId] as const,
 };
+
+export function decodeUsageThreadTurns(value: unknown) {
+  return Schema.decodeUnknownSync(UsageThreadTurnsSchema)(value);
+}
+
+/** One thread's recorded turn usage; live facts are merged in by `useThreadCacheTurns`. */
+export function usageThreadTurnsQueryOptions(input: {
+  readonly threadId: ThreadId;
+  readonly enabled: boolean;
+}) {
+  return queryOptions({
+    queryKey: usageQueryKeys.threadTurns(input.threadId),
+    queryFn: async (context) =>
+      decodeUsageThreadTurns(
+        await ensureNativeApi().usage.getThreadTurns(
+          { threadId: input.threadId },
+          rpcQueryContext(context),
+        ),
+      ),
+    meta: rpcQueryMeta("refresh-background"),
+    // Facts are merged live only while the thread is open, so reopening it
+    // refetches what was recorded meanwhile. Focus adds nothing the live
+    // merge has not; reconnects refetch explicitly.
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    enabled: input.enabled,
+  });
+}
 
 /** Stable mutation key so a pending forced refresh survives Limits remounts. */
 export const USAGE_ACCOUNTS_FORCE_MUTATION_KEY = ["usage", "accounts", "force"] as const;

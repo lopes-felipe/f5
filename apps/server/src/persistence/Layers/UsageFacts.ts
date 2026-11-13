@@ -1,5 +1,5 @@
-import { isKnownProviderKind, UsageTurnFact } from "@t3tools/contracts";
-import { Effect, Layer } from "effect";
+import { isKnownProviderKind, UsageThreadTurn, UsageTurnFact } from "@t3tools/contracts";
+import { Effect, Layer, Option, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
@@ -14,6 +14,10 @@ import {
   type UsageFactRepositoryShape,
   type UsageScopeTitle,
 } from "../Services/UsageFacts.ts";
+
+// A row that fails the contract (a stray model string, say) is skipped rather
+// than failing the whole thread's history.
+const decodeThreadTurn = Schema.decodeUnknownOption(UsageThreadTurn);
 
 interface TitleDbRow {
   readonly id: string;
@@ -377,6 +381,35 @@ const make = Effect.gen(function* () {
       };
     }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.readScopeTitles")));
 
+  const listByThread: UsageFactRepositoryShape["listByThread"] = (input) =>
+    sql<{ readonly provider: string }>`
+      SELECT * FROM (
+        SELECT
+          turn_id AS "turnId",
+          provider_name AS "provider",
+          model,
+          input_tokens AS "inputTokens",
+          output_tokens AS "outputTokens",
+          cache_read_tokens AS "cacheReadTokens",
+          cache_write_tokens AS "cacheWriteTokens",
+          completed_at AS "completedAt"
+        FROM projection_turn_usage_facts
+        WHERE thread_id = ${input.threadId}
+        ORDER BY completed_at DESC, turn_id DESC
+        LIMIT ${input.limit}
+      )
+      ORDER BY "completedAt" ASC, "turnId" ASC
+    `.pipe(
+      Effect.map((rows) =>
+        rows.flatMap((row): Array<UsageThreadTurn> => {
+          if (!isKnownProviderKind(row.provider)) return [];
+          const turn = decodeThreadTurn(row);
+          return Option.isSome(turn) ? [turn.value] : [];
+        }),
+      ),
+      Effect.mapError(toPersistenceSqlError("UsageFactRepository.listByThread")),
+    );
+
   return {
     record,
     readMuseRecordedIntervals: museRecordedIntervals(sql).pipe(
@@ -387,6 +420,7 @@ const make = Effect.gen(function* () {
     summarizeBuckets,
     summarizeByScope,
     readScopeTitles,
+    listByThread,
   } satisfies UsageFactRepositoryShape;
 });
 

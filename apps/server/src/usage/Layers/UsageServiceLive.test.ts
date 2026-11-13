@@ -394,6 +394,38 @@ function fact(
   };
 }
 
+it.layer(SqliteClient.layerMemory())("UsageService thread turns", (it) => {
+  it.effect("returns only the requested thread's turns, oldest first", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0116;
+      const facts = yield* UsageFactRepository;
+      yield* facts.record(fact("thread-late", "2026-08-12T10:05:00.000Z", { cacheReadTokens: 70 }));
+      yield* facts.record(fact("thread-early", "2026-08-12T10:00:00.000Z"));
+      yield* facts.record(
+        fact("thread-other", "2026-08-12T10:01:00.000Z", {
+          threadId: ThreadId.makeUnsafe("thread-b"),
+        }),
+      );
+
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const result = yield* usage.getThreadTurns({ threadId: ThreadId.makeUnsafe("thread-a") });
+        assert.deepStrictEqual(
+          result.turns.map((turn) => `${turn.turnId}:${turn.cacheReadTokens}`),
+          ["turn-thread-early:0", "turn-thread-late:70"],
+        );
+        const empty = yield* usage.getThreadTurns({ threadId: ThreadId.makeUnsafe("thread-z") });
+        assert.deepStrictEqual(empty, { turns: [] });
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+});
+
 it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
   it.effect("applies the provider and project filters to the previous period", () =>
     Effect.gen(function* () {
