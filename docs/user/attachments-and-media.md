@@ -38,6 +38,9 @@ Claude and Antigravity can receive PDFs as native document content, including
 scanned pages. Files outside the provider's size or page limits, and PDFs whose
 page count cannot safely be determined, remain available by path. Document request
 budgets persist across restarts; exhausted budgets fall back to file paths.
+The current conservative counter supports direct page trees; encrypted PDFs,
+compressed object streams and cross-reference streams remain path-only. This is
+not a guarantee that a document fits the model's token context.
 
 ## HTML previews
 

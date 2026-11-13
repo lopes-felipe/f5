@@ -122,3 +122,7 @@ it("keeps malformed, encrypted, and unknown-page PDFs path-only", async () => {
   await writeFile(input.attachments[0]!.localPath, "not a PDF");
   expect(await pdfDocuments(input)).toEqual([]);
 });
+it("counts a locally generated Chromium print-to-PDF document", async () => {
+  const bytes = await fs.readFile(new URL("./fixtures/chromium.pdf", import.meta.url));
+  expect(await estimateClaudePdfPagesAsync(bytes)).toBe(1);
+});
