@@ -12,6 +12,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
 - Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
 - A server started without an auth token answers only requests addressed to `localhost`, a `.localhost` name or a loopback address, so a web page whose hostname is re-pointed at this machine (DNS rebinding) can no longer reach it. A proxy or tunnel that presents another hostname needs `--auth-token`.
 - Agents, Git hooks, setup scripts and other processes F5 starts no longer inherit the backend's own auth token (`T3CODE_AUTH_TOKEN`).

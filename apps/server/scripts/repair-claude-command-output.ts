@@ -9,8 +9,9 @@ import {
   inspectClaudeCommandOutputs,
   repairClaudeCommandOutput,
   type ClaudeCommandOutputCandidate,
+  CLAUDE_COMMAND_OUTPUT_CANDIDATES_SQL,
 } from "../src/maintenance/ClaudeCommandOutputRepair.ts";
-import { assertDatabaseOffline, createRepairBackup } from "../src/maintenance/offlineRepair.ts";
+import { assertDatabaseOffline, createRepairBackup } from "./lib/offlineRepair.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
@@ -40,7 +41,8 @@ for (let index = 0; index < args.length; index++) {
   if (arg === "--help") {
     console.log(
       "Usage: bun run repair:claude-command-output [--state-dir PATH] [--thread-id ID] [--apply]\n" +
-        "Defaults to a read-only dry-run. Apply requires F5 to be stopped and creates a database backup.",
+        "Defaults to a read-only dry-run. Apply requires F5 to be stopped and creates a database backup.\n" +
+        "Repairs only empty completed command transcripts; launch-only or other nonempty output is preserved.",
     );
     process.exit(0);
   }
@@ -59,16 +61,7 @@ let candidates: ClaudeCommandOutputCandidate[];
 try {
   candidates = database
     .query<ClaudeCommandOutputCandidate, [string | null, string | null]>(
-      `SELECT command.thread_id AS threadId, command.turn_id AS turnId,
-      command.command_execution_id AS commandExecutionId, command.provider_item_id AS providerItemId,
-      command.last_updated_sequence AS lastUpdatedSequence
-    FROM projection_thread_command_executions AS command
-    JOIN projection_threads AS thread ON thread.thread_id = command.thread_id
-    JOIN projection_thread_sessions AS session ON session.thread_id = command.thread_id
-    WHERE session.provider_name = 'claudeAgent' AND thread.deleted_at IS NULL
-      AND command.output = '' AND command.output_truncated = 0
-      AND command.provider_item_id IS NOT NULL AND command.completed_at IS NOT NULL
-      AND (? IS NULL OR command.thread_id = ?)`,
+      CLAUDE_COMMAND_OUTPUT_CANDIDATES_SQL,
     )
     .all(threadId ?? null, threadId ?? null);
 } finally {

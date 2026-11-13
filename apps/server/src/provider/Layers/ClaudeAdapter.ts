@@ -58,6 +58,10 @@ import {
 } from "../chromeSessionRuntimeFactory";
 import { spawnRegisteredProcess } from "../registeredIntegrationProcess";
 import { readClaudeNativeResumeMetadata } from "../claudeResumeState.ts";
+import {
+  rememberClaudeToolResultCorrelation,
+  type ClaudeToolResultCorrelation,
+} from "../claudeToolResultCorrelations.ts";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import {
   ClaudeTranscriptRejoinCancelled,
@@ -616,7 +620,8 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   /** Background calls outlive content-block indexes and sometimes their task notification. */
-  readonly pendingBackgroundToolResults: Map<string, ToolInFlight>;
+  readonly pendingBackgroundToolResults: Map<string, ClaudeToolResultCorrelation>;
+  readonly completedTaskNotifications: Map<string, string | undefined>;
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly taskLaunchesByTool: Map<string, ClaudeSubagentLaunch>;
@@ -2301,6 +2306,22 @@ function findInFlightToolEntryByItemId(
   return Array.from(context.inFlightTools.entries()).find(([, tool]) => tool.itemId === itemId);
 }
 
+function claimTaskCompletion(context: ClaudeSessionContext, taskId: string): boolean {
+  const runId = context.nativeTaskRuns.get(taskId);
+  if (
+    context.completedTaskNotifications.has(taskId) &&
+    context.completedTaskNotifications.get(taskId) === runId
+  )
+    return false;
+  context.completedTaskNotifications.set(taskId, runId);
+  if (context.completedTaskNotifications.size > 512) {
+    context.completedTaskNotifications.delete(
+      context.completedTaskNotifications.keys().next().value!,
+    );
+  }
+  return true;
+}
+
 function findTaskStateEntryByToolUseId(
   context: ClaudeSessionContext,
   toolUseId: string,
@@ -3931,6 +3952,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (
+          input.eventType === "task.completed" &&
+          !claimTaskCompletion(context, input.state.taskId)
+        )
+          return;
         const stamp = yield* makeEventStamp(context);
         const base = {
           ...stamp,
@@ -4033,7 +4059,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context.inFlightTools.delete(inFlightEntry[0]);
             }
             if (inFlightEntry || context.pendingBackgroundToolResults.has(tool.itemId)) {
-              context.pendingBackgroundToolResults.set(tool.itemId, tool);
+              rememberClaudeToolResultCorrelation(context.pendingBackgroundToolResults, tool);
             }
           } else if (asUnknownRecord(message)?.subtype !== "task_notification") {
             yield* emitTaskUpdatedFallback(context, {
@@ -4325,7 +4351,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         for (const [index, tool] of context.inFlightTools.entries()) {
           if (hasBackgroundTaskStateForTool(context, tool.itemId)) {
-            context.pendingBackgroundToolResults.set(tool.itemId, tool);
+            rememberClaudeToolResultCorrelation(context.pendingBackgroundToolResults, tool);
             context.inFlightTools.delete(index);
             continue;
           }
@@ -4973,7 +4999,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const emitToolResultOutput = (
       context: ClaudeSessionContext,
       message: SDKMessage,
-      tool: ToolInFlight,
+      tool: ClaudeToolResultCorrelation,
       text: string,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -5100,7 +5126,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* emitToolResultOutput(context, message, tool, toolResult.text);
 
             context.inFlightTools.delete(index);
-            context.pendingBackgroundToolResults.set(tool.itemId, tool);
+            rememberClaudeToolResultCorrelation(context.pendingBackgroundToolResults, tool);
             continue;
           }
 
@@ -5989,6 +6015,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const taskId = normalizeOptionalString(message.task_id);
               const toolUseId = normalizeOptionalString(messageRecord?.tool_use_id);
               if (taskId) {
+                context.completedTaskNotifications.delete(taskId);
                 const tool = toolUseId
                   ? findInFlightToolEntryByItemId(context, toolUseId)?.[1]
                   : undefined;
@@ -6102,19 +6129,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context.nativeTaskStops.delete(message.task_id);
             }
             yield* updateResumeCursor(context);
-            yield* offerRuntimeEvent({
-              ...base,
-              resumeCursor: context.session.resumeCursor,
-              type: "task.completed",
-              ...(completedTaskTurnId ? { turnId: completedTaskTurnId } : {}),
-              payload: {
-                taskId: RuntimeTaskId.makeUnsafe(message.task_id),
-                ...nativeTaskRunReference(context, message.task_id, message),
-                status: message.status,
-                ...(message.summary ? { summary: message.summary } : {}),
-                ...(message.usage ? { usage: message.usage } : {}),
-              },
-            });
+            if (claimTaskCompletion(context, message.task_id))
+              yield* offerRuntimeEvent({
+                ...base,
+                resumeCursor: context.session.resumeCursor,
+                type: "task.completed",
+                ...(completedTaskTurnId ? { turnId: completedTaskTurnId } : {}),
+                payload: {
+                  taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                  ...nativeTaskRunReference(context, message.task_id, message),
+                  status: message.status,
+                  ...(message.summary ? { summary: message.summary } : {}),
+                  ...(message.usage ? { usage: message.usage } : {}),
+                },
+              });
             context.taskStates.delete(message.task_id);
             return;
           case "files_persisted":
@@ -7005,6 +7033,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
         context.taskStates.clear();
         context.pendingBackgroundToolResults.clear();
+        context.completedTaskNotifications.clear();
         context.taskModelsByTool.clear();
         context.taskLaunchesByTool.clear();
 
@@ -9013,6 +9042,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           })),
           inFlightTools,
           pendingBackgroundToolResults: new Map(),
+          completedTaskNotifications: new Map(),
           taskStates,
           taskModelsByTool: new Map(),
           taskLaunchesByTool: new Map(),

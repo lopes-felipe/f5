@@ -88,6 +88,71 @@ const inFlightThreadCommandExecutionDetailRequests = new Map<
   string,
   Promise<OrchestrationGetThreadCommandExecutionResult>
 >();
+
+type CommandDetailEvent = Extract<
+  OrchestrationEvent,
+  { type: "thread.command-execution-recorded" | "thread.command-execution-output-appended" }
+>;
+interface CommandDetailRead {
+  readonly events: CommandDetailEvent[];
+  chars: number;
+  needsRefresh: boolean;
+}
+const commandDetailReads = new WeakMap<QueryClient, Map<string, CommandDetailRead>>();
+
+async function fetchCommandDetailWithEvents(
+  client: QueryClient,
+  input: { threadId: ThreadId; commandExecutionId: OrchestrationCommandExecutionId },
+  signal: AbortSignal,
+): Promise<OrchestrationGetThreadCommandExecutionResult> {
+  const key = `${input.threadId}:${input.commandExecutionId}`;
+  const queryKey = orchestrationQueryKeys.threadCommandExecution(
+    input.threadId,
+    input.commandExecutionId,
+  );
+  const reads = commandDetailReads.get(client) ?? new Map<string, CommandDetailRead>();
+  commandDetailReads.set(client, reads);
+  const read: CommandDetailRead = {
+    events: [],
+    chars: 0,
+    needsRefresh: inFlightThreadCommandExecutionDetailRequests.has(key),
+  };
+  reads.set(key, read);
+  const baseline = client.getQueryData<OrchestrationGetThreadCommandExecutionResult>(queryKey);
+  let succeeded = false;
+  try {
+    let result = await fetchThreadCommandExecutionRpc(input, signal);
+    // A previously loaded complete transcript is also a valid baseline. Never
+    // replace it with an older snapshot, even if another caller began that RPC.
+    if (
+      baseline?.commandExecution &&
+      (!result.commandExecution ||
+        baseline.commandExecution.lastUpdatedSequence > result.commandExecution.lastUpdatedSequence)
+    ) {
+      result = baseline;
+    }
+    for (const event of read.events) {
+      result =
+        (event.type === "thread.command-execution-recorded"
+          ? mergeThreadCommandExecutionRecordedDetailResult(result, event, null)
+          : mergeThreadCommandExecutionOutputAppendedDetailResult(result, event, null)) ?? result;
+    }
+    if (!result.commandExecution && read.events.length) read.needsRefresh = true;
+    succeeded = true;
+    return result;
+  } finally {
+    if (reads.get(key) === read) reads.delete(key);
+    if (succeeded && read.needsRefresh && !signal.aborted) {
+      // Reconcile/overflow needs one authoritative follow-up after this query
+      // commits. Ordinary streaming events are replayed above, without refetching.
+      setTimeout(() => {
+        if (!signal.aborted && client.getQueryState(queryKey)) {
+          void client.invalidateQueries({ queryKey });
+        }
+      }, 0);
+    }
+  }
+}
 const inFlightThreadFileChangeRequests = new Map<
   string,
   Promise<OrchestrationGetThreadFileChangesResult>
@@ -340,6 +405,7 @@ export function mergeThreadCommandExecutionRecordedDetailResult(
     commandExecution: {
       ...existing,
       ...nextSummary,
+      startedSequence: existing.startedSequence,
       output: existing.output,
       outputTruncated: existing.outputTruncated,
     },
@@ -399,20 +465,27 @@ export function applyThreadCommandExecutionEventToQueryCache(
       commandExecutionId,
     );
     const state = queryClient.getQueryState<OrchestrationGetThreadCommandExecutionResult>(queryKey);
-    if (
+    const read = commandDetailReads
+      .get(queryClient)
+      ?.get(`${event.payload.threadId}:${commandExecutionId}`);
+    if (read) {
+      if (event.type === "thread.command-execution-output-reconciled") read.needsRefresh = true;
+      else {
+        const chars =
+          event.type === "thread.command-execution-output-appended"
+            ? event.payload.chunk.length
+            : 0;
+        if (read.events.length >= 512 || read.chars + chars > 1024 * 1024) read.needsRefresh = true;
+        else {
+          read.events.push(event);
+          read.chars += chars;
+        }
+      }
+    } else if (
       state &&
-      (event.type === "thread.command-execution-output-reconciled" ||
-        state.fetchStatus === "fetching" ||
-        !state.data?.commandExecution)
+      (event.type === "thread.command-execution-output-reconciled" || !state.data?.commandExecution)
     ) {
-      // A read started before this event must not overwrite a newer transcript or
-      // turn a partial tail into a complete detail. Cancel both layers of deduplication.
-      inFlightThreadCommandExecutionDetailRequests.delete(
-        `${event.payload.threadId}:${commandExecutionId}`,
-      );
-      void queryClient
-        .cancelQueries({ queryKey })
-        .then(() => queryClient.invalidateQueries({ queryKey }));
+      void queryClient.invalidateQueries({ queryKey });
       return;
     }
   }
@@ -1007,11 +1080,12 @@ export function threadCommandExecutionQueryOptions(input: {
       input.threadId && input.commandExecutionId
         ? orchestrationQueryKeys.threadCommandExecution(input.threadId, input.commandExecutionId)
         : ([...orchestrationQueryKeys.all, "threadCommandExecution", "disabled"] as const),
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ signal, client }) => {
       if (!input.threadId || !input.commandExecutionId) {
         return { commandExecution: null } satisfies OrchestrationGetThreadCommandExecutionResult;
       }
-      return fetchThreadCommandExecutionRpc(
+      return fetchCommandDetailWithEvents(
+        client,
         {
           threadId: input.threadId,
           commandExecutionId: input.commandExecutionId,
@@ -1080,7 +1154,10 @@ export async function scheduleThreadCommandExecutionRefreshIfMissing(
         if (latest === undefined || latest.commandExecution !== null) {
           return;
         }
-        const refreshed = await fetchThreadCommandExecutionRpc(input, options?.signal);
+        const refreshed = await queryClient.fetchQuery({
+          ...threadCommandExecutionQueryOptions(input),
+          staleTime: 0,
+        });
         if (options?.signal?.aborted) {
           return;
         }

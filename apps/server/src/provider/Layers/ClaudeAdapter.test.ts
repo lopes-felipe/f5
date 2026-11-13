@@ -16422,6 +16422,26 @@ for (const terminal of ["task_notification", "task_updated"] as const) {
               if (resultFirst) result();
               notify();
               notify();
+              if (!backgrounded) {
+                // Exercise both terminal forms, including the updated-first ordering.
+                if (terminal === "task_updated")
+                  h.query.emit({
+                    type: "system",
+                    subtype: "task_notification",
+                    task_id: "output-task",
+                    status: failed ? "failed" : "completed",
+                    output_file: "",
+                    summary: "Finished",
+                    session_id: BACKGROUND_SESSION_ID,
+                    uuid: crypto.randomUUID(),
+                  } as unknown as SDKMessage);
+                else
+                  emitClaudeTaskUpdated(h.query, {
+                    taskId: "output-task",
+                    patch: { status: failed ? "failed" : "completed" },
+                    uuid: crypto.randomUUID(),
+                  });
+              }
               if (backgrounded && !resultFirst) {
                 // The output may arrive after the launching turn has ended.
                 emitClaudeSuccessResult(h.query);
@@ -16459,6 +16479,14 @@ for (const terminal of ["task_notification", "task_updated"] as const) {
                 (event) => event.type === "item.completed" && event.itemId === "output-call",
               );
               assert.equal(completions.length, 1);
+              if (!backgrounded)
+                assert.equal(
+                  events.filter(
+                    (event) =>
+                      event.type === "task.completed" && event.payload.taskId === "output-task",
+                  ).length,
+                  1,
+                );
               assert.equal(completions[0]?.turnId, turn.turnId);
               if (completions[0]?.type === "item.completed") {
                 assert.equal(completions[0].payload.status, failed ? "failed" : "completed");

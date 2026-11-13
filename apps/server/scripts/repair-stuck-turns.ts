@@ -20,7 +20,7 @@ import { OrchestrationEngineLive } from "../src/orchestration/Layers/Orchestrati
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../src/orchestration/Services/OrchestrationEngine.ts";
-import { assertDatabaseOffline, createRepairBackup } from "../src/maintenance/offlineRepair.ts";
+import { assertDatabaseOffline, createRepairBackup } from "./lib/offlineRepair.ts";
 
 interface Options {
   readonly apply: boolean;

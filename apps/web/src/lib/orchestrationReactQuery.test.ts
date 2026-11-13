@@ -205,18 +205,20 @@ describe("command execution detail cache helpers", () => {
 describe("command execution detail query cache", () => {
   for (const initial of [true, false]) {
     for (const kind of ["recorded", "appended"] as const) {
-      it(`refetches authoritative output when ${kind} overlaps ${initial ? "initial fetch" : "refetch"}`, async () => {
+      it(`replays ${kind} during ${initial ? "initial fetch" : "refetch"} without restarting the read`, async () => {
         const client = new QueryClient();
         const key = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);
         if (!initial)
           client.setQueryData(key, {
-            commandExecution: makeExecution({ output: "old\n" }),
+            commandExecution: makeExecution({ output: "historical\n" }),
           });
         let finishOld!: (value: OrchestrationGetThreadCommandExecutionResult) => void;
         const fresh = {
           commandExecution: makeExecution({
-            output: "historical\nhello\n",
-            lastUpdatedSequence: 3,
+            output: kind === "appended" ? "historical\nhello\n" : "historical\n",
+            updatedAt:
+              kind === "appended" ? "2026-03-20T10:00:02.000Z" : "2026-03-20T10:00:01.000Z",
+            lastUpdatedSequence: kind === "appended" ? 3 : 2,
           }),
         };
         const rpc = vi
@@ -245,15 +247,75 @@ describe("command execution detail query cache", () => {
             client,
             kind === "recorded" ? makeRecordedEvent() : makeOutputAppendedEvent(),
           );
-          finishOld({ commandExecution: makeExecution({ output: "" }) });
+          finishOld({ commandExecution: makeExecution({ output: "historical\n" }) });
           await vi.waitFor(() => expect(client.getQueryData(key)).toEqual(fresh));
-          expect(rpc).toHaveBeenCalledTimes(2);
+          expect(rpc).toHaveBeenCalledTimes(1);
         } finally {
           unsubscribe();
           client.clear();
         }
       });
     }
+  }
+
+  for (const loaded of [false, true]) {
+    it(`settles a slow streaming read without a refetch loop (loaded=${loaded})`, async () => {
+      const client = new QueryClient();
+      const key = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);
+      if (loaded)
+        client.setQueryData(key, { commandExecution: makeExecution({ output: "history\n" }) });
+      let finish!: (value: OrchestrationGetThreadCommandExecutionResult) => void;
+      const rpc = vi.fn(
+        () =>
+          new Promise<OrchestrationGetThreadCommandExecutionResult>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+        orchestration: { getThreadCommandExecution: rpc },
+      } as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
+      const observer = new QueryObserver(
+        client,
+        threadCommandExecutionQueryOptions({ threadId, commandExecutionId }),
+      );
+      const unsubscribe = observer.subscribe(() => {});
+      try {
+        if (loaded) void observer.refetch();
+        await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(1));
+        let expected = "history\n";
+        for (let index = 0; index < 20; index++) {
+          const chunk = `line ${index}\n`;
+          expected += chunk;
+          const event = makeOutputAppendedEvent({ sequence: index + 3 });
+          applyThreadCommandExecutionEventToQueryCache(client, {
+            ...event,
+            payload: { ...event.payload, chunk },
+          });
+          if (loaded)
+            expect(
+              client.getQueryData<{ commandExecution: OrchestrationCommandExecution }>(key)
+                ?.commandExecution.output,
+            ).toBe(expected);
+        }
+        expect(rpc).toHaveBeenCalledTimes(1);
+        finish({
+          commandExecution: makeExecution({
+            output:
+              "history\n" + Array.from({ length: 10 }, (_, index) => `line ${index}\n`).join(""),
+            lastUpdatedSequence: 12,
+          }),
+        });
+        await vi.waitFor(() => expect(observer.getCurrentResult().isFetching).toBe(false));
+        expect(
+          client.getQueryData<{ commandExecution: OrchestrationCommandExecution }>(key)
+            ?.commandExecution.output,
+        ).toBe(expected);
+        expect(rpc).toHaveBeenCalledTimes(1);
+      } finally {
+        unsubscribe();
+        client.clear();
+      }
+    });
   }
 
   it("removes per-thread command detail queries on thread.reverted", async () => {
@@ -323,6 +385,7 @@ describe("command execution detail query cache", () => {
   it("refetches a repaired command's detail even while an older read is in flight", async () => {
     const queryClient = new QueryClient();
     let finishOld: (value: OrchestrationGetThreadCommandExecutionResult) => void = () => {};
+    let finishRepair!: (value: OrchestrationGetThreadCommandExecutionResult) => void;
     const repaired = makeExecution({ output: "hello\nworld\n", lastUpdatedSequence: 6 });
     const getThreadCommandExecution = vi
       .fn()
@@ -331,7 +394,11 @@ describe("command execution detail query cache", () => {
           finishOld = resolve;
         }),
       )
-      .mockResolvedValueOnce({ commandExecution: repaired });
+      .mockReturnValueOnce(
+        new Promise<OrchestrationGetThreadCommandExecutionResult>((resolve) => {
+          finishRepair = resolve;
+        }),
+      );
     vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
       orchestration: { getThreadCommandExecution },
     } as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
@@ -364,12 +431,29 @@ describe("command execution detail query cache", () => {
       });
       // The pre-repair read answers late with the old output.
       finishOld({ commandExecution: makeExecution({ output: "hello\n" }) });
+      await vi.waitFor(() => expect(getThreadCommandExecution).toHaveBeenCalledTimes(2));
+      const tail = Array.from({ length: 10 }, (_, index) => `tail ${index}\n`).join("");
+      for (let index = 0; index < 10; index++) {
+        const event = makeOutputAppendedEvent({ sequence: index + 7 });
+        applyThreadCommandExecutionEventToQueryCache(queryClient, {
+          ...event,
+          payload: { ...event.payload, chunk: `tail ${index}\n` },
+        });
+      }
+      finishRepair({ commandExecution: repaired });
       await vi.waitFor(() =>
         expect(
           queryClient.getQueryData(
             orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId),
           ),
-        ).toEqual({ commandExecution: repaired }),
+        ).toEqual({
+          commandExecution: {
+            ...repaired,
+            output: repaired.output + tail,
+            lastUpdatedSequence: 16,
+            updatedAt: "2026-03-20T10:00:02.000Z",
+          },
+        }),
       );
       expect(getThreadCommandExecution).toHaveBeenCalledTimes(2);
     } finally {

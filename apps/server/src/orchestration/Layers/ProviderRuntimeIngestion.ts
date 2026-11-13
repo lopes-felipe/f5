@@ -3748,6 +3748,15 @@ const make = Effect.gen(function* () {
     OrchestrationCommandExecutionId,
     PendingCommandExecutionOutputState
   >();
+  // Closed commands can still receive provider tails after turn cleanup.
+  const closedCommandExecutionTurns = new Map<OrchestrationCommandExecutionId, TurnId>();
+  const rememberClosedCommandExecution = (id: OrchestrationCommandExecutionId, turnId: TurnId) => {
+    closedCommandExecutionTurns.delete(id);
+    closedCommandExecutionTurns.set(id, turnId);
+    if (closedCommandExecutionTurns.size > 512) {
+      closedCommandExecutionTurns.delete(closedCommandExecutionTurns.keys().next().value!);
+    }
+  };
   const pendingFileChanges = new Map<OrchestrationFileChangeId, PendingFileChangeState>();
   let enqueueCommandOutputFlush:
     | ((commandExecutionId: OrchestrationCommandExecutionId) => void)
@@ -3817,6 +3826,7 @@ const make = Effect.gen(function* () {
           continue;
         }
         clearCommandExecutionFlushTimer(commandExecution);
+        rememberClosedCommandExecution(commandExecution.id, commandExecution.turnId);
         openCommandExecutions.delete(commandExecution.id);
       }
     });
@@ -4153,14 +4163,28 @@ const make = Effect.gen(function* () {
   }) {
     const commandExecution = openCommandExecutions.get(input.commandExecutionId);
     if (!commandExecution) {
-      const persisted = yield* threadCommandExecutionQuery.getThreadCommandExecution({
-        threadId: input.event.threadId,
-        commandExecutionId: input.commandExecutionId,
-      });
-      if (
-        persisted.commandExecution &&
-        persisted.commandExecution.turnId === toTurnId(input.event.turnId)
-      ) {
+      const existingPendingOutput = pendingCommandExecutionOutput.get(input.commandExecutionId);
+      let closedTurnId = closedCommandExecutionTurns.get(input.commandExecutionId);
+      if (!closedTurnId && !existingPendingOutput) {
+        // One lookup distinguishes a resumed command from output preceding its
+        // lifecycle. Further pre-lifecycle chunks reuse the pending buffer.
+        const persisted = yield* threadCommandExecutionQuery.getThreadCommandExecution({
+          threadId: input.event.threadId,
+          commandExecutionId: input.commandExecutionId,
+        });
+        if (persisted.commandExecution) {
+          closedTurnId = persisted.commandExecution.turnId;
+          rememberClosedCommandExecution(input.commandExecutionId, closedTurnId);
+        }
+      }
+      if (closedTurnId && closedTurnId !== toTurnId(input.event.turnId)) {
+        yield* Effect.logWarning("dropping command output attributed to a different turn", {
+          eventId: input.event.eventId,
+          commandExecutionId: input.commandExecutionId,
+        });
+        return;
+      }
+      if (closedTurnId) {
         yield* orchestrationEngine.dispatch({
           type: "thread.command-execution.output.append",
           commandId: providerCommandId(input.event, "late-command-output"),
@@ -4172,7 +4196,6 @@ const make = Effect.gen(function* () {
         });
         return;
       }
-      const existingPendingOutput = pendingCommandExecutionOutput.get(input.commandExecutionId);
       pendingCommandExecutionOutput.set(input.commandExecutionId, {
         bufferedOutput: `${existingPendingOutput?.bufferedOutput ?? ""}${input.event.payload.delta}`,
         updatedAt:
@@ -4249,6 +4272,7 @@ const make = Effect.gen(function* () {
         createdAt: input.updatedAt,
       });
       clearCommandExecutionFlushTimer(commandExecution);
+      rememberClosedCommandExecution(commandExecution.id, commandExecution.turnId);
       openCommandExecutions.delete(commandExecution.id);
     }
   });

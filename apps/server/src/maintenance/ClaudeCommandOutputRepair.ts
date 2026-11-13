@@ -16,6 +16,18 @@ export interface ClaudeCommandOutputCandidate {
   readonly lastUpdatedSequence: number;
 }
 
+export const CLAUDE_COMMAND_OUTPUT_CANDIDATES_SQL = `SELECT
+  command.thread_id AS threadId, command.turn_id AS turnId,
+  command.command_execution_id AS commandExecutionId, command.provider_item_id AS providerItemId,
+  command.last_updated_sequence AS lastUpdatedSequence
+FROM projection_thread_command_executions AS command
+JOIN projection_threads AS thread ON thread.thread_id = command.thread_id
+JOIN projection_thread_sessions AS session ON session.thread_id = command.thread_id
+WHERE session.provider_name = 'claudeAgent' AND thread.deleted_at IS NULL
+  AND command.output = '' AND command.output_truncated = 0
+  AND command.provider_item_id IS NOT NULL AND command.completed_at IS NOT NULL
+  AND (? IS NULL OR command.thread_id = ?)`;
+
 export interface ClaudeCommandOutputInspection {
   readonly candidate: ClaudeCommandOutputCandidate;
   readonly reason: "eligible" | "missing_history" | "ambiguous_history" | "empty_result";

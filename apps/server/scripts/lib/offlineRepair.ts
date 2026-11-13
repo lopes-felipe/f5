@@ -3,6 +3,7 @@ import { constants as fsConstants, copyFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
+/** Bun-only maintenance scripts must close F5 before mutating its database. */
 export function assertDatabaseOffline(dbPath: string): void {
   try {
     const output = execFileSync("lsof", ["-t", "--", dbPath], {

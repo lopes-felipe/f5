@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   OrchestrationCommandExecutionId,
   ProviderItemId,
@@ -15,6 +16,7 @@ import {
   inspectClaudeCommandOutputs,
   repairClaudeCommandOutput,
   type ClaudeCommandOutputCandidate,
+  CLAUDE_COMMAND_OUTPUT_CANDIDATES_SQL,
 } from "./ClaudeCommandOutputRepair.ts";
 import { MAX_COMMAND_TRANSCRIPT_BYTES } from "../orchestration/outputTruncation.ts";
 
@@ -29,6 +31,51 @@ const candidate: ClaudeCommandOutputCandidate = {
   providerItemId: "tool-repair",
   lastUpdatedSequence: 3,
 };
+
+it("selects only empty completed Claude commands and honors the thread filter", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE projection_threads (thread_id TEXT, deleted_at TEXT);
+      CREATE TABLE projection_thread_sessions (thread_id TEXT, provider_name TEXT);
+      CREATE TABLE projection_thread_command_executions (
+        thread_id TEXT, turn_id TEXT, command_execution_id TEXT, provider_item_id TEXT,
+        last_updated_sequence INTEGER, output TEXT, output_truncated INTEGER, completed_at TEXT
+      );`);
+    for (const [thread, provider, deleted] of [
+      ["claude", "claudeAgent", null],
+      ["other", "codex", null],
+      ["deleted", "claudeAgent", "deleted"],
+      ["second", "claudeAgent", null],
+    ]) {
+      db.prepare("INSERT INTO projection_threads VALUES (?, ?)").run(thread!, deleted!);
+      db.prepare("INSERT INTO projection_thread_sessions VALUES (?, ?)").run(thread!, provider!);
+    }
+    const insert = db.prepare(
+      "INSERT INTO projection_thread_command_executions VALUES (?, 'turn', ?, 'tool', 3, ?, ?, ?)",
+    );
+    insert.run("claude", "empty", "", 0, "done");
+    insert.run(
+      "claude",
+      "launch-only",
+      "Command is running in the background with ID: task",
+      0,
+      "done",
+    );
+    insert.run("claude", "running", "", 0, null);
+    insert.run("claude", "truncated", "", 1, "done");
+    insert.run("other", "other-provider", "", 0, "done");
+    insert.run("deleted", "deleted-thread", "", 0, "done");
+    insert.run("second", "second-empty", "", 0, "done");
+    const select = db.prepare(CLAUDE_COMMAND_OUTPUT_CANDIDATES_SQL);
+    expect(select.all(null, null).map((row) => row.commandExecutionId)).toEqual([
+      "empty",
+      "second-empty",
+    ]);
+    expect(select.all("claude", "claude").map((row) => row.commandExecutionId)).toEqual(["empty"]);
+  } finally {
+    db.close();
+  }
+});
 function nativeLine(
   content: unknown,
   options: { session?: string; turn?: string; type?: string } = {},
