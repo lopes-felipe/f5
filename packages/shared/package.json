@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./pendingActivityWindow": {
+      "types": "./src/pendingActivityWindow.ts",
+      "import": "./src/pendingActivityWindow.ts"
+    },
     "./providerUpdate": {
       "types": "./src/providerUpdate.ts",
       "import": "./src/providerUpdate.ts"

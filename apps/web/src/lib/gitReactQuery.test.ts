@@ -16,11 +16,33 @@ import {
   gitRunStackedActionMutationOptions,
   gitStatusQueryOptions,
   invalidateGitQueries,
+  applyTurnGitStatus,
   refreshCheckedOutGitBranch,
 } from "./gitReactQuery";
 import { rpcQueryContext } from "./rpcQueryContext";
 
 describe("gitMutationKeys", () => {
+  it("refreshes divergence in both caches without fetching or losing PR metadata", () => {
+    const client = new QueryClient();
+    const previous = { branch: "feature", aheadCount: 2, behindCount: 0, pr: { number: 1 } };
+    client.setQueryData(gitQueryKeys.status("/repo"), previous);
+    client.setQueryData([...gitQueryKeys.status("/repo"), "local"], previous);
+    applyTurnGitStatus(client, "/repo", {
+      ...previous,
+      aheadCount: 0,
+      behindCount: 3,
+      pr: null,
+    } as never);
+    expect(client.getQueryData(gitQueryKeys.status("/repo"))).toMatchObject({
+      aheadCount: 0,
+      behindCount: 3,
+      pr: { number: 1 },
+    });
+    expect(client.getQueryData([...gitQueryKeys.status("/repo"), "local"])).toMatchObject({
+      behindCount: 3,
+    });
+    expect(status).not.toHaveBeenCalled();
+  });
   it("scopes stacked action keys by cwd", () => {
     expect(gitMutationKeys.runStackedAction("/repo/a")).not.toEqual(
       gitMutationKeys.runStackedAction("/repo/b"),

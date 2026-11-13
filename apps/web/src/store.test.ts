@@ -1986,6 +1986,57 @@ describe("store read model sync", () => {
     });
   });
 
+  it("preserves loaded resolved approvals and deduplicates pending cards on tail refresh", () => {
+    const row = (id: string, sequence: number, kind: string, requestId?: string) => ({
+      id: EventId.makeUnsafe(id),
+      sequence,
+      kind,
+      tone: "info" as const,
+      summary: id,
+      payload: requestId ? { requestId } : {},
+      turnId: null,
+      createdAt: "2026-04-01T09:00:00.000Z",
+    });
+    const requested = row("requested", 1, "approval.requested", "done");
+    const resolved = row("resolved", 2, "approval.resolved", "done");
+    const pending = row("pending", 0, "approval.requested", "open");
+    const tail = row("tail", 4, "runtime.note");
+    const thread = makeThread({
+      detailsLoaded: true,
+      activities: [pending, requested, resolved, tail],
+    });
+    const details = makeThreadDetails({
+      activities: [pending, tail],
+      detailSequence: 10,
+      hasOlderActivities: true,
+      oldestLoadedActivityCursor: {
+        sequenceIsNull: false,
+        sequence: 4,
+        createdAt: tail.createdAt,
+        activityId: tail.id,
+      },
+    });
+    const refreshed = syncThreadTailDetails(makeState(thread), thread.id, details);
+    expect(refreshed.threads[0]!.activities.map((activity) => activity.id)).toEqual([
+      pending.id,
+      requested.id,
+      resolved.id,
+      tail.id,
+    ]);
+    const answer = row("answer", 5, "approval.resolved", "open");
+    const closed = syncThreadTailDetails(refreshed, thread.id, {
+      ...details,
+      activities: [tail, answer],
+      detailSequence: 11,
+    });
+    expect(closed.threads[0]!.activities.map((activity) => activity.id)).toEqual([
+      pending.id,
+      requested.id,
+      resolved.id,
+      tail.id,
+      answer.id,
+    ]);
+  });
   it("beginThreadDetailLoad retains an existing buffer until all owners release it", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const initialState = {

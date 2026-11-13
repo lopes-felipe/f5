@@ -304,6 +304,7 @@ export class CodexJsonRpcError extends Error {
     readonly code: number | undefined,
     message: string,
     readonly data?: unknown,
+    readonly rawMessage: string = message,
   ) {
     super(`${method} failed: ${message}`);
   }
@@ -1220,7 +1221,14 @@ export function classifyCodexStderrLine(rawLine: string): { message: string } | 
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const message = (
+    error instanceof CodexJsonRpcError
+      ? error.rawMessage + " " + error.message
+      : error instanceof Error
+        ? error.message
+        : String(error)
+  ).toLowerCase();
+  if (message.includes("already has an active writer")) return false;
   if (!message.includes("thread/resume")) {
     return false;
   }
@@ -1521,6 +1529,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
               requestedRuntimeMode: input.runtimeMode,
               resumeThreadId,
               recoverable: false,
+              providerMessage: error instanceof CodexJsonRpcError ? error.rawMessage : undefined,
               cause: error instanceof Error ? error.message : String(error),
             }).pipe(this.runPromise);
             throw error;
@@ -4547,7 +4556,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     if (response.error) {
       const providerMessage = formatCodexUnsupportedModelError(
-        response.error.message ?? "Unknown JSON-RPC error",
+        response.error.code === -32600 &&
+          response.error.message?.includes("already has an active writer")
+          ? "This conversation is open in another Codex client. Codex lets one client write to a conversation at a time. Quit the other Codex app, CLI, or IDE extension, then send your message again."
+          : (response.error.message ?? "Unknown JSON-RPC error"),
         asObject(response.error.data)?.codexErrorInfo,
       );
       if (
@@ -4566,6 +4578,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           response.error.code,
           providerMessage,
           response.error.data,
+          response.error.message ?? "Unknown JSON-RPC error",
         ),
       );
       return;

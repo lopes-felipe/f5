@@ -405,6 +405,13 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+      if (
+        request.prompt.some(
+          (block) => block.type === "text" && block.text === "silent-inactivity-test",
+        )
+      ) {
+        return yield* Effect.never;
+      }
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "exit") process.exit(7);
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "malformed") {
         process.stdout.write("{malformed-json\n");
