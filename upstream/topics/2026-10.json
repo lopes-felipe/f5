@@ -60305,11 +60305,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-13T12:06:59.505Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25737",
-      "status": "port",
+      "reason": "F5 displays the file explorer and open files in separate right-panel tabs, so it has no adjacent explorer pane to resize.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
