@@ -2,6 +2,7 @@ import type {
   ProjectId,
   ServerProvider,
   UpstreamOverview,
+  UpstreamPortQueueView,
   UpstreamProjectSummary,
   UpstreamResolvePublicationInput,
   UpstreamRunKind,
@@ -26,7 +27,7 @@ import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { LedgerChip } from "./PublicationBanner";
 import { UpstreamSettingsPopover } from "./UpstreamSettingsPopover";
-import { UpstreamPortQueue } from "./UpstreamPortQueue";
+import { UpstreamPortQueueChip } from "./UpstreamPortQueue";
 import { repositoryUrl, runDisabledReason, runKindLabel, runStatus, shortRepository } from "./upstreamPage.logic";
 
 const formatNextRun = (iso: string) =>
@@ -220,6 +221,7 @@ export function UpstreamHeader(props: {
   readonly onExpireBacklog: () => void;
   readonly onRefresh: () => void;
   readonly onResolvePublication: (action: UpstreamResolvePublicationInput["action"]) => void;
+  readonly onOpenQueue: (view: UpstreamPortQueueView) => void;
 }) {
   const { overview } = props;
   const repository = overview.config?.repository ?? "";
@@ -253,7 +255,7 @@ export function UpstreamHeader(props: {
         </a>
       )}
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
-        <UpstreamPortQueue projectId={props.projectId} overview={overview} readOnly={props.readOnly} />
+        <UpstreamPortQueueChip overview={overview} onOpen={props.onOpenQueue} />
         <RunStatusChip overview={overview} readOnly={props.readOnly} busy={props.busy} onRun={props.onRun} />
         <LedgerChip
           publication={overview.publication}

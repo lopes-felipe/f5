@@ -13,6 +13,7 @@ import {
   HelpCircleIcon,
   HourglassIcon,
   ListFilterIcon,
+  ListOrderedIcon,
   PlayIcon,
   SearchIcon,
   XIcon,
@@ -136,6 +137,17 @@ export const UpstreamToolbar = forwardRef<
       readonly disabled: boolean;
       readonly onStart: () => void;
     } | null;
+    /** The Queue view toggle; null hides it (no queue history). */
+    readonly queue: {
+      /** The Queue view is showing instead of a list. */
+      readonly active: boolean;
+      /** Running plus queued jobs. */
+      readonly jobs: number;
+      readonly needsAttention: number;
+      readonly onOpen: () => void;
+      /** Returns to the list the queue was opened from, keeping its filters and sort. */
+      readonly onClose: () => void;
+    } | null;
   }
 >(function UpstreamToolbar(props, searchRef) {
   const { search, facets, onSearchChange } = props;
@@ -155,32 +167,74 @@ export const UpstreamToolbar = forwardRef<
     props.list === "inbox" && facets
       ? UPSTREAM_LANES.filter((value) => facets.lane[value] > 0 || search.lane?.includes(value))
       : [];
+  const queueActive = props.queue?.active === true;
+  const lists = (
+    <ToggleGroup
+      aria-label="Topic lists"
+      size="sm"
+      value={queueActive ? [] : [props.list]}
+      onValueChange={(values) => {
+        const next = values[0] as UpstreamTopicList | undefined;
+        // From the Queue view, pressing the list it came from returns to it as it was.
+        if (queueActive && (next === undefined || next === props.list)) props.queue?.onClose();
+        else if (next) props.onListChange(next);
+      }}
+    >
+      {UPSTREAM_LISTS.map((entry) => (
+        <ToggleGroupItem
+          key={entry.id}
+          value={entry.id}
+          aria-current={!queueActive && entry.id === props.list ? "page" : undefined}
+          className="gap-1.5"
+        >
+          {entry.label}
+          <Badge variant="outline" size="sm" className="tabular-nums">
+            {props.counts[entry.id]}
+          </Badge>
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  );
+  const queueToggle = props.queue && (
+    <Toggle
+      size="sm"
+      pressed={queueActive}
+      aria-current={queueActive ? "page" : undefined}
+      onPressedChange={(pressed) => {
+        if (pressed) props.queue?.onOpen();
+        else props.queue?.onClose();
+      }}
+      className="gap-1.5"
+    >
+      <ListOrderedIcon />
+      Queue
+      <Badge variant="outline" size="sm" className="tabular-nums">
+        {props.queue.jobs.toLocaleString()}
+      </Badge>
+      {props.queue.needsAttention > 0 && (
+        <Badge
+          variant="warning"
+          size="sm"
+          className="tabular-nums"
+          aria-label={`${props.queue.needsAttention} need attention`}
+        >
+          {props.queue.needsAttention.toLocaleString()}
+        </Badge>
+      )}
+    </Toggle>
+  );
+  if (queueActive)
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {lists}
+        {queueToggle}
+      </div>
+    );
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <ToggleGroup
-          aria-label="Topic lists"
-          size="sm"
-          value={[props.list]}
-          onValueChange={(values) => {
-            const next = values[0] as UpstreamTopicList | undefined;
-            if (next) props.onListChange(next);
-          }}
-        >
-          {UPSTREAM_LISTS.map((entry) => (
-            <ToggleGroupItem
-              key={entry.id}
-              value={entry.id}
-              aria-current={entry.id === props.list ? "page" : undefined}
-              className="gap-1.5"
-            >
-              {entry.label}
-              <Badge variant="outline" size="sm" className="tabular-nums">
-                {props.counts[entry.id]}
-              </Badge>
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+        {lists}
+        {queueToggle}
         {props.list === "inbox" && (
           <ToggleGroup
             aria-label="Inbox view"

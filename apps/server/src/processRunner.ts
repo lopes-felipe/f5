@@ -446,7 +446,7 @@ export async function runProcess(
       fail(normalizeStdinError(command, args, error));
     });
 
-    if (options.stdin !== undefined) {
+    if (options.stdin !== undefined && options.stdin.length > 0) {
       child.stdin.write(options.stdin, (error) => {
         if (error) {
           fail(normalizeStdinError(command, args, error));
