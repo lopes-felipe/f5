@@ -120,8 +120,26 @@ describe("formatCodeReviewReport", () => {
     expect(formatCodeReviewReport(text, { pullRequest: PR })).toBe(text);
   });
 
+  it("keeps a title that links the PR and adds nothing", () => {
+    const text = `# Consolidated review: [acme/app#42](${PR.url})\n\n**Verdict:** ship it`;
+    expect(formatCodeReviewReport(text, { pullRequest: PR })).toBe(text);
+  });
+
+  it("puts the header under a title that does not link the PR", () => {
+    expect(
+      formatCodeReviewReport("# Consolidated review\n\n## Medium\n1. x", { pullRequest: PR }),
+    ).toBe(`# Consolidated review\n\n**Reviewed PR:** [acme/app#42](${PR.url})\n\n## Medium\n1. x`);
+  });
+
+  it("drops narration before the linked header and does not repeat it", () => {
+    const text = `I checked the main claims and am now writing the merged report.\n\n**Reviewed PR:** ${PR.url}\n\nHead abc.`;
+    expect(formatCodeReviewReport(text, { pullRequest: PR })).toBe(
+      `**Reviewed PR:** ${PR.url}\n\nHead abc.`,
+    );
+  });
+
   it("adds the header when the URL only appears later or as a longer PR number", () => {
-    const later = `## Findings\n- see ${PR.url}`;
+    const later = `## Findings\n- one\n- two\n- three\n- see ${PR.url}`;
     expect(formatCodeReviewReport(later, { pullRequest: PR })).toMatch(/^\*\*Reviewed PR:\*\*/);
     const longer = `**Reviewed PR:** ${PR.url}3\n\nbody`;
     expect(formatCodeReviewReport(longer, { pullRequest: PR })).toMatch(
