@@ -34392,9 +34392,11 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
+      "decidedAt": "2026-11-13T11:24:08.098Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34106",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "usage",
