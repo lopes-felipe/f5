@@ -7606,93 +7606,99 @@ describe("ProviderRuntimeIngestion", () => {
     expect(result.executions[0]?.title).toBe("Search workspace");
   });
 
-  it("captures late command output deltas that arrive after item completion", async () => {
-    const harness = await createHarness();
-    const now = new Date().toISOString();
+  for (const afterTurn of [false, true]) {
+    it(`captures late command output after ${afterTurn ? "turn" : "item"} completion`, async () => {
+      const harness = await createHarness();
+      const now = new Date().toISOString();
 
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-command-turn-started"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      payload: {},
-    });
-    harness.emit({
-      type: "item.started",
-      eventId: asEventId("evt-command-started"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      itemId: asItemId("item-command-output"),
-      payload: {
-        itemType: "command_execution",
-        status: "in_progress",
-        title: "Ran command",
-        detail: "/bin/zsh -lc 'uname -a'",
-      },
-    });
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-command-completed"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      itemId: asItemId("item-command-output"),
-      payload: {
-        itemType: "command_execution",
-        status: "completed",
-        title: "Ran command",
-        detail: "/bin/zsh -lc 'uname -a'",
-      },
-    });
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-command-output"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      itemId: asItemId("item-command-output"),
-      payload: {
-        streamKind: "command_output",
-        delta: "Darwin kernel-version\n",
-      },
-    });
-    harness.emit({
-      type: "turn.completed",
-      eventId: asEventId("evt-command-turn-completed"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      payload: {
-        state: "completed",
-      },
-    });
-
-    await harness.drain();
-
-    const result = await Effect.runPromise(
-      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-command-turn-started"),
+        provider: "codex",
+        createdAt: now,
         threadId: asThreadId("thread-1"),
-      }),
-    );
-
-    expect(result.executions).toHaveLength(1);
-    expect(result.executions[0]?.command).toBe("/bin/zsh -lc 'uname -a'");
-    expect(result.executions[0]?.cwd).toBe(harness.workspaceRoot);
-    const detail = await Effect.runPromise(
-      harness.threadCommandExecutionQuery.getThreadCommandExecution({
+        turnId: asTurnId("turn-command-output"),
+        payload: {},
+      });
+      harness.emit({
+        type: "item.started",
+        eventId: asEventId("evt-command-started"),
+        provider: "codex",
+        createdAt: now,
         threadId: asThreadId("thread-1"),
-        commandExecutionId: result.executions[0]!.id,
-      }),
-    );
-    expect(detail.commandExecution?.output).toContain("Darwin kernel-version");
-  });
+        turnId: asTurnId("turn-command-output"),
+        itemId: asItemId("item-command-output"),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: "Ran command",
+          detail: "/bin/zsh -lc 'uname -a'",
+        },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId("evt-command-completed"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-command-output"),
+        itemId: asItemId("item-command-output"),
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          title: "Ran command",
+          detail: "/bin/zsh -lc 'uname -a'",
+        },
+      });
+      const completeTurn = () =>
+        harness.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-command-turn-completed"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-command-output"),
+          payload: { state: "completed" },
+        });
+      if (afterTurn) {
+        completeTurn();
+        await harness.drain();
+      }
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-command-output"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-command-output"),
+        itemId: asItemId("item-command-output"),
+        payload: {
+          streamKind: "command_output",
+          delta: "Darwin kernel-version\n",
+        },
+      });
+      if (!afterTurn) completeTurn();
+
+      await harness.drain();
+
+      const result = await Effect.runPromise(
+        harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+          threadId: asThreadId("thread-1"),
+        }),
+      );
+
+      expect(result.executions).toHaveLength(1);
+      expect(result.executions[0]?.command).toBe("/bin/zsh -lc 'uname -a'");
+      expect(result.executions[0]?.cwd).toBe(harness.workspaceRoot);
+      const detail = await Effect.runPromise(
+        harness.threadCommandExecutionQuery.getThreadCommandExecution({
+          threadId: asThreadId("thread-1"),
+          commandExecutionId: result.executions[0]!.id,
+        }),
+      );
+      expect(detail.commandExecution?.output).toContain("Darwin kernel-version");
+    });
+  }
 
   describe("PRs a command creates", () => {
     const prUrl = "https://github.com/lopes-felipe/f5/pull/493";

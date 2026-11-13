@@ -132,7 +132,7 @@ afterEach(() => {
 });
 
 describe("command execution detail cache helpers", () => {
-  it("hydrates a missing detail result from a recorded summary", () => {
+  it("does not invent historical output from a recorded summary", () => {
     const result = mergeThreadCommandExecutionRecordedDetailResult(
       { commandExecution: null },
       makeRecordedEvent(),
@@ -142,12 +142,7 @@ describe("command execution detail cache helpers", () => {
       }),
     );
 
-    expect(result).toEqual({
-      commandExecution: makeExecution({
-        updatedAt: "2026-03-20T10:00:01.000Z",
-        lastUpdatedSequence: 2,
-      }),
-    });
+    expect(result).toEqual({ commandExecution: null });
   });
 
   it("ignores stale recorded events for an already-loaded detail result", () => {
@@ -193,7 +188,7 @@ describe("command execution detail cache helpers", () => {
     ).toBe(current);
   });
 
-  it("hydrates output chunks into a missing detail result while projection catches up", () => {
+  it("does not treat a live tail as a complete transcript when detail is missing", () => {
     const result = mergeThreadCommandExecutionOutputAppendedDetailResult(
       { commandExecution: null },
       makeOutputAppendedEvent(),
@@ -203,17 +198,64 @@ describe("command execution detail cache helpers", () => {
       }),
     );
 
-    expect(result).toEqual({
-      commandExecution: makeExecution({
-        updatedAt: "2026-03-20T10:00:02.000Z",
-        lastUpdatedSequence: 3,
-        output: "hello\n",
-      }),
-    });
+    expect(result).toEqual({ commandExecution: null });
   });
 });
 
 describe("command execution detail query cache", () => {
+  for (const initial of [true, false]) {
+    for (const kind of ["recorded", "appended"] as const) {
+      it(`refetches authoritative output when ${kind} overlaps ${initial ? "initial fetch" : "refetch"}`, async () => {
+        const client = new QueryClient();
+        const key = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);
+        if (!initial)
+          client.setQueryData(key, {
+            commandExecution: makeExecution({ output: "old\n" }),
+          });
+        let finishOld!: (value: OrchestrationGetThreadCommandExecutionResult) => void;
+        const fresh = {
+          commandExecution: makeExecution({
+            output: "historical\nhello\n",
+            lastUpdatedSequence: 3,
+          }),
+        };
+        const rpc = vi
+          .fn()
+          .mockReturnValueOnce(
+            new Promise<OrchestrationGetThreadCommandExecutionResult>((resolve) => {
+              finishOld = resolve;
+            }),
+          )
+          .mockResolvedValue(fresh);
+        vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+          orchestration: { getThreadCommandExecution: rpc },
+        } as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
+        const observer = new QueryObserver(
+          client,
+          threadCommandExecutionQueryOptions({
+            threadId,
+            commandExecutionId,
+          }),
+        );
+        const unsubscribe = observer.subscribe(() => {});
+        try {
+          if (!initial) void observer.refetch();
+          await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(1));
+          applyThreadCommandExecutionEventToQueryCache(
+            client,
+            kind === "recorded" ? makeRecordedEvent() : makeOutputAppendedEvent(),
+          );
+          finishOld({ commandExecution: makeExecution({ output: "" }) });
+          await vi.waitFor(() => expect(client.getQueryData(key)).toEqual(fresh));
+          expect(rpc).toHaveBeenCalledTimes(2);
+        } finally {
+          unsubscribe();
+          client.clear();
+        }
+      });
+    }
+  }
+
   it("removes per-thread command detail queries on thread.reverted", async () => {
     const queryClient = new QueryClient();
     const queryKey = orchestrationQueryKeys.threadCommandExecution(threadId, commandExecutionId);

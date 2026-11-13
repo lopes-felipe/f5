@@ -1,7 +1,6 @@
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { canHydrateThreadTail } from "../orchestration/detailCoverage";
 import type {
-  OrchestrationCommandExecution,
   OrchestrationCommandExecutionId,
   OrchestrationCommandExecutionSummary,
   OrchestrationEvent,
@@ -310,24 +309,6 @@ function buildThreadCommandExecutionSummaryFromRecordedEvent(
   };
 }
 
-function buildThreadCommandExecutionDetailFromSummary(
-  summary: OrchestrationCommandExecutionSummary,
-  options?: {
-    output?: string;
-    outputTruncated?: boolean;
-    updatedAt?: string;
-    lastUpdatedSequence?: number;
-  },
-): OrchestrationCommandExecution {
-  return {
-    ...summary,
-    output: options?.output ?? "",
-    outputTruncated: options?.outputTruncated ?? false,
-    updatedAt: options?.updatedAt ?? summary.updatedAt,
-    lastUpdatedSequence: options?.lastUpdatedSequence ?? summary.lastUpdatedSequence,
-  };
-}
-
 function findThreadCommandExecutionSummary(
   threadId: ThreadId,
   commandExecutionId: OrchestrationCommandExecutionId,
@@ -352,9 +333,7 @@ export function mergeThreadCommandExecutionRecordedDetailResult(
 
   const nextSummary = summary ?? buildThreadCommandExecutionSummaryFromRecordedEvent(event);
   if (!existing) {
-    return {
-      commandExecution: buildThreadCommandExecutionDetailFromSummary(nextSummary),
-    };
+    return current;
   }
 
   return {
@@ -370,7 +349,7 @@ export function mergeThreadCommandExecutionRecordedDetailResult(
 export function mergeThreadCommandExecutionOutputAppendedDetailResult(
   current: OrchestrationGetThreadCommandExecutionResult | undefined,
   event: Extract<OrchestrationEvent, { type: "thread.command-execution-output-appended" }>,
-  summary: OrchestrationCommandExecutionSummary | null,
+  _summary: OrchestrationCommandExecutionSummary | null,
 ): OrchestrationGetThreadCommandExecutionResult | undefined {
   if (current === undefined) {
     return current;
@@ -382,16 +361,7 @@ export function mergeThreadCommandExecutionOutputAppendedDetailResult(
   }
 
   if (!existing) {
-    if (!summary) {
-      return current;
-    }
-    return {
-      commandExecution: buildThreadCommandExecutionDetailFromSummary(summary, {
-        output: event.payload.chunk,
-        updatedAt: event.payload.updatedAt,
-        lastUpdatedSequence: event.sequence,
-      }),
-    };
+    return current;
   }
 
   return {
@@ -415,6 +385,37 @@ export function applyThreadCommandExecutionEventToQueryCache(
     | { type: "thread.command-execution-output-reconciled" }
   >,
 ): void {
+  if (
+    event.type === "thread.command-execution-recorded" ||
+    event.type === "thread.command-execution-output-appended" ||
+    event.type === "thread.command-execution-output-reconciled"
+  ) {
+    const commandExecutionId =
+      event.type === "thread.command-execution-recorded"
+        ? event.payload.commandExecution.id
+        : event.payload.commandExecutionId;
+    const queryKey = orchestrationQueryKeys.threadCommandExecution(
+      event.payload.threadId,
+      commandExecutionId,
+    );
+    const state = queryClient.getQueryState<OrchestrationGetThreadCommandExecutionResult>(queryKey);
+    if (
+      state &&
+      (event.type === "thread.command-execution-output-reconciled" ||
+        state.fetchStatus === "fetching" ||
+        !state.data?.commandExecution)
+    ) {
+      // A read started before this event must not overwrite a newer transcript or
+      // turn a partial tail into a complete detail. Cancel both layers of deduplication.
+      inFlightThreadCommandExecutionDetailRequests.delete(
+        `${event.payload.threadId}:${commandExecutionId}`,
+      );
+      void queryClient
+        .cancelQueries({ queryKey })
+        .then(() => queryClient.invalidateQueries({ queryKey }));
+      return;
+    }
+  }
   switch (event.type) {
     case "thread.deleted":
     case "thread.reverted": {
@@ -466,19 +467,7 @@ export function applyThreadCommandExecutionEventToQueryCache(
     }
 
     case "thread.command-execution-output-reconciled": {
-      // Whether it applied depends on the server row's sequence: refetch it. A read already
-      // in flight started before the repair, so the refetch must not join it: neither the
-      // shared RPC nor the query's own fetch, which a refetch joins while there is no data.
-      inFlightThreadCommandExecutionDetailRequests.delete(
-        `${event.payload.threadId}:${event.payload.commandExecutionId}`,
-      );
-      const queryKey = orchestrationQueryKeys.threadCommandExecution(
-        event.payload.threadId,
-        event.payload.commandExecutionId,
-      );
-      void queryClient
-        .cancelQueries({ queryKey })
-        .then(() => queryClient.invalidateQueries({ queryKey }));
+      return;
     }
   }
 }

@@ -473,6 +473,7 @@ interface PendingUserInput {
 }
 
 interface ToolInFlight {
+  readonly turnId?: TurnId;
   readonly itemId: string;
   readonly itemType: CanonicalItemType;
   readonly toolName: string;
@@ -614,6 +615,8 @@ interface ClaudeSessionContext {
     approximateChars: number;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  /** Background calls outlive content-block indexes and sometimes their task notification. */
+  readonly pendingBackgroundToolResults: Map<string, ToolInFlight>;
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly taskLaunchesByTool: Map<string, ClaudeSubagentLaunch>;
@@ -4009,7 +4012,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             type: "task-completed",
             taskId: state.taskId,
           });
-          if (tool) {
+          if (tool && (state.backgrounded ?? tool.input.run_in_background === true)) {
             yield* emitBackgroundToolLifecycle(context, {
               eventType: "item.completed",
               tool,
@@ -4029,7 +4032,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (inFlightEntry) {
               context.inFlightTools.delete(inFlightEntry[0]);
             }
-          } else {
+            if (inFlightEntry || context.pendingBackgroundToolResults.has(tool.itemId)) {
+              context.pendingBackgroundToolResults.set(tool.itemId, tool);
+            }
+          } else if (asUnknownRecord(message)?.subtype !== "task_notification") {
             yield* emitTaskUpdatedFallback(context, {
               eventType: "task.completed",
               state,
@@ -4319,6 +4325,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         for (const [index, tool] of context.inFlightTools.entries()) {
           if (hasBackgroundTaskStateForTool(context, tool.itemId)) {
+            context.pendingBackgroundToolResults.set(tool.itemId, tool);
             context.inFlightTools.delete(index);
             continue;
           }
@@ -4722,6 +4729,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             Object.keys(toolInput).length > 0 ? toolInputFingerprint(toolInput) : undefined;
 
           const tool: ToolInFlight = {
+            ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
             itemId,
             itemType,
             toolName,
@@ -4962,6 +4970,29 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
       });
 
+    const emitToolResultOutput = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      tool: ToolInFlight,
+      text: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const streamKind = toolResultStreamKind(tool.itemType);
+        const turnId = tool.turnId ?? context.turnState?.turnId;
+        if (!streamKind || text.length === 0 || !turnId) return;
+        yield* offerRuntimeEvent({
+          ...(yield* makeEventStamp(context)),
+          type: "content.delta",
+          provider: PROVIDER,
+          threadId: context.session.threadId,
+          turnId,
+          itemId: asRuntimeItemId(tool.itemId),
+          payload: { streamKind, delta: text },
+          providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+          raw: { source: "claude.sdk.message", method: "claude/user", payload: message },
+        });
+      });
+
     const handleUserMessage = (
       context: ClaudeSessionContext,
       message: SDKMessage,
@@ -4980,6 +5011,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           context.chromeActivity?.callEnded(toolResult.toolUseId);
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
+            const pending = context.pendingBackgroundToolResults.get(toolResult.toolUseId);
+            if (pending) {
+              if (readBackgroundTaskIdFromToolResult(message, toolResult)) continue;
+              // The task owns completion; the result owns output. Neither needs an active turn.
+              context.pendingBackgroundToolResults.delete(toolResult.toolUseId);
+              yield* emitToolResultOutput(context, message, pending, toolResult.text);
+              continue;
+            }
             const subagentTool = context.subagentTaskTools.get(toolResult.toolUseId);
             if (subagentTool)
               yield* completeSubagentTaskTool(
@@ -4994,9 +5033,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
           const [index, tool] = toolEntry;
           const taskEntry = findTaskStateEntryByToolUseId(context, tool.itemId);
-          const backgroundTaskId =
-            readBackgroundTaskIdFromToolResult(message, toolResult) ??
-            (taskEntry?.[1].backgrounded === true ? taskEntry[0] : undefined);
+          const backgroundTaskId = readBackgroundTaskIdFromToolResult(message, toolResult);
 
           if (backgroundTaskId) {
             if (tool.itemType === "collab_agent_tool_call") {
@@ -5060,32 +5097,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
             });
 
-            const streamKind = toolResultStreamKind(tool.itemType);
-            if (streamKind && toolResult.text.length > 0 && context.turnState) {
-              const deltaStamp = yield* makeEventStamp(context);
-              yield* offerRuntimeEvent({
-                type: "content.delta",
-                ...deltaStamp,
-                eventId: deltaStamp.eventId,
-                provider: PROVIDER,
-                createdAt: deltaStamp.createdAt,
-                threadId: context.session.threadId,
-                turnId: context.turnState.turnId,
-                itemId: asRuntimeItemId(tool.itemId),
-                payload: {
-                  streamKind,
-                  delta: toolResult.text,
-                },
-                providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
-                raw: {
-                  source: "claude.sdk.message",
-                  method: "claude/user",
-                  payload: message,
-                },
-              });
-            }
+            yield* emitToolResultOutput(context, message, tool, toolResult.text);
 
             context.inFlightTools.delete(index);
+            context.pendingBackgroundToolResults.set(tool.itemId, tool);
             continue;
           }
 
@@ -5150,30 +5165,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             },
           });
 
-          const streamKind = toolResultStreamKind(tool.itemType);
-          if (streamKind && toolResult.text.length > 0 && context.turnState) {
-            const deltaStamp = yield* makeEventStamp(context);
-            yield* offerRuntimeEvent({
-              type: "content.delta",
-              ...deltaStamp,
-              eventId: deltaStamp.eventId,
-              provider: PROVIDER,
-              createdAt: deltaStamp.createdAt,
-              threadId: context.session.threadId,
-              turnId: context.turnState.turnId,
-              itemId: asRuntimeItemId(tool.itemId),
-              payload: {
-                streamKind,
-                delta: toolResult.text,
-              },
-              providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
-              raw: {
-                source: "claude.sdk.message",
-                method: "claude/user",
-                payload: message,
-              },
-            });
-          }
+          yield* emitToolResultOutput(context, message, tool, toolResult.text);
 
           const resultNote = completion.semanticSuccess
             ? claudeToolResultNote(tool.toolName, completion.structuredOutput)
@@ -6011,6 +6003,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
                   ...(description ? { description } : {}),
                   ...(taskType ? { taskType } : {}),
+                  ...(typeof messageRecord?.is_backgrounded === "boolean"
+                    ? { backgrounded: messageRecord.is_backgrounded }
+                    : {}),
                   ...(tool ? { tool } : {}),
                 });
               }
@@ -7009,6 +7004,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           rawPayload: { status: "stopped" },
         });
         context.taskStates.clear();
+        context.pendingBackgroundToolResults.clear();
         context.taskModelsByTool.clear();
         context.taskLaunchesByTool.clear();
 
@@ -9016,6 +9012,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             approximateChars: 0,
           })),
           inFlightTools,
+          pendingBackgroundToolResults: new Map(),
           taskStates,
           taskModelsByTool: new Map(),
           taskLaunchesByTool: new Map(),

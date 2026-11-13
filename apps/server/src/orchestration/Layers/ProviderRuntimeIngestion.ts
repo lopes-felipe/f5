@@ -4153,6 +4153,25 @@ const make = Effect.gen(function* () {
   }) {
     const commandExecution = openCommandExecutions.get(input.commandExecutionId);
     if (!commandExecution) {
+      const persisted = yield* threadCommandExecutionQuery.getThreadCommandExecution({
+        threadId: input.event.threadId,
+        commandExecutionId: input.commandExecutionId,
+      });
+      if (
+        persisted.commandExecution &&
+        persisted.commandExecution.turnId === toTurnId(input.event.turnId)
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.command-execution.output.append",
+          commandId: providerCommandId(input.event, "late-command-output"),
+          threadId: input.event.threadId,
+          commandExecutionId: input.commandExecutionId,
+          chunk: input.event.payload.delta,
+          updatedAt: input.event.createdAt,
+          createdAt: input.event.createdAt,
+        });
+        return;
+      }
       const existingPendingOutput = pendingCommandExecutionOutput.get(input.commandExecutionId);
       pendingCommandExecutionOutput.set(input.commandExecutionId, {
         bufferedOutput: `${existingPendingOutput?.bufferedOutput ?? ""}${input.event.payload.delta}`,
