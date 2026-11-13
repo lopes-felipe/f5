@@ -34705,12 +34705,14 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
+      "decidedAt": "2026-11-13T11:23:13.911Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34181",
       "relatedTopics": [
         "pr-33160"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
