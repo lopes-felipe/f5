@@ -6,18 +6,22 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Usage includes local Muse Code history, including child sessions and automated reviews. Unknown models remain visible as unpriced and can use custom prices.
 - Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
 - Code Review workflows detect the pull request named in the review instructions (a link, or `PR #123` in the project's GitHub repo), open the merged review with a link to it, and can post the merged review to the PR as a comment. Tick **Post merged review to the PR when it finishes** when starting the workflow, or use **Post to PR** on the workflow page. Posted comments end with a footer naming F5 and the reviewer and merge models.
 - Upstream ranks every topic in a lane (Security, Bugs, Perf, Features, Maintenance) with a 0–100 score, and the Inbox opens on a shortlist of the topics worth reviewing today. **Expire backlog…** and an optional **Expire after** setting skip unreviewed topics after a while (security topics never expire), **Areas** choose which features reach the shortlist, a weekly notification counts new features, and an opt-in **Auto-port** queues confident high and critical security fixes, and optionally high-impact bug fixes, after each run. Port threads now add a changelog entry for user-visible changes when the repository keeps a changelog. Every profile that opens the ledger must run this version first: the ledger and `upstream/rules.json` use new formats that older versions cannot read.
 
 ### Changed
 
+- Usage labels external session history and legacy unattributed costs as **Usage without a project**. Muse history refreshes incrementally, retains previous data on failure, reconciles cached calls against newly completed turns, and includes priced native calls in cost comparisons.
 - Database snapshot history is thinned when the disk runs low: 6 hourly and 3 daily copies with under 10 GB free, and only the newest 2 with under 2 GB free. Thinning starts only when two snapshots in a row find the disk that low, and the server log records what was removed. With more space the history stays at 24 hourly and 7 daily copies.
 - New events and commands get time-ordered IDs, so the database rewrites fewer index pages per hour and each snapshot holds less space.
 - F5 starts faster and uses less memory on profiles with many archived threads: their activity history now loads when a thread is used, not at startup. The first start after this update takes longer once while two database indexes are built (about 20 seconds on a 6 GB profile).
+- The Upstream port queue is now a **Queue** view next to the topic lists instead of a dialog. Jobs are split into **Active** (running first, then queued in order), **Needs you** and **History** (newest first, with cancelled and superseded jobs hidden until you ask). Each job shows its thread title, PR number, when it was queued or finished, and a plain-language result for each topic, and clicking a topic opens it in the detail pane. Waiting jobs list each blocking thread once with its PR, and jobs have actions to start without waiting, remove them from the queue, or retry a failed port. The header chip appears only while ports run or wait, the queue is paused, or something needs attention.
 
 ### Fixed
 
+- The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
 - Storage settings count automatic database snapshots at the space they actually hold. Snapshots are copy-on-write clones that share unchanged data with the live database, but each one was counted at the full database size, so nine copies of a 6 GB database showed as 57 GB while holding about 2.5 GB. Recovery backups, Total used and Reclaimable now use an estimate of the data that newer copies do not share, and each snapshot lists both sizes. The amount reported after a reclaim is measured against the snapshots that remain, so removing one from the middle of the history no longer claims space an older copy still holds.
 - Reclaiming a database snapshot removes its folder, and an empty leftover folder is reported as removed instead of skipped. Empty snapshot folders left by earlier cleanups are cleared, and no longer count as snapshots for retention or as the copy to restore from.
 - Opening a just-created thread waits for its details instead of bouncing to the start page while the sidebar catches up.
@@ -38,6 +42,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
 - The profile database also drops two indexes on its command receipts that nothing read, so every command the server records writes two fewer index entries.
 - The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
+
+- Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
+- Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
 
 ## [0.1.8] - 2026-11-12
 

@@ -147,6 +147,13 @@ import {
   type QueueRecord,
   type QueueState,
 } from "./queueStore.ts";
+import {
+  bucketQueue,
+  dedupeBlockers,
+  queueViewCounts,
+  selectQueueView,
+  type QueueBucketContext,
+} from "./queueView.ts";
 
 import { GitCommandError, type TextGenerationError } from "../git/Errors.ts";
 import type { StructuredJsonGenerationInput } from "../git/Services/TextGeneration.ts";
@@ -2185,6 +2192,7 @@ export function makeUpstreamPortsService(
             running: 0,
             concurrency: context.settings.portConcurrency,
             waitingOnFiles: 0,
+            needsAttention: 0,
             paused: false,
             pausedReason: null,
             hold: null,
@@ -3136,6 +3144,22 @@ export function makeUpstreamPortsService(
     const landedOnDefaultBranch = (snapshot: CurrentView, topicId: string, epoch: number) =>
       snapshot.base.trailers.epochs.get(topicId)?.has(epoch) === true;
 
+    /** What `bucketQueue` reads from the snapshot; callers that skip conflicts never report `waiting`. */
+    const queueBucketContext = (snapshot: CurrentView): QueueBucketContext => {
+      const baseById = new Map(snapshot.base.ledger.topics.map((topic) => [topic.id, topic]));
+      return {
+        rows: new Map(snapshot.rows.map((row) => [row.topic.id, row])),
+        onDefaultBranch: (topicId, epoch) => {
+          const baseTopic = baseById.get(topicId);
+          return (
+            landedOnDefaultBranch(snapshot, topicId, epoch) ||
+            (baseTopic?.epoch === epoch && baseTopic.status === "equivalent")
+          );
+        },
+        blocked: () => false,
+      };
+    };
+
     /** Ledger decisions outlive the turn that recorded them. An idle resolved topic
      * must not regain its reservation when a later turn reports a different result. */
     const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
@@ -3698,122 +3722,140 @@ export function makeUpstreamPortsService(
         yield* requireConfig(context);
         const records = yield* queue.listQueue(input.projectId);
         const snapshot = yield* currentView(context);
-        const conflicts = yield* openConflicts(context, snapshot);
-        const model = yield* host.readModel;
-        const outcomes = yield* readOutcomes(
-          context,
-          model,
-          records.flatMap((entry) => (entry.threadId ? [entry.threadId] : [])),
-          snapshot,
-        );
-        const summaries = yield* linkSummaries(
-          context,
-          records.flatMap((entry) => (entry.threadId ? [entry.threadId] : [])),
-          model,
-          outcomes,
-        );
-        const counts: UpstreamGetPortQueueResult["counts"] = {
-          queued: 0,
-          executing: 0,
-          awaitingReview: 0,
-          recorded: 0,
-          needsAttention: 0,
-          omitted: 0,
-          cancelled: 0,
-        };
-        // Use a mutable local tally while keeping wire contracts readonly.
-        const tally = { ...counts };
+        // Only queued entries can wait on another port's files.
+        const conflicts = records.some((entry) => entry.status === "queued")
+          ? yield* openConflicts(context, snapshot)
+          : [];
         const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
-        const baseById = new Map(snapshot.base.ledger.topics.map((topic) => [topic.id, topic]));
-        const doneOnDefaultBranch = new Set<string>();
-        const all = records.map((entry) => {
-          const topics = Object.keys(entry.topicEpochs).map((topicId) => {
-            const row = rowsById.get(topicId);
-            const epoch = entry.topicEpochs[topicId]!;
-            const superseded = row?.topic.epoch !== epoch;
-            const result = entry.topicResults[topicId] ?? entry.result;
-            const baseTopic = baseById.get(topicId);
-            const onDefaultBranch =
-              !superseded &&
-              (snapshot.base.trailers.epochs.get(topicId)?.has(epoch) ||
-                (baseTopic?.epoch === epoch && baseTopic.status === "equivalent"));
-            if (onDefaultBranch) doneOnDefaultBranch.add(`${topicId}#${epoch}`);
-            if (!entry.topicIds.includes(topicId)) {
-              if (entry.topicResults[topicId] === "canceled") tally.cancelled++;
-              else tally.omitted++;
-            } else if (entry.status === "queued") tally.queued++;
-            else if (entry.status === "started") tally.executing++;
-            else if (entry.status === "dropped") {
-              if (entry.result === "canceled") tally.cancelled++;
-              else if (entry.result === "not-ready" || entry.result === "epoch-changed")
-                tally.omitted++;
-              else tally.needsAttention++;
-            } else if (superseded) tally.omitted++;
-            else if (
-              !superseded &&
-              row?.topic.decidedBy === "llm" &&
-              ((result === "equivalent" && row.topic.status === "equivalent") ||
-                (result === "not-applicable" &&
-                  row.topic.status === "skip" &&
-                  row.topic.reasonKey === "not-applicable"))
-            )
-              tally.recorded++;
-            else if (onDefaultBranch) {
-              /* Done is counted separately from unresolved work. */
-            } else if (["pr", "equivalent", "not-applicable"].includes(result ?? ""))
-              tally.awaitingReview++;
-            else tally.needsAttention++;
-            return {
-              topicId,
-              title: row?.topic.title ?? topicId,
-              state: row?.state ?? null,
-              epoch,
-              superseded,
-              result: result ?? null,
-            };
-          });
-          return {
-            entryId: entry.entryId,
-            position: entry.position,
-            topics,
-            status: entry.status,
-            result: entry.result,
-            reason: entry.reason,
-            threadId: entry.threadId as UpstreamPortLinkSummary["threadId"] | null,
-            prUrl: summaries.get(entry.threadId ?? "")?.prUrl ?? null,
-            fileCount: entry.fileKeys.length,
-            waitingOn: entry.status === "queued" ? waitingOn(entry, conflicts) : [],
-            ignoreConflicts: entry.ignoreConflicts,
-          };
-        });
-        const filtered = all.filter(
-          (entry) => !input.statuses?.length || input.statuses.includes(entry.status),
+        const blockersOf = new Map(
+          records
+            .filter((entry) => entry.status === "queued")
+            .map((entry) => [entry.entryId, waitingOn(entry, conflicts)]),
         );
+        const bucketed = bucketQueue(records, {
+          ...queueBucketContext(snapshot),
+          blocked: (entry) => (blockersOf.get(entry.entryId)?.length ?? 0) > 0,
+        });
+        const titleOf = (topicId: string) => rowsById.get(topicId)?.topic.title ?? topicId;
+        const viewCounts = queueViewCounts(bucketed.entries);
+        const statusFiltered = bucketed.entries.filter(
+          (entry) => !input.statuses?.length || input.statuses.includes(entry.record.status),
+        );
+        const ordered = input.view
+          ? selectQueueView(statusFiltered, input.view, input.includeInactive === true)
+          : statusFiltered;
         const offset = input.cursor ? Number(input.cursor) : 0;
         if (!Number.isSafeInteger(offset) || offset < 0)
           return yield* fail("invalid", "Invalid queue cursor.");
         const limit = input.limit ?? 100;
+        const pageEntries = ordered.slice(offset, offset + limit);
+        // Thread titles and PRs only for the page: the history can hold thousands of entries.
+        // Blocking threads are usually queue entries, but a port started by hand can block too.
+        const pageThreadIds = [
+          ...new Set(
+            pageEntries.flatMap(({ record }) => [
+              ...(record.threadId ? [record.threadId] : []),
+              ...(blockersOf.get(record.entryId) ?? []).flatMap((blocker) =>
+                blocker.threadId ? [blocker.threadId] : [],
+              ),
+            ]),
+          ),
+        ];
+        const model = pageThreadIds.length ? yield* host.readModel : null;
+        const summaries = pageThreadIds.length
+          ? yield* linkSummaries(
+              context,
+              pageThreadIds,
+              model,
+              yield* readOutcomes(context, model, pageThreadIds, snapshot),
+            )
+          : new Map<string, Omit<UpstreamPortLinkSummary, "epoch">>();
+        const page = pageEntries.map(({ record: entry, topics, bucket }) => {
+          const summary = entry.threadId ? summaries.get(entry.threadId) : undefined;
+          const prUrl = summary?.prUrl ?? null;
+          return {
+            entryId: entry.entryId,
+            position: entry.position,
+            topics: topics.map((topic) => ({
+              ...topic,
+              title: titleOf(topic.topicId),
+              state: rowsById.get(topic.topicId)?.state ?? null,
+            })),
+            status: entry.status,
+            bucket,
+            createdAt: entry.createdAt,
+            finishedAt: entry.finishedAt,
+            result: entry.result,
+            reason: entry.reason,
+            threadId: entry.threadId as UpstreamPortLinkSummary["threadId"] | null,
+            thread: entry.threadId
+              ? {
+                  title: summary?.threadTitle ?? null,
+                  status: summary?.threadStatus ?? null,
+                }
+              : null,
+            prUrl,
+            pr: prUrl ? { number: summary?.prNumber ?? null, url: prUrl } : null,
+            fileCount: entry.fileKeys.length,
+            waitingOn: dedupeBlockers(blockersOf.get(entry.entryId) ?? [], titleOf).map(
+              ({ topicTitles, ...blocker }) => {
+                const blockerSummary = blocker.threadId
+                  ? summaries.get(blocker.threadId)
+                  : undefined;
+                return {
+                  ...blocker,
+                  threadTitle: blockerSummary?.threadTitle ?? null,
+                  prNumber: blockerSummary?.prNumber ?? null,
+                  topicTitles,
+                };
+              },
+            ),
+            ignoreConflicts: entry.ignoreConflicts,
+          };
+        });
         // Keep panel reads responsive; a content push follows changed base evidence.
-        if (tally.awaitingReview > 0) yield* track(refreshQueueBase(context));
+        if (bucketed.counts.awaitingReview > 0) yield* track(refreshQueueBase(context));
         return {
-          entries: filtered.slice(offset, offset + limit),
-          nextCursor: offset + limit < filtered.length ? String(offset + limit) : null,
-          counts: tally,
-          doneOnDefaultBranch: doneOnDefaultBranch.size,
+          entries: page,
+          nextCursor: offset + limit < ordered.length ? String(offset + limit) : null,
+          counts: bucketed.counts,
+          viewCounts,
+          doneOnDefaultBranch: bucketed.counts.done,
           baseEvidenceAt: baseEvidence.get(input.projectId)?.at ?? null,
           baseRefreshError: baseEvidence.get(input.projectId)?.error ?? null,
         };
       }).pipe(Effect.mapError(internal));
 
+    const queueHistorySummaries = new Map<
+      string,
+      { readonly key: string; readonly hasHistory: boolean; readonly needsAttention: number }
+    >();
     const queueSummary = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
+        // Bucketing reads the whole queue history, so the overview reuses it until the
+        // queue or the snapshot changes. The version is read first: a write racing the
+        // read leaves a stale key that the next read replaces.
+        const key = `${yield* queue.getQueueVersion(context.projectId)}:${snapshot.revision}`;
+        let history = queueHistorySummaries.get(context.projectId);
+        if (history?.key !== key) {
+          const records = yield* queue.listQueue(context.projectId);
+          history = {
+            key,
+            hasHistory: records.length > 0,
+            needsAttention: bucketQueue(records, queueBucketContext(snapshot)).entries.filter(
+              (entry) => entry.bucket === "needs-attention",
+            ).length,
+          };
+          queueHistorySummaries.set(context.projectId, history);
+        }
+        const { hasHistory, needsAttention } = history;
         const entries = yield* queue.listQueue(context.projectId, ["queued"]);
         const state = yield* queue.getQueueState(context.projectId);
         const automaticUsageRecovery =
           state.holdKind !== "usage" || (yield* host.getSettings).autoResumeUsageLimitedThreads;
         const conflicts = entries.length ? yield* openConflicts(context, snapshot) : [];
         return {
-          hasHistory: yield* queue.hasQueueHistory(context.projectId),
+          hasHistory,
           queuedTopics: entries.reduce((sum, entry) => sum + entry.topicIds.length, 0),
           queuedTopicIds: [...new Set(entries.flatMap((entry) => entry.topicIds))].slice(
             0,
@@ -3823,6 +3865,7 @@ export function makeUpstreamPortsService(
           running: (yield* runningThreads(context.projectId, snapshot)).size,
           concurrency: context.settings.portConcurrency,
           waitingOnFiles: entries.filter((entry) => waitingOn(entry, conflicts).length > 0).length,
+          needsAttention,
           paused: state.paused,
           pausedReason: state.pausedReason,
           hold: state.holdKind
@@ -3845,6 +3888,7 @@ export function makeUpstreamPortsService(
                 running: 0,
                 concurrency: context.settings.portConcurrency,
                 waitingOnFiles: 0,
+                needsAttention: 0,
                 paused: false,
                 pausedReason: null,
                 hold: null,

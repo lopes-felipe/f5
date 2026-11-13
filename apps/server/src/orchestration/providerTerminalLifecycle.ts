@@ -173,6 +173,10 @@ export function makeCompletedTurnUsageFact(input: {
   if (input.event.turnId === undefined) {
     return undefined;
   }
+  const cursor = asRecord(input.event.resumeCursor);
+  const nativeSessionId =
+    input.event.provider === "muse" ? asString(cursor?.mspSessionId) : undefined;
+  const turn = input.thread.latestTurn;
   return {
     turnId: TurnId.makeUnsafe(String(input.event.turnId)),
     threadId: input.thread.id,
@@ -184,6 +188,10 @@ export function makeCompletedTurnUsageFact(input: {
     ...normalizeTurnUsage(input.event),
     completedAt: input.event.createdAt,
     sourceEventId: input.event.eventId,
+    ...(nativeSessionId ? { nativeSessionId } : {}),
+    ...(nativeSessionId && turn?.turnId === input.event.turnId
+      ? { startedAt: turn.startedAt ?? turn.requestedAt }
+      : {}),
   };
 }
 
