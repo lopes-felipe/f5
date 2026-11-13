@@ -4023,6 +4023,177 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("groups an expanded workflow's steps by phase, each led by its step state", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "outline-branch-a" as ThreadId,
+      b: "outline-branch-b" as ThreadId,
+      merge: "outline-merge" as ThreadId,
+      impl: "outline-impl" as ThreadId,
+      reviewA: "outline-review-a" as ThreadId,
+      reviewB: "outline-review-b" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId, status: "completed" | "error") => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status,
+      error: status === "error" ? "Reviewer crashed" : null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${ids.b}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.entries(ids).map(([role, id]) =>
+              createSnapshotThread({
+                id,
+                title: `Outline ${role} thread`,
+                // Never visited since its turn finished: unread outside a workflow.
+                latestTurn: {
+                  turnId: `${id}-turn` as never,
+                  state: "completed",
+                  requestedAt: at,
+                  startedAt: at,
+                  completedAt: at,
+                  assistantMessageId: null,
+                },
+                lastVisitedAt: null,
+                // Branch A's saved plan reads "Plan Ready" outside a workflow.
+                ...(role === "a" ? createPlanReadyOverrides("outline-a") : {}),
+              }),
+            ),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-outline",
+              title: "Outline workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: null,
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [
+                  codeReview(ids.reviewA, "completed"),
+                  codeReview(ids.reviewB, "error"),
+                ],
+                status: "error",
+                error: "Reviewer crashed",
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 536,
+                    title: "Outline implementation",
+                    url: "https://github.com/acme/repo/pull/536",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open",
+                  },
+                },
+              }
+            : null;
+      },
+    });
+    const phaseRow = (phaseId: string) =>
+      document.querySelector<HTMLElement>(`[data-testid="workflow-phase-row-${phaseId}"]`);
+    const leadOf = (row: HTMLElement) => row.firstElementChild as HTMLElement;
+
+    try {
+      // The open thread's phase is expanded; Revision reruns the authors, so no row of its own.
+      const authoring = await waitForElement(
+        () => phaseRow("authoring"),
+        "Authoring should render as a phase row.",
+      );
+      expect(authoring.getAttribute("aria-expanded")).toBe("true");
+      expect(authoring.textContent).toContain("Authoring");
+      expect(phaseRow("revision")).toBeNull();
+      const branchA = await waitForSidebarThreadRow("Branch A");
+      expect(
+        leadOf(branchA)
+          .querySelector("[data-workflow-step-state]")
+          ?.getAttribute("data-workflow-step-state"),
+      ).toBe("completed");
+      expect(branchA.textContent).not.toContain("Plan Ready");
+      // Unread outside a workflow, but steps run unattended: no bold.
+      expect(branchA.className).not.toContain("font-medium");
+
+      // A phase with one step is that step's row.
+      expect(phaseRow("merge")).toBeNull();
+      await waitForSidebarThreadRow("Merge");
+
+      // The phase with a failed step opens by default and leads with the error.
+      const codeReviewPhase = phaseRow("code-review")!;
+      expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("true");
+      expect(
+        leadOf(codeReviewPhase).getAttribute("data-workflow-step-state") ??
+          codeReviewPhase
+            .querySelector("[data-workflow-step-state]")
+            ?.getAttribute("data-workflow-step-state"),
+      ).toBe("error");
+      const reviewB = await waitForSidebarThreadRow("Code Review B");
+      expect(reviewB.className).toContain("text-foreground");
+
+      // The implementation thread's PR is its leading glyph; no other step shows a PR, so
+      // every title starts at the same x.
+      const implementation = await waitForSidebarThreadRow("Implementation");
+      await vi.waitFor(() =>
+        expect(
+          leadOf(implementation).querySelector('button[aria-label*="PR open"]'),
+        ).not.toBeNull(),
+      );
+      const titleLeft = (row: HTMLElement) =>
+        [...row.children]
+          .find((child) => child.textContent?.trim() && child !== leadOf(row))!
+          .getBoundingClientRect().left;
+      expect(branchA.querySelector('button[aria-label*="PR open"]')).toBeNull();
+      expect(titleLeft(implementation)).toBe(titleLeft(querySidebarThreadRowByTitle("Merge")!));
+
+      // Click and Left/Right fold the phase, even with the open thread inside.
+      authoring.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+      expect(authoring.getAttribute("aria-expanded")).toBe("false");
+      authoring.focus();
+      authoring.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+      await waitForSidebarThreadRow("Branch A");
+      authoring.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows a finished workflow's PR state, and its step line always opens a thread", async () => {
     seedAppSettings({ sidebarOlderThreadDays: 7 });
     const at = "2026-03-11T12:00:00.000Z";

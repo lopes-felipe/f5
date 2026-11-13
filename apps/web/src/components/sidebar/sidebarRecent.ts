@@ -9,6 +9,7 @@ import {
   type SidebarWorkflowEntry,
   workflowEntryKey,
 } from "./sidebarLists";
+import { workflowActivityAt } from "./sidebarWorkflowGroups";
 
 /** The Recent view's buckets, in display order. */
 export const RECENT_SIDEBAR_BUCKETS = [
@@ -99,7 +100,10 @@ export function collectRecentSidebarItems<T extends ThreadListItem>(
         key: workflowEntryKey(entry),
         projectId,
         entry,
-        activityAt: entry.workflow.updatedAt,
+        activityAt: workflowActivityAt(
+          entry.workflow,
+          lists.workflowThreadsByKey.get(workflowEntryKey(entry)) ?? [],
+        ),
         overallState:
           lists.workflowMetaByKey.get(workflowEntryKey(entry))?.overallState ?? "pending",
       });

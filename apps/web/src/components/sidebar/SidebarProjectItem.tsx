@@ -43,6 +43,7 @@ import {
   workflowEntryKey,
 } from "./sidebarLists";
 import { liveSidebarActivityAt } from "./sidebarRecent";
+import { workflowActivityAt } from "./sidebarWorkflowGroups";
 import { SidebarThreadRow } from "./SidebarThreadRow";
 import {
   ScheduledShelfIndicator,
@@ -322,7 +323,12 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
       getKey: workflowEntryKey,
       // Only finished workflows fold; a pending or running one stays in view.
       getActivityAt: (entry) =>
-        workflowMeta(entry)?.overallState === "completed" ? entry.workflow.updatedAt : null,
+        workflowMeta(entry)?.overallState === "completed"
+          ? workflowActivityAt(
+              entry.workflow,
+              workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [],
+            )
+          : null,
     },
   );
   const olderExpanded = isListExpanded("older");
@@ -414,6 +420,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
         routeThreadId={routeThreadId}
         expandByDefault={props.expandWorkflowThreadsByDefault}
         overrideExpanded={props.workflowExpandedById[entry.workflow.id]}
+        expansionOverrides={props.workflowExpandedById}
         onToggleCollapsed={projectActions.onToggleWorkflowCollapsed}
         onArchive={projectActions.onArchiveWorkflow}
         indicatorsForThread={indicatorsForThread}

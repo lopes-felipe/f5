@@ -1,9 +1,11 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import { resolveThreadPullRequests } from "../../lib/threadPullRequests";
-import type { ThreadListItem } from "../../types";
+import { createPlanningWorkflow } from "../../test/workflowFixtures";
+import type { Project, ThreadListItem } from "../../types";
 import {
+  buildProjectSidebarLists,
   orderThreadsByPipeline,
   prStatusIndicator,
   type ThreadPr,
@@ -100,6 +102,50 @@ describe("orderThreadsByPipeline", () => {
       "implementation",
       "stray-new",
       "stray-old",
+    ]);
+  });
+});
+
+describe("buildProjectSidebarLists", () => {
+  it("orders workflows by their threads' activity, not a bumped updatedAt", () => {
+    const projectId = ProjectId.makeUnsafe("project-sort");
+    const projectThread = (id: string, lastInteractionAt: string) =>
+      ({ ...thread(id, lastInteractionAt), projectId, snoozedUntil: null }) as ThreadListItem;
+    // Finished weeks ago, but a bookkeeping write bumped updatedAt to now.
+    const bumped = {
+      ...createPlanningWorkflow({
+        id: "workflow-bumped",
+        projectId,
+        branchAThreadId: ThreadId.makeUnsafe("bumped-a"),
+        branchBThreadId: ThreadId.makeUnsafe("bumped-b"),
+      }),
+      updatedAt: "2026-11-13T00:00:00.000Z",
+    };
+    const recent = {
+      ...createPlanningWorkflow({
+        id: "workflow-recent",
+        projectId,
+        branchAThreadId: ThreadId.makeUnsafe("recent-a"),
+        branchBThreadId: ThreadId.makeUnsafe("recent-b"),
+      }),
+      updatedAt: "2026-10-01T00:00:00.000Z",
+    };
+    const lists = buildProjectSidebarLists({
+      project: { id: projectId, model: null } as unknown as Project,
+      threads: [
+        projectThread("bumped-a", "2026-10-19T00:00:00.000Z"),
+        projectThread("bumped-b", "2026-10-19T00:00:00.000Z"),
+        projectThread("recent-a", "2026-11-12T00:00:00.000Z"),
+        projectThread("recent-b", "2026-11-12T00:00:00.000Z"),
+      ],
+      planningWorkflows: [bumped, recent],
+      codeReviewWorkflows: [],
+      investigationWorkflows: [],
+      draftThread: null,
+    });
+    expect(lists.projectWorkflows.map((entry) => entry.workflow.id)).toEqual([
+      "workflow-recent",
+      "workflow-bumped",
     ]);
   });
 });
