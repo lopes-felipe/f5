@@ -11,7 +11,12 @@ import {
   pendingUserInputsOf,
   runningTurnElapsed,
 } from "./homeItems";
-import { appendQuickStartText, quickStartNeedsFullComposer } from "./HomeQuickStart";
+import { homeComposerDraft } from "./homeComposerDraft";
+import {
+  appendQuickStartText,
+  quickStartEnterAction,
+  quickStartNeedsFullComposer,
+} from "./HomeQuickStart";
 import { nextScheduledRunAt } from "./HomeStatusStrip";
 import { mergeHomeThreadTail, tailFromMessages } from "./useHomeThreadTail";
 
@@ -98,6 +103,59 @@ describe("quickStartNeedsFullComposer", () => {
     expect(quickStartNeedsFullComposer("/Users/me/app.ts crashes on start")).toBe(false);
     expect(quickStartNeedsFullComposer("$ npm test fails")).toBe(false);
     expect(quickStartNeedsFullComposer("Use src/app.ts and /tmp")).toBe(false);
+  });
+});
+
+describe("quickStartEnterAction", () => {
+  const press = (
+    shortcut: Parameters<typeof quickStartEnterAction>[0]["shortcut"],
+    keys: { shiftKey?: boolean; altKey?: boolean; modifierKey?: boolean } = {},
+    text = "Fix the login bug",
+  ) =>
+    quickStartEnterAction({
+      shortcut,
+      text,
+      shiftKey: false,
+      altKey: false,
+      modifierKey: false,
+      ...keys,
+    });
+
+  it("sends on Enter and opens on the modifier with the plain Enter setting", () => {
+    expect(press("enter")).toBe("send");
+    expect(press("enter", { modifierKey: true })).toBe("send-and-open");
+    expect(press("enter", { shiftKey: true })).toBe("newline");
+    expect(press("enter", { altKey: true })).toBe("newline");
+    expect(press("enter", { modifierKey: true, shiftKey: true })).toBe("newline");
+  });
+
+  it("never sends on a plain Enter when the setting asks for the modifier", () => {
+    expect(press("mod-enter")).toBe("newline");
+    // The modifier is the send key here, so it sends and stays.
+    expect(press("mod-enter", { modifierKey: true })).toBe("send");
+    expect(press("mod-enter", { modifierKey: true, shiftKey: true })).toBe("newline");
+  });
+
+  it("asks for the modifier only once the text has several lines", () => {
+    expect(press("mod-enter-multiline")).toBe("send");
+    expect(press("mod-enter-multiline", {}, "Fix the bug\nand add a test")).toBe("newline");
+    expect(press("mod-enter-multiline", { modifierKey: true }, "Fix the bug\nand a test")).toBe(
+      "send",
+    );
+  });
+});
+
+describe("homeComposerDraft.clearSentText", () => {
+  it("clears the box only while it still holds what was sent", () => {
+    homeComposerDraft.setText("Fix the login bug");
+    homeComposerDraft.clearSentText("Fix the login bug");
+    expect(homeComposerDraft.text()).toBe("");
+
+    // A late answer for an earlier send leaves text typed since alone.
+    homeComposerDraft.setText("A newer task");
+    homeComposerDraft.clearSentText("Fix the login bug");
+    expect(homeComposerDraft.text()).toBe("A newer task");
+    homeComposerDraft.resetForTests();
   });
 });
 

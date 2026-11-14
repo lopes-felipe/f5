@@ -27,9 +27,16 @@ The box at the top of Home starts a thread without leaving Home. Pick the projec
 and its effort, **Agent** or **Plan**, **Access**, and **Local** or **New worktree**, type the
 task and press `Enter`. The thread starts in the background and shows up under **Running**;
 `mod+Enter` starts it and opens it. The settings begin from the project's defaults for a new
-thread, and a new worktree starts from the project's current branch.
+thread, and a new worktree starts from the project's current branch. If F5 cannot read the
+project's branches, the workspace shows **Local** and the thread starts in the project folder.
 
-If the send fails, your text stays in the box. Text that begins with a `/` command or a skill
+The box follows **Settings → Conversation → Send shortcut**. If that setting asks for
+`mod+Enter`, `Enter` adds a line, and `mod+Enter` starts the thread and stays on Home; open the
+thread from the **Open** button in the confirmation.
+
+If the send fails, your text stays in the box. If no answer came back, for example because the
+connection dropped, send the same text again: F5 resends the same message, so the thread starts
+once. Text that begins with a `/` command or a skill
 opens the full composer instead, where those are resolved. For attachments, `@` mentions or
 another base branch, click **Open full composer**: it opens a new thread with your text and
 the settings you picked, unsent.

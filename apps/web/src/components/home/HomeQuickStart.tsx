@@ -11,26 +11,25 @@ import {
   type Ref,
 } from "react";
 
+import { type AppSettings, useAppSettingsSelector } from "../../appSettings";
 import { useCommandPaletteStore } from "../../commandPaletteStore";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { requestComposerFocus } from "../../composerFocusRequestStore";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
 import { useStartScratchThread } from "../../hooks/useStartScratchThread";
 import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
+import { replyNeedsComposer } from "../../lib/sendThreadReply";
 import { waitForThreadInStore } from "../../lib/threadArrival";
 import { isMacPlatform } from "../../lib/utils";
 import type { Project } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
 import { useServerMutationsAvailable } from "../../wsConnectionState";
+import { composerSendShortcutLabel, shouldSubmitComposer } from "../chat/composer/sendShortcut";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { HomeComposerHandle } from "./HomeComposerControls";
-import {
-  applyHomeComposerSettings,
-  homeComposerDraft,
-  homeSelectionKey,
-} from "./homeComposerDraft";
+import { homeComposerDraft, homeSelectionKey, useHomeComposerTextStore } from "./homeComposerDraft";
 import {
   HomeProjectPickerPlaceholder,
   type HomeProjectSelection,
@@ -44,9 +43,6 @@ const HomeComposerControls = lazy(() => import("./HomeComposerControls"));
 
 export const QUICK_START_PLACEHOLDER = "What should we work on?";
 
-/** A leading `/command` or `$skill`. The thread composer resolves those; Home does not. */
-const LEADING_COMMAND_PATTERN = /^[/$][^\s/$]+(?=\s|$)/;
-
 /** Appends quick-start text to a draft without disturbing its mentions. */
 export function appendQuickStartText(existingPrompt: string, text: string): string {
   if (existingPrompt.trim().length === 0) return text;
@@ -54,16 +50,42 @@ export function appendQuickStartText(existingPrompt: string, text: string): stri
   return `${existingPrompt}${separator}${text}`;
 }
 
-/** Whether Home sends this text itself or hands it to the thread composer. */
+/**
+ * Whether Home sends this text itself or hands it to the thread composer, which resolves
+ * a leading `/command` or `$skill`.
+ */
 export function quickStartNeedsFullComposer(text: string): boolean {
-  return LEADING_COMMAND_PATTERN.test(text.trim());
+  return replyNeedsComposer(text);
+}
+
+/** What Enter does in Home's box. */
+export type QuickStartEnterAction = "send" | "send-and-open" | "newline";
+
+/**
+ * Home follows the send shortcut setting, as the thread composer does: with a setting that
+ * asks for the modifier, a plain Enter is a new line and never starts an agent. Mod+Enter
+ * is the other way to send only with the plain Enter setting, the rule the new-thread
+ * composer has for its background send: there it sends and stays, here it sends and opens.
+ */
+export function quickStartEnterAction(input: {
+  readonly shortcut: AppSettings["sendShortcut"];
+  readonly text: string;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+  readonly modifierKey: boolean;
+}): QuickStartEnterAction {
+  if (input.shortcut === "enter" && input.modifierKey && !input.shiftKey && !input.altKey) {
+    return "send-and-open";
+  }
+  return shouldSubmitComposer({ ...input, prompt: input.text }) ? "send" : "newline";
 }
 
 /**
  * Home's starting point, above the queue: pick a project, a model and how the agent
  * works, describe the task, and the thread starts in the background while Home stays
- * open. Mod+Enter also opens the thread. Attachments, mentions, commands and skills
- * belong to the full composer, which opens with the text typed here.
+ * open. With the plain Enter send shortcut, Mod+Enter also opens the thread. Attachments,
+ * mentions, commands and skills belong to the full composer, which opens with the text
+ * typed here.
  */
 export function HomeQuickStart(props: {
   readonly projects: ReadonlyArray<Project>;
@@ -75,6 +97,7 @@ export function HomeQuickStart(props: {
   const navigate = useNavigate();
   const startScratchThread = useStartScratchThread();
   const mutationsAvailable = useServerMutationsAvailable();
+  const sendShortcut = useAppSettingsSelector((settings) => settings.sendShortcut);
   const [selected, setSelected] = useState<HomeProjectSelection | null>(null);
   const liveRef = useRef(true);
   useEffect(() => {
@@ -83,12 +106,11 @@ export function HomeQuickStart(props: {
       liveRef.current = false;
     };
   }, []);
-  const [text, setTextState] = useState(homeComposerDraft.text);
-  const setText = (next: string) => {
-    homeComposerDraft.setText(next);
-    setTextState(next);
-  };
-  const [busy, setBusy] = useState<"send" | "open" | null>(null);
+  // Both live outside the component: leaving Home and coming back while a send is still
+  // in flight finds the same text, still busy, and sees it cleared when the answer arrives.
+  const text = useHomeComposerTextStore((state) => state.text);
+  const busy = useHomeComposerTextStore((state) => state.busy);
+  const { setText, setBusy } = homeComposerDraft;
   // Set once the controls have loaded: they hold the settings a send goes out with.
   const [controls, setControls] = useState<HomeComposerHandle | null>(null);
   const selection: HomeProjectSelection =
@@ -103,7 +125,8 @@ export function HomeQuickStart(props: {
   const trimmed = text.trim();
 
   const openFullComposer = async () => {
-    if (busy) return;
+    if (homeComposerDraft.busy()) return;
+    const handedText = text;
     setBusy("open");
     try {
       // Home must prefill before navigating: navigation itself unmounts this form.
@@ -119,16 +142,19 @@ export function HomeQuickStart(props: {
       const { threadId } = result;
       const draftStore = useComposerDraftStore.getState();
       const existingPrompt = draftStore.draftsByThreadId[threadId]?.prompt ?? "";
-      // A draft that already holds text keeps the model it was written for.
-      if (existingPrompt.trim().length === 0) applyHomeComposerSettings(threadId, selectionKey);
+      // A draft that already holds text keeps the model and modes it was written for. An
+      // empty one takes what Home shows, once Home's controls have loaded it.
+      if (existingPrompt.trim().length === 0) controls?.applySettings(threadId);
       if (trimmed.length > 0) {
         // Without explicit mentions the store reconciles the existing ones
         // against the new prompt; appending keeps every mention range intact.
         draftStore.setPrompt(threadId, appendQuickStartText(existingPrompt, trimmed));
       }
+      // The draft has the text now. Clear the box even when Home was left meanwhile, or
+      // the same task would wait in both places.
+      homeComposerDraft.clearSentText(handedText);
       if (!liveRef.current) return;
       requestComposerFocus(threadId);
-      setText("");
       await navigate({ to: "/$threadId", params: { threadId } });
     } catch (error) {
       // Keep the typed text so the user can retry.
@@ -138,18 +164,25 @@ export function HomeQuickStart(props: {
         description: error instanceof Error ? error.message : "An unexpected error occurred.",
       });
     } finally {
-      if (liveRef.current) setBusy(null);
+      setBusy(null);
     }
   };
 
   const send = async (open: boolean) => {
-    if (busy || trimmed.length === 0) return;
+    if (homeComposerDraft.busy() || trimmed.length === 0) return;
     if (quickStartNeedsFullComposer(trimmed)) {
       await openFullComposer();
       return;
     }
     // Nothing is sent before the settings it goes out with are on screen.
-    if (!controls) return;
+    if (!controls) {
+      toastManager.add({
+        type: "info",
+        title: "Still loading",
+        description: "Your text is kept. Send once the model and access controls are shown.",
+      });
+      return;
+    }
     if (!mutationsAvailable) {
       toastManager.add({
         type: "info",
@@ -158,11 +191,12 @@ export function HomeQuickStart(props: {
       });
       return;
     }
+    const sentText = text;
     setBusy("send");
     try {
       const { threadId, outcome } = await controls.start(trimmed);
-      homeComposerDraft.setText("");
-      if (liveRef.current) setTextState("");
+      // Only what was sent: Home may have been left and reopened, and new text typed.
+      homeComposerDraft.clearSentText(sentText);
       const openThread = () => void navigate({ to: "/$threadId", params: { threadId } });
       // The thread route sends an unknown thread back to Home, so wait for it to arrive.
       if (open && (await waitForThreadInStore(threadId)) && liveRef.current) {
@@ -182,7 +216,7 @@ export function HomeQuickStart(props: {
         description: error instanceof Error ? error.message : "An unexpected error occurred.",
       });
     } finally {
-      if (liveRef.current) setBusy(null);
+      setBusy(null);
     }
   };
 
@@ -191,15 +225,27 @@ export function HomeQuickStart(props: {
     void send(false);
   };
 
+  const isMac = isMacPlatform(navigator.platform);
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== "Enter" || event.shiftKey || isKeyboardEventComposing(event.nativeEvent)) {
-      return;
-    }
+    if (event.key !== "Enter" || isKeyboardEventComposing(event.nativeEvent)) return;
+    const action = quickStartEnterAction({
+      shortcut: sendShortcut,
+      text,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      modifierKey: isMac ? event.metaKey : event.ctrlKey,
+    });
+    // The text box adds the line itself.
+    if (action === "newline") return;
     event.preventDefault();
-    void send(event.metaKey || event.ctrlKey);
+    void send(action === "send-and-open");
   };
 
-  const modKey = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
+  const sendKeyLabel = composerSendShortcutLabel(sendShortcut, text, isMac);
+  const sendTooltip =
+    sendShortcut === "enter"
+      ? `Enter starts the thread and stays here. ${isMac ? "⌘" : "Ctrl+"}Enter also opens it.`
+      : `${sendKeyLabel} starts the thread and stays here.`;
 
   return (
     <form
@@ -311,9 +357,7 @@ export function HomeQuickStart(props: {
               Send
               <ArrowUpIcon />
             </TooltipTrigger>
-            <TooltipPopup side="bottom">
-              Enter starts the thread and stays here. {modKey}+Enter also opens it.
-            </TooltipPopup>
+            <TooltipPopup side="bottom">{sendTooltip}</TooltipPopup>
           </Tooltip>
         </div>
       </div>

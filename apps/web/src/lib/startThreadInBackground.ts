@@ -13,8 +13,8 @@ import type {
 import { buildFirstSendBootstrap } from "../components/ChatView.logic";
 import { readNativeApi } from "../nativeApi";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
-import { isTransportConnectionErrorMessage } from "../transportError";
 import type { Project } from "../types";
+import { createUnconfirmedSubmissions } from "./unconfirmedSubmission";
 import { newCommandId, newMessageId, newThreadId } from "./utils";
 
 /** A first message and everything the new thread starts with. */
@@ -104,15 +104,17 @@ function attemptKey(input: BackgroundThreadStartInput): string {
 }
 
 /**
- * A submission whose response was lost. The server may have started the thread, so sending
- * the same message with the same settings again resends this exact command, which the
- * server replays instead of starting a second thread.
+ * The start whose outcome is not known. Until the server answers, it may have started the
+ * thread: a timeout or a dropped connection says nothing either way. Sending the same
+ * message with the same settings again resends this exact command, thread id included,
+ * which the server replays instead of starting a second agent on the same task. It is
+ * kept without a time limit, until the server answers or something else is sent.
  */
-let unconfirmed: { readonly key: string; readonly command: ClientThreadTurnStartCommand } | null =
-  null;
+const unconfirmedStarts = createUnconfirmedSubmissions<ClientThreadTurnStartCommand>();
+const HOME_START_SLOT = "home";
 
 export function resetBackgroundThreadStartForTests(): void {
-  unconfirmed = null;
+  unconfirmedStarts.clear();
 }
 
 /**
@@ -124,23 +126,17 @@ export async function startThreadInBackground(
 ): Promise<BackgroundThreadStartResult> {
   const api = readNativeApi();
   if (!api) throw new Error("F5 is not connected.");
-  const key = attemptKey(input);
-  const command =
-    unconfirmed?.key === key ? unconfirmed.command : buildBackgroundThreadStartCommand(input);
-  unconfirmed = { key, command };
-  let submission;
-  try {
-    submission = await api.nextTurnQueue.submit({
-      submissionId: command.commandId,
-      command,
-      intent: "auto",
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : null;
-    if (!isTransportConnectionErrorMessage(message)) unconfirmed = null;
-    throw error;
-  }
-  unconfirmed = null;
+  const { command, result: submission } = await unconfirmedStarts.submit({
+    slot: HOME_START_SLOT,
+    signature: attemptKey(input),
+    build: () => buildBackgroundThreadStartCommand(input),
+    send: (toSend) =>
+      api.nextTurnQueue.submit({
+        submissionId: toSend.commandId,
+        command: toSend,
+        intent: "auto",
+      }),
+  });
   if (
     submission.disposition === "canceled" ||
     submission.disposition === "cleared" ||

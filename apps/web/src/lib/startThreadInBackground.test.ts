@@ -6,6 +6,7 @@ vi.mock("../nativeApi", () => ({
   readNativeApi: () => ({ nextTurnQueue: { submit } }),
 }));
 
+import { WsRequestError } from "../wsTransport";
 import {
   type BackgroundThreadStartInput,
   buildBackgroundThreadStartCommand,
@@ -94,18 +95,43 @@ describe("startThreadInBackground", () => {
     await expect(startThreadInBackground(INPUT)).rejects.toThrow("Provider is turned off.");
   });
 
-  it("resends the same submission after a lost response, so one thread starts", async () => {
-    submit.mockRejectedValueOnce(new Error("WebSocket connection closed."));
-    await expect(startThreadInBackground(INPUT)).rejects.toThrow("WebSocket connection closed.");
-    submit.mockResolvedValue({ disposition: "started", sequence: 1 });
-    await startThreadInBackground(INPUT);
-    const [first, second] = submit.mock.calls.map((call) => call[0]);
-    expect(second.submissionId).toBe(first.submissionId);
-    expect(second.command.threadId).toBe(first.command.threadId);
+  it.each([
+    "WebSocket connection closed.",
+    // Sent, and the server may still be working on it: the transport waits for a late answer.
+    "Request timed out: nextTurnQueue.submit",
+    // Rejects every request in flight.
+    "WebSocket connection timed out.",
+  ])(
+    "resends the same submission after a lost response, so one thread starts (%s)",
+    async (message) => {
+      submit.mockRejectedValueOnce(new Error(message));
+      await expect(startThreadInBackground(INPUT)).rejects.toThrow(message);
+      submit.mockResolvedValue({ disposition: "started", sequence: 1 });
+      await startThreadInBackground(INPUT);
+      const [first, second] = submit.mock.calls.map((call) => call[0]);
+      expect(second.submissionId).toBe(first.submissionId);
+      expect(second.command.commandId).toBe(first.command.commandId);
+      expect(second.command.threadId).toBe(first.command.threadId);
 
-    // Once confirmed, the same text starts another thread.
-    await startThreadInBackground(INPUT);
-    expect(submit.mock.calls[2]![0].command.threadId).not.toBe(first.command.threadId);
+      // Once confirmed, the same text starts another thread.
+      await startThreadInBackground(INPUT);
+      expect(submit.mock.calls[2]![0].command.threadId).not.toBe(first.command.threadId);
+    },
+  );
+
+  it("keeps the unconfirmed start for as long as nothing else is sent", async () => {
+    vi.useFakeTimers();
+    try {
+      submit.mockRejectedValueOnce(new Error("Request timed out: nextTurnQueue.submit"));
+      await expect(startThreadInBackground(INPUT)).rejects.toThrow();
+      vi.advanceTimersByTime(60 * 60_000);
+      submit.mockResolvedValue({ disposition: "started", sequence: 1 });
+      await startThreadInBackground(INPUT);
+      const [first, second] = submit.mock.calls.map((call) => call[0]);
+      expect(second.command.threadId).toBe(first.command.threadId);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("starts over when the text or settings changed after a lost response", async () => {
@@ -117,13 +143,37 @@ describe("startThreadInBackground", () => {
     expect(second.command.threadId).not.toBe(first.command.threadId);
   });
 
-  it("starts over after a failure the server reported", async () => {
-    submit.mockRejectedValueOnce(new Error("Select a base branch."));
-    await expect(startThreadInBackground(INPUT)).rejects.toThrow("Select a base branch.");
+  it.each([
+    [
+      "the server reported",
+      new WsRequestError("Select a base branch.", "Invalid", undefined, false, undefined, "server"),
+    ],
+    [
+      "that never left the client",
+      new WsRequestError(
+        "Request timed out before it was sent: nextTurnQueue.submit",
+        "QueueExpired",
+        undefined,
+        true,
+      ),
+    ],
+    ["of a connection that was not ready", new WsRequestError("Not ready.", "ConnectionNotReady")],
+  ])("starts over after a failure %s", async (_name, error) => {
+    submit.mockRejectedValueOnce(error);
+    await expect(startThreadInBackground(INPUT)).rejects.toBe(error);
     submit.mockResolvedValue({ disposition: "started", sequence: 1 });
     await startThreadInBackground(INPUT);
     const [first, second] = submit.mock.calls.map((call) => call[0]);
     expect(second.submissionId).not.toBe(first.submissionId);
+    expect(second.command.threadId).not.toBe(first.command.threadId);
+  });
+
+  it("starts over after the server refused the submission", async () => {
+    submit.mockResolvedValueOnce({ disposition: "rejected", detail: "Provider is turned off." });
+    await expect(startThreadInBackground(INPUT)).rejects.toThrow("Provider is turned off.");
+    submit.mockResolvedValue({ disposition: "started", sequence: 1 });
+    await startThreadInBackground(INPUT);
+    const [first, second] = submit.mock.calls.map((call) => call[0]);
     expect(second.command.threadId).not.toBe(first.command.threadId);
   });
 });

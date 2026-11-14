@@ -1,4 +1,10 @@
-import { type ThreadEnvMode, ThreadId } from "@t3tools/contracts";
+import {
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ThreadEnvMode,
+  ThreadId,
+} from "@t3tools/contracts";
+import { create } from "zustand";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
@@ -20,7 +26,22 @@ export function homeSelectionKey(selection: HomeProjectSelection): string {
  */
 let seededSelection: string | null = null;
 let chosenEnvMode: { readonly selection: string; readonly mode: ThreadEnvMode } | null = null;
-let text = "";
+
+interface HomeComposerTextState {
+  /** The typed text; it outlives a trip to another page. */
+  readonly text: string;
+  /**
+   * What the box is doing with its text: starting a thread, or handing it to the full
+   * composer. Kept here, not in the component, so the box is still busy when Home is left
+   * and reopened before the server answered: the text on screen is the one in flight.
+   */
+  readonly busy: "send" | "open" | null;
+}
+
+export const useHomeComposerTextStore = create<HomeComposerTextState>(() => ({
+  text: "",
+  busy: null,
+}));
 
 export const homeComposerDraft = {
   seededFor: (): string | null => seededSelection,
@@ -33,38 +54,47 @@ export const homeComposerDraft = {
   setEnvMode: (selection: string, mode: ThreadEnvMode): void => {
     chosenEnvMode = { selection, mode };
   },
-  /** The typed text outlives a trip to another page. */
-  text: (): string => text,
-  setText: (next: string): void => {
-    text = next;
+  text: (): string => useHomeComposerTextStore.getState().text,
+  setText: (text: string): void => {
+    useHomeComposerTextStore.setState({ text });
+  },
+  /** Clears the box only while it still holds `sent`: text typed since was never sent. */
+  clearSentText: (sent: string): void => {
+    if (useHomeComposerTextStore.getState().text === sent) {
+      useHomeComposerTextStore.setState({ text: "" });
+    }
+  },
+  busy: (): HomeComposerTextState["busy"] => useHomeComposerTextStore.getState().busy,
+  setBusy: (busy: HomeComposerTextState["busy"]): void => {
+    useHomeComposerTextStore.setState({ busy });
   },
   resetForTests: (): void => {
     seededSelection = null;
     chosenEnvMode = null;
-    text = "";
+    useHomeComposerTextStore.setState({ text: "", busy: null });
   },
 };
 
 /**
  * Gives a thread draft the model, effort and modes shown on Home, so the full composer
- * opens with what was on screen. Does nothing until Home's controls have loaded them
- * for this selection.
+ * opens with what was on screen. `modes` are the ones Home resolved and displayed, which
+ * may be a project default the Home draft never stored: both are always written, or a
+ * reused draft would keep modes Home did not show. Does nothing until Home's controls
+ * have loaded the settings for this selection.
  */
-export function applyHomeComposerSettings(threadId: ThreadId, selection: string): void {
+export function applyHomeComposerSettings(
+  threadId: ThreadId,
+  selection: string,
+  modes: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+): void {
   if (seededSelection !== selection) return;
   const drafts = useComposerDraftStore.getState();
   const home = drafts.draftsByThreadId[HOME_COMPOSER_DRAFT_ID];
-  if (!home) return;
-  if (home.provider) drafts.setProvider(threadId, home.provider);
-  if (home.providerInstanceId) drafts.setProviderInstance(threadId, home.providerInstanceId);
-  if (home.model) drafts.setModel(threadId, home.model);
-  if (home.modelOptions) drafts.setModelOptions(threadId, home.modelOptions);
-  if (home.runtimeMode) {
-    drafts.setRuntimeMode(threadId, home.runtimeMode);
-    drafts.setDraftThreadContext(threadId, { runtimeMode: home.runtimeMode });
-  }
-  if (home.interactionMode) {
-    drafts.setInteractionMode(threadId, home.interactionMode);
-    drafts.setDraftThreadContext(threadId, { interactionMode: home.interactionMode });
-  }
+  if (home?.provider) drafts.setProvider(threadId, home.provider);
+  if (home?.providerInstanceId) drafts.setProviderInstance(threadId, home.providerInstanceId);
+  if (home?.model) drafts.setModel(threadId, home.model);
+  if (home?.modelOptions) drafts.setModelOptions(threadId, home.modelOptions);
+  drafts.setRuntimeMode(threadId, modes.runtimeMode);
+  drafts.setInteractionMode(threadId, modes.interactionMode);
+  drafts.setDraftThreadContext(threadId, modes);
 }

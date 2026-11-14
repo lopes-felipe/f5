@@ -6,6 +6,7 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type ThreadEnvMode,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import {
@@ -48,7 +49,12 @@ import {
 import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker";
 import { RuntimeModePicker } from "../chat/RuntimeModePicker";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { HOME_COMPOSER_DRAFT_ID, homeComposerDraft, homeSelectionKey } from "./homeComposerDraft";
+import {
+  applyHomeComposerSettings,
+  HOME_COMPOSER_DRAFT_ID,
+  homeComposerDraft,
+  homeSelectionKey,
+} from "./homeComposerDraft";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 
 const EMPTY_PROVIDER_STATUSES: ReadonlyArray<ServerProvider> = [];
@@ -66,6 +72,11 @@ export interface HomeComposerHandle {
    * show when nothing was sent.
    */
   readonly start: (text: string) => Promise<BackgroundThreadStartResult>;
+  /**
+   * Gives a thread draft the model, effort and modes on screen, for the full composer.
+   * The modes are the ones shown, a project default included.
+   */
+  readonly applySettings: (threadId: ThreadId) => void;
 }
 
 async function ensureScratchProject(): Promise<Project | undefined> {
@@ -172,17 +183,29 @@ export default function HomeComposerControls(props: {
   const currentBranch = branchesQuery.data?.branches.find((branch) => branch.current)?.name ?? null;
   const workspaceLoading =
     hasGitProject && (branchesQuery.isPending || defaultEnvModeQuery.isPending);
-  const envMode: ThreadEnvMode =
-    !hasGitProject || branchesQuery.data?.isRepo === false
-      ? "local"
-      : (chosenEnvMode ?? defaultEnvModeQuery.data ?? "local");
+  // The branches could not be read, so there is no workspace picker to offer either.
+  const branchLookupFailed = hasGitProject && !branchesQuery.isPending && !branchesQuery.data;
+  // A worktree needs a repository Home has read. Without one the thread runs in the project
+  // folder, whatever the project's default: Home must not ask for a worktree it shows no
+  // picker for and has no branch to start from.
+  const envMode: ThreadEnvMode = isRepo
+    ? (chosenEnvMode ?? defaultEnvModeQuery.data ?? "local")
+    : "local";
 
-  const noProviderAvailable = dispatch.noProviderAvailable;
+  // Until the server's provider list arrives there is nothing to pick from: that is
+  // loading, not a setup with no provider.
+  const providersLoading = serverConfig === undefined;
+  const noProviderAvailable = !providersLoading && dispatch.noProviderAvailable;
 
   useImperativeHandle(
     props.handleRef,
     () => ({
+      applySettings: (threadId) =>
+        applyHomeComposerSettings(threadId, selectionKey, { runtimeMode, interactionMode }),
       start: async (text) => {
+        if (providersLoading) {
+          throw new Error("Still loading the providers. Try again in a moment.");
+        }
         if (noProviderAvailable) {
           throw new Error("No provider is available. Enable one in Settings.");
         }
@@ -233,8 +256,10 @@ export default function HomeComposerControls(props: {
       noProviderAvailable,
       project,
       projectSettings.enableAssistantStreaming,
+      providersLoading,
       runtimeMode,
       scratch,
+      selectionKey,
       workspaceLoading,
     ],
   );
@@ -268,7 +293,11 @@ export default function HomeComposerControls(props: {
   return (
     // The chips wrap in the bar's own row, next to the project picker.
     <div data-slot="home-composer-controls" className="contents">
-      {noProviderAvailable ? (
+      {providersLoading ? (
+        <span className="px-2 text-xs text-muted-foreground" role="status">
+          Loading providers…
+        </span>
+      ) : noProviderAvailable ? (
         <span className="px-2 text-xs text-muted-foreground" role="status">
           No provider available
         </span>
@@ -353,6 +382,16 @@ export default function HomeComposerControls(props: {
             </span>
           ) : null}
         </>
+      ) : branchLookupFailed ? (
+        <span
+          role="status"
+          data-composer-control="envMode"
+          className="inline-flex items-center gap-1 px-2 text-xs text-muted-foreground"
+          title="The project's branches could not be read, so the thread starts in the project folder. Open the full composer to use a worktree."
+        >
+          <FolderIcon className="size-3.5" />
+          Local
+        </span>
       ) : null}
     </div>
   );

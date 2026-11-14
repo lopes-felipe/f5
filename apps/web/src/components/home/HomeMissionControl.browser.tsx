@@ -22,6 +22,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { APP_SETTINGS_STORAGE_KEY, parsePersistedAppSettings } from "../../appSettings";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useComposerFocusRequestStore } from "../../composerFocusRequestStore";
 import { resetThreadRepliesForTests } from "../../lib/sendThreadReply";
@@ -59,16 +60,46 @@ vi.mock("./HomePreviewPane", async (importOriginal) => {
   };
 });
 
-function holdPreview(): () => void {
+// The composer's controls load after the box. A test holds them back to send before then.
+const controlsGate = vi.hoisted(() => ({ pending: null as Promise<void> | null }));
+vi.mock("./HomeComposerControls", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./HomeComposerControls")>();
+  const { createElement, use } = await import("react");
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      if (controlsGate.pending) use(controlsGate.pending);
+      return createElement(actual.default, props);
+    },
+  };
+});
+
+function hold(gate: { pending: Promise<void> | null }): () => void {
   let release!: () => void;
-  previewGate.pending = new Promise<void>((resolve) => {
+  gate.pending = new Promise<void>((resolve) => {
     release = resolve;
   });
   return () => {
-    previewGate.pending = null;
+    gate.pending = null;
     release();
   };
 }
+const holdPreview = () => hold(previewGate);
+
+/** A promise a test settles by hand, to act while a request is in flight. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
+const IS_MAC = /mac|iphone|ipad|ipod/i.test(navigator.platform);
+const MOD_ENTER = IS_MAC ? "{Meta>}{Enter}{/Meta}" : "{Control>}{Enter}{/Control}";
+const MOD_ENTER_LABEL = IS_MAC ? "⌘Enter" : "Ctrl+Enter";
 
 const NOW_ISO = new Date().toISOString();
 // Older than every thread so thread activity, not creation order, picks the
@@ -79,7 +110,7 @@ const getProjectSettings = vi.fn(async () => {
   throw new Error("offline");
 });
 // One provider, so Home's composer has a model to send with.
-const getServerConfig = async () => ({
+const serverConfig = async () => ({
   cwd: "/repo",
   keybindingsConfigPath: "/repo/.t3code-keybindings.json",
   keybindings: [],
@@ -88,6 +119,7 @@ const getServerConfig = async () => ({
   providers: [createTestServerProvider("codex")],
   availableEditors: [],
 });
+const getServerConfig = vi.fn(serverConfig);
 const dispatchCommand = vi.fn(async (_command: { type: string; threadId?: string }) => ({
   sequence: 1,
 }));
@@ -149,10 +181,11 @@ const resumedQueue = async (input: {
 const setQueuePaused = vi.fn(resumedQueue);
 const noPausedQueues = async () => ({ threads: [] as ReadonlyArray<object> });
 const queueSummary = vi.fn(noPausedQueues);
-const listBranches = vi.fn(async (_input: { cwd: string }) => ({
+const repoOnMain = async (_input: { cwd: string }) => ({
   isRepo: true,
   branches: [{ name: "main", current: true }],
-}));
+});
+const listBranches = vi.fn(repoOnMain);
 
 function makeProject(id: string, name: string): Project {
   return {
@@ -401,6 +434,9 @@ describe("HomeMissionControl", () => {
 
   afterEach(() => {
     previewGate.pending = null;
+    controlsGate.pending = null;
+    getServerConfig.mockImplementation(serverConfig);
+    listBranches.mockImplementation(repoOnMain);
     resetWsConnectionStateForTests();
     resetProtocolStateForTests();
     homeComposerDraft.resetForTests();
@@ -815,7 +851,7 @@ describe("HomeMissionControl", () => {
       const view = await renderHome([IDLE_THREAD]);
       try {
         await typeTask("Fix the login bug");
-        await userEvent.keyboard("{Control>}{Enter}{/Control}");
+        await userEvent.keyboard(MOD_ENTER);
 
         await vi.waitFor(() =>
           expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(
@@ -995,6 +1031,223 @@ describe("HomeMissionControl", () => {
           .element(page.getByRole("textbox", { name: "What should we work on?" }))
           .toHaveValue("Half a thought");
       } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("follows the send shortcut setting: Enter adds a line, the modifier sends and stays", async () => {
+      localStorage.setItem(
+        APP_SETTINGS_STORAGE_KEY,
+        JSON.stringify({ ...parsePersistedAppSettings(null), sendShortcut: "mod-enter" }),
+      );
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        const input = await typeTask("Fix the login bug");
+        await userEvent.keyboard("{Enter}");
+        await expect.element(input).toHaveValue("Fix the login bug\n");
+        expect(submitTurn).not.toHaveBeenCalled();
+        await page.getByRole("button", { name: "Send" }).hover();
+        await expect
+          .element(page.getByText(`${MOD_ENTER_LABEL} starts the thread and stays here.`))
+          .toBeVisible();
+
+        await userEvent.keyboard(MOD_ENTER);
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        expect(sentCommand().message.text).toBe("Fix the login bug");
+        await expect.element(input).toHaveValue("");
+        // The modifier is the way to send here, so it does not also open the thread.
+        expect(view.pushedPaths).toEqual([]);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("names both keys in the Send tooltip with the plain Enter setting", async () => {
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await typeTask("Fix the login bug");
+        await page.getByRole("button", { name: "Send" }).hover();
+        await expect
+          .element(
+            page.getByText(
+              `Enter starts the thread and stays here. ${MOD_ENTER_LABEL} also opens it.`,
+            ),
+          )
+          .toBeVisible();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("stays busy with the text in flight across a trip away, and clears it on the answer", async () => {
+      const answer = deferred<TurnSubmissionOutcome>();
+      submitTurn.mockImplementation(() => answer.promise);
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await typeTask("Fix the login bug");
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+
+        await view.router.navigate({ to: "/$threadId", params: { threadId: "elsewhere" } });
+        await view.router.navigate({ to: "/" });
+        const input = page.getByRole("textbox", { name: "What should we work on?" });
+        await expect.element(input).toHaveValue("Fix the login bug");
+        // Still the message in flight: it cannot be edited or sent a second time.
+        await expect.element(input).toHaveAttribute("readonly");
+        await expect.element(page.getByRole("button", { name: "Send" })).toBeDisabled();
+
+        answer.resolve(await startedTurn(submitTurn.mock.calls[0]![0]));
+        await expect.element(input).toHaveValue("");
+        await expect.element(input).not.toHaveAttribute("readonly");
+        expect(submitTurn).toHaveBeenCalledTimes(1);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("clears the box once the full composer has the text, even when Home was left meanwhile", async () => {
+      const scratch = deferred<{ projectId: ProjectId }>();
+      ensureScratch.mockImplementation(() => scratch.promise as never);
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await pickNoProject();
+        await typeTask("Research solar energy");
+        await page.getByRole("button", { name: "Open full composer" }).click();
+        await vi.waitFor(() => expect(ensureScratch).toHaveBeenCalledTimes(1));
+        await view.router.navigate({ to: "/$threadId", params: { threadId: "elsewhere" } });
+
+        useStore.setState((state) => ({ projects: [...state.projects, SCRATCH] }));
+        scratch.resolve({ projectId: SCRATCH.id });
+        await vi.waitFor(() =>
+          expect(
+            Object.values(useComposerDraftStore.getState().draftsByThreadId).map(
+              (draft) => draft.prompt,
+            ),
+          ).toContain("Research solar energy"),
+        );
+        // One copy of the task: in the draft, not also waiting on Home.
+        await vi.waitFor(() => expect(homeComposerDraft.text()).toBe(""));
+        await view.router.navigate({ to: "/" });
+        await expect
+          .element(page.getByRole("textbox", { name: "What should we work on?" }))
+          .toHaveValue("");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("gives a reused empty draft the modes Home shows, not the ones it had", async () => {
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        const reused = ThreadId.makeUnsafe("reused-draft");
+        const drafts = useComposerDraftStore.getState();
+        drafts.setProjectDraftThreadId(PROJECT_A.id, reused, {
+          envMode: "local",
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+        });
+        drafts.setRuntimeMode(reused, "approval-required");
+        drafts.setInteractionMode(reused, "plan");
+
+        // Home shows the project's defaults: nothing was picked here.
+        await typeTask("Fix the login bug");
+        await page.getByRole("button", { name: "Open full composer" }).click();
+        await vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(reused),
+        );
+        const after = useComposerDraftStore.getState();
+        expect(after.draftsByThreadId[reused]).toMatchObject({
+          prompt: "Fix the login bug",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        expect(after.draftThreadsByThreadId[reused]).toMatchObject({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("starts in the project folder, and says so, when the branches cannot be read", async () => {
+      listBranches.mockRejectedValue(new Error("git is not available"));
+      // A worktree was the choice while the repository could still be read.
+      homeComposerDraft.setEnvMode(PROJECT_A.id, "worktree");
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await typeTask("Fix the login bug");
+        const workspaceChip = () =>
+          document.querySelector<HTMLElement>('[role="status"][data-composer-control="envMode"]');
+        await vi.waitFor(() => expect(workspaceChip()?.textContent).toBe("Local"));
+        expect(workspaceChip()?.title).toContain("could not be read");
+        expect(page.getByRole("combobox", { name: "Workspace" }).all()).toHaveLength(0);
+
+        await page.getByRole("button", { name: "Send" }).click();
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        expect(sentCommand().bootstrap).toMatchObject({
+          createThread: { projectId: PROJECT_A.id, branch: null, worktreePath: null },
+        });
+        expect(sentCommand().bootstrap?.prepareWorktree).toBeUndefined();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("says the providers are loading, not missing, until the server lists them", async () => {
+      const config = deferred<Awaited<ReturnType<typeof serverConfig>>>();
+      getServerConfig.mockImplementation(() => config.promise);
+      const toast = vi.spyOn(toastManager, "add");
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        const input = await typeTask("Fix the login bug");
+        await expect.element(page.getByText("Loading providers…")).toBeVisible();
+        expect(page.getByText("No provider available").all()).toHaveLength(0);
+
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "error",
+              description: "Still loading the providers. Try again in a moment.",
+            }),
+          ),
+        );
+        expect(submitTurn).not.toHaveBeenCalled();
+        await expect.element(input).toHaveValue("Fix the login bug");
+
+        config.resolve(await serverConfig());
+        await expect.element(page.getByText("Loading providers…")).not.toBeInTheDocument();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("says it is still loading when Enter comes before the controls", async () => {
+      const release = hold(controlsGate);
+      const toast = vi.spyOn(toastManager, "add");
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        const input = page.getByRole("textbox", { name: "What should we work on?" });
+        await input.fill("Fix the login bug");
+        await expect.element(page.getByRole("button", { name: "Send" })).toBeDisabled();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "info", title: "Still loading" }),
+          ),
+        );
+        expect(submitTurn).not.toHaveBeenCalled();
+        await expect.element(input).toHaveValue("Fix the login bug");
+
+        release();
+        await expect.element(page.getByRole("button", { name: "Send" })).toBeEnabled();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+      } finally {
+        release();
         await view.cleanup();
       }
     });

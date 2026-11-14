@@ -20,7 +20,10 @@ export function submissionOutcomeUnknown(error: unknown): boolean {
   return error.code === undefined || !UNSENT_REQUEST_CODES.has(error.code);
 }
 
-/** Past this age a repeat is a new message, not a retry of the one whose response was lost. */
+/**
+ * For a message to an existing thread: past this age a repeat is a new message ("continue",
+ * sent again later), not a retry of the one whose response was lost.
+ */
 export const UNCONFIRMED_SUBMISSION_TTL_MS = 5 * 60_000;
 
 interface UnconfirmedSubmission<Command> {
@@ -34,8 +37,12 @@ interface UnconfirmedSubmission<Command> {
  * (the same `signature` in the same slot) resends the very same command, so the server,
  * which replays a submission id it has already seen, never delivers the message twice.
  * That covers a retry after a lost response and a second send while the first is in flight.
+ *
+ * `ttlMs` bounds how long a lost send is still taken for the same one; without it the
+ * command is kept until the server answers or something else is sent in its slot.
  */
-export function createUnconfirmedSubmissions<Command>() {
+export function createUnconfirmedSubmissions<Command>(options: { readonly ttlMs?: number } = {}) {
+  const ttlMs = options.ttlMs ?? Number.POSITIVE_INFINITY;
   const bySlot = new Map<string, UnconfirmedSubmission<Command>>();
   return {
     /**
@@ -52,7 +59,7 @@ export function createUnconfirmedSubmissions<Command>() {
       const reusable =
         retained !== undefined &&
         retained.signature === input.signature &&
-        Date.now() - retained.at < UNCONFIRMED_SUBMISSION_TTL_MS;
+        Date.now() - retained.at < ttlMs;
       const entry = reusable
         ? retained
         : { signature: input.signature, command: input.build(), at: Date.now() };

@@ -14,7 +14,10 @@ import { readNativeApi } from "../nativeApi";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { getServerSendLimits } from "../protocolState";
 import type { Thread } from "../types";
-import { createUnconfirmedSubmissions } from "./unconfirmedSubmission";
+import {
+  createUnconfirmedSubmissions,
+  UNCONFIRMED_SUBMISSION_TTL_MS,
+} from "./unconfirmedSubmission";
 import { newCommandId, newMessageId } from "./utils";
 
 /** The thread settings a reply is sent with: the thread's own, not a composer draft's. */
@@ -99,7 +102,9 @@ function replySignature(command: ClientThreadTurnStartCommand, intent: string): 
 }
 
 /** One per thread: the reply whose response has not come back. */
-const unconfirmedReplies = createUnconfirmedSubmissions<ClientThreadTurnStartCommand>();
+const unconfirmedReplies = createUnconfirmedSubmissions<ClientThreadTurnStartCommand>({
+  ttlMs: UNCONFIRMED_SUBMISSION_TTL_MS,
+});
 
 export function resetThreadRepliesForTests(): void {
   unconfirmedReplies.clear();
