@@ -28,6 +28,9 @@ For its icon, choose **Automatic**, a custom monogram, an emoji, a colored symbo
 are rejected. Automatic icons use the discovered project favicon and fall back to a
 monogram.
 
+Before switching to an older F5 build that predates image icons, reset saved image icons
+to **Automatic**. Those older builds cannot decode the new image-icon variant.
+
 Two optional controls live in global **Settings → Conversation**:
 
 - **Proactive panels** opens linked pull requests and completed-turn diffs. A manual

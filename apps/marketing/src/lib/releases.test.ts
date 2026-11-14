@@ -161,8 +161,13 @@ describe("resolveDownload", () => {
     }
   });
   it("never links platforms without an installer, even if a release carries one", () => {
-    for (const target of ["mac-x64", "linux-x64"] as const)
+    for (const target of ["mac-x64"] as const)
       expect(resolveDownload(target, RELEASE)).toEqual({ href: null, note: "Not yet available" });
+  });
+  it("links the AppImage from the same stable release as Debian packages", () => {
+    expect(resolveDownload("linux-x64", RELEASE).href).toBe(
+      RELEASE.assets.find((entry) => entry.name.endsWith(".AppImage"))?.browser_download_url,
+    );
   });
   it("covers every download target", () => {
     expect(Object.keys(DOWNLOAD_AVAILABILITY).sort()).toEqual([

@@ -171,7 +171,11 @@ import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings"
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { respondToApproval } from "~/lib/respondToApproval";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
-import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
+import {
+  buildTurnDiffSearch,
+  clearFileViewSearchParams,
+  clearTurnDiffSearchParams,
+} from "../diffRouteSearch";
 import { requestDiffFileReveal } from "../diffFileReveal";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import { TerminalCommandProvider } from "../terminalCommandContext";
@@ -7582,12 +7586,8 @@ export default memo(function ChatView({
       void navigate({
         to: "/$threadId",
         params: { threadId },
-        search: (previous) => {
-          const rest = clearTurnDiffSearchParams(previous);
-          return filePath
-            ? { ...rest, diff: "1", diffTurnId: turnId, diffFilePath: filePath }
-            : { ...rest, diff: "1", diffTurnId: turnId };
-        },
+        replace: automatic,
+        search: (previous) => buildTurnDiffSearch(previous, turnId, filePath, automatic),
       });
     },
     [navigate, threadId],

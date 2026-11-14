@@ -34,6 +34,9 @@ beforeEach(() => {
     closedHistory: [],
     userActionRevisionByThreadId: {},
     proactiveDiffTurnIdByThreadId: {},
+    proactiveTurnBaselineByThreadId: {},
+    proactivePullRequestKeyByThreadId: {},
+    pendingProactiveDiffNavigationByThreadId: {},
   });
   openTurnDiff.mockClear();
 });
@@ -63,6 +66,34 @@ it("honors manual choices made while a turn or its checkpoint is pending", async
   expect(useRightPanelStore.getState().byThreadId[threadId]?.activeSurfaceId).toBe("files");
 });
 
+it.each([true, false])(
+  "preserves a manual choice across visits while a turn settles (running on return: %s)",
+  async (runningOnReturn) => {
+    const view = await render(<Harness input={{ ...base, runningTurnId: turnId }} />);
+    useRightPanelStore.getState().open(threadId, "files");
+    await view.unmount();
+    const other = await render(
+      <Harness input={{ ...base, threadId: ThreadId.makeUnsafe("other") }} />,
+    );
+    await other.unmount();
+    const returned = await render(
+      <Harness
+        input={{
+          ...base,
+          runningTurnId: runningOnReturn ? turnId : null,
+          completedTurnId: runningOnReturn ? null : turnId,
+          checkpoints: [completed],
+        }}
+      />,
+    );
+    await returned.rerender(
+      <Harness input={{ ...base, completedTurnId: turnId, checkpoints: [completed] }} />,
+    );
+    expect(openTurnDiff).not.toHaveBeenCalled();
+    expect(useRightPanelStore.getState().byThreadId[threadId]?.activeSurfaceId).toBe("files");
+  },
+);
+
 it("leaves panels closed while disabled and prioritizes a linked PR over a diff", async () => {
   const link: ThreadPullRequestLink = {
     provider: "github",
@@ -85,4 +116,8 @@ it("leaves panels closed while disabled and prioritizes a linked PR over a diff"
   await view.rerender(<Harness input={input} />);
   expect(useRightPanelStore.getState().byThreadId[threadId]?.activeSurfaceId).toMatch(/^pr:/);
   expect(openTurnDiff).not.toHaveBeenCalled();
+  useRightPanelStore.getState().close(threadId);
+  await view.unmount();
+  await render(<Harness input={input} />);
+  expect(useRightPanelStore.getState().byThreadId[threadId]?.isOpen).toBe(false);
 });

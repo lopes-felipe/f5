@@ -1,0 +1,54 @@
+name: Linux packaging
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/linux-packaging.yml"
+      - "scripts/build-desktop-artifact*"
+      - "scripts/lib/release-profile.ts"
+      - "scripts/linux-after-pack*"
+      - "apps/desktop/**"
+      - "bun.lock"
+permissions:
+  contents: read
+concurrency:
+  group: linux-packaging-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  linux-packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      T3CODE_DESKTOP_UPDATE_CHANNEL: beta
+      F5_LINUX_SMOKE_VERSION: 0.0.0-beta.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: bun run build:desktop
+      - name: Build AppImage and Debian package without publishing
+        run: node scripts/build-desktop-artifact.ts --skip-build --platform linux --arch x64 --target AppImage --build-version "$F5_LINUX_SMOKE_VERSION" --output-dir "$RUNNER_TEMP/f5-linux"
+      - name: Verify actual Linux package names and update manifest
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { parseDesktopUpdateManifest } from "./scripts/desktop-update-manifest.ts";
+          import { desktopReleaseAssets } from "./scripts/lib/release-profile.ts";
+          const version = process.env.F5_LINUX_SMOKE_VERSION;
+          const root = join(process.env.RUNNER_TEMP, "f5-linux");
+          const feed = desktopReleaseAssets("all", version, "beta").feeds.find((entry) => entry.manifest === "beta-linux.yml");
+          const manifest = parseDesktopUpdateManifest(readFileSync(join(root, feed.manifest), "utf8"), feed.manifest);
+          assert.equal(manifest.version, version);
+          assert.deepEqual(manifest.files.map((entry) => entry.url).sort(), [...feed.installers].sort());
+          for (const entry of manifest.files) {
+            const bytes = readFileSync(join(root, entry.url));
+            assert.equal(bytes.length, entry.size);
+            assert.equal(createHash("sha512").update(bytes).digest("base64"), entry.sha512);
+          }
+          NODE
+          test "$(dpkg-deb --field "$RUNNER_TEMP/f5-linux/F5-$F5_LINUX_SMOKE_VERSION-amd64.deb" Architecture)" = amd64

@@ -19,6 +19,8 @@ export function RunningThreadSync() {
     let busy = false;
     let observedKey = "";
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 5_000;
+    let observationQueued = false;
     const missingIds = () =>
       useStore
         .getState()
@@ -43,7 +45,8 @@ export function RunningThreadSync() {
           retry = setTimeout(() => {
             pending = true;
             void drain();
-          }, 5_000);
+          }, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 60_000);
         }
       }
     };
@@ -51,12 +54,20 @@ export function RunningThreadSync() {
       const key = JSON.stringify(missingIds());
       if (key === observedKey) return;
       observedKey = key;
+      retryDelay = 5_000;
       pending = true;
       clearTimeout(retry);
       retry = undefined;
       void drain();
     };
-    const unsubscribe = useStore.subscribe(observe);
+    const unsubscribe = useStore.subscribe((state, previous) => {
+      if (state.threads === previous.threads || observationQueued) return;
+      observationQueued = true;
+      queueMicrotask(() => {
+        observationQueued = false;
+        if (!controller.signal.aborted) observe();
+      });
+    });
     observe();
     return () => {
       unsubscribe();

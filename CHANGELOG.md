@@ -39,6 +39,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
+- Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
+- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
+
 - Desktop project activation uses a stable socket address and async canonical path matching. File previews retain access to notebook outputs beyond the live-frame limit and display non-UTF-8 text with a decoding notice.
 - The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
 - The Usage page counts Pi's cache reads and writes in its token totals and its uncached input. Pi reports cached tokens apart from input, as Claude does, but they were treated as part of input, so totals left them out and uncached input read too low.

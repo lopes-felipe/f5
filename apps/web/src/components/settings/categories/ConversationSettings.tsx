@@ -8,6 +8,7 @@ import {
   parsePersistedAppSettings,
 } from "../../../appSettings";
 import { useServerCapability } from "../../../protocolState";
+import { isElectron } from "../../../env";
 import { DisplayProfileSelector } from "../DisplayProfileSelector";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
@@ -440,6 +441,7 @@ export function ConversationSettings() {
               control={
                 <Switch
                   checked={settings.keepRunningThreadsSynced}
+                  disabled={!isElectron}
                   onCheckedChange={(checked) =>
                     updateSettings({ keepRunningThreadsSynced: Boolean(checked) })
                   }

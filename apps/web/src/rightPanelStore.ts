@@ -50,6 +50,11 @@ export interface OpenFileSurfaceInput {
 interface RightPanelStoreState {
   userActionRevisionByThreadId: Record<string, number>;
   proactiveDiffTurnIdByThreadId: Record<string, TurnId>;
+  proactivePullRequestKeyByThreadId: Record<string, string>;
+  pendingProactiveDiffNavigationByThreadId: Record<string, true>;
+  finishProactiveDiffNavigation: (threadId: ThreadId) => void;
+  proactiveTurnBaselineByThreadId: Record<string, { turnId: TurnId; revision: number }>;
+  captureProactiveTurnRevision: (threadId: ThreadId, turnId: TurnId) => number;
   openProactive: (
     threadId: ThreadId,
     request:
@@ -249,25 +254,51 @@ export const useRightPanelStore = create<RightPanelStoreState>()((automaticSet, 
   ) =>
     automaticSet((state) => {
       const next = typeof partial === "function" ? partial(state) : partial;
-      if (
-        next.userActionRevisionByThreadId ||
-        !next.byThreadId ||
-        next.byThreadId === state.byThreadId
-      )
-        return next;
-      const revisions = { ...state.userActionRevisionByThreadId };
+      if (!next.byThreadId || next.byThreadId === state.byThreadId) return next;
+      const revisions = next.userActionRevisionByThreadId ?? {
+        ...state.userActionRevisionByThreadId,
+      };
+      const pending = { ...state.pendingProactiveDiffNavigationByThreadId };
       for (const key of new Set([
         ...Object.keys(state.byThreadId),
         ...Object.keys(next.byThreadId),
       ])) {
-        if (state.byThreadId[key] !== next.byThreadId[key])
-          revisions[key] = (revisions[key] ?? 0) + 1;
+        if (state.byThreadId[key] !== next.byThreadId[key]) {
+          if (!next.userActionRevisionByThreadId) revisions[key] = (revisions[key] ?? 0) + 1;
+          delete pending[key];
+        }
       }
-      return { ...next, userActionRevisionByThreadId: revisions };
+      return {
+        ...next,
+        userActionRevisionByThreadId: revisions,
+        pendingProactiveDiffNavigationByThreadId: pending,
+      };
     });
   return {
     userActionRevisionByThreadId: {},
     proactiveDiffTurnIdByThreadId: {},
+    proactivePullRequestKeyByThreadId: {},
+    pendingProactiveDiffNavigationByThreadId: {},
+    finishProactiveDiffNavigation: (threadId) =>
+      automaticSet((state) => {
+        if (!state.pendingProactiveDiffNavigationByThreadId[threadId]) return state;
+        const { [threadId]: _pending, ...rest } = state.pendingProactiveDiffNavigationByThreadId;
+        return { pendingProactiveDiffNavigationByThreadId: rest };
+      }),
+    proactiveTurnBaselineByThreadId: {},
+    captureProactiveTurnRevision: (threadId, turnId) => {
+      const state = get();
+      const previous = state.proactiveTurnBaselineByThreadId[threadId];
+      if (previous?.turnId === turnId) return previous.revision;
+      const revision = state.userActionRevisionByThreadId[threadId] ?? 0;
+      automaticSet({
+        proactiveTurnBaselineByThreadId: {
+          ...state.proactiveTurnBaselineByThreadId,
+          [threadId]: { turnId, revision },
+        },
+      });
+      return revision;
+    },
     openProactive: (threadId, request, expectedRevision) => {
       let opened = false;
       automaticSet((state) => {
@@ -291,14 +322,21 @@ export const useRightPanelStore = create<RightPanelStoreState>()((automaticSet, 
               ...state.proactiveDiffTurnIdByThreadId,
               [threadId]: request.turnId,
             },
+            pendingProactiveDiffNavigationByThreadId: opened
+              ? { ...state.pendingProactiveDiffNavigationByThreadId, [threadId]: true }
+              : state.pendingProactiveDiffNavigationByThreadId,
           };
         }
-        if (!revisionMatches) return state;
-        opened = true;
+        if (state.proactivePullRequestKeyByThreadId[threadId] === request.key) return state;
+        opened = revisionMatches;
         return {
-          byThreadId: updateThread(state.byThreadId, threadId, (panel) =>
-            upsertSurface(panel, request),
-          ),
+          proactivePullRequestKeyByThreadId: {
+            ...state.proactivePullRequestKeyByThreadId,
+            [threadId]: request.key,
+          },
+          byThreadId: opened
+            ? updateThread(state.byThreadId, threadId, (panel) => upsertSurface(panel, request))
+            : state.byThreadId,
         };
       });
       return opened;
@@ -512,10 +550,19 @@ export const useRightPanelStore = create<RightPanelStoreState>()((automaticSet, 
           state.userActionRevisionByThreadId;
         const { [key]: _offer, ...proactiveDiffTurnIdByThreadId } =
           state.proactiveDiffTurnIdByThreadId;
+        const { [key]: _baseline, ...proactiveTurnBaselineByThreadId } =
+          state.proactiveTurnBaselineByThreadId;
+        const { [key]: _pr, ...proactivePullRequestKeyByThreadId } =
+          state.proactivePullRequestKeyByThreadId;
+        const { [key]: _navigation, ...pendingProactiveDiffNavigationByThreadId } =
+          state.pendingProactiveDiffNavigationByThreadId;
         return {
           byThreadId,
           userActionRevisionByThreadId,
           proactiveDiffTurnIdByThreadId,
+          proactiveTurnBaselineByThreadId,
+          proactivePullRequestKeyByThreadId,
+          pendingProactiveDiffNavigationByThreadId,
           closedHistory: state.closedHistory.filter((entry) => entry.threadId !== threadId),
           tabMenuThreadId: state.tabMenuThreadId === threadId ? null : state.tabMenuThreadId,
         };

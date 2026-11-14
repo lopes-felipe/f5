@@ -490,7 +490,11 @@ function ChatThreadRouteView() {
       if (!currentState.isOpen || activeSurface?.kind !== "diff") {
         rightPanelStore.open(threadId, "diff");
       }
-    } else if (currentState.surfaces.some((surface) => surface.kind === "diff")) {
+      rightPanelStore.finishProactiveDiffNavigation(threadId);
+    } else if (
+      !rightPanelStore.pendingProactiveDiffNavigationByThreadId[threadId] &&
+      currentState.surfaces.some((surface) => surface.kind === "diff")
+    ) {
       rightPanelStore.closeSurface(threadId, "diff");
     }
     if (search.fileViewPath) {

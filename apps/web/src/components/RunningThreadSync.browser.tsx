@@ -65,8 +65,23 @@ beforeEach(() => {
   mocks.preload.mockReset();
 });
 afterEach(() => {
+  vi.useRealTimers();
   updateAppSettings({ keepRunningThreadsSynced: false });
   useStore.setState({ threads: [] });
+});
+it("backs off repeated failures instead of retrying every five seconds", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  mocks.preload.mockResolvedValue(undefined);
+  updateAppSettings({ keepRunningThreadsSynced: true });
+  const view = await render(<Harness />);
+  expect(mocks.preload).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(mocks.preload).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(mocks.preload).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(mocks.preload).toHaveBeenCalledTimes(3);
+  await view.unmount();
 });
 
 it("does no work until opted in, and does not reload an already synchronized running thread", async () => {

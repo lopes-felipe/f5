@@ -55,15 +55,16 @@ export function useProactivePanels(input: {
       observation.current = {
         threadId,
         runningTurnId: undefined,
-        lastStartedTurnId: runningTurnId,
+        lastStartedTurnId: null,
         targetKey: undefined,
         revision: currentRevision,
       };
     }
     const previous = observation.current;
-    if (runningTurnId !== null && runningTurnId !== previous.lastStartedTurnId) {
-      previous.lastStartedTurnId = runningTurnId;
-      previous.revision = currentRevision;
+    const observedTurnId = runningTurnId ?? input.completedTurnId;
+    if (observedTurnId !== null && observedTurnId !== previous.lastStartedTurnId) {
+      previous.lastStartedTurnId = observedTurnId;
+      previous.revision = panels.captureProactiveTurnRevision(threadId, observedTurnId);
     }
     if (!input.ready) return;
     const link = input.linkedPullRequest;

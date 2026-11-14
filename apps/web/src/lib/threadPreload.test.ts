@@ -32,6 +32,7 @@ import {
 } from "./threadPreload";
 import {
   clearInFlightOrchestrationRpcRequests,
+  fetchAndSyncThreadDetail,
   ensureThreadHistoryBackfill,
   loadOlderThreadActivitiesPage,
   loadThreadHistoryAroundMessage,
@@ -401,6 +402,37 @@ describe("preloadRecentThreadDetails", () => {
 
     expect(getThreadDetails).toHaveBeenCalledTimes(1);
   });
+
+  it.each([false, true])(
+    "releases a rejected hydration's retainer without releasing another consumer: %s",
+    async (otherConsumer) => {
+      const threadId = ThreadId.makeUnsafe("rejected-tail");
+      seedStore({ threads: [makeThread({ id: threadId })] });
+      if (otherConsumer) useStore.getState().beginThreadDetailLoad(threadId);
+      mockGetThreadDetails(async () => makeDetails(threadId));
+      const sync = useStore.getState().syncThreadTailDetails;
+      // Overflow after the RPC freshness check but before the store accepts its tail.
+      useStore.setState({
+        syncThreadTailDetails: (id, details) => {
+          useStore.setState((state) => {
+            const buffers = new Map(state.detailEventBufferByThreadId);
+            buffers.set(id, { ...buffers.get(id)!, overflowSequence: details.detailSequence + 1 });
+            return { detailEventBufferByThreadId: buffers };
+          });
+          sync(id, details);
+        },
+      });
+      try {
+        await fetchAndSyncThreadDetail(new QueryClient(), threadId);
+        expect(useStore.getState().threads[0]?.detailsLoaded).toBe(false);
+        expect(useStore.getState().detailEventBufferByThreadId.get(threadId)?.retainers).toBe(
+          otherConsumer ? 1 : undefined,
+        );
+      } finally {
+        useStore.setState({ syncThreadTailDetails: sync });
+      }
+    },
+  );
 
   it("creates one live-warm buffer per thread and dedupes repeated live events", async () => {
     const threadId = ThreadId.makeUnsafe("thread-00");
