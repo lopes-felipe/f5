@@ -29,7 +29,12 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { HomeComposerHandle } from "./HomeComposerControls";
-import { homeComposerDraft, homeSelectionKey, useHomeComposerTextStore } from "./homeComposerDraft";
+import {
+  applyHomeComposerSettings,
+  homeComposerDraft,
+  homeSelectionKey,
+  useHomeComposerTextStore,
+} from "./homeComposerDraft";
 import {
   HomeProjectPickerPlaceholder,
   type HomeProjectSelection,
@@ -127,6 +132,9 @@ export function HomeQuickStart(props: {
   const openFullComposer = async () => {
     if (homeComposerDraft.busy()) return;
     const handedText = text;
+    // Taken now: another project can be picked while the draft is being created, and Home
+    // then shows that project's settings, not the ones this text was written with.
+    const settings = controls?.settings() ?? null;
     setBusy("open");
     try {
       // Home must prefill before navigating: navigation itself unmounts this form.
@@ -143,8 +151,10 @@ export function HomeQuickStart(props: {
       const draftStore = useComposerDraftStore.getState();
       const existingPrompt = draftStore.draftsByThreadId[threadId]?.prompt ?? "";
       // A draft that already holds text keeps the model and modes it was written for. An
-      // empty one takes what Home shows, once Home's controls have loaded it.
-      if (existingPrompt.trim().length === 0) controls?.applySettings(threadId);
+      // empty one takes what Home showed, if Home's controls had loaded it.
+      if (existingPrompt.trim().length === 0 && settings) {
+        applyHomeComposerSettings(threadId, settings);
+      }
       if (trimmed.length > 0) {
         // Without explicit mentions the store reconciles the existing ones
         // against the new prompt; appending keeps every mention range intact.
@@ -197,16 +207,31 @@ export function HomeQuickStart(props: {
       const { threadId, outcome } = await controls.start(trimmed);
       // Only what was sent: Home may have been left and reopened, and new text typed.
       homeComposerDraft.clearSentText(sentText);
-      const openThread = () => void navigate({ to: "/$threadId", params: { threadId } });
-      // The thread route sends an unknown thread back to Home, so wait for it to arrive.
-      if (open && (await waitForThreadInStore(threadId)) && liveRef.current) {
-        openThread();
+      // The thread route sends an unknown thread back to Home, and the thread's creation
+      // event can land after the answer that named it: every way to open it waits for it.
+      const arrived = () => waitForThreadInStore(threadId);
+      const openThread = () => navigate({ to: "/$threadId", params: { threadId } });
+      if (open && (await arrived()) && liveRef.current) {
+        await openThread();
         return;
       }
       toastManager.add({
         type: "success",
         title: outcome === "queued" ? "Thread created, preparing its worktree" : "Thread started",
-        actionProps: { children: "Open", onClick: openThread },
+        actionProps: {
+          children: "Open",
+          onClick: async () => {
+            if (await arrived()) {
+              await openThread();
+              return;
+            }
+            toastManager.add({
+              type: "info",
+              title: "The thread is not ready yet",
+              description: "It shows up under Running once it has been created.",
+            });
+          },
+        },
       });
     } catch (error) {
       // Keep the typed text so the user can retry.

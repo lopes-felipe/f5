@@ -6,8 +6,9 @@
  *
  * @module agentBridge/stdioShim
  */
-import * as Readline from "node:readline";
 import type { Readable, Writable } from "node:stream";
+
+import { Utf8Lines } from "@t3tools/shared/utf8Lines";
 
 import { jsonRpcError, jsonRpcSuccess, type JsonRpcRequest } from "../mcp/jsonRpcHttp.ts";
 import { AGENT_PROCESS_ENV } from "../providerProcessEnv.ts";
@@ -70,7 +71,7 @@ function recursionGuardReply(request: JsonRpcRequest) {
   }
 }
 
-export function runAgentBridgeStdio(options: AgentBridgeStdioOptions): Promise<void> {
+export async function runAgentBridgeStdio(options: AgentBridgeStdioOptions): Promise<void> {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetch ?? fetch;
   const markedAgent = env[AGENT_PROCESS_ENV] === "1";
@@ -145,33 +146,37 @@ export function runAgentBridgeStdio(options: AgentBridgeStdioOptions): Promise<v
     write(body);
   };
 
-  return new Promise<void>((resolve) => {
-    const lines = Readline.createInterface({ input: options.input, crlfDelay: Infinity });
-    lines.on("line", (raw) => {
-      const line = raw.trim();
-      if (line.length === 0) return;
-      let request: JsonRpcRequest;
-      try {
-        const parsed: unknown = JSON.parse(line);
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          write(jsonRpcError(null, -32600, "Send one JSON-RPC message per line."));
-          return;
-        }
-        request = parsed as JsonRpcRequest;
-      } catch {
-        write(jsonRpcError(null, -32700, "Parse error."));
+  const dispatch = (raw: string) => {
+    const line = raw.trim();
+    if (line.length === 0) return;
+    let request: JsonRpcRequest;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        write(jsonRpcError(null, -32600, "Send one JSON-RPC message per line."));
         return;
       }
-      // Requests run concurrently: a long wait_for_submission must not block others.
-      const task = forward(request, line).catch(() => {
-        if (request.id !== undefined)
-          write(jsonRpcError(request.id, AGENT_BRIDGE_UNAVAILABLE_CODE, UNAVAILABLE_MESSAGE));
-      });
-      pending.add(task);
-      void task.finally(() => pending.delete(task));
+      request = parsed as JsonRpcRequest;
+    } catch {
+      write(jsonRpcError(null, -32700, "Parse error."));
+      return;
+    }
+    // Requests run concurrently: a long wait_for_submission must not block others.
+    const task = forward(request, line).catch(() => {
+      if (request.id !== undefined)
+        write(jsonRpcError(request.id, AGENT_BRIDGE_UNAVAILABLE_CODE, UNAVAILABLE_MESSAGE));
     });
-    lines.on("close", () => {
-      void Promise.allSettled(pending).then(() => resolve());
-    });
-  });
+    pending.add(task);
+    void task.finally(() => pending.delete(task));
+  };
+  // MCP messages end only at LF; Unicode separators belong to the JSON payload.
+  const lines = new Utf8Lines();
+  try {
+    for await (const chunk of options.input) {
+      for (const line of lines.push(chunk as Buffer | string)) dispatch(line);
+    }
+    for (const line of lines.finish()) dispatch(line);
+  } finally {
+    await Promise.allSettled(pending);
+  }
 }

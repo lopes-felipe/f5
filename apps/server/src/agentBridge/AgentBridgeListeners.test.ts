@@ -295,6 +295,113 @@ describe("agent-bridge-stdio", () => {
       .map((line) => JSON.parse(line) as { id?: number; result?: any; error?: any });
   }
 
+  function startShim(fetchImpl: typeof fetch, input = new PassThrough()) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-agent-bridge-framing-"));
+    const credentialsPath = path.join(dir, "local.json");
+    fs.writeFileSync(
+      credentialsPath,
+      JSON.stringify({ port: 9, token: "t", startedAt: new Date().toISOString() }),
+    );
+    const output = new PassThrough();
+    const replies: string[] = [];
+    output.on("data", (chunk: Buffer) => replies.push(chunk.toString("utf8")));
+    const done = runAgentBridgeStdio({
+      credentialsPath,
+      input,
+      output,
+      env: {},
+      fetch: fetchImpl,
+    });
+    return { input, replies, done };
+  }
+
+  it("preserves Unicode separators and chunked UTF-8 in newline-delimited requests", async () => {
+    const requests: string[] = [];
+    const { input, replies, done } = startShim(
+      (async (_url, init) => {
+        const body = String(init?.body);
+        requests.push(body);
+        return Response.json({ jsonrpc: "2.0", id: JSON.parse(body).id, result: { ok: true } });
+      }) as typeof fetch,
+      // Object mode prevents the stream from coalescing the split UTF-8 writes.
+      new PassThrough({ objectMode: true }),
+    );
+    const message = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "echo", arguments: { text: "a\u2028b\u2029c\u{1f30d}" } },
+    });
+    const next = JSON.stringify({ jsonrpc: "2.0", id: 5, method: "ping" });
+    const bytes = Buffer.from(message);
+    const split = bytes.indexOf(Buffer.from("\u{1f30d}")) + 2;
+    input.write(bytes.subarray(0, split));
+    input.write(Buffer.concat([bytes.subarray(split), Buffer.from("\r")]));
+    input.end(Buffer.from("\n\n" + next));
+    await done;
+    expect(requests).toHaveLength(2);
+    expect(requests).toContain(message);
+    expect(requests).toContain(next);
+    expect(replies.map((reply) => JSON.parse(reply)).sort((a, b) => a.id - b.id)).toEqual([
+      { jsonrpc: "2.0", id: 4, result: { ok: true } },
+      { jsonrpc: "2.0", id: 5, result: { ok: true } },
+    ]);
+  });
+
+  it("reports a malformed line and forwards the next message in the same chunk", async () => {
+    const requests: string[] = [];
+    const { input, replies, done } = startShim((async (_url, init) => {
+      requests.push(String(init?.body));
+      return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
+    }) as typeof fetch);
+    const message = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+    input.end("{bad\n" + message + "\n");
+    await done;
+    expect(requests).toEqual([message]);
+    expect(replies.map((reply) => JSON.parse(reply))).toEqual([
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error." } },
+      { jsonrpc: "2.0", id: 1, result: {} },
+    ]);
+  });
+
+  it.each(["error", "premature close"])(
+    "drains pending replies after stdin %s",
+    async (failure) => {
+      let started!: () => void;
+      const forwarding = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let respond!: (response: Response) => void;
+      const response = new Promise<Response>((resolve) => {
+        respond = resolve;
+      });
+      const { input, replies, done } = startShim((async () => {
+        started();
+        return response;
+      }) as unknown as typeof fetch);
+      let settled = false;
+      const outcome = done
+        .catch((error: unknown) => error)
+        .finally(() => {
+          settled = true;
+        });
+      input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }) + "\n");
+      await forwarding;
+      const error = new Error("stdin failed");
+      input.destroy(failure === "error" ? error : undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const settledBeforeReply = settled;
+      respond(Response.json({ jsonrpc: "2.0", id: 1, result: {} }));
+      const cause = await outcome;
+      expect(settledBeforeReply).toBe(false);
+      if (failure === "error") expect(cause).toBe(error);
+      else expect(cause).toMatchObject({ code: "ERR_STREAM_PREMATURE_CLOSE" });
+      expect(replies.map((reply) => JSON.parse(reply))).toEqual([
+        { jsonrpc: "2.0", id: 1, result: {} },
+      ]);
+    },
+  );
+
   it("serves no tools to F5's own agent processes", async () => {
     const replies = await runShim(
       [

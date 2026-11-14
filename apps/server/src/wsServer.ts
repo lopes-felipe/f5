@@ -9,7 +9,7 @@ import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.t
 import { TURN_SUBMISSION_FAILURES } from "./TurnSubmissionError.ts";
 import { makeTurnSubmissionService } from "./TurnSubmissionService.ts";
 import { RouteRequestError, mapNextTurnQueueRouteError } from "./turnSubmissionErrors.ts";
-import { makeScheduledTaskService, userScheduleActor } from "./scheduledTasks/Service.ts";
+import { makeScheduledTaskService } from "./scheduledTasks/Service.ts";
 import { makeScheduledTaskStore, scheduleError } from "./scheduledTasks/Store.ts";
 import { McpAppService } from "./mcpApps/McpAppService.ts";
 import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
@@ -379,6 +379,7 @@ import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
+import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
 import {
   answerFromTable,
   mergeRouteTables,
@@ -4169,18 +4170,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   // before its switch; see `wsServer/routes/routeTable.ts`.
   const routeTable = mergeRouteTables(
     mergeRouteTables(
-      githubAccountRoutes({
-        login: githubLogin,
-        account: githubAccount,
-        cliImport: githubCliImport,
+      mergeRouteTables(
+        githubAccountRoutes({
+          login: githubLogin,
+          account: githubAccount,
+          cliImport: githubCliImport,
+        }),
+        providerAccountRoutes(accountService),
+      ),
+      profileRoutes({
+        store: profilesStore,
+        list: readProfiles,
+        defaultStateDir: defaultProfileStateDir,
+        activeProfileId: activeProfile.id,
       }),
-      providerAccountRoutes(accountService),
     ),
-    profileRoutes({
-      store: profilesStore,
-      list: readProfiles,
-      defaultStateDir: defaultProfileStateDir,
-      activeProfileId: activeProfile.id,
+    scheduledTaskRoutes({
+      schedules: scheduledTasks,
+      desktopShowsNotifications: () =>
+        Option.isSome(computerAutomationBroker) &&
+        computerAutomationBroker.value.host.notificationsCapable(),
     }),
   );
 
@@ -7142,64 +7151,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             : yield* worktreeSetup.ordering(body.threadId)),
         };
       }
-
-      case WS_METHODS.scheduledTasksList:
-        return yield* scheduledTasks
-          .list(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksGet:
-        return yield* scheduledTasks
-          .get(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksCreate:
-        return yield* scheduledTasks
-          .create(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksUpdate:
-        return yield* scheduledTasks
-          .update(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksDelete:
-        return yield* scheduledTasks
-          .delete(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksSetEnabled:
-        return yield* scheduledTasks
-          .setEnabled(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksRunNow:
-        return yield* scheduledTasks
-          .runNow(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksListRuns:
-        return yield* scheduledTasks
-          .listRuns(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksFindRunForTurn:
-        return yield* scheduledTasks
-          .findRunForTurn(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksPreviewSchedule:
-        return yield* scheduledTasks
-          .previewSchedule(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksResolveRun:
-        return yield* scheduledTasks
-          .resolveRun(stripRequestTag(request.body), userScheduleActor)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksClaimNotifications:
-        if (
-          Option.isSome(computerAutomationBroker) &&
-          computerAutomationBroker.value.host.notificationsCapable()
-        )
-          return { notifications: [], leaseExpiresAt: new Date().toISOString(), retryAt: null };
-        return yield* scheduledTasks
-          .claimNotifications(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case WS_METHODS.scheduledTasksAcknowledgeNotifications:
-        return yield* scheduledTasks
-          .acknowledgeNotifications(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
 
       case WS_METHODS.nextTurnQueueList: {
         const body = stripRequestTag(request.body);
