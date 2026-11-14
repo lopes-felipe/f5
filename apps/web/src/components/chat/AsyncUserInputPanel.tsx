@@ -5,6 +5,7 @@ import {
   type ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { ArrowRightIcon } from "lucide-react";
 import { readNativeApi } from "~/nativeApi";
 import { newCommandId } from "~/lib/utils";
@@ -30,7 +31,25 @@ function initialAsyncDraft(questions: ReadonlyArray<UserInputQuestion>): AsyncUs
   };
 }
 
-/** Message questions keep their drafts mounted while the conversation continues. */
+/**
+ * A blocking request is answered on the provider's own request, whose adapters read one
+ * value per question. The value follows the composer's rule (`resolvePendingUserInputAnswer`):
+ * typed text is the answer and replaces any selected options; otherwise one option is a
+ * string and several are an array. A skipped optional question sends "".
+ */
+export function blockingUserInputAnswer(
+  selected: ReadonlyArray<string>,
+  typed: string,
+): string | string[] {
+  if (typed) return typed;
+  if (selected.length === 0) return "";
+  return selected.length === 1 ? selected[0]! : [...selected];
+}
+
+/**
+ * Message questions keep their drafts mounted while the conversation continues. Home also
+ * answers blocking questions with this panel, without opening their thread.
+ */
 export function AsyncUserInputPanel({
   threadId,
   input,
@@ -38,10 +57,12 @@ export function AsyncUserInputPanel({
   variant = "standalone",
 }: {
   threadId: ThreadId;
-  input: PendingUserInput;
+  input: Pick<PendingUserInput, "requestId" | "questions" | "responseMode" | "blocking"> &
+    Partial<Pick<PendingUserInput, "receipt">>;
   cwd?: string | undefined;
   variant?: ComposerPanelVariant;
 }) {
+  const blocking = isBlockingUserInput(input);
   // Kept outside the panel so leaving the thread does not drop a typed answer.
   const storedDraft = usePendingUserInputDraftStore(
     (store) => store.asyncDraftsByThreadId[threadId]?.[input.requestId],
@@ -76,10 +97,11 @@ export function AsyncUserInputPanel({
     (customOpen[question.id] || question.options.length === 0)
       ? (custom[question.id]?.trim() ?? "")
       : "";
+  const selectedFor = (question: UserInputQuestion) =>
+    resolvePendingUserInputOptionValues(question, answers[question.id]);
   const answerFor = (question: UserInputQuestion) => {
     const text = customTextFor(question);
-    const selected = resolvePendingUserInputOptionValues(question, answers[question.id]);
-    return [...selected, ...(text ? [text] : [])];
+    return [...selectedFor(question), ...(text ? [text] : [])];
   };
   const isAnswered = (question: UserInputQuestion) => answerFor(question).length > 0;
   const canSend = questions.every((question) => question.optional || isAnswered(question));
@@ -118,7 +140,12 @@ export function AsyncUserInputPanel({
               ...base,
               type: "thread.user-input.respond",
               answers: Object.fromEntries(
-                questions.map((question) => [question.id, { answers: answerFor(question) }]),
+                questions.map((question) => [
+                  question.id,
+                  blocking
+                    ? blockingUserInputAnswer(selectedFor(question), customTextFor(question))
+                    : { answers: answerFor(question) },
+                ]),
               ),
               attachments: attachments.map((attachment) => ({
                 type: "upload" as const,

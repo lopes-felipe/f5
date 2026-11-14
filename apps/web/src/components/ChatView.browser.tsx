@@ -3658,9 +3658,10 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(() => expect(editor.textContent).toContain("Dismissed answer"));
 
       await mounted.router.navigate({ to: "/" });
-      await expect
-        .element(page.getByText("Which approach?", { exact: true }))
-        .not.toBeInTheDocument();
+      // Home lists the waiting thread with its question, so wait for the thread's composer to go.
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-chat-composer-shell="true"]')).toBeNull(),
+      );
       const dismissal = createThreadActivity({
         id: "question-dismissed",
         createdAt: isoAt(202),
