@@ -6102,8 +6102,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case PR_HUB_WS_METHODS.getOverview:
         return yield* prHub.getOverview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.listPullRequests:
-        return yield* prHub.listPullRequests(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.listPullRequests: {
+        const page = yield* prHub.listPullRequests(stripRequestTag(request.body));
+        if (Option.isNone(prHubExtensions) || page.pullRequests.length === 0) return page;
+        // Links decorate rows; a storage error must not fail the list.
+        const threadLinks = yield* prHubExtensions.value
+          .getThreadsForPrs(page.pullRequests.map((pr) => pr.key))
+          .pipe(Effect.orElseSucceed(() => ({})));
+        return { ...page, threadLinks };
+      }
 
       case PR_HUB_WS_METHODS.refresh: {
         const body = stripRequestTag(request.body);

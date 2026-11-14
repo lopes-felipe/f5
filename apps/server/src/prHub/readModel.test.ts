@@ -184,6 +184,28 @@ describe("PR Hub bounded read model", () => {
       expect(overview.counts.needs_you).toBe(4);
     });
 
+    it("offers filter values from the active queue, most common first", () => {
+      const labelled = {
+        ...data,
+        pullRequests: [
+          ...data.pullRequests.map((pr) => ({ ...pr, labels: pr.number < 4 ? ["bug"] : [] })),
+          row(30, {
+            attentionState: "review_requested",
+            author: "zoe",
+            labels: ["bug", "size:S"],
+            repository: { owner: "acme", repo: "web", nameWithOwner: "acme/web" },
+          }),
+          // Ignored rows are not in the queue, so they offer nothing to filter by.
+          row(31, { attentionState: "review_requested", author: "ghost", ignoredAt: daysAgo(1) }),
+        ],
+      };
+      expect(prHubOverview(labelled, "1").facets).toEqual({
+        repositories: ["octo/repo", "acme/web"],
+        authors: ["me", "someone", "zoe"],
+        labels: ["bug", "size:S"],
+      });
+    });
+
     it("lists one section of the active queue and stamps it on every row", () => {
       const review = listPrHubPullRequests(data, "1", { section: "review" }).pullRequests;
       expect(review.map((pr) => pr.number)).toEqual([1, 11]);

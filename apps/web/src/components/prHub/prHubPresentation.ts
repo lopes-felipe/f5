@@ -236,11 +236,6 @@ export function defaultSnoozeUntil(): string {
   return defaultSnoozeUntilFor(readAppSettingsSnapshot().snoozePresets);
 }
 
-/** The two layouts the PR Hub can render. Persisted per-user in localStorage. */
-export type PrHubViewMode = "inbox" | "focus";
-
-export const PR_HUB_VIEW_MODE_STORAGE_KEY = "f5.prHub.viewMode";
-
 export function safeHttpsUrl(input: string): string | null {
   try {
     const url = new URL(input);

@@ -582,7 +582,7 @@ function PullRequestSettings() {
       />
       <SettingsRow
         title="Flag my PRs as stalled after"
-        description="Hours waiting; 0 disables. Filters and sorts only, without notifications."
+        description="Hours waiting; 0 disables. Marks the row as Stalled in the queue, without notifications."
         control={
           <Input
             className="h-8 w-20"
