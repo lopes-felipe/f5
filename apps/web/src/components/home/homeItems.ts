@@ -43,6 +43,37 @@ export const HOME_KIND_LABELS: Record<HomeThreadItemKind, string> = {
   pinned: "Pinned",
 };
 
+/** The message box under a thread's preview, by what the thread is doing; null where none fits. */
+export const HOME_REPLY_BOX_BY_KIND: Record<
+  HomeThreadItemKind,
+  {
+    readonly label: string;
+    readonly placeholder: string;
+    /** A plan is revised in plan mode; other replies keep the thread's mode. */
+    readonly interactionMode?: "plan";
+    /** A message for a running thread waits for the turn to end. */
+    readonly intent?: "queue-tail";
+  } | null
+> = {
+  // The thread's composer takes no message while a request is open either.
+  approval: null,
+  question: null,
+  "queue-paused": null,
+  plan: {
+    label: "Revise plan",
+    placeholder: "Tell the agent what to change in the plan…",
+    interactionMode: "plan",
+  },
+  failed: { label: "Reply", placeholder: "Reply to this thread…" },
+  completed: { label: "Reply", placeholder: "Reply to this thread…" },
+  pinned: { label: "Reply", placeholder: "Reply to this thread…" },
+  running: {
+    label: "Queue message",
+    placeholder: "Queue a message for when this turn ends…",
+    intent: "queue-tail",
+  },
+};
+
 /** What a thread waits on, read from the store: the same inputs its status is derived from. */
 export interface HomeThreadDecision {
   /** Open approval requests, oldest first. */

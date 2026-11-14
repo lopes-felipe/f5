@@ -28,10 +28,40 @@ import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { useStore } from "../../store";
 import type { Project, Thread } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
+import {
+  noteWsConnectionOpened,
+  noteWsSynchronized,
+  resetWsConnectionStateForTests,
+} from "../../wsConnectionState";
 import { SidebarProvider } from "../ui/sidebar";
 import { HomeMissionControl } from "./HomeMissionControl";
 import { useHomeSelectionStore } from "./homeSelectionStore";
 import { toastManager } from "../ui/toast";
+
+// The preview loads after the queue. A test holds it back to press keys before it is there.
+const previewGate = vi.hoisted(() => ({ pending: null as Promise<void> | null }));
+vi.mock("./HomePreviewPane", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./HomePreviewPane")>();
+  const { createElement, use } = await import("react");
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      if (previewGate.pending) use(previewGate.pending);
+      return createElement(actual.default, props);
+    },
+  };
+});
+
+function holdPreview(): () => void {
+  let release!: () => void;
+  previewGate.pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return () => {
+    previewGate.pending = null;
+    release();
+  };
+}
 
 const NOW_ISO = new Date().toISOString();
 // Older than every thread so thread activity, not creation order, picks the
@@ -61,6 +91,8 @@ interface TailDetailsFixture {
   }>;
   readonly checkpoints: ReadonlyArray<never>;
   readonly tasks: ReadonlyArray<never>;
+  /** Left out, the pending requests cannot be read, as when the server is slow. */
+  readonly activities?: Thread["activities"];
 }
 const emptyTailDetails = async (input: { threadId: string }): Promise<TailDetailsFixture> => ({
   threadId: input.threadId,
@@ -71,6 +103,35 @@ const emptyTailDetails = async (input: { threadId: string }): Promise<TailDetail
 const getThreadTailDetails = vi.fn(emptyTailDetails);
 const getPrHubOverview = vi.fn(async () => ({ counts: { needs_you: 0 } }));
 const getDiskSpace = vi.fn(async (): Promise<DiskSpaceStatus> => emptyDiskSpaceStatus);
+
+type TurnSubmission = Parameters<NativeApi["nextTurnQueue"]["submit"]>[0];
+type TurnSubmissionOutcome = Awaited<ReturnType<NativeApi["nextTurnQueue"]["submit"]>>;
+const startedTurn = async (input: TurnSubmission): Promise<TurnSubmissionOutcome> =>
+  ({ submissionId: input.submissionId, disposition: "started", sequence: 1 }) as never;
+const submitTurn = vi.fn(startedTurn);
+function queueSnapshot(threadId: string, overrides: object = {}) {
+  return {
+    threadId,
+    items: [],
+    revision: 7,
+    paused: true,
+    blockedKind: null,
+    reasonCode: null,
+    reasonDetail: null,
+    maxItems: 20,
+    quarantinedCount: 0,
+    ...overrides,
+  };
+}
+const listQueue = vi.fn(async (input: { threadId: string }) => queueSnapshot(input.threadId));
+const setQueuePaused = vi.fn(
+  async (input: { threadId: string; paused: boolean; expectedRevision: number }) =>
+    queueSnapshot(input.threadId, { paused: input.paused, revision: input.expectedRevision + 1 }),
+);
+const listBranches = vi.fn(async (_input: { cwd: string }) => ({
+  isRepo: true,
+  branches: [{ name: "main", current: true }],
+}));
 
 function makeProject(id: string, name: string): Project {
   return {
@@ -146,23 +207,26 @@ async function pickNoProject() {
   await page.getByTestId("project-picker-no-project").click();
 }
 
+function approvalActivity(requestId: string, payload: object = {}): Thread["activities"][number] {
+  return {
+    id: `activity-${requestId}` as never,
+    tone: "approval",
+    kind: "approval.requested",
+    summary: "Needs approval",
+    payload: {
+      requestId,
+      requestKind: "command",
+      detail: "git push --force-with-lease",
+      ...payload,
+    },
+    turnId: null,
+    createdAt: NOW_ISO,
+  };
+}
+
 const APPROVAL_THREAD = makeThread(PROJECT_A.id, "thread-approval", {
   title: "Needs an approval",
-  activities: [
-    {
-      id: "activity-approval" as never,
-      tone: "approval",
-      kind: "approval.requested",
-      summary: "Needs approval",
-      payload: {
-        requestId: "request-1",
-        requestKind: "command",
-        detail: "git push --force-with-lease",
-      },
-      turnId: null,
-      createdAt: NOW_ISO,
-    },
-  ],
+  activities: [approvalActivity("request-1")],
 });
 
 function endedTurn(id: string, state: "completed" | "error"): NonNullable<Thread["latestTurn"]> {
@@ -295,15 +359,32 @@ describe("HomeMissionControl", () => {
       orchestration: { dispatchCommand, getThreadPeeks, getThreadTailDetails },
       prHub: { getOverview: () => getPrHubOverview(), onChanged: () => () => {} },
       scheduledTasks: { list: async () => ({ revision: 0, tasks: [] }) },
+      nextTurnQueue: {
+        submit: submitTurn,
+        list: listQueue,
+        setPaused: setQueuePaused,
+        summary: async () => ({ threads: [] }),
+      },
+      git: { listBranches },
     } as unknown as NativeApi;
   });
 
-  // Wide enough for the queue and the preview side by side; one test narrows it.
+  // Wide enough for the queue and the preview side by side; one test narrows it. The server
+  // is reachable, or Home refuses to act.
   beforeEach(async () => {
     await page.viewport(1280, 800);
+    noteWsConnectionOpened();
+    noteWsSynchronized();
   });
 
   afterEach(() => {
+    previewGate.pending = null;
+    resetWsConnectionStateForTests();
+    submitTurn.mockClear();
+    submitTurn.mockImplementation(startedTurn);
+    listQueue.mockClear();
+    setQueuePaused.mockClear();
+    listBranches.mockClear();
     localStorage.clear();
     document.body.innerHTML = "";
     dispatchCommand.mockClear();
@@ -701,7 +782,7 @@ describe("HomeMissionControl", () => {
         await expect.element(queue).toHaveFocus();
         await expect.poll(selectedTitle).toBe("Needs an approval");
         const preview = page.getByRole("article", { name: "Needs an approval" });
-        await expect.element(preview).toHaveTextContent("Agent wants to run");
+        await expect.element(preview).toHaveTextContent("Command approval requested");
         await expect.element(preview).toHaveTextContent("git push --force-with-lease");
 
         await userEvent.keyboard("j");
@@ -1020,6 +1101,446 @@ describe("HomeMissionControl", () => {
           .focus();
         await userEvent.keyboard("{Escape}");
         await expect.element(queue).toHaveFocus();
+      } finally {
+        await view.cleanup();
+      }
+    });
+  });
+
+  describe("inline actions", () => {
+    const approvalThread = (payload: object = {}, requestId = "request-1") =>
+      makeThread(PROJECT_A.id, "thread-approval", {
+        title: "Needs an approval",
+        activities: [approvalActivity(requestId, payload)],
+      });
+    /** The server still waits on these requests. */
+    const serverPending = (...activities: Thread["activities"]) =>
+      getThreadTailDetails.mockImplementation(async (input) => ({
+        ...(await emptyTailDetails(input)),
+        activities,
+      }));
+    const approvalResponses = () =>
+      dispatchCommand.mock.calls
+        .map(([command]) => command)
+        .filter((command) => command.type === "thread.approval.respond");
+    const submittedCommand = (index = 0) => submitTurn.mock.calls[index]![0].command;
+    const queue = () => page.getByRole("listbox", { name: "Queue" });
+
+    it("waits for the preview before Enter approves, then answers the request on screen", async () => {
+      const thread = approvalThread();
+      serverPending(...thread.activities);
+      const showPreview = holdPreview();
+      const view = await renderHome([thread, DONE_THREAD]);
+      try {
+        await expect.element(queue()).toHaveFocus();
+        // The request is not on screen yet: Enter neither approves it nor opens the thread.
+        await userEvent.keyboard("{Enter}");
+        expect(page.getByRole("article").all()).toHaveLength(0);
+        expect(dispatchCommand).not.toHaveBeenCalled();
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+
+        showPreview();
+        const preview = page.getByRole("article", { name: "Needs an approval" });
+        await expect.element(preview).toHaveTextContent("git push --force-with-lease");
+        await expect
+          .element(preview.getByRole("button", { name: /Approve once/ }))
+          .toHaveTextContent("↵");
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+        expect(approvalResponses()[0]).toMatchObject({
+          threadId: thread.id,
+          requestId: "request-1",
+          decision: "accept",
+        });
+        await expect.element(preview.getByRole("status")).toHaveTextContent("Decision sent");
+        expect(preview.getByRole("group", { name: "Approval" }).all()).toHaveLength(0);
+
+        // Sent once: Enter has nothing left to act on, and the queue still has the keys.
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        expect(approvalResponses()).toHaveLength(1);
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("offers each choice of the request and declines with D", async () => {
+      const thread = approvalThread();
+      const view = await renderHome([thread]);
+      try {
+        const choices = page.getByRole("group", { name: "Approval" });
+        await expect.element(choices).toBeVisible();
+        expect(
+          Array.from(choices.element().querySelectorAll("button"), (button) =>
+            button.textContent?.replace(/[↵D]$/, ""),
+          ),
+        ).toEqual(["Cancel turn", "Decline", "Always allow this session", "Approve once"]);
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("d");
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+        expect(approvalResponses()[0]).toMatchObject({
+          requestId: "request-1",
+          decision: "decline",
+        });
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("answers the request that is shown when a click picks another choice", async () => {
+      const thread = makeThread(PROJECT_A.id, "thread-approval", {
+        title: "Needs an approval",
+        activities: [
+          approvalActivity("request-1"),
+          {
+            ...approvalActivity("request-2", { detail: "rm -rf build" }),
+            createdAt: new Date(Date.now() + 1_000).toISOString(),
+          },
+        ],
+      });
+      const view = await renderHome([thread]);
+      try {
+        const preview = page.getByRole("article", { name: "Needs an approval" });
+        await expect.element(preview).toHaveTextContent("1/2");
+        await expect.element(preview).toHaveTextContent("git push --force-with-lease");
+        await preview.getByRole("button", { name: "Always allow this session" }).click();
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+        expect(approvalResponses()[0]).toMatchObject({
+          requestId: "request-1",
+          decision: "acceptForSession",
+        });
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("sends nothing for a request the server no longer waits on", async () => {
+      const thread = approvalThread();
+      // Answered from another window: the server has no pending request left.
+      serverPending();
+      const toast = vi.spyOn(toastManager, "add");
+      const view = await renderHome([thread]);
+      try {
+        const preview = page.getByRole("article", { name: "Needs an approval" });
+        await preview.getByRole("button", { name: /Approve once/ }).click();
+        await expect
+          .element(preview.getByRole("status"))
+          .toHaveTextContent("This request was already answered.");
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: "This request was already answered." }),
+        );
+        expect(approvalResponses()).toHaveLength(0);
+        expect(preview.getByRole("group", { name: "Approval" }).all()).toHaveLength(0);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("leaves Enter unbound when the provider asks for No as the default", async () => {
+      const thread = approvalThread({ presentation: { defaultToNo: true } });
+      const view = await renderHome([thread]);
+      try {
+        const approve = page.getByRole("button", { name: /Approve once/ });
+        await expect.element(approve).toBeVisible();
+        expect(approve.element().textContent).toBe("Approve once");
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("{Enter}");
+        // A click is still a deliberate yes.
+        await approve.click();
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+        expect(dispatchCommand).toHaveBeenCalledTimes(1);
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("refuses to act while the server connection is down", async () => {
+      resetWsConnectionStateForTests();
+      const view = await renderHome([approvalThread(), DONE_THREAD]);
+      try {
+        await expect.element(page.getByRole("button", { name: /Approve once/ })).toBeDisabled();
+        await expect.element(page.getByRole("button", { name: /Decline/ })).toBeDisabled();
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.keyboard("d");
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        await page.getByRole("textbox", { name: "Reply" }).fill("Ship it");
+        await expect.element(page.getByRole("button", { name: "Reply" })).toBeDisabled();
+        await userEvent.keyboard("{Enter}");
+        expect(dispatchCommand).not.toHaveBeenCalled();
+        expect(submitTurn).not.toHaveBeenCalled();
+        // Reading is not blocked: the thread still opens.
+        await page.getByRole("button", { name: /Open thread/ }).click();
+        await vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="thread-route"]')).toBeTruthy(),
+        );
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("answers a blocking question in place, with the answer shape its provider reads", async () => {
+      const thread = makeThread(PROJECT_A.id, "thread-question", {
+        title: "Pick a database",
+        activities: [
+          {
+            id: "activity-question" as never,
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "Question",
+            payload: {
+              requestId: "input-1",
+              questions: [
+                {
+                  id: "db",
+                  header: "Database",
+                  question: "Which database should the service use?",
+                  options: [
+                    { label: "Postgres", description: "Relational" },
+                    { label: "SQLite", description: "Embedded" },
+                  ],
+                },
+              ],
+            },
+            turnId: null,
+            createdAt: NOW_ISO,
+          },
+        ],
+      });
+      const view = await renderHome([thread]);
+      try {
+        const preview = page.getByRole("article", { name: "Pick a database" });
+        await expect.element(preview).toHaveTextContent("Which database should the service use?");
+        const option = preview.getByRole("button", { name: /SQLite/ });
+        await option.click();
+        // The form's own keys stay in the form: E must not settle the thread from here.
+        await userEvent.keyboard("e");
+        await preview.getByRole("button", { name: "Send" }).click();
+        await vi.waitFor(() =>
+          expect(dispatchCommand).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "thread.user-input.respond",
+              threadId: thread.id,
+              requestId: "input-1",
+              answers: { db: "SQLite" },
+            }),
+          ),
+        );
+        expect(dispatchCommand).toHaveBeenCalledTimes(1);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    const PLAN_THREAD = makeThread(PROJECT_A.id, "thread-plan", {
+      title: "Plan the queue",
+      interactionMode: "plan",
+      runtimeMode: "approval-required",
+      latestTurn: endedTurn("thread-plan", "completed"),
+      proposedPlans: [
+        {
+          id: "plan-1" as never,
+          turnId: "thread-plan-turn" as never,
+          planMarkdown: "# Ship the queue\n\n1. Build it",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+        },
+      ],
+    });
+
+    it("implements the plan on screen with Enter, in the thread's own settings", async () => {
+      const view = await renderHome([PLAN_THREAD]);
+      try {
+        const preview = page.getByRole("article", { name: "Plan the queue" });
+        await expect.element(preview).toHaveTextContent("Ship the queue");
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        expect(submitTurn.mock.calls[0]![0].intent).toBe("auto");
+        expect(submittedCommand()).toMatchObject({
+          type: "thread.turn.start",
+          threadId: PLAN_THREAD.id,
+          model: "gpt-5.4",
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          sourceProposedPlan: { threadId: PLAN_THREAD.id, planId: "plan-1" },
+          message: { text: "PLEASE IMPLEMENT THIS PLAN:\n# Ship the queue\n\n1. Build it" },
+        });
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("revises a plan in plan mode from the reply box", async () => {
+      const view = await renderHome([PLAN_THREAD]);
+      try {
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("r");
+        const box = page.getByRole("textbox", { name: "Revise plan" });
+        await expect.element(box).toHaveFocus();
+        // The key that focused the box is not typed into it.
+        await expect.element(box).toHaveValue("");
+        await userEvent.keyboard("Skip the migration{Enter}");
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        const command = submittedCommand();
+        expect(command).toMatchObject({
+          interactionMode: "plan",
+          message: { text: "Skip the migration" },
+        });
+        expect(command.sourceProposedPlan).toBeUndefined();
+        await expect.element(box).toHaveValue("");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("replies with the thread's own model and modes, and keeps the text when the send fails", async () => {
+      const thread: Thread = {
+        ...DONE_THREAD,
+        model: "claude-opus-4-6",
+        modelSelection: { instanceId: "claude", model: "claude-opus-4-6" } as never,
+        runtimeMode: "approval-required",
+      };
+      submitTurn.mockImplementationOnce(
+        async (input) =>
+          ({
+            submissionId: input.submissionId,
+            disposition: "rejected",
+            reasonCode: "provider_unavailable",
+            detail: "The provider is signed out.",
+          }) as never,
+      );
+      const toast = vi.spyOn(toastManager, "add");
+      const view = await renderHome([thread]);
+      try {
+        const box = page.getByRole("textbox", { name: "Reply" });
+        await box.fill("Looks good, open a PR");
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(
+            expect.objectContaining({
+              title: "Could not send the message",
+              description: "The provider is signed out.",
+            }),
+          ),
+        );
+        await expect.element(box).toHaveValue("Looks good, open a PR");
+
+        await page.getByRole("button", { name: "Reply" }).click();
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(2));
+        expect(submitTurn.mock.calls[1]![0].intent).toBe("auto");
+        expect(submittedCommand(1)).toMatchObject({
+          threadId: thread.id,
+          model: "claude-opus-4-6",
+          modelSelection: { instanceId: "claude", model: "claude-opus-4-6" },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          message: { text: "Looks good, open a PR", attachments: [] },
+        });
+        await expect.element(box).toHaveValue("");
+        // Escape hands the keys back to the queue.
+        await box.click();
+        await userEvent.keyboard("{Escape}");
+        await expect.element(queue()).toHaveFocus();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("queues a message behind a running turn", async () => {
+      const view = await renderHome([WORKING_THREAD]);
+      try {
+        const box = page.getByRole("textbox", { name: "Queue message" });
+        await box.fill("Then run the tests");
+        await page.getByRole("button", { name: "Queue message" }).click();
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        expect(submitTurn.mock.calls[0]![0].intent).toBe("queue-tail");
+        expect(submittedCommand().message.text).toBe("Then run the tests");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("asks before sending to a thread whose branch changed under it", async () => {
+      const thread: Thread = { ...DONE_THREAD, branch: "feature/queue" };
+      const view = await renderHome([thread]);
+      try {
+        const box = page.getByRole("textbox", { name: "Reply" });
+        await box.fill("Continue");
+        await userEvent.keyboard("{Enter}");
+        const dialog = page.getByRole("dialog", { name: "Thread branch changed" });
+        await expect.element(dialog).toHaveTextContent("feature/queue");
+        expect(listBranches).toHaveBeenCalledWith({ cwd: PROJECT_B.cwd });
+        // Keys under the dialog are not Home's.
+        await userEvent.keyboard("e");
+        await dialog.getByRole("button", { name: "Cancel send" }).click();
+        await expect.element(box).toHaveValue("Continue");
+        expect(submitTurn).not.toHaveBeenCalled();
+        expect(dispatchCommand).not.toHaveBeenCalled();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("resumes a paused queue at the revision the server has", async () => {
+      useNextTurnQueueStore.setState({
+        summary: {
+          threads: [
+            {
+              threadId: IDLE_THREAD.id,
+              queuedCount: 1,
+              dispatchingCount: 0,
+              failedCount: 0,
+              scheduledResumeAt: null,
+              paused: true,
+            },
+          ],
+        },
+      });
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await page.getByRole("button", { name: "Resume queue" }).click();
+        await vi.waitFor(() =>
+          expect(setQueuePaused).toHaveBeenCalledWith({
+            threadId: IDLE_THREAD.id,
+            paused: false,
+            expectedRevision: 7,
+          }),
+        );
+        // The summary read after it says no queue is paused: the row leaves.
+        await expect.element(page.getByText("Nothing needs you")).toBeInTheDocument();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("keeps the keys working while the preview stands alone in a narrow window", async () => {
+      await page.viewport(600, 800);
+      const view = await renderHome([approvalThread(), DONE_THREAD]);
+      try {
+        await expect.element(queue()).toHaveFocus();
+        // The first Enter only shows the request.
+        await userEvent.keyboard("{Enter}");
+        const preview = page.getByRole("article", { name: "Needs an approval" });
+        await expect.element(preview).toHaveFocus();
+        expect(dispatchCommand).not.toHaveBeenCalled();
+        await userEvent.keyboard("j");
+        await expect
+          .element(page.getByRole("article", { name: "Finished refactor" }))
+          .toHaveFocus();
+        await userEvent.keyboard("k");
+        await expect.element(preview).toHaveFocus();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+        await userEvent.keyboard("{Escape}");
+        await expect.element(queue()).toHaveFocus();
       } finally {
         await view.cleanup();
       }

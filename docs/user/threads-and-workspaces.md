@@ -135,11 +135,17 @@ commit, push and pull request actions. Linked pull requests also appear in the
 - **Home** (`mod+shift+H`) is a triage queue in four groups: **Needs a decision** (approvals,
   questions, plans, paused queues), **Ready for review** (failed turns, then finished ones you
   have not opened), **Running** (threads and workflows) and **Pinned**. The pane beside the queue
-  shows the selected thread's request or error and its last exchange. `J`/`K` or the arrow keys
-  move, `Enter` or `O` opens, `E` settles, `H` snoozes, `P` pins and `/` jumps to the new thread
-  box. A line above the queue counts pull requests and upstream topics waiting on you, and shows
-  the next scheduled run, an account limit above 50% and low disk space; each opens its page.
-  Recent threads are in the sidebar's **Recent** view.
+  shows the selected thread's request or error and its last exchange, and acts on it without
+  opening the thread: approve or decline a request with any of its choices, answer a question,
+  implement or revise a plan, resume a paused queue, reply to finished or failed work, or queue
+  a message behind a running turn. Messages sent from Home use the thread's own model and
+  modes. `J`/`K` or the arrow keys move, `O` opens, `E` settles, `H` snoozes, `P` pins, `R`
+  starts a reply and `/` jumps to the new thread box. `Enter` approves the request once or
+  implements the plan, and opens other threads; `D` declines. `Enter` is left unbound when the
+  provider asks for "no" to be the default. Forms sent by a provider or an MCP server are
+  filled in the thread. A line above the queue counts pull requests and upstream topics waiting
+  on you, and shows the next scheduled run, an account limit above 50% and low disk space; each
+  opens its page. Recent threads are in the sidebar's **Recent** view.
 - `mod+K` searches threads, workflows and commands.
 - Archive a thread from its sidebar menu; archived items are under **Settings → Archive**.
 - A usage-limit notice can be snoozed until a time you pick; snoozed threads show a moon icon.

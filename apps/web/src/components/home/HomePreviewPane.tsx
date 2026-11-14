@@ -10,21 +10,28 @@ import {
   GitPullRequestIcon,
   PinIcon,
   PinOffIcon,
+  PlayIcon,
 } from "lucide-react";
+import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
+
+import { useQuery } from "@tanstack/react-query";
 
 import type { ThreadActionMenuItem } from "../../hooks/useThreadActionController";
 import type { HomeThreadItemKind } from "../../lib/homeQueue";
 import { useNowMinute } from "../../lib/nowTicker";
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
-import { readNativeApi } from "../../nativeApi";
-import { useNextTurnQueueCount } from "../../nextTurnQueueStore";
+import { ensureNativeApi, readNativeApi } from "../../nativeApi";
+import { useNextTurnQueueBadge, useNextTurnQueueCount } from "../../nextTurnQueueStore";
 import { useStore } from "../../store";
 import { selectThreadById } from "../../threadSelectors";
 import { pillForStatus } from "../../threadStatus";
 import type { Project, Thread } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
+import { AsyncUserInputPanel } from "../chat/AsyncUserInputPanel";
+import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPanel";
 import { ModelChip } from "../chat/ModelChip";
+import { describeQueueBlockedState } from "../chat/NextTurnQueuePanel.logic";
 import { ProposedPlanCard } from "../chat/ProposedPlanCard";
 import { ProjectIcon } from "../ProjectIcon";
 import { contextUsagePercent, stripMarkdownToPlainText } from "../sidebar/sidebarPeek";
@@ -38,8 +45,16 @@ import { SectionLabel } from "../ui/section-label";
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import {
-  approvalHeadline,
+  approvalDenyDecision,
+  approvalEnterDecision,
+  HomeApprovalActions,
+  type HomeApprovalState,
+  HomeReplyBox,
+  useHomeInlineActions,
+} from "./HomeInlineActions";
+import {
   deriveHomeThreadDecision,
+  HOME_REPLY_BOX_BY_KIND,
   type HomeItem,
   type HomeThreadDecision,
   type HomeThreadItem,
@@ -56,6 +71,22 @@ export interface HomePreviewActions {
   readonly settle: (threadId: ThreadId) => void;
   readonly togglePin: (threadId: ThreadId) => void;
   readonly snooze: (threadId: ThreadId, actionId: ThreadActionMenuItem["id"]) => void;
+  /** Gives the keyboard back to the queue (or to the preview while it stands alone). */
+  readonly focusQueue: () => void;
+}
+
+/**
+ * The actions Home's keys reach in the shown preview. It exists only once the preview has
+ * rendered the selected item, so a key can never act on something not on screen. Each
+ * method returns whether it did anything.
+ */
+export interface HomePreviewHandle {
+  /** Enter: approve the request shown, or implement the plan shown. */
+  readonly primary: () => boolean;
+  /** D: decline the request shown. */
+  readonly deny: () => boolean;
+  /** R: put the cursor in the reply box. */
+  readonly focusReply: () => boolean;
 }
 
 export interface HomePreviewPaneProps {
@@ -63,6 +94,9 @@ export interface HomePreviewPaneProps {
   readonly project: Project | undefined;
   readonly peek: OrchestrationThreadPeek | undefined;
   readonly actions: HomePreviewActions;
+  readonly handleRef?: Ref<HomePreviewHandle> | undefined;
+  /** The preview stands alone (narrow layout), so it holds focus for Home's keys. */
+  readonly holdsFocus?: boolean | undefined;
   /** The snooze menu is opened by its button or by Home's H key. */
   readonly snoozeMenu: {
     readonly open: boolean;
@@ -186,35 +220,63 @@ function LastExchange(props: {
   );
 }
 
-function ApprovalBody(props: { readonly decision: HomeThreadDecision }) {
+function ApprovalBody(props: {
+  readonly decision: HomeThreadDecision;
+  readonly state: HomeApprovalState;
+}) {
   const approval = props.decision.approvals[0];
   if (!approval) {
     return <p className="text-sm text-muted-foreground">This approval was already answered.</p>;
   }
-  const total = props.decision.approvals.length;
   return (
-    <Block label={approvalHeadline(approval)}>
-      {approval.detail ? (
-        <MonoBlock>{approval.detail}</MonoBlock>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          Open the thread to see what this request covers.
+    <>
+      {/* The thread's own panel, so Home shows everything the request says before a decision. */}
+      <div className="min-w-0 rounded-lg border border-border bg-muted/40">
+        <ComposerPendingApprovalPanel
+          approval={approval}
+          pendingCount={props.decision.approvals.length}
+        />
+      </div>
+      {props.state === "open" ? null : (
+        <p role="status" className="text-sm text-muted-foreground">
+          {props.state === "sent"
+            ? "Decision sent. Waiting for the agent to continue."
+            : "This request was already answered."}
         </p>
       )}
-      {total > 1 ? (
-        <p className="text-2xs text-muted-foreground tabular-nums">Request 1 of {total}</p>
-      ) : null}
-    </Block>
+    </>
   );
 }
 
-function QuestionBody(props: { readonly decision: HomeThreadDecision }) {
+/** The oldest open question, answered in place unless it is a provider form. */
+function QuestionBody(props: {
+  readonly threadId: ThreadId;
+  readonly decision: HomeThreadDecision;
+  readonly cwd: string | undefined;
+}) {
   const input = props.decision.userInputs[0];
   if (!input) {
     return <p className="text-sm text-muted-foreground">This question was already answered.</p>;
   }
+  if (!input.elicitation) {
+    return (
+      // The panel has keys of its own (digits pick an option); Home's stay out of it.
+      <div data-home-keys="ignore" data-slot="home-question">
+        <AsyncUserInputPanel
+          // A panel that sent its answer hides itself: the next question gets a new one.
+          key={input.requestId}
+          threadId={props.threadId}
+          input={input}
+          cwd={props.cwd}
+        />
+      </div>
+    );
+  }
   return (
     <>
+      <p className="text-sm text-muted-foreground">
+        This request is a form from the provider. Open the thread to fill it in.
+      </p>
       {input.questions.map((question) => (
         <Block key={question.id} label={question.header}>
           <p className="text-sm text-foreground">{question.question}</p>
@@ -324,19 +386,52 @@ function ThreadMeta(props: {
   );
 }
 
+/** Why the queue stopped and how much waits in it. */
+function QueuePausedBody(props: { readonly threadId: ThreadId }) {
+  const queuedCount = useNextTurnQueueCount(props.threadId);
+  const snapshot = useQuery({
+    queryKey: ["home-queue-snapshot", props.threadId] as const,
+    queryFn: () => ensureNativeApi().nextTurnQueue.list({ threadId: props.threadId }),
+    staleTime: 10_000,
+  });
+  const reason = snapshot.data ? describeQueueBlockedState(snapshot.data) : null;
+  return (
+    <Block label="Queue paused">
+      <p className="text-sm text-muted-foreground">
+        {queuedCount > 0
+          ? `${queuedCount} queued ${queuedCount === 1 ? "turn waits" : "turns wait"} until the queue is resumed.`
+          : "Nothing is queued. Resume the queue to let new turns start."}
+      </p>
+      {reason ? <p className="text-sm text-foreground">{reason}</p> : null}
+    </Block>
+  );
+}
+
 function ThreadActions(props: {
   readonly item: HomeThreadItem;
   readonly actions: HomePreviewActions;
   readonly snoozeMenu: HomePreviewPaneProps["snoozeMenu"];
+  /** False when the item has an action of its own above: opening is then the second choice. */
+  readonly openIsPrimary: boolean;
 }) {
   const { item, actions, snoozeMenu } = props;
   const threadId = item.thread.id;
   const pinned = item.thread.pinnedAt != null;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <Button size="sm" onClick={() => actions.openThread(threadId)}>
+      <Button
+        size="sm"
+        variant={props.openIsPrimary ? "default" : "outline"}
+        onClick={() => actions.openThread(threadId)}
+      >
         Open thread
-        <Kbd className="bg-primary-foreground/15 text-primary-foreground">O</Kbd>
+        <Kbd
+          className={
+            props.openIsPrimary ? "bg-primary-foreground/15 text-primary-foreground" : undefined
+          }
+        >
+          O
+        </Kbd>
         <ArrowRightIcon />
       </Button>
       <span className="flex-1" />
@@ -395,34 +490,95 @@ const REPLY_LABEL_BY_KIND: Record<HomeThreadItemKind, string> = {
   pinned: "Latest reply",
 };
 
-function ThreadPreview(props: {
+interface ThreadPreviewProps {
   readonly item: HomeThreadItem;
   readonly project: Project | undefined;
   readonly peek: OrchestrationThreadPeek | undefined;
   readonly actions: HomePreviewActions;
+  readonly handleRef?: Ref<HomePreviewHandle> | undefined;
+  readonly holdsFocus?: boolean | undefined;
   readonly snoozeMenu: HomePreviewPaneProps["snoozeMenu"];
   readonly onBack?: (() => void) | undefined;
-}) {
+}
+
+/** Focuses the preview when it stands alone and nothing else holds focus. */
+function useHoldFocus(holdsFocus: boolean | undefined) {
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (holdsFocus && document.activeElement === document.body) {
+      ref.current?.focus({ preventScroll: true });
+    }
+  }, [holdsFocus]);
+  return ref;
+}
+
+function ThreadPreview(props: ThreadPreviewProps) {
+  const thread = useStore((state) => selectThreadById(state, props.item.thread.id));
+  // The thread was deleted while its row was still on screen.
+  return thread ? <LoadedThreadPreview {...props} thread={thread} /> : null;
+}
+
+function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thread }) {
   "use memo";
-  const { item } = props;
-  const thread = useStore((state) => selectThreadById(state, item.thread.id));
+  const { item, thread } = props;
   const projects = useStore((state) => state.projects);
-  const queuedCount = useNextTurnQueueCount(item.thread.id);
+  const queuePaused = useNextTurnQueueBadge(thread.id) === "paused";
   const now = useNowMinute();
   const activityAt = useLiveThreadActivityAt(item.thread.id, item.thread.lastInteractionAt);
   const tail = useHomeThreadTail(thread);
   const title = item.thread.title.trim() || "Untitled thread";
   const pill = pillForStatus(item.thread.status);
-  if (!thread) return null;
   const decision = deriveHomeThreadDecision(thread);
   const cwd = resolveThreadWorkspaceCwd({ thread, projects });
+  const inline = useHomeInlineActions({
+    thread,
+    project: props.project,
+    decision,
+    cwd,
+    focusQueue: props.actions.focusQueue,
+  });
+  const articleRef = useHoldFocus(props.holdsFocus);
+  const replyRef = useRef<HTMLTextAreaElement | null>(null);
+  const replyBox = HOME_REPLY_BOX_BY_KIND[item.kind];
+  // The request the buttons and keys act on: the one on screen, until its answer left.
+  const openApproval =
+    item.kind === "approval" && inline.approvalState === "open" ? inline.approval : null;
+  const hasOwnAction =
+    openApproval !== null ||
+    (item.kind === "plan" && decision.plan !== null) ||
+    (item.kind === "queue-paused" && queuePaused);
+
+  useImperativeHandle(props.handleRef, () => ({
+    primary: () => {
+      if (!inline.enabled) return false;
+      if (item.kind === "plan") return inline.implementPlan();
+      const approveDecision = openApproval ? approvalEnterDecision(openApproval) : null;
+      if (!openApproval || !approveDecision) return false;
+      inline.respondToApproval(openApproval, approveDecision);
+      return true;
+    },
+    deny: () => {
+      const denyDecision = openApproval ? approvalDenyDecision(openApproval) : null;
+      if (!inline.enabled || !openApproval || !denyDecision) return false;
+      inline.respondToApproval(openApproval, denyDecision);
+      return true;
+    },
+    focusReply: () => {
+      if (!replyRef.current) return false;
+      replyRef.current.focus();
+      return true;
+    },
+  }));
 
   return (
     <article
+      ref={articleRef}
+      // Focusable by script only: it takes Home's keys while the queue is not on screen.
+      tabIndex={-1}
       aria-label={title}
       data-slot="home-preview"
       data-kind={item.kind}
-      className={PANE_CLASS_NAME}
+      className={cn(PANE_CLASS_NAME, "outline-none")}
     >
       <PaneHeader
         title={title}
@@ -445,8 +601,12 @@ function ThreadPreview(props: {
         }
       />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
-        {item.kind === "approval" ? <ApprovalBody decision={decision} /> : null}
-        {item.kind === "question" ? <QuestionBody decision={decision} /> : null}
+        {item.kind === "approval" ? (
+          <ApprovalBody decision={decision} state={inline.approvalState} />
+        ) : null}
+        {item.kind === "question" ? (
+          <QuestionBody threadId={thread.id} decision={decision} cwd={cwd} />
+        ) : null}
         {item.kind === "plan" && decision.plan ? (
           <ProposedPlanCard
             planMarkdown={decision.plan.planMarkdown}
@@ -454,15 +614,7 @@ function ThreadPreview(props: {
             workspaceRoot={cwd}
           />
         ) : null}
-        {item.kind === "queue-paused" ? (
-          <Block label="Queue paused">
-            <p className="text-sm text-muted-foreground">
-              {queuedCount > 0
-                ? `${queuedCount} queued ${queuedCount === 1 ? "turn waits" : "turns wait"} until the queue is resumed.`
-                : "Nothing is queued. Resume the queue in the thread to let new turns start."}
-            </p>
-          </Block>
-        ) : null}
+        {item.kind === "queue-paused" ? <QueuePausedBody threadId={thread.id} /> : null}
         {item.kind === "failed" && thread.error ? (
           <Block label="Error">
             <MonoBlock tone="error">{thread.error}</MonoBlock>
@@ -479,9 +631,53 @@ function ThreadPreview(props: {
         )}
       </div>
       <footer className="flex flex-col gap-2.5 border-t border-border px-4 py-3">
-        <ThreadActions item={item} actions={props.actions} snoozeMenu={props.snoozeMenu} />
+        {openApproval ? (
+          <HomeApprovalActions
+            approval={openApproval}
+            enabled={inline.enabled}
+            onRespond={inline.respondToApproval}
+          />
+        ) : null}
+        {item.kind === "plan" && decision.plan ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button size="sm" disabled={!inline.enabled} onClick={() => inline.implementPlan()}>
+              Implement
+              <Kbd className="bg-primary-foreground/15 text-primary-foreground">↵</Kbd>
+            </Button>
+          </div>
+        ) : null}
+        {item.kind === "queue-paused" && queuePaused ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button size="sm" disabled={!inline.enabled} onClick={inline.resumeQueue}>
+              <PlayIcon />
+              Resume queue
+            </Button>
+          </div>
+        ) : null}
+        {replyBox ? (
+          <HomeReplyBox
+            threadId={thread.id}
+            label={replyBox.label}
+            placeholder={replyBox.placeholder}
+            enabled={inline.enabled}
+            inputRef={replyRef}
+            onSubmit={(text) =>
+              inline.reply(text, {
+                interactionMode: replyBox.interactionMode,
+                intent: replyBox.intent,
+              })
+            }
+          />
+        ) : null}
+        <ThreadActions
+          item={item}
+          actions={props.actions}
+          snoozeMenu={props.snoozeMenu}
+          openIsPrimary={!hasOwnAction}
+        />
         <ThreadMeta thread={thread} peek={props.peek} />
       </footer>
+      {inline.dialog}
     </article>
   );
 }
@@ -497,16 +693,20 @@ function WorkflowPreview(props: {
   readonly item: HomeWorkflowItem;
   readonly project: Project | undefined;
   readonly actions: HomePreviewActions;
+  readonly holdsFocus?: boolean | undefined;
   readonly onBack?: (() => void) | undefined;
 }) {
   const workflow = props.item.workflow;
   const now = useNowMinute();
+  const articleRef = useHoldFocus(props.holdsFocus);
   return (
     <article
+      ref={articleRef}
+      tabIndex={-1}
       aria-label={workflow.title}
       data-slot="home-preview"
       data-kind="workflow"
-      className={PANE_CLASS_NAME}
+      className={cn(PANE_CLASS_NAME, "outline-none")}
     >
       <PaneHeader
         title={workflow.title}
@@ -578,6 +778,8 @@ export default function HomePreviewPane(props: HomePreviewPaneProps) {
       project={props.project}
       peek={props.peek}
       actions={props.actions}
+      handleRef={props.handleRef}
+      holdsFocus={props.holdsFocus}
       snoozeMenu={props.snoozeMenu}
       onBack={props.onBack}
     />
@@ -587,6 +789,7 @@ export default function HomePreviewPane(props: HomePreviewPaneProps) {
       item={props.item}
       project={props.project}
       actions={props.actions}
+      holdsFocus={props.holdsFocus}
       onBack={props.onBack}
     />
   );

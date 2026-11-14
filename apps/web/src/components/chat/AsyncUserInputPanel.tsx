@@ -5,6 +5,7 @@ import {
   type ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { ArrowRightIcon } from "lucide-react";
 import { readNativeApi } from "~/nativeApi";
 import { newCommandId } from "~/lib/utils";
@@ -30,7 +31,20 @@ function initialAsyncDraft(questions: ReadonlyArray<UserInputQuestion>): AsyncUs
   };
 }
 
-/** Message questions keep their drafts mounted while the conversation continues. */
+/**
+ * A blocking request is answered on the provider's own request, whose adapters read one
+ * value per question (a string, an array for several, "" for a skipped optional one), as the
+ * composer sends it.
+ */
+export function blockingUserInputAnswer(values: ReadonlyArray<string>): string | string[] {
+  if (values.length === 0) return "";
+  return values.length === 1 ? values[0]! : [...values];
+}
+
+/**
+ * Message questions keep their drafts mounted while the conversation continues. Home also
+ * answers blocking questions with this panel, without opening their thread.
+ */
 export function AsyncUserInputPanel({
   threadId,
   input,
@@ -38,10 +52,12 @@ export function AsyncUserInputPanel({
   variant = "standalone",
 }: {
   threadId: ThreadId;
-  input: PendingUserInput;
+  input: Pick<PendingUserInput, "requestId" | "questions" | "responseMode" | "blocking"> &
+    Partial<Pick<PendingUserInput, "receipt">>;
   cwd?: string | undefined;
   variant?: ComposerPanelVariant;
 }) {
+  const blocking = isBlockingUserInput(input);
   // Kept outside the panel so leaving the thread does not drop a typed answer.
   const storedDraft = usePendingUserInputDraftStore(
     (store) => store.asyncDraftsByThreadId[threadId]?.[input.requestId],
@@ -118,7 +134,12 @@ export function AsyncUserInputPanel({
               ...base,
               type: "thread.user-input.respond",
               answers: Object.fromEntries(
-                questions.map((question) => [question.id, { answers: answerFor(question) }]),
+                questions.map((question) => [
+                  question.id,
+                  blocking
+                    ? blockingUserInputAnswer(answerFor(question))
+                    : { answers: answerFor(question) },
+                ]),
               ),
               attachments: attachments.map((attachment) => ({
                 type: "upload" as const,
