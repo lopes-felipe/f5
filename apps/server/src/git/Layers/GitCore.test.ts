@@ -2,7 +2,20 @@ import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecyc
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Effect, Layer, ManagedRuntime, Metric, Schema, Stream } from "effect";
+import { it as effectIt } from "@effect/vitest";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Metric,
+  Schema,
+  Sink,
+  Stream,
+} from "effect";
+import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -979,13 +992,28 @@ it.each(["none", "shallow", "recursive"] as const)(
       };
     });
     const core = await makeCore(scripted.service);
+    const finished: Array<{ status: string; detail: string | null }> = [];
     const result = await Effect.runPromise(
-      core.createWorktree({ cwd: process.cwd(), branch: "main", path: null, submodules }),
+      core.createWorktree({
+        cwd: process.cwd(),
+        branch: "main",
+        path: null,
+        submodules,
+        progress: { onSubmodulesFinished: (result) => finished.push(result) },
+      }),
     );
     expect(result.worktree.branch).toBe("main");
     const calls = scripted.calls.filter((call) => call.args.includes("submodule"));
-    if (submodules === "none") expect(calls).toHaveLength(0);
-    else {
+    if (submodules === "none") {
+      expect(calls).toHaveLength(0);
+      expect(finished).toEqual([{ status: "skipped", detail: "disabled in settings" }]);
+    } else {
+      expect(finished).toEqual([
+        {
+          status: "warning",
+          detail: expect.stringContaining("Unable to initialize worktree submodules"),
+        },
+      ]);
       // Registration writes the shared config on its own; the clones run separately.
       expect(calls.map((call) => call.args)).toEqual([
         ["submodule", "init"],
@@ -995,6 +1023,7 @@ it.each(["none", "shallow", "recursive"] as const)(
           "submodule",
           "update",
           "--init",
+          "--progress",
           ...(submodules === "recursive" ? ["--recursive"] : []),
         ],
       ]);
@@ -1043,6 +1072,146 @@ it("retains active receipt ownership while initializing submodules outside lifec
     (await Effect.runPromise(core.readWorktreePreparation(created.worktree.path)))?.phase,
   ).toBe("checkout_created");
 });
+
+effectIt.effect.each([
+  { submodules: "recursive", progress: false, cancel: false, stall: false },
+  { submodules: "recursive", progress: true, cancel: false, stall: false },
+  { submodules: "shallow", progress: false, cancel: false, stall: false },
+  { submodules: "shallow", progress: true, cancel: false, stall: false },
+  { submodules: "recursive", progress: true, cancel: true, stall: false },
+  { submodules: "recursive", progress: true, cancel: false, stall: true },
+  { submodules: "shallow", progress: false, cancel: false, stall: true },
+] as const)(
+  "bounds submodule inactivity ($submodules, progress: $progress, cancel: $cancel, stall: $stall)",
+  ({ submodules, progress, cancel, stall }) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      let running = true;
+      let killed = false;
+      let killedBeforeSpawnerRelease = false;
+      const kill = () =>
+        Effect.sync(() => {
+          killed = true;
+          running = false;
+        });
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.acquireRelease(
+          Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              // A synthetic id beyond the host PID range; never target a real process group.
+              pid: ChildProcessSpawner.ProcessId(2_147_483_647),
+              exitCode: Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(ChildProcessSpawner.ExitCode(0)),
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    running = false;
+                  }),
+                ),
+              ),
+              isRunning: Effect.sync(() => running),
+              kill,
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: stall
+                ? Stream.empty
+                : Stream.fromEffect(
+                    Effect.sleep("4 minutes").pipe(
+                      Effect.as(new TextEncoder().encode("Cloning submodule\n")),
+                    ),
+                  ),
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            }),
+          ),
+          () =>
+            Effect.gen(function* () {
+              killedBeforeSpawnerRelease = killed;
+              // Like the real spawner, its own release also terminates children on Windows.
+              if (running) yield* kill();
+              yield* Deferred.succeed(stopped, undefined);
+            }),
+        ),
+      );
+      // Exercise the real command timeout and process-scope handling for the update.
+      const git = yield* Effect.service(GitService).pipe(
+        Effect.provide(
+          GitServiceLive.pipe(
+            Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+          ),
+        ),
+      );
+      const scripted = makeScriptedGitService((input) => {
+        if (input.args[0] === "worktree" && input.args[1] === "add") {
+          const target = input.args[input.args.length - 2]!;
+          mkdirSync(target, { recursive: true });
+          writeFileSync(join(target, ".gitmodules"), '[submodule "lib"]\n');
+        }
+        return { stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "" };
+      });
+      const core = yield* Effect.promise(() =>
+        makeCore({
+          execute: (input) =>
+            input.args.includes("submodule") && input.args.includes("update")
+              ? git.execute(input)
+              : scripted.service.execute(input),
+        }),
+      );
+      const finished: Array<{ status: string; detail: string | null }> = [];
+      const lines: string[] = [];
+      const claimed: string[] = [];
+      const creation = yield* core
+        .createWorktree({
+          cwd: process.cwd(),
+          branch: "main",
+          path: null,
+          submodules,
+          progress: {
+            onWorktreeClaimed: (path) => claimed.push(path),
+            onSubmodulesFinished: (result) => finished.push(result),
+            ...(progress ? { onSubmoduleLine: (line: string) => lines.push(line) } : {}),
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      // Step past real progress before advancing further, so an idle deadline is reset.
+      if (!stall) yield* TestClock.adjust("4 minutes");
+      yield* TestClock.adjust(stall ? "6 minutes" : "2 minutes");
+      if (stall) {
+        yield* Fiber.join(creation);
+        expect(finished).toEqual([
+          {
+            status: "warning",
+            detail: expect.stringContaining("no output for 5 minutes"),
+          },
+        ]);
+        expect(yield* Deferred.isDone(stopped)).toBe(true);
+        expect(killed).toBe(true);
+        if (process.platform !== "win32") expect(killedBeforeSpawnerRelease).toBe(true);
+        return;
+      }
+      expect(finished).toEqual([]);
+      expect(yield* Deferred.isDone(stopped)).toBe(false);
+      expect(claimed).toHaveLength(1);
+      if (cancel) {
+        yield* Fiber.interrupt(creation);
+        const exit = yield* Fiber.await(creation);
+        expect(exit._tag === "Failure" && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+        expect(finished).toEqual([]);
+        expect(killed).toBe(true);
+        if (process.platform !== "win32") expect(killedBeforeSpawnerRelease).toBe(true);
+      } else {
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(creation);
+        expect(finished).toEqual([{ status: "done", detail: null }]);
+        if (progress) expect(lines).toEqual(["Cloning submodule"]);
+      }
+      expect(yield* Deferred.isDone(stopped)).toBe(true);
+    }),
+);
 
 describe("failed worktree add", () => {
   const failAdd = (createDir: boolean) =>
