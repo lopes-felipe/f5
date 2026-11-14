@@ -71,3 +71,22 @@ export function readThreadPeek(sql: SqlClient.SqlClient, threadId: ThreadId) {
     } satisfies OrchestrationThreadPeek;
   });
 }
+
+/**
+ * Peeks for several threads in one request (Home's queue rows), in the order asked and once
+ * per thread. Ids of threads that do not exist, or were deleted, are left out.
+ */
+export function readThreadPeeks(sql: SqlClient.SqlClient, threadIds: ReadonlyArray<ThreadId>) {
+  return Effect.gen(function* () {
+    const unique = [...new Set(threadIds)];
+    if (unique.length === 0) return [] as OrchestrationThreadPeek[];
+    const rows = yield* sql<{ threadId: string }>`
+      SELECT thread_id AS "threadId" FROM projection_threads
+      WHERE ${sql.in("thread_id", unique)} AND deleted_at IS NULL`;
+    const existing = new Set(rows.map((row) => row.threadId));
+    return yield* Effect.forEach(
+      unique.filter((threadId) => existing.has(threadId)),
+      (threadId) => readThreadPeek(sql, threadId),
+    );
+  });
+}

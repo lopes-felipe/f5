@@ -75,6 +75,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getThreadTailDetails: "orchestration.getThreadTailDetails",
   getRewindDrafts: "orchestration.getRewindDrafts",
   getThreadPeek: "orchestration.getThreadPeek",
+  getThreadPeeks: "orchestration.getThreadPeeks",
   getThreadHistoryPage: "orchestration.getThreadHistoryPage",
   getThreadDetails: "orchestration.getThreadDetails",
   dispatchCommand: "orchestration.dispatchCommand",
@@ -3123,6 +3124,20 @@ export const OrchestrationThreadPeek = Schema.Struct({
 });
 export type OrchestrationThreadPeek = typeof OrchestrationThreadPeek.Type;
 
+/** Most threads one `getThreadPeeks` request may ask for. */
+export const THREAD_PEEKS_MAX_THREADS = 50;
+
+export const OrchestrationGetThreadPeeksInput = Schema.Struct({
+  threadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(THREAD_PEEKS_MAX_THREADS)),
+});
+export type OrchestrationGetThreadPeeksInput = typeof OrchestrationGetThreadPeeksInput.Type;
+
+/** Peeks in the order asked, each thread once; ids of threads that do not exist are left out. */
+export const OrchestrationThreadPeeks = Schema.Struct({
+  peeks: Schema.Array(OrchestrationThreadPeek),
+});
+export type OrchestrationThreadPeeks = typeof OrchestrationThreadPeeks.Type;
+
 export const OrchestrationGetThreadTailDetailsInput = Schema.Struct({
   threadId: ThreadId,
   messageLimit: Schema.optional(NonNegativeInt),
@@ -3580,6 +3595,10 @@ export const OrchestrationRpcSchemas = {
   getThreadPeek: {
     input: OrchestrationGetThreadPeekInput,
     output: OrchestrationThreadPeek,
+  },
+  getThreadPeeks: {
+    input: OrchestrationGetThreadPeeksInput,
+    output: OrchestrationThreadPeeks,
   },
   getThreadHistoryPage: {
     input: OrchestrationGetThreadHistoryPageInput,

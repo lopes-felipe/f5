@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { readThreadPeek } from "./threadPeek.ts";
+import { readThreadPeek, readThreadPeeks } from "./threadPeek.ts";
 
 it.layer(SqlitePersistenceMemory)("thread peek", (it) => {
   it.effect("returns nulls for a thread without messages or checkpoints", () =>
@@ -84,6 +84,43 @@ it.layer(SqlitePersistenceMemory)("thread peek", (it) => {
       yield* sql`DELETE FROM projection_thread_messages WHERE message_id = 'i-a3'`;
       const interrupted = yield* readThreadPeek(sql, ThreadId.makeUnsafe("i"));
       assert.strictEqual(interrupted.lastAssistantText, "T2 partial reply");
+    }),
+  );
+
+  it.effect("reads several threads in the order asked and leaves out missing ones", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-11-01T00:00:00.000Z";
+      yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, default_model, scripts_json, created_at, updated_at, deleted_at)
+        VALUES ('peeks-project', 'Peeks', '/tmp', NULL, '[]', ${now}, ${now}, NULL)`;
+      for (const [threadId, deletedAt] of [
+        ["peeks-a", null],
+        ["peeks-b", null],
+        ["peeks-deleted", now],
+      ] as const) {
+        yield* sql`INSERT INTO projection_threads
+          (thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+           archived_at, created_at, last_interaction_at, updated_at, deleted_at)
+          VALUES (${threadId}, 'peeks-project', ${threadId}, 'gpt-5', NULL, NULL, NULL,
+            NULL, ${now}, ${now}, ${now}, ${deletedAt})`;
+      }
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('peeks-a-u','peeks-a',NULL,'user','Prompt A',0,'1','1'),
+          ('peeks-b-u','peeks-b',NULL,'user','Prompt B',0,'1','1')`;
+      const ids = ["peeks-b", "peeks-missing", "peeks-a", "peeks-deleted", "peeks-b"].map((id) =>
+        ThreadId.makeUnsafe(id),
+      );
+      const peeks = yield* readThreadPeeks(sql, ids);
+      assert.deepStrictEqual(
+        peeks.map((peek) => [peek.threadId, peek.lastUserText]),
+        [
+          ["peeks-b", "Prompt B"],
+          ["peeks-a", "Prompt A"],
+        ],
+      );
+      assert.deepStrictEqual(yield* readThreadPeeks(sql, []), []);
     }),
   );
 });
