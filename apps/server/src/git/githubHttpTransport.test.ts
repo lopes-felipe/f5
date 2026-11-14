@@ -178,6 +178,68 @@ it("preserves diff text and sends only the fixed diff media type", async () => {
   expect(result.stdout).toContain("diff --git a/a b/a\n+hello\n");
 });
 
+describe("job log downloads", () => {
+  const redirect = (location: string) =>
+    new Response(null, { status: 302, headers: { Location: location } });
+  const request = (fetcher: typeof fetch, extra: string[] = ["--allow-escape-sequences"]) =>
+    Effect.runPromise(
+      makeGitHubHttpTransport(fetcher)({
+        cwd: ".",
+        args: [
+          "api",
+          "repos/octo/repo/actions/jobs/501/logs",
+          "--hostname",
+          "github.com",
+          "--method",
+          "GET",
+          "--include",
+          ...extra,
+        ],
+        env: { GH_TOKEN: "cloud-secret" },
+      }),
+    );
+
+  it("reads a log from the storage GitHub redirects to, without the token", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(redirect("https://logs.storage.example/job/501?sig=abc"))
+      .mockResolvedValueOnce(
+        new Response("﻿2026-11-14T06:58:53.4329374Z ##[error]Process completed.\n"),
+      );
+    const result = await request(fetcher);
+    expect(String(fetcher.mock.calls[1]![0])).toBe("https://logs.storage.example/job/501?sig=abc");
+    const stored = new Headers(fetcher.mock.calls[1]![1]?.headers);
+    expect(stored.get("authorization")).toBeNull();
+    expect([...stored.keys()]).toEqual(["user-agent"]);
+    expect(new Headers(fetcher.mock.calls[0]![1]?.headers).get("authorization")).toBe(
+      "Bearer cloud-secret",
+    );
+    expect(parseGitHubApiResponse(result.stdout, Date.now(), "text")).toMatchObject({
+      status: 200,
+      body: "﻿2026-11-14T06:58:53.4329374Z ##[error]Process completed.\n",
+    });
+  });
+
+  it("follows only one hop off the API origin, only over HTTPS, only for a log", async () => {
+    const chained = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(redirect("https://logs.storage.example/job/501"))
+      .mockResolvedValueOnce(redirect("https://elsewhere.example/job/501"));
+    expect(await request(chained)).toMatchObject({ code: 1 });
+    expect(chained).toHaveBeenCalledTimes(2);
+
+    const plain = vi.fn<typeof fetch>().mockResolvedValue(redirect("http://logs.example/501"));
+    expect(await request(plain)).toMatchObject({ code: 1 });
+    expect(plain).toHaveBeenCalledTimes(1);
+
+    const unmarked = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(redirect("https://logs.storage.example/job/501"));
+    expect(await request(unmarked, [])).toMatchObject({ code: 1 });
+    expect(unmarked).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("GitHub fetch parity with gh", () => {
   const sockets = new Set<Net.Socket>();
   const track = (socket: Net.Socket) => {

@@ -695,6 +695,69 @@ export const PrHubCheck = Schema.Struct({
 });
 export type PrHubCheck = typeof PrHubCheck.Type;
 
+/** One check of the head commit, with what is needed to group it, time it and read its log. */
+export const PrHubCheckRun = Schema.Struct({
+  ...PrHubCheck.fields,
+  /** Stable within one head commit. The forge's job ID where there is one. */
+  id: Schema.String,
+  workflow: Schema.NullOr(Schema.String),
+  workflowRunId: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  logAvailable: Schema.Boolean,
+});
+export type PrHubCheckRun = typeof PrHubCheckRun.Type;
+
+export const PrHubChecksInput = Schema.Struct({
+  accountGeneration: Schema.optional(Schema.String),
+  key: PullRequestKey,
+  mode: Schema.optional(Schema.Literals(["if_stale", "force"])),
+});
+export type PrHubChecksInput = typeof PrHubChecksInput.Type;
+
+export const PrHubChecksResult = Schema.Struct({
+  headOid: Schema.NullOr(Schema.String),
+  checks: Schema.Array(PrHubCheckRun),
+  /** The head commit has more checks than were read. */
+  truncated: Schema.Boolean,
+  refreshedAt: IsoDateTime,
+});
+export type PrHubChecksResult = typeof PrHubChecksResult.Type;
+
+export const PrHubCheckLogInput = Schema.Struct({
+  accountGeneration: Schema.optional(Schema.String),
+  key: PullRequestKey,
+  checkId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+});
+export type PrHubCheckLogInput = typeof PrHubCheckLogInput.Type;
+
+export const PrHubCheckLogUnavailable = Schema.Literals([
+  "unsupported",
+  "pending",
+  "expired",
+  "forbidden",
+  "failed",
+]);
+export type PrHubCheckLogUnavailable = typeof PrHubCheckLogUnavailable.Type;
+
+/**
+ * The part of a check's log around its first error. `excerpt` is null when the log could
+ * not be read; `unavailable` then says why.
+ */
+export const PrHubCheckLog = Schema.Struct({
+  checkId: Schema.String,
+  excerpt: Schema.NullOr(Schema.String),
+  unavailable: Schema.optional(PrHubCheckLogUnavailable),
+  /** Line number, in the whole log, of the excerpt's first line. Zero without an excerpt. */
+  startLine: NonNegativeInt,
+  totalLines: NonNegativeInt,
+  /** Line number, in the whole log, of the first error. */
+  errorLine: Schema.NullOr(PositiveInt),
+  /** Lines of the log were left out of the excerpt. */
+  truncated: Schema.Boolean,
+});
+export type PrHubCheckLog = typeof PrHubCheckLog.Type;
+
 export const PrHubReviewer = Schema.Struct({
   ...PrHubActor.fields,
   kind: Schema.Literals(["user", "team"]),
@@ -1170,6 +1233,8 @@ export const PR_HUB_WS_METHODS = {
   recoverOperation: "prHub.recoverOperation",
   cancelOperation: "prHub.cancelOperation",
   listReviewerCandidates: "prHub.listReviewerCandidates",
+  getChecks: "prHub.getChecks",
+  getCheckLog: "prHub.getCheckLog",
 
   getOverview: "prHub.getOverview",
   listPullRequests: "prHub.listPullRequests",

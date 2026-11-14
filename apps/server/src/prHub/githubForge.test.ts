@@ -361,3 +361,88 @@ it("does not activate auto-merge after the prepared head changes", async () => {
   expect(result._tag).toBe("Failure");
   expect(queries.some((entry) => entry.query.startsWith("mutation"))).toBe(false);
 });
+
+it("sends query parameters apart from the endpoint, which may not hold a query string", async () => {
+  const { provider, calls } = fixture([[{ login: "alice" }]]);
+  await Effect.runPromise(provider.listReviewerCandidates(ref));
+  expect(calls[0]).toMatchObject({
+    method: "GET",
+    endpoint: "repos/team/repo/collaborators",
+    query: { per_page: "100" },
+  });
+  const files = fixture([[]]);
+  await Effect.runPromise(files.provider.getFiles(ref));
+  expect(files.calls[0]).toMatchObject({
+    endpoint: "repos/team/repo/pulls/7/files",
+    query: { per_page: "100", page: "1" },
+  });
+  expect([...calls, ...files.calls].every((call) => !call.endpoint.includes("?"))).toBe(true);
+});
+
+describe("re-running failed checks", () => {
+  const run = (id: number, conclusion: string, status = "completed") => ({
+    id,
+    status,
+    conclusion,
+    head_sha: "head-sha",
+  });
+
+  it("re-runs the failed jobs of every failed workflow run at the prepared head", async () => {
+    const { provider, calls } = fixture([
+      pr,
+      {
+        total_count: 4,
+        workflow_runs: [
+          run(11, "failure"),
+          run(12, "success"),
+          run(13, "cancelled"),
+          run(14, "", "in_progress"),
+        ],
+      },
+      {},
+      {},
+    ]);
+    await Effect.runPromise(
+      provider.performAction({ ref, action: "rerun-failed-checks", expectedHeadOid: "head-sha" }),
+    );
+    expect(calls[1]).toMatchObject({
+      method: "GET",
+      endpoint: "repos/team/repo/actions/runs",
+      query: { head_sha: "head-sha", per_page: "100" },
+    });
+    expect(calls.slice(2).map((call) => [call.method, call.endpoint])).toEqual([
+      ["POST", "repos/team/repo/actions/runs/11/rerun-failed-jobs"],
+      ["POST", "repos/team/repo/actions/runs/13/rerun-failed-jobs"],
+    ]);
+  });
+
+  it("sends nothing without a prepared head, after a push, or when no run failed", async () => {
+    const attempts = [
+      { responses: [pr], expectedHeadOid: undefined },
+      { responses: [pr], expectedHeadOid: "old-sha" },
+      {
+        responses: [pr, { total_count: 1, workflow_runs: [run(12, "success")] }],
+        expectedHeadOid: "head-sha",
+      },
+      {
+        responses: [pr, { total_count: 250, workflow_runs: [run(11, "failure")] }],
+        expectedHeadOid: "head-sha",
+      },
+    ];
+    for (const attempt of attempts) {
+      const { provider, calls } = fixture(attempt.responses);
+      const result = await Effect.runPromise(
+        provider
+          .performAction({
+            ref,
+            action: "rerun-failed-checks",
+            ...(attempt.expectedHeadOid ? { expectedHeadOid: attempt.expectedHeadOid } : {}),
+          })
+          .pipe(Effect.result),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.requestDispatched).toBe(false);
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+    }
+  });
+});

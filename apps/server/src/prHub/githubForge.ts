@@ -16,6 +16,7 @@ import {
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import { record, text } from "./forgeModel.ts";
 import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
+import { failedGitHubWorkflowRuns } from "./githubChecks.ts";
 
 export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvider {
   const scope = <A>(
@@ -54,14 +55,17 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
     suffix: string,
     method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" = "GET",
     body?: unknown,
-  ) =>
-    scope(ref, (context) =>
+  ) => {
+    // The request layer refuses a query string inside the endpoint, so it travels apart.
+    const [path = "", search] = suffix.split("?", 2);
+    return scope(ref, (context) =>
       github
         .request({
           cwd,
           context,
           method,
-          endpoint: `repos/${ref.repository.split("/").map(encodeURIComponent).join("/")}${suffix}`,
+          endpoint: `repos/${ref.repository.split("/").map(encodeURIComponent).join("/")}${path}`,
+          ...(search ? { query: Object.fromEntries(new URLSearchParams(search)) } : {}),
           ...(body === undefined ? {} : { body }),
         })
         .pipe(
@@ -80,6 +84,7 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
           ),
         ),
     );
+  };
   // CLI adapter errors retain dispatch knowledge for durable recovery.
   const graphql = (
     ref: SourceControlPullRequestRef,
@@ -427,6 +432,28 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               "mutation($id:ID!){revertPullRequest(input:{pullRequestId:$id}){revertPullRequest{id url}}}",
               { id: yield* node(ref) },
             );
+          case "rerun-failed-checks": {
+            const sha = input.expectedHeadOid;
+            if (!sha)
+              return yield* failure("rerun-failed-checks", "A prepared head revision is required.");
+            const detail = yield* getDetail(ref);
+            if (detail.headRefOid !== sha)
+              return yield* failure("rerun-failed-checks", "The pull request head has changed.");
+            const runs = failedGitHubWorkflowRuns(
+              yield* request(ref, `/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`),
+              sha,
+            );
+            if (!runs.complete)
+              return yield* failure("rerun-failed-checks", "The workflow run list is incomplete.");
+            if (runs.ids.length === 0)
+              return yield* failure(
+                "rerun-failed-checks",
+                "No failed GitHub Actions run can be re-run at this revision.",
+              );
+            for (const id of runs.ids)
+              yield* request(ref, `/actions/runs/${id}/rerun-failed-jobs`, "POST");
+            return null;
+          }
           case "approve-workflows": {
             const detail = yield* getDetail(ref);
             if (!detail.isCrossRepository) return null;

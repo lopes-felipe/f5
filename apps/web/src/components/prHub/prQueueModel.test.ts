@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   movePrQueueCursor,
+  prCanRerunChecks,
   prPageActionAvailability,
   prQueueCollapsed,
   prQueueCommand,
@@ -174,32 +175,61 @@ describe("row cells and checklist", () => {
   it("offers the step that moves each line forward", () => {
     const actions = (overrides: Partial<TrackedPullRequest>) =>
       Object.fromEntries(
-        prStatusChecklist(makePr(overrides)).map((item) => [item.id, item.action?.kind ?? null]),
+        prStatusChecklist(makePr(overrides)).map((item) => [
+          item.id,
+          item.actions.map((action) => action.kind),
+        ]),
       );
     expect(
       actions({ checkRollup: "failure", mergeStateStatus: "BEHIND", unresolvedThreadCount: 1 }),
     ).toEqual({
-      review: "request_reviewers",
-      checks: "view_checks",
-      branch: "update_branch",
-      threads: "view_threads",
+      review: ["request_reviewers"],
+      checks: ["view_checks", "rerun_checks", "fix_ci"],
+      branch: ["update_branch"],
+      threads: ["view_threads"],
     });
-    expect(actions({ mergeable: "conflicting" }).branch).toBe("resolve_conflicts");
+    expect(actions({ mergeable: "conflicting" }).branch).toEqual(["resolve_conflicts"]);
+    // Checks that pass or still run have nothing to re-run or fix.
+    expect(actions({ checkRollup: "pending" }).checks).toEqual(["view_checks"]);
+    expect(actions({ checkRollup: "success" }).checks).toEqual(["view_checks"]);
     // Nothing to do on an approved, up-to-date pull request without checks.
     expect(actions({ reviewDecision: "approved", checkRollup: "none" })).toEqual({
-      review: null,
-      checks: null,
-      branch: null,
+      review: [],
+      checks: [],
+      branch: [],
     });
+  });
+
+  it("offers a re-run only where the forge can re-run this pull request's checks", () => {
+    const caps = forgeCapabilitiesFor("github")!;
+    const checks = (overrides: Partial<TrackedPullRequest>) =>
+      prStatusChecklist(makePr({ checkRollup: "failure", ...overrides }))
+        .find((item) => item.id === "checks")
+        ?.actions.map((action) => action.label);
+    expect(checks({})).toEqual(["View checks", "Re-run failed jobs", "Fix CI with F5"]);
+    // No write access: the capability is off and the action is not advertised.
+    expect(
+      checks({
+        forgeCapabilities: {
+          ...caps,
+          checks: { logs: true, rerun: false },
+          actions: caps.actions.filter((action) => action !== "rerun-failed-checks"),
+        },
+      }),
+    ).toEqual(["View checks", "Fix CI with F5"]);
+    expect(checks({ provider: "gitlab" })).toEqual(["View checks", "Fix CI with F5"]);
+    expect(prCanRerunChecks(makePr({ state: "merged" }))).toBe(false);
   });
 
   it("offers a reviewer no author steps, and nothing on a closed or ignored pull request", () => {
     const kinds = (overrides: Partial<TrackedPullRequest>) =>
       prStatusChecklist(makePr(overrides)).flatMap((item) =>
-        item.action ? [item.action.kind] : [],
+        item.actions.map((action) => action.kind),
       );
+    // A reviewer with write access can still re-run; fixing is the author's.
     expect(kinds({ ...theirs, mergeable: "conflicting", checkRollup: "failure" })).toEqual([
       "view_checks",
+      "rerun_checks",
     ]);
     expect(kinds({ state: "closed", checkRollup: "failure" })).toEqual([]);
     expect(kinds({ ignoredAt: "2026-11-02T00:00:00.000Z", checkRollup: "failure" })).toEqual([]);

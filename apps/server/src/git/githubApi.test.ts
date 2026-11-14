@@ -787,6 +787,74 @@ describe("GitHub response failures", () => {
     expect(parseGitHubApiResponse("HTTP/2.0 204 No Content\n\n").body).toBeNull();
     expect(() => parseGitHubApiResponse("HTTP/2.0 200 OK\n\n")).toThrow();
   });
+
+  it("reads terminal text as text and lets the CLI print its escape sequences", async () => {
+    const h = harness();
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
+    );
+    const log = "﻿2026-11-14T06:58:53.4329374Z \u001B[31m##[error]failed\u001B[0m\n";
+    h.respond(`HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n${log}`);
+    h.execute.mockClear();
+    const response = await Effect.runPromise(
+      h.api.request({
+        cwd: "/repo",
+        context,
+        method: "GET",
+        endpoint: "repos/octo/repo/actions/jobs/501/logs",
+        terminalText: true,
+      }),
+    );
+    expect(response).toMatchObject({ status: 200, body: log });
+    expect(h.execute.mock.calls.at(-1)?.[0].args).toContain("--allow-escape-sequences");
+    // A write is never a download.
+    expect(
+      Exit.isFailure(
+        await Effect.runPromiseExit(
+          h.api.request({
+            cwd: "/repo",
+            context,
+            method: "POST",
+            endpoint: "repos/octo/repo/actions/runs/9/rerun-failed-jobs",
+            terminalText: true,
+          }),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("takes query parameters apart from the endpoint", async () => {
+    const h = harness();
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
+    );
+    h.execute.mockClear();
+    expect(
+      Exit.isFailure(
+        await Effect.runPromiseExit(
+          h.api.request({
+            cwd: "/repo",
+            context,
+            method: "GET",
+            endpoint: "repos/octo/repo/actions/runs?head_sha=abc",
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(h.execute).not.toHaveBeenCalled();
+    await Effect.runPromise(
+      h.api.request({
+        cwd: "/repo",
+        context,
+        method: "GET",
+        endpoint: "repos/octo/repo/actions/runs",
+        query: { head_sha: "abc", per_page: 100 },
+      }),
+    );
+    expect(h.execute.mock.calls.at(-1)?.[0].args[1]).toBe(
+      "repos/octo/repo/actions/runs?head_sha=abc&per_page=100",
+    );
+  });
 });
 
 it("a credential refresh dispatches only the exact token whose account was verified", async () => {

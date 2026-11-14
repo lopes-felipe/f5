@@ -1117,6 +1117,8 @@ export function createWsNativeApi(): NativeApi {
       cancelOperation: (input) => transport.request(PR_HUB_WS_METHODS.cancelOperation, input),
       listReviewerCandidates: (input) =>
         transport.request(PR_HUB_WS_METHODS.listReviewerCandidates, input),
+      getChecks: (input) => transport.request(PR_HUB_WS_METHODS.getChecks, input),
+      getCheckLog: (input) => transport.request(PR_HUB_WS_METHODS.getCheckLog, input),
 
       claimNotifications: (input) => requestPrHub(PR_HUB_WS_METHODS.claimNotifications, input),
       acknowledgeNotifications: (input) =>

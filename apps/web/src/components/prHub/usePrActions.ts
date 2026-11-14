@@ -29,6 +29,7 @@ export type PrPendingAction =
   | "markReady"
   | "convertToDraft"
   | "updateBranch"
+  | "rerunChecks"
   | "reRequestReview"
   | "snooze"
   | null;
@@ -56,6 +57,10 @@ export interface PrActionHandlers {
   onMarkReady: () => void;
   onConvertToDraft: () => void;
   onUpdateBranch: () => void;
+  /** Re-runs the failed jobs of the head commit's failed workflow runs. */
+  onRerunChecks: () => void;
+  /** Starts an agent on the failing checks, whatever else the pull request waits for. */
+  onFixCi: () => void;
   onClose: () => void;
   onReopen: () => void;
   onReRequest: () => void;
@@ -214,6 +219,8 @@ export function usePrActions(
         return "Convert to draft";
       case "updateBranch":
         return "Update branch";
+      case "rerunChecks":
+        return "Re-run failed jobs";
       case "reRequestReview":
         return "Re-request review";
       case "snooze":
@@ -499,6 +506,8 @@ export function usePrActions(
       onMarkReady: () => setPendingAction("markReady"),
       onConvertToDraft: () => setPendingAction("convertToDraft"),
       onUpdateBranch: () => setPendingAction("updateBranch"),
+      onRerunChecks: () => setPendingAction("rerunChecks"),
+      onFixCi: () => void handleOpenInF5("investigation"),
       onClose: () => setPendingAction("close"),
       onReopen: () => setPendingAction("reopen"),
       onReRequest: () => {

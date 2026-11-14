@@ -208,17 +208,35 @@ export function prRowChecks(pr: TrackedPullRequest): PrRowCell {
 export type PrChecklistActionKind =
   | "request_reviewers"
   | "view_checks"
+  | "rerun_checks"
+  | "fix_ci"
   | "update_branch"
   | "resolve_conflicts"
   | "view_threads";
+
+export interface PrChecklistAction {
+  readonly kind: PrChecklistActionKind;
+  readonly label: string;
+}
 
 export interface PrChecklistItem {
   readonly id: "review" | "checks" | "branch" | "threads" | "requirements";
   readonly label: string;
   readonly detail: string;
   readonly tone: PrTone;
-  /** The step that moves this line forward, when there is one the viewer can take. */
-  readonly action?: { readonly kind: PrChecklistActionKind; readonly label: string };
+  /** The steps that move this line forward and that the viewer can take; often none. */
+  readonly actions: ReadonlyArray<PrChecklistAction>;
+}
+
+/** Whether the forge can re-run the failed jobs of this pull request's checks. */
+export function prCanRerunChecks(pr: TrackedPullRequest): boolean {
+  const caps = pr.forgeCapabilities ?? forgeCapabilitiesFor(pr.provider);
+  return (
+    pr.state === "open" &&
+    !pr.repositoryArchived &&
+    !!caps?.checks.rerun &&
+    caps.actions.includes("rerun-failed-checks")
+  );
 }
 
 /**
@@ -231,16 +249,14 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
   const caps = pr.forgeCapabilities ?? forgeCapabilitiesFor(pr.provider);
   const actionable = pr.state === "open" && pr.ignoredAt === null && !pr.repositoryArchived;
   const isAuthor = pr.roles.includes("author");
-  const action = (
-    kind: PrChecklistActionKind,
-    label: string,
-    when: boolean,
-  ): Pick<PrChecklistItem, "action"> => (actionable && when ? { action: { kind, label } } : {});
+  const step = (kind: PrChecklistActionKind, label: string, when: boolean): PrChecklistAction[] =>
+    actionable && when ? [{ kind, label }] : [];
+  const failing = pr.checkRollup === "failure" || pr.checkRollup === "error";
   items.push({
     id: "review",
     label: "Review",
     tone: prRowReview(pr).tone,
-    ...action(
+    actions: step(
       "request_reviewers",
       "Request reviewers",
       isAuthor && pr.reviewDecision !== "approved" && !!caps?.reviewers.request,
@@ -262,7 +278,12 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
     id: "checks",
     label: "Checks",
     tone: prRowChecks(pr).tone,
-    ...action("view_checks", "View checks", pr.checkRollup !== "none"),
+    // An agent works on the author's own branch, so only the author is offered the fix.
+    actions: [
+      ...step("view_checks", "View checks", pr.checkRollup !== "none"),
+      ...step("rerun_checks", "Re-run failed jobs", failing && prCanRerunChecks(pr)),
+      ...step("fix_ci", "Fix CI with F5", failing && isAuthor),
+    ],
     detail:
       pr.checkRollup === "success"
         ? "All checks passed"
@@ -278,13 +299,14 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
   items.push({
     id: "branch",
     label: "Branch",
-    ...(pr.mergeable === "conflicting"
-      ? action("resolve_conflicts", "Resolve with F5", isAuthor)
-      : action(
-          "update_branch",
-          "Update branch",
-          behind && !!caps?.actions.includes("update-branch") && caps.updateMethods.length > 0,
-        )),
+    actions:
+      pr.mergeable === "conflicting"
+        ? step("resolve_conflicts", "Resolve with F5", isAuthor)
+        : step(
+            "update_branch",
+            "Update branch",
+            behind && !!caps?.actions.includes("update-branch") && caps.updateMethods.length > 0,
+          ),
     tone:
       pr.mergeable === "conflicting"
         ? "danger"
@@ -308,7 +330,7 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
       label: "Threads",
       tone: "warning",
       detail: `${pr.unresolvedThreadCount} unresolved`,
-      ...action("view_threads", "View threads", true),
+      actions: step("view_threads", "View threads", true),
     });
   }
   if (
@@ -320,6 +342,7 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
       label: "Requirements",
       tone: "warning",
       detail: pr.mergeRequirements.explanation,
+      actions: [],
     });
   }
   return items;
