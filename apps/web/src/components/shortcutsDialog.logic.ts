@@ -10,6 +10,7 @@ import { formatShortcutLabel } from "@t3tools/shared/keybindings";
 
 import { shortcutBindingForCommand } from "../keybindings";
 import { formatKeybindingCommandLabel } from "../lib/keybindingConflicts";
+import { PR_QUEUE_SHORTCUTS } from "./prHub/prQueueModel";
 
 type StaticKeybindingCommand = (typeof STATIC_KEYBINDING_COMMANDS)[number];
 
@@ -226,6 +227,41 @@ function entryMatchesQuery(entry: ShortcutEntry, query: string): boolean {
     entry.command.toLowerCase().includes(query) ||
     entry.shortcut.toLowerCase().includes(query)
   );
+}
+
+/** Shortcuts that are not keybinding commands: single keys that only work on one page. */
+export interface FixedShortcutSection {
+  readonly id: string;
+  readonly title: string;
+  /** Where the keys work. */
+  readonly context: string;
+  readonly entries: ReadonlyArray<{ readonly keys: string; readonly label: string }>;
+}
+
+const FIXED_SHORTCUT_SECTIONS: ReadonlyArray<FixedShortcutSection> = [
+  {
+    id: "pull-requests",
+    title: "Pull requests",
+    context: "On the Pull requests page; these keys cannot be changed.",
+    entries: PR_QUEUE_SHORTCUTS,
+  },
+];
+
+/** The fixed sections, filtered like the configurable ones; a title match keeps a whole section. */
+export function buildFixedShortcutSections(rawQuery = ""): FixedShortcutSection[] {
+  const query = normalizeQuery(rawQuery);
+  if (!query) return [...FIXED_SHORTCUT_SECTIONS];
+  return FIXED_SHORTCUT_SECTIONS.map((section) =>
+    section.title.toLowerCase().includes(query)
+      ? section
+      : {
+          ...section,
+          entries: section.entries.filter(
+            (entry) =>
+              entry.label.toLowerCase().includes(query) || entry.keys.toLowerCase().includes(query),
+          ),
+        },
+  ).filter((section) => section.entries.length > 0);
 }
 
 /**

@@ -24,6 +24,13 @@ export const ACCOUNTS_SETTINGS_DESCRIPTORS = [
     targetSelector: '[data-settings-search-target="accounts.github"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["accounts.forges"],
+    label: "Forge accounts",
+    description: "Accounts for pull requests on other forges and hosts, and repository routing.",
+    keywords: ["gitlab", "bitbucket", "azure devops", "forgejo", "gitea", "token", "pull requests"],
+    targetSelector: '[data-settings-search-target="accounts.forges"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["accounts.storage"],
     label: "Profile storage",
     description: "Where profile data and removed profiles are kept on disk.",

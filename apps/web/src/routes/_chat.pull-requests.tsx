@@ -1,30 +1,50 @@
 import { lazy, Suspense } from "react";
 import { parsePullRequestReference } from "../lib/pullRequestReference";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 
 import { RouteErrorView } from "../components/RouteErrorView";
 
-import { PullRequestsView } from "../components/prHub/PullRequestsView";
+import { PrQueueView } from "../components/prHub/PrQueueView";
+import { parsePrQueueSearch, type PrQueueSearch } from "../components/prHub/prQueueSearch";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { SidebarInset } from "../components/ui/sidebar";
 
 const PrLinkedPanel = lazy(() => import("../components/prHub/PrLinkedPanel"));
 
+const SETTINGS_TARGETS = {
+  accounts: { category: "accounts", item: "accounts.forges" },
+  github: { category: "accounts", item: "accounts.github" },
+  prHub: { category: "git", item: "git.pr-stale" },
+} as const;
+
 function PullRequestsRouteView() {
-  const search = Route.useSearch();
+  const { url, ...search } = Route.useSearch();
+  const navigate = useNavigate();
   useDocumentTitle("Pull Requests");
 
-  // PullRequestsView renders its own title bar so the view toggle and
-  // refresh actions sit in the same row as the breadcrumb.
+  // The queue renders its own title bar so its status and menu share the breadcrumb row.
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <div className="flex min-h-0 flex-1 flex-col">
-        {search.url ? (
+        {url ? (
           <Suspense fallback={<p>Loading pull request…</p>}>
-            <PrLinkedPanel url={search.url} />
+            <PrLinkedPanel url={url} />
           </Suspense>
         ) : (
-          <PullRequestsView focusedPrKey={search.pr ?? null} />
+          <PrQueueView
+            search={search}
+            onSearchChange={(next, options) =>
+              void navigate({
+                to: "/pull-requests",
+                search: next,
+                replace: options?.replace ?? false,
+              })
+            }
+            onOpenThread={(threadId) => void navigate({ to: "/$threadId", params: { threadId } })}
+            onOpenSettings={(target) =>
+              void navigate({ to: "/settings", search: SETTINGS_TARGETS[target] })
+            }
+          />
         )}
       </div>
     </SidebarInset>
@@ -32,12 +52,11 @@ function PullRequestsRouteView() {
 }
 
 export const Route = createFileRoute("/_chat/pull-requests")({
-  validateSearch: (input): { pr?: string; url?: string } => {
+  validateSearch: (input): PrQueueSearch & { url?: string } => {
     const url = (input as { url?: unknown }).url;
     if (typeof url === "string" && url.length <= 4096 && parsePullRequestReference(url))
       return { url };
-    const raw = (input as { pr?: unknown }).pr;
-    return typeof raw === "string" && raw.trim().length > 0 ? { pr: raw } : {};
+    return parsePrQueueSearch(input);
   },
   component: PullRequestsRouteView,
   errorComponent: RouteErrorView,

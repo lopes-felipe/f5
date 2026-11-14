@@ -7,6 +7,7 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas";
 import {
@@ -350,14 +351,27 @@ export const PrHubOverview = Schema.Struct({
   /** Active pull requests per queue section. */
   sectionCounts: Schema.optional(Schema.Record(PrHubSection, NonNegativeInt)),
   sync: Schema.optional(PrHubSyncState),
+  /** Values the queue's filters offer, most common first, from active pull requests. */
+  facets: Schema.optional(
+    Schema.Struct({
+      repositories: Schema.Array(Schema.String),
+      authors: Schema.Array(Schema.String),
+      labels: Schema.Array(Schema.String),
+    }),
+  ),
   coverage: Schema.Array(PrHubCoverage),
 });
 export type PrHubOverview = typeof PrHubOverview.Type;
+/** An F5 thread linked to a pull request. */
+export const PrHubThreadLink = Schema.Struct({ threadId: ThreadId, title: Schema.String });
+export type PrHubThreadLink = typeof PrHubThreadLink.Type;
 export const PrHubListPage = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
   revision: Schema.String,
   status: Schema.Literals(["ok", "cursor_stale"]),
   pullRequests: Schema.Array(TrackedPullRequest).check(Schema.isMaxLength(100)),
+  /** Linked threads by pull request key, newest first; keys without links are absent. */
+  threadLinks: Schema.optional(Schema.Record(Schema.String, Schema.Array(PrHubThreadLink))),
   nextCursor: Schema.NullOr(Schema.String),
 });
 export type PrHubListPage = typeof PrHubListPage.Type;

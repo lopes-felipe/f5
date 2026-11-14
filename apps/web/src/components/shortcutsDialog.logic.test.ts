@@ -5,7 +5,7 @@ import {
 } from "@t3tools/shared/keybindings";
 import { describe, expect, it } from "vitest";
 
-import { buildShortcutSections } from "./shortcutsDialog.logic";
+import { buildFixedShortcutSections, buildShortcutSections } from "./shortcutsDialog.logic";
 
 describe("buildShortcutSections", () => {
   it("groups the default bindings into named sections", () => {
@@ -105,5 +105,22 @@ describe("buildShortcutSections", () => {
       "sidebar.toggle",
     ]);
     expect(buildShortcutSections(keybindings, { platform: "Linux", query: "nothing" })).toEqual([]);
+  });
+});
+
+describe("buildFixedShortcutSections", () => {
+  it("lists the pull request keys and filters them by label, key or section", () => {
+    const [section] = buildFixedShortcutSections();
+    expect(section?.title).toBe("Pull requests");
+    expect(section?.entries.map((entry) => entry.keys)).toContain("J / K");
+    expect(
+      buildFixedShortcutSections(" snooze ").flatMap((item) =>
+        item.entries.map((entry) => entry.keys),
+      ),
+    ).toEqual(["S"]);
+    expect(buildFixedShortcutSections("pull requests")[0]?.entries).toHaveLength(
+      section?.entries.length ?? 0,
+    );
+    expect(buildFixedShortcutSections("sidebar")).toEqual([]);
   });
 });

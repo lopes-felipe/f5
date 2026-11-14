@@ -764,3 +764,37 @@ it.effect("does not start branch deletion while recovering an unrecorded primary
     }),
   ),
 );
+it.effect("reads the linked threads of a page of pull requests in one pass", () =>
+  run(({ engine, sql }) =>
+    Effect.gen(function* () {
+      yield* sql`CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT)`;
+      yield* sql`CREATE TABLE projection_thread_pull_requests (link_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, provider TEXT NOT NULL, host TEXT NOT NULL, repository TEXT NOT NULL, number INTEGER NOT NULL)`;
+      const thread = (id: string, createdAt: string, deletedAt: string | null = null) =>
+        sql`INSERT INTO projection_threads VALUES (${id}, ${`Thread ${id}`}, ${createdAt}, ${deletedAt})`;
+      const link = (id: string, number: number) =>
+        sql`INSERT INTO projection_thread_pull_requests VALUES (${`${id}-${number}`}, ${id}, 'gitlab', 'gitlab.example', 'team/repo', ${number})`;
+      yield* thread("old", "2026-01-01");
+      yield* thread("new", "2026-02-01");
+      yield* thread("deleted", "2026-03-01", "2026-03-02");
+      yield* thread("other", "2026-01-15");
+      yield* link("old", 7);
+      yield* link("new", 7);
+      yield* link("deleted", 7);
+      yield* link("other", 8);
+      const links = yield* engine.getThreadsForPrs([
+        key,
+        "gitlab:gitlab.example/team/repo#8",
+        "gitlab:gitlab.example/team/repo#9",
+        "not a key",
+      ]);
+      assert.deepEqual<unknown>(links, {
+        [key]: [
+          { threadId: "new", title: "Thread new" },
+          { threadId: "old", title: "Thread old" },
+        ],
+        "gitlab:gitlab.example/team/repo#8": [{ threadId: "other", title: "Thread other" }],
+      });
+      assert.deepEqual(yield* engine.getThreadsForPrs([]), {});
+    }),
+  ),
+);

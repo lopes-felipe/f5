@@ -43,7 +43,6 @@ it("selects an exact account or the legacy profile without changing a global acc
 it("verifies credentials on the chosen host and clears the password after success", async () => {
   const onSelect = vi.fn();
   render(<PrAccounts onSelect={onSelect} />);
-  await page.getByText("Manage accounts", { exact: true }).click();
   await page.getByRole("textbox", { name: "Host", exact: true }).fill("ghe.example.com");
   const token = page.getByLabelText("Access token", { exact: true });
   await token.fill("sensitive-token");
@@ -69,7 +68,6 @@ it("routes one repository to an exact host/provider/account tuple", async () => 
       { provider: "github", host: "ghe.example.com", repository: "org/repo", accountId: "bob" },
     ]);
   render(<PrAccounts selectedAccountId="alice" onSelect={() => {}} />);
-  await page.getByText("Manage accounts", { exact: true }).click();
   await page
     .getByRole("combobox", { name: "Account for repository", exact: true })
     .selectOptions("bob");
@@ -90,7 +88,6 @@ it("routes one repository to an exact host/provider/account tuple", async () => 
 it("keeps failed verification visible without echoing a token in its error", async () => {
   api.saveAccount.mockRejectedValue(new Error("sensitive-token"));
   render(<PrAccounts onSelect={() => {}} />);
-  await page.getByText("Manage accounts", { exact: true }).click();
   await page.getByLabelText("Access token", { exact: true }).fill("sensitive-token");
   await page.getByRole("button", { name: "Verify and save account", exact: true }).click();
   await expect.element(page.getByRole("alert")).toHaveTextContent("Could not verify this account.");
@@ -105,7 +102,6 @@ it("requires an Azure organization before verifying a scoped token", async () =>
   api.saveAccount.mockResolvedValue(azure);
   api.listAccounts.mockResolvedValueOnce([alice, bob]).mockResolvedValue([alice, bob, azure]);
   render(<PrAccounts onSelect={() => {}} />);
-  await page.getByText("Manage accounts", { exact: true }).click();
   await page.getByRole("combobox", { name: "Provider", exact: true }).selectOptions("azure-devops");
   await page.getByLabelText("Access token", { exact: true }).fill("azure-secret");
   const save = page.getByRole("button", { name: "Verify and save account", exact: true });
