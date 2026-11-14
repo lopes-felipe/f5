@@ -1023,6 +1023,7 @@ it.each(["none", "shallow", "recursive"] as const)(
           "submodule",
           "update",
           "--init",
+          "--progress",
           ...(submodules === "recursive" ? ["--recursive"] : []),
         ],
       ]);
@@ -1073,38 +1074,66 @@ it("retains active receipt ownership while initializing submodules outside lifec
 });
 
 effectIt.effect.each([
-  { submodules: "recursive", progress: false, cancel: false },
-  { submodules: "recursive", progress: true, cancel: false },
-  { submodules: "shallow", progress: false, cancel: false },
-  { submodules: "shallow", progress: true, cancel: false },
-  { submodules: "recursive", progress: true, cancel: true },
+  { submodules: "recursive", progress: false, cancel: false, stall: false },
+  { submodules: "recursive", progress: true, cancel: false, stall: false },
+  { submodules: "shallow", progress: false, cancel: false, stall: false },
+  { submodules: "shallow", progress: true, cancel: false, stall: false },
+  { submodules: "recursive", progress: true, cancel: true, stall: false },
+  { submodules: "recursive", progress: true, cancel: false, stall: true },
+  { submodules: "shallow", progress: false, cancel: false, stall: true },
 ] as const)(
-  "keeps slow submodule updates cancellable ($submodules, progress: $progress, cancel: $cancel)",
-  ({ submodules, progress, cancel }) =>
+  "bounds submodule inactivity ($submodules, progress: $progress, cancel: $cancel, stall: $stall)",
+  ({ submodules, progress, cancel, stall }) =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       const stopped = yield* Deferred.make<void>();
+      let running = true;
+      let killed = false;
+      let killedBeforeSpawnerRelease = false;
+      const kill = () =>
+        Effect.sync(() => {
+          killed = true;
+          running = false;
+        });
       const spawner = ChildProcessSpawner.make(() =>
         Effect.acquireRelease(
           Effect.succeed(
             ChildProcessSpawner.makeHandle({
-              pid: ChildProcessSpawner.ProcessId(1),
+              // A synthetic id beyond the host PID range; never target a real process group.
+              pid: ChildProcessSpawner.ProcessId(2_147_483_647),
               exitCode: Deferred.succeed(started, undefined).pipe(
                 Effect.andThen(Deferred.await(release)),
                 Effect.as(ChildProcessSpawner.ExitCode(0)),
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    running = false;
+                  }),
+                ),
               ),
-              isRunning: Effect.succeed(false),
-              kill: () => Effect.void,
+              isRunning: Effect.sync(() => running),
+              kill,
               stdin: Sink.drain,
               stdout: Stream.empty,
-              stderr: Stream.make(new TextEncoder().encode("Cloning submodule\n")),
+              stderr: stall
+                ? Stream.empty
+                : Stream.fromEffect(
+                    Effect.sleep("4 minutes").pipe(
+                      Effect.as(new TextEncoder().encode("Cloning submodule\n")),
+                    ),
+                  ),
               all: Stream.empty,
               getInputFd: () => Sink.drain,
               getOutputFd: () => Stream.empty,
             }),
           ),
-          () => Deferred.succeed(stopped, undefined),
+          () =>
+            Effect.gen(function* () {
+              killedBeforeSpawnerRelease = killed;
+              // Like the real spawner, its own release also terminates children on Windows.
+              if (running) yield* kill();
+              yield* Deferred.succeed(stopped, undefined);
+            }),
         ),
       );
       // Exercise the real command timeout and process-scope handling for the update.
@@ -1148,7 +1177,22 @@ effectIt.effect.each([
         })
         .pipe(Effect.forkChild);
       yield* Deferred.await(started);
-      yield* TestClock.adjust("6 minutes");
+      // Step past real progress before advancing further, so an idle deadline is reset.
+      if (!stall) yield* TestClock.adjust("4 minutes");
+      yield* TestClock.adjust(stall ? "6 minutes" : "2 minutes");
+      if (stall) {
+        yield* Fiber.join(creation);
+        expect(finished).toEqual([
+          {
+            status: "warning",
+            detail: expect.stringContaining("no output for 5 minutes"),
+          },
+        ]);
+        expect(yield* Deferred.isDone(stopped)).toBe(true);
+        expect(killed).toBe(true);
+        if (process.platform !== "win32") expect(killedBeforeSpawnerRelease).toBe(true);
+        return;
+      }
       expect(finished).toEqual([]);
       expect(yield* Deferred.isDone(stopped)).toBe(false);
       expect(claimed).toHaveLength(1);
@@ -1157,6 +1201,8 @@ effectIt.effect.each([
         const exit = yield* Fiber.await(creation);
         expect(exit._tag === "Failure" && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
         expect(finished).toEqual([]);
+        expect(killed).toBe(true);
+        if (process.platform !== "win32") expect(killedBeforeSpawnerRelease).toBe(true);
       } else {
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(creation);
