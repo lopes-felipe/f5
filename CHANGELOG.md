@@ -6,8 +6,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Large worktree submodule clones can run past five minutes while reporting progress. Updates with no output for five minutes stop with a warning instead of leaving worktree preparation stuck.
+- Codex turns now record prompt-cache usage across all model requests, restoring cache history and cache-miss indicators while keeping context occupancy separate. Previously unreported historical usage remains unavailable.
 - Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
+
+- Large worktree submodule clones can run past five minutes while reporting progress. Updates with no output for five minutes stop with a warning instead of leaving worktree preparation stuck.
 
 ### Changed
 
