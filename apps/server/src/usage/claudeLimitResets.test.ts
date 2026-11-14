@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -89,17 +90,22 @@ describe("readClaudeOAuthToken", () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
-  it("falls back to .credentials.json, and reads only the file elsewhere", async () => {
+  it("falls back to .credentials.json when the macOS Keychain has no token", async () => {
     const readFile = vi.fn(async () => credentials("file-token"));
     expect(await readClaudeOAuthToken(source({ readFile }))).toMatchObject({
       kind: "token",
       token: { accessToken: "file-token" },
     });
-    expect(readFile).toHaveBeenCalledWith("/cfg/.credentials.json");
+    expect(readFile).toHaveBeenCalledExactlyOnceWith(join("/cfg", ".credentials.json"));
+  });
+
+  it.each(["linux", "win32"] as const)("reads only the credential file on %s", async (platform) => {
+    const readFile = vi.fn(async () => credentials("file-token"));
     const runSecurity = vi.fn(async () => credentials());
-    expect(
-      await readClaudeOAuthToken(source({ platform: "linux", runSecurity, readFile })),
-    ).toMatchObject({ token: { accessToken: "file-token" } });
+    expect(await readClaudeOAuthToken(source({ platform, runSecurity, readFile }))).toMatchObject({
+      token: { accessToken: "file-token" },
+    });
+    expect(readFile).toHaveBeenCalledExactlyOnceWith(join("/cfg", ".credentials.json"));
     expect(runSecurity).not.toHaveBeenCalled();
   });
 
