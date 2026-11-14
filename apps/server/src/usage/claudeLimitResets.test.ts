@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -95,7 +96,8 @@ describe("readClaudeOAuthToken", () => {
       kind: "token",
       token: { accessToken: "file-token" },
     });
-    expect(readFile).toHaveBeenCalledWith("/cfg/.credentials.json");
+    // The source joins with the platform separator, so Windows reads \cfg\.credentials.json.
+    expect(readFile).toHaveBeenCalledWith(join("/cfg", ".credentials.json"));
     const runSecurity = vi.fn(async () => credentials());
     expect(
       await readClaudeOAuthToken(source({ platform: "linux", runSecurity, readFile })),
