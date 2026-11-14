@@ -80,10 +80,13 @@ export interface ComposerDispatchSettingsInput {
     ComposerThreadDraftState,
     "provider" | "providerInstanceId" | "model" | "modelOptions"
   >;
-  /** The server thread, or the local draft thread standing in for it before the first send. */
-  readonly thread: Thread | undefined;
-  /** False while `thread` is a local draft. */
-  readonly isServerThread: boolean;
+  /** The thread as the server has it; undefined before the first send. */
+  readonly serverThread: Thread | undefined;
+  /**
+   * The local draft standing in for the thread before the first send. It is read only
+   * while there is no server thread, and its placeholder selection never seeds the draft.
+   */
+  readonly localDraftThread: Thread | undefined;
   readonly project: Project | undefined;
   /** Provider snapshots with the project's enablement applied. */
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
@@ -106,8 +109,7 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
   const {
     threadId,
     composerDraft,
-    thread: activeThread,
-    isServerThread,
+    serverThread,
     project: activeProject,
     providerStatuses,
     serverConfig,
@@ -115,6 +117,9 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
     modelCatalogSettings: unifiedSettings,
     seedsModelOptions,
   } = input;
+  // Derived here, so a caller cannot pass a draft and call it a server thread.
+  const isServerThread = serverThread !== undefined;
+  const activeThread = serverThread ?? input.localDraftThread;
   const setComposerDraftModelOptions = useComposerDraftStore((store) => store.setModelOptions);
   const sessionProvider = activeThread?.session?.provider ?? null;
   const selectedProviderByThreadId = composerDraft.provider;
@@ -335,7 +340,7 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
     selectedModel,
   ]);
   // A local draft has no recorded selection to seed from.
-  const threadModelSelection = isServerThread ? activeThread?.modelSelection : undefined;
+  const threadModelSelection = serverThread?.modelSelection;
   useEffect(() => {
     if (!seedsModelOptions) return;
     const next = resolveComposerModelOptionsSeed({
