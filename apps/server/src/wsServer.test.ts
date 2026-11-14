@@ -635,6 +635,33 @@ describe("WebSocket Server", () => {
     );
   });
 
+  it("answers a batch of thread peeks in the order asked, without unknown threads", async () => {
+    vi.spyOn(console, "log");
+    const cwd = path.join(makeTempDir("t3code-peeks-"), "peeks-workspace");
+    fs.mkdirSync(cwd);
+    h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const threadId = (welcome.data as { bootstrapThreadId?: string }).bootstrapThreadId;
+    expect(threadId).toBeDefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadPeeks, {
+      threadIds: ["missing-peek-thread", threadId, threadId],
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({
+      peeks: [{ threadId, lastUserText: null, lastAssistantText: null, latestTurnDiff: null }],
+    });
+
+    const tooMany = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadPeeks, {
+      threadIds: Array.from({ length: 51 }, (_, index) => `peek-thread-${index}`),
+    });
+    expect(tooMany.result).toBeUndefined();
+    expect(tooMany.error).toBeDefined();
+  });
+
   it("includes bootstrap ids in welcome when cwd project and thread already exist", async () => {
     vi.spyOn(console, "log");
     const stateDir = makeTempDir("t3code-state-bootstrap-existing-");

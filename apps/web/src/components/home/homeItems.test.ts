@@ -7,10 +7,13 @@ import {
   firstErrorLine,
   formatPeekDiff,
   homeRowSummary,
+  homeSettleBlocker,
+  pendingUserInputsOf,
   runningTurnElapsed,
 } from "./homeItems";
 import { appendQuickStartText } from "./HomeQuickStart";
 import { nextScheduledRunAt } from "./HomeStatusStrip";
+import { mergeHomeThreadTail, tailFromMessages } from "./useHomeThreadTail";
 
 const NOW = Date.parse("2026-03-09T12:00:00.000Z");
 
@@ -34,6 +37,28 @@ function approvalActivity(requestId: string, detail?: string): Thread["activitie
     kind: "approval.requested",
     summary: "Needs approval",
     payload: { requestId, requestKind: "command", ...(detail ? { detail } : {}) },
+    turnId: null,
+    createdAt: "2026-03-09T11:59:00.000Z",
+  };
+}
+
+function questionActivity(requestId: string, question: string): Thread["activities"][number] {
+  return {
+    id: `activity-${requestId}` as never,
+    tone: "info",
+    kind: "user-input.requested",
+    summary: "Asks a question",
+    payload: {
+      requestId,
+      questions: [
+        {
+          id: "q1",
+          header: "Scope",
+          question,
+          options: [{ label: "Yes", description: "Go ahead" }],
+        },
+      ],
+    },
     turnId: null,
     createdAt: "2026-03-09T11:59:00.000Z",
   };
@@ -144,6 +169,94 @@ describe("deriveHomeThreadDecision", () => {
     expect(decision.approvals.map((approval) => approval.requestId)).toEqual(["r1", "r2"]);
     expect(decision.userInputs).toEqual([]);
     expect(decision.plan).toBeNull();
+  });
+});
+
+describe("pendingUserInputsOf", () => {
+  const activities = [questionActivity("from-activities", "Ship it?")];
+  const projected = {
+    requestId: "from-projection" as never,
+    turnId: null,
+    createdAt: "2026-03-09T11:58:00.000Z",
+    questions: [],
+  };
+
+  it("reads the server's projection when it lists a question", () => {
+    const inputs = pendingUserInputsOf({ activities, pendingUserInputs: [projected] });
+    expect(inputs.map((input) => input.requestId)).toEqual(["from-projection"]);
+  });
+
+  it("falls back to the activities, which put the thread in the queue, when the projection is empty", () => {
+    for (const pendingUserInputs of [[], undefined]) {
+      const inputs = pendingUserInputsOf({ activities, pendingUserInputs });
+      expect(inputs.map((input) => input.requestId)).toEqual(["from-activities"]);
+    }
+    // The row and the preview read the same question.
+    const thread = rowThread({ activities, pendingUserInputs: [] });
+    expect(homeRowSummary({ kind: "question", thread, peek: undefined, now: NOW })).toBe(
+      "Ship it?",
+    );
+    expect(deriveHomeThreadDecision(thread).userInputs).toHaveLength(1);
+  });
+});
+
+describe("homeSettleBlocker", () => {
+  it("blocks what the server refuses to settle", () => {
+    for (const kind of ["running", "question", "approval"] as const) {
+      expect(homeSettleBlocker({ kind, pinned: false })).toEqual(expect.any(String));
+    }
+    expect(homeSettleBlocker({ kind: "completed", pinned: true })).toBe(
+      "Unpin the thread to settle it",
+    );
+  });
+
+  it("lets the rest through", () => {
+    for (const kind of ["plan", "queue-paused", "failed", "completed", "pinned"] as const) {
+      expect(homeSettleBlocker({ kind, pinned: false })).toBeNull();
+    }
+  });
+});
+
+describe("thread tail", () => {
+  const message = (role: string, text: string, turnId: string | null, streaming = false) => ({
+    role,
+    text,
+    turnId,
+    streaming,
+  });
+
+  it("reads the last prompt and the newest settled reply outside a running turn", () => {
+    const messages = [
+      message("user", "First", "t1"),
+      message("assistant", "First reply", "t1"),
+      message("user", "Second", "t2"),
+      message("assistant", "Commentary", "t2"),
+      message("assistant", "Streaming", "t2", true),
+      message("user", "   ", "t2"),
+    ];
+    expect(tailFromMessages(messages, { turnId: "t2" as never, state: "running" })).toEqual({
+      lastPrompt: "Second",
+      lastReply: "First reply",
+    });
+    expect(tailFromMessages(messages, { turnId: "t2" as never, state: "completed" })).toEqual({
+      lastPrompt: "Second",
+      lastReply: "Commentary",
+    });
+    expect(tailFromMessages([], null)).toEqual({ lastPrompt: null, lastReply: null });
+  });
+
+  it("keeps the loaded half while the server's tail is missing or shorter", () => {
+    const local = { lastPrompt: null, lastReply: "Loaded reply" };
+    // Still loading, or the read failed.
+    expect(mergeHomeThreadTail(local, null)).toEqual(local);
+    expect(mergeHomeThreadTail(local, { lastPrompt: "Server prompt", lastReply: null })).toEqual({
+      lastPrompt: "Server prompt",
+      lastReply: "Loaded reply",
+    });
+    expect(
+      mergeHomeThreadTail(local, { lastPrompt: "Server prompt", lastReply: "Server reply" }),
+    ).toEqual({ lastPrompt: "Server prompt", lastReply: "Server reply" });
+    expect(mergeHomeThreadTail(null, null)).toEqual({ lastPrompt: null, lastReply: null });
   });
 });
 

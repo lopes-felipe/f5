@@ -74,6 +74,7 @@ export function useHomeQueue(): HomeQueue<ThreadSummary, HomeWorkflowRow> {
       return {
         key: workflowEntryKey(entry),
         active: true,
+        startedAt: entry.workflow.createdAt,
         activityAt: workflowActivityAt({
           updatedAt: entry.workflow.updatedAt,
           threads: workflowThreads,
@@ -110,12 +111,13 @@ const PEEKS_PER_REQUEST = 50;
 /**
  * Last prompt, reply snippet and diff totals for the queue's rows, read in one request per
  * 50 threads. The key holds each thread's latest turn, so a finished or new turn refetches
- * while streaming output does not.
+ * while streaming output does not. The ids are sorted first: the key names the set of
+ * threads, so rows that only trade places in the queue read nothing.
  */
 export function useHomeThreadPeeks(
   threadIds: ReadonlyArray<ThreadId>,
 ): ReadonlyMap<ThreadId, OrchestrationThreadPeek> {
-  const ids = useMemo(() => threadIds.slice(0, HOME_PEEK_THREAD_LIMIT), [threadIds]);
+  const ids = useMemo(() => threadIds.slice(0, HOME_PEEK_THREAD_LIMIT).toSorted(), [threadIds]);
   const signature = useStore((state) =>
     ids
       .map((threadId) => {

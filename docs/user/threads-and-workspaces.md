@@ -139,10 +139,15 @@ commit, push and pull request actions. Linked pull requests also appear in the
   opening the thread: approve or decline a request with any of its choices, answer a question,
   implement or revise a plan, resume a paused queue, reply to finished or failed work, or queue
   a message behind a running turn. Messages sent from Home use the thread's own model and
-  modes. `J`/`K` or the arrow keys move, `O` opens, `E` settles, `H` snoozes, `P` pins, `R`
-  starts a reply and `/` jumps to the new thread box. `Enter` approves the request once or
-  implements the plan, and opens other threads; `D` declines. `Enter` is left unbound when the
-  provider asks for "no" to be the default. Forms sent by a provider or an MCP server are
+  modes and go out as plain text; one that starts with a `/command` or a `$skill` opens the
+  thread with the text in its composer, which resolves it. `J`/`K` or the arrow keys move,
+  `O` opens, `E` settles (not a running thread or one waiting on an approval or a question),
+  `H` snoozes, `P` pins, `R` starts a reply and `/` jumps to the new thread box. `Enter`
+  approves the request once or implements the plan, and opens other threads; `D` declines.
+  `Enter` and the arrow keys act from the queue: after a click in the pane to read it, they
+  scroll and answer nothing. `Enter` is left unbound when the provider asks for "no" to be the
+  default, and the key hints under the queue list only the keys that act on the selected
+  thread. Forms sent by a provider or an MCP server are
   filled in the thread. A line above the queue counts pull requests and upstream topics waiting
   on you, and shows the next scheduled run, an account limit above 50% and low disk space; each
   opens its page. Recent threads are in the sidebar's **Recent** view.
