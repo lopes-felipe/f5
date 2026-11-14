@@ -205,6 +205,7 @@ describe("formatKeybindingCommandLabel", () => {
     expect(formatKeybindingCommandLabel("chat.new")).toBe("New thread");
     expect(formatKeybindingCommandLabel("dialog.primaryAction")).toBe("Dialog primary action");
     expect(formatKeybindingCommandLabel("prHub.open")).toBe("Open Pull Requests");
+    expect(formatKeybindingCommandLabel("home.open")).toBe("Open Home");
     expect(formatKeybindingCommandLabel("palette.files")).toBe("Search project files");
     expect(formatKeybindingCommandLabel("projectContentSearch.toggle")).toBe(
       "Search project content",

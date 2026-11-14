@@ -7,12 +7,25 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Added
 
 - Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
-
 - Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.
-
 - Opt into **Proactive panels** in Conversation settings to open linked pull requests and completed-turn diffs. Manual panel choices take priority and dismissed turn diffs stay dismissed.
-
 - Linux builds include a Debian/Ubuntu package alongside the AppImage. Installed Debian packages can download and install updates from F5.
+
+### Fixed
+
+- Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
+- Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
+- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
+- Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
+
+### Changed
+
+- Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. From that pane you can approve or decline a request, answer a question, implement or revise a plan, resume a paused queue, reply to finished or failed work and queue a message behind a running turn; messages use the thread's own model and modes. `J`/`K` move, `O` opens, `E` settles, `H` snoozes, `P` pins and `R` starts a reply; `Enter` approves once or implements the plan (and opens other threads), `D` declines; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
+- The box at the top of Home starts the thread itself. Pick the project, model, effort, **Agent** or **Plan**, access and **Local** or **New worktree**, then press `Enter`: the thread starts in the background and Home stays open, and `mod+Enter` also opens it. The box follows the **Send shortcut** setting: if it asks for `mod+Enter`, `Enter` adds a line and `mod+Enter` sends and stays. A send that fails keeps your text, and sending the same text again after a lost connection starts one thread, not two. Text that begins with a `/` command or a skill, and anything that needs attachments or mentions, goes to the full composer, which the expand button opens with your text and settings.
+
+## [0.1.9] - 2026-11-14
+
+### Added
 
 - Open a project in the running desktop app with `f5 app [path]` (or `t3 app [path]`). F5 adds or reuses the project, focuses its window, and starts a new thread.
 - Preview Word, Excel, PowerPoint, OpenDocument, EPUB, RTF and notebooks in the file viewer, along with fonts, Mermaid diagrams, archives and SQLite databases. HEIC and TIFF images are decoded locally.
@@ -39,10 +52,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
-- Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
-- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
-
+- Upstream ports automatically start their code review after a successful continuation, even when an earlier implementation turn was interrupted, failed, or blocked. On upgrade, eligible historical ports are recovered too: each open PR can start a dual-review workflow, so several may start if multiple ports were previously stuck.
 - Desktop project activation uses a stable socket address and async canonical path matching. File previews retain access to notebook outputs beyond the live-frame limit and display non-UTF-8 text with a decoding notice.
 - The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
 - The Usage page counts Pi's cache reads and writes in its token totals and its uncached input. Pi reports cached tokens apart from input, as Claude does, but they were treated as part of input, so totals left them out and uncached input read too low.
@@ -64,11 +74,13 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Behind a reverse proxy listed with `--trusted-proxy` (`F5_TRUSTED_PROXIES`), the failed-login limit applies to each client the proxy reports in `X-Forwarded-For`, so one client's wrong tokens no longer lock out everyone else. A proxy on the same machine must be listed too (`--trusted-proxy 127.0.0.1`); unlisted, its clients keep sharing one limit. Wrong bearer tokens now count toward their client's limit, and a locked-out client gets `429` with `Retry-After`; requests straight from the same machine stay exempt. `X-Forwarded-Proto` is honored only from a proxy on the same machine or a listed one, so a TLS proxy on another host must now be listed.
 - Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
 - The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
+- The profile database also drops two indexes on its command receipts that nothing read, so every command the server records writes two fewer index entries.
 - The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
 - Claude's Plan mode instructions name Claude's own tools (AskUserQuestion, ExitPlanMode, the task tools) and no longer warn about an `update_plan` error that only Codex returns. They also say to load ExitPlanMode through ToolSearch when Claude Code defers it.
 
 - Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
 - Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
+- On Windows, storage cleanup no longer mistakes a folder that replaced the one you reviewed for the original. Windows file IDs are too large to compare as ordinary numbers, so two different folders could look identical and the newer one could be deleted. F5 now compares the full ID and asks for a rescan.
 
 ## [0.1.8] - 2026-11-12
 

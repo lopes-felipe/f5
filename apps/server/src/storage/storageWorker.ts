@@ -256,7 +256,7 @@ export async function executeStorageTask(
     deletionRoot = Path.join(Path.dirname(task.path), ".f5-bun-cache-trash-" + randomUUID());
     await FS.rename(task.path, deletionRoot);
     const moved = await storageLstat(deletionRoot);
-    if (moved.dev !== stat.dev || moved.ino !== stat.ino)
+    if (moved.dev !== stat.dev || moved.exactIno !== stat.exactIno)
       throw new Error("Bun cache identity changed before quarantine. Files retained.");
     if (!Path.basename(task.path).startsWith(".f5-bun-cache-trash-"))
       await FS.mkdir(task.path, { mode: stat.mode & 0o777 }).catch(

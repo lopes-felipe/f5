@@ -598,8 +598,254 @@ layer("port review persistence and queue", (it) => {
       yield* h.reactor.retry(h.thread.projectId, h.thread.id);
       assert.lengthOf(h.fake.reviews, 1);
       assert.strictEqual((yield* h.store.getPortReviewByThread(h.thread.id))!.status, "reviewing");
+      assert.isNull((yield* h.store.getPortReviewByThread(h.thread.id))!.resumeAfterTurnId);
     }),
   );
+  for (const stop of ["interrupted", "error", "blocked"] as const) {
+    it.effect(
+      "automatically recovers " + stop + " implementations after restart exactly once",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* setup;
+          h.fake.threads[0] = {
+            ...h.thread,
+            latestTurn: {
+              ...h.thread.latestTurn!,
+              state: stop === "blocked" ? "completed" : stop,
+            },
+            messages: h.thread.messages.map((m) => ({
+              ...m,
+              text: "UPSTREAM-OUTCOME: blocked missing dependency",
+            })),
+          };
+          yield* h.reactor.advance(h.thread.id);
+          const stopped = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+          assert.strictEqual(stopped.status, stop === "blocked" ? "skipped" : "error");
+          assert.strictEqual(stopped.resumeAfterTurnId, h.thread.latestTurn!.turnId);
+          assert.isTrue(
+            (yield* h.store.listActivePortReviews).some((row) => row.threadId === h.thread.id),
+          );
+          const reactor = h.make();
+          yield* reactor.reconcile;
+          assert.lengthOf(h.fake.reviews, 0);
+          h.fake.threads[0] = {
+            ...h.thread,
+            latestTurn: {
+              ...h.thread.latestTurn!,
+              turnId: TurnId.makeUnsafe("continuation"),
+              processingQuiescedAt: REVIEW_NOW,
+            },
+            messages: h.thread.messages.map((m) => ({
+              ...m,
+              turnId: TurnId.makeUnsafe("continuation"),
+            })),
+          };
+          yield* Effect.all([reactor.reconcile, reactor.advance(h.thread.id), reactor.reconcile], {
+            concurrency: "unbounded",
+          });
+          assert.lengthOf(h.fake.reviews, 1);
+          const row = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+          assert.strictEqual(row.status, "reviewing");
+          assert.isNull(row.resumeAfterTurnId);
+        }),
+    );
+  }
+
+  it.effect(
+    "completion events wake stopped ports and duplicate events do not duplicate review",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* setup;
+        const events = yield* h.reactor.subscribe;
+        yield* events.pipe(Effect.forkScoped);
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: { ...h.thread.latestTurn!, state: "interrupted" },
+        };
+        yield* h.reactor.advance(h.thread.id);
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: {
+            ...h.thread.latestTurn!,
+            turnId: TurnId.makeUnsafe("event-continuation"),
+            processingQuiescedAt: REVIEW_NOW,
+          },
+          messages: h.thread.messages.map((m) => ({
+            ...m,
+            turnId: TurnId.makeUnsafe("event-continuation"),
+          })),
+        };
+        const event = {
+          type: "thread.turn-processing-quiesced",
+          aggregateId: h.thread.id,
+        } as unknown as OrchestrationEvent;
+        yield* h.notify(event);
+        yield* h.notify(event);
+        for (
+          let count = 0;
+          count < 200 &&
+          (h.receivedEvents() < 2 ||
+            (yield* h.store.getPortReviewByThread(h.thread.id))?.status !== "reviewing" ||
+            h.fake.reviews.length === 0);
+          count++
+        )
+          yield* Effect.yieldNow;
+        assert.strictEqual(h.receivedEvents(), 2);
+        assert.lengthOf(h.fake.reviews, 1);
+      }),
+  );
+
+  it.effect("validates projected PRs after recovery and does not retry setup failures", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      h.fake.threads[0] = {
+        ...h.thread,
+        latestTurn: { ...h.thread.latestTurn!, state: "interrupted" },
+      };
+      yield* h.reactor.advance(h.thread.id);
+      const reactor = h.make({ projectedPrUrl: () => Effect.succeed(REVIEW_PR) });
+      h.fake.threads[0] = {
+        ...h.thread,
+        branch: "different-branch",
+        latestTurn: {
+          ...h.thread.latestTurn!,
+          turnId: TurnId.makeUnsafe("projected-pr-continuation"),
+          processingQuiescedAt: REVIEW_NOW,
+        },
+        messages: h.thread.messages.map((m) => ({
+          ...m,
+          turnId: TurnId.makeUnsafe("projected-pr-continuation"),
+          text: "Implementation completed.",
+        })),
+      };
+      yield* reactor.reconcile;
+      const row = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+      assert.strictEqual(row.status, "error");
+      assert.include(row.detail!, "does not match port branch");
+      assert.isNull(row.resumeAfterTurnId);
+      yield* reactor.reconcile;
+      assert.lengthOf(h.fake.reviews, 0);
+    }),
+  );
+
+  for (const [text, terminal] of [
+    ["UPSTREAM-OUTCOME: equivalent x:1", true],
+    ["UPSTREAM-OUTCOME: not-applicable unsupported", true],
+    ["UPSTREAM-OUTCOME pr-1: equivalent x:1", true],
+    ["UPSTREAM-OUTCOME pr-1: not-applicable unsupported", true],
+    ["UPSTREAM-OUTCOME: blocked missing dependency", false],
+    ["UPSTREAM-OUTCOME pr-1: blocked missing dependency", false],
+    ["Implementation still needs more work.", false],
+  ] as const) {
+    it.effect("handles a settled continuation ending with " + text, () =>
+      Effect.gen(function* () {
+        const h = yield* setup;
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: { ...h.thread.latestTurn!, state: "interrupted" },
+        };
+        yield* h.reactor.advance(h.thread.id);
+        const hasOutcome = text.startsWith("UPSTREAM-OUTCOME");
+        const reactor = h.make({
+          projectedPrUrl: () => Effect.succeed(hasOutcome ? REVIEW_PR : null),
+        });
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: {
+            ...h.thread.latestTurn!,
+            turnId: TurnId.makeUnsafe("non-pr-continuation"),
+            processingQuiescedAt: REVIEW_NOW,
+          },
+          messages: h.thread.messages.map((m) => ({
+            ...m,
+            turnId: TurnId.makeUnsafe("non-pr-continuation"),
+            text,
+          })),
+        };
+        yield* reactor.reconcile;
+        const row = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+        assert.strictEqual(row.status, terminal ? "skipped" : "error");
+        assert.strictEqual(row.resumeAfterTurnId, terminal ? null : h.thread.latestTurn!.turnId);
+        assert.strictEqual(
+          (yield* h.store.listActivePortReviews).some((r) => r.threadId === h.thread.id),
+          !terminal,
+        );
+        assert.lengthOf(h.fake.reviews, 0);
+        yield* reactor.reconcile;
+        assert.lengthOf(h.fake.reviews, 0);
+        // Blocked or inconclusive continuations can still finish in another turn.
+        if (!terminal) {
+          h.fake.threads[0] = {
+            ...h.thread,
+            latestTurn: {
+              ...h.thread.latestTurn!,
+              turnId: TurnId.makeUnsafe("successful-continuation"),
+              processingQuiescedAt: REVIEW_NOW,
+            },
+            messages: h.thread.messages.map((m) => ({
+              ...m,
+              turnId: TurnId.makeUnsafe("successful-continuation"),
+            })),
+          };
+          yield* reactor.reconcile;
+          assert.lengthOf(h.fake.reviews, 1);
+        }
+      }),
+    );
+  }
+
+  it.effect("invalid persisted reviewers disarm implementation recovery", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      h.fake.threads[0] = {
+        ...h.thread,
+        latestTurn: { ...h.thread.latestTurn!, state: "interrupted" },
+      };
+      yield* h.reactor.advance(h.thread.id);
+      yield* h.sql`UPDATE upstream_port_reviews SET reviewers_json = '{}'
+        WHERE port_thread_id = ${h.thread.id}`;
+      yield* h.reactor.reconcile;
+      const row = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+      assert.strictEqual(row.status, "error");
+      assert.isNull(row.resumeAfterTurnId);
+      assert.isNull(
+        (yield* h.sql<{ resume_after_turn_id: string | null }>`SELECT resume_after_turn_id
+          FROM upstream_port_reviews WHERE port_thread_id = ${h.thread.id}`)[0]!
+          .resume_after_turn_id,
+      );
+      assert.lengthOf(h.fake.reviews, 0);
+    }),
+  );
+
+  for (const stop of ["archived", "deleted", "unlinked"] as const) {
+    it.effect("clears implementation recovery when the port is " + stop, () =>
+      Effect.gen(function* () {
+        const h = yield* setup;
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: { ...h.thread.latestTurn!, state: "interrupted" },
+        };
+        yield* h.reactor.advance(h.thread.id);
+        h.fake.threads[0] = {
+          ...h.thread,
+          ...(stop === "archived" ? { archivedAt: REVIEW_NOW } : {}),
+          ...(stop === "deleted" ? { deletedAt: REVIEW_NOW } : {}),
+        };
+        if (stop === "unlinked")
+          yield* h.sql`UPDATE upstream_port_links SET state = 'unlinked'
+            WHERE thread_id = ${h.thread.id}`;
+        yield* h.reactor.reconcile;
+        const row = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+        assert.strictEqual(row.status, "skipped");
+        assert.isNull(row.resumeAfterTurnId);
+        assert.isFalse(
+          (yield* h.store.listActivePortReviews).some((row) => row.threadId === h.thread.id),
+        );
+        assert.lengthOf(h.fake.reviews, 0);
+      }),
+    );
+  }
+
   it.effect(
     "recovers a prompt budget failure after compaction, without another review workflow",
     () =>
