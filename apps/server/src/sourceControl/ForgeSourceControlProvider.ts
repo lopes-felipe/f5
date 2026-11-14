@@ -13,6 +13,7 @@ import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl"
 import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
 import { gitLabHeadPipelineChecks, gitLabTriggerJobChecks } from "./gitLabPipelineChecks.ts";
+import { markRequiredForgejoChecks } from "./forgejoRequiredChecks.ts";
 import {
   SourceControlProviderError,
   type SourceControlProvider,
@@ -480,6 +481,55 @@ export function makeForgeSourceControlProvider(options: {
               ...detail,
               headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
             };
+          }
+          if (kind === "forgejo" && options?.checks) {
+            if (!detail.headRefOid || !detail.baseRefName)
+              return { ...detail, checks: [], checksComplete: false };
+            const branch = object(
+              yield* request(ref, undefined, "/branches/" + pathParts(detail.baseRefName)).pipe(
+                Effect.catch((cause) =>
+                  cause.kind === "forbidden" || cause.kind === "not_found"
+                    ? Effect.succeed({})
+                    : Effect.fail(cause),
+                ),
+              ),
+            );
+            const checks = new Map<string, PrHubCheck>();
+            // Recent-update order puts the newest status for each context first.
+            for (let page = 1; page <= 20; page++) {
+              const statuses = yield* request(
+                ref,
+                undefined,
+                "/statuses/" + enc(detail.headRefOid) + "?sort=recentupdate&limit=50&page=" + page,
+              );
+              if (!Array.isArray(statuses))
+                return yield* error("checks", "Invalid Forgejo status page.", "invalid_response");
+              for (const value of statuses) {
+                const status = object(value);
+                const name = text(status.context) || "check";
+                if (checks.has(name)) continue;
+                checks.set(name, {
+                  name,
+                  status:
+                    status.status === "success"
+                      ? "success"
+                      : status.status === "failure" || status.status === "error"
+                        ? "failure"
+                        : "pending",
+                  description: text(status.description) || null,
+                  url: text(status.target_url)
+                    ? (URL.parse(text(status.target_url), detail.url)?.href ?? null)
+                    : null,
+                });
+              }
+              if (statuses.length < 50)
+                return {
+                  ...detail,
+                  checks: markRequiredForgejoChecks([...checks.values()], branch),
+                  checksComplete: true,
+                };
+            }
+            return { ...detail, checks: [], checksComplete: false };
           }
           if (kind !== "gitlab" || !options?.checks) return detail;
           detail = {
