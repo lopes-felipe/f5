@@ -50,9 +50,9 @@ it.each([
     provider(),
   );
   expect(pr.checkRollup).toBe(expected);
-  expect(forgeDetail(pr, detail).detail.truncatedSections).toEqual(
-    complete ? undefined : ["checks"],
-  );
+  expect(
+    forgeDetail(pr, { ...detail, checks: complete ? detail.checks : [] }).detail.truncatedSections,
+  ).toEqual(complete ? undefined : ["checks"]);
 });
 
 it.each([
