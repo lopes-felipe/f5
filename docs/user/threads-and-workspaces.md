@@ -30,13 +30,22 @@ task and press `Enter`. The thread starts in the background and shows up under *
 thread, and a new worktree starts from the project's current branch. If F5 cannot read the
 project's branches, the workspace shows **Local** and the thread starts in the project folder.
 
-The box follows **Settings → Conversation → Send shortcut**. If that setting asks for
-`mod+Enter`, `Enter` adds a line, and `mod+Enter` starts the thread and stays on Home; open the
-thread from the **Open** button in the confirmation.
+The box follows **Settings → Conversation → Send shortcut**:
+
+| Send shortcut                            | `Enter`                                                              | `mod+Enter`                 |
+| ---------------------------------------- | -------------------------------------------------------------------- | --------------------------- |
+| Enter                                    | Starts the thread                                                    | Starts the thread, opens it |
+| Command/Ctrl+Enter                       | Adds a line                                                          | Starts the thread           |
+| Command/Ctrl+Enter for multiline prompts | Starts the thread while the text is one line; adds a line after that | Starts the thread           |
+
+When `mod+Enter` does not open the thread, open it from the **Open** button in the
+confirmation.
 
 If the send fails, your text stays in the box. If no answer came back, for example because the
-connection dropped, send the same text again: F5 resends the same message, so the thread starts
-once. Text that begins with a `/` command or a skill
+connection dropped, send the same text again without changing the project or any setting: F5
+resends the same message, so the thread starts once. If you change the text, the project, the
+model, the effort, the mode, the access or the workspace first, F5 sends a new message, and
+the first one may still have started a thread. Text that begins with a `/` command or a skill
 opens the full composer instead, where those are resolved. For attachments, `@` mentions or
 another base branch, click **Open full composer**: it opens a new thread with your text and
 the settings you picked, unsent.

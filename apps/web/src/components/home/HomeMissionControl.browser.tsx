@@ -40,7 +40,7 @@ import {
   resetWsConnectionStateForTests,
 } from "../../wsConnectionState";
 import { SidebarProvider } from "../ui/sidebar";
-import { homeComposerDraft } from "./homeComposerDraft";
+import { HOME_COMPOSER_DRAFT_ID, homeComposerDraft } from "./homeComposerDraft";
 import { resetHomeInlineStoreForTests } from "./homeInlineStore";
 import { HomeMissionControl } from "./HomeMissionControl";
 import { useHomeSelectionStore } from "./homeSelectionStore";
@@ -1136,7 +1136,7 @@ describe("HomeMissionControl", () => {
       }
     });
 
-    it("gives a reused empty draft the modes Home shows, not the ones it had", async () => {
+    it("gives a reused empty draft the modes and effort Home shows, not the ones it had", async () => {
       const view = await renderHome([IDLE_THREAD]);
       try {
         const reused = ThreadId.makeUnsafe("reused-draft");
@@ -1148,9 +1148,14 @@ describe("HomeMissionControl", () => {
         });
         drafts.setRuntimeMode(reused, "approval-required");
         drafts.setInteractionMode(reused, "plan");
+        drafts.setModelOptions(reused, { codex: { reasoningEffort: "xhigh", fastMode: true } });
 
         // Home shows the project's defaults: nothing was picked here.
         await typeTask("Fix the login bug");
+        const shownOptions =
+          useComposerDraftStore.getState().draftsByThreadId[HOME_COMPOSER_DRAFT_ID]?.modelOptions ??
+          null;
+        expect(shownOptions).toBeNull();
         await page.getByRole("button", { name: "Open full composer" }).click();
         await vi.waitFor(() =>
           expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(reused),
@@ -1160,11 +1165,71 @@ describe("HomeMissionControl", () => {
           prompt: "Fix the login bug",
           runtimeMode: "full-access",
           interactionMode: "default",
+          modelOptions: null,
         });
         expect(after.draftThreadsByThreadId[reused]).toMatchObject({
           runtimeMode: "full-access",
           interactionMode: "default",
         });
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("hands over the settings the text was written with when another project is picked meanwhile", async () => {
+      const scratch = deferred<{ projectId: ProjectId }>();
+      ensureScratch.mockImplementation(() => scratch.promise as never);
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await pickNoProject();
+        await typeTask("Research solar energy");
+        await page.getByRole("button", { name: "Plan", exact: true }).click();
+        await page.getByRole("button", { name: "Open full composer" }).click();
+        await vi.waitFor(() => expect(ensureScratch).toHaveBeenCalledTimes(1));
+
+        // Home now shows Beta's settings, in the one draft it keeps for every project.
+        await page.getByRole("combobox", { name: "Project" }).click();
+        await page.getByRole("option", { name: "Beta" }).click();
+        await vi.waitFor(() => expect(homeComposerDraft.seededFor()).toBe(PROJECT_B.id));
+
+        useStore.setState((state) => ({ projects: [...state.projects, SCRATCH] }));
+        scratch.resolve({ projectId: SCRATCH.id });
+        await vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="thread-route"]')).toBeTruthy(),
+        );
+        const threadId = document.querySelector('[data-testid="thread-route"]')?.textContent ?? "";
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[threadId as ThreadId],
+        ).toMatchObject({ prompt: "Research solar energy", interactionMode: "plan" });
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("waits for the thread before the confirmation's Open button opens it", async () => {
+      const toast = vi.spyOn(toastManager, "add");
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await typeTask("Fix the login bug");
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Thread started" })),
+        );
+        const started = toast.mock.calls
+          .map(([options]) => options)
+          .find((options) => options.title === "Thread started");
+        const open = started?.actionProps?.onClick as unknown as () => void;
+
+        // The answer named a thread whose creation event has not landed yet.
+        open();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(view.pushedPaths).toEqual([]);
+
+        const threadId = sentCommand().threadId;
+        useStore.setState((state) => ({
+          threads: [...state.threads, makeThread(PROJECT_A.id, threadId)],
+        }));
+        await vi.waitFor(() => expect(view.pushedPaths).toEqual([`/${threadId}`]));
       } finally {
         await view.cleanup();
       }
