@@ -49,7 +49,7 @@ export function applyRecentModelSwap(threadId: ThreadId): boolean {
   }
 
   // Keep `hasThreadStarted` / `providerLocked` in sync with the derivation in
-  // `ChatView.tsx` (search: `providerLocked`).
+  // `useComposerDispatchSettings.ts` (search: `providerLocked`).
   const thread = useStore.getState().threads.find((t) => t.id === threadId) ?? null;
   const draft = useComposerDraftStore.getState().draftsByThreadId[threadId];
   const hasThreadStarted = Boolean(
