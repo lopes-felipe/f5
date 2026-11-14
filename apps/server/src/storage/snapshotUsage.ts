@@ -313,25 +313,37 @@ export async function measureSnapshotRemoval(
 
 const CACHE_VERSION = 1;
 
-function isIdentity(value: unknown): value is FileIdentity {
-  if (typeof value !== "object" || value === null) return false;
-  const identity = value as Record<string, unknown>;
-  return ["dev", "ino", "size", "mtimeMs", "mode"].every(
-    (key) => typeof identity[key] === "number",
-  );
+function readIdentity(value: unknown): FileIdentity | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { dev, ino, size, mtimeMs, mode } = value as Record<string, unknown>;
+  if (
+    typeof dev !== "number" ||
+    typeof size !== "number" ||
+    typeof mtimeMs !== "number" ||
+    typeof mode !== "number"
+  )
+    return null;
+  if (typeof ino === "string") return { dev, ino, size, mtimeMs, mode };
+  // Written before inodes were kept exactly. A number that large may already
+  // have been rounded, so only one that cannot have been is carried over.
+  return typeof ino === "number" && Number.isSafeInteger(ino)
+    ? { dev, ino: String(ino), size, mtimeMs, mode }
+    : null;
 }
 
-function isCacheEntry(value: unknown): value is SnapshotUsageCacheEntry {
-  if (typeof value !== "object" || value === null) return false;
-  const entry = value as Record<string, unknown>;
-  return (
-    typeof entry.older === "string" &&
-    typeof entry.newer === "string" &&
-    typeof entry.unsharedBytes === "number" &&
-    entry.unsharedBytes >= 0 &&
-    isIdentity(entry.olderIdentity) &&
-    isIdentity(entry.newerIdentity)
-  );
+function readCacheEntry(value: unknown): SnapshotUsageCacheEntry[] {
+  if (typeof value !== "object" || value === null) return [];
+  const { older, newer, unsharedBytes, ...entry } = value as Record<string, unknown>;
+  const olderIdentity = readIdentity(entry.olderIdentity);
+  const newerIdentity = readIdentity(entry.newerIdentity);
+  return typeof older === "string" &&
+    typeof newer === "string" &&
+    typeof unsharedBytes === "number" &&
+    unsharedBytes >= 0 &&
+    olderIdentity &&
+    newerIdentity
+    ? [{ older, olderIdentity, newer, newerIdentity, unsharedBytes }]
+    : [];
 }
 
 /** A missing or unreadable cache only costs a recomparison. */
@@ -342,7 +354,7 @@ export async function readSnapshotUsageCache(path: string): Promise<SnapshotUsag
       entries?: unknown;
     };
     if (parsed.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) return [];
-    return parsed.entries.filter(isCacheEntry);
+    return parsed.entries.flatMap(readCacheEntry);
   } catch {
     return [];
   }

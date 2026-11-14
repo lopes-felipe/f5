@@ -49,6 +49,15 @@ export const activePortReview = (row: PortReviewSummaryRecord) =>
 
 export class InvalidPortReviewRetry extends Error {}
 
+const recoverablePortReview = (row: PortReviewRecord) =>
+  (row.status === "error" || row.status === "skipped") &&
+  row.resumeAfterTurnId !== null &&
+  row.reviewWorkflowId === null &&
+  row.applyCommandJson === null;
+
+const trackedPortReview = (row: PortReviewRecord) =>
+  activePortReview(row) || recoverablePortReview(row);
+
 export function portReviewSummary(
   row: PortReviewSummaryRecord,
   workflow?: CodeReviewWorkflow | null,
@@ -99,31 +108,44 @@ export type PortReviewStep =
       readonly detail: string;
       readonly cancelRevision: boolean;
       readonly archiveWorkflow: boolean;
+      readonly resumeAfterTurnId?: string;
     }
+  | { readonly kind: "resume" }
   | { readonly kind: "startReview"; readonly prUrl: string; readonly headSha: string | null }
   | { readonly kind: "createWorkflow" }
   | { readonly kind: "prepareApply" }
   | { readonly kind: "submit" }
   | { readonly kind: "complete" }
-  | { readonly kind: "fail"; readonly stage: ErrorStage; readonly detail: string };
+  | {
+      readonly kind: "fail";
+      readonly stage: ErrorStage;
+      readonly detail: string;
+      readonly resumeAfterTurnId?: string;
+    };
 
 export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext): PortReviewStep {
   const wait = (detail?: string | null): PortReviewStep => ({
     kind: "wait",
     ...(detail === undefined ? {} : { detail }),
   });
-  const skip = (detail: string): PortReviewStep => ({
+  const recovery = (recover: boolean) =>
+    recover && !row.reviewWorkflowId && ctx.thread?.latestTurn
+      ? { resumeAfterTurnId: ctx.thread.latestTurn.turnId }
+      : {};
+  const skip = (detail: string, recover = false): PortReviewStep => ({
     kind: "skip",
     detail,
     cancelRevision: row.status === "apply_pending" || row.status === "applying",
     archiveWorkflow: row.status === "reviewing",
+    ...recovery(recover),
   });
-  const fail = (stage: ErrorStage, detail: string): PortReviewStep => ({
+  const fail = (stage: ErrorStage, detail: string, recover = false): PortReviewStep => ({
     kind: "fail",
     stage,
     detail,
+    ...recovery(recover),
   });
-  if (!activePortReview(row)) return wait();
+  if (!trackedPortReview(row)) return wait();
   if (!ctx.thread) {
     if (
       ctx.group.status === "rejected" ||
@@ -136,6 +158,33 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
   if (ctx.thread.deletedAt) return skip("Port thread deleted");
   if (!ctx.links.some((link) => link.state === "active")) return skip("Port unlinked");
   if (ctx.thread.archivedAt) return skip("Port thread archived");
+  if (recoverablePortReview(row)) {
+    const finished = getFinishedConsumableLatestTurn(ctx.thread);
+    if (
+      !finished ||
+      finished.turnId === row.resumeAfterTurnId ||
+      !ctx.thread.latestTurn?.processingQuiescedAt
+    )
+      return wait();
+    const parsed = parseUpstreamOutcomes(finished.assistantText);
+    const outcome = parsed.thread;
+    // A continuation's explicit outcome takes precedence over a PR projected by any turn.
+    if (outcome?.kind === "equivalent" || outcome?.kind === "not-applicable")
+      return skip("Port ended with " + outcome.kind);
+    if (outcome?.kind === "blocked") return wait();
+    if (
+      !outcome &&
+      ctx.group.topicIds.length > 0 &&
+      ctx.group.topicIds.every((id) => {
+        const scoped = parsed.byTopic.get(id);
+        return scoped && scoped.kind !== "pr";
+      })
+    )
+      return ctx.group.topicIds.some((id) => parsed.byTopic.get(id)?.kind === "blocked")
+        ? wait()
+        : skip("Port ended without a pull request for any topic");
+    return ctx.projectedPrUrl || outcome?.kind === "pr" ? { kind: "resume" } : wait();
+  }
   if (row.status === "waiting") {
     const finished = getFinishedConsumableLatestTurn(ctx.thread);
     const parsed = parseUpstreamOutcomes(finished?.assistantText ?? "");
@@ -150,17 +199,22 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
           return scoped && scoped.kind !== "pr";
         })
       )
-        return skip("Port ended without a pull request for any topic");
+        return skip(
+          "Port ended without a pull request for any topic",
+          ctx.group.topicIds.some((id) => parsed.byTopic.get(id)?.kind === "blocked"),
+        );
       if (!outcome) {
         const state = ctx.thread.latestTurn?.state;
         return state === "error" || state === "interrupted"
           ? fail(
               "review-setup",
               "Port turn " + state + "; finish the port or Retry review after opening a PR",
+              true,
             )
           : wait();
       }
-      if (outcome.kind !== "pr") return skip("Port ended with " + outcome.kind);
+      if (outcome.kind !== "pr")
+        return skip("Port ended with " + outcome.kind, outcome.kind === "blocked");
     }
     const prUrl = row.prUrl ?? ctx.projectedPrUrl ?? outcome?.detail ?? "";
     if (!parsePortPullRequestUrl(prUrl)) return skip("Port outcome has no valid pull request URL");
@@ -315,7 +369,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
     const previousWorkflow = workflowByThread.get(row.threadId);
     if (previousWorkflow) activeWorkflows.delete(previousWorkflow);
     workflowByThread.delete(row.threadId);
-    if (activePortReview(row)) {
+    if (trackedPortReview(row)) {
       indexVersions.set(row.threadId, ++indexVersion);
       activeThreads.set(row.threadId, row.threadId);
       if (row.reviewWorkflowId) {
@@ -332,7 +386,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
     Effect.gen(function* () {
       const key = JSON.stringify(portReviewSummary(row, workflow));
       if (summaryKeys.get(row.threadId) !== key) {
-        if (activePortReview(row)) summaryKeys.set(row.threadId, key);
+        if (trackedPortReview(row)) summaryKeys.set(row.threadId, key);
         yield* deps.emit(row.projectId);
       }
     });
@@ -341,7 +395,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
       const next = { ...row, ...patch, updatedAt: deps.now().toISOString() };
       yield* store.updatePortReview(next);
       index(next);
-      if (activePortReview(next))
+      if (trackedPortReview(next))
         summaryKeys.set(next.threadId, JSON.stringify(portReviewSummary(next)));
       yield* deps.emit(next.projectId);
       return next;
@@ -416,7 +470,9 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
             )?.text ?? null)
           : null;
       const projectedPrUrl =
-        row.status === "waiting" ? yield* deps.projectedPrUrl(row.threadId) : null;
+        row.status === "waiting" || recoverablePortReview(row)
+          ? yield* deps.projectedPrUrl(row.threadId)
+          : null;
       const finished = getFinishedConsumableLatestTurn(thread);
       const outcome = finished ? parseUpstreamOutcome(finished.assistantText) : null;
       const prUrl = row.prUrl ?? projectedPrUrl ?? (outcome?.kind === "pr" ? outcome.detail : null);
@@ -479,7 +535,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
       if (!row) return;
       index(row);
       // Bound immediate transitions; external changes are picked up by events or the safety net.
-      for (let count = 0; count < 8 && activePortReview(row); count++) {
+      for (let count = 0; count < 8 && trackedPortReview(row); count++) {
         const ctx: LoadedPortReviewContext = yield* readContext(row);
         index(row);
         yield* notify(row, ctx.workflow);
@@ -487,12 +543,25 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
           row = yield* save(row, { applyTurnId: ctx.submission.turnId });
         const step = nextPortReviewStep(row, ctx);
         switch (step.kind) {
+          case "resume":
+            row = yield* save(row, {
+              status: "waiting",
+              resumeAfterTurnId: null,
+              errorStage: null,
+              detail: null,
+            });
+            continue;
           case "wait":
             if (step.detail !== undefined && step.detail !== row.detail)
               yield* save(row, { detail: step.detail });
             return;
           case "fail":
-            yield* save(row, { status: "error", errorStage: step.stage, detail: step.detail });
+            yield* save(row, {
+              status: "error",
+              errorStage: step.stage,
+              detail: step.detail,
+              resumeAfterTurnId: step.resumeAfterTurnId ?? null,
+            });
             return;
           case "skip": {
             let detail = step.detail;
@@ -510,7 +579,11 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
               yield* host
                 .archiveCodeReviewWorkflow(CodeReviewWorkflowId.makeUnsafe(row.reviewWorkflowId))
                 .pipe(Effect.ignoreCause({ log: true }));
-            yield* save(row, { status: "skipped", detail });
+            yield* save(row, {
+              status: "skipped",
+              detail,
+              resumeAfterTurnId: step.resumeAfterTurnId ?? null,
+            });
             return;
           }
           case "startReview": {
@@ -552,6 +625,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
             if (!input) return;
             row = yield* save(row, {
               status: "reviewing",
+              resumeAfterTurnId: null,
               attempt: row.attempt + 1,
               reviewWorkflowId: deps.mintId(),
               prUrl: step.prUrl,
@@ -795,7 +869,12 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
             });
             // An explicit retry may replace a definitively failed/interrupted turn.
             if (!["failed", "interrupted", "rejected"].includes(status.status)) {
-              yield* save(row, { status: "applying", errorStage: null, detail: null });
+              yield* save(row, {
+                status: "applying",
+                errorStage: null,
+                detail: null,
+                resumeAfterTurnId: null,
+              });
               yield* advanceUnlocked(threadId);
               return;
             }
@@ -816,6 +895,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
         // Reusing a completed report still goes through the head check before applying it.
         yield* save(row, {
           status: reuse ? "reviewing" : "waiting",
+          resumeAfterTurnId: null,
           attempt: reuse ? row.attempt + 1 : row.attempt,
           reviewWorkflowId: reuse ? row.reviewWorkflowId : null,
           reviewInputJson: reuse ? row.reviewInputJson : null,

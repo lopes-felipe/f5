@@ -1,413 +1,161 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
 import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { useNavigate } from "@tanstack/react-router";
+import { CheckCircle2Icon } from "lucide-react";
 import {
-  ArrowRightIcon,
-  CheckCircle2Icon,
-  ChevronDownIcon,
-  HistoryIcon,
-  PlayIcon,
-  SparklesIcon,
-  XIcon,
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 
 import { requestComposerFocus } from "../../composerFocusRequestStore";
-import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
-import { useDiskSpaceStatus } from "../../hooks/useDiskSpaceStatus";
-import { groupThreadsByActivity } from "../../lib/activityGrouping";
-import { QUEUE_PAUSED_REASON_TAG, resolveAttentionReasonTag } from "../../lib/attentionReason";
 import {
-  evaluateSmartResume,
-  formatAwayDuration,
-  readLastHomeVisitAt,
-  writeLastHomeVisitAt,
-} from "../../lib/lastHomeVisit";
-import {
-  getMostRecentProject,
-  getVisibleThreads,
-  sortProjectsByActivity,
-} from "../../lib/threadOrdering";
-import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
-import {
-  bucketThreadsByAttention,
-  selectStandaloneThreadsByActivity,
-  selectVisibleWorkflowThreads,
-} from "../../lib/threadAttentionBuckets";
-import { cn, isMacPlatform } from "../../lib/utils";
+  type ThreadActionMenuItem,
+  useThreadActionController,
+} from "../../hooks/useThreadActionController";
+import { usePrHubNeedsYouCount } from "../../hooks/useSurfaceCounts";
+import { resolveHomeSelection, stepHomeSelection } from "../../lib/homeQueue";
+import { observeResize } from "../../lib/observeResize";
+import { getMostRecentProject, getVisibleThreads } from "../../lib/threadOrdering";
 import { useStore } from "../../store";
-import { orderedPinnedThreadIds, toggleThreadPin } from "../../threadPinSnooze";
-import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
-import { useNowHour } from "../../lib/nowTicker";
-import {
-  liveThreadActivityAt,
-  type ThreadSummary,
-  useLiveActivityBuckets,
-  useThreadSummaries,
-} from "../../threadSelectors";
-import type { ThreadStatus } from "../../threadStatus";
+import { useThreadSummaries } from "../../threadSelectors";
 import type { Project } from "../../types";
-import { LowDiskSpaceBanner } from "../chat/LowDiskSpaceBanner";
-import { ProjectIcon } from "../ProjectIcon";
+import { workflowRouteForType } from "../sidebar/sidebarLists";
 import { Kbd } from "../ui/kbd";
-import { SectionLabel } from "../ui/section-label";
-import { toastManager } from "../ui/toast";
-import { HomeAttentionCard } from "./HomeAttentionCard";
+import { Skeleton } from "../ui/skeleton";
+import { type HomeItem, homeSettleBlocker, type HomeWorkflowRow } from "./homeItems";
+import type { HomePreviewActions } from "./HomePreviewPane";
+import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
+import { HomeQueueList } from "./HomeQueueList";
 import { HomeQuickStart } from "./HomeQuickStart";
-import { HomeThreadRow } from "./HomeThreadRow";
+import { useHomeSelectionStore } from "./homeSelectionStore";
+import { HomeStatusStrip } from "./HomeStatusStrip";
+import { useHomeQueue, useHomeThreadPeeks } from "./useHomeQueue";
 
-const ATTENTION_LIMIT = 8;
-const WORKING_LIMIT = 8;
-const RECENT_THREADS_DEFAULT_LIMIT = 5;
-const RECENT_THREADS_EXPANDED_LIMIT = 20;
-/** Keep the quick-jump surface focused — more than four is noise. */
-const QUICK_JUMP_PROJECT_LIMIT = 4;
+// The preview brings the markdown renderer; Home's first paint does not need it.
+const HomePreviewPane = lazy(() => import("./HomePreviewPane"));
 
-type RecentStatusFilter = "all" | "completed" | "failed" | "idle";
+/** Below this width the queue and the preview take turns instead of sharing the row. */
+export const HOME_NARROW_WIDTH_PX = 720;
 
-export function matchesRecentStatusFilter(
-  status: ThreadStatus,
-  filter: RecentStatusFilter,
-): boolean {
-  switch (filter) {
-    case "all":
-      return true;
-    case "completed":
-    case "failed":
-      return status === filter;
-    case "idle":
-      return status === "none";
-  }
+function isTypingTarget(target: HTMLElement): boolean {
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
-interface MissionControlBuckets {
-  attention: ThreadSummary[];
-  working: ThreadSummary[];
-  recent: ThreadSummary[];
-  workingOverflow: number;
-}
-
-function bucketThreads(
-  sortedThreads: ReadonlyArray<ThreadSummary>,
-  statusByThreadId: ReadonlyMap<ThreadId, ThreadStatus>,
-  pausedQueueThreadIds: ReadonlySet<ThreadId>,
-  workflowThreads: ReadonlyArray<ThreadSummary>,
-): MissionControlBuckets {
-  const {
-    attention,
-    working: workingAll,
-    remaining,
-  } = bucketThreadsByAttention(
-    sortedThreads,
-    statusByThreadId,
-    pausedQueueThreadIds,
-    workflowThreads,
-  );
-
-  const working = workingAll.slice(0, WORKING_LIMIT);
-  // `attention` and `recent` are full lists; the UI decides how many to show
-  // so "Show more" can surface the real total.
-  return {
-    attention,
-    working,
-    recent: remaining,
-    workingOverflow: Math.max(0, workingAll.length - working.length),
-  };
-}
-
-/** "Show more +N" / "Show less" under a capped list. */
-function ShowMoreToggle(props: {
-  readonly expanded: boolean;
-  readonly hiddenCount: number;
-  readonly onToggle: () => void;
-}) {
-  return (
-    <div className="flex justify-center pt-1">
-      <button
-        type="button"
-        onClick={props.onToggle}
-        aria-expanded={props.expanded}
-        className="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-2xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {props.hiddenCount > 0 ? (
-          <>
-            Show more
-            <span className="tabular-nums">+{props.hiddenCount}</span>
-            <ChevronDownIcon className="size-3.5" aria-hidden="true" />
-          </>
-        ) : (
-          <>
-            Show less
-            <ChevronDownIcon className="size-3.5 rotate-180" aria-hidden="true" />
-          </>
-        )}
-      </button>
-    </div>
-  );
-}
-
-export function resolveGreeting(hour = new Date().getHours()): string {
-  if (hour < 5) return "Good evening";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
-function Section(props: {
-  readonly label: string;
-  readonly count: number;
-  readonly overflow?: number;
-  readonly trailing?: React.ReactNode;
-  readonly children: React.ReactNode;
-}) {
-  const overflow = props.overflow ?? 0;
-  return (
-    <section className="flex flex-col gap-1.5" aria-label={props.label}>
-      <SectionLabel
-        as="h2"
-        trailing={props.trailing}
-        count={overflow > 0 ? undefined : props.count}
-        className="px-1"
-      >
-        {props.label}
-        {overflow > 0 ? (
-          <span className="ml-1.5 tabular-nums">
-            {props.count}+{overflow}
-          </span>
-        ) : null}
-      </SectionLabel>
-      {props.children}
-    </section>
-  );
-}
-
-function FilterChips<T extends string>(props: {
-  readonly label: string;
-  readonly options: ReadonlyArray<{ readonly value: T; readonly label: string }>;
-  readonly value: T;
-  readonly onChange: (next: T) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label={props.label}>
-      {props.options.map((option) => {
-        const isActive = option.value === props.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="tab"
-            aria-selected={isActive}
-            onClick={() => props.onChange(option.value)}
-            className={cn(
-              "inline-flex h-6 items-center rounded-full border px-2.5 text-2xs font-medium outline-none transition-colors duration-(--duration-fast) focus-visible:ring-2 focus-visible:ring-ring",
-              isActive
-                ? "border-transparent bg-accent text-foreground"
-                : "border-border text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-            )}
-          >
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function AllCaughtUpNote() {
-  return (
-    <div className="flex items-center gap-2 rounded-xl border border-border px-3 py-3 text-sm text-muted-foreground">
-      <CheckCircle2Icon className="size-4 text-success" aria-hidden="true" />
-      <span>You&apos;re all caught up — nothing needs your attention.</span>
-    </div>
-  );
-}
-
-interface QuickStartChip {
-  readonly key: string;
-  readonly label: string;
-  readonly icon: React.ReactNode;
-  readonly onClick: () => void;
-}
-
-function QuickStartChips({ chips }: { readonly chips: ReadonlyArray<QuickStartChip> }) {
-  if (chips.length === 0) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {chips.map((chip) => (
-        <button
-          key={chip.key}
-          type="button"
-          onClick={chip.onClick}
-          className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="text-faint-foreground">{chip.icon}</span>
-          <span className="max-w-[24ch] truncate">{chip.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function SmartResumeBanner(props: {
-  readonly awayLabel: string;
-  readonly thread: ThreadSummary;
-  readonly project: Project | undefined;
-  readonly onResume: () => void;
-  readonly onDismiss: () => void;
-}) {
-  const title = props.thread.title.trim() || "Untitled thread";
-  const projectName = props.project?.name ?? "Unknown project";
+function PreviewSkeleton() {
   return (
     <div
-      role="region"
-      aria-label="Resume last thread"
-      className="flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5 text-sm"
+      aria-hidden="true"
+      className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-xl border border-border bg-card p-4"
     >
-      <HistoryIcon className="size-4 shrink-0 text-info" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-foreground">
-          <span className="text-muted-foreground">Back after {props.awayLabel} —</span>{" "}
-          <span className="font-medium">{title}</span>
-        </p>
-        <p className="mt-0.5 flex items-center gap-1.5 text-2xs text-muted-foreground">
-          {props.project ? (
-            <ProjectIcon
-              projectId={props.project.id}
-              kind={props.project.kind}
-              name={props.project.name}
-              icon={props.project.icon}
-              className="size-3"
-            />
-          ) : null}
-          <span className="font-mono">{projectName}</span>
-        </p>
-      </div>
-      <button
-        type="button"
-        onClick={props.onResume}
-        className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2.5 text-ui font-medium text-primary-foreground outline-none transition-colors hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        Resume
-        <ArrowRightIcon className="size-3.5" aria-hidden="true" />
-      </button>
-      <button
-        type="button"
-        onClick={props.onDismiss}
-        aria-label="Dismiss resume banner"
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <XIcon className="size-3.5" aria-hidden="true" />
-      </button>
+      <Skeleton className="h-3 w-32 rounded-full" />
+      <Skeleton className="h-5 w-2/3 rounded-full" />
+      <Skeleton className="mt-3 h-3 w-full rounded-full" />
+      <Skeleton className="h-3 w-5/6 rounded-full" />
+      <Skeleton className="h-3 w-3/4 rounded-full" />
     </div>
   );
 }
 
+function EmptyQueue(props: { readonly otherSurfacesNeedYou: boolean }) {
+  return (
+    <div
+      data-slot="home-empty-queue"
+      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border px-6 py-10 text-center"
+    >
+      <CheckCircle2Icon className="size-5 text-success" aria-hidden="true" />
+      {/* Never "all caught up" while the strip above still counts work elsewhere. */}
+      <p className="text-sm font-medium text-foreground">
+        {props.otherSurfacesNeedYou ? "No threads need you" : "Nothing needs you"}
+      </p>
+      <p className="max-w-md text-ui text-muted-foreground">
+        Approvals, questions, plans and finished work show up here, next to the agents that are
+        still running.
+      </p>
+    </div>
+  );
+}
+
+const KEY_HINTS: ReadonlyArray<{ readonly keys: ReadonlyArray<string>; readonly label: string }> = [
+  { keys: ["J", "K"], label: "move" },
+  { keys: ["↵", "O"], label: "open" },
+  { keys: ["E"], label: "settle" },
+  { keys: ["H"], label: "snooze" },
+  { keys: ["P"], label: "pin" },
+  { keys: ["/"], label: "new thread" },
+];
+
+/**
+ * Home: a triage queue (what needs a decision, what is ready for review, what is running,
+ * what is pinned) beside the selected item's context and actions, under a quick-start bar
+ * and a one-line strip for the other surfaces.
+ */
 export function HomeMissionControl() {
-  "use memo";
   const navigate = useNavigate();
   const projects = useStore((state) => state.projects);
-  const pickableProjects = withoutScratchProjects(projects);
   const threads = useThreadSummaries();
   const planningWorkflows = useStore((state) => state.planningWorkflows);
   const codeReviewWorkflows = useStore((state) => state.codeReviewWorkflows);
   const investigationWorkflows = useStore((state) => state.investigationWorkflows);
-  const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
-  const pinRevision = useStore((state) => state.pinRevision ?? 0);
-  const pinnedThreadIds = useMemo(() => orderedPinnedThreadIds(threads), [threads]);
-  const queueSummary = useNextTurnQueueStore((state) => state.summary);
-  const diskSpaceStatus = useDiskSpaceStatus();
-  const pausedQueueThreadIds = useMemo(
-    () =>
-      new Set(
-        (queueSummary?.threads ?? [])
-          .filter((entry) => entry.paused)
-          .map((entry) => entry.threadId),
-      ),
-    [queueSummary],
-  );
-
-  // Session-scoped filters: not persisted across reloads on purpose.
-  const [projectFilter, setProjectFilter] = useState<ProjectId | "all">("all");
-  const [statusFilter, setStatusFilter] = useState<RecentStatusFilter>("all");
-  const [isRecentExpanded, setIsRecentExpanded] = useState(false);
-  const [isAttentionExpanded, setIsAttentionExpanded] = useState(false);
-  // Sampled once on mount so "Back after X" stays stable during one visit.
-  const [smartResume, setSmartResume] = useState<{ awayMs: number } | null>(null);
-  const [smartResumeDismissed, setSmartResumeDismissed] = useState(false);
+  const queue = useHomeQueue();
+  const prsNeedingYou = usePrHubNeedsYouCount();
+  const controller = useThreadActionController({ activeThreadId: null });
 
   const sectionRef = useRef<HTMLElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const {
-    buckets,
-    statusByThreadId,
-    projectsById,
-    mostRecentProject,
-    mostRecentThread,
-    quickJumpProjects,
-    recentAll,
-    totalVisibleThreads,
-    allProjectsInRecent,
-    attentionReasonByThreadId,
-  } = useMemo(() => {
-    // Workflow sub-threads surface through their parent workflow, not Home,
-    // unless a step is blocked on the user: that one joins Needs you.
-    const workflowInput = {
-      threads,
-      planningWorkflows,
-      codeReviewWorkflows,
-      investigationWorkflows,
-    };
-    const sorted = selectStandaloneThreadsByActivity(workflowInput);
-    const workflowThreads = selectVisibleWorkflowThreads(workflowInput);
-    const statusById = new Map<ThreadId, ThreadStatus>();
-    for (const thread of [...sorted, ...workflowThreads]) {
-      statusById.set(thread.id, thread.status);
-    }
-    const projectMap = new Map<ProjectId, Project>();
-    for (const project of projects) {
-      projectMap.set(project.id, project);
-    }
-    const reasonByThreadId = new Map<ThreadId, string>();
-    for (const thread of [...sorted, ...workflowThreads]) {
-      const status = statusById.get(thread.id) ?? "none";
-      const tag = resolveAttentionReasonTag(status, liveThreadActivityAt(thread));
-      if (pausedQueueThreadIds.has(thread.id))
-        reasonByThreadId.set(thread.id, QUEUE_PAUSED_REASON_TAG);
-      else if (tag) reasonByThreadId.set(thread.id, tag);
-    }
+  // ── Selection ──────────────────────────────────────────────────────
+  // A string key, so a rebuilt queue with the same rows does not count as a change.
+  const itemIdsKey = queue.items.map((item) => item.id).join("\n");
+  const itemIds = useMemo(() => (itemIdsKey ? itemIdsKey.split("\n") : []), [itemIdsKey]);
+  const storedSelectedId = useHomeSelectionStore((state) => state.selectedId);
+  const setSelectedId = useHomeSelectionStore((state) => state.setSelectedId);
+  // The ids the stored selection was last reconciled against: when its item leaves the
+  // queue, here or while another page was open, the selection moves to the item that
+  // followed it there.
+  const reconciledIds = useHomeSelectionStore((state) => state.itemIds);
+  const reconcileSelection = useHomeSelectionStore((state) => state.reconcile);
+  const selectedId = resolveHomeSelection(reconciledIds, itemIds, storedSelectedId);
+  useEffect(() => {
+    reconcileSelection(itemIds, selectedId);
+  }, [itemIds, reconcileSelection, selectedId]);
+  const selectedItem = queue.items.find((item) => item.id === selectedId) ?? null;
+  const selectedThread = selectedItem?.type === "thread" ? selectedItem.thread : null;
 
-    const recentAllList: ThreadSummary[] = [];
-    for (const thread of sorted) {
-      const status = statusById.get(thread.id) ?? "none";
-      if (
-        !pausedQueueThreadIds.has(thread.id) &&
-        status !== "pending-approval" &&
-        status !== "awaiting-input" &&
-        status !== "plan-ready" &&
-        status !== "working" &&
-        status !== "connecting"
-      ) {
-        recentAllList.push(thread);
-      }
-    }
-    const projectIdsInRecent = new Set<ProjectId>();
-    for (const thread of recentAllList) projectIdsInRecent.add(thread.projectId);
-    const projectsInRecent: Project[] = [];
-    for (const projectId of projectIdsInRecent) {
-      const project = projectMap.get(projectId);
-      if (project) projectsInRecent.push(project);
-    }
-    projectsInRecent.sort((a, b) => a.name.localeCompare(b.name));
+  // ── Layout ─────────────────────────────────────────────────────────
+  const [narrow, setNarrow] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  useLayoutEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    const measure = () => setNarrow(section.clientWidth < HOME_NARROW_WIDTH_PX);
+    measure();
+    return observeResize(section, measure);
+  }, []);
+  const showList = !narrow || !detailOpen;
+  const showPreview = selectedItem !== null && (!narrow || detailOpen);
 
-    // Top active projects for the ⌘1..⌘N quick-jump shortcuts.
-    const listedProjects = withoutScratchProjects(projects);
-    const sortedProjects = sortProjectsByActivity(
-      listedProjects,
-      threads,
-      planningWorkflows,
-      codeReviewWorkflows,
-      investigationWorkflows,
-    ).slice(0, QUICK_JUMP_PROJECT_LIMIT);
+  // ── Data for the rows ──────────────────────────────────────────────
+  const projectsById = useMemo(() => {
+    const map = new Map<ProjectId, Project>();
+    for (const project of projects) map.set(project.id, project);
+    return map;
+  }, [projects]);
+  const peekThreadIds = useMemo(
+    () => queue.items.flatMap((item) => (item.type === "thread" ? [item.thread.id] : [])),
+    [queue.items],
+  );
+  const peeks = useHomeThreadPeeks(peekThreadIds);
+
+  const defaultSelection = useMemo((): HomeProjectSelection => {
     const visibleProjectIds = new Set(
       getVisibleThreads(
         threads,
@@ -416,431 +164,290 @@ export function HomeMissionControl() {
         investigationWorkflows,
       ).map((thread) => thread.projectId),
     );
-
-    return {
-      buckets: bucketThreads(sorted, statusById, pausedQueueThreadIds, workflowThreads),
-      statusByThreadId: statusById,
-      projectsById: projectMap,
-      mostRecentProject: getMostRecentProject(
-        projects.filter(
-          (project) => !isScratchProject(project) || visibleProjectIds.has(project.id),
-        ),
-        threads,
-        planningWorkflows,
-        codeReviewWorkflows,
-        investigationWorkflows,
-      ),
-      mostRecentThread: sorted[0] ?? null,
-      quickJumpProjects: sortedProjects,
-      recentAll: recentAllList,
-      totalVisibleThreads: sorted.length,
-      allProjectsInRecent: projectsInRecent,
-      attentionReasonByThreadId: reasonByThreadId,
-    };
-  }, [
-    codeReviewWorkflows,
-    investigationWorkflows,
-    pausedQueueThreadIds,
-    planningWorkflows,
-    projects,
-    threads,
-  ]);
-
-  // Pinned threads float above everything and ignore the Recent filters.
-  const pinnedThreads = useMemo(() => {
-    if (pinnedThreadIds.length === 0) return [] as ThreadSummary[];
-    const byId = new Map<ThreadId, ThreadSummary>();
-    for (const thread of threads) byId.set(thread.id, thread);
-    const collected: ThreadSummary[] = [];
-    for (const id of pinnedThreadIds) {
-      const thread = byId.get(id);
-      if (thread) collected.push(thread);
-    }
-    return collected;
-  }, [pinnedThreadIds, threads]);
-
-  const pinnedIdSet = useMemo(() => new Set<ThreadId>(pinnedThreadIds), [pinnedThreadIds]);
-
-  const filteredRecent = useMemo(() => {
-    const filteredByProject =
-      projectFilter === "all"
-        ? recentAll
-        : recentAll.filter((thread) => thread.projectId === projectFilter);
-    const filteredByStatus =
-      statusFilter === "all"
-        ? filteredByProject
-        : filteredByProject.filter((thread) =>
-            matchesRecentStatusFilter(thread.status, statusFilter),
-          );
-    return filteredByStatus.filter((thread) => !pinnedIdSet.has(thread.id));
-  }, [pinnedIdSet, projectFilter, recentAll, statusFilter]);
-
-  const recentLimit = isRecentExpanded
-    ? RECENT_THREADS_EXPANDED_LIMIT
-    : RECENT_THREADS_DEFAULT_LIMIT;
-  const visibleAttention = isAttentionExpanded
-    ? buckets.attention
-    : buckets.attention.slice(0, ATTENTION_LIMIT);
-  const hiddenAttentionCount = buckets.attention.length - visibleAttention.length;
-
-  const recentTruncated = filteredRecent.slice(0, recentLimit);
-  const hasMoreRecent = filteredRecent.length > recentTruncated.length;
-
-  const onSelectThread = useCallback(
-    (threadId: ThreadId) => {
-      void navigate({ to: "/$threadId", params: { threadId } });
-    },
-    [navigate],
-  );
-
-  // Deep link from a "Needs you" card: open the thread and hand focus to its
-  // composer, where the plan, question and approval controls live.
-  const onOpenAttentionThread = useCallback(
-    (threadId: ThreadId) => {
-      requestComposerFocus(threadId);
-      void navigate({ to: "/$threadId", params: { threadId } });
-    },
-    [navigate],
-  );
-
-  const onTogglePin = useCallback(
-    (threadId: ThreadId) => {
-      void toggleThreadPin({
-        threadId,
-        threads: useStore.getState().threads,
-        expectedRevision: pinRevision,
-      }).catch((error) => {
-        toastManager.add({
-          type: "error",
-          title: "Failed to update pinned threads",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      });
-    },
-    [pinRevision],
-  );
-
-  const modifierKey =
-    typeof navigator !== "undefined" && isMacPlatform(navigator.platform) ? "⌘" : "Ctrl+";
-
-  // j/k cycle through rows and cards; ⌘/Ctrl+1..N start a thread in a top
-  // project. Both are ignored while typing.
-  useEffect(() => {
-    const container = sectionRef.current;
-    if (!container) return;
-
-    const isTypingTarget = (target: EventTarget | null): boolean => {
-      if (!(target instanceof HTMLElement)) return false;
-      const tag = target.tagName;
-      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
-    };
-
-    const handler = (event: KeyboardEvent) => {
-      if (isTypingTarget(event.target)) return;
-
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
-        const digit = Number.parseInt(event.key, 10);
-        if (digit >= 1 && digit <= 9) {
-          const target = quickJumpProjects[digit - 1];
-          if (target) {
-            event.preventDefault();
-            void createProjectBackedDraftThread(target.id);
-          }
-          return;
-        }
-      }
-
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key !== "j" && event.key !== "k") return;
-
-      const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-home-row-index]"));
-      if (rows.length === 0) return;
-
-      const active = document.activeElement as HTMLElement | null;
-      const currentIndex = active ? rows.findIndex((row) => row === active) : -1;
-      const delta = event.key === "j" ? 1 : -1;
-      const nextIndex =
-        currentIndex === -1
-          ? delta === 1
-            ? 0
-            : rows.length - 1
-          : (currentIndex + delta + rows.length) % rows.length;
-      const nextRow = rows[nextIndex];
-      if (nextRow) {
-        event.preventDefault();
-        nextRow.focus();
-      }
-    };
-
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [createProjectBackedDraftThread, quickJumpProjects]);
-
-  // Record the visit on mount (not unmount, which is unreliable on tab close)
-  // and offer a resume banner after a meaningful break.
-  useEffect(() => {
-    const signal = evaluateSmartResume(readLastHomeVisitAt());
-    if (signal.shouldOffer) setSmartResume({ awayMs: signal.awayMs });
-    writeLastHomeVisitAt();
-  }, []);
-
-  // A clock input, so neither the greeting nor "Today" freezes while Home stays open.
-  const nowHour = useNowHour();
-  const recentBuckets = useLiveActivityBuckets(recentTruncated, nowHour);
-  const recentGroups = useMemo(
-    () =>
-      groupThreadsByActivity(
-        recentTruncated,
-        new Date(nowHour),
-        (_thread, index) => recentBuckets[index] ?? "earlier",
-      ),
-    [nowHour, recentBuckets, recentTruncated],
-  );
-  const greeting = resolveGreeting(new Date(nowHour).getHours());
-  const defaultSelection: HomeProjectSelection =
-    !mostRecentProject || isScratchProject(mostRecentProject)
+    const mostRecentProject = getMostRecentProject(
+      projects.filter((project) => !isScratchProject(project) || visibleProjectIds.has(project.id)),
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    );
+    return !mostRecentProject || isScratchProject(mostRecentProject)
       ? { kind: "none" }
       : { kind: "project", projectId: mostRecentProject.id };
+  }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, projects, threads]);
 
-  // One flat index so j/k spans every section in reading order: each section
-  // starts where the previous one's rendered rows end.
-  const attentionRowOffset = pinnedThreads.length;
-  const workingRowOffset = attentionRowOffset + visibleAttention.length;
-  const recentRowOffset = workingRowOffset + buckets.working.length;
-  const recentGroupRowOffsets: number[] = [];
-  let recentGroupRowOffset = recentRowOffset;
-  for (const group of recentGroups) {
-    recentGroupRowOffsets.push(recentGroupRowOffset);
-    recentGroupRowOffset += group.threads.length;
-  }
+  // ── Actions ────────────────────────────────────────────────────────
+  const [snoozeMenu, setSnoozeMenu] = useState<{
+    readonly open: boolean;
+    readonly items: ReadonlyArray<ThreadActionMenuItem>;
+  }>({ open: false, items: [] });
 
-  const projectFilterOptions: ReadonlyArray<{
-    readonly value: ProjectId | "all";
-    readonly label: string;
-  }> = [
-    { value: "all", label: "All projects" },
-    ...allProjectsInRecent.map((project) => ({ value: project.id, label: project.name })),
-  ];
-
-  const statusFilterOptions: ReadonlyArray<{
-    readonly value: RecentStatusFilter;
-    readonly label: string;
-  }> = [
-    { value: "all", label: "Any status" },
-    { value: "completed", label: "Completed" },
-    { value: "failed", label: "Failed" },
-    { value: "idle", label: "Idle" },
-  ];
-
-  const quickStartChips = useMemo<ReadonlyArray<QuickStartChip>>(() => {
-    const chips: QuickStartChip[] = [];
-    // Skip "Continue" while the resume banner already offers the same thread.
-    if (mostRecentThread && !smartResume) {
-      const title = mostRecentThread.title.trim() || "Untitled thread";
-      chips.push({
-        key: "continue-last",
-        label: `Continue: ${title}`,
-        icon: <PlayIcon className="size-3" />,
-        onClick: () => onSelectThread(mostRecentThread.id),
+  const openThread = useCallback(
+    (threadId: ThreadId) => {
+      void navigate({ to: "/$threadId", params: { threadId } });
+    },
+    [navigate],
+  );
+  const openWorkflow = useCallback(
+    (workflow: HomeWorkflowRow) => {
+      void navigate({
+        to: workflowRouteForType(workflow.entry.type),
+        params: { workflowId: workflow.entry.workflow.id },
       });
-    }
-    const firstPlanReady = buckets.attention.find((thread) => thread.status === "plan-ready");
-    if (firstPlanReady && firstPlanReady.id !== mostRecentThread?.id) {
-      const title = firstPlanReady.title.trim() || "Untitled thread";
-      chips.push({
-        key: "resume-plan",
-        label: `Resume plan: ${title}`,
-        icon: <SparklesIcon className="size-3" />,
-        onClick: () => onSelectThread(firstPlanReady.id),
+    },
+    [navigate],
+  );
+  const openItem = useCallback(
+    (item: HomeItem) => {
+      if (item.type === "workflow") {
+        openWorkflow(item.workflow);
+        return;
+      }
+      // A decision is answered in the composer: hand it focus, as the thread's own
+      // approval, question and plan controls live there.
+      if (item.group === "decision") requestComposerFocus(item.thread.id);
+      openThread(item.thread.id);
+    },
+    [openThread, openWorkflow],
+  );
+  // The queue holds focus for Home's keys; while the preview stands alone, the preview does.
+  const focusQueue = useCallback(() => {
+    const target =
+      listRef.current ??
+      sectionRef.current?.querySelector<HTMLElement>('[data-slot="home-preview"]');
+    target?.focus({ preventScroll: true });
+  }, []);
+  const closeDetail = useCallback(() => {
+    setDetailOpen(false);
+    // The list mounts with this update; focus it once it is there.
+    requestAnimationFrame(() => listRef.current?.focus({ preventScroll: true }));
+  }, []);
+  const { executeAction, menuItemsForThread } = controller;
+  const actions = useMemo(
+    (): HomePreviewActions => ({
+      openThread: (threadId) => {
+        const item = queue.items.find(
+          (entry) => entry.type === "thread" && entry.thread.id === threadId,
+        );
+        if (item) openItem(item);
+        else openThread(threadId);
+      },
+      openWorkflow,
+      settle: (threadId) => void executeAction(threadId, "settle"),
+      togglePin: (threadId) => {
+        const pinned = threads.find((thread) => thread.id === threadId)?.pinnedAt != null;
+        void executeAction(threadId, pinned ? "unpin" : "pin");
+      },
+      snooze: (threadId, actionId) => void executeAction(threadId, actionId),
+    }),
+    [executeAction, openItem, openThread, openWorkflow, queue.items, threads],
+  );
+  const setSnoozeMenuOpen = useCallback(
+    (open: boolean) => {
+      if (!open || !selectedThread) {
+        setSnoozeMenu((current) => ({ ...current, open: false }));
+        return;
+      }
+      // Read the options as the menu opens, so each shows the wake time it will use.
+      setSnoozeMenu({
+        open: true,
+        items: menuItemsForThread(selectedThread).filter((entry) => entry.id.startsWith("snooze:")),
       });
-    }
-    return chips;
-  }, [buckets.attention, mostRecentThread, onSelectThread, smartResume]);
+    },
+    [menuItemsForThread, selectedThread],
+  );
 
-  // `self-start` keeps tall content from being vertically centered and
-  // clipped above the scroll viewport.
+  // ── Focus ──────────────────────────────────────────────────────────
+  // Home's keys are handled on this section, so something in it has to hold focus. The
+  // queue takes it when Home opens with focus nowhere, and again when the focused control
+  // went away with its item (answered, settled) and focus fell back to the page. In the
+  // narrow layout the preview replaces the queue and takes its place here too.
+  const selectedKind = selectedItem?.type === "thread" ? selectedItem.kind : null;
+  const hasItems = itemIds.length > 0;
+  useEffect(() => {
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    focusQueue();
+  }, [focusQueue, hasItems, selectedId, selectedKind, showList]);
+
+  const select = useCallback(
+    (itemId: string) => {
+      setSelectedId(itemId);
+      if (narrow) setDetailOpen(true);
+    },
+    [narrow, setSelectedId],
+  );
+
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.defaultPrevented) return;
+    const target = event.target;
+    // React bubbles events out of portals: a key pressed in a menu or dialog opened from
+    // here is not Home's.
+    if (!(target instanceof HTMLElement) || !event.currentTarget.contains(target)) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (isTypingTarget(target)) return;
+    // The queue, or the preview only while it stands in for the queue. A click in the
+    // preview beside the queue focuses it too: that is reading, and must not hand it
+    // Enter or the arrow keys.
+    const onQueue =
+      target === listRef.current ||
+      (narrow && detailOpen && target.dataset.slot === "home-preview");
+    const move = (delta: 1 | -1) => {
+      const next = stepHomeSelection(itemIds, selectedId, delta);
+      if (next === null) return;
+      event.preventDefault();
+      setSelectedId(next);
+    };
+
+    if (event.key === "Escape") {
+      if (!narrow || !detailOpen) return;
+      event.preventDefault();
+      closeDetail();
+      return;
+    }
+    if (event.key === "/") {
+      event.preventDefault();
+      composerRef.current?.focus();
+      return;
+    }
+    if (onQueue && !event.shiftKey) {
+      // Arrow keys and Enter belong to whatever has focus; only the queue itself gives
+      // them to Home.
+      if (event.key === "ArrowDown") return move(1);
+      if (event.key === "ArrowUp") return move(-1);
+      if (event.key === "Home" && itemIds.length > 0) {
+        event.preventDefault();
+        setSelectedId(itemIds[0]!);
+        return;
+      }
+      if (event.key === "End" && itemIds.length > 0) {
+        event.preventDefault();
+        setSelectedId(itemIds[itemIds.length - 1]!);
+        return;
+      }
+      if (event.key === "Enter" && selectedItem) {
+        event.preventDefault();
+        if (narrow && !detailOpen) setDetailOpen(true);
+        else openItem(selectedItem);
+        return;
+      }
+    }
+    if (event.shiftKey) return;
+    switch (event.key) {
+      case "j":
+        return move(1);
+      case "k":
+        return move(-1);
+      case "o":
+        if (!selectedItem) return;
+        event.preventDefault();
+        openItem(selectedItem);
+        return;
+      case "e":
+        if (selectedItem?.type !== "thread") return;
+        // The same rule as the Settle button, which says why.
+        if (
+          homeSettleBlocker({
+            kind: selectedItem.kind,
+            pinned: selectedItem.thread.pinnedAt != null,
+          }) !== null
+        )
+          return;
+        event.preventDefault();
+        actions.settle(selectedItem.thread.id);
+        return;
+      case "p":
+        if (!selectedThread) return;
+        event.preventDefault();
+        actions.togglePin(selectedThread.id);
+        return;
+      case "h":
+        if (!selectedThread) return;
+        event.preventDefault();
+        // The menu hangs off the preview's Snooze button.
+        if (narrow) setDetailOpen(true);
+        setSnoozeMenuOpen(true);
+        return;
+      default:
+        return;
+    }
+  };
+
+  // `self-stretch` gives the section the route's height, so the queue and the preview
+  // scroll on their own; `min-h` lets a short window scroll the page instead.
   return (
     <section
       ref={sectionRef}
       aria-label="Home"
-      className="mx-auto flex w-full max-w-4xl flex-col gap-8 self-start px-6 py-10 motion-safe:animate-in motion-safe:fade-in-50 motion-safe:duration-300"
+      onKeyDown={onKeyDown}
+      className="mx-auto flex min-h-128 w-full max-w-6xl flex-col gap-3 self-stretch px-6 py-6 motion-safe:animate-in motion-safe:fade-in-50 motion-safe:duration-300"
     >
-      <div className="flex flex-col gap-3">
-        <HomeQuickStart
-          greeting={greeting}
-          projects={pickableProjects}
-          defaultSelection={defaultSelection}
-        />
-        {quickStartChips.length > 0 ? <QuickStartChips chips={quickStartChips} /> : null}
-      </div>
-
-      <LowDiskSpaceBanner
-        status={diskSpaceStatus}
-        onOpenStorage={() => {
-          void navigate({
-            to: "/settings",
-            search: { category: "storage", item: "storage.overview" },
-          });
-        }}
+      <HomeQuickStart
+        projects={withoutScratchProjects(projects)}
+        defaultSelection={defaultSelection}
+        inputRef={composerRef}
       />
+      <HomeStatusStrip prsNeedingYou={prsNeedingYou} />
 
-      {smartResume && !smartResumeDismissed && mostRecentThread ? (
-        <SmartResumeBanner
-          awayLabel={formatAwayDuration(smartResume.awayMs)}
-          thread={mostRecentThread}
-          project={projectsById.get(mostRecentThread.projectId)}
-          onResume={() => onSelectThread(mostRecentThread.id)}
-          onDismiss={() => setSmartResumeDismissed(true)}
-        />
-      ) : null}
-
-      <div className="flex flex-col gap-8">
-        {pinnedThreads.length > 0 ? (
-          <Section label="Pinned" count={pinnedThreads.length}>
-            <div className="flex flex-col">
-              {pinnedThreads.map((thread, index) => (
-                <HomeThreadRow
-                  key={thread.id}
-                  thread={thread}
-                  project={projectsById.get(thread.projectId)}
-                  onSelect={onSelectThread}
-                  rowIndex={index}
-                  isPinned
-                  onTogglePin={onTogglePin}
-                />
-              ))}
-            </div>
-          </Section>
-        ) : null}
-
-        {buckets.attention.length > 0 ? (
-          <Section label="Needs you" count={buckets.attention.length}>
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {visibleAttention.map((thread, index) => (
-                <HomeAttentionCard
-                  key={thread.id}
-                  thread={thread}
-                  project={projectsById.get(thread.projectId)}
-                  status={statusByThreadId.get(thread.id)}
-                  reasonTag={attentionReasonByThreadId.get(thread.id)}
-                  rowIndex={attentionRowOffset + index}
-                  onOpen={onOpenAttentionThread}
-                />
-              ))}
-            </div>
-            {hiddenAttentionCount > 0 || isAttentionExpanded ? (
-              <ShowMoreToggle
-                expanded={isAttentionExpanded}
-                hiddenCount={hiddenAttentionCount}
-                onToggle={() => setIsAttentionExpanded((prev) => !prev)}
+      {hasItems ? (
+        <div className="flex min-h-0 flex-1 gap-3">
+          {showList ? (
+            <div
+              className={
+                narrow
+                  ? "flex min-h-0 min-w-0 flex-1 flex-col"
+                  : "flex min-h-0 w-80 shrink-0 flex-col"
+              }
+            >
+              <HomeQueueList
+                queue={queue}
+                selectedId={selectedId}
+                projectsById={projectsById}
+                peeks={peeks}
+                listRef={listRef}
+                onSelect={select}
+                onOpenThread={actions.openThread}
+                onOpenWorkflow={openWorkflow}
               />
-            ) : null}
-          </Section>
-        ) : totalVisibleThreads > 0 ? (
-          <Section label="Needs you" count={0}>
-            <AllCaughtUpNote />
-          </Section>
-        ) : null}
+            </div>
+          ) : null}
+          {showPreview && selectedItem ? (
+            <Suspense fallback={<PreviewSkeleton />}>
+              <HomePreviewPane
+                item={selectedItem}
+                project={projectsById.get(
+                  selectedItem.type === "thread"
+                    ? selectedItem.thread.projectId
+                    : selectedItem.workflow.projectId,
+                )}
+                peek={selectedThread ? peeks.get(selectedThread.id) : undefined}
+                actions={actions}
+                holdsFocus={narrow}
+                snoozeMenu={{ ...snoozeMenu, onOpenChange: setSnoozeMenuOpen }}
+                onBack={narrow ? closeDetail : undefined}
+              />
+            </Suspense>
+          ) : null}
+        </div>
+      ) : (
+        <EmptyQueue otherSurfacesNeedYou={prsNeedingYou > 0} />
+      )}
 
-        {buckets.working.length > 0 ? (
-          <Section
-            label="Working"
-            count={buckets.working.length}
-            overflow={buckets.workingOverflow}
-          >
-            <div className="flex flex-col">
-              {buckets.working.map((thread, index) => (
-                <HomeThreadRow
-                  key={thread.id}
-                  thread={thread}
-                  project={projectsById.get(thread.projectId)}
-                  onSelect={onSelectThread}
-                  rowIndex={workingRowOffset + index}
-                  isPinned={pinnedIdSet.has(thread.id)}
-                  onTogglePin={onTogglePin}
-                  urgencyStatus={statusByThreadId.get(thread.id)}
-                />
+      {hasItems && !narrow ? (
+        <p
+          data-slot="home-key-hints"
+          className="flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs text-muted-foreground"
+        >
+          {KEY_HINTS.map((hint) => (
+            <span key={hint.label} className="inline-flex items-center gap-1">
+              {hint.keys.map((key) => (
+                <Kbd key={key}>{key}</Kbd>
               ))}
-            </div>
-          </Section>
-        ) : null}
-
-        {recentAll.length > 0 ? (
-          <Section label="Recent" count={filteredRecent.length}>
-            <div className="flex flex-col gap-3">
-              {allProjectsInRecent.length > 1 || recentAll.length > 3 ? (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-1">
-                  {allProjectsInRecent.length > 1 ? (
-                    <FilterChips
-                      label="Filter by project"
-                      options={projectFilterOptions}
-                      value={projectFilter}
-                      onChange={setProjectFilter}
-                    />
-                  ) : null}
-                  {recentAll.length > 3 ? (
-                    <FilterChips
-                      label="Filter by status"
-                      options={statusFilterOptions}
-                      value={statusFilter}
-                      onChange={setStatusFilter}
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-              {filteredRecent.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-                  No threads match the current filters.
-                </p>
-              ) : (
-                <>
-                  {recentGroups.map((group, groupIndex) => (
-                    <div key={group.bucket} className="flex flex-col">
-                      <SectionLabel as="h3" className="px-2.5">
-                        {group.label}
-                      </SectionLabel>
-                      {group.threads.map((thread, index) => (
-                        <HomeThreadRow
-                          key={thread.id}
-                          thread={thread}
-                          project={projectsById.get(thread.projectId)}
-                          onSelect={onSelectThread}
-                          rowIndex={(recentGroupRowOffsets[groupIndex] ?? recentRowOffset) + index}
-                          isPinned={pinnedIdSet.has(thread.id)}
-                          onTogglePin={onTogglePin}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                  {hasMoreRecent || isRecentExpanded ? (
-                    <ShowMoreToggle
-                      expanded={isRecentExpanded}
-                      hiddenCount={filteredRecent.length - recentTruncated.length}
-                      onToggle={() => setIsRecentExpanded((prev) => !prev)}
-                    />
-                  ) : null}
-                </>
-              )}
-            </div>
-          </Section>
-        ) : null}
-      </div>
-
-      <p className="flex flex-wrap items-center gap-1 border-t border-border pt-4 text-ui text-muted-foreground">
-        Tip: press <Kbd>{modifierKey}K</Kbd> to search commands, <Kbd>j</Kbd>/<Kbd>k</Kbd> to move
-        between threads
-        {quickJumpProjects.length > 0 ? (
-          <>
-            , or <Kbd>{modifierKey}1</Kbd>–
-            <Kbd>
-              {modifierKey}
-              {quickJumpProjects.length}
-            </Kbd>{" "}
-            to start a thread in a top project
-          </>
-        ) : null}
-        .
-      </p>
+              {hint.label}
+            </span>
+          ))}
+        </p>
+      ) : null}
     </section>
   );
 }

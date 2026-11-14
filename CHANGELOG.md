@@ -8,6 +8,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
 
+### Changed
+
+- Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. `J`/`K` move, `Enter` or `O` opens, `E` settles, `H` snoozes and `P` pins; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
+
 ## [0.1.9] - 2026-11-14
 
 ### Added
@@ -37,6 +41,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Upstream ports automatically start their code review after a successful continuation, even when an earlier implementation turn was interrupted, failed, or blocked. On upgrade, eligible historical ports are recovered too: each open PR can start a dual-review workflow, so several may start if multiple ports were previously stuck.
 - Desktop project activation uses a stable socket address and async canonical path matching. File previews retain access to notebook outputs beyond the live-frame limit and display non-UTF-8 text with a decoding notice.
 - The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
 - The Usage page counts Pi's cache reads and writes in its token totals and its uncached input. Pi reports cached tokens apart from input, as Claude does, but they were treated as part of input, so totals left them out and uncached input read too low.
@@ -64,6 +69,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
 - Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
+- On Windows, storage cleanup no longer mistakes a folder that replaced the one you reviewed for the original. Windows file IDs are too large to compare as ordinary numbers, so two different folders could look identical and the newer one could be deleted. F5 now compares the full ID and asks for a rescan.
 
 ## [0.1.8] - 2026-11-12
 
