@@ -8,6 +8,7 @@ import {
 } from "../codexItemPresentation.ts";
 export { normalizeCodexThreadItemType } from "../codexItemPresentation.ts";
 import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
+import { CodexTurnUsage } from "../codexTurnUsage.ts";
 import { makeCodexGeneratedImageStore } from "../codexGeneratedImageStore.ts";
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
@@ -3461,6 +3462,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const preparationControllers = new Set<AbortController>();
     const turnStartedAtByThread = new Map<string, string>();
     const reasoningTokenBaselineByThread = new Map<string, number>();
+    const turnUsage = new CodexTurnUsage();
     const terminalFailureByThread = new Map<
       string,
       { readonly turnId: string; readonly evidence: CodexTerminalFailureEvidence }
@@ -3674,6 +3676,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 return;
               }
               yield* writeNativeEvent(event, slot);
+              const completedUsage = turnUsage.observe(event);
               if (event.method === "turn/started") {
                 turnStartedAtByThread.set(key, event.createdAt);
                 terminalFailureByThread.delete(key);
@@ -3742,6 +3745,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ownsAutomation ? computerDecisions.get(event.threadId) : undefined,
                 ownsAutomation ? chromeSessions.get(event.threadId)?.state : undefined,
               );
+              if (completedUsage !== undefined) {
+                runtimeEvents = runtimeEvents.map((runtimeEvent) =>
+                  runtimeEvent.type === "turn.completed" && runtimeEvent.payload.usage === undefined
+                    ? {
+                        ...runtimeEvent,
+                        payload: { ...runtimeEvent.payload, usage: completedUsage },
+                      }
+                    : runtimeEvent,
+                );
+              }
               if (event.method === "thread/tokenUsage/updated") {
                 const reasoning = codexReasoningTokensSinceBaseline(
                   asObject(event.payload),
