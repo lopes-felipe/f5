@@ -201,7 +201,6 @@ import {
   AGENT_BRIDGE_WS_CHANNELS,
   AGENT_BRIDGE_WS_METHODS,
   UPSTREAM_PORTS_WS_CHANNELS,
-  UPSTREAM_PORTS_WS_METHODS,
   UpstreamTriageBatchResult,
   USAGE_WS_METHODS,
   ELICITATION_WS_METHODS,
@@ -380,6 +379,7 @@ import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
 import {
   answerFromTable,
   mergeRouteTables,
@@ -3870,17 +3870,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.ignoreCause({ log: true }),
       Effect.forkIn(subscriptionsScope),
     );
-  const requireUpstreamPorts = Effect.suspend(() =>
-    upstreamPorts === null
-      ? Effect.fail(new RouteRequestError({ message: "Upstream Ports is unavailable." }))
-      : Effect.succeed(upstreamPorts),
-  );
-  const upstreamRoute = <A>(effect: Effect.Effect<A, UpstreamPortsError>) =>
-    effect.pipe(
-      Effect.mapError(
-        (error) => new RouteRequestError({ message: error.message, code: error.code }),
-      ),
-    );
 
   const ownedPreviewUrls = new OwnedPreviewUrls();
   const unsubscribeTerminalEvents = yield* terminalManager.subscribe((event) => {
@@ -4171,26 +4160,29 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const routeTable = mergeRouteTables(
     mergeRouteTables(
       mergeRouteTables(
-        githubAccountRoutes({
-          login: githubLogin,
-          account: githubAccount,
-          cliImport: githubCliImport,
+        mergeRouteTables(
+          githubAccountRoutes({
+            login: githubLogin,
+            account: githubAccount,
+            cliImport: githubCliImport,
+          }),
+          providerAccountRoutes(accountService),
+        ),
+        profileRoutes({
+          store: profilesStore,
+          list: readProfiles,
+          defaultStateDir: defaultProfileStateDir,
+          activeProfileId: activeProfile.id,
         }),
-        providerAccountRoutes(accountService),
       ),
-      profileRoutes({
-        store: profilesStore,
-        list: readProfiles,
-        defaultStateDir: defaultProfileStateDir,
-        activeProfileId: activeProfile.id,
+      scheduledTaskRoutes({
+        schedules: scheduledTasks,
+        desktopShowsNotifications: () =>
+          Option.isSome(computerAutomationBroker) &&
+          computerAutomationBroker.value.host.notificationsCapable(),
       }),
     ),
-    scheduledTaskRoutes({
-      schedules: scheduledTasks,
-      desktopShowsNotifications: () =>
-        Option.isSome(computerAutomationBroker) &&
-        computerAutomationBroker.value.host.notificationsCapable(),
-    }),
+    upstreamPortRoutes(upstreamPorts),
   );
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
@@ -4211,97 +4203,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* agentBridge
           .setSchedulingGrant(stripRequestTag(request.body))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      case UPSTREAM_PORTS_WS_METHODS.listProjects:
-        return yield* upstreamRoute((yield* requireUpstreamPorts).listProjects);
-      case UPSTREAM_PORTS_WS_METHODS.getOverview:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).getOverview(request.body.projectId),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.listTopics:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).listTopics(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.listTopicIds:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).listTopicIds(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.getTopic:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).getTopic(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.getTopicFiles:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).getTopicFiles(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.decide:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).decide(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.acceptSuggestions:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).acceptSuggestions(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.undoDecisions:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).undoDecisions(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.expireBacklog:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).expireBacklog(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.run:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).run(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.startPort:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).startPort(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.previewPortGroups:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).previewPortGroups(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.enqueuePort:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).enqueuePort(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.getPortQueue:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).getPortQueue(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.dequeuePort:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).dequeuePort(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.controlPortQueue:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).controlPortQueue(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.unlinkPort:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).unlinkPort(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.retryPortReview:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).retryPortReview(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.getPortPrompt:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).getPortPrompt(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.resolvePublication:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).resolvePublication(stripRequestTag(request.body)),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.addRemote:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).addRemote(request.body.projectId),
-        );
-      case UPSTREAM_PORTS_WS_METHODS.takeOverWriter:
-        return yield* upstreamRoute(
-          (yield* requireUpstreamPorts).takeOverWriter(request.body.projectId),
-        );
-
       case AGENT_BRIDGE_WS_METHODS.getState:
         return yield* agentBridge.getState;
       case AGENT_BRIDGE_WS_METHODS.getTasks:
