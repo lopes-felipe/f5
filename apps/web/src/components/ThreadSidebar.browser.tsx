@@ -2339,7 +2339,26 @@ describe("Thread sidebar", () => {
       const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
         button.getAttribute("aria-label"),
       );
-      expect(navLabels).toEqual(["Home", "Search threads", "Scheduled", "Projects", "Recent"]);
+      expect(navLabels).toEqual([
+        "Home",
+        "Search threads",
+        "Pull requests",
+        "Scheduled",
+        "Usage",
+        "Projects",
+        "Recent",
+      ]);
+      // Presence is not enough: the flex-1/min-w-0 icon buttons collapse to 0px outside the
+      // strip, which once hid Pull requests and Usage while these labels still matched.
+      for (const button of navigation.querySelectorAll<HTMLElement>("button[aria-label]")) {
+        expect(
+          button.getBoundingClientRect().width,
+          `${button.getAttribute("aria-label")} width`,
+        ).toBeGreaterThan(0);
+      }
+      const footer = document.querySelector('[data-sidebar="footer"]')!;
+      expect(footer.querySelector('[aria-label="Usage"]')).toBeNull();
+      expect(footer.querySelector('[aria-label="Pull requests"]')).toBeNull();
       // The notifications bell lives in the title bar, beside the profile switcher.
       const bell = document.querySelector('[data-testid="sidebar-notifications"]');
       expect(bell).toBeInstanceOf(HTMLElement);
@@ -2374,12 +2393,11 @@ describe("Thread sidebar", () => {
       );
       await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
-      const usageButton = document.querySelector<HTMLButtonElement>(
-        '[data-sidebar="footer"] [aria-label="Usage"]',
-      )!;
+      const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
       expect(usageButton.hasAttribute("aria-current")).toBe(false);
       usageButton.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
+      await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
       await vi.waitFor(() =>
         expect(document.querySelector('[data-sidebar="footer"]')?.textContent).toContain("Back"),
       );
@@ -4916,7 +4934,7 @@ describe("Thread sidebar", () => {
       );
       const badge = await waitForElement(
         () =>
-          [...document.querySelectorAll<HTMLElement>('[data-sidebar="footer"] span')].find(
+          [...navigation.querySelectorAll<HTMLElement>("span")].find(
             (span) => span.textContent === "1.2k",
           ) ?? null,
         "The Pull requests badge should render.",
