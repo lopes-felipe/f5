@@ -53,6 +53,7 @@ import { getProviderModelCapabilities, pickPreferredModel } from "~/providerMode
 import { resolveProviderOptionsForDispatch } from "~/providerOptionsForDispatch";
 import { useServerCapability } from "~/protocolState";
 import { getThreadModelOptionsSeed, recordThreadModelOptionsSeed } from "~/threadModelOptionsSeeds";
+import type { UnifiedWebSettings } from "~/hooks/useSettings";
 import type { Project, Thread } from "~/types";
 
 const EMPTY_PROVIDER_STATUSES: ServerProvider[] = [];
@@ -73,6 +74,33 @@ export type ComposerDispatchAppSettings = Pick<
   | "customGrokModels"
   | "providerModelPreferences"
 >;
+
+/** For a composer that reads no other app setting. ChatView selects these with its own. */
+export function selectComposerDispatchAppSettings(
+  settings: AppSettings,
+): ComposerDispatchAppSettings {
+  return {
+    claudeBinaryPath: settings.claudeBinaryPath,
+    claudeLaunchArgs: settings.claudeLaunchArgs,
+    claudeProjectSettings: settings.claudeProjectSettings,
+    claudeSubagentDefaults: settings.claudeSubagentDefaults,
+    codexBinaryPath: settings.codexBinaryPath,
+    codexHomePath: settings.codexHomePath,
+    codexThreadTitleModel: settings.codexThreadTitleModel,
+    customClaudeModels: settings.customClaudeModels,
+    customCodexModels: settings.customCodexModels,
+    customGrokModels: settings.customGrokModels,
+    providerModelPreferences: settings.providerModelPreferences,
+  };
+}
+
+export function selectModelCatalogSettings(settings: UnifiedWebSettings): ModelCatalogSettings {
+  return {
+    providerInstances: settings.providerInstances,
+    providers: settings.providers,
+    providerModelPreferences: settings.providerModelPreferences,
+  };
+}
 
 export interface ComposerDispatchSettingsInput {
   readonly threadId: ThreadId;

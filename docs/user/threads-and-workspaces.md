@@ -8,7 +8,7 @@ afterwards.
 
 ## How to
 
-1. Click **New thread** (`mod+N`) or type in the box on Home.
+1. Click **New thread** (`mod+N`), or [start it from Home](#start-a-thread-from-home).
 2. Pick the **provider and model** from the model chip, and **traits** such as reasoning effort.
 3. Pick **Access**, the thread's [runtime mode](../runtime-modes.md).
 4. Choose **Agent** or **Plan**. Plan asks for a plan you can accept or revise before any change.
@@ -20,6 +20,19 @@ afterwards.
 The composer also takes [attachments](attachments-and-media.md), `@` file mentions and `/`
 commands, including provider and project skills. The context ring shows how full the model's
 context window is.
+
+## Start a thread from Home
+
+The box at the top of Home starts a thread without leaving Home. Pick the project, the model
+and its effort, **Agent** or **Plan**, **Access**, and **Local** or **New worktree**, type the
+task and press `Enter`. The thread starts in the background and shows up under **Running**;
+`mod+Enter` starts it and opens it. The settings begin from the project's defaults for a new
+thread, and a new worktree starts from the project's current branch.
+
+If the send fails, your text stays in the box. Text that begins with a `/` command or a skill
+opens the full composer instead, where those are resolved. For attachments, `@` mentions or
+another base branch, click **Open full composer**: it opens a new thread with your text and
+the settings you picked, unsent.
 
 To give the agent another thread as context, drag that thread from the sidebar into the
 composer. If you selected several threads, dragging one of them adds them all, up to 10 per
@@ -140,7 +153,8 @@ commit, push and pull request actions. Linked pull requests also appear in the
   implement or revise a plan, resume a paused queue, reply to finished or failed work, or queue
   a message behind a running turn. Messages sent from Home use the thread's own model and
   modes. `J`/`K` or the arrow keys move, `O` opens, `E` settles, `H` snoozes, `P` pins, `R`
-  starts a reply and `/` jumps to the new thread box. `Enter` approves the request once or
+  starts a reply and `/` jumps to the [new thread box](#start-a-thread-from-home). `Enter`
+  approves the request once or
   implements the plan, and opens other threads; `D` declines. `Enter` is left unbound when the
   provider asks for "no" to be the default. Forms sent by a provider or an MCP server are
   filled in the thread. A line above the queue counts pull requests and upstream topics waiting

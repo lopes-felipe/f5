@@ -79,7 +79,10 @@ import { isMacPlatform } from "../lib/utils";
 import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
-import { useComposerDispatchSettings } from "./chat/composer/useComposerDispatchSettings";
+import {
+  selectModelCatalogSettings,
+  useComposerDispatchSettings,
+} from "./chat/composer/useComposerDispatchSettings";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import type {
   ComposerAttachments,
@@ -286,7 +289,6 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { createTerminalCloseRepeatGuard } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
-import { type ModelCatalogSettings } from "../modelSelection";
 import {
   selectServerSettings,
   type UnifiedWebSettings,
@@ -777,14 +779,6 @@ function selectChatViewSettings(settings: AppSettings) {
 
 function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<FavoritePreset> {
   return settings.favorites;
-}
-
-function selectModelCatalogSettings(settings: UnifiedWebSettings): ModelCatalogSettings {
-  return {
-    providerInstances: settings.providerInstances,
-    providers: settings.providers,
-    providerModelPreferences: settings.providerModelPreferences,
-  };
 }
 
 // Memoized: props are primitives, so streamed tokens and panel updates only re-render this

@@ -9,7 +9,7 @@ import {
   homeRowSummary,
   runningTurnElapsed,
 } from "./homeItems";
-import { appendQuickStartText } from "./HomeQuickStart";
+import { appendQuickStartText, quickStartNeedsFullComposer } from "./HomeQuickStart";
 import { nextScheduledRunAt } from "./HomeStatusStrip";
 
 const NOW = Date.parse("2026-03-09T12:00:00.000Z");
@@ -58,6 +58,21 @@ describe("appendQuickStartText", () => {
   it("appends on a new line and keeps the existing prefix intact", () => {
     expect(appendQuickStartText("@src/app.ts ", "add tests")).toBe("@src/app.ts \nadd tests");
     expect(appendQuickStartText("first line\n", "second")).toBe("first line\nsecond");
+  });
+});
+
+describe("quickStartNeedsFullComposer", () => {
+  it("hands commands and skills to the thread composer", () => {
+    expect(quickStartNeedsFullComposer("/review")).toBe(true);
+    expect(quickStartNeedsFullComposer("  /plan the migration")).toBe(true);
+    expect(quickStartNeedsFullComposer("$deploy staging")).toBe(true);
+  });
+
+  it("sends ordinary text, including a leading path", () => {
+    expect(quickStartNeedsFullComposer("Fix the login bug")).toBe(false);
+    expect(quickStartNeedsFullComposer("/Users/me/app.ts crashes on start")).toBe(false);
+    expect(quickStartNeedsFullComposer("$ npm test fails")).toBe(false);
+    expect(quickStartNeedsFullComposer("Use src/app.ts and /tmp")).toBe(false);
   });
 });
 

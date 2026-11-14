@@ -56,6 +56,7 @@ end of a turn sums up everything that turn changed, and **View full diff** opens
 - **Home** (`mod+shift+H`) is a queue of the threads that wait for an approval, an answer or a
   plan decision, then finished and failed work you have not looked at, then what is running.
   Select one to read its last exchange and to approve, answer or reply without opening it.
+  The box at the top starts a new thread in the background: type the task and press `Enter`.
   **Needs you** in the sidebar lists the waiting threads too.
 - `mod+K` searches threads, workflows and commands.
 - Drop files onto the composer to attach them. See [Attachments and media](attachments-and-media.md).

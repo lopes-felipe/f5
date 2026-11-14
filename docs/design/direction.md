@@ -18,7 +18,7 @@ This file records the visual direction chosen in the design lab (Phase D of the 
 | Density         | Comfortable      | Constant (32px rows, 14px body); no `uiDensity` setting                                   |
 | Composer        | Dock             | Floating dock over a bottom fade; timeline padding tracks the measured dock height        |
 | Workflow page   | Board            | Phases as columns at `lg` and up; List below `lg`                                         |
-| Home            | Triage           | Quick-start bar, status strip, a keyboard-driven queue beside the selected item's preview |
+| Home            | Triage           | Background composer, status strip, a keyboard-driven queue beside the selected preview    |
 | Motion          | Expressive       | Panel slide and staggered list entry, always `motion-reduce` safe                         |
 | Radius base     | 0.75rem (12px)   | `--radius`                                                                                |
 

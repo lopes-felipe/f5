@@ -36,6 +36,47 @@ import { NativeGoalDialog } from "./NativeGoalDialog";
 const INTERACTION_MODE_TOGGLE_CLASS_NAME =
   "h-6 min-w-0 gap-1 rounded-sm border-0 px-2 text-ui font-normal text-muted-foreground hover:bg-transparent hover:text-foreground data-pressed:bg-background data-pressed:text-foreground data-pressed:shadow-xs sm:h-6 [&_svg:not([class*='size-'])]:size-3.5";
 
+/** The Agent/Plan switch. Exactly one mode stays selected. */
+export function ComposerInteractionModeToggle(props: {
+  readonly value: "default" | "plan";
+  readonly disabled?: boolean | undefined;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <ToggleGroup
+      aria-label="Interaction mode"
+      data-composer-control="interactionMode"
+      className="mx-0.5 h-7 shrink-0 gap-0 rounded-md bg-muted/60 p-0.5"
+      value={[props.value]}
+      disabled={props.disabled ?? false}
+      onValueChange={(next) => {
+        const nextMode = next[0];
+        // A single-select group can be emptied by pressing the active
+        // item; keep exactly one mode selected.
+        if (!nextMode || nextMode === props.value) return;
+        props.onToggle();
+      }}
+    >
+      <Toggle
+        value="default"
+        className={INTERACTION_MODE_TOGGLE_CLASS_NAME}
+        title="Agent mode: the agent edits and runs commands"
+      >
+        <BotIcon />
+        Agent
+      </Toggle>
+      <Toggle
+        value="plan"
+        className={INTERACTION_MODE_TOGGLE_CLASS_NAME}
+        title="Plan mode: the agent proposes a plan before changing anything"
+      >
+        <NotebookPenIcon />
+        Plan
+      </Toggle>
+    </ToggleGroup>
+  );
+}
+
 /**
  * Left side of the composer footer: Add menu, model and traits chips, the
  * Agent/Plan mode switch, access mode and the plan panel toggle. Folds the
@@ -242,37 +283,11 @@ export function ComposerFooterControls(props: {
           ) : null}
 
           {mode.showInteractionModeToggle ? (
-            <ToggleGroup
-              aria-label="Interaction mode"
-              data-composer-control="interactionMode"
-              className="mx-0.5 h-7 shrink-0 gap-0 rounded-md bg-muted/60 p-0.5"
-              value={[mode.interactionMode]}
+            <ComposerInteractionModeToggle
+              value={mode.interactionMode}
               disabled={isPendingTurnDispatchBlocked}
-              onValueChange={(next) => {
-                const nextMode = next[0];
-                // A single-select group can be emptied by pressing the active
-                // item; keep exactly one mode selected.
-                if (!nextMode || nextMode === mode.interactionMode) return;
-                mode.toggleInteractionMode();
-              }}
-            >
-              <Toggle
-                value="default"
-                className={INTERACTION_MODE_TOGGLE_CLASS_NAME}
-                title="Agent mode: the agent edits and runs commands"
-              >
-                <BotIcon />
-                Agent
-              </Toggle>
-              <Toggle
-                value="plan"
-                className={INTERACTION_MODE_TOGGLE_CLASS_NAME}
-                title="Plan mode: the agent proposes a plan before changing anything"
-              >
-                <NotebookPenIcon />
-                Plan
-              </Toggle>
-            </ToggleGroup>
+              onToggle={mode.toggleInteractionMode}
+            />
           ) : null}
 
           <RuntimeModePicker
