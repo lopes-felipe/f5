@@ -171,9 +171,12 @@ export async function runAgentBridgeStdio(options: AgentBridgeStdioOptions): Pro
   };
   // MCP messages end only at LF; Unicode separators belong to the JSON payload.
   const lines = new Utf8Lines();
-  for await (const chunk of options.input) {
-    for (const line of lines.push(chunk as Buffer | string)) dispatch(line);
+  try {
+    for await (const chunk of options.input) {
+      for (const line of lines.push(chunk as Buffer | string)) dispatch(line);
+    }
+    for (const line of lines.finish()) dispatch(line);
+  } finally {
+    await Promise.allSettled(pending);
   }
-  for (const line of lines.finish()) dispatch(line);
-  await Promise.allSettled(pending);
 }

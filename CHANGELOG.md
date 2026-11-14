@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.
+
 ## [0.1.4] - 2026-11-05
 
 ### Added
