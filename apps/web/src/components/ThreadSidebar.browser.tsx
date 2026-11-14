@@ -2348,8 +2348,8 @@ describe("Thread sidebar", () => {
         "Projects",
         "Recent",
       ]);
-      // Presence is not enough: the flex-1/min-w-0 icon buttons collapse to 0px outside the
-      // strip, which once hid Pull requests and Usage while these labels still matched.
+      // The flex-1/min-w-0 icon buttons only get width from the strip's layout; guard it, since
+      // DOM presence alone passed while 0.1.9 rendered Pull requests and Usage at 0px.
       for (const button of navigation.querySelectorAll<HTMLElement>("button[aria-label]")) {
         expect(
           button.getBoundingClientRect().width,
@@ -2402,6 +2402,20 @@ describe("Thread sidebar", () => {
         expect(document.querySelector('[data-sidebar="footer"]')?.textContent).toContain("Back"),
       );
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
+      // Pull requests is marked in the strip, so its page keeps Settings in the footer.
+      const pullRequestsButton = navigation.querySelector<HTMLButtonElement>(
+        '[aria-label="Pull requests"]',
+      )!;
+      expect(pullRequestsButton.hasAttribute("aria-current")).toBe(false);
+      pullRequestsButton.click();
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/pull-requests"));
+      await vi.waitFor(() => expect(pullRequestsButton.getAttribute("aria-current")).toBe("page"));
+      expect(usageButton.hasAttribute("aria-current")).toBe(false);
+      await vi.waitFor(() => {
+        const footerText = document.querySelector('[data-sidebar="footer"]')?.textContent;
+        expect(footerText).toContain("Settings");
+        expect(footerText).not.toContain("Back");
+      });
       expect(navigation.textContent).not.toContain("Bots");
 
       // The search field stays hidden until the Search button opens it, focused.

@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
+
 ## [0.1.9] - 2026-11-14
 
 ### Added
