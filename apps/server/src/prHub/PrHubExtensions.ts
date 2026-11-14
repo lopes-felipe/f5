@@ -13,7 +13,13 @@ import {
   ThreadId,
   type ForgeOperationInput,
   type ForgePrepareOperationInput,
+  type PrHubCheckLog,
+  type PrHubCheckLogInput,
+  type PrHubCheckLogUnavailable,
+  type PrHubChecksInput,
+  type PrHubChecksResult,
   type PrHubPeekInput,
+  type SourceControlPullRequestRef,
   type PrHubStackInput,
   type PrHubThreadLink,
   type PrHubViewedFilesInput,
@@ -38,6 +44,11 @@ import { readGitHubStack } from "./githubStacks.ts";
 import { mapGitHubCliError } from "../sourceControl/GitHubSourceControlProvider.ts";
 import { readThreadPullRequestLinks } from "./threadLinks.ts";
 import { peekFactsFromRaw, peekIsoDate } from "./prHubPeekFacts.ts";
+import { excerptCheckLog } from "./checkLog.ts";
+import { GITHUB_CHECKS_QUERY, failedGitHubWorkflowRuns, readGitHubChecks } from "./githubChecks.ts";
+
+/** Checks change while a pull request is open, so a read is reused only briefly. */
+const CHECKS_CACHE_MS = 15_000;
 
 const failure = (detail: string, kind: SourceControlProviderError["kind"] = "generic") =>
   new SourceControlProviderError({
@@ -66,6 +77,8 @@ export const makePrHubExtensions = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const gates = new Map<string, Semaphore.Semaphore>();
   const peekCache = new Map<string, { expires: number; value: PrHubPeek }>();
+  const checksCache = new Map<string, { expires: number; value: PrHubChecksResult }>();
+  const logCache = new Map<string, PrHubCheckLog>();
   const permit = yield* Semaphore.make(2);
   const db = <A, E>(value: Effect.Effect<A, E>) =>
     value.pipe(Effect.mapError(() => failure("PR Hub storage is unavailable.")));
@@ -341,6 +354,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
               caps.actions.includes("delete-branch") &&
               !!runtime.provider.deletePullRequestBranch)) &&
           (p.action !== "delete-branch" || !!runtime.provider.deletePullRequestBranch) &&
+          (p.action !== "rerun-failed-checks" || caps.checks.rerun) &&
           caps.actions.includes(p.action) &&
           (!p.method ||
             (p.action === "update-branch" ? caps.updateMethods : caps.mergeMethods).includes(
@@ -912,6 +926,10 @@ export const makePrHubExtensions = Effect.gen(function* () {
                   : "The outcome could not be confirmed. Check this saved operation before preparing another.",
               );
             }
+            // A re-run, a push or a merge changes the checks; the next read asks the forge.
+            checksCache.delete(
+              JSON.stringify([runtime.account.id, runtime.account.generation, input.key]),
+            );
             return (yield* load(account, id))!.operation;
           }),
         ),
@@ -1041,6 +1059,32 @@ export const makePrHubExtensions = Effect.gen(function* () {
                 )
               )
                 yield* update(runtime.account.id, input.operationId, "succeeded");
+            } else if (p.kind === "action" && p.action === "rerun-failed-checks") {
+              // A re-run takes its workflow run out of the failed set, so an empty set at the
+              // prepared head shows that every failed run was restarted.
+              if (runtime.github) {
+                const head = saved.operation.expectedHeadOid;
+                const context = yield* runtime.github
+                  .getCredentialContext({ cwd: config.cwd, host: ref.host })
+                  .pipe(Effect.mapError(mapGitHubCliError));
+                const response = yield* runtime.github
+                  .request({
+                    cwd: config.cwd,
+                    context,
+                    method: "GET",
+                    endpoint: `repos/${ref.repository}/actions/runs`,
+                    query: { head_sha: head, per_page: 100 },
+                  })
+                  .pipe(Effect.mapError(mapGitHubCliError));
+                const runs = failedGitHubWorkflowRuns(response.body, head);
+                if (
+                  response.status < 400 &&
+                  runs.complete &&
+                  runs.total > 0 &&
+                  runs.ids.length === 0
+                )
+                  yield* update(runtime.account.id, input.operationId, "succeeded");
+              }
             } else {
               const detail = yield* runtime.provider.getDetail(ref);
               const observed =
@@ -1088,7 +1132,132 @@ export const makePrHubExtensions = Effect.gen(function* () {
         }),
       ),
     );
+  const readChecks = (
+    runtime: PrHubAccountRuntime,
+    ref: SourceControlPullRequestRef,
+    input: PrHubChecksInput,
+  ) =>
+    Effect.gen(function* () {
+      const identity = JSON.stringify([runtime.account.id, runtime.account.generation, input.key]);
+      const cached = checksCache.get(identity);
+      if (input.mode !== "force" && cached && cached.expires > Date.now()) return cached.value;
+      let value: PrHubChecksResult;
+      if (runtime.github) {
+        const github = runtime.github;
+        const context = yield* github
+          .getCredentialContext({ cwd: config.cwd, host: ref.host })
+          .pipe(Effect.mapError(mapGitHubCliError));
+        const [owner, name] = ref.repository.split("/");
+        const read = yield* readGitHubChecks((cursor) =>
+          github
+            .request({
+              cwd: config.cwd,
+              context,
+              method: "POST",
+              endpoint: "graphql",
+              body: {
+                query: GITHUB_CHECKS_QUERY,
+                variables: { owner, name, number: ref.number, cursor },
+              },
+            })
+            .pipe(
+              Effect.mapError(mapGitHubCliError),
+              Effect.flatMap((response) =>
+                response.status >= 400
+                  ? Effect.fail(failure("GitHub checks read failed.", "invalid_response"))
+                  : Effect.succeed(response.body),
+              ),
+            ),
+        );
+        value = { ...read, refreshedAt: new Date().toISOString() };
+      } else {
+        const result = yield* runtime.hub.getDetail({
+          key: input.key,
+          ...(input.accountGeneration ? { accountGeneration: input.accountGeneration } : {}),
+          ...(input.mode ? { mode: input.mode } : {}),
+        });
+        const details = result.detail.providerDetails;
+        value = {
+          headOid: details.headRefOid ?? null,
+          // These forges report neither a job nor a workflow, so a check is its name.
+          checks: result.detail.checks.map((check, index) => ({
+            ...check,
+            id: `check:${index}:${check.name}`.slice(0, 64),
+            workflow: null,
+            workflowRunId: null,
+            startedAt: null,
+            completedAt: null,
+            logAvailable: false,
+          })),
+          truncated: result.detail.truncatedSections?.includes("checks") ?? false,
+          refreshedAt: result.refreshedAt,
+        };
+      }
+      checksCache.delete(identity);
+      checksCache.set(identity, { expires: Date.now() + CHECKS_CACHE_MS, value });
+      while (checksCache.size > 64) checksCache.delete(checksCache.keys().next().value!);
+      return value;
+    });
+  const getChecks = (input: PrHubChecksInput) =>
+    permit.withPermits(1)(
+      resolve(input).pipe(Effect.flatMap(({ runtime, ref }) => readChecks(runtime, ref, input))),
+    );
+  const getCheckLog = (input: PrHubCheckLogInput) =>
+    permit.withPermits(1)(
+      Effect.gen(function* () {
+        const { runtime, ref } = yield* resolve(input);
+        const checks = yield* readChecks(runtime, ref, input);
+        const check = checks.checks.find((value) => value.id === input.checkId);
+        if (!check)
+          return yield* failure(
+            "This check is not part of the pull request's current revision. Refresh the checks.",
+            "not_found",
+          );
+        const unavailable = (reason: PrHubCheckLogUnavailable): PrHubCheckLog => ({
+          checkId: check.id,
+          excerpt: null,
+          unavailable: reason,
+          startLine: 0,
+          totalLines: 0,
+          errorLine: null,
+          truncated: false,
+        });
+        if (!runtime.github || !check.logAvailable)
+          return unavailable(check.status === "pending" ? "pending" : "unsupported");
+        // A finished job's log never changes, so one read serves every later request.
+        const identity = JSON.stringify([runtime.account.id, ref.repository, check.id]);
+        const cached = logCache.get(identity);
+        if (cached) return cached;
+        const context = yield* runtime.github
+          .getCredentialContext({ cwd: config.cwd, host: ref.host })
+          .pipe(Effect.mapError(mapGitHubCliError));
+        const response = yield* runtime.github
+          .request({
+            cwd: config.cwd,
+            context,
+            method: "GET",
+            endpoint: `repos/${ref.repository}/actions/jobs/${check.id}/logs`,
+            terminalText: true,
+            timeoutMs: 30_000,
+          })
+          .pipe(Effect.result);
+        // A log over the response limit, a timeout and a network error all end here.
+        if (response._tag === "Failure") return unavailable("failed");
+        const { status, body } = response.success;
+        if (status === 404 || status === 410) return unavailable("expired");
+        if (status === 403)
+          return unavailable(response.success.rateLimit.remaining === 0 ? "failed" : "forbidden");
+        if (status >= 400 || typeof body !== "string" || body.trim() === "")
+          return unavailable("failed");
+        const log: PrHubCheckLog = { checkId: check.id, ...excerptCheckLog(body) };
+        logCache.set(identity, log);
+        while (logCache.size > 32) logCache.delete(logCache.keys().next().value!);
+        return log;
+      }),
+    );
   return {
+    getChecks,
+    getCheckLog,
     peek,
     getStack,
     getViewedFiles,

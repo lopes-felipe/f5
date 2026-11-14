@@ -746,6 +746,8 @@ export function buildTrackedPullRequest(
       },
       labels: pr.mergePermission === "allowed",
       stackActions: pr.mergePermission === "allowed",
+      // Anyone who can read the pull request can read its logs; a re-run needs write access.
+      checks: { logs: true, rerun: pr.mergePermission === "allowed" },
     },
     nodeId: pr.nodeId,
     number: pr.number,

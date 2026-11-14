@@ -5,7 +5,7 @@ import { UnderlineTabs, type UnderlineTab } from "~/components/ui/underline-tabs
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 
-import { PrChecksTab } from "./PrChecksTab";
+import { PrChecksTab, type PrChecksTabProps } from "./PrChecksTab";
 import { PrFilesTab } from "./PrFilesTab";
 import { PrOverviewTab, type PrOverviewExtras } from "./PrOverviewTab";
 import type { PrQueueTab } from "./prQueueSearch";
@@ -25,11 +25,14 @@ export function PrDetailsTabs({
   activeTab,
   onTabChange,
   overview,
+  checks,
 }: {
   pr: TrackedPullRequest;
   activeTab?: PrDetailTab | undefined;
   onTabChange?: ((tab: PrDetailTab) => void) | undefined;
   overview?: PrOverviewExtras | undefined;
+  /** The steps the Checks tab offers; without them it only lists the checks. */
+  checks?: Omit<PrChecksTabProps, "pr"> | undefined;
 }) {
   const [localTab, setLocalTab] = useState<PrDetailTab>("overview");
   const keybindings = useServerKeybindings();
@@ -97,7 +100,7 @@ export function PrDetailsTabs({
           ) : tab === "threads" ? (
             <PrReviewThreadsTab key={pr.key} pr={pr} />
           ) : tab === "checks" ? (
-            <PrChecksTab key={pr.key} pr={pr} />
+            <PrChecksTab key={pr.key} pr={pr} {...checks} />
           ) : tab === "guide" ? (
             <Suspense fallback={<p>Loading review guide…</p>}>
               <PrReviewGuideTab key={pr.key} pr={pr} />

@@ -81,6 +81,8 @@ export function PrQueueActionHost({
         onReview(pr.key);
         break;
       case "fix_ci":
+        handlers.onFixCi();
+        break;
       case "resolve_conflicts":
       case "address_feedback":
         handlers.onRunInF5();

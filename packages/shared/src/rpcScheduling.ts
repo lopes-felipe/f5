@@ -240,6 +240,8 @@ export const RPC_METHOD_POLICY = {
   "prHub.generateReviewGuide": MUTATION,
   "prHub.getAdvisories": READ,
   "prHub.getCommentOperation": READ,
+  "prHub.getCheckLog": READ,
+  "prHub.getChecks": READ,
   "prHub.getDetail": READ,
   "prHub.getFiles": READ,
   "prHub.getOperation": READ,

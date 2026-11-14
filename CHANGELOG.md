@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- A pull request's **Checks** tab lists the checks of the latest commit by workflow, with how long each ran. A failed GitHub Actions job shows its log below it, cut down to the lines around the first error, with **Copy** and **Open full log**. **Re-run failed jobs** starts the failed and cancelled jobs again after you confirm, from the tab, the status checklist or the queue's side panel; it needs write access to the repository. **Fix CI with F5** now gives the agent up to three failing checks with the end of their logs. Logs and re-runs are for GitHub Actions; other checks and forges are listed with a link to their own page.
+
 ### Changed
 
 - PR Hub's **Needs you**, the sidebar badge and pull request notifications now cover only reviews requested from you personally, your own pull requests that need a fix, and your pull requests that are ready to merge. A review requested from one of your teams reads "Review requested from your team" and no longer counts; add a team under **Settings → Git → Teams whose review requests are mine** to count its requests as yours. Pull requests with no activity for 30 days are stale: they leave **Needs you** and sort last (**Move PRs to Stale after**, 0 turns it off). Lists show the most recently updated pull request first instead of the longest-waiting one, **Ignore** has an **Undo** button, and search accepts `repo:owner/name`.
@@ -15,6 +19,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - PR Hub no longer shows "results may be incomplete" while GitHub's request budget only delays part of a refresh. Waiting searches and detail reads continue on the next poll and are listed under the sync details line; your own pull requests and personal review requests are read first. The **Discover PRs from GitHub notifications** setting is now saved, and saving one PR Hub setting no longer clears text you were typing in another.
 - Opening a pull request from a notification no longer changes the Pull requests filter, and typing in its search no longer clears the list while results load. The forge account chosen for Pull requests now applies from startup, where the sidebar badge and notifications used the profile's GitHub account until the page was first opened. Pull request panels in threads no longer reload on every PR Hub update.
 - A pull request's checks show an icon for their own result. Failed, running and skipped checks used the same tick as passed ones, in a different colour.
+- Some of PR Hub's GitHub requests were refused before they were sent, because their paging options were written into the address: reviewer suggestions, the comment and changed-file reads behind review actions and review guides, and **Approve workflow runs**. They are sent now.
 
 ## [0.1.9] - 2026-11-14
 

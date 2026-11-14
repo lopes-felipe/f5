@@ -47,6 +47,11 @@ export interface GitHubApiRequest {
   readonly endpoint: string;
   readonly body?: unknown;
   readonly accept?: "application/vnd.github.diff";
+  /**
+   * The response is terminal output, such as a job log: plain text that can hold escape
+   * sequences. The CLI refuses to print those unless it is told to.
+   */
+  readonly terminalText?: boolean;
   readonly query?: Readonly<Record<string, string | number | boolean>>;
   readonly cache?: GitHubConditionalRead;
   readonly ifNoneMatch?: string | undefined;
@@ -287,6 +292,10 @@ export function makeGitHubApi(
                 throw new Error("Invalid GitHub response format.");
               args.push("--header", `Accept: ${input.accept}`);
             }
+            if (input.terminalText) {
+              if (input.method !== "GET") throw new Error("Invalid GitHub response format.");
+              args.push("--allow-escape-sequences");
+            }
             if (body !== undefined) args.push("--input", "-");
             const timeoutMs = input.timeoutMs ?? 45_000;
             const maxStdoutBytes = input.maxResponseBytes ?? 8 * 1024 * 1024;
@@ -375,7 +384,11 @@ export function makeGitHubApi(
           }
           return yield* Effect.try({
             try: () =>
-              parseGitHubApiResponse(result.stdout, Date.now(), input.accept ? "text" : "json"),
+              parseGitHubApiResponse(
+                result.stdout,
+                Date.now(),
+                input.accept || input.terminalText ? "text" : "json",
+              ),
             catch: (cause) =>
               cause instanceof GitHubResponseParseError
                 ? cause

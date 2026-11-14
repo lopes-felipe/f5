@@ -29,6 +29,7 @@ const api = vi.hoisted(() => ({
   markSeen: vi.fn(),
   refresh: vi.fn(),
   track: vi.fn(),
+  getOperation: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api }) as unknown as NativeApi,
@@ -407,6 +408,19 @@ it("opens the page where a step of the peek's checklist is taken", async () => {
   await userEvent.keyboard("{Escape}");
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByTestId("pr-page-reviewers")).toHaveTextContent("closed");
+});
+
+it("confirms a re-run of the failed jobs from the peek, without leaving the queue", async () => {
+  api.getOperation.mockResolvedValue(null);
+  await renderQueue();
+  await row("Charlie fix").click();
+  await expect.element(peek(3).getByRole("button", { name: "Fix CI with F5" })).toBeVisible();
+  await peek(3).getByRole("button", { name: "Re-run failed jobs" }).click();
+  await expect.element(page.getByRole("dialog", { name: "Re-run failed jobs" })).toBeVisible();
+  await expect
+    .element(page.getByRole("button", { name: "Prepare re-run failed jobs", exact: true }))
+    .toBeVisible();
+  expect(lastSearch()).toEqual({ pr: keyOf(3) });
 });
 
 it("restores the page, its tab and the filters from the URL state", async () => {

@@ -57,6 +57,31 @@ export function prHubDetailQueryOptions(key: PullRequestKey) {
   });
 }
 
+/** The head commit's checks. A change to the pull request re-reads them. */
+export function prHubChecksQueryOptions(key: PullRequestKey) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    queryKey: ["prHub", "checks", accountGeneration, key] as const,
+    queryFn: async () => ensureNativeApi().prHub.getChecks({ key, accountGeneration }),
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * The part of one check's log around its error. A job that runs again gets a new ID, so a
+ * log that was read stays valid. The pull request's key is kept inside an object so that a
+ * change to the pull request does not re-read every open log.
+ */
+export function prHubCheckLogQueryOptions(key: PullRequestKey, checkId: string) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    queryKey: ["prHub", "checkLog", accountGeneration, { key, checkId }] as const,
+    queryFn: async () => ensureNativeApi().prHub.getCheckLog({ key, accountGeneration, checkId }),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
 export function prHubTimelineQueryOptions(key: PullRequestKey) {
   const accountGeneration = getPrHubAccountGeneration();
   return infiniteQueryOptions({
