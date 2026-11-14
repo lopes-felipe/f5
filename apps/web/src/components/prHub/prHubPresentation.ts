@@ -241,8 +241,6 @@ export type PrHubViewMode = "inbox" | "focus";
 
 export const PR_HUB_VIEW_MODE_STORAGE_KEY = "f5.prHub.viewMode";
 
-export { comparePrPriority } from "@t3tools/shared/prHub";
-
 export function safeHttpsUrl(input: string): string | null {
   try {
     const url = new URL(input);

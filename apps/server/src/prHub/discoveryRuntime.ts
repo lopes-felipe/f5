@@ -14,7 +14,7 @@ import { mapGitHubCliError } from "../sourceControl/GitHubSourceControlProvider.
 
 import { type PrHubLocalCheckoutCandidate, type PrHubSnapshot } from "@t3tools/contracts";
 
-import { Effect, Exit } from "effect";
+import { Effect, Exit, type Cause } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -36,6 +36,7 @@ import {
   buildReconcileByNumberRequest,
   buildTrackedByNumberRequest,
   buildSearchQueries,
+  causeErrorKind,
   causeUserMessage,
   nodeArray,
   normalizeFallbackPr,
@@ -50,6 +51,12 @@ import type { GitHubCliShape } from "../git/Services/GitHubCli.ts";
 import type { ServerSettingsShape } from "../serverSettings.ts";
 import type { SourceControlProvider } from "../sourceControl/SourceControlProvider.ts";
 import type { PrHubDiscoveryMethods } from "./Services/PrHubDiscovery.ts";
+/**
+ * The request scheduler and GitHub's own rate limit both answer "not now": the work stays
+ * queued and the next poll continues it. Anything else is a read that failed.
+ */
+const isDeferredRead = (cause: Cause.Cause<unknown>) => causeErrorKind(cause) === "rate_limited";
+
 export interface PrHubDiscoveryContext {
   readonly host: string;
   readonly cwd: string;
@@ -94,6 +101,8 @@ export function createPrHubDiscovery(
     {
       readonly nodesById: ReadonlyMap<string, Record<string, unknown>>;
       readonly degraded: boolean;
+      /** A read failed outright, as opposed to being deferred for a later poll. */
+      readonly failed: boolean;
       readonly errorMessage?: string | undefined;
     },
     never
@@ -101,6 +110,7 @@ export function createPrHubDiscovery(
     Effect.gen(function* () {
       const nodesById = new Map<string, Record<string, unknown>>();
       let degraded = false;
+      let failed = false;
       let errorMessage: string | undefined;
       let loggedFailureCount = 0;
 
@@ -131,6 +141,7 @@ export function createPrHubDiscovery(
             }
 
             degraded = true;
+            failed ||= !isDeferredRead(result.cause);
             errorMessage ??= message;
             loggedFailureCount += 1;
             if (loggedFailureCount <= 5) {
@@ -151,6 +162,7 @@ export function createPrHubDiscovery(
           const graphQlErrors = asArray(response?.errors);
           if (graphQlErrors.length > 0) {
             degraded = true;
+            failed = true;
             errorMessage ??= `GitHub GraphQL returned partial PR detail errors for ${graphQlErrors.length} chunk(s).`;
           }
           const nodes = asArray(asRecord(response?.data)?.nodes);
@@ -197,6 +209,7 @@ export function createPrHubDiscovery(
           const data = asRecord(body?.data);
           if (asArray(body?.errors).length > 0) {
             degraded = true;
+            failed = true;
             errorMessage ??= "GitHub GraphQL returned partial saved PR lookup errors.";
           }
           for (const { alias, key } of request.aliases) {
@@ -212,6 +225,7 @@ export function createPrHubDiscovery(
               nodesById.set(task.key, node);
             } else {
               degraded = true;
+              failed ||= !(Exit.isFailure(response) && isDeferredRead(response.cause));
               errorMessage ??= Exit.isFailure(response)
                 ? causeUserMessage(response.cause, "Saved PR lookup failed.")
                 : "Saved PR lookup returned no accessible data.";
@@ -297,6 +311,7 @@ export function createPrHubDiscovery(
       return {
         nodesById,
         degraded,
+        failed,
         ...(errorMessage ? { errorMessage } : {}),
       };
     });
@@ -465,12 +480,16 @@ export function createPrHubDiscovery(
         });
       let recoveredPullRequests: readonly NormalizedPr[] = [];
       let recoveryError: string | undefined;
+      // Set by any read that failed outright; deferred reads leave only backlog behind.
+      let hardFailure = false;
+      let searchFailed = false;
       if (!(yield* githubCooldownActive(host))) {
         yield* enqueuePrHubTracked(account, excluded).pipe(Effect.orDie);
         const recovery = yield* selectPrHubHydration(account, excluded).pipe(Effect.orDie);
         if (recovery.size > 0) {
           const recovered = yield* hydrateAndPersist(recovery);
           recoveredPullRequests = recovered.pullRequests;
+          hardFailure ||= recovered.details.failed;
           recoveryError =
             recovered.details.errorMessage ??
             (recovered.attentionIncomplete || recovered.missingDetailCount > 0
@@ -503,6 +522,7 @@ export function createPrHubDiscovery(
           }),
         );
         if (Exit.isFailure(result)) {
+          searchFailed ||= !isDeferredRead(result.cause);
           searchErrorMessage ??= causeUserMessage(
             result.cause,
             "GitHub GraphQL search request failed.",
@@ -560,6 +580,7 @@ export function createPrHubDiscovery(
         ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       if (Exit.isFailure(continued)) {
+        searchFailed ||= !isDeferredRead(continued.cause);
         cappedBuckets.push("discovery_continuation");
         searchErrorMessage ??= causeUserMessage(
           continued.cause,
@@ -622,6 +643,9 @@ export function createPrHubDiscovery(
           ? (details.errorMessage ?? "GitHub GraphQL returned partial PR detail data.")
           : missingDetailMessage;
       const detailDegraded = attentionIncomplete || details.degraded || missingDetailCount > 0;
+      // Details missing without any deferred read are a real gap, not backlog.
+      hardFailure ||= details.failed || (missingDetailCount > 0 && !details.degraded);
+      hardFailure ||= graphQlErrors.length > 0 || viewer.teamLookupError !== null;
 
       const work = yield* sql<{
         repositories: number;
@@ -683,6 +707,8 @@ export function createPrHubDiscovery(
               : "partial",
           checkedAt: new Date().toISOString(),
           remainingTasks: repoSearches + remainingHydrations,
+          remainingSearches: repoSearches,
+          remainingHydrations,
           description: `${work[0]?.repositories ?? 0} known repositories; ${repoSearches} search pages/partitions and ${remainingHydrations} PR detail reads remain.${Exit.isFailure(knownRepos) ? " Affiliation enumeration is unavailable." : knownRepos.value ? " Affiliation traversal completed." : " Affiliation traversal is still in progress."}`,
         },
         {
@@ -699,6 +725,8 @@ export function createPrHubDiscovery(
               : "partial",
           checkedAt: new Date().toISOString(),
           remainingTasks: globalSearches + remainingHydrations,
+          remainingSearches: globalSearches,
+          remainingHydrations,
           limits: cappedBuckets,
           description: `Search-based relationship coverage: ${globalSearches} pages/partitions and ${remainingHydrations} PR detail reads remain. GitHub search cannot prove coverage of every accessible repository.`,
         },
@@ -719,8 +747,16 @@ export function createPrHubDiscovery(
         },
       ];
 
+      // The fallback search is for reads that failed. Deferred work is already queued, and
+      // searching again around the budget would only spend the quota it protects.
+      const degraded =
+        !!recoveryError ||
+        !!searchErrorMessage ||
+        graphQlErrors.length > 0 ||
+        detailDegraded ||
+        viewer.teamLookupError !== null;
       const fallback =
-        searchErrorMessage || (details.degraded && pullRequests.length === 0)
+        (searchErrorMessage && searchFailed) || (details.failed && pullRequests.length === 0)
           ? yield* fetchFallback(
               viewer,
               searchErrorMessage ?? details.errorMessage ?? "PR detail recovery is incomplete.",
@@ -735,12 +771,8 @@ export function createPrHubDiscovery(
           ),
         ],
         cappedBuckets,
-        degraded:
-          !!recoveryError ||
-          !!searchErrorMessage ||
-          graphQlErrors.length > 0 ||
-          detailDegraded ||
-          viewer.teamLookupError !== null,
+        degraded,
+        resumable: degraded && !hardFailure && !searchFailed,
         errorMessage:
           fallback?.errorMessage ??
           recoveryError ??

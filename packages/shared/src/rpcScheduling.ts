@@ -294,6 +294,7 @@ export const RPC_METHOD_POLICY = {
   "prHub.submitOperation": MUTATION,
   "prHub.submitReview": MUTATION,
   "prHub.track": MUTATION,
+  "prHub.unignore": MUTATION,
   "prHub.unsnooze": MUTATION,
   "prHub.updateBranch": MUTATION,
   "prHub.updateComment": MUTATION,

@@ -120,6 +120,7 @@ function makePrHubStub(snapshot: PrHubSnapshot): PrHubServiceShape {
     snooze: () => Effect.succeed(snapshot),
     unsnooze: () => Effect.succeed(snapshot),
     ignore: () => Effect.succeed(snapshot),
+    unignore: () => Effect.succeed(snapshot),
     acknowledgeAttention: () => Effect.succeed(snapshot),
     markSeen: () => Effect.succeed(snapshot),
     markNotified: () => Effect.succeed(snapshot),

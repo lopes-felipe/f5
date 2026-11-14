@@ -357,8 +357,30 @@ export function usePrActions(
   const handleIgnore = async () => {
     setIsIgnoring(true);
     try {
-      await ensureNativeApi().prHub.ignore({ key: pr.key });
-      toastManager.add({ type: "success", title: "Pull request ignored" });
+      const key = pr.key;
+      await ensureNativeApi().prHub.ignore({ key });
+      const toastId = toastManager.add({
+        type: "success",
+        title: "Pull request ignored",
+        description: `${pr.repository.nameWithOwner}#${pr.number}`,
+        timeout: 8000,
+        actionProps: {
+          children: "Undo",
+          onClick: (event) => {
+            event.preventDefault();
+            toastManager.close(toastId);
+            void ensureNativeApi()
+              .prHub.unignore({ key })
+              .catch((error: unknown) =>
+                toastManager.add({
+                  type: "error",
+                  title: "Could not restore pull request",
+                  description: error instanceof Error ? error.message : String(error),
+                }),
+              );
+          },
+        },
+      });
     } catch (error) {
       toastManager.add({
         type: "error",

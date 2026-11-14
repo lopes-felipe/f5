@@ -7,7 +7,12 @@ import { prHubOverviewQueryOptions } from "../../lib/prHubReactQuery";
 import { buildPrAttentionNotification } from "../../prHubNotifications";
 import { ensureNativeApi } from "../../nativeApi";
 import { notify } from "../../notificationCenter/notify";
-import { onPrHubChanged, onServerConfigUpdated } from "../../wsNativeApi";
+import {
+  EMPTY_PR_HUB_CHANGE_BATCH,
+  isPrHubQueryStale,
+  mergePrHubChange,
+} from "../../lib/prHubInvalidation";
+import { onPrHubChanged, onServerConfigUpdated, onServerWelcome } from "../../wsNativeApi";
 
 export function PrAttentionNotificationControllerContent({
   navigateToPrHub,
@@ -40,7 +45,12 @@ export function PrAttentionNotificationControllerContent({
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let batch = EMPTY_PR_HUB_CHANGE_BATCH;
     const unsubscribeSettings = onServerConfigUpdated(() => {
+      void queryClient.invalidateQueries({ queryKey: ["prHub"] });
+    });
+    // Events sent while disconnected are gone; a new connection re-reads everything.
+    const unsubscribeWelcome = onServerWelcome(() => {
       void queryClient.invalidateQueries({ queryKey: ["prHub"] });
     });
     const unsubscribe = onPrHubChanged((event) => {
@@ -48,17 +58,22 @@ export function PrAttentionNotificationControllerContent({
         predicate: (query) =>
           query.queryKey[0] === "prHub" && query.queryKey[2] !== event.accountGeneration,
       });
+      batch = mergePrHubChange(batch, event);
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
-        // Invalidate active reads once per burst. This also handles skipped revisions
-        // when the transport coalesces events or a subscriber reconnects.
-        void queryClient.invalidateQueries({ queryKey: ["prHub"] });
+        const pending = batch;
+        batch = EMPTY_PR_HUB_CHANGE_BATCH;
+        // Once per burst: the collection always, a single PR's reads only if it changed.
+        void queryClient.invalidateQueries({
+          predicate: (query) => isPrHubQueryStale(query.queryKey, pending),
+        });
       }, 250);
     });
     return () => {
       unsubscribe();
       unsubscribeSettings();
+      unsubscribeWelcome();
       if (timer) clearTimeout(timer);
     };
   }, [queryClient]);

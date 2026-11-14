@@ -453,6 +453,12 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "git.pr-stalled": {
     category: "git",
   },
+  "git.pr-stale": {
+    category: "git",
+  },
+  "git.pr-direct-teams": {
+    category: "git",
+  },
   "git.pr-exclude": {
     category: "git",
   },

@@ -31,6 +31,7 @@ import { PrHubService } from "../Services/PrHubService.ts";
 import { PrHubServiceLive } from "./PrHubService.ts";
 
 const SEARCH_ALIASES = [
+  "direct_review",
   "review_requested",
   "team_review_0",
   "team_review_1",
@@ -327,7 +328,8 @@ function makeGithubStub(input: {
       });
       const overridden = input.graphqlRequest?.(request);
       if (overridden) return overridden;
-      if (request.query.includes("PrHubSearch($rr:")) {
+      // The personal review bucket opens every poll, so it advances the scripted response.
+      if (request.query.includes("PrHubSearch($dr:")) {
         currentSearchResponse = nextResponse(searchResponses, emptySearchResponse());
         searchRequestCount += 1;
         if (input.stallSearchAfterFirst && searchRequestCount > 1) {
@@ -475,7 +477,13 @@ function makeLayer(input: {
   return serviceLayer.pipe(
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-pr-hub-test-" })),
-    Layer.provideMerge(ServerSettingsService.layerTest(input.settings ?? {})),
+    Layer.provideMerge(
+      // Fixtures carry fixed dates, so they must not age into the Stale section.
+      ServerSettingsService.layerTest({
+        ...input.settings,
+        prHub: { staleAfterDays: 0, ...input.settings?.prHub },
+      }),
+    ),
     Layer.provideMerge(Layer.succeed(GitHubCli, github)),
     Layer.provideMerge(Layer.succeed(GitCore, gitCore)),
     Layer.provideMerge(Layer.succeed(ProjectionProjectRepository, projects)),
@@ -760,8 +768,9 @@ it.effect("coalesces overlapping forced refreshes into one GitHub fetch", () => 
     );
 
     const searchCalls = calls.graphql.filter((call) => call.query.includes("PrHubSearch"));
-    assert.equal(searchCalls.length, 6);
+    assert.equal(searchCalls.length, 7);
     assert.equal(searchCalls.filter((call) => call.query.includes("$rr:")).length, 1);
+    assert.equal(searchCalls.filter((call) => call.query.includes("$dr:")).length, 1);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -917,7 +926,7 @@ it.effect(
       }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE task_key='legacy-broken'`;
       assert.equal(legacy[0]?.count, 0);
       const searches = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
-      assert.equal(searches.length, 12);
+      assert.equal(searches.length, 14);
       for (const search of searches) {
         assert.equal(search.query.includes("team_review_"), false);
         assert.equal(JSON.stringify(search.variables).includes("1970"), false);
@@ -1427,6 +1436,127 @@ it.effect("moves ignored pull requests to resolved history for the active viewer
       makeLayer({
         calls,
         searchResponses: [searchResponse("review_requested", [pr])],
+      }),
+    ),
+  );
+});
+
+it.effect("restores an ignored pull request to the queue", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_unignore", number: 15 });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const tracked = (yield* service.refreshNow({ mode: "force" })).pullRequests[0];
+    assert.ok(tracked);
+    const ignored = yield* service.ignore({ key: tracked.key });
+    assert.deepStrictEqual(ignored.pullRequests, []);
+
+    const restored = yield* service.unignore({ key: tracked.key });
+    assert.deepStrictEqual(
+      restored.pullRequests.map((entry) => entry.key),
+      [tracked.key],
+    );
+    assert.equal(restored.pullRequests[0]?.ignoredAt, null);
+    assert.deepStrictEqual(restored.recentlyResolved, []);
+  }).pipe(
+    Effect.provide(makeLayer({ calls, searchResponses: [searchResponse("direct_review", [pr])] })),
+  );
+});
+
+it.effect("keeps team-only review requests out of the queue until their team is promoted", () => {
+  const calls = makeCalls();
+  const direct = makePrNode({
+    id: "PR_direct",
+    number: 31,
+    reviewRequests: ["me", "octo/platform"],
+  });
+  const team = makePrNode({ id: "PR_team", number: 32, reviewRequests: ["octo/platform"] });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const settings = yield* ServerSettingsService;
+    const sql = yield* SqlClient.SqlClient;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const byNumber = new Map(snapshot.pullRequests.map((pr) => [pr.number, pr]));
+    assert.include(byNumber.get(31), {
+      attentionState: "review_requested",
+      reviewRequestSource: "direct",
+      section: "review",
+    });
+    assert.include(byNumber.get(32), {
+      attentionState: "team_review_requested",
+      attentionBucket: "informational",
+      reviewRequestSource: "team",
+      section: "team",
+      notificationPending: false,
+    });
+    const overview = yield* service.getOverview({});
+    assert.equal(overview.counts.needs_you, 1);
+    assert.include(overview.sectionCounts, { review: 1, team: 1 });
+    // The first sync is a silent baseline; make both rows unseen to compare them.
+    yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL`;
+    const claimed = yield* service.claimNotifications({
+      accountGeneration: overview.account!.generation,
+      clientId: "client",
+      maxItems: 20,
+    });
+    assert.deepStrictEqual(
+      claimed.pullRequests.map((pr) => pr.number),
+      [31],
+    );
+
+    // Promotion applies on the next read; it does not wait for a refresh.
+    yield* settings.updateSettings({ prHub: { directReviewTeams: ["Octo/Platform"] } });
+    const promoted = yield* service.getOverview({});
+    assert.equal(promoted.counts.needs_you, 2);
+    assert.include(promoted.sectionCounts, { review: 2, team: 0 });
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        teams: ["octo/platform"],
+        searchResponses: [
+          multiSearchResponse({
+            direct_review: [direct],
+            review_requested: [direct, team],
+            team_review_0: [team],
+          }),
+        ],
+      }),
+    ),
+  );
+});
+
+it.effect("treats searches deferred by the request budget as backlog, not a failed refresh", () => {
+  const calls = makeCalls();
+  let fallbacks = 0;
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    assert.equal(snapshot.status, "ok");
+    assert.equal(snapshot.errorKind, "backlog");
+    // The gh fallback would spend the same budget that deferred the search.
+    assert.equal(fallbacks, 0);
+    const overview = yield* service.getOverview({});
+    assert.equal(overview.sync?.state, "syncing");
+    assert.isAbove(overview.sync?.pending.searches ?? 0, 0);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [
+          new GitHubCliError({
+            operation: "schedule",
+            detail: "GitHub search budget reached.",
+            kind: "rate_limited",
+          }),
+        ],
+        fallbackRequest: () => {
+          fallbacks += 1;
+          return Effect.succeed([]);
+        },
       }),
     ),
   );
@@ -2857,12 +2987,12 @@ it.effect("resumes unfinished scopes while refreshing healthy scopes after resta
     const first = yield* service.refreshNow({ mode: "force" });
     assert.equal(first.status, "degraded");
     const initial = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
-    assert.equal(initial.length, 6);
+    assert.equal(initial.length, 7);
     assert.ok(initial.every((call) => !call.query.includes("team_review")));
     const completed = yield* sql<{
       count: number;
     }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE kind = 'source_watermark' AND json_extract(payload_json, '$.complete') = 1`;
-    assert.equal(completed[0]!.count, 5);
+    assert.equal(completed[0]!.count, 6);
     // Old versions created watermarks for no-match team scopes; they must not stall the new cycle.
     yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
       VALUES('github','github.com','1','source_watermark','unused-team','{"complete":false,"task":{"alias":"team_review_0"}}','2026-01-01','2026-01-01')`;
@@ -2877,7 +3007,7 @@ it.effect("resumes unfinished scopes while refreshing healthy scopes after resta
       assert.equal(recovered.pullRequests[0]?.number, 401);
       assert.equal(
         calls.graphql.filter((call) => call.query.includes("query PrHubSearch(")).length,
-        11,
+        13,
       );
       assert.equal(
         recovered.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,

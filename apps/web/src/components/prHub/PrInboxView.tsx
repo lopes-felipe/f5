@@ -1,5 +1,5 @@
 import type { PrQuickActionRequest } from "../../lib/prQuickActions";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   PrHubAdvisory,
   PullRequestKey,
@@ -12,7 +12,6 @@ import { PrEmptyState } from "./PrEmptyState";
 import { Kbd } from "../ui/kbd";
 import { PrDetailPanel } from "./PrDetailPanel";
 import { PrSpineList } from "./PrSpineList";
-import { comparePrPriority } from "./prHubPresentation";
 import { isInteractiveTextTarget } from "./prHubKeyboard";
 
 export interface PrModeViewProps {
@@ -51,7 +50,8 @@ export function PrInboxView({
   onSelectionChange,
   refreshIncomplete = false,
 }: PrModeViewProps) {
-  const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
+  // The server orders the queue; re-sorting here would disagree with its pagination.
+  const ordered = prs;
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
   const [quickRequest, setQuickRequest] = useState<{
     key: PullRequestKey;
