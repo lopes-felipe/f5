@@ -21191,11 +21191,21 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-14T01:08:01.251Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/PullRequestWatchService.ts:431",
+          "apps/server/src/orchestration/pullRequestWatchRemarks.ts:75"
+        ],
+        "f5Refs": [
+          "0f39cf608273424b594db0bcf62dc01913a06027"
+        ]
+      },
       "id": "pr-18835",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -25050,11 +25060,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-14T01:08:01.251Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19636",
-      "status": "port",
+      "reason": "F5 has no OpenCode workspace command inventory cache or pending-probe protocol.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
