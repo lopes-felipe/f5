@@ -21,6 +21,7 @@ import Migration0073 from "../../persistence/Migrations/073_UsageFactRecordedAt.
 import Migration0161 from "../../persistence/Migrations/161_UsageNativeIdentity.ts";
 import Migration0116 from "../../persistence/Migrations/116_UsageAccountHistory.ts";
 import Migration0101 from "../../persistence/Migrations/101_UsageResetCreditRequests.ts";
+import Migration0165 from "../../persistence/Migrations/165_UsageResetCreditGrant.ts";
 import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import * as SqliteClient from "../../persistence/NodeSqliteClient.ts";
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
@@ -373,6 +374,7 @@ it.layer(SqliteClient.layerMemory())("UsageService reset credits", (it) => {
   it.effect("passes the Claude grant id through to the instance", () =>
     Effect.gen(function* () {
       yield* Migration0101;
+      yield* Migration0165;
       const calls: Array<[string, string | undefined]> = [];
       const instance = {
         instanceId,

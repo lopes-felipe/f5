@@ -414,6 +414,8 @@ export const UsageConsumeResetCreditResult = Schema.Struct({
   ]),
   /** Why the reset could not be used, for the `unavailable` outcome. */
   message: Schema.optional(TrimmedNonEmptyString),
+  /** When the reset can be tried again, formatted by the client. */
+  retryAt: Schema.optional(IsoDateTime),
 });
 export type UsageConsumeResetCreditResult = typeof UsageConsumeResetCreditResult.Type;
 export const UsagePriceOverride = Schema.Struct({

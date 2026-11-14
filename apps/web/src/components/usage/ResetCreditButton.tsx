@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { ProviderInstanceId } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { invalidateUsageAccounts } from "../../lib/usageReactQuery";
+import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { Button } from "../ui/button";
 import {
   AlertDialog,
@@ -68,15 +69,21 @@ export function ResetCreditButton(props: {
         // Nothing to clear.
       }
       key.current = null;
-      if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed")
-        setError(
-          result.outcome === "noCredit"
+      if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed") {
+        const message =
+          result.message ??
+          (result.outcome === "noCredit"
             ? "No reset credits remain."
             : result.outcome === "unavailable"
-              ? (result.message ?? "This reset can't be used right now.")
-              : "This account has no exhausted window to reset.",
+              ? "This reset can't be used right now."
+              : "This account has no exhausted window to reset.");
+        // The server sends the time; format it in the viewer's locale and zone.
+        setError(
+          result.retryAt
+            ? `${message} Try again after ${formatAbsoluteTimeLabel(result.retryAt)}.`
+            : message,
         );
-      else setOpen(false);
+      } else setOpen(false);
       await invalidateUsageAccounts(client);
     } catch (error) {
       setError(

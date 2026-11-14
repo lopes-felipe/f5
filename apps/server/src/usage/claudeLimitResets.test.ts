@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CLAUDE_KEYCHAIN_BLOCKED_MESSAGE,
   CLAUDE_LIMIT_RESET_STATUS_PATH,
   CLAUDE_SIGN_IN_AGAIN_MESSAGE,
   ClaudeLimitResetRequestError,
+  SecurityCommandError,
   claudeCredentialsAccount,
   claudeCredentialsService,
   makeClaudeLimitResetClient,
@@ -63,7 +65,7 @@ describe("readClaudeOAuthToken", () => {
     env: { CLAUDE_CONFIG_DIR: "/cfg", USER: "me" },
     platform: "darwin",
     fallbackUser: "me",
-    runSecurity: () => Promise.reject(new Error("missing")),
+    runSecurity: () => Promise.reject(new SecurityCommandError(44)),
     readFile: () => Promise.reject(new Error("missing")),
     ...overrides,
   });
@@ -124,6 +126,27 @@ describe("readClaudeOAuthToken", () => {
         }),
       ),
     ).toEqual({ kind: "unsupported" });
+  });
+
+  it("tells a missing Keychain item from a refused or timed-out read", async () => {
+    const failing = (exitCode: number | null) => async () => {
+      throw new SecurityCommandError(exitCode);
+    };
+    expect(await readClaudeOAuthToken(source({ runSecurity: failing(44) }))).toEqual({
+      kind: "missing",
+    });
+    expect(await readClaudeOAuthToken(source({ runSecurity: failing(128) }))).toEqual({
+      kind: "blocked",
+    });
+    expect(await readClaudeOAuthToken(source({ runSecurity: failing(null) }))).toEqual({
+      kind: "blocked",
+    });
+    // The plaintext store still wins over a refused Keychain.
+    expect(
+      await readClaudeOAuthToken(
+        source({ runSecurity: failing(128), readFile: async () => credentials("file-token") }),
+      ),
+    ).toMatchObject({ kind: "token" });
   });
 
   it("parses payloads without exposing token text on failure", () => {
@@ -229,7 +252,8 @@ describe("normalizeClaudeLimitResets", () => {
 describe("mapClaudeClaimResult", () => {
   it.each([
     [{ result: "reset", resets_left: 0 }, "reset"],
-    [{ result: "already_used" }, "alreadyRedeemed"],
+    // Claude Code treats this as a spent grant, not a replayed success.
+    [{ result: "already_used" }, "noCredit"],
     [{ result: "not_limited" }, "nothingToReset"],
     [{ result: "ineligible", reason: "no_grant" }, "noCredit"],
     [{ result: "ineligible", reason: "expired" }, "noCredit"],
@@ -237,18 +261,37 @@ describe("mapClaudeClaimResult", () => {
     [{ result: "ineligible", reason: "tier" }, "unavailable"],
     [{ result: "cooldown", cooldown_until: "2026-11-15T10:00:00Z" }, "unavailable"],
     [{ result: "unavailable", reason: "paused" }, "unavailable"],
-    [{ result: "something-new" }, "unavailable"],
-    [null, "unavailable"],
-  ])("maps %j to %s", (response, outcome) => {
+    [{ result: "unavailable", reason: "not_next_grant" }, "unavailable"],
+    [{ result: "unavailable", reason: "expired" }, "noCredit"],
+  ])("settles %j as %s", (response, outcome) => {
     const result = mapClaudeClaimResult(response);
     expect(result.outcome).toBe(outcome);
-    if (outcome === "unavailable") expect(result.message).toBeTruthy();
+    if (outcome !== "reset" && outcome !== "nothingToReset") expect(result.message).toBeTruthy();
   });
 
-  it("explains cooldowns and paused grants", () => {
+  it.each([
+    [{ result: "unavailable", reason: "reset_unconfirmed" }],
+    [{ result: "unavailable", reason: "stamp_indeterminate" }],
+    [{ result: "unavailable" }],
+    [{ result: "something-new" }],
+    [{ resets_left: 0 }],
+    [null],
+  ])("keeps %j pending", (response) => {
+    expect(() => mapClaudeClaimResult(response)).toThrow(ClaudeLimitResetRequestError);
+  });
+
+  it("returns the cooldown time for the client to format", () => {
     expect(
-      mapClaudeClaimResult({ result: "cooldown", cooldown_until: "2026-11-15T10:00:00Z" }).message,
-    ).toMatch(/cooling down\. Try again after/);
+      mapClaudeClaimResult({ result: "cooldown", cooldown_until: "2026-11-15T10:00:00Z" }),
+    ).toEqual({
+      outcome: "unavailable",
+      message: "Limit resets are cooling down.",
+      retryAt: "2026-11-15T10:00:00.000Z",
+    });
+    expect(mapClaudeClaimResult({ result: "cooldown" })).toEqual({
+      outcome: "unavailable",
+      message: "Limit resets are cooling down. Try again later.",
+    });
     expect(mapClaudeClaimResult({ result: "unavailable", reason: "paused" }).message).toBe(
       "This limit reset is paused.",
     );
@@ -368,24 +411,37 @@ describe("makeClaudeLimitResetClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("asks to sign in again when the token stays unusable", async () => {
+  const pendingError = (promise: Promise<unknown>) =>
+    promise.then(
+      () => {
+        throw new Error("expected the claim to stay pending");
+      },
+      (cause: unknown) => {
+        expect(cause).toBeInstanceOf(ClaudeLimitResetRequestError);
+        return (cause as Error).message;
+      },
+    );
+
+  it("keeps the claim pending when it can't be sent, instead of settling it", async () => {
     const twice401 = setup({ responses: [json(401, {}), json(403, {})] });
-    expect(await twice401.client.claim("full", "req")).toEqual({
-      outcome: "unavailable",
-      message: CLAUDE_SIGN_IN_AGAIN_MESSAGE,
-    });
-    const missing = setup({ tokens: [{ kind: "missing" }, { kind: "missing" }], responses: [] });
-    expect(await missing.client.claim("full", "req")).toEqual({
-      outcome: "unavailable",
-      message: CLAUDE_SIGN_IN_AGAIN_MESSAGE,
-    });
-    expect(missing.refreshToken).toHaveBeenCalledTimes(1);
+    expect(await pendingError(twice401.client.claim("full", "req"))).toBe(
+      CLAUDE_SIGN_IN_AGAIN_MESSAGE,
+    );
+    const missing = setup({ tokens: [{ kind: "missing" }], responses: [] });
+    expect(await pendingError(missing.client.claim("full", "req"))).toBe(
+      CLAUDE_SIGN_IN_AGAIN_MESSAGE,
+    );
     expect(missing.fetch).not.toHaveBeenCalled();
+    const blocked = setup({ tokens: [{ kind: "blocked" }], responses: [] });
+    expect(await pendingError(blocked.client.claim("full", "req"))).toBe(
+      CLAUDE_KEYCHAIN_BLOCKED_MESSAGE,
+    );
     const noOrg = setup({ responses: [], organization: null });
-    expect((await noOrg.client.claim("full", "req")).outcome).toBe("unavailable");
+    await pendingError(noOrg.client.claim("full", "req"));
+    expect(noOrg.readToken).not.toHaveBeenCalled();
   });
 
-  it("refreshes an expired token before claiming", async () => {
+  it("refreshes an expired token before claiming, and never twice", async () => {
     const { client, refreshToken, fetch } = setup({
       tokens: [{ kind: "token", token: { accessToken: "old", expiresAt: NOW - 1 } }],
       responses: [json(200, { result: "reset" })],
@@ -393,6 +449,59 @@ describe("makeClaudeLimitResetClient", () => {
     expect(await client.claim("full", "req")).toEqual({ outcome: "reset" });
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]![1].headers).toMatchObject({ Authorization: `Bearer ${SECRET}` });
+    // A 401 after that refresh asks to sign in rather than refreshing again.
+    const second = setup({
+      tokens: [{ kind: "token", token: { accessToken: "old", expiresAt: NOW - 1 } }],
+      responses: [json(401, {})],
+    });
+    expect(await pendingError(second.client.claim("full", "req"))).toBe(
+      CLAUDE_SIGN_IN_AGAIN_MESSAGE,
+    );
+    expect(second.refreshToken).toHaveBeenCalledTimes(1);
+    expect(second.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles definite client errors, reading a structured answer when there is one", async () => {
+    const { client } = setup({
+      responses: [
+        json(404, { error: "not found" }),
+        json(409, { result: "already_used" }),
+        json(422, { result: "unavailable", reason: "reset_unconfirmed" }),
+      ],
+    });
+    expect(await client.claim("full", "req")).toEqual({
+      outcome: "unavailable",
+      message: "Claude rejected the reset request (HTTP 404).",
+    });
+    expect((await client.claim("full", "req")).outcome).toBe("noCredit");
+    // An indeterminate answer stays pending even on a 4xx.
+    await pendingError(client.claim("full", "req"));
+  });
+
+  it("passes the caller's abort signal to the request", async () => {
+    const { client, fetch } = setup({ responses: [json(200, { result: "reset" })] });
+    const controller = new AbortController();
+    await client.claim("full", "req", controller.signal);
+    const signal = fetch.mock.calls[0]![1].signal!;
+    expect(signal.aborted).toBe(false);
+    controller.abort();
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("stops background reads after the Keychain refuses, until a claim or sign-in", async () => {
+    const body = { cedar_ember: { eligible: true, grants: [grant()] } };
+    const { client, readToken } = setup({
+      tokens: [{ kind: "blocked" }],
+      responses: [json(200, body), json(200, body)],
+    });
+    expect(await client.fetchStatus()).toBeNull();
+    expect(await client.fetchStatus()).toBeNull();
+    expect(readToken).toHaveBeenCalledTimes(1);
+    client.invalidate();
+    expect((await client.fetchStatus())?.grants).toHaveLength(1);
+    expect(client.lastKnownStatus()?.grants).toHaveLength(1);
+    client.invalidate();
+    expect(client.lastKnownStatus()).toBeNull();
   });
 
   it("leaves 429s, server errors and network failures uncertain", async () => {
@@ -413,8 +522,8 @@ describe("makeClaudeLimitResetClient", () => {
 
   it("refuses malformed grant or request ids without a request", async () => {
     const { client, fetch } = setup({ responses: [] });
-    expect((await client.claim("Bad Id", "req")).outcome).toBe("unavailable");
-    expect((await client.claim("full", "bad id!")).outcome).toBe("unavailable");
+    await pendingError(client.claim("Bad Id", "req"));
+    await pendingError(client.claim("full", "bad id!"));
     expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -27,10 +27,15 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
-import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Option, Path, Ref, Schema, Stream } from "effect";
 import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
-import { makeClaudeLimitResetAccess } from "./ClaudeLimitResetAccess.ts";
-import { ClaudeLimitResetRequestError } from "../../usage/claudeLimitResets.ts";
+import {
+  makeClaudeConsumeResetCredit,
+  makeClaudeLimitResetAccess,
+} from "./ClaudeLimitResetAccess.ts";
+
+/** How long a usage refresh waits for limit resets before using the last read. */
+const LIMIT_RESET_STATUS_WAIT = Duration.seconds(4);
 import {
   emptyAccountSection,
   makeAccountUsageCapability,
@@ -257,11 +262,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           sections: [emptyAccountSection("claude-usage")],
         },
         probes.usage.pipe(
-          // Best effort: a failed limit-reset read only hides the block.
+          // Best effort: a failed limit-reset read only hides the block. A slow one
+          // keeps running for the next refresh while this one uses the last read.
           Effect.flatMap((usage) =>
             usage.limitsAvailable && usage.subscriptionLabel !== null
               ? Effect.promise(() => limitResets.fetchStatus()).pipe(
-                  Effect.map((resets) => ({ ...usage, limitResets: resets })),
+                  Effect.timeoutOption(LIMIT_RESET_STATUS_WAIT),
+                  Effect.map((resets) => ({
+                    ...usage,
+                    limitResets: Option.isSome(resets)
+                      ? resets.value
+                      : limitResets.lastKnownStatus(),
+                  })),
                 )
               : Effect.succeed({ ...usage, limitResets: null }),
           ),
@@ -305,34 +317,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         effectiveConfig.binaryPath,
         claudeProcessEnvironment,
       );
-      const consumeResetCredit = (idempotencyKey: string, grantId?: string) =>
-        Effect.gen(function* () {
-          let target = grantId;
-          if (!target) {
-            const section = (yield* accountUsage.getSnapshot).sections.find(
-              (entry) => entry.kind === "claude-usage",
-            );
-            target =
-              section?.kind === "claude-usage"
-                ? (section.snapshot?.data.limitResets?.nextGrantId ?? undefined)
-                : undefined;
-          }
-          if (!target) return { outcome: "noCredit" as const };
-          const grant = target;
-          return yield* Effect.tryPromise({
-            try: () => limitResets.claim(grant, idempotencyKey),
-            catch: (cause) =>
-              new ProviderDriverError({
-                driver: DRIVER_KIND,
-                instanceId,
-                detail:
-                  cause instanceof ClaudeLimitResetRequestError
-                    ? cause.message
-                    : "Could not claim a Claude limit reset.",
-                cause,
-              }),
-          });
-        });
+      const consumeResetCredit = makeClaudeConsumeResetCredit(limitResets, DRIVER_KIND, instanceId);
       const checkProvider = withSignOutInvalidation(
         checkClaudeProviderStatus(
           effectiveConfig,

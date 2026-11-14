@@ -2,20 +2,25 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import * as NodeOS from "node:os";
 
-import type { ClaudeSettings } from "@t3tools/contracts";
+import type { ClaudeSettings, UsageConsumeResetCreditResult } from "@t3tools/contracts";
 import { Effect, FileSystem, Path } from "effect";
 
 import {
+  ClaudeLimitResetRequestError,
   makeClaudeLimitResetClient,
   readClaudeOAuthToken,
+  SecurityCommandError,
   type ClaudeLimitResetClient,
+  type ClaudeLimitResetClientDeps,
 } from "../../usage/claudeLimitResets.ts";
 import { asRecord, asTrimmedString } from "../../usage/accountUsageJson.ts";
+import { ProviderDriverError } from "../Errors.ts";
 import { isCustomClaudeApiEndpoint } from "../Layers/ClaudeProvider.ts";
 import { resolveClaudeUserStatePath } from "../claudeInventory.ts";
 import { makeClaudeEnvironment, readClaudeSettingsBaseUrl } from "./ClaudeHome.ts";
 
-const SECURITY_TIMEOUT_MS = 10_000;
+/** Short enough that a waiting Keychain prompt can't stall a usage refresh for long. */
+const SECURITY_TIMEOUT_MS = 5_000;
 
 function runSecurity(args: ReadonlyArray<string>): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -25,7 +30,8 @@ function runSecurity(args: ReadonlyArray<string>): Promise<string> {
       { timeout: SECURITY_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
       (error, stdout) => {
         // Never include stdout in the error: it holds the credentials payload.
-        if (error) reject(new Error(`security exited with ${error.code ?? "an error"}`));
+        if (error)
+          reject(new SecurityCommandError(typeof error.code === "number" ? error.code : null));
         else resolve(stdout);
       },
     );
@@ -52,6 +58,10 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
     readonly cwd: string;
     /** Makes the CLI refresh its stored token. */
     readonly refreshToken: () => Promise<void>;
+    /** Test seams. */
+    readonly platform?: NodeJS.Platform;
+    readonly runSecurity?: (args: ReadonlyArray<string>) => Promise<string>;
+    readonly fetch?: ClaudeLimitResetClientDeps["fetch"];
   },
 ): Effect.fn.Return<ClaudeLimitResetClient, never, Path.Path | FileSystem.FileSystem> {
   const path = yield* Path.Path;
@@ -70,9 +80,9 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
       readClaudeOAuthToken({
         configDir,
         env: environment,
-        platform: process.platform,
+        platform: options.platform ?? process.platform,
         fallbackUser,
-        runSecurity,
+        runSecurity: options.runSecurity ?? runSecurity,
         readFile: (file) => readFile(file, "utf8"),
         customEndpoint,
       }),
@@ -85,7 +95,35 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
       }
     },
     refreshToken: options.refreshToken,
-    fetch: (url, init) => globalThis.fetch(url, init),
+    fetch: options.fetch ?? ((url, init) => globalThis.fetch(url, init)),
     now: () => Date.now(),
   });
 });
+
+/**
+ * The instance's `consumeResetCredit`. Claude needs the grant to claim; any
+ * unsettled claim fails, so the coordinator keeps its request id pending.
+ */
+export const makeClaudeConsumeResetCredit =
+  (client: Pick<ClaudeLimitResetClient, "claim">, driver: string, instanceId: string) =>
+  (
+    idempotencyKey: string,
+    grantId?: string,
+  ): Effect.Effect<UsageConsumeResetCreditResult, ProviderDriverError> =>
+    grantId
+      ? Effect.tryPromise({
+          try: (signal) => client.claim(grantId, idempotencyKey, signal),
+          catch: (cause) =>
+            new ProviderDriverError({
+              driver,
+              instanceId,
+              detail:
+                cause instanceof ClaudeLimitResetRequestError
+                  ? cause.message
+                  : "Could not claim a Claude limit reset.",
+              cause,
+            }),
+        })
+      : Effect.fail(
+          new ProviderDriverError({ driver, instanceId, detail: "Choose a limit reset to claim." }),
+        );

@@ -2169,6 +2169,42 @@ describe("limits", () => {
       queryClient.clear();
     }
   });
+
+  it("formats a Claude cooldown's retry time in the viewer's locale", async () => {
+    api.consumeResetCredit.mockReset();
+    const retryAt = "2026-11-15T10:00:00.000Z";
+    api.consumeResetCredit.mockResolvedValue({
+      outcome: "unavailable",
+      message: "Limit resets are cooling down.",
+      retryAt,
+    });
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <ClaudeGrantButton
+          instanceId={ProviderInstanceId.make("claude-test")}
+          accountName="Claude"
+          grant={claudeGrant()}
+          cooldownUntil={null}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      await page.getByRole("button", { name: "Use Full reset (1)" }).click();
+      await page.getByRole("button", { name: "Confirm redemption" }).click();
+      await expect
+        .element(page.getByRole("alert"))
+        .toHaveTextContent(
+          `Limit resets are cooling down. Try again after ${new Date(retryAt).toLocaleString(
+            undefined,
+            { dateStyle: "medium", timeStyle: "short" },
+          )}.`,
+        );
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
 });
 
 describe("unified page", () => {
