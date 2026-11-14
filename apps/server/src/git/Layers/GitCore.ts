@@ -2573,7 +2573,8 @@ const makeGitCore = Effect.gen(function* () {
               ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
             ],
             {
-              timeoutMs: 300_000,
+              // Cloning scales with remote size; let it finish or be cancelled.
+              timeoutMs: null,
               fallbackErrorMessage: "Unable to initialize worktree submodules",
               ...(progress?.onSubmoduleLine ? { onStderrChunk: lines } : {}),
             },
