@@ -4,6 +4,14 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Changed
+
+- PR Hub's **Needs you**, the sidebar badge and pull request notifications now cover only reviews requested from you personally, your own pull requests that need a fix, and your pull requests that are ready to merge. A review requested from one of your teams reads "Review requested from your team" and no longer counts; add a team under **Settings → Git → Teams whose review requests are mine** to count its requests as yours. Pull requests with no activity for 30 days are stale: they leave **Needs you** and sort last (**Move PRs to Stale after**, 0 turns it off). Lists show the most recently updated pull request first instead of the longest-waiting one, **Ignore** has an **Undo** button, and search accepts `repo:owner/name`.
+
+### Fixed
+
+- PR Hub no longer shows "results may be incomplete" while GitHub's request budget only delays part of a refresh. Waiting searches and detail reads continue on the next poll and are listed under the sync details line; your own pull requests and personal review requests are read first. The **Discover PRs from GitHub notifications** setting is now saved, and saving one PR Hub setting no longer clears text you were typing in another.
+
 ## [0.1.9] - 2026-11-14
 
 ### Added
@@ -30,11 +38,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - F5 starts faster and uses less memory on profiles with many archived threads: their activity history now loads when a thread is used, not at startup. The first start after this update takes longer once while two database indexes are built (about 20 seconds on a 6 GB profile).
 - The Upstream port queue is now a **Queue** view next to the topic lists instead of a dialog. Jobs are split into **Active** (running first, then queued in order), **Needs you** and **History** (newest first, with cancelled and superseded jobs hidden until you ask). Each job shows its thread title, PR number, when it was queued or finished, and a plain-language result for each topic, and clicking a topic opens it in the detail pane. Waiting jobs list each blocking thread once with its PR, and jobs have actions to start without waiting, remove them from the queue, or retry a failed port. The header chip appears only while ports run or wait, the queue is paused, or something needs attention.
 - An expanded workflow in the sidebar groups its steps by phase. A phase with one step shows that step; larger phases fold, and open on their own when they hold the open thread, are running or failed, or have a step waiting on you. Phases that haven't started show faintly. Every step leads with its state (done, running, failed or pending) instead of "Plan Ready", unseen "Completed" or unread bold, and the workflow's PR sits in the implementation step's icon slot so titles line up. A finished workflow's time, its sort order and when it folds into "older" now follow its steps' activity, not background updates that showed weeks-old work as "just now".
-- PR Hub's **Needs you**, the sidebar badge and pull request notifications now cover only reviews requested from you personally, your own pull requests that need a fix, and your pull requests that are ready to merge. A review requested from one of your teams reads "Review requested from your team" and no longer counts; add a team under **Settings → Git → Teams whose review requests are mine** to count its requests as yours. Pull requests with no activity for 30 days are stale: they leave **Needs you** and sort last (**Move PRs to Stale after**, 0 turns it off). Lists show the most recently updated pull request first instead of the longest-waiting one, **Ignore** has an **Undo** button, and search accepts `repo:owner/name`.
 
 ### Fixed
 
-- PR Hub no longer shows "results may be incomplete" while GitHub's request budget only delays part of a refresh. Waiting searches and detail reads continue on the next poll and are listed under the sync details line; your own pull requests and personal review requests are read first. The **Discover PRs from GitHub notifications** setting is now saved, and saving one PR Hub setting no longer clears text you were typing in another.
 - Desktop project activation uses a stable socket address and async canonical path matching. File previews retain access to notebook outputs beyond the live-frame limit and display non-UTF-8 text with a decoding notice.
 - The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
 - The Usage page counts Pi's cache reads and writes in its token totals and its uncached input. Pi reports cached tokens apart from input, as Claude does, but they were treated as part of input, so totals left them out and uncached input read too low.
