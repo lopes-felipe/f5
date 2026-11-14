@@ -166,10 +166,18 @@ describe("resolveDownload", () => {
   });
   it("covers every download target", () => {
     expect(Object.keys(DOWNLOAD_AVAILABILITY).sort()).toEqual([
+      "linux-deb-x64",
       "linux-x64",
       "mac-arm64",
       "mac-x64",
       "win-x64",
     ]);
+  });
+  it("links Debian packages only when the release contains one", () => {
+    const deb = asset("F5-1.2.3-amd64.deb");
+    expect(resolveDownload("linux-deb-x64", RELEASE).href).toBeNull();
+    expect(
+      resolveDownload("linux-deb-x64", { ...RELEASE, assets: [...RELEASE.assets, deb] }).href,
+    ).toBe(deb.browser_download_url);
   });
 });

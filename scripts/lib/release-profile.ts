@@ -63,7 +63,7 @@ const PLATFORM_FEEDS: Record<
   }),
   linux: (version, channel) => ({
     manifest: `${channel}-linux.yml`,
-    installers: [`F5-${version}-x86_64.AppImage`],
+    installers: [`F5-${version}-x86_64.AppImage`, `F5-${version}-amd64.deb`],
     blockmaps: [],
   }),
 };

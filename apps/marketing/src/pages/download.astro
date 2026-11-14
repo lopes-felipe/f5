@@ -79,6 +79,11 @@ const card = (target: DownloadTarget) => ({
           <span class="card-format">AppImage</span>
           <span class="card-status">{initial["linux-x64"].note}</span>
         </a>
+        <a {...card("linux-deb-x64")}>
+          <span class="card-arch">Debian, Ubuntu x86_64</span>
+          <span class="card-format">.deb</span>
+          <span class="card-status">{initial["linux-deb-x64"].note}</span>
+        </a>
       </div>
     </section>
   </div>

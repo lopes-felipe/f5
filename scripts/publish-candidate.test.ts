@@ -325,7 +325,11 @@ async function candidateFixture() {
               "F5-" + fixture.version + "-x64.exe.blockmap",
               "beta.yml",
             ]
-          : ["F5-" + fixture.version + "-x86_64.AppImage", "beta-linux.yml"];
+          : [
+              "F5-" + fixture.version + "-x86_64.AppImage",
+              "F5-" + fixture.version + "-amd64.deb",
+              "beta-linux.yml",
+            ];
       for (const file of names) copyFileSync(join(fixture.dir, file), join(dir, file));
     }
     state.directories.set(index + 1, dir);
