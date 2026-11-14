@@ -2,7 +2,7 @@ import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { fileIdentity } from "./diskUsage.ts";
+import { fileIdentity, storageLstat } from "./diskUsage.ts";
 import { removeFileIfSafe, removeTreeIfSafe, validateDeletablePath } from "./storagePathSafety.ts";
 const roots: string[] = [];
 async function fixture() {
@@ -17,7 +17,7 @@ test("worktree directory identity tolerates content timestamps but refuses repla
   const root = await fixture(),
     path = Path.join(root, "worktree");
   await FS.mkdir(path);
-  const expectedIdentity = fileIdentity(await FS.lstat(path));
+  const expectedIdentity = fileIdentity(await storageLstat(path));
   await FS.writeFile(Path.join(path, ".DS_Store"), "new contents");
   const input = { path, allowedRoot: root, expectedIdentity, directoryIdentityOnly: true };
   expect((await validateDeletablePath(input)).kind).toBe("validated");
@@ -53,7 +53,7 @@ test("replaced files and files that appeared after review are retained", async (
   const root = await fixture(),
     path = Path.join(root, "file");
   await FS.writeFile(path, "first");
-  const identity = fileIdentity(await FS.lstat(path));
+  const identity = fileIdentity(await storageLstat(path));
   await FS.rename(path, Path.join(root, "old"));
   await FS.writeFile(path, "second");
   expect(
@@ -67,7 +67,7 @@ test("replaced files and files that appeared after review are retained", async (
       await removeFileIfSafe({
         path,
         allowedRoot: root,
-        expectedIdentity: fileIdentity(await FS.lstat(path)),
+        expectedIdentity: fileIdentity(await storageLstat(path)),
       })
     ).kind,
   ).toBe("removed");

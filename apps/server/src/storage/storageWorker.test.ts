@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
 import { runProcess } from "../processRunner.ts";
 import { discoverProviderCandidates } from "./cleanupProviders.ts";
-import { fileIdentity } from "./diskUsage.ts";
+import { fileIdentity, storageLstat } from "./diskUsage.ts";
 
 // Filesystem unit fixtures supply their own activity snapshot; native process
 // and file-sharing behavior is exercised independently in storageActivity.test.
@@ -191,7 +191,7 @@ it("measures real ASAR-named files in an isolated maintenance process", async ()
   expect(measurement.files.map((file) => file.name).sort()).toEqual(["item", "sample.asar"]);
   expect(measurement.totalBytes).toBeGreaterThan(0);
   for (const file of measurement.files)
-    expect(file.identity).toEqual(fileIdentity(await FS.lstat(file.path)));
+    expect(file.identity).toEqual(fileIdentity(await storageLstat(file.path)));
 }, 15_000);
 it("cancels an isolated scanner without deleting fixture data", async () => {
   const f = await fixture();

@@ -140,6 +140,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 161, name: "UsageNativeIdentity" },
       { migration_id: 162, name: "UsageFactsThreadIndex" },
       { migration_id: 163, name: "DropUnreadReceiptIndexes" },
+      { migration_id: 164, name: "UpstreamPortReviewRecovery" },
     ]);
     // Receipts are only ever found by command id, which the primary key serves.
     const receiptIndexes = yield* sql<{
