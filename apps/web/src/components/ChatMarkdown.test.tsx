@@ -2,6 +2,7 @@ import ChatMarkdown from "./ChatMarkdown";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
 
 // ChatMarkdown pulls in shiki, the native API, and the file-navigation
 // context. Stub them out so the test exercises only the streaming-lite vs
@@ -34,6 +35,10 @@ vi.mock("../nativeApi", () => ({
 
 vi.mock("./chat/VscodeEntryIcon", () => ({
   VscodeEntryIcon: () => null,
+}));
+
+vi.mock("./ChatAssetAudio", () => ({
+  ChatAssetAudio: ({ children }: { children: ReactNode }) => <span data-audio>{children}</span>,
 }));
 
 const STREAMING_FIXTURE = [
@@ -115,6 +120,13 @@ it("leaves a file link with an unclosed angle-bracket destination as literal tex
   // Upstream reverted automatic repair (t3code#15824); only the valid link becomes a chip.
   expect(html.match(/chat-markdown-file-link"/g)).toHaveLength(1);
   expect(html).toContain("[notes](&lt;/tmp/project/my notes.md)");
+});
+
+it("keeps meaningful audio link labels and the open-file action beside the player", async () => {
+  const html = await renderMarkup("[Listen to the recording](./recording.mp3)", false);
+  expect(html).toContain("data-audio");
+  expect(html).toContain("Listen to the recording");
+  expect(html).toContain("chat-markdown-file-link");
 });
 
 describe("ChatMarkdown external-bot policy", () => {

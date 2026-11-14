@@ -58,6 +58,7 @@ import type {
 import { ComposerFooterControls } from "./ComposerFooterControls";
 import { ComposerPrimaryAction } from "./ComposerPrimaryAction";
 import { ContextMeter } from "./ContextMeter";
+import type { PromptCacheMeterView } from "../../../lib/useThreadCacheTurns";
 import { contextUsageSummaryLine, type ComposerTokenUsage } from "./contextMeter.logic";
 import { composerSendShortcutLabel } from "./sendShortcut";
 import { isMacPlatform } from "~/lib/utils";
@@ -116,7 +117,11 @@ export interface ChatComposerProps {
   ) => void;
 
   tokenUsage: ComposerTokenUsage;
+  /** The thread's prompt cache history for the context meter; null hides it. */
+  promptCache?: PromptCacheMeterView | null;
   pendingInteraction: ComposerPendingInteraction;
+  onEditorFocus?: () => void;
+  onEditorBlur?: () => void;
   modelControls: ComposerModelControls;
   modeControls: ComposerModeControls;
   sendControls: ComposerSendControls;
@@ -175,7 +180,10 @@ export function ChatComposer({
   onComposerMenuItemHighlighted,
   onSelectComposerItem,
   tokenUsage,
+  promptCache = null,
   pendingInteraction,
+  onEditorFocus,
+  onEditorBlur,
   modelControls,
   modeControls,
   sendControls,
@@ -436,6 +444,20 @@ export function ChatComposer({
           className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) shrink-0"
           aria-label={collapsed ? "Message composer (collapsed)" : "Message composer"}
           data-chat-composer-form="true"
+          onFocusCapture={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-testid="composer-editor"]')
+            )
+              onEditorFocus?.();
+          }}
+          onBlurCapture={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-testid="composer-editor"]')
+            )
+              onEditorBlur?.();
+          }}
           data-composer-collapsed={collapsed ? "true" : "false"}
           {...(expanded ? { [EXPANDED_COMPOSER_ATTRIBUTE]: "true" } : {})}
           style={
@@ -888,7 +910,7 @@ export function ChatComposer({
                             {sendShortcutLabel} to send
                           </span>
                         ) : null}
-                        <ContextMeter tokenUsage={tokenUsage} />
+                        <ContextMeter tokenUsage={tokenUsage} promptCache={promptCache} />
                       </>
                     )
                   }

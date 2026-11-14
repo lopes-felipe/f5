@@ -256,7 +256,8 @@ export function applyServerSettingsPatch(
       ? { usageModelAliases: patch.usageModelAliases }
       : {}),
   };
-  // Upstream schedule fields merge; nullable model selections replace, not merge.
+  // Upstream schedule, budget and auto-port fields merge; nullable model
+  // selections and the area policy map replace, not merge.
   const upstreamPatch = patch.upstreamPorts;
   const nextWithUpstream =
     upstreamPatch !== undefined
@@ -266,6 +267,8 @@ export function applyServerSettingsPatch(
             ...current.upstreamPorts,
             ...upstreamPatch,
             schedule: { ...current.upstreamPorts.schedule, ...upstreamPatch.schedule },
+            budget: { ...current.upstreamPorts.budget, ...upstreamPatch.budget },
+            autoPort: { ...current.upstreamPorts.autoPort, ...upstreamPatch.autoPort },
           },
         }
       : nextWithReplacements;

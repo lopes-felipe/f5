@@ -153,6 +153,10 @@ export interface AcpSessionRuntimeStartResult {
 }
 
 export interface AcpSessionRuntimeShape {
+  readonly getPromptActivity?: Effect.Effect<{
+    readonly lastProgressAt: number;
+    readonly paused: boolean;
+  }>;
   readonly handleRequestPermission: EffectAcpClient.AcpClientShape["handleRequestPermission"];
   readonly handleElicitation: EffectAcpClient.AcpClientShape["handleElicitation"];
   readonly handleReadTextFile: EffectAcpClient.AcpClientShape["handleReadTextFile"];
@@ -305,6 +309,24 @@ const makeAcpSessionRuntime = (
     const eventQueue = yield* Queue.unbounded<AcpRuntimeQueueEntry>();
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
+    let lastProgressAt = yield* Clock.currentTimeMillis;
+    let openRequests = 0;
+    const trackHandler =
+      <Args extends ReadonlyArray<unknown>, A, E, R>(
+        handler: (...args: Args) => Effect.Effect<A, E, R>,
+      ) =>
+      (...args: Args) =>
+        Effect.gen(function* () {
+          openRequests++;
+          return yield* handler(...args).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                openRequests--;
+                lastProgressAt = yield* Clock.currentTimeMillis;
+              }),
+            ),
+          );
+        });
     const toolEmissions = new Map<string, { length: number | undefined; skipped: number }>();
     // Recently shown tool calls. A late update to a finished call is not a new
     // boundary in the answer, although its progress state is gone.
@@ -463,6 +485,13 @@ const makeAcpSessionRuntime = (
         if (!normalized) {
           if (hardeningEnabled) yield* recordReplayActivity;
           return;
+        }
+        if (
+          /^(agent_message|agent_thought|tool_call|terminal_|plan|compaction_)/.test(
+            normalized.update.sessionUpdate,
+          )
+        ) {
+          lastProgressAt = yield* Clock.currentTimeMillis;
         }
         yield* handleSessionUpdate({
           queue: eventQueue,
@@ -994,32 +1023,46 @@ const makeAcpSessionRuntime = (
     );
 
     return {
+      getPromptActivity: Effect.gen(function* () {
+        const tools = yield* Ref.get(toolCallsRef);
+        return {
+          lastProgressAt,
+          paused:
+            openRequests > 0 ||
+            [...tools.values()].some(
+              (tool) => tool.status === "pending" || tool.status === "inProgress",
+            ),
+        };
+      }),
       handleRequestPermission: (handler) =>
-        acp.handleRequestPermission((params) =>
-          Effect.gen(function* () {
-            const started = yield* Ref.get(startStateRef);
-            const tracked =
-              started._tag === "Started" && params.sessionId === started.result.sessionId
-                ? (yield* Ref.get(toolCallsRef)).get(
-                    trackedToolCallKey(params.sessionId, params.toolCall.toolCallId),
-                  )
-                : undefined;
-            return yield* handler(withTrackedPermissionToolCall(params, tracked));
-          }),
+        acp.handleRequestPermission(
+          trackHandler((params) =>
+            Effect.gen(function* () {
+              const started = yield* Ref.get(startStateRef);
+              const tracked =
+                started._tag === "Started" && params.sessionId === started.result.sessionId
+                  ? (yield* Ref.get(toolCallsRef)).get(
+                      trackedToolCallKey(params.sessionId, params.toolCall.toolCallId),
+                    )
+                  : undefined;
+              return yield* handler(withTrackedPermissionToolCall(params, tracked));
+            }),
+          ),
         ),
-      handleElicitation: acp.handleElicitation,
-      handleReadTextFile: acp.handleReadTextFile,
-      handleWriteTextFile: acp.handleWriteTextFile,
-      handleCreateTerminal: acp.handleCreateTerminal,
-      handleTerminalOutput: acp.handleTerminalOutput,
-      handleTerminalWaitForExit: acp.handleTerminalWaitForExit,
-      handleTerminalKill: acp.handleTerminalKill,
-      handleTerminalRelease: acp.handleTerminalRelease,
+      handleElicitation: (handler) => acp.handleElicitation(trackHandler(handler)),
+      handleReadTextFile: (handler) => acp.handleReadTextFile(trackHandler(handler)),
+      handleWriteTextFile: (handler) => acp.handleWriteTextFile(trackHandler(handler)),
+      handleCreateTerminal: (handler) => acp.handleCreateTerminal(trackHandler(handler)),
+      handleTerminalOutput: (handler) => acp.handleTerminalOutput(trackHandler(handler)),
+      handleTerminalWaitForExit: (handler) => acp.handleTerminalWaitForExit(trackHandler(handler)),
+      handleTerminalKill: (handler) => acp.handleTerminalKill(trackHandler(handler)),
+      handleTerminalRelease: (handler) => acp.handleTerminalRelease(trackHandler(handler)),
       handleSessionUpdate: acp.handleSessionUpdate,
       handleElicitationComplete: acp.handleElicitationComplete,
-      handleUnknownExtRequest: acp.handleUnknownExtRequest,
+      handleUnknownExtRequest: (handler) => acp.handleUnknownExtRequest(trackHandler(handler)),
       handleUnknownExtNotification: acp.handleUnknownExtNotification,
-      handleExtRequest: acp.handleExtRequest,
+      handleExtRequest: (method, payload, handler) =>
+        acp.handleExtRequest(method, payload, trackHandler(handler)),
       handleExtNotification: acp.handleExtNotification,
       start: () => start,
       getEvents,

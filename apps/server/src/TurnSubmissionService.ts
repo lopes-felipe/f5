@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { toTurnSubmissionError } from "./TurnSubmissionError.ts";
 import {
   CommandId,
@@ -245,7 +246,7 @@ export function makeTurnSubmissionService(deps: TurnSubmissionDependencies) {
           message: "Only thread turn-start commands can be queued.",
         });
       }
-      const itemId = CommandId.makeUnsafe(crypto.randomUUID());
+      const itemId = CommandId.makeUnsafe(timeOrderedUuid());
       const steeringThread =
         body.intent === "steer"
           ? (yield* (yield* awaitOrchestrationRuntimeForRoute).orchestrationEngine.getReadModel()).threads.find(

@@ -1,5 +1,6 @@
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { canonicalDesktopStateDir } from "@t3tools/shared/desktopAppControl";
 
 import { USERDATA_STATE_DIR_NAME, defaultF5UserdataStateDir } from "@t3tools/shared/appStatePaths";
 
@@ -41,7 +42,7 @@ export function resolveDesktopStateDirConfig(
 
   const explicitStateDir = env.F5_STATE_DIR?.trim() || env.T3CODE_STATE_DIR?.trim();
   if (explicitStateDir) {
-    return { stateDir: explicitStateDir, source: "explicit-state" };
+    return { stateDir: canonicalDesktopStateDir(explicitStateDir), source: "explicit-state" };
   }
 
   const homeStateDir = resolveHomeStateDir(env.F5_HOME) || resolveHomeStateDir(env.T3CODE_HOME);

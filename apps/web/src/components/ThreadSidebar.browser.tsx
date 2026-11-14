@@ -332,11 +332,11 @@ function buildFixture(snapshot: OrchestrationReadModel = createSnapshot()): Test
   return {
     snapshot,
     serverConfig: createBaseServerConfig(),
+    // Tests select their route explicitly. The shared socket replays this
+    // welcome across mounts, so a default bootstrap target would override Home.
     welcome: {
       cwd: "/repo/project",
       projectName: "Project",
-      bootstrapProjectId: PROJECT_ID,
-      bootstrapThreadId: THREAD_ID,
     },
   };
 }
@@ -401,6 +401,11 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     const thread = fixture.snapshot.threads.find((t) => t.id === threadId);
     return {
       threadId,
+      // Match the server: null confirms the thread is absent, so the thread
+      // route redirects home instead of waiting for metadata that never comes.
+      thread: thread
+        ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+        : null,
       messages: thread?.messages ?? [],
       checkpoints: thread?.checkpoints ?? [],
       commandExecutions: [],
@@ -1454,7 +1459,7 @@ describe("Thread sidebar", () => {
                 disabled: true,
               },
               { id: "edit-schedule", label: "Edit scheduled task…" },
-              { id: "rename", label: "Rename thread", separatorBefore: true },
+              { id: "rename", label: "Rename thread", separatorBefore: true, icon: "pencil" },
             ]),
           );
         } else {
@@ -1662,13 +1667,16 @@ describe("Thread sidebar", () => {
     seedAppSettings({ onboardingLiteStatus: "dismissed" });
     const emptySnapshot = createEmptySnapshot();
     const startupResponse = createDeferred<WsRequestResolution>();
+    let socket: TestWsClient | undefined;
     const mounted = await mountApp({
       width: 1_400,
       initialEntries: ["/"],
       configureFixture: (nextFixture) => {
         nextFixture.snapshot = emptySnapshot;
-        nextFixture.resolveWsRequest = (body) => {
+        nextFixture.welcome = { cwd: "/repo/project", projectName: "Project" };
+        nextFixture.resolveWsRequest = (body, client) => {
           if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            socket = client;
             return startupResponse.promise;
           }
           return null;
@@ -1688,6 +1696,17 @@ describe("Thread sidebar", () => {
       expect(document.body.textContent).not.toContain("No projects yet");
       expect(document.body.textContent).not.toContain("Add a project to get started.");
 
+      // The shared transport can replay a previous fixture's bootstrap thread.
+      // Publish this empty server's welcome before completing its recovery.
+      await vi.waitFor(() => expect(socket).toBeDefined());
+      socket!.send(
+        JSON.stringify({
+          type: "push",
+          sequence: 3,
+          channel: WS_CHANNELS.serverWelcome,
+          data: { ...fixture.welcome, bootstrap: serverBootstrapFixture },
+        }),
+      );
       startupResponse.resolve({
         type: "result",
         result: {
@@ -2329,6 +2348,17 @@ describe("Thread sidebar", () => {
         "Projects",
         "Recent",
       ]);
+      // The flex-1/min-w-0 icon buttons only get width from the strip's layout; guard it, since
+      // DOM presence alone passed while 0.1.9 rendered Pull requests and Usage at 0px.
+      for (const button of navigation.querySelectorAll<HTMLElement>("button[aria-label]")) {
+        expect(
+          button.getBoundingClientRect().width,
+          `${button.getAttribute("aria-label")} width`,
+        ).toBeGreaterThan(0);
+      }
+      const footer = document.querySelector('[data-sidebar="footer"]')!;
+      expect(footer.querySelector('[aria-label="Usage"]')).toBeNull();
+      expect(footer.querySelector('[aria-label="Pull requests"]')).toBeNull();
       // The notifications bell lives in the title bar, beside the profile switcher.
       const bell = document.querySelector('[data-testid="sidebar-notifications"]');
       expect(bell).toBeInstanceOf(HTMLElement);
@@ -2341,7 +2371,10 @@ describe("Thread sidebar", () => {
       expect(document.querySelector('[data-testid="sidebar-projects-label"]')?.textContent).toBe(
         "Projects",
       );
-      expect(queryButtonByAriaLabel("Add project")).not.toBeNull();
+      // Home's quick-start bar has an Add project button of its own.
+      const sidebarAddProject = () =>
+        document.querySelector('[data-slot="sidebar"] button[aria-label="Add project"]');
+      expect(sidebarAddProject()).not.toBeNull();
       const recentToggle = navigation.querySelector<HTMLButtonElement>(
         '[data-testid="sidebar-view-recent"]',
       )!;
@@ -2357,7 +2390,7 @@ describe("Thread sidebar", () => {
       await vi.waitFor(() =>
         expect(document.querySelector('[data-testid="sidebar-projects-label"]')).toBeNull(),
       );
-      expect(queryButtonByAriaLabel("Add project")).toBeNull();
+      expect(sidebarAddProject()).toBeNull();
       recentToggle.dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
       );
@@ -2368,7 +2401,24 @@ describe("Thread sidebar", () => {
       usageButton.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
       await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-sidebar="footer"]')?.textContent).toContain("Back"),
+      );
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
+      // Pull requests is marked in the strip, so its page keeps Settings in the footer.
+      const pullRequestsButton = navigation.querySelector<HTMLButtonElement>(
+        '[aria-label="Pull requests"]',
+      )!;
+      expect(pullRequestsButton.hasAttribute("aria-current")).toBe(false);
+      pullRequestsButton.click();
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/pull-requests"));
+      await vi.waitFor(() => expect(pullRequestsButton.getAttribute("aria-current")).toBe("page"));
+      expect(usageButton.hasAttribute("aria-current")).toBe(false);
+      await vi.waitFor(() => {
+        const footerText = document.querySelector('[data-sidebar="footer"]')?.textContent;
+        expect(footerText).toContain("Settings");
+        expect(footerText).not.toContain("Back");
+      });
       expect(navigation.textContent).not.toContain("Bots");
 
       // The search field stays hidden until the Search button opens it, focused.
@@ -3363,7 +3413,7 @@ describe("Thread sidebar", () => {
     const snoozedTitle = "Snoozed implementation";
     const mounted = await mountApp({
       width: 1_400,
-      initialEntries: ["/"],
+      initialEntries: [`/${THREAD_ID}`],
       configureFixture: (nextFixture) => {
         nextFixture.snapshot = createSnapshot([
           createSnapshotThread({
@@ -4008,6 +4058,327 @@ describe("Thread sidebar", () => {
       await vi.waitFor(() =>
         expect(document.querySelector('[data-testid="workflow-current-step"]')).toBeNull(),
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups an expanded workflow's steps by phase, each led by its step state", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "outline-branch-a" as ThreadId,
+      b: "outline-branch-b" as ThreadId,
+      merge: "outline-merge" as ThreadId,
+      impl: "outline-impl" as ThreadId,
+      reviewA: "outline-review-a" as ThreadId,
+      reviewB: "outline-review-b" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId, status: "completed" | "error") => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status,
+      error: status === "error" ? "Reviewer crashed" : null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${ids.b}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.entries(ids).map(([role, id]) =>
+              createSnapshotThread({
+                id,
+                title: `Outline ${role} thread`,
+                // Never visited since its turn finished: unread outside a workflow.
+                latestTurn: {
+                  turnId: `${id}-turn` as never,
+                  state: "completed",
+                  requestedAt: at,
+                  startedAt: at,
+                  completedAt: at,
+                  assistantMessageId: null,
+                },
+                // Branch A's saved plan reads "Plan Ready" outside a workflow.
+                ...(role === "a" ? createPlanReadyOverrides("outline-a") : {}),
+              }),
+            ),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-outline",
+              title: "Outline workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: null,
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [
+                  codeReview(ids.reviewA, "completed"),
+                  codeReview(ids.reviewB, "error"),
+                ],
+                status: "error",
+                error: "Reviewer crashed",
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 536,
+                    title: "Outline implementation",
+                    url: "https://github.com/acme/repo/pull/536",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open",
+                  },
+                },
+              }
+            : null;
+      },
+    });
+    const phaseRow = (phaseId: string) =>
+      document.querySelector<HTMLElement>(`[data-testid="workflow-phase-row-${phaseId}"]`);
+    const leadOf = (row: HTMLElement) => row.firstElementChild as HTMLElement;
+
+    try {
+      // The open thread's phase is expanded; Revision reruns the authors, so no row of its own.
+      const authoring = await waitForElement(
+        () => phaseRow("authoring"),
+        "Authoring should render as a phase row.",
+      );
+      expect(authoring.getAttribute("aria-expanded")).toBe("true");
+      expect(authoring.textContent).toContain("Authoring");
+      expect(phaseRow("revision")).toBeNull();
+      const branchA = await waitForSidebarThreadRow("Branch A");
+      expect(
+        leadOf(branchA)
+          .querySelector("[data-workflow-step-state]")
+          ?.getAttribute("data-workflow-step-state"),
+      ).toBe("completed");
+      expect(branchA.textContent).not.toContain("Plan Ready");
+      // Unread outside a workflow, but steps run unattended: no bold.
+      expect(branchA.className).not.toContain("font-medium");
+
+      // A phase with one step is that step's row.
+      expect(phaseRow("merge")).toBeNull();
+      await waitForSidebarThreadRow("Merge");
+
+      // The phase with a failed step opens by default and leads with the error.
+      const codeReviewPhase = phaseRow("code-review")!;
+      expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("true");
+      expect(
+        leadOf(codeReviewPhase).getAttribute("data-workflow-step-state") ??
+          codeReviewPhase
+            .querySelector("[data-workflow-step-state]")
+            ?.getAttribute("data-workflow-step-state"),
+      ).toBe("error");
+      const reviewB = await waitForSidebarThreadRow("Code Review B");
+      expect(reviewB.className).toContain("text-foreground");
+
+      // The implementation thread's PR is its leading glyph; no other step shows a PR, so
+      // every title starts at the same x.
+      const implementation = await waitForSidebarThreadRow("Implementation");
+      await vi.waitFor(() =>
+        expect(
+          leadOf(implementation).querySelector('button[aria-label*="PR open"]'),
+        ).not.toBeNull(),
+      );
+      const titleLeft = (row: HTMLElement) =>
+        [...row.children]
+          .find((child) => child.textContent?.trim() && child !== leadOf(row))!
+          .getBoundingClientRect().left;
+      expect(branchA.querySelector('button[aria-label*="PR open"]')).toBeNull();
+      expect(titleLeft(implementation)).toBe(titleLeft(querySidebarThreadRowByTitle("Merge")!));
+
+      // Click and Left/Right fold the phase, even with the open thread inside.
+      authoring.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+      expect(authoring.getAttribute("aria-expanded")).toBe("false");
+      authoring.focus();
+      authoring.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+      await waitForSidebarThreadRow("Branch A");
+      authoring.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Branch A")).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the implementation PR during code review and a folded phase's approval in view", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "review-stage-branch-a" as ThreadId,
+      b: "review-stage-branch-b" as ThreadId,
+      merge: "review-stage-merge" as ThreadId,
+      impl: "review-stage-impl" as ThreadId,
+      reviewA: "review-stage-review-a" as ThreadId,
+      reviewB: "review-stage-review-b" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId) => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status: "running" as const,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.entries(ids).map(([role, id]) =>
+              createSnapshotThread({
+                id,
+                title: `Review stage ${role} thread`,
+                ...(role === "reviewA"
+                  ? {
+                      activities: [
+                        {
+                          id: "review-stage-approval" as never,
+                          tone: "approval",
+                          kind: "approval.requested",
+                          summary: "Needs approval",
+                          payload: { requestId: "review-stage-request", requestKind: "command" },
+                          turnId: null,
+                          createdAt: at,
+                        },
+                      ],
+                    }
+                  : {}),
+              }),
+            ),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-review-stage",
+              title: "Review stage workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: null,
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [codeReview(ids.reviewA), codeReview(ids.reviewB)],
+                status: "code_reviews_requested",
+                error: null,
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) => {
+          // The default details carry no activities; keep Review A's approval when the sidebar
+          // prefetches its details.
+          if (
+            body._tag === ORCHESTRATION_WS_METHODS.getThreadTailDetails &&
+            body.threadId === ids.reviewA
+          ) {
+            const thread = nextFixture.snapshot.threads.find((entry) => entry.id === ids.reviewA);
+            return {
+              type: "result",
+              result: {
+                ...(resolveWsRpc(body) as Record<string, unknown>),
+                activities: thread?.activities ?? [],
+              },
+            };
+          }
+          return body._tag === WS_METHODS.gitStatus
+            ? {
+                type: "result",
+                result: {
+                  branch: "main",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: true,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: {
+                    number: 537,
+                    title: "Review stage implementation",
+                    url: "https://github.com/acme/repo/pull/537",
+                    baseBranch: "main",
+                    headBranch: "main",
+                    state: "open",
+                  },
+                },
+              }
+            : null;
+        };
+      },
+    });
+
+    try {
+      const workflowRow = await waitForSidebarThreadRow("Review stage workflow");
+      if (!document.querySelector('[data-testid="workflow-phase-row-code-review"]')) {
+        workflowRow
+          .querySelector<HTMLButtonElement>('button[aria-label="Expand Review stage workflow"]')
+          ?.click();
+      }
+      // Code review keeps the implementation step active; its PR still leads the row.
+      // The workflow row's phase summary also says "Implementation", so find the step's row.
+      const implementationRow = () =>
+        document.querySelector<HTMLElement>(`[data-sidebar-row="thread:workflow:${ids.impl}"]`);
+      await vi.waitFor(() =>
+        expect(
+          (implementationRow()?.firstElementChild as HTMLElement | undefined)?.querySelector(
+            'button[aria-label*="PR open"]',
+          ) ?? null,
+        ).not.toBeNull(),
+      );
+
+      // Folding the phase keeps the waiting approval visible on the phase row.
+      const codeReviewPhase = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="workflow-phase-row-code-review"]'),
+        "Code Review should render as a phase row.",
+      );
+      await vi.waitFor(() => expect(codeReviewPhase.textContent).toContain("Pending Approval"));
+      expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("true");
+      codeReviewPhase.click();
+      await vi.waitFor(() => expect(codeReviewPhase.getAttribute("aria-expanded")).toBe("false"));
+      expect(querySidebarThreadRowByTitle("Code Review A")).toBeNull();
+      expect(codeReviewPhase.textContent).toContain("Pending Approval");
     } finally {
       await mounted.cleanup();
     }

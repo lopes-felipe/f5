@@ -193,8 +193,8 @@
       }
     ],
     "profileIsolation": "isolated",
-    "evidenceId": "claude-chrome-darwin-arm64-20261111",
-    "evidenceCommit": "968101c0c889e725ebe8a87a132f31e7044e8a39",
+    "evidenceId": "claude-chrome-darwin-arm64-20261112",
+    "evidenceCommit": "cb7da3111bf720895db7142c2abaa84c1bd803e8",
     "toolNames": [
       "browser_batch",
       "computer",

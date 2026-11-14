@@ -295,6 +295,7 @@ export async function tryHandleProjectFaviconRequest(
   authorizer: WorkspaceAssetAuthorizer,
   checkedInProjectFileService: CheckedInProjectFileService,
   req?: http.IncomingMessage,
+  requestOrigin: (request: http.IncomingMessage) => string | null = externalRequestOrigin,
 ): Promise<boolean> {
   if (url.pathname.startsWith(WORKSPACE_ASSET_ROUTE_PREFIX)) {
     if (req && req.method !== "GET" && req.method !== "HEAD") {
@@ -323,7 +324,7 @@ export async function tryHandleProjectFaviconRequest(
         if (opened) {
           // CSP must name the origin the browser actually used; `url` carries a
           // synthetic localhost base. An unusable Host leaves passive loads at 'none'.
-          const origin = externalRequestOrigin(req);
+          const origin = requestOrigin(req);
           await serveAsset(req, res, opened.file, opened.name, {
             htmlPrefix:
               opened.grant === "html-document" && origin

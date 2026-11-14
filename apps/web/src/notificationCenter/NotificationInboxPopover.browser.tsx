@@ -7,13 +7,22 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import { updateAppSettings } from "../appSettings";
+import {
+  APP_SETTINGS_STORAGE_KEY,
+  parsePersistedAppSettings,
+  updateAppSettings,
+} from "../appSettings";
 import { StoreProvider } from "../store";
 import { useNotificationInbox, useNotificationInboxPopover } from "./inboxStore";
 import { NotificationsBell } from "./NotificationsBell";
-import { DEFAULT_NOTIFICATION_PREFERENCES } from "./preferences";
+import { DEFAULT_NOTIFICATION_PREFERENCES, DO_NOT_DISTURB_FOREVER } from "./preferences";
+
+function getAppSettings() {
+  return parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY));
+}
 
 // The bell reads its shortcut from the server config; no server runs here.
 vi.mock("../keybindings", async (importOriginal) => ({
@@ -64,6 +73,16 @@ function rows() {
   return Array.from(document.querySelectorAll<HTMLElement>("[data-inbox-row]"));
 }
 
+function viewSegment(view: "all" | "needs-you" | "unread") {
+  return document.querySelector<HTMLElement>(`[data-inbox-view="${view}"]`)!;
+}
+
+function sectionRowIds(section: string) {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(`[data-inbox-section="${section}"] [data-inbox-row]`),
+  ).map((row) => row.dataset.inboxRow);
+}
+
 describe("notification inbox", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -85,12 +104,12 @@ describe("notification inbox", () => {
 
     bell.click();
     await expect.poll(() => rows().length).toBe(2);
-    expect(document.querySelector('[data-testid="notification-inbox"]')?.textContent).toContain(
-      "2 new",
-    );
+    expect(viewSegment("unread").textContent).toBe("Unread2");
 
-    document.querySelector<HTMLElement>('[role="tab"]:nth-child(6)')!.click();
+    await page.getByTestId("inbox-source-filter").click();
+    await page.getByRole("menuitemradio", { name: "Errors", exact: true }).click();
     await expect.poll(() => rows().map((row) => row.dataset.inboxRow)).toEqual(["err"]);
+    expect(viewSegment("unread").textContent).toBe("Unread1");
 
     // Opening a row with no target reads it without closing the popover.
     rows()[0]!.click();
@@ -114,16 +133,59 @@ describe("notification inbox", () => {
 
     bell.click();
     await expect.poll(() => rows().map((row) => row.dataset.inboxRow)).toEqual(["pr"]);
-    const tabs = () =>
-      Array.from(document.querySelectorAll('[role="tab"]')).map((tab) => tab.textContent);
-    expect(tabs()).not.toContain("Errors");
+    const sourceOptions = () =>
+      Array.from(document.querySelectorAll('[role="menuitemradio"]')).map(
+        (option) => option.textContent,
+      );
+    await page.getByTestId("inbox-source-filter").click();
+    await expect.poll(sourceOptions).toContain("Pull requests");
+    expect(sourceOptions()).not.toContain("Errors");
+    await page.getByRole("menuitemradio", { name: "All sources", exact: true }).click();
+    await expect.poll(sourceOptions).toEqual([]);
 
     // Turning the switch back on brings the earlier entries back.
     updateAppSettings({ notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES });
     await expect.poll(() => rows().length).toBe(2);
-    expect(tabs()).toContain("Errors");
+    await page.getByTestId("inbox-source-filter").click();
+    await expect.poll(sourceOptions).toContain("Errors");
     await expect.poll(() => bell.textContent).toContain("2 unread");
 
+    await screen.unmount();
+  });
+
+  it("narrows the list to unread entries and groups by day", async () => {
+    seed();
+    useNotificationInbox.getState().markRead("pr");
+    const screen = await mountBell();
+    useNotificationInboxPopover.getState().setOpen(true);
+    await expect.poll(() => sectionRowIds("Today")).toEqual(["err", "pr"]);
+    // Nothing waits on the user here, so there is no pinned section.
+    expect(sectionRowIds("needs-you")).toEqual([]);
+
+    await page.getByRole("button", { name: /^Unread/ }).click();
+    await expect.poll(() => sectionRowIds("Today")).toEqual(["err"]);
+
+    await page.getByRole("button", { name: /^Needs you/ }).click();
+    await expect
+      .poll(() => document.querySelector('[data-testid="notification-inbox"]')?.textContent)
+      .toContain("Nothing needs you");
+    await screen.unmount();
+  });
+
+  it("snoozes and turns off Do Not Disturb from the header", async () => {
+    updateAppSettings({ doNotDisturbUntil: null });
+    const screen = await mountBell();
+    useNotificationInboxPopover.getState().setOpen(true);
+    const moon = page.getByTestId("inbox-do-not-disturb");
+    await moon.click();
+    await page.getByRole("menuitem", { name: "Until I turn it off", exact: true }).click();
+    await expect.poll(() => getAppSettings().doNotDisturbUntil).toBe(DO_NOT_DISTURB_FOREVER);
+    await expect.element(moon).toHaveAttribute("data-active", "");
+
+    await moon.click();
+    await page.getByRole("menuitem", { name: "Turn off", exact: true }).click();
+    await expect.poll(() => getAppSettings().doNotDisturbUntil).toBeNull();
+    await expect.element(moon).not.toHaveAttribute("data-active");
     await screen.unmount();
   });
 

@@ -178,7 +178,11 @@ export interface ProviderAdapterShape<TError> {
    * compaction) rather than an ordinary prompt. Context handoffs are never
    * prepended to native commands. Defaults to "prompt".
    */
-  readonly classifyTurnInput?: (threadId: ThreadId, text: string) => "prompt" | "native-command";
+  readonly classifyTurnInput?: (
+    threadId: ThreadId,
+    text: string,
+    cwd?: string,
+  ) => "prompt" | "native-command" | Effect.Effect<"prompt" | "native-command">;
   readonly previewClaudeFileRewind?: (
     threadId: ThreadId,
     userMessageId: string,

@@ -62,6 +62,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
             { homePath: "" },
             {
               CLAUDECODE: "1",
+              ELECTRON_RUN_AS_NODE: "1",
               CLAUDE_CODE_SESSION_ID: "host-session",
               CLAUDE_CODE_MESSAGING_TOKEN: "host-token",
               CLAUDE_EFFORT: "low",
@@ -76,6 +77,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           );
         const clean = yield* resolve([]);
         expect(clean.CLAUDECODE).toBeUndefined();
+        expect(clean.ELECTRON_RUN_AS_NODE).toBeUndefined();
         expect(clean.CLAUDE_CODE_SESSION_ID).toBeUndefined();
         expect(clean.CLAUDE_CODE_MESSAGING_TOKEN).toBeUndefined();
         expect(clean.CLAUDE_EFFORT).toBeUndefined();

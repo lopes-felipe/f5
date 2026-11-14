@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
@@ -13,6 +14,7 @@ import { makeScheduledTaskStore, scheduleError } from "./scheduledTasks/Store.ts
 import { McpAppService } from "./mcpApps/McpAppService.ts";
 import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
 import { ThreadSettlementService } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { makeTurnGitStatusRefresh } from "./wsServer/turnGitStatusRefresh";
 import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
 import { PullRequestWatchService } from "./orchestration/Layers/PullRequestWatchService.ts";
 import { PR_WATCH_WS_METHODS, PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
@@ -118,7 +120,7 @@ import {
   reconcileChromeSessionSetups,
 } from "./provider/chromeSessionRuntimeFactory";
 import { finishAcknowledgedNativeRewind } from "./orchestration/nativeRewindAcknowledgement.ts";
-import { readThreadPeek } from "./orchestration/threadPeek.ts";
+import { readThreadPeek, readThreadPeeks } from "./orchestration/threadPeek.ts";
 import { ProviderValidationError } from "./provider/Errors.ts";
 import { NATIVE_OPERATION_WS_METHODS, ThreadId as NativeForkThreadId } from "@t3tools/contracts";
 import {
@@ -176,7 +178,6 @@ import {
   invalidExecutionDirectories,
 } from "./profiles/RepositorySharing";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
-import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
@@ -356,6 +357,12 @@ import {
 } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
 import {
+  readServerHealth,
+  recordSlowRpcRoute,
+  SLOW_RPC_ROUTE_MS,
+  startEventLoopDelayMonitor,
+} from "./observability/serverHealth.ts";
+import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
@@ -369,6 +376,15 @@ import {
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
+import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
+import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
+import {
+  answerFromTable,
+  mergeRouteTables,
+  routePromise,
+  tableAnswers,
+} from "./wsServer/routes/routeTable.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import {
@@ -376,7 +392,12 @@ import {
   getCurrentStartupPhase,
   withStartupPhaseTiming,
 } from "./startupTiming.ts";
-import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
+import {
+  AUTH_RATE_LIMITED_MESSAGE,
+  isPrivateHttpPath,
+  makeServerAuth,
+  REQUEST_HOST_NOT_ALLOWED_MESSAGE,
+} from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import {
@@ -468,11 +489,21 @@ const isServerNotRunningError = (error: Error): boolean => {
   );
 };
 
-function rejectUpgrade(socket: Duplex, statusCode: number, message: string): void {
+function rejectUpgrade(
+  socket: Duplex,
+  statusCode: number,
+  message: string,
+  headers: Readonly<Record<string, string>> = {},
+): void {
+  const reason =
+    statusCode === 401 ? "Unauthorized" : statusCode === 429 ? "Too Many Requests" : "Bad Request";
   socket.end(
-    `HTTP/1.1 ${statusCode} ${statusCode === 401 ? "Unauthorized" : "Bad Request"}\r\n` +
+    `HTTP/1.1 ${statusCode} ${reason}\r\n` +
       "Connection: close\r\n" +
       "Content-Type: text/plain\r\n" +
+      Object.entries(headers)
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("") +
       `Content-Length: ${Buffer.byteLength(message)}\r\n` +
       "\r\n" +
       message,
@@ -832,7 +863,6 @@ const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 const CurrentRpcMethod = ServiceMap.Reference<string | null>("f5/ws/CurrentRpcMethod", {
   defaultValue: () => null,
 });
-const SLOW_RPC_ROUTE_LOG_MS = 1_000;
 const LARGE_RPC_RESPONSE_LOG_BYTES = 1024 * 1024;
 
 /**
@@ -1074,6 +1104,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
       ...(devUrl ? [devUrl.origin] : []),
     ],
+    ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
   const availableEditors = resolveAvailableEditors();
 
@@ -1229,6 +1260,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
   const githubLogin = new GithubDeviceLogin(githubAccount, resolveGithubOAuthClientId(process.env));
   yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
+  const stopEventLoopDelayMonitor = startEventLoopDelayMonitor();
+  yield* Effect.addFinalizer(() => Effect.sync(stopEventLoopDelayMonitor));
   const githubCliImport = new GithubCliImport({
     account: githubAccount,
     // Profile state dirs live under the F5 home (parent of Default's state dir).
@@ -1240,12 +1273,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     launcherDir: githubLauncherDir(serverConfig.stateDir),
   });
   const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
-  const profileCall = <A>(operation: () => Promise<A>) =>
-    Effect.tryPromise({
-      try: operation,
-      catch: (cause) =>
-        new RouteRequestError({ message: cause instanceof Error ? cause.message : String(cause) }),
-    });
+  const profileCall = routePromise;
   const computeProfiles = async () => {
     const snapshot = await profilesStore.list(activeProfile.id);
     const providers = await Effect.runPromise(providerRegistry.getProviders);
@@ -1353,7 +1381,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       ? orchestrationEngine
                           .dispatch({
                             type: "thread.turn.interrupt",
-                            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                             threadId: ThreadId.makeUnsafe(interrupted.threadId),
                             createdAt: new Date().toISOString(),
                           })
@@ -1378,7 +1406,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       ? orchestrationEngine
                           .dispatch({
                             type: "thread.turn.interrupt",
-                            commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                            commandId: CommandId.makeUnsafe(timeOrderedUuid()),
                             threadId: ThreadId.makeUnsafe(killed.threadId),
                             createdAt: new Date().toISOString(),
                           })
@@ -2081,6 +2109,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
     void Effect.runPromise(
       Effect.gen(function* () {
+        // Before anything else, static files included: a rebound page must not load the app
+        // under its own origin either.
+        if (!serverAuth.isRequestHostAllowed(req)) {
+          respond(
+            403,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify({ error: REQUEST_HOST_NOT_ALLOWED_MESSAGE }),
+          );
+          return;
+        }
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
         // Workspace asset handles are capabilities: the URL is the credential, so
         // they skip session auth but still need CORS for the renderer's fetch().
@@ -2174,13 +2212,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return;
         }
         if (isPrivatePath && !serverAuth.isHttpRequestAuthenticated(req)) {
+          // A locked-out client is told to wait, so it does not take its token for a wrong one.
+          const retryAfter = serverAuth.bearerRetryAfterSeconds(req);
           respond(
-            401,
+            retryAfter === null ? 401 : 429,
             {
               "Cache-Control": "no-store",
               "Content-Type": "application/json; charset=utf-8",
+              ...(retryAfter === null ? {} : { "Retry-After": `${retryAfter}` }),
             },
-            JSON.stringify({ error: "Authentication required." }),
+            JSON.stringify({
+              error: retryAfter === null ? "Authentication required." : AUTH_RATE_LIMITED_MESSAGE,
+            }),
           );
           return;
         }
@@ -2469,6 +2512,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               workspaceAssetAuthorizer,
               checkedInProjectFileService,
               req,
+              serverAuth.externalRequestOrigin,
             ),
           )
         ) {
@@ -3032,6 +3076,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
       }
 
+      const refreshTurnGitStatus = makeTurnGitStatusRefresh({
+        scope: subscriptionsScope,
+        resolveCwd: (threadId) =>
+          Effect.gen(function* () {
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === threadId);
+            const project = model.projects.find((project) => project.id === thread?.projectId);
+            return thread ? threadWorkspaceCwd(thread, project) : null;
+          }),
+        read: (cwd) =>
+          gitManager
+            .status({ cwd, includeRemote: false, includePullRequest: false })
+            .pipe(Effect.orElseSucceed(() => null)),
+        publish: (cwd, status) =>
+          pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status }),
+      });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           if (event.type.startsWith("project.")) profileReadCache = undefined;
@@ -3051,6 +3111,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               );
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.type === "thread.turn-processing-quiesced") {
+            yield* refreshTurnGitStatus(event.payload.threadId);
+          }
           if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
             yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
@@ -3322,7 +3385,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         bootstrapProjectDefaultModel = DEFAULT_MODEL_BY_PROVIDER.codex;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           projectId: bootstrapProjectId,
           title: bootstrapProjectTitle,
           workspaceRoot: cwd,
@@ -3343,7 +3406,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const threadId = ThreadId.makeUnsafe(crypto.randomUUID());
         yield* orchestrationEngine.dispatch({
           type: "thread.create",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId,
           projectId: bootstrapProjectId,
           title: "New thread",
@@ -3553,6 +3616,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
       Effect.mapError(toAgentBridgeHostError),
     ),
+    ensureThreadActivities: (threadIds) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(
+          ({ orchestrationEngine }) =>
+            orchestrationEngine.ensureThreadActivities?.(threadIds) ?? Effect.void,
+        ),
+        Effect.ignore,
+      ),
     getThreadDetails: (threadId) =>
       projectionReadModelQuery
         .getThreadDetails({ threadId })
@@ -4094,6 +4165,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       });
 
+  // Routes that live in their own modules. `routeRequest` answers from here
+  // before its switch; see `wsServer/routes/routeTable.ts`.
+  const routeTable = mergeRouteTables(
+    mergeRouteTables(
+      githubAccountRoutes({
+        login: githubLogin,
+        account: githubAccount,
+        cliImport: githubCliImport,
+      }),
+      providerAccountRoutes(accountService),
+    ),
+    profileRoutes({
+      store: profilesStore,
+      list: readProfiles,
+      defaultStateDir: defaultProfileStateDir,
+      activeProfileId: activeProfile.id,
+    }),
+  );
+
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
     if (typeof requestCwd === "string") {
@@ -4104,89 +4194,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
       if (refusal) return yield* new RouteRequestError({ message: refusal });
     }
+    if (tableAnswers(routeTable, request.body)) {
+      return yield* answerFromTable(routeTable, request.body, ws);
+    }
     switch (request.body._tag) {
-      case WS_METHODS.githubLoginStart:
-        return yield* profileCall(() => githubLogin.start());
-      case WS_METHODS.githubLoginStatus:
-        return githubLogin.status(request.body.handle);
-      case WS_METHODS.githubLoginCancel:
-        return githubLogin.cancel(request.body.handle);
-      case WS_METHODS.githubAccountSet: {
-        const { host, token } = request.body;
-        // Browser sign-in is github.com-only; a token save for that host supersedes it.
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubAccount.set(host, token));
-      }
-      case WS_METHODS.githubAccountRemove: {
-        const { host } = request.body;
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubAccount.remove(host));
-      }
-      case WS_METHODS.githubAccountStatus: {
-        const { host } = request.body;
-        return yield* profileCall(() => githubAccount.status(host));
-      }
-      case WS_METHODS.githubAccountCliCandidates:
-        return yield* profileCall(() => githubCliImport.candidates());
-      case WS_METHODS.githubAccountCliImport: {
-        const { host, login } = request.body;
-        if (host === "github.com") githubLogin.cancel();
-        return yield* profileCall(() => githubCliImport.import({ host, login }));
-      }
-      case WS_METHODS.profilesList:
-        return yield* profileCall(readProfiles);
-      case WS_METHODS.profilesCreate: {
-        const profile = yield* profileCall(() =>
-          profilesStore.create(
-            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileCreateInput,
-          ),
-        );
-        return {
-          ...profile,
-          stateDir: profileStateDir(defaultProfileStateDir, profile),
-          isActive: false,
-          providerAccounts: [],
-        };
-      }
-      case WS_METHODS.profilesUpdate: {
-        const profile = yield* profileCall(() =>
-          profilesStore.update(
-            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileUpdateInput,
-          ),
-        );
-        return {
-          ...profile,
-          stateDir: profileStateDir(defaultProfileStateDir, profile),
-          isActive: profile.id === activeProfile.id,
-          providerAccounts: [],
-        };
-      }
-      case WS_METHODS.profilesDelete: {
-        const id = request.body.profileId;
-        return yield* profileCall(() => profilesStore.remove(id));
-      }
-      case WS_METHODS.providerAccountLoginStart: {
-        const id = request.body.instanceId;
-        const method = request.body.method;
-        return yield* profileCall(() => accountService.start(id, false, ws, method));
-      }
-      case WS_METHODS.providerAccountLogout: {
-        const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.start(id, true, ws));
-      }
-      case WS_METHODS.providerAccountInput: {
-        const { handle, data } = request.body;
-        return yield* profileCall(async () => accountService.input(handle, data, ws));
-      }
-      case WS_METHODS.providerAccountCancel: {
-        const { handle } = request.body;
-        return yield* profileCall(() => accountService.cancel(handle, ws));
-      }
-      case WS_METHODS.providerAccountStatus: {
-        const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.status(id));
-      }
-
       case AGENT_BRIDGE_WS_METHODS.setSchedulingGrant:
         return yield* agentBridge
           .setSchedulingGrant(stripRequestTag(request.body))
@@ -4224,6 +4235,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case UPSTREAM_PORTS_WS_METHODS.undoDecisions:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).undoDecisions(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.expireBacklog:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).expireBacklog(stripRequestTag(request.body)),
         );
       case UPSTREAM_PORTS_WS_METHODS.run:
         return yield* upstreamRoute(
@@ -4596,7 +4611,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               ),
               markerId: recovery.expected.eventId,
               commandId: CommandId.makeUnsafe(
-                `server:history-accepted:${recovery.threadId}:${crypto.randomUUID()}`,
+                `server:history-accepted:${recovery.threadId}:${timeOrderedUuid()}`,
               ),
               createdAt: new Date().toISOString(),
             });
@@ -4672,6 +4687,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case USAGE_WS_METHODS.getThreadTurns: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .getThreadTurns(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
       case USAGE_WS_METHODS.analyzeClaudeUsage: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* usageService
@@ -4724,6 +4746,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* readThreadPeek(sql, body.threadId);
       }
 
+      case ORCHESTRATION_WS_METHODS.getThreadPeeks: {
+        const body = stripRequestTag(request.body);
+        return { peeks: yield* readThreadPeeks(sql, body.threadIds) };
+      }
+
       case ORCHESTRATION_WS_METHODS.getThreadTailDetails: {
         const body = stripRequestTag(request.body);
         return yield* withWsThreadOpenTiming({
@@ -4734,7 +4761,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               threadId: body.threadId,
               reason: "ws:getThreadTailDetails",
             });
-            return yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const details = yield* projectionReadModelQuery.getThreadTailDetails(body);
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const model = yield* orchestrationEngine.getReadModel();
+            const thread = model.threads.find((thread) => thread.id === body.threadId);
+            // Keep the response bounded even when the runtime retains full history.
+            return {
+              ...details,
+              thread: thread
+                ? { ...thread, messages: [], activities: [], checkpoints: [], proposedPlans: [] }
+                : null,
+            };
           }),
           summarize: (result) => ({
             detailSequence: result.detailSequence,
@@ -5152,6 +5189,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
+      }
+
+      case ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow: {
+        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        return yield* codeReviewWorkflowService
+          .postWorkflow(body)
+          .pipe(Effect.mapError((cause) => new RouteRequestError({ message: cause.message })));
       }
 
       case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {
@@ -6651,6 +6696,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         // Lets a client holding requests notice readiness even if a push is lost.
         return { runtime: currentRuntimeReadiness() };
 
+      case WS_METHODS.serverGetHealth:
+        return readServerHealth();
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -8046,13 +8094,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     );
     const routeMs = Date.now() - routeStartedAt;
-    if (routeMs >= SLOW_RPC_ROUTE_LOG_MS)
+    if (routeMs >= SLOW_RPC_ROUTE_MS) {
+      recordSlowRpcRoute(method, routeMs, lane);
       yield* Effect.logInfo("slow rpc route", {
         method,
         lane,
         durationMs: routeMs,
         admission: admission.snapshot(),
       });
+    }
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse(
         {
@@ -8087,13 +8137,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return;
     }
 
+    if (!serverAuth.isRequestHostAllowed(request)) {
+      rejectUpgrade(socket, 403, REQUEST_HOST_NOT_ALLOWED_MESSAGE);
+      return;
+    }
+
     if (!serverAuth.isWebSocketOriginAllowed(request)) {
-      rejectUpgrade(socket, 403, "WebSocket origin is not allowed");
+      // The usual cause behind a TLS proxy on another host: its X-Forwarded-Proto is not
+      // believed, so the https Origin does not match. Say so instead of a bare refusal.
+      const ignoredPeer = serverAuth.ignoredForwardedProtoPeer(request);
+      rejectUpgrade(
+        socket,
+        403,
+        ignoredPeer === null
+          ? "WebSocket origin is not allowed"
+          : `WebSocket origin is not allowed. X-Forwarded-Proto from ${ignoredPeer} was ignored; ` +
+              "if that is your reverse proxy, start F5 with --trusted-proxy.",
+      );
       return;
     }
 
     if (!serverAuth.isWebSocketRequestAuthenticated(request, url)) {
-      rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      // A locked-out client is told to wait, so it does not take its token for a wrong one.
+      const retryAfter = serverAuth.bearerRetryAfterSeconds(request);
+      if (retryAfter === null) rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      else
+        rejectUpgrade(socket, 429, AUTH_RATE_LIMITED_MESSAGE, { "Retry-After": `${retryAfter}` });
       return;
     }
 

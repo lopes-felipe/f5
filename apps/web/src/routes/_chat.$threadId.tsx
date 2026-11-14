@@ -69,6 +69,7 @@ import {
 } from "../rightPanelNavigation";
 import {
   selectThreadRightPanelState,
+  selectFilePreviewVisible,
   type RightPanelSurface,
   useRightPanelStore,
 } from "../rightPanelStore";
@@ -79,6 +80,7 @@ import {
 } from "../session-logic";
 import { useStore } from "../store";
 import { useThread } from "../threadSelectors";
+import { resolveThreadRouteRenderState } from "../threadRoutes";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 import { AppTitlebar } from "~/components/AppTitlebar";
 import { workspaceAreaProps } from "~/lib/workspaceFocus";
@@ -129,11 +131,17 @@ const LazyFileViewPanel = (props: {
   mode: DiffPanelMode;
   surface: FileRightPanelSurface;
   onClose: () => void;
+  openInShortcutEnabled: boolean;
 }) => {
   return (
     <DiffSurfaceBoundary fallback={<DiffLoadingFallback mode={props.mode} />}>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <FileViewPanel mode={props.mode} surface={props.surface} onClose={props.onClose} />
+        <FileViewPanel
+          mode={props.mode}
+          surface={props.surface}
+          onClose={props.onClose}
+          openInShortcutEnabled={props.openInShortcutEnabled}
+        />
       </Suspense>
     </DiffSurfaceBoundary>
   );
@@ -376,11 +384,21 @@ function ChatThreadRouteView() {
     projectName: activeProject?.name ?? null,
     itemTitle: thread?.title ?? (draftThread ? "New thread" : null),
   });
-  const threadDetailQuery = useThreadDetail(thread ? threadId : null);
+  const threadDetailQuery = useThreadDetail(
+    thread || (startupReady && !draftThread) ? threadId : null,
+  );
+  const routeRenderState = resolveThreadRouteRenderState({
+    startupReady,
+    threadExists,
+    draftThreadExists: draftThread !== null,
+    detail: threadDetailQuery.data,
+    detailFetching: threadDetailQuery.isFetching,
+  });
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const rightPanelState = useRightPanelStore((store) =>
     selectThreadRightPanelState(store.byThreadId, threadId),
   );
+  const filePreviewVisible = selectFilePreviewVisible(rightPanelState);
   const agentsPanelVisible =
     rightPanelState.isOpen &&
     rightPanelState.surfaces.some(
@@ -501,7 +519,7 @@ function ChatThreadRouteView() {
       return;
     }
 
-    if (!routeThreadExists) {
+    if (routeRenderState === "missing") {
       // Bootstrap rollback can rekey a draft and navigate in the same tick.
       // The old route must not cancel that navigation with a stale redirect.
       if (router.state.isLoading || router.state.location.pathname !== "/" + threadId) return;
@@ -509,7 +527,7 @@ function ChatThreadRouteView() {
       void navigate({ to: "/", replace: true });
       return;
     }
-  }, [navigate, navigationPending, routeThreadExists, router, startupReady, threadId]);
+  }, [navigate, navigationPending, routeRenderState, router, startupReady, threadId]);
 
   const clearSearchParamsForSurfaces = useCallback(
     (surfaces: ReadonlyArray<RightPanelSurface>) => {
@@ -717,6 +735,7 @@ function ChatThreadRouteView() {
               <LazyFileViewPanel
                 mode={mode}
                 surface={surface}
+                openInShortcutEnabled={filePreviewVisible}
                 onClose={() => closeRightPanelSurface(surface)}
               />
             );
@@ -800,6 +819,7 @@ function ChatThreadRouteView() {
       retryAgents,
       rightPanelState.activeSurfaceId,
       rightPanelState.isOpen,
+      filePreviewVisible,
       settings.timestampFormat,
       threadId,
       workspaceBrowserName,
@@ -863,7 +883,17 @@ function ChatThreadRouteView() {
   }
 
   if (!routeThreadExists) {
-    return null;
+    if (threadDetailQuery.isError && !threadDetailQuery.isFetching) {
+      return (
+        <ThreadDetailErrorView
+          title="Thread"
+          error={threadDetailQuery.error}
+          onRetry={() => void threadDetailQuery.refetch()}
+          retrying={threadDetailQuery.isFetching}
+        />
+      );
+    }
+    return routeRenderState === "loading" ? <StartupThreadRouteSkeleton /> : null;
   }
 
   if (
@@ -919,6 +949,7 @@ function ChatThreadRouteView() {
           <ChatView
             key={threadId}
             threadId={threadId}
+            openInShortcutEnabled={!filePreviewVisible}
             liveAgentCount={agentsLiveBadgeCount}
             focusTimelineEntryId={search.timelineEntryId}
             focusTimelineEntryKind={search.timelineEntryKind}
@@ -943,6 +974,7 @@ function ChatThreadRouteView() {
         <ChatView
           key={threadId}
           threadId={threadId}
+          openInShortcutEnabled={!filePreviewVisible}
           liveAgentCount={agentsLiveBadgeCount}
           focusTimelineEntryId={search.timelineEntryId}
           focusTimelineEntryKind={search.timelineEntryKind}

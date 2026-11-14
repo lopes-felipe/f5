@@ -9,7 +9,10 @@
  */
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
+import {
+  claudeCliSpawnEnvironment,
+  resolveClaudeCliInvocation,
+} from "../../provider/claudeSdkExecutable.ts";
 import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 import { hasClaudeManagedMcpConfig } from "../../provider/claudeInventory.ts";
 import {
@@ -233,7 +236,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ),
         );
       const command = ChildProcess.make(invocation.file, [...invocation.args], {
-        env: claudeEnvironment,
+        env: claudeCliSpawnEnvironment(invocation, claudeEnvironment),
         extendEnv: false,
         cwd: isolatedCwd,
         stdin: {

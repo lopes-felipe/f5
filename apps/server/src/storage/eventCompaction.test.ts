@@ -10,11 +10,12 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
+import { createEmptyReadModel, projectEvent } from "../orchestration/projector.ts";
 import { OrchestrationProjectionPipeline } from "../orchestration/Services/ProjectionPipeline.ts";
 import {
   reportDatabaseCorruption,
@@ -27,9 +28,11 @@ import {
   compactCommandOutputCopy,
   COMPACTED_COMMAND_OUTPUT_MAX_BYTES,
   compactThreadEvents,
+  compactWorkflowEvents,
   foldMessagePayloads,
   MAX_EVENTS_PER_TRANSACTION,
   MAX_EVENTS_PER_GROUP,
+  removableSessionUpdates,
 } from "./eventCompaction.ts";
 
 const layer = OrchestrationProjectionPipelineLive.pipe(
@@ -667,7 +670,439 @@ it.layer(layer)("compactThreadEvents", (it) => {
       assert.deepInclude(waiting, { threadsCompacted: 0, threadsFailed: 0 });
     }),
   );
+
+  it.effect("removes token-estimate session updates that a later update restates", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* OrchestrationEventStore;
+      yield* reset;
+      yield* seed;
+      const running = { status: "running", activeTurnId: turnId };
+      const ready = { status: "ready", activeTurnId: null };
+      const context = (tokens: number) => ({
+        estimatedContextTokens: tokens,
+        tokenUsageSource: "provider",
+      });
+      const updates: ReadonlyArray<readonly [tag: string, session: Record<string, unknown>]> = [
+        ["thread-session-set", running],
+        ["thread-token-usage-set", { ...running, ...context(1_000) }],
+        ["thread-thinking-tokens-set", { ...running, estimatedThinkingTokens: 500 }],
+        ["thread-token-usage-set", { ...running, ...context(2_000) }],
+        // Kept: the context window below is restated, this thinking count is not.
+        ["thread-thinking-tokens-set", { ...running, estimatedThinkingTokens: 900 }],
+        // Kept: nothing later restates the context window.
+        [
+          "thread-token-usage-set",
+          { ...running, ...context(3_000), modelContextWindowTokens: 200_000 },
+        ],
+        ["thread-token-usage-set", { ...running, ...context(3_500) }],
+        ["thread-session-set", ready],
+        // Kept: a lifecycle update, even though it only moves an estimate.
+        ["thread-session-set", { ...ready, ...context(4_000) }],
+        ["thread-token-usage-set", { ...ready, ...context(4_100) }],
+        ["thread-token-usage-set", { ...ready, ...context(4_200) }],
+      ];
+      const sequences: number[] = [];
+      for (const [index, [tag, session]] of updates.entries()) {
+        const stored = yield* store.append({
+          ...threadEvent({
+            type: "thread.session-set",
+            payload: {
+              threadId,
+              session: {
+                threadId,
+                providerName: "codex",
+                runtimeMode: "full-access",
+                lastError: null,
+                updatedAt: `2026-01-01T00:01:${String(index).padStart(2, "0")}.000Z`,
+                ...session,
+              },
+            },
+          }),
+          commandId: CommandId.makeUnsafe(`provider:session-event-${index}:${tag}`),
+        });
+        sequences.push(stored.sequence);
+        yield* sql`
+          INSERT INTO orchestration_command_receipts (
+            command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, error
+          ) VALUES (
+            ${stored.commandId}, 'thread', ${threadId}, ${at}, ${stored.sequence}, 'accepted', NULL
+          )
+        `;
+        // A message after each update: with no provider usage recorded yet, a
+        // message event recomputes the context estimate itself, so a replay
+        // without the removed reports passes through different estimates.
+        yield* store.append(
+          threadEvent({
+            type: "thread.message-sent",
+            payload: message({
+              messageId: MessageId.makeUnsafe(`between-session-updates-${index}`),
+              text: "x".repeat(400 * (index + 1)),
+              streaming: false,
+            }),
+          }),
+        );
+      }
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+      const projectedSession = sql`
+        SELECT * FROM projection_thread_sessions WHERE thread_id = ${threadId}
+      `;
+      const before = {
+        projected: yield* projectedSession,
+        replayed: yield* replayedEstimates,
+      };
+      assert.deepInclude(before.replayed[0]!.session, {
+        status: "ready",
+        estimatedContextTokens: 4_200,
+        estimatedThinkingTokens: 900,
+        modelContextWindowTokens: 200_000,
+        tokenUsageSource: "provider",
+      });
+      assert.equal(before.replayed[0]!.estimatedContextTokens, 4_200);
+
+      const result = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.deepInclude(result, {
+        threadsCompacted: 1,
+        sessionUpdatesCompacted: 4,
+        // Five from the seeded output and message, four session updates.
+        eventsRemoved: 9,
+        // Receipts of removed session updates stay, to deduplicate a redelivery.
+        receiptsRemoved: 2,
+        complete: true,
+      });
+      const left = yield* sql<{ readonly sequence: number }>`
+        SELECT sequence FROM orchestration_events
+        WHERE event_type = 'thread.session-set' ORDER BY sequence
+      `;
+      assert.deepStrictEqual(
+        left.map((row) => row.sequence),
+        [0, 4, 5, 6, 7, 8, 10].map((index) => sequences[index]!),
+      );
+
+      // The log replays to the same session, in memory and in the projection.
+      assert.deepStrictEqual(yield* replayedEstimates, before.replayed);
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM projection_state WHERE projector = 'projection.thread-sessions'`;
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+      assert.deepStrictEqual(yield* projectedSession, before.projected);
+
+      yield* sql`DELETE FROM orchestration_event_compaction`;
+      const revisit = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.deepInclude(revisit, { threadsCompacted: 1, eventsRemoved: 0 });
+    }),
+  );
 });
+
+describe("removableSessionUpdates", () => {
+  const update = (sequence: number, estimates: number, tokenReport = true) => ({
+    sequence,
+    bytes: 1,
+    estimates,
+    tokenReport,
+  });
+  const removed = (run: ReadonlyArray<ReturnType<typeof update>>) =>
+    removableSessionUpdates(run).map((entry) => entry.sequence);
+
+  it("keeps the first and last update of a run and any estimate not restated later", () => {
+    // Flags: 1 context estimate, 2 thinking estimate, 4 usage source, 8 context window.
+    const context = 1 | 4;
+    assert.deepStrictEqual(removed([]), []);
+    assert.deepStrictEqual(removed([update(1, context)]), []);
+    assert.deepStrictEqual(removed([update(1, context), update(2, context)]), []);
+    assert.deepStrictEqual(
+      removed([update(1, context), update(2, context), update(3, context)]),
+      [2],
+    );
+    // 2 sets the thinking estimate, which nothing later restates.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 2), update(3, context), update(4, context)]),
+      [3],
+    );
+    // An update that is not a token report stays, and still restates for earlier ones.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, context), update(3, context, false), update(4, 0)]),
+      [2],
+    );
+  });
+
+  it("needs one later update to restate the context estimate together with its source", () => {
+    // Message events between the two would recompute the estimate while the source is unsettled.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4), update(3, 1), update(4, 4)]),
+      [],
+    );
+    assert.deepStrictEqual(removed([update(1, 0), update(2, 4), update(3, 1), update(4, 1)]), []);
+    assert.deepStrictEqual(removed([update(1, 0), update(2, 1), update(3, 1), update(4, 1)]), []);
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1), update(3, 4), update(4, 1 | 4), update(5, 2)]),
+      [2, 3],
+    );
+    // The context window is independent of both: 4 restates it for 2, 3 restates the rest.
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4 | 8), update(3, 1 | 4), update(4, 8)]),
+      [2],
+    );
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4 | 8), update(3, 1 | 4), update(4, 2)]),
+      [],
+    );
+    assert.deepStrictEqual(
+      removed([update(1, 0), update(2, 1 | 4 | 8), update(3, 1 | 4), update(4, 1 | 4 | 8)]),
+      [2, 3],
+    );
+  });
+});
+
+it.layer(layer)("compactWorkflowEvents", (it) => {
+  it.effect("keeps a workflow's first event and newest update, in order and across passes", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* OrchestrationEventStore;
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      yield* reset;
+      yield* seed;
+      const append = (
+        type: "project.workflow-created" | "project.workflow-upserted" | "project.workflow-deleted",
+        id: string,
+        title: string,
+        occurredAt = at,
+      ) =>
+        store
+          .append({
+            ...base(),
+            occurredAt,
+            aggregateKind: "project",
+            aggregateId: projectId,
+            type,
+            payload:
+              type === "project.workflow-deleted"
+                ? { projectId, workflowId: id, deletedAt: at }
+                : { projectId, workflow: planningWorkflow(id, title) },
+          } as Omit<OrchestrationEvent, "sequence">)
+          .pipe(Effect.map((stored) => stored.sequence));
+      const run = (nowMs = Date.now()) => compactWorkflowEvents({ nowMs, maxDurationMs: 60_000 });
+      const workflowEvents = sql<{ readonly sequence: number }>`
+        SELECT sequence FROM orchestration_events
+        WHERE event_type LIKE 'project.workflow-%' ORDER BY sequence
+      `.pipe(Effect.map((rows) => rows.map((row) => row.sequence)));
+      const projected = sql`SELECT * FROM projection_planning_workflows ORDER BY workflow_id`;
+      const replayed = replayedReadModel.pipe(Effect.map((model) => model.planningWorkflows));
+
+      const created = yield* append("project.workflow-created", "workflow-a", "A1");
+      yield* append("project.workflow-upserted", "workflow-a", "A2");
+      // No creation event: the log starts mid-history, so this one counts as the first.
+      const firstOfB = yield* append("project.workflow-upserted", "workflow-b", "B1");
+      const beforeDeletion = yield* append("project.workflow-upserted", "workflow-a", "A3");
+      yield* append("project.workflow-upserted", "workflow-b", "B2");
+      const newestOfB = yield* append("project.workflow-upserted", "workflow-b", "B3");
+      const deleted = yield* append("project.workflow-deleted", "workflow-a", "");
+      // The first event after a deletion counts as the first again.
+      const recreated = yield* append("project.workflow-upserted", "workflow-a", "A4");
+      const newestOfA = yield* append("project.workflow-upserted", "workflow-a", "A5");
+      yield* pipeline.bootstrap;
+      const before = { projected: yield* projected, replayed: yield* replayed };
+      assert.deepStrictEqual(before.replayed.map((workflow) => workflow.title).toSorted(), [
+        "A5",
+        "B3",
+      ]);
+
+      const first = yield* run();
+      assert.deepInclude(first, { eventsRemoved: 2, complete: true, futureDatedEvent: null });
+      assert.isAbove(first.bytesRemoved, 0);
+      assert.deepStrictEqual(yield* workflowEvents, [
+        created,
+        firstOfB,
+        beforeDeletion,
+        newestOfB,
+        deleted,
+        recreated,
+        newestOfA,
+      ]);
+      assert.deepStrictEqual(yield* replayed, before.replayed);
+      yield* sql`DELETE FROM projection_planning_workflows`;
+      yield* sql`DELETE FROM projection_state WHERE projector = 'projection.planning-workflows'`;
+      yield* pipeline.bootstrap;
+      assert.deepStrictEqual(yield* projected, before.projected);
+      assert.deepInclude(yield* run(), { eventsRemoved: 0, complete: true });
+
+      // An update no projector has applied yet is not read, so nothing it replaces goes.
+      const unprojected = yield* append("project.workflow-upserted", "workflow-b", "B4");
+      assert.deepInclude(yield* run(), { eventsRemoved: 0, complete: true });
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(), { eventsRemoved: 1, complete: true });
+
+      // Nor is one from the last hour, or anything after it.
+      const recent = yield* append(
+        "project.workflow-upserted",
+        "workflow-b",
+        "B5",
+        new Date().toISOString(),
+      );
+      const afterRecent = yield* append("project.workflow-upserted", "workflow-a", "A6");
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(), { eventsRemoved: 0, complete: true });
+      assert.deepInclude(yield* run(Date.now() + 2 * 60 * 60 * 1_000), {
+        eventsRemoved: 2,
+        complete: true,
+      });
+      assert.deepStrictEqual(yield* workflowEvents, [
+        created,
+        firstOfB,
+        beforeDeletion,
+        deleted,
+        recreated,
+        recent,
+        afterRecent,
+      ]);
+      assert.notInclude(yield* workflowEvents, unprojected);
+      assert.deepStrictEqual((yield* replayed).map((workflow) => workflow.title).toSorted(), [
+        "A6",
+        "B5",
+      ]);
+
+      // Out of time or on a damaged database: no page is read.
+      yield* append("project.workflow-upserted", "workflow-a", "A7");
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* compactWorkflowEvents({ nowMs: Date.now(), maxDurationMs: -1 }), {
+        eventsRemoved: 0,
+        complete: false,
+      });
+    }),
+  );
+
+  it.effect("forgets a deleted workflow and reports a future-dated event holding the scan", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* OrchestrationEventStore;
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      yield* reset;
+      yield* seed;
+      const append = (
+        type: "project.workflow-upserted" | "project.workflow-deleted",
+        id: string,
+        occurredAt = at,
+      ) =>
+        store
+          .append({
+            ...base(),
+            occurredAt,
+            aggregateKind: "project",
+            aggregateId: projectId,
+            type,
+            payload:
+              type === "project.workflow-deleted"
+                ? { projectId, workflowId: id, deletedAt: at }
+                : { projectId, workflow: planningWorkflow(id, id) },
+          } as Omit<OrchestrationEvent, "sequence">)
+          .pipe(Effect.map((stored) => stored.sequence));
+      const run = (nowMs: number) => compactWorkflowEvents({ nowMs, maxDurationMs: 60_000 });
+      const workflowRows = sql<{ readonly groupKey: string }>`
+        SELECT group_key AS "groupKey" FROM orchestration_event_keep_last
+        WHERE group_key LIKE 'workflow:%' ORDER BY group_key
+      `.pipe(Effect.map((rows) => rows.map((row) => row.groupKey)));
+      const nowMs = Date.now();
+
+      yield* append("project.workflow-upserted", "workflow-a");
+      yield* append("project.workflow-upserted", "workflow-b");
+      yield* append("project.workflow-upserted", "workflow-a");
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(nowMs), { eventsRemoved: 0, futureDatedEvent: null });
+      assert.deepStrictEqual(yield* workflowRows, ["workflow:workflow-a", "workflow:workflow-b"]);
+
+      yield* append("project.workflow-deleted", "workflow-a");
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(nowMs), { eventsRemoved: 0, futureDatedEvent: null });
+      assert.deepStrictEqual(yield* workflowRows, ["workflow:workflow-b"]);
+
+      // An event from the last hour holds the scan too, but that is not worth reporting.
+      const recent = yield* append(
+        "project.workflow-upserted",
+        "workflow-b",
+        new Date(nowMs - 60_000).toISOString(),
+      );
+      yield* pipeline.bootstrap;
+      assert.deepInclude(yield* run(nowMs), { eventsRemoved: 0, futureDatedEvent: null });
+      yield* sql`DELETE FROM orchestration_events WHERE sequence = ${recent}`;
+
+      const occurredAt = new Date(nowMs + 3 * 60 * 60 * 1_000).toISOString();
+      const future = yield* append("project.workflow-upserted", "workflow-b", occurredAt);
+      yield* append("project.workflow-upserted", "workflow-b");
+      yield* pipeline.bootstrap;
+      const held = yield* run(nowMs);
+      assert.deepInclude(held, { eventsRemoved: 0, complete: true });
+      assert.deepStrictEqual(held.futureDatedEvent, { sequence: future, occurredAt });
+
+      // Once its date is an hour past, the scan moves on (the update after it replaces it)
+      // and stops reporting it.
+      assert.deepInclude(yield* run(nowMs + 5 * 60 * 60 * 1_000), {
+        eventsRemoved: 1,
+        complete: true,
+        futureDatedEvent: null,
+      });
+    }),
+  );
+});
+
+const planningWorkflow = (id: string, title: string) => {
+  const branch = (branchId: "a" | "b") => ({
+    branchId,
+    authorSlot: { provider: "codex", model: "gpt-5-codex" },
+    authorThreadId: `${id}-thread-${branchId}`,
+    planFilePath: null,
+    planTurnId: null,
+    revisionTurnId: null,
+    reviews: [],
+    status: "pending",
+    error: null,
+    updatedAt: at,
+  });
+  return {
+    id,
+    projectId,
+    title,
+    slug: id,
+    requirementPrompt: "Ship it",
+    plansDirectory: "plans",
+    selfReviewEnabled: true,
+    branchA: branch("a"),
+    branchB: branch("b"),
+    merge: {
+      mergeSlot: { provider: "codex", model: "gpt-5-codex" },
+      threadId: null,
+      outputFilePath: null,
+      turnId: null,
+      status: "not_started",
+      error: null,
+      updatedAt: at,
+    },
+    createdAt: at,
+    updatedAt: at,
+    archivedAt: null,
+    deletedAt: null,
+  };
+};
+
+/** The read model the in-memory projector builds from the stored event log. */
+const replayedReadModel = Effect.gen(function* () {
+  const store = yield* OrchestrationEventStore;
+  let model = createEmptyReadModel(at);
+  for (const event of yield* Stream.runCollect(store.readAll())) {
+    model = yield* projectEvent(model, event);
+  }
+  return model;
+});
+
+/** Each thread's session and thread-level token estimates after a replay. */
+const replayedEstimates = replayedReadModel.pipe(
+  Effect.map((model) =>
+    model.threads.map((thread) => ({
+      session: thread.session,
+      estimatedContextTokens: thread.estimatedContextTokens,
+      estimatedThinkingTokens: thread.estimatedThinkingTokens,
+      modelContextWindowTokens: thread.modelContextWindowTokens,
+    })),
+  ),
+);
 
 const reset = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -675,9 +1110,12 @@ const reset = Effect.gen(function* () {
     "orchestration_events",
     "orchestration_command_receipts",
     "orchestration_event_compaction",
+    "orchestration_event_keep_last",
     "projection_threads",
+    "projection_thread_sessions",
     "projection_thread_messages",
     "projection_thread_command_executions",
+    "projection_planning_workflows",
   ]) {
     yield* sql.unsafe(`DELETE FROM ${table}`);
   }

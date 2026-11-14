@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { lstat } from "node:fs/promises";
 import { CommandId, EventId, WORKTREE_SETUP_TAIL_LINES } from "@t3tools/contracts";
@@ -192,7 +193,7 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
                   return;
                 yield* engine.dispatch({
                   type: "thread.activity.append",
-                  commandId: CommandId.makeUnsafe(`worktree-prepared:${crypto.randomUUID()}`),
+                  commandId: CommandId.makeUnsafe(`worktree-prepared:${timeOrderedUuid()}`),
                   threadId: input.threadId,
                   activity: {
                     id: EventId.makeUnsafe(`worktree-prepared:${input.threadId}`),

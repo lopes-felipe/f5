@@ -25,7 +25,13 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import {
+  useCanGoBack,
+  useLocation,
+  useNavigate,
+  useParams,
+  useRouter,
+} from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
@@ -35,7 +41,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { gitStatusQueryOptions } from "../lib/gitReactQuery";
-import { resolveThreadPullRequests } from "../lib/threadPullRequests";
+import { resolveThreadPullRequests, threadBranchPullRequest } from "../lib/threadPullRequests";
 import {
   linkedPullRequestLookupCwd,
   useLinkedPullRequestStates,
@@ -197,6 +203,7 @@ export default function Sidebar() {
   const router = useRouter();
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
+  const canGoBack = useCanGoBack();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const appSettings = useAppSettingsSelector(selectSidebarSettings);
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
@@ -348,9 +355,7 @@ export default function Sidebar() {
     const pending = new Set<ThreadId>();
     for (const target of threadGitTargets) {
       const status = target.cwd ? statusByCwd.get(target.cwd) : undefined;
-      const branchMatches =
-        target.branch !== null && status?.branch !== null && status?.branch === target.branch;
-      map.set(target.threadId, branchMatches ? (status?.pr ?? null) : null);
+      map.set(target.threadId, threadBranchPullRequest(target.branch, status));
       if (target.branch !== null && target.cwd !== null && pendingCwds.has(target.cwd)) {
         pending.add(target.threadId);
       }
@@ -751,7 +756,7 @@ export default function Sidebar() {
           : [
               { id: "worktrees", label: "Worktrees…" },
               { id: "settle-idle", label: "Settle idle threads" },
-              { id: "icon", label: "Change project icon..." },
+              { id: "settings", label: "Project settings…" },
               { id: "change-path", label: "Change project path..." },
               { id: "rename", label: "Rename project" },
               { id: "delete", label: "Remove project", destructive: true },
@@ -776,10 +781,10 @@ export default function Sidebar() {
         await navigate({ to: "/worktrees", search: { projectId } });
         return;
       }
-      if (clicked === "icon") {
+      if (clicked === "settings") {
         await navigate({
           to: "/settings",
-          search: { category: "project", item: "project.icon", project: projectId },
+          search: { category: "project", project: projectId },
         });
         return;
       }
@@ -1077,6 +1082,10 @@ export default function Sidebar() {
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
     [keybindings],
   );
+  const homeShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "home.open"),
+    [keybindings],
+  );
   const handleOpenCommandPalette = useStableCallback(() => {
     setCommandPaletteOpen(true);
   });
@@ -1255,6 +1264,7 @@ export default function Sidebar() {
           onOpenCommandPalette={handleOpenCommandPalette}
           commandPaletteShortcutLabel={commandPaletteShortcutLabel}
           pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+          homeShortcutLabel={homeShortcutLabel}
           view={sidebarView}
           onViewChange={setSidebarView}
         />
@@ -1428,7 +1438,10 @@ export default function Sidebar() {
                 {isOnSettings || isOnUsage ? (
                   <SidebarMenuButton
                     className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                    onClick={() => window.history.back()}
+                    onClick={() => {
+                      if (canGoBack) window.history.back();
+                      else void navigate({ to: "/" });
+                    }}
                   >
                     <ArrowLeftIcon className="size-4" />
                     <span>Back</span>

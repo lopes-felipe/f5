@@ -93,7 +93,7 @@ describe("Toast close controls", () => {
       const title = await waitForToastTitle("Stacked toast with close");
       const icon = document.querySelector<HTMLElement>('[data-slot="toast-icon"]')!;
       const description = document.querySelector<HTMLElement>('[data-slot="toast-description"]')!;
-      // macOS layout: the tile sits left of a text column the description shares with the title.
+      // The glyph sits on the title's line, left of it, and the body is indented under the title.
       expect(
         Math.abs(icon.getBoundingClientRect().top - title.getBoundingClientRect().top),
       ).toBeLessThan(4);
@@ -103,6 +103,15 @@ describe("Toast close controls", () => {
       expect(
         Math.abs(description.getBoundingClientRect().left - title.getBoundingClientRect().left),
       ).toBeLessThan(2);
+      // A status rail runs down the card's left edge.
+      const rail = document.querySelector<HTMLElement>('[data-slot="toast-rail"]')!;
+      expect(rail.dataset.tone).toBe("info");
+      expect(rail.getBoundingClientRect().right).toBeLessThanOrEqual(
+        icon.getBoundingClientRect().left,
+      );
+      expect(rail.getBoundingClientRect().height).toBeGreaterThan(
+        title.getBoundingClientRect().height,
+      );
       const closeButton = document.querySelector<HTMLButtonElement>('[data-slot="toast-close"]');
       expect(closeButton?.getAttribute("aria-label")).toBe("Dismiss");
       closeButton?.click();
@@ -191,6 +200,50 @@ describe("Notification-style toasts", () => {
       rows[0]!.click();
       expect(onSelect).toHaveBeenCalledTimes(1);
       await waitForToastTitleRemoved("2 pull requests need you");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("colours the rail by status and puts a detail on the buttons' line", async () => {
+    const screen = await render(<RouterProvider router={createTestRouter()} />);
+    try {
+      toastManager.add({
+        type: "warning",
+        title: "Approval needed",
+        timeout: 0,
+        data: {
+          threadStatus: "pending-approval",
+          detail: "bun run test apps/web",
+          actions: [
+            { label: "Deny", onClick: () => undefined },
+            { label: "Approve", variant: "primary", onClick: () => undefined },
+          ],
+        },
+      });
+      toastManager.add({ type: "error", title: "Could not push", timeout: 0 });
+      const approvalRoot = (await waitForToastTitle("Approval needed")).closest<HTMLElement>(
+        '[data-slot="toast-root"]',
+      )!;
+      const errorRoot = (await waitForToastTitle("Could not push")).closest<HTMLElement>(
+        '[data-slot="toast-root"]',
+      )!;
+      expect(
+        approvalRoot.querySelector<HTMLElement>('[data-slot="toast-rail"]')?.dataset.tone,
+      ).toBe("warning");
+      expect(errorRoot.querySelector<HTMLElement>('[data-slot="toast-rail"]')?.dataset.tone).toBe(
+        "destructive",
+      );
+
+      const detail = approvalRoot.querySelector<HTMLElement>('[data-slot="toast-detail"]')!;
+      const buttons = approvalRoot.querySelectorAll<HTMLElement>('[data-slot="toast-action"]');
+      expect(buttons).toHaveLength(2);
+      const detailRect = detail.getBoundingClientRect();
+      const buttonRect = buttons[0]!.getBoundingClientRect();
+      expect(detailRect.right).toBeLessThanOrEqual(buttonRect.left);
+      expect(
+        Math.abs(detailRect.top + detailRect.height / 2 - (buttonRect.top + buttonRect.height / 2)),
+      ).toBeLessThan(3);
     } finally {
       await screen.unmount();
     }

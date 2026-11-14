@@ -97,8 +97,9 @@ export function tokenFieldDisplay(metrics: UsageMetrics, field: TokenField): Fie
       ? { value: "Unknown", detail: "Field coverage unavailable", known: false, complete: false }
       : { value: "0", detail: null, known: true, complete: true };
   }
-  const reported = reporting[REPORTING_FIELD[field]];
-  const recorded = reporting.recordedTurnCount;
+  const native = metrics.nativeInferenceCount ?? 0;
+  const reported = reporting[REPORTING_FIELD[field]] + native;
+  const recorded = reporting.recordedTurnCount + native;
   if (reported === 0)
     // Legacy cost records carry no token fields, so cost-only history is
     // unreported rather than a confirmed zero.
@@ -108,7 +109,9 @@ export function tokenFieldDisplay(metrics: UsageMetrics, field: TokenField): Fie
   const partial = reported < recorded;
   return {
     value: value === 0 ? "0" : compactNumber(value),
-    detail: partial ? `${reported} of ${recorded} recorded turns` : null,
+    detail: partial
+      ? `${reported} of ${recorded} ${native ? "usage records" : "recorded turns"}`
+      : null,
     known: true,
     complete: !partial,
   };
@@ -141,9 +144,17 @@ export function totalCost(metrics: UsageMetrics): number {
   return (metrics.providerReportedCostUsd ?? 0) + (metrics.estimatedCostUsd ?? 0);
 }
 
+export function unpricedRecordCount(metrics: UsageMetrics): number {
+  return metrics.unpricedTurnCount + (metrics.unpricedNativeInferenceCount ?? 0);
+}
+
 /** No provider-reported cost and no priced turn: the cost is unknown, not zero. */
 export function isCostUnknown(metrics: UsageMetrics): boolean {
-  return metrics.providerReportedCostUsd === null && !metrics.pricedTurnCount;
+  return (
+    metrics.providerReportedCostUsd === null &&
+    !metrics.pricedTurnCount &&
+    metrics.estimatedCostUsd == null
+  );
 }
 
 /** The value a row ranks and shares by for the selected chart metric. */
@@ -160,7 +171,9 @@ export function costLabel(metrics: UsageMetrics): string {
   if (isCostUnknown(metrics)) return "Unpriced";
   const estimates = metrics.estimatedCostUsd !== undefined && metrics.estimatedCostUsd !== null;
   return `${formatUsd(totalCost(metrics))}${estimates ? " (includes estimates)" : ""}${
-    metrics.unpricedTurnCount > 0 ? " + unpriced" : ""
+    metrics.unpricedTurnCount > 0 || (metrics.unpricedNativeInferenceCount ?? 0) > 0
+      ? " + unpriced"
+      : ""
   }`;
 }
 
@@ -181,8 +194,7 @@ export function tokenDelta(summary: UsageSummary): string | null {
 
 export function costDelta(summary: UsageSummary): string | null {
   const previous = summary.previousMetrics;
-  if (!previous || summary.metrics.pricedTurnCount === 0 || previous.pricedTurnCount === 0)
-    return null;
+  if (!previous || isCostUnknown(summary.metrics) || isCostUnknown(previous)) return null;
   return formatDelta(totalCost(summary.metrics), totalCost(previous), rangeLabel(summary.range));
 }
 

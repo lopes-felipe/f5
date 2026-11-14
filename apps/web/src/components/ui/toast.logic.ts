@@ -1,3 +1,57 @@
+import type { ThreadStatus } from "../../threadStatus";
+
+/** The status colour of a toast: its rail, its glyph and its inbox row. */
+export type ToastTone =
+  | "warning"
+  | "attention"
+  | "info"
+  | "success"
+  | "destructive"
+  | "primary"
+  | "muted";
+
+const THREAD_STATUS_TONES: Record<Exclude<ThreadStatus, "none">, ToastTone> = {
+  "pending-approval": "warning",
+  "plan-ready": "warning",
+  "awaiting-input": "attention",
+  working: "info",
+  connecting: "info",
+  failed: "destructive",
+  completed: "success",
+};
+
+const SOURCE_TONES: Partial<Record<string, ToastTone>> = {
+  pr: "warning",
+  scheduled: "primary",
+  update: "primary",
+  upstream: "muted",
+  errors: "destructive",
+};
+
+const TYPE_TONES: Partial<Record<string, ToastTone>> = {
+  error: "destructive",
+  warning: "warning",
+  success: "success",
+  info: "info",
+  loading: "muted",
+};
+
+/**
+ * A thread status wins (the status colours of F3), then the source, then the toast type;
+ * anything else is muted.
+ */
+export function resolveToastTone(
+  type: string | undefined,
+  data: { threadStatus?: ThreadStatus | undefined; source?: string | undefined } | undefined,
+): ToastTone {
+  if (data?.threadStatus && data.threadStatus !== "none") {
+    return THREAD_STATUS_TONES[data.threadStatus];
+  }
+  const sourceTone = data?.source ? SOURCE_TONES[data.source] : undefined;
+  if (sourceTone) return sourceTone;
+  return (type && TYPE_TONES[type]) || "muted";
+}
+
 export function shouldHideCollapsedToastContent(
   visibleToastIndex: number,
   visibleToastCount: number,

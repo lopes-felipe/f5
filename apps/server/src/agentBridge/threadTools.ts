@@ -383,6 +383,26 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
   );
   const snapshot = host.readSnapshot.pipe(hostError);
 
+  /**
+   * The same threads with their activities loaded. A thread archived before
+   * startup is flagged `activitiesOmitted` until something loads them, and
+   * its status would miss an open approval. A load that fails is an error
+   * the caller can retry, not a status computed without the approvals.
+   */
+  const withActivities = (threads: ReadonlyArray<OrchestrationThread>) =>
+    Effect.gen(function* () {
+      const omitted = threads.filter((thread) => thread.activitiesOmitted);
+      if (omitted.length === 0) return threads;
+      yield* host.ensureThreadActivities?.(omitted.map((thread) => thread.id)) ?? Effect.void;
+      const loaded = new Map((yield* snapshot).threads.map((thread) => [thread.id, thread]));
+      const current = threads.map((thread) => loaded.get(thread.id) ?? thread);
+      if (current.some((thread) => thread.activitiesOmitted))
+        return yield* toolError("F5 could not read this thread's activity. Try again.", {
+          retryAfterSeconds: 1,
+        });
+      return current;
+    });
+
   const requireThread = (caller: AgentBridgeCaller, threadId: string) =>
     snapshot.pipe(
       Effect.flatMap((model) => {
@@ -689,13 +709,14 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
           ...(stored.reason ? { reason: stored.reason } : {}),
         };
       const model = yield* snapshot;
-      const thread = visibleThread(model, caller, threadId);
-      if (!thread) {
+      const visible = visibleThread(model, caller, threadId);
+      if (!visible) {
         // A worktree send creates its thread before admission completes.
         return receipt.status === "pending"
           ? { ...base, status: "queued" as const }
           : yield* notFound("Thread");
       }
+      const [thread = visible] = yield* withActivities([visible]);
       const result = yield* resolveTurnSubmissionStatus(
         {
           ...host,
@@ -848,16 +869,18 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
         const mine = input.createdByMe
           ? new Set(yield* store.listCreatedThreadIds(caller.client.id).pipe(storeError))
           : null;
-        const threads = model.threads
-          .filter(
-            (thread) =>
-              thread.deletedAt === null &&
-              caller.visibleProjectIds.has(thread.projectId) &&
-              (input.projectId === undefined || thread.projectId === input.projectId) &&
-              (mine === null || mine.has(thread.id)),
-          )
-          .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-          .slice(0, input.limit ?? 20);
+        const threads = yield* withActivities(
+          model.threads
+            .filter(
+              (thread) =>
+                thread.deletedAt === null &&
+                caller.visibleProjectIds.has(thread.projectId) &&
+                (input.projectId === undefined || thread.projectId === input.projectId) &&
+                (mine === null || mine.has(thread.id)),
+            )
+            .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+            .slice(0, input.limit ?? 20),
+        );
         return {
           threads: threads.map((thread) => ({
             id: thread.id,
@@ -884,7 +907,8 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
     run: (args, caller) =>
       Effect.gen(function* () {
         const input = yield* decodeArgs(ThreadArgs)(args);
-        const { thread } = yield* requireThread(caller, input.threadId);
+        const found = yield* requireThread(caller, input.threadId);
+        const [thread = found.thread] = yield* withActivities([found.thread]);
         const details = yield* host.getThreadDetails(thread.id).pipe(hostError);
         const recent = details.messages.slice(-AGENT_BRIDGE_RECENT_MESSAGES);
         const plan = thread.proposedPlans.at(-1);

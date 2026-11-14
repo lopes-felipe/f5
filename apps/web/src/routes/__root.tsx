@@ -1,3 +1,4 @@
+import { DesktopAppActivationCoordinator } from "../components/DesktopAppActivationCoordinator";
 import { createOrchestrationSyncController } from "../orchestration/syncController";
 export {
   applyProviderAdvisoriesToServerConfig,
@@ -268,5 +269,5 @@ function EventRouter() {
 
 function DesktopProjectBootstrap() {
   // Desktop hydration runs through EventRouter project + orchestration sync.
-  return null;
+  return <DesktopAppActivationCoordinator />;
 }

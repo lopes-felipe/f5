@@ -56,7 +56,7 @@ import {
   invalidateThreadCommandExecutionDetailQueries,
   orchestrationQueryKeys,
 } from "../lib/orchestrationReactQuery";
-import { invalidateGitQueries } from "../lib/gitReactQuery";
+import { invalidateGitQueries, applyTurnGitStatus } from "../lib/gitReactQuery";
 import { invalidateReviewQueries } from "../lib/reviewReactQuery";
 import { readAppSettingsSnapshot, type useAppSettings } from "../appSettings";
 import { deriveOnboardingLiteState } from "../lib/onboardingLite";
@@ -965,6 +965,10 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     );
   });
   const unsubGitStatusInvalidated = api.git.onStatusInvalidated((payload) => {
+    if (payload.cwd && payload.status) {
+      applyTurnGitStatus(queryClient, payload.cwd, payload.status);
+      return;
+    }
     void invalidateGitQueries(queryClient, { cwd: payload.cwd });
     void invalidateReviewQueries(queryClient);
   });

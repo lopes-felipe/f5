@@ -48,6 +48,7 @@ it("writes the in-memory read model once and publishes where it is", async () =>
   const stateDir = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-tripwire-"));
   roots.push(stateDir);
   FS.mkdirSync(Path.join(stateDir, "backups", "snapshot-1790000000000"), { recursive: true });
+  FS.writeFileSync(Path.join(stateDir, "backups", "snapshot-1790000000000", "state.sqlite"), "");
   const published: DatabaseDamage[] = [];
   const readModel = {
     snapshotSequence: 7,

@@ -8,7 +8,7 @@ import { CodexLaunchArgsError, resolveCodexLaunchArgv } from "./codexLaunchArgs.
 import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { CommandNotFoundError, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
-import { resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
+import { claudeCliSpawnEnvironment, resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
 import { resolveCodexCommand } from "./codexExecutable.ts";
 
 export interface ProviderCliCommandResult {
@@ -140,7 +140,7 @@ export const runClaudeCliCommand = (
           : new CommandNotFoundError(options?.binaryPath ?? "claude", String(cause)),
     });
     const command = ChildProcess.make(invocation.file, [...invocation.args], {
-      env: environment,
+      env: claudeCliSpawnEnvironment(invocation, environment),
       stdin: "ignore",
     });
     const child = yield* spawner.spawn(command);

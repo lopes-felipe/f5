@@ -6,7 +6,9 @@ import type {
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
+  UsageGetThreadTurnsInput,
   UsageSummary,
+  UsageThreadTurns,
   UsageQuotaHistory,
   ProviderInstanceId,
   UsageAccount,
@@ -41,6 +43,9 @@ export interface UsageServiceShape {
   readonly analyzeClaudeUsage: (
     input: UsageAnalyzeClaudeUsageInput,
   ) => Effect.Effect<ClaudeUsageAnalysis, UsageQueryError>;
+  readonly getThreadTurns: (
+    input: UsageGetThreadTurnsInput,
+  ) => Effect.Effect<UsageThreadTurns, UsageQueryError>;
 }
 
 export class UsageService extends ServiceMap.Service<UsageService, UsageServiceShape>()(

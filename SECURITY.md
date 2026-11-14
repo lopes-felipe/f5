@@ -21,7 +21,7 @@ Please include:
 In scope:
 
 - The F5 desktop app (`apps/desktop`).
-- The F5 server / CLI (`apps/server`, published as `t3` on npm).
+- The F5 server / CLI (`apps/server`, shipped inside the desktop app and as the standalone `f5` CLI).
 - The F5 web app (`apps/web`) when served by the F5 server.
 - The shared packages (`packages/contracts`, `packages/shared`).
 

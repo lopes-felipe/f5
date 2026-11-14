@@ -1,9 +1,11 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import { resolveThreadPullRequests } from "../../lib/threadPullRequests";
-import type { ThreadListItem } from "../../types";
+import { createPlanningWorkflow } from "../../test/workflowFixtures";
+import type { Project, ThreadListItem } from "../../types";
 import {
+  buildProjectSidebarLists,
   orderThreadsByPipeline,
   prStatusIndicator,
   type ThreadPr,
@@ -101,5 +103,101 @@ describe("orderThreadsByPipeline", () => {
       "stray-new",
       "stray-old",
     ]);
+  });
+});
+
+describe("buildProjectSidebarLists", () => {
+  const projectId = ProjectId.makeUnsafe("project-sort");
+  const at = "2026-10-19T00:00:00.000Z";
+  const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+  const projectThread = (id: string, lastInteractionAt: string) =>
+    ({ ...thread(id, lastInteractionAt), projectId, snoozedUntil: null }) as ThreadListItem;
+  /** A planning workflow whose four threads last ran at `threadsAt`, updated at `updatedAt`. */
+  const workflowWithThreads = (input: {
+    id: string;
+    finished: boolean;
+    updatedAt: string;
+    threadsAt: string;
+  }) => {
+    const threadId = (role: string) => ThreadId.makeUnsafe(`${input.id}-${role}`);
+    const workflow = createPlanningWorkflow({
+      id: input.id,
+      projectId,
+      branchAThreadId: threadId("a"),
+      branchBThreadId: threadId("b"),
+      ...(input.finished
+        ? {
+            branchA: { status: "revised" as const },
+            branchB: { status: "revised" as const },
+            merge: { status: "merged" as const, threadId: threadId("merge") },
+            implementation: {
+              implementationSlot: slot,
+              threadId: threadId("impl"),
+              implementationTurnId: null,
+              revisionTurnId: null,
+              codeReviewEnabled: true,
+              codeReviews: [
+                {
+                  reviewerLabel: "Reviewer",
+                  reviewerSlot: slot,
+                  threadId: threadId("review"),
+                  status: "completed" as const,
+                  error: null,
+                  retryCount: 0,
+                  lastRetryAt: null,
+                  updatedAt: at,
+                },
+              ],
+              status: "completed" as const,
+              error: null,
+              retryCount: 0,
+              lastRetryAt: null,
+              updatedAt: at,
+            },
+          }
+        : {}),
+    });
+    return {
+      workflow: { ...workflow, updatedAt: input.updatedAt },
+      threads: ["a", "b", "merge", "impl"].map((role) =>
+        projectThread(`${input.id}-${role}`, input.threadsAt),
+      ),
+    };
+  };
+  const order = (entries: ReadonlyArray<ReturnType<typeof workflowWithThreads>>) =>
+    buildProjectSidebarLists({
+      project: { id: projectId, model: null } as unknown as Project,
+      threads: entries.flatMap((entry) => entry.threads),
+      planningWorkflows: entries.map((entry) => entry.workflow),
+      codeReviewWorkflows: [],
+      investigationWorkflows: [],
+      draftThread: null,
+    }).projectWorkflows.map((entry) => entry.workflow.id);
+  const recent = workflowWithThreads({
+    id: "recent",
+    finished: false,
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    threadsAt: "2026-11-12T00:00:00.000Z",
+  });
+
+  it("orders a finished workflow by its threads' activity, not a bumped updatedAt", () => {
+    // Finished weeks ago, but a bookkeeping write bumped updatedAt to now.
+    const bumped = workflowWithThreads({
+      id: "bumped",
+      finished: true,
+      updatedAt: "2026-11-13T00:00:00.000Z",
+      threadsAt: at,
+    });
+    expect(order([bumped, recent])).toEqual(["recent", "bumped"]);
+  });
+
+  it("counts updatedAt for an unfinished workflow advancing to a step with no thread", () => {
+    const advanced = workflowWithThreads({
+      id: "advanced",
+      finished: false,
+      updatedAt: "2026-11-13T00:00:00.000Z",
+      threadsAt: at,
+    });
+    expect(order([recent, advanced])).toEqual(["advanced", "recent"]);
   });
 });

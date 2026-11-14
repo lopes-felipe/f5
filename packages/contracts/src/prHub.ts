@@ -1215,6 +1215,8 @@ export type PrHubCommentOperation = typeof PrHubCommentOperation.Type;
 export const PrHubCommentReadInput = Schema.Struct({
   accountGeneration: Schema.String,
   key: PullRequestKey,
+  /** Read and reconcile this operation; without it, the PR's most relevant one. */
+  id: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
 });
 export type PrHubCommentReadInput = typeof PrHubCommentReadInput.Type;
 

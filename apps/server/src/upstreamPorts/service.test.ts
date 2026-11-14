@@ -61,6 +61,8 @@ const setup = (
   options: {
     readonly count?: number;
     readonly paths?: (index: number) => ReadonlyArray<string>;
+    /** The suggestion on `pr-1`, the topic already in the ledger. */
+    readonly suggestion?: UpstreamTopic["suggestion"];
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -78,6 +80,7 @@ const setup = (
     yield* sql`DELETE FROM upstream_port_queue_requests`;
     yield* sql`DELETE FROM upstream_port_outcome_checks`;
     yield* sql`DELETE FROM upstream_port_topic_outcomes`;
+    yield* sql`DELETE FROM upstream_budget_state`;
     yield* sql`DELETE FROM projection_turns`;
     yield* sql`DELETE FROM next_turn_queue`;
     yield* sql`DELETE FROM projection_pending_approvals`;
@@ -100,6 +103,7 @@ const setup = (
       upstreamPrs: [1],
       status: "inbox",
       epoch: 1,
+      ...(options.suggestion ? { suggestion: options.suggestion } : {}),
     };
     const ledger: UpstreamLedger = {
       intervals: [
@@ -357,8 +361,11 @@ layer("upstream port queue", (it) => {
           const unresolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries.find(
             (entry) => entry.status === "queued",
           )!;
-          assert.lengthOf(unresolved.waitingOn, 2);
-          assert.isTrue(unresolved.waitingOn.every((blocker) => blocker.needsAttention));
+          // Both batch topics block, but the thread is listed once.
+          assert.lengthOf(unresolved.waitingOn, 1);
+          assert.lengthOf(unresolved.waitingOn[0]!.topicTitles, 2);
+          assert.equal(unresolved.waitingOn[0]!.threadId, threadId);
+          assert.isTrue(unresolved.waitingOn[0]!.needsAttention);
           fixture.gh.prs.push(pr);
           fixture.clock.now = new Date(fixture.clock.now.getTime() + 16_000);
           yield* service.testing.dispatchQueue(PROJECT_ID);
@@ -912,6 +919,27 @@ layer("upstream port queue", (it) => {
       assert.equal(progress.counts.queued, 9);
       assert.equal(progress.entries[0]!.fileCount, 1);
       assert.equal(progress.entries[1]!.waitingOn.length, 1);
+      assert.deepStrictEqual(progress.viewCounts, {
+        active: 10,
+        needsYou: 0,
+        history: 0,
+        inactive: 0,
+      });
+      const active = yield* service.getPortQueue({
+        projectId: PROJECT_ID,
+        view: "active",
+        limit: 2,
+      });
+      assert.deepStrictEqual(
+        active.entries.map((entry) => entry.bucket),
+        ["executing", "waiting"],
+      );
+      assert.isNotNull(active.entries[0]!.thread);
+      assert.equal(active.nextCursor, "2");
+      assert.lengthOf(
+        (yield* service.getPortQueue({ projectId: PROJECT_ID, view: "history" })).entries,
+        0,
+      );
     }),
   );
 
@@ -930,7 +958,57 @@ layer("upstream port queue", (it) => {
       assert.equal(progress.counts.executing, 0);
       assert.equal(progress.counts.needsAttention, 1);
       assert.equal(progress.entries[0]!.topics[0]!.result, "no-outcome");
-      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hasHistory, true);
+      assert.equal(progress.entries[0]!.bucket, "needs-attention");
+      assert.equal(progress.viewCounts.needsYou, 1);
+      const needsYou = yield* service.getPortQueue({ projectId: PROJECT_ID, view: "needs-you" });
+      assert.deepStrictEqual(
+        needsYou.entries.map((entry) => entry.entryId),
+        [progress.entries[0]!.entryId],
+      );
+      assert.lengthOf(
+        (yield* service.getPortQueue({ projectId: PROJECT_ID, view: "active" })).entries,
+        0,
+      );
+      const summary = (yield* service.getOverview(PROJECT_ID)).portQueue;
+      assert.equal(summary.hasHistory, true);
+      assert.equal(summary.needsAttention, 1);
+      // A later attempt at the same epoch supersedes the failed one.
+      const queue = makeQueueStore(yield* SqlClient.SqlClient);
+      const [failed] = yield* queue.listQueue(PROJECT_ID);
+      yield* queue.setQueueEntry({
+        ...failed!,
+        entryId: `${failed!.entryId}-retry`,
+        position: failed!.position + 1,
+        requestId: `${failed!.requestId}-retry`,
+        topicResults: { [ids[0]!]: "pr" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 0);
+      const retried = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.deepStrictEqual(
+        retried.entries.map((entry) => entry.bucket),
+        ["superseded", "awaiting-review"],
+      );
+      assert.equal(retried.counts.needsAttention, 0);
+      yield* queue.setQueueEntry({
+        ...failed!,
+        entryId: `${failed!.entryId}-retry`,
+        position: failed!.position + 1,
+        requestId: `${failed!.requestId}-retry`,
+        status: "dropped",
+        result: "canceled",
+        topicResults: { [ids[0]!]: "canceled" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 1);
+      // Deciding the topic by hand settles it: the queue stops asking for attention.
+      // Declining keeps the epoch (Watch would start a new one and supersede the entry).
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: [ids[0]!],
+        decision: { kind: "declined", reason: "Not for f5" },
+      });
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.needsAttention, 0);
+      const resolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      assert.equal(resolved.bucket, "resolved");
     }),
   );
   it.effect("releases overlapping files after recording a settled not-applicable outcome", () =>
@@ -2354,6 +2432,199 @@ layer("upstream ports service", (it) => {
     }),
   );
 
+  it.effect("keeps Inbox topics without a stored classification from expiring", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const preview = yield* service.expireBacklog({
+        projectId: PROJECT_ID,
+        olderThanDays: 14,
+        dryRun: true,
+      });
+      assert.strictEqual(preview.count, 0);
+      assert.strictEqual(preview.unclassified, 1);
+    }),
+  );
+
+  it.effect("previews and expires aged Inbox topics under one undo token", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        suggestion: {
+          status: "port",
+          reason: "Useful",
+          userImpact: "medium",
+          confidence: 0.6,
+          areas: [],
+          model: "m",
+          kind: "fix",
+        },
+      });
+      const service = yield* fixture.make();
+      // pr-1 was created 2026-10-01; the clock is 2026-10-22.
+      const input = { projectId: PROJECT_ID, olderThanDays: 14 };
+      const preview = yield* service.expireBacklog({ ...input, dryRun: true });
+      assert.strictEqual(preview.unclassified, 0);
+      assert.strictEqual(preview.count, 1);
+      assert.deepStrictEqual(preview.byLane, { bug: 1, perf: 0, feature: 0, maintenance: 0 });
+      assert.isNull(preview.undoToken);
+      const untouched = yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.strictEqual(untouched.row.state, "inbox");
+      assert.strictEqual(
+        (yield* service.expireBacklog({ ...input, olderThanDays: 30, dryRun: true })).count,
+        0,
+      );
+
+      const applied = yield* service.expireBacklog({ ...input, dryRun: false });
+      assert.strictEqual(applied.count, preview.count);
+      assert.ok(applied.undoToken);
+      const expired = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" })).row;
+      assert.strictEqual(expired.state, "skipped");
+      assert.strictEqual(expired.topic.reasonKey, "aged-out");
+      assert.strictEqual(expired.topic.decidedBy, "rule");
+      const filtered = yield* service.listTopics({
+        projectId: PROJECT_ID,
+        list: "skipped",
+        filter: { reasonKey: "aged-out" },
+      });
+      assert.deepStrictEqual(
+        filtered.topics.map((row) => row.topic.id),
+        ["pr-1"],
+      );
+
+      yield* service.undoDecisions({ projectId: PROJECT_ID, undoToken: applied.undoToken! });
+      assert.strictEqual(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: "pr-1" })).row.state,
+        "inbox",
+      );
+    }),
+  );
+
+  it.effect(
+    "auto-queues confident critical security fixes from a run, within the daily limit",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 3 });
+        fixture.host.settings = {
+          ...fixture.host.settings,
+          upstreamPorts: {
+            ...fixture.host.settings.upstreamPorts,
+            portModelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+            portReview: { enabled: false, reviewerA: null, reviewerB: null, consolidation: null },
+            autoPort: { mode: "security-and-bugs", dailyLimit: 1 },
+          },
+        };
+        fixture.host.triage = triageAll((sha) =>
+          sha === fixture.upstream[2]
+            ? { kind: "security", severity: "critical", confidence: 0.95 }
+            : sha === fixture.upstream[1]
+              ? { kind: "security", severity: "high", confidence: 0.9 }
+              : // High impact, but its files are not in f5.
+                { kind: "fix", userImpact: "high", confidence: 0.95 },
+        );
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* service.testing.awaitIdle;
+        const queue = makeQueueStore(yield* SqlClient.SqlClient);
+        const entries = yield* queue.listQueue(PROJECT_ID);
+        assert.strictEqual(entries.length, 1);
+        const [queuedId] = entries[0]!.topicIds;
+        const queued = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: queuedId! })).row;
+        assert.strictEqual(queued.topic.decidedBy, "llm");
+        assert.strictEqual(queued.topic.suggestion?.severity, "critical");
+        const inbox = yield* service.listTopics({
+          projectId: PROJECT_ID,
+          list: "inbox",
+          filter: { lane: ["security"] },
+        });
+        assert.deepStrictEqual(
+          inbox.topics.map((row) => row.topic.suggestion?.severity),
+          ["high"],
+        );
+        // Dequeuing the topic does not give its daily slot back.
+        yield* service.dequeuePort({ projectId: PROJECT_ID, topicIds: [queuedId!] });
+        assert.strictEqual(
+          yield* queue.countTopicsRequestedSince(PROJECT_ID, "auto-port:", "2000-01-01T00:00:00Z"),
+          1,
+        );
+      }),
+  );
+
+  it.effect(
+    "holds auto-port, deciding nothing, until reviewers are chosen or the provider is available",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 1 });
+        const autoPortSettings = (overrides: object) => ({
+          ...fixture.host.settings,
+          upstreamPorts: {
+            ...fixture.host.settings.upstreamPorts,
+            portModelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+            autoPort: { mode: "security" as const, dailyLimit: 5 },
+            ...overrides,
+          },
+        });
+        // Review is on (the default) but no reviewer models are saved yet.
+        fixture.host.settings = autoPortSettings({});
+        fixture.host.triage = triageAll(() => ({
+          kind: "security",
+          severity: "critical",
+          confidence: 0.95,
+        }));
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* service.testing.awaitIdle;
+        const queue = makeQueueStore(yield* SqlClient.SqlClient);
+        assert.strictEqual((yield* queue.listQueue(PROJECT_ID)).length, 0);
+        assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts.inbox, 2);
+        assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts.ready, 0);
+
+        // The saved port model's provider instance is gone.
+        const second = yield* setup({ count: 1 });
+        second.host.settings = {
+          ...second.host.settings,
+          upstreamPorts: {
+            ...second.host.settings.upstreamPorts,
+            portModelSelection: { instanceId: "missing", model: "claude-test" } as never,
+            portReview: { enabled: false, reviewerA: null, reviewerB: null, consolidation: null },
+            autoPort: { mode: "security", dailyLimit: 5 },
+          },
+        };
+        second.host.triage = fixture.host.triage;
+        const other = yield* second.make();
+        yield* other.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+        yield* other.testing.awaitIdle;
+        assert.strictEqual((yield* queue.listQueue(PROJECT_ID)).length, 0);
+        assert.strictEqual((yield* other.getOverview(PROJECT_ID)).counts.ready, 0);
+      }),
+  );
+
+  it.effect("never auto-queues without a port model", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ count: 1 });
+      fixture.host.settings = {
+        ...fixture.host.settings,
+        upstreamPorts: {
+          ...fixture.host.settings.upstreamPorts,
+          portModelSelection: null,
+          autoPort: { mode: "security", dailyLimit: 5 },
+        },
+      };
+      fixture.host.triage = triageAll(() => ({
+        kind: "security",
+        severity: "critical",
+        confidence: 0.95,
+      }));
+      const service = yield* fixture.make();
+      yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+      yield* service.testing.awaitIdle;
+      assert.strictEqual(
+        (yield* makeQueueStore(yield* SqlClient.SqlClient).listQueue(PROJECT_ID)).length,
+        0,
+      );
+      assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts.inbox, 2);
+    }),
+  );
+
   it.effect("stops at the call budget with a partial run and resumes from the recorded chunk", () =>
     Effect.gen(function* () {
       const fixture = yield* setup({ count: 12 });
@@ -2877,7 +3148,7 @@ layer("upstream ports service", (it) => {
       fixture.host.settings = {
         ...fixture.host.settings,
         upstreamPorts: {
-          portReview: fixture.host.settings.upstreamPorts.portReview,
+          ...fixture.host.settings.upstreamPorts,
           portConcurrency: 5,
           autoRecordOutcomes: true,
           schedule: { mode: "daily", hour: 0, weekday: 1 },

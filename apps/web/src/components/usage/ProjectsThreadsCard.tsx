@@ -95,7 +95,7 @@ export function ProjectsThreadsCard(props: {
       key: project.projectId ?? "\u0000unattributed",
       name:
         project.projectId === null
-          ? "Unattributed historical cost"
+          ? "Usage without a project"
           : props.projectName(project.projectId, project.title),
       deleted: project.deleted,
       projectId: project.projectId,

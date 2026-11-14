@@ -2,7 +2,7 @@ import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
 import { performance } from "node:perf_hooks";
-import { measureTree, type DiskUsageFs } from "../src/storage/diskUsage.ts";
+import { measureTree, readStorageStat, type DiskUsageFs } from "../src/storage/diskUsage.ts";
 
 const count = Number(process.argv[2] ?? 100_000);
 if (!Number.isSafeInteger(count) || count < 1 || count > 1_000_000)
@@ -37,7 +37,7 @@ try {
     }
   };
   const fs: DiskUsageFs = {
-    lstat: (path) => tracked(() => FS.lstat(path)),
+    lstat: (path) => tracked(() => readStorageStat(path)),
     readdir: (path, options) => tracked(() => FS.readdir(path, options)),
   };
   const initialRss = process.memoryUsage().rss;

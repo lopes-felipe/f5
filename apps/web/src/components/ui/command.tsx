@@ -2,6 +2,8 @@
 
 import { Dialog as CommandDialogPrimitive } from "@base-ui/react/dialog";
 import { SearchIcon } from "lucide-react";
+import { useRef } from "react";
+import { isElectron } from "~/env";
 import type * as React from "react";
 import { cn } from "~/lib/utils";
 import {
@@ -46,6 +48,8 @@ function CommandDialogViewport({ className, ...props }: CommandDialogPrimitive.V
     <CommandDialogPrimitive.Viewport
       className={cn(
         "fixed inset-0 z-50 flex flex-col items-center px-4 py-[max(--spacing(4),4vh)] sm:py-[10vh]",
+        isElectron &&
+          "pt-[max(1rem,4vh,env(titlebar-area-height,0px))] sm:pt-[max(10vh,env(titlebar-area-height,0px))]",
         className,
       )}
       data-slot="command-dialog-viewport"
@@ -55,11 +59,14 @@ function CommandDialogViewport({ className, ...props }: CommandDialogPrimitive.V
 }
 
 function CommandDialogPopup({ className, children, ...props }: CommandDialogPrimitive.Popup.Props) {
+  const popupRef = useRef<HTMLDivElement>(null);
   return (
     <CommandDialogPortal>
       <CommandDialogBackdrop />
       <CommandDialogViewport>
         <CommandDialogPrimitive.Popup
+          initialFocus={() => popupRef.current?.querySelector("input") ?? true}
+          ref={popupRef}
           className={cn(
             "-translate-y-[calc(1.25rem*var(--nested-dialogs))] relative row-start-2 flex max-h-105 min-h-0 w-full min-w-0 max-w-xl scale-[calc(1-0.1*var(--nested-dialogs))] flex-col rounded-2xl border bg-popover text-popover-foreground opacity-[calc(1-0.1*var(--nested-dialogs))] shadow-lg/5 outline-none transition-[scale,opacity,translate] duration-200 ease-in-out will-change-transform before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:bg-muted/72 data-nested:data-ending-style:translate-y-8 data-nested:data-starting-style:translate-y-8 data-nested-dialog-open:origin-top data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 **:data-[slot=scroll-area-viewport]:data-has-overflow-y:pe-1",
             className,

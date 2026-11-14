@@ -183,6 +183,7 @@ export function SidebarRecentView(props: {
           routeThreadId={routeThreadId}
           expandByDefault={props.expandWorkflowThreadsByDefault}
           overrideExpanded={props.workflowExpandedById[item.entry.workflow.id]}
+          expansionOverrides={props.workflowExpandedById}
           onToggleCollapsed={props.projectActions.onToggleWorkflowCollapsed}
           onArchive={props.projectActions.onArchiveWorkflow}
           indicatorsForThread={props.indicatorsForThread}

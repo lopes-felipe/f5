@@ -326,6 +326,33 @@ describe("CodexAppServerManager protocol diagnostics", () => {
     expect(rejectedError?.message).toContain(`turn/start failed: ${original}`);
     expect(rejectedError?.message).toContain("Choose another model");
   });
+  it("preserves the raw -32600 writer conflict and never treats it as missing history", () => {
+    const manager = new CodexAppServerManager();
+    const reject = vi.fn();
+    const raw = "thread not found: thread already has an active writer";
+    const context = {
+      pending: new Map([
+        [
+          "1",
+          {
+            method: "thread/resume",
+            timeout: setTimeout(() => {}, 60_000),
+            resolve: vi.fn(),
+            reject,
+          },
+        ],
+      ]),
+    };
+    (
+      manager as unknown as { handleResponse: (context: unknown, response: unknown) => void }
+    ).handleResponse(context, { id: 1, error: { code: -32600, message: raw } });
+    const error = reject.mock.calls[0]![0] as CodexJsonRpcError;
+    expect(error.code).toBe(-32600);
+    expect(error.rawMessage).toBe(raw);
+    expect(error.message).toContain("Quit the other Codex");
+    expect(isRecoverableThreadResumeError(error)).toBe(false);
+    expect(context.pending.size).toBe(0);
+  });
 
   it("does not classify model/list method errors as unsupported-model errors", () => {
     const manager = new CodexAppServerManager();
@@ -548,7 +575,12 @@ describe("isRecoverableThreadResumeError", () => {
         new Error("thread/resume failed: no rollout found for thread id abc"),
       ),
     ).toBe(true);
-    for (const reason of ["rate limit exceeded", "unauthorized", "permission denied"]) {
+    for (const reason of [
+      "rate limit exceeded",
+      "unauthorized",
+      "permission denied",
+      "thread not found: already has an active writer",
+    ]) {
       expect(isRecoverableThreadResumeError(new Error(`thread/resume failed: ${reason}`))).toBe(
         false,
       );

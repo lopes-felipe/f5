@@ -44,10 +44,14 @@ export const UpstreamProjectConfig = Schema.Struct({
 });
 export type UpstreamProjectConfig = typeof UpstreamProjectConfig.Type;
 
-// ── Ledger v7 repository files ──────────────────────────────────────────
+// ── Ledger v8 repository files ──────────────────────────────────────────
 
-export const UPSTREAM_LEDGER_SCHEMA_VERSION = 7;
-export const UPSTREAM_RULES_SCHEMA_VERSION = 1;
+/** Written by F5. Version 7 files, which lack the v8 classification keys, still decode. */
+export const UPSTREAM_LEDGER_SCHEMA_VERSION = 8;
+const UpstreamLedgerSchemaVersion = Schema.Literals([7, UPSTREAM_LEDGER_SCHEMA_VERSION]);
+/** Written by F5 tooling; version 1 files (without `areas`) still decode. */
+export const UPSTREAM_RULES_SCHEMA_VERSION = 2;
+const UpstreamRulesSchemaVersion = Schema.Literals([1, UPSTREAM_RULES_SCHEMA_VERSION]);
 export const UPSTREAM_POLICY_MAX_BYTES = 16 * 1024;
 export const UPSTREAM_TOPIC_TITLE_MAX = 100;
 export const UPSTREAM_TOPIC_SUMMARY_MAX = 300;
@@ -77,7 +81,7 @@ export const UpstreamMembershipCommit = Schema.Struct({
 export type UpstreamMembershipCommit = typeof UpstreamMembershipCommit.Type;
 
 export const UpstreamIntervalFile = Schema.Struct({
-  schemaVersion: Schema.Literal(UPSTREAM_LEDGER_SCHEMA_VERSION),
+  schemaVersion: UpstreamLedgerSchemaVersion,
   interval: PositiveInt,
   baseSha: UpstreamSha,
   targetSha: UpstreamSha,
@@ -90,7 +94,7 @@ export const UpstreamIntervalFile = Schema.Struct({
 export type UpstreamIntervalFile = typeof UpstreamIntervalFile.Type;
 
 export const UpstreamLegacyBatchFile = Schema.Struct({
-  schemaVersion: Schema.Literal(UPSTREAM_LEDGER_SCHEMA_VERSION),
+  schemaVersion: UpstreamLedgerSchemaVersion,
   batch: PositiveInt,
   createdAt: UpstreamUtcTimestamp,
   count: NonNegativeInt,
@@ -129,6 +133,33 @@ export type UpstreamUserImpact = typeof UpstreamUserImpact.Type;
 export const UpstreamSuggestionStatus = Schema.Literals(["port", "skip", "watch", "equivalent"]);
 export type UpstreamSuggestionStatus = typeof UpstreamSuggestionStatus.Type;
 
+/** What a topic changes, from its conventional-commit prefixes and triage. */
+export const UpstreamChangeKind = Schema.Literals([
+  "security",
+  "fix",
+  "feat",
+  "perf",
+  "refactor",
+  "maintenance",
+  "revert",
+]);
+export type UpstreamChangeKind = typeof UpstreamChangeKind.Type;
+
+/** Set only on `security` topics. */
+export const UpstreamSecuritySeverity = Schema.Literals(["critical", "high", "medium", "low"]);
+export type UpstreamSecuritySeverity = typeof UpstreamSecuritySeverity.Type;
+
+/**
+ * How many of a topic's source paths (tests, docs, snapshots and lockfiles
+ * excluded) exist in the fork at triage time.
+ */
+export const UpstreamF5Coverage = Schema.Literals(["all", "partial", "none"]);
+export type UpstreamF5Coverage = typeof UpstreamF5Coverage.Type;
+
+/** Derived from the change kind; never stored. */
+export const UpstreamLane = Schema.Literals(["security", "bug", "perf", "feature", "maintenance"]);
+export type UpstreamLane = typeof UpstreamLane.Type;
+
 export const UpstreamTopicSuggestion = Schema.Struct({
   status: UpstreamSuggestionStatus,
   reasonKey: Schema.optionalKey(Schema.String),
@@ -141,6 +172,9 @@ export const UpstreamTopicSuggestion = Schema.Struct({
   conflict: Schema.optionalKey(Schema.Literal(true)),
   f5Refs: Schema.optionalKey(Schema.Array(Schema.String)),
   triageError: Schema.optionalKey(Schema.String),
+  kind: Schema.optionalKey(UpstreamChangeKind),
+  severity: Schema.optionalKey(UpstreamSecuritySeverity),
+  f5Coverage: Schema.optionalKey(UpstreamF5Coverage),
 });
 export type UpstreamTopicSuggestion = typeof UpstreamTopicSuggestion.Type;
 
@@ -171,7 +205,7 @@ export const UpstreamTopic = Schema.Struct({
 export type UpstreamTopic = typeof UpstreamTopic.Type;
 
 export const UpstreamTopicFile = Schema.Struct({
-  schemaVersion: Schema.Literal(UPSTREAM_LEDGER_SCHEMA_VERSION),
+  schemaVersion: UpstreamLedgerSchemaVersion,
   month: UpstreamMonth,
   topics: Schema.Array(UpstreamTopic),
 });
@@ -184,14 +218,23 @@ export const UpstreamAutoSkipRule = Schema.Struct({
 });
 export type UpstreamAutoSkipRule = typeof UpstreamAutoSkipRule.Type;
 
+/** One entry of the area taxonomy triage picks from; aliases normalize free-form areas. */
+export const UpstreamAreaDefinition = Schema.Struct({
+  key: Schema.String,
+  label: Schema.String,
+  aliases: Schema.Array(Schema.String),
+});
+export type UpstreamAreaDefinition = typeof UpstreamAreaDefinition.Type;
+
 export const UpstreamRules = Schema.Struct({
-  schemaVersion: Schema.Literal(UPSTREAM_RULES_SCHEMA_VERSION),
+  schemaVersion: UpstreamRulesSchemaVersion,
   reasonKeys: Schema.Array(Schema.String),
   reasonLabels: Schema.Record(Schema.String, Schema.String),
   upstreamOnlySubsystems: Schema.Array(Schema.String),
   ignoredPathPrefixes: Schema.Array(Schema.String),
   autoSkip: Schema.Array(UpstreamAutoSkipRule),
   autoSkipConfidence: Schema.Number,
+  areas: Schema.optionalKey(Schema.Array(UpstreamAreaDefinition)),
 });
 export type UpstreamRules = typeof UpstreamRules.Type;
 
@@ -211,6 +254,12 @@ export const UpstreamTriageGroup = Schema.Struct({
   confidence: Schema.Number,
   areas: Schema.Array(Schema.String),
   question: Schema.NullOr(Schema.String),
+  /**
+   * Plain strings so an off-list answer degrades to the deterministic kind;
+   * optional so output from an older prompt still decodes.
+   */
+  kind: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  severity: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type UpstreamTriageGroup = typeof UpstreamTriageGroup.Type;
 
@@ -235,6 +284,8 @@ export const UPSTREAM_PORT_CONCURRENCY_MAX = 10;
 export const UPSTREAM_LIST_DEFAULT_LIMIT = 200;
 export const UPSTREAM_LIST_MAX_LIMIT = 500;
 export const UPSTREAM_LIST_IDS_MAX = 10_000;
+/** Topics below this score never enter the shortlist. */
+export const UPSTREAM_SHORTLIST_MIN_SCORE = 50;
 
 const TopicIds = (max: number) =>
   Schema.Array(UpstreamTopicId).check(Schema.isMinLength(1), Schema.isMaxLength(max));
@@ -259,7 +310,7 @@ export type UpstreamPortsListProjectsInput = typeof UpstreamPortsListProjectsInp
 export const UpstreamPortsProjectInput = Schema.Struct({ projectId: ProjectId });
 export type UpstreamPortsProjectInput = typeof UpstreamPortsProjectInput.Type;
 
-export const UpstreamRunKind = Schema.Literals(["upstream", "legacy", "retriage"]);
+export const UpstreamRunKind = Schema.Literals(["upstream", "legacy", "retriage", "reclassify"]);
 export type UpstreamRunKind = typeof UpstreamRunKind.Type;
 export const UpstreamRunTriage = Schema.Literals(["llm", "rules-only"]);
 export type UpstreamRunTriage = typeof UpstreamRunTriage.Type;
@@ -393,6 +444,8 @@ export const UpstreamOverview = Schema.Struct({
     running: NonNegativeInt,
     concurrency: PositiveInt,
     waitingOnFiles: NonNegativeInt,
+    /** Jobs with a topic that needs a decision. */
+    needsAttention: NonNegativeInt,
     paused: Schema.Boolean,
     pausedReason: Schema.NullOr(Schema.String),
     hold: Schema.NullOr(
@@ -411,6 +464,8 @@ export const UpstreamOverview = Schema.Struct({
   reasonKeys: Schema.Array(Schema.String),
   reasonLabels: Schema.Record(Schema.String, Schema.String),
   upstreamOnlySubsystems: Schema.Array(Schema.String),
+  /** The rules.json area taxonomy, for the area follow list. */
+  areas: Schema.Array(Schema.Struct({ key: Schema.String, label: Schema.String })),
 });
 export type UpstreamOverview = typeof UpstreamOverview.Type;
 
@@ -429,8 +484,14 @@ export const UpstreamSuggestionFilter = Schema.Literals([
 ]);
 export type UpstreamSuggestionFilter = typeof UpstreamSuggestionFilter.Type;
 
-/** `priority` (impact, then confidence) is the Inbox default; `newest` the default elsewhere. */
-export const UpstreamTopicSort = Schema.Literals(["priority", "newest", "oldest", "confidence"]);
+/** `score` is the Inbox default; `newest` the default elsewhere. `priority` sorts by impact, then confidence. */
+export const UpstreamTopicSort = Schema.Literals([
+  "score",
+  "priority",
+  "newest",
+  "oldest",
+  "confidence",
+]);
 export type UpstreamTopicSort = typeof UpstreamTopicSort.Type;
 
 export const UpstreamTopicFilter = Schema.Struct({
@@ -444,6 +505,14 @@ export const UpstreamTopicFilter = Schema.Struct({
   ),
   impact: Schema.optionalKey(Schema.Array(UpstreamUserImpact).check(Schema.isMaxLength(4))),
   area: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100))),
+  lane: Schema.optionalKey(Schema.Array(UpstreamLane).check(Schema.isMaxLength(5))),
+  /** Skips with this reason key only, e.g. `aged-out`. */
+  reasonKey: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100))),
+  /**
+   * Only the shortlist: topics scoring at least `UPSTREAM_SHORTLIST_MIN_SCORE`,
+   * the first `shortlistSize` of them by score, after every other filter.
+   */
+  shortlist: Schema.optionalKey(Schema.Boolean),
 });
 export type UpstreamTopicFilter = typeof UpstreamTopicFilter.Type;
 
@@ -476,6 +545,13 @@ export const UpstreamTopicFacets = Schema.Struct({
     medium: NonNegativeInt,
     low: NonNegativeInt,
     none: NonNegativeInt,
+  }),
+  lane: Schema.Struct({
+    security: NonNegativeInt,
+    bug: NonNegativeInt,
+    perf: NonNegativeInt,
+    feature: NonNegativeInt,
+    maintenance: NonNegativeInt,
   }),
   /** The 20 most common areas, plus the filtered area when it is not among them. */
   areas: Schema.Array(Schema.Struct({ area: Schema.String, count: NonNegativeInt })),
@@ -554,6 +630,9 @@ export const UpstreamTopicRow = Schema.Struct({
   links: Schema.Array(UpstreamPortLinkSummary),
   /** Merge commit PR number or f5 SHA that carried the completing trailer. */
   doneBy: Schema.NullOr(Schema.String),
+  lane: UpstreamLane,
+  /** 0-100; see `scoreUpstreamTopic` in `@t3tools/shared/upstreamPortsScore`. */
+  score: NonNegativeInt,
 });
 export type UpstreamTopicRow = typeof UpstreamTopicRow.Type;
 
@@ -744,6 +823,40 @@ export const UpstreamUndoDecisionsInput = Schema.Struct({
 });
 export type UpstreamUndoDecisionsInput = typeof UpstreamUndoDecisionsInput.Type;
 
+export const UPSTREAM_EXPIRE_DAYS_MIN = 1;
+export const UPSTREAM_EXPIRE_DAYS_MAX = 365;
+
+export const UpstreamExpireBacklogInput = Schema.Struct({
+  projectId: ProjectId,
+  /** Count only; nothing is decided. */
+  dryRun: Schema.Boolean,
+  /** Age threshold; topics scoring at or above the keep score get twice as long. */
+  olderThanDays: Schema.Int.check(
+    Schema.isBetween({ minimum: UPSTREAM_EXPIRE_DAYS_MIN, maximum: UPSTREAM_EXPIRE_DAYS_MAX }),
+  ),
+  /** See `UpstreamDecideInput.undoToken`. */
+  undoToken: Schema.optionalKey(UndoToken),
+});
+export type UpstreamExpireBacklogInput = typeof UpstreamExpireBacklogInput.Type;
+
+export const UpstreamExpireBacklogResult = Schema.Struct({
+  revision: Schema.String,
+  count: NonNegativeInt,
+  byLane: Schema.Struct({
+    bug: NonNegativeInt,
+    perf: NonNegativeInt,
+    feature: NonNegativeInt,
+    maintenance: NonNegativeInt,
+  }),
+  /** `null` for a dry run or when nothing expired. */
+  undoToken: Schema.NullOr(Schema.String),
+  /** Inbox topics without a stored classification; they never expire until reclassified. */
+  unclassified: NonNegativeInt,
+  /** Set when a batch failed after earlier batches expired: `count` covers those only. */
+  stoppedEarly: Schema.optionalKey(Schema.String),
+});
+export type UpstreamExpireBacklogResult = typeof UpstreamExpireBacklogResult.Type;
+
 export const UpstreamRunInput = Schema.Struct({
   projectId: ProjectId,
   kind: UpstreamRunKind,
@@ -833,9 +946,37 @@ export const UpstreamPortQueueStatus = Schema.Literals([
   "dropped",
 ]);
 export type UpstreamPortQueueStatus = typeof UpstreamPortQueueStatus.Type;
+/**
+ * Where one queued topic stands. `waiting` is a queued entry held back by
+ * another port's files; `resolved` means the topic was decided outside the
+ * queue; `superseded` means a later attempt or a new epoch replaced it.
+ */
+export const UpstreamPortQueueBucket = Schema.Literals([
+  "queued",
+  "waiting",
+  "executing",
+  "needs-attention",
+  "awaiting-review",
+  "done",
+  "recorded",
+  "resolved",
+  "superseded",
+  "omitted",
+  "cancelled",
+]);
+export type UpstreamPortQueueBucket = typeof UpstreamPortQueueBucket.Type;
+export const UpstreamPortQueueView = Schema.Literals(["active", "needs-you", "history"]);
+export type UpstreamPortQueueView = typeof UpstreamPortQueueView.Type;
 export const UpstreamGetPortQueueInput = Schema.Struct({
   projectId: ProjectId,
   statuses: Schema.optionalKey(Schema.Array(UpstreamPortQueueStatus)),
+  /**
+   * One tab of the queue, filtered and ordered before paging. Omitted, entries
+   * come back in queue position order with no filtering.
+   */
+  view: Schema.optionalKey(UpstreamPortQueueView),
+  /** History only: also list jobs that were cancelled, omitted or superseded. */
+  includeInactive: Schema.optionalKey(Schema.Boolean),
   cursor: Schema.optionalKey(Schema.String),
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
 });
@@ -851,12 +992,22 @@ export const UpstreamPortQueueEntry = Schema.Struct({
       epoch: PositiveInt,
       superseded: Schema.Boolean,
       result: Schema.NullOr(Schema.String),
+      bucket: UpstreamPortQueueBucket,
     }),
   ),
   status: UpstreamPortQueueStatus,
+  /** The most severe bucket among the entry's topics. */
+  bucket: UpstreamPortQueueBucket,
+  createdAt: Schema.String,
+  finishedAt: Schema.NullOr(Schema.String),
+  thread: Schema.NullOr(
+    Schema.Struct({ title: Schema.NullOr(Schema.String), status: Schema.NullOr(Schema.String) }),
+  ),
+  pr: Schema.NullOr(Schema.Struct({ number: Schema.NullOr(PositiveInt), url: Schema.String })),
   result: Schema.NullOr(Schema.String),
   reason: Schema.NullOr(Schema.String),
   threadId: Schema.NullOr(ThreadId),
+  /** @deprecated Use `pr.url`; kept for older clients. */
   prUrl: Schema.NullOr(Schema.String),
   fileCount: NonNegativeInt,
   waitingOn: Schema.Array(
@@ -865,6 +1016,10 @@ export const UpstreamPortQueueEntry = Schema.Struct({
       threadId: Schema.NullOr(ThreadId),
       prUrl: Schema.NullOr(Schema.String),
       needsAttention: Schema.optionalKey(Schema.Boolean),
+      threadTitle: Schema.NullOr(Schema.String),
+      prNumber: Schema.NullOr(PositiveInt),
+      /** Every blocking topic in that thread; blockers are listed once per thread. */
+      topicTitles: Schema.Array(Schema.String),
     }),
   ),
   ignoreConflicts: Schema.Boolean,
@@ -881,7 +1036,18 @@ export const UpstreamGetPortQueueResult = Schema.Struct({
     needsAttention: NonNegativeInt,
     omitted: NonNegativeInt,
     cancelled: NonNegativeInt,
+    done: NonNegativeInt,
+    resolved: NonNegativeInt,
+    superseded: NonNegativeInt,
   }),
+  /** Jobs per tab. `inactive` counts the history jobs hidden without `includeInactive`. */
+  viewCounts: Schema.Struct({
+    active: NonNegativeInt,
+    needsYou: NonNegativeInt,
+    history: NonNegativeInt,
+    inactive: NonNegativeInt,
+  }),
+  /** Equals `counts.done`; kept for older clients. */
   doneOnDefaultBranch: NonNegativeInt,
   baseEvidenceAt: Schema.NullOr(Schema.String),
   baseRefreshError: Schema.NullOr(Schema.String),

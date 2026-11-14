@@ -297,6 +297,25 @@ describe("TerminalManager", () => {
     }
   });
 
+  it("stops only opted-in busy actions on settlement and keeps their output", async () => {
+    const { manager, ptyAdapter } = makeManager(5, {
+      processTableReader: async () => new Set([9000, 9001, 9002]),
+    });
+    try {
+      await manager.open({ ...openInput(), stopOnSettle: true });
+      ptyAdapter.processes[0]!.emitData("action output\n");
+      await manager.open({ ...openInput(), terminalId: "busy" });
+      await manager.open({ ...openInput(), threadId: "thread-2", stopOnSettle: true });
+      await manager.closeIdleForThread("thread-1");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      await manager.closeOnSettleForThread("thread-1");
+      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([true, false, false]);
+      expect((await manager.open(openInput())).history).toContain("action output");
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it("preserves a terminal that receives input while its idle probe is in flight", async () => {
     let hold = false;
     let release: ((parents: ReadonlySet<number>) => void) | undefined;

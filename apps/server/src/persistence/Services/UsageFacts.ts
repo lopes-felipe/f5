@@ -1,4 +1,11 @@
-import type { IsoDateTime, ProjectId, ProviderKind, UsageTurnFact } from "@t3tools/contracts";
+import type {
+  IsoDateTime,
+  ProjectId,
+  ProviderKind,
+  ThreadId,
+  UsageThreadTurns,
+  UsageTurnFact,
+} from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
 
@@ -33,6 +40,8 @@ export interface UsageBucketSummaryInput {
  * `totalTokenTurnCount > 0` has a known total for every turn it covers.
  */
 export interface UsageAggregateRow {
+  readonly nativeInferenceCount?: number;
+  readonly unpricedNativeInferenceCount?: number;
   readonly provider: string;
   readonly model: string | null;
   readonly estimationEligibleTurnCount?: number;
@@ -85,6 +94,10 @@ export interface UsageScopeTitles {
 }
 
 export interface UsageFactRepositoryShape {
+  readonly readMuseRecordedIntervals: Effect.Effect<
+    ReadonlyArray<import("../../usage/museRecordedIntervals.ts").MuseRecordedInterval>,
+    ProjectionRepositoryError
+  >;
   readonly record: (fact: UsageTurnFact) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly readCoverageStartedAt: Effect.Effect<IsoDateTime, ProjectionRepositoryError>;
   readonly readUsageMetadata: Effect.Effect<UsageMetadata, ProjectionRepositoryError>;
@@ -100,6 +113,14 @@ export interface UsageFactRepositoryShape {
     readonly threadIds: ReadonlyArray<string>;
     readonly projectIds: ReadonlyArray<string>;
   }) => Effect.Effect<UsageScopeTitles, ProjectionRepositoryError>;
+  /**
+   * The thread's newest `limit` conversation turns, oldest first, with where
+   * that window starts. Asides and unknown providers are left out.
+   */
+  readonly listByThread: (input: {
+    readonly threadId: ThreadId;
+    readonly limit: number;
+  }) => Effect.Effect<UsageThreadTurns, ProjectionRepositoryError>;
 }
 
 export class UsageFactRepository extends ServiceMap.Service<

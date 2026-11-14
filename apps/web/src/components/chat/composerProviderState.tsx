@@ -1,5 +1,6 @@
 import { stepEffortOptions } from "./effortLevels";
 import {
+  type ModelCapabilities,
   type ProviderDriverKind,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -48,7 +49,10 @@ type TraitsRenderInput = {
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const { provider, model, models, modelOptions } = input;
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
+  const descriptors = getProviderOptionDescriptors({
+    caps,
+    selections: withImplicitFastModeDefault(caps, modelOptions),
+  });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
       descriptor.type === "select",
@@ -121,12 +125,31 @@ export function getComposerEffortDescriptors(
   return descriptors;
 }
 
+export function withImplicitFastModeDefault(
+  caps: ModelCapabilities,
+  options: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  if (
+    options?.some((option) => option.id === "fastMode") ||
+    !caps.optionDescriptors?.some(
+      (descriptor) => descriptor.id === "fastMode" && descriptor.type === "boolean",
+    )
+  ) {
+    return options ?? undefined;
+  }
+  return [...(options ?? []), { id: "fastMode", value: false }];
+}
+
 function renderTraitsControl(
   Component: typeof TraitsMenuContent | typeof TraitsPicker,
   input: TraitsRenderInput,
   presentation: { tintTrigger?: boolean } = {},
 ): ReactNode {
-  const { provider, threadRef, draftId, model, models, modelOptions } = input;
+  const { provider, threadRef, draftId, model, models } = input;
+  const modelOptions = withImplicitFastModeDefault(
+    getProviderModelCapabilities(models, model, provider),
+    input.modelOptions,
+  );
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   if (!hasTarget || !shouldRenderTraitsControls({ provider, models, model, modelOptions })) {
     return null;

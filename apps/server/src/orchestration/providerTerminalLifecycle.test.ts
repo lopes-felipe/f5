@@ -1,7 +1,43 @@
-import { CommandId, ThreadId, TurnId, type OrchestrationSession } from "@t3tools/contracts";
+import {
+  CommandId,
+  ThreadId,
+  TurnId,
+  type OrchestrationSession,
+  type OrchestrationThread,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { makeHistoryRecoveredSessionSet } from "./providerTerminalLifecycle.ts";
+import {
+  makeHistoryRecoveredSessionSet,
+  makeCompletedTurnUsageFact,
+  type TurnCompletedRuntimeEvent,
+} from "./providerTerminalLifecycle.ts";
+
+it("captures Muse identity from the terminal event rather than a replaceable session", () => {
+  const thread = {
+    id: "thread",
+    projectId: "project",
+    model: "muse",
+    latestTurn: {
+      turnId: "turn",
+      startedAt: "2026-08-01T12:00:00.000Z",
+      requestedAt: "2026-08-01T11:59:00.000Z",
+    },
+  } as unknown as OrchestrationThread;
+  const event = {
+    provider: "muse",
+    type: "turn.completed",
+    turnId: "turn",
+    eventId: "completion",
+    resumeCursor: { mspSessionId: "original-session" },
+    createdAt: "2026-08-01T12:01:00.000Z",
+    payload: { state: "completed", usage: { inputTokens: 100, outputTokens: 20 } },
+  } as unknown as TurnCompletedRuntimeEvent;
+  expect(makeCompletedTurnUsageFact({ event, thread })).toMatchObject({
+    nativeSessionId: "original-session",
+    startedAt: "2026-08-01T12:00:00.000Z",
+  });
+});
 
 describe("makeHistoryRecoveredSessionSet", () => {
   const threadId = ThreadId.makeUnsafe("thread");

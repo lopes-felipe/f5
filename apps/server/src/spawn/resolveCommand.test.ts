@@ -1,5 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -9,6 +18,7 @@ import { Effect } from "effect";
 
 import {
   clearCommandResolutionCache,
+  PathDirectoryListings,
   CommandNotFoundError,
   npmShimExecutable,
   preferGitForWindowsBinary,
@@ -21,7 +31,7 @@ import { runProviderCliCommand } from "../provider/providerCli.ts";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, statSync: vi.fn(actual.statSync) };
+  return { ...actual, statSync: vi.fn(actual.statSync), readdirSync: vi.fn(actual.readdirSync) };
 });
 
 function tempDir(prefix: string): string {
@@ -37,6 +47,34 @@ function writeExecutable(filePath: string): void {
 afterEach(clearCommandResolutionCache);
 
 describe("resolveExecutable", () => {
+  it("lists PATH directories once per scan and refreshes changed directories", () => {
+    const directory = tempDir("f5-listings-");
+    try {
+      writeExecutable(path.join(directory, "cursor.CMD"));
+      const pathDirectoryListings = new PathDirectoryListings();
+      const env = { PATH: directory, PATHEXT: ".EXE;.CMD" };
+      const options = { platform: "win32" as const, pathDirectoryListings };
+      vi.mocked(readdirSync).mockClear();
+      vi.mocked(statSync).mockClear();
+      expect(resolveExecutables("cursor", env, options)).toEqual([
+        path.join(directory, "cursor.CMD"),
+      ]);
+      expect(resolveExecutables("absent", env, options)).toEqual([]);
+      expect(readdirSync).toHaveBeenCalledTimes(1);
+      expect(
+        vi
+          .mocked(statSync)
+          .mock.calls.map(([file]) => file)
+          .filter((file) => file !== directory),
+      ).toEqual([path.join(directory, "cursor.CMD")]);
+      writeExecutable(path.join(directory, "late.EXE"));
+      utimesSync(directory, 4102444800, 4102444800);
+      expect(resolveExecutables("late", env, options)).toEqual([path.join(directory, "late.EXE")]);
+      expect(readdirSync).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("honors case-insensitive Path/PATHEXT keys, quoted entries, and extension order", () => {
     const directory = tempDir("f5 resolve command ");
     writeExecutable(path.join(directory, "agent.CMD"));

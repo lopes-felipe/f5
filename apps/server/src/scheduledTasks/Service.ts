@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { scheduledRunLeafSubmissions, scheduledRunHasSettledLeaves } from "./submissions.ts";
 import { makeShutdownSourceScope, registerShutdown } from "../shutdown.ts";
 import { scheduledExecutionConfiguration } from "@t3tools/shared/scheduledTasks";
@@ -1121,7 +1122,7 @@ export const makeScheduledTaskService = (deps: {
             const threadId = boundWorkspace
                 ? boundWorkspace.threadId
                 : ThreadId.makeUnsafe(crypto.randomUUID()),
-              submissionId = CommandId.makeUnsafe(crypto.randomUUID()),
+              submissionId = CommandId.makeUnsafe(timeOrderedUuid()),
               messageId = MessageId.makeUnsafe(crypto.randomUUID());
             const rewritten = rewriteComposerRuntimeSkillInvocationForSend({
               text: current.snapshot.prompt,

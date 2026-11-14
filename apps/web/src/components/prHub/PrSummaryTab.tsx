@@ -1,5 +1,5 @@
 import { ForgeReactionControl } from "./ForgeReactionControl";
-import { PrMarkdown } from "./PrMarkdown";
+import { PrDescription } from "./PrDescription";
 import { PrStackSection } from "./PrStackSection";
 import { ForgeControls } from "./ForgeControls";
 import { useState, type ReactNode } from "react";
@@ -108,7 +108,17 @@ export function PrSummaryTab({
               Description
             </h3>
             {detail.body.trim() ? (
-              <PrMarkdown body={detail.body} host={pr.host} provider={pr.provider} />
+              <PrDescription
+                key={pr.key}
+                pr={pr}
+                body={detail.body}
+                readingVersion={detailQuery.dataUpdatedAt}
+                canEdit={
+                  !!pr.forgeCapabilities?.edit.changeRequest &&
+                  !pr.repositoryArchived &&
+                  (githubDetails?.viewerCanUpdate ?? pr.provider !== "github")
+                }
+              />
             ) : (
               <p className="text-sm text-muted-foreground">No description provided.</p>
             )}

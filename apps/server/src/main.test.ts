@@ -19,6 +19,7 @@ afterEach(() => {
 });
 import { NetService } from "@t3tools/shared/Net";
 import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
+import { startDesktopAppControl } from "@t3tools/shared/desktopAppControl";
 
 import { CliConfig, recordStartupHeartbeat, t3Cli, type CliConfigShape } from "./main";
 import { ServerConfig, type ServerConfigShape } from "./config";
@@ -105,6 +106,26 @@ beforeEach(() => {
 });
 
 it.layer(testLayer)("server CLI command", (it) => {
+  it.effect("opens a project through app without starting the server", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-cli-app-"));
+      const opened: string[] = [];
+      const close = yield* Effect.promise(() =>
+        startDesktopAppControl(root, async (request) => {
+          opened.push(request.path);
+        }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await close();
+          FS.rmSync(root, { recursive: true, force: true });
+        }),
+      );
+      yield* runCli(["--state-dir", root, "app", root]);
+      assert.deepEqual(opened, [FS.realpathSync.native(root)]);
+      assert.equal(start.mock.calls.length, 0);
+    }),
+  );
   it.effect("parses all CLI flags and wires scoped start/stop", () =>
     Effect.gen(function* () {
       yield* runCli([
@@ -237,6 +258,22 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.logWebSocketEvents, true);
       assert.equal(resolvedConfig?.observabilityEnabled, false);
       assert.equal(findAvailablePort.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("removes the auth token from its own environment once the config holds it", () =>
+    Effect.gen(function* () {
+      const previous = process.env.T3CODE_AUTH_TOKEN;
+      process.env.T3CODE_AUTH_TOKEN = "inherited-by-every-child";
+      try {
+        yield* runCli(["--auth-token", "token-secret"]);
+
+        assert.equal(resolvedConfig?.authToken, "token-secret");
+        assert.isUndefined(process.env.T3CODE_AUTH_TOKEN);
+      } finally {
+        if (previous === undefined) delete process.env.T3CODE_AUTH_TOKEN;
+        else process.env.T3CODE_AUTH_TOKEN = previous;
+      }
     }),
   );
 
@@ -525,6 +562,28 @@ it.layer(testLayer)("server CLI command", (it) => {
 
       assert.equal(start.mock.calls.length, 0);
       assert.equal(stop.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("reads trusted proxies from the flag or the environment and rejects bad ones", () =>
+    Effect.gen(function* () {
+      yield* runCli(["--trusted-proxy", "10.0.0.5, 172.16.0.0/12"], {
+        T3CODE_NO_BROWSER: "true",
+        F5_TRUSTED_PROXIES: "192.0.2.1",
+      });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, ["10.0.0.5", "172.16.0.0/12"]);
+
+      yield* runCli([], { T3CODE_NO_BROWSER: "true", F5_TRUSTED_PROXIES: "192.0.2.1" });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, ["192.0.2.1"]);
+
+      yield* runCli([], { T3CODE_NO_BROWSER: "true" });
+      assert.deepStrictEqual(resolvedConfig?.trustedProxies, []);
+      assert.equal(start.mock.calls.length, 3);
+
+      yield* runCli(["--trusted-proxy", "proxy.example"], { T3CODE_NO_BROWSER: "true" }).pipe(
+        Effect.catch(() => Effect.void),
+      );
+      assert.equal(start.mock.calls.length, 3);
     }),
   );
 

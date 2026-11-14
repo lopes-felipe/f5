@@ -422,6 +422,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeExit: null,
           hasRunningSubprocess: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          stopOnSettle: input.stopOnSettle ?? false,
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
@@ -429,6 +430,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         return this.snapshot(session);
       }
 
+      if (input.stopOnSettle !== undefined) existing.stopOnSettle = input.stopOnSettle;
       const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
       const currentRuntimeEnv = existing.runtimeEnv;
       const targetCols = input.cols ?? existing.cols;
@@ -570,6 +572,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeExit: null,
           hasRunningSubprocess: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          stopOnSettle: false,
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
@@ -620,6 +623,15 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       }
       this.updateSubprocessPollingState();
     });
+  }
+
+  async closeOnSettleForThread(threadId: string): Promise<void> {
+    await this.runWithThreadLock(threadId, async () => {
+      for (const session of this.sessionsForThread(threadId)) {
+        if (session.stopOnSettle) await this.closeSession(threadId, session.terminalId, false);
+      }
+    });
+    await this.closeIdleForThread(threadId);
   }
 
   async closeIdleForThread(threadId: string): Promise<void> {
@@ -1677,6 +1689,12 @@ export const TerminalManagerLive = Layer.effect(
           try: () => runtime.closeIdleForThread(threadId),
           catch: (cause) =>
             new TerminalError({ message: "Could not verify and close idle terminals", cause }),
+        }),
+      closeOnSettleForThread: (threadId) =>
+        Effect.tryPromise({
+          try: () => runtime.closeOnSettleForThread(threadId),
+          catch: (cause) =>
+            new TerminalError({ message: "Could not close settled terminals", cause }),
         }),
       createAccountProcess: (input) =>
         ptyAdapter

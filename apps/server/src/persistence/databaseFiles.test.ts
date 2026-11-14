@@ -47,8 +47,12 @@ describe("assertDatabaseFileUsable", () => {
     const stateDir = tempStateDir();
     const dbPath = Path.join(stateDir, "state.sqlite");
     FS.writeFileSync(dbPath, "ready");
-    FS.mkdirSync(Path.join(stateDir, "backups", "snapshot-1790000000000"), { recursive: true });
-    FS.mkdirSync(Path.join(stateDir, "backups", "snapshot-1790000360000"), { recursive: true });
+    for (const name of ["snapshot-1790000000000", "snapshot-1790000360000"]) {
+      FS.mkdirSync(Path.join(stateDir, "backups", name), { recursive: true });
+      FS.writeFileSync(Path.join(stateDir, "backups", name, "state.sqlite"), "copy");
+    }
+    // Newer, but emptied by storage cleanup: not a copy anyone can restore.
+    FS.mkdirSync(Path.join(stateDir, "backups", "snapshot-1790000720000"));
     expect(() => assertDatabaseFileUsable(dbPath)).toThrow(
       /damaged \(missing the SQLite file header; 5 bytes\).*snapshot-1790000360000/su,
     );

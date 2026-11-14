@@ -302,6 +302,68 @@ function makeThreadDetails(
   };
 }
 
+describe("unlisted thread detail hydration", () => {
+  const threadId = ThreadId.makeUnsafe("thread-1");
+  const emptyState = () => ({ ...makeState(makeThread()), threads: [] });
+
+  it("opens a thread from detail before it appears in the shell", () => {
+    const details = makeThreadDetails({
+      thread: makeReadModelThread({ title: "Just created" }),
+      messages: [
+        {
+          id: MessageId.makeUnsafe("detail-message"),
+          role: "user",
+          text: "Hello",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-02T00:00:00Z",
+          updatedAt: "2026-01-02T00:00:00Z",
+        },
+      ],
+    });
+    const state = syncThreadTailDetails(emptyState(), threadId, details);
+    expect(state.threads).toHaveLength(1);
+    expect(state.threads[0]).toMatchObject({
+      id: threadId,
+      title: "Just created",
+      detailsLoaded: true,
+    });
+    expect(state.threads[0]?.messages.map((message) => message.id)).toEqual(["detail-message"]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    makeReadModelThread({ deletedAt: "2026-01-02T00:00:00Z" }),
+    makeReadModelThread({ archivedAt: "2026-01-02T00:00:00Z" }),
+    makeReadModelThread({ id: ThreadId.makeUnsafe("another-thread") }),
+  ])("does not seed missing, removed, or mismatched threads: %j", (thread) => {
+    const state = emptyState();
+    expect(syncThreadTailDetails(state, threadId, makeThreadDetails({ thread }))).toBe(state);
+  });
+
+  it("does not resurrect a thread from a tail older than the shell", () => {
+    const state = { ...emptyState(), lastAppliedSequence: 3 };
+    expect(
+      syncThreadTailDetails(
+        state,
+        threadId,
+        makeThreadDetails({ thread: makeReadModelThread({}) }),
+      ),
+    ).toBe(state);
+  });
+
+  it("preserves newer shell metadata when an earlier detail request finishes", () => {
+    const state = makeState(makeThread({ title: "Newer shell title" }));
+    const next = syncThreadTailDetails(
+      state,
+      threadId,
+      makeThreadDetails({ thread: makeReadModelThread({ title: "Earlier title" }) }),
+    );
+    expect(next.threads[0]?.title).toBe("Newer shell title");
+  });
+});
+
 function makeEvent<TType extends OrchestrationEvent["type"]>(
   type: TType,
   payload: Extract<OrchestrationEvent, { type: TType }>["payload"],
@@ -1986,6 +2048,57 @@ describe("store read model sync", () => {
     });
   });
 
+  it("preserves loaded resolved approvals and deduplicates pending cards on tail refresh", () => {
+    const row = (id: string, sequence: number, kind: string, requestId?: string) => ({
+      id: EventId.makeUnsafe(id),
+      sequence,
+      kind,
+      tone: "info" as const,
+      summary: id,
+      payload: requestId ? { requestId } : {},
+      turnId: null,
+      createdAt: "2026-04-01T09:00:00.000Z",
+    });
+    const requested = row("requested", 1, "approval.requested", "done");
+    const resolved = row("resolved", 2, "approval.resolved", "done");
+    const pending = row("pending", 0, "approval.requested", "open");
+    const tail = row("tail", 4, "runtime.note");
+    const thread = makeThread({
+      detailsLoaded: true,
+      activities: [pending, requested, resolved, tail],
+    });
+    const details = makeThreadDetails({
+      activities: [pending, tail],
+      detailSequence: 10,
+      hasOlderActivities: true,
+      oldestLoadedActivityCursor: {
+        sequenceIsNull: false,
+        sequence: 4,
+        createdAt: tail.createdAt,
+        activityId: tail.id,
+      },
+    });
+    const refreshed = syncThreadTailDetails(makeState(thread), thread.id, details);
+    expect(refreshed.threads[0]!.activities.map((activity) => activity.id)).toEqual([
+      pending.id,
+      requested.id,
+      resolved.id,
+      tail.id,
+    ]);
+    const answer = row("answer", 5, "approval.resolved", "open");
+    const closed = syncThreadTailDetails(refreshed, thread.id, {
+      ...details,
+      activities: [tail, answer],
+      detailSequence: 11,
+    });
+    expect(closed.threads[0]!.activities.map((activity) => activity.id)).toEqual([
+      pending.id,
+      requested.id,
+      resolved.id,
+      tail.id,
+      answer.id,
+    ]);
+  });
   it("beginThreadDetailLoad retains an existing buffer until all owners release it", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const initialState = {

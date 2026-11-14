@@ -865,6 +865,16 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("preserves meaningful whitespace in configured Codex homes", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const homes = { homePath: "/accounts/work ", shadowHomePath: " /accounts/private " };
+      const next = yield* serverSettings.updateSettings({ providers: { codex: homes } });
+      assert.equal(next.providers.codex.homePath, homes.homePath);
+      assert.equal(next.providers.codex.shadowHomePath, homes.shadowHomePath);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("trims observability settings when updates are applied", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsService;

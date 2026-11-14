@@ -1,4 +1,5 @@
 import { makeScheduledTaskStore } from "../../scheduledTasks/Store.ts";
+import { isApprovalClosingActivity } from "@t3tools/shared/pendingActivityWindow";
 import {
   makeScheduledRunProjector,
   SCHEDULED_RUN_EVENT_TYPES,
@@ -2448,7 +2449,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           const existingRow = yield* projectionPendingApprovalRepository.getByRequestId({
             requestId,
           });
-          if (event.payload.activity.kind === "approval.resolved") {
+          if (isApprovalClosingActivity(event.payload.activity)) {
             const resolvedDecisionRaw =
               typeof event.payload.activity.payload === "object" &&
               event.payload.activity.payload !== null &&

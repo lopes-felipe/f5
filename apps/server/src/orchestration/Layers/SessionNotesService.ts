@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { registerShutdown } from "../../shutdown.ts";
 import {
   CommandId,
@@ -74,7 +75,7 @@ function shouldTriggerRefresh(event: SessionNotesTriggerEvent): boolean {
 }
 
 const sessionNotesCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`session-notes:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`session-notes:${tag}:${timeOrderedUuid()}`);
 
 function normalizeMultilineSection(value: string, maxChars: number): string {
   const normalized = value

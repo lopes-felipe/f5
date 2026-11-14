@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { readIncompleteHistory } from "../provider/runtimePayload.ts";
 import { readPersistedSessionGeneration } from "../provider/sessionCapabilities.ts";
 import {
@@ -354,7 +355,7 @@ function buildSnapshotCommandId(
   tag: string,
 ): CommandId {
   return CommandId.makeUnsafe(
-    `provider:snapshot:${source}:${threadId}:${turnId}:${tag}:${crypto.randomUUID()}`,
+    `provider:snapshot:${source}:${threadId}:${turnId}:${tag}:${timeOrderedUuid()}`,
   );
 }
 
@@ -461,11 +462,19 @@ export const reconcileCodexThreadSnapshots = (
               return;
             const turn = snapshot.turns.find((entry) => entry.id === incomplete.turnId);
             if (!turn) return;
+            // Tool items are verified against recorded activities, which a thread
+            // archived before startup has not loaded yet.
+            yield* (
+              dependencies.orchestrationEngine.ensureThreadActivities?.([threadId]) ?? Effect.void
+            );
+            const verifiedThread = (yield* getCurrentThread(threadId)) ?? currentThread;
+            // The load failed: nothing can be verified against partial activities.
+            if (verifiedThread.activitiesOmitted) return;
             // Every item must be verifiable before anything is written: partial
             // repair is never proof that the whole stream was recovered.
             const classification = classifyIncompleteTurnItems(
               turn,
-              currentThread,
+              verifiedThread,
               incomplete.turnId,
             );
             if (classification.kind === "unsupported") {

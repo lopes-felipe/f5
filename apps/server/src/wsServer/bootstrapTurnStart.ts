@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { OrchestrationOverloadError } from "../orchestration/Errors.ts";
 import { dispatchVerifiedWorkspace } from "../project/workspaceTransitionContext.ts";
 import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../project/worktreeBase.ts";
@@ -61,7 +62,7 @@ interface BootstrapPreviousThreadMeta {
 }
 
 const serverCommandId = (tag: string): CommandId =>
-  CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
 const stripBootstrapFromTurnStart = (
   command: ThreadTurnStartCommand,

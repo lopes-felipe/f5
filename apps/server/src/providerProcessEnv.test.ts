@@ -56,6 +56,17 @@ describe("buildProviderChildProcessEnv", () => {
     ).toEqual({ PATH: "/usr/bin" });
   });
 
+  it("never passes the backend's own auth token to F5's children", () => {
+    expect(
+      buildProviderChildProcessEnv({
+        PATH: "/usr/bin",
+        T3CODE_AUTH_TOKEN: "backend-credential",
+        t3code_auth_token: "lowercase",
+        T3CODE_CODEX_LAUNCH_ARGS: "--legacy",
+      }),
+    ).toEqual({ PATH: "/usr/bin", T3CODE_CODEX_LAUNCH_ARGS: "--legacy" });
+  });
+
   it("treats env keys case-insensitively and applies overrides", () => {
     const env = buildProviderChildProcessEnv(
       {
@@ -239,6 +250,20 @@ describe("profile browser environment", () => {
       );
     }
   });
+});
+
+it("keeps the backend auth token from every Default-profile child", () => {
+  const stateDir = Path.resolve("default-profile");
+  for (const purpose of ["provider", "terminal", "git", "account"] as const) {
+    const env = buildAccountExecutionEnvironment({
+      purpose,
+      stateDir,
+      profile: fallbackDefaultProfile(stateDir),
+      baseEnv: { HOME: "machine", T3CODE_AUTH_TOKEN: "backend-credential" },
+    });
+    expect(env.T3CODE_AUTH_TOKEN).toBeUndefined();
+    expect(env.HOME).toBe("machine");
+  }
 });
 
 it("preserves Default reserved overrides and deliberate telemetry endpoints", () => {

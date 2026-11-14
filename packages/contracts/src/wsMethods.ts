@@ -119,6 +119,7 @@ export const WS_METHODS = {
   serverUndoClaudeTranscriptRepair: "server.undoClaudeTranscriptRepair",
   serverReportClientDiagnostics: "server.reportClientDiagnostics",
   serverGetConfig: "server.getConfig",
+  serverGetHealth: "server.getHealth",
   serverUpdateSettings: "server.updateSettings",
   serverGetProjectSettings: "server.getProjectSettings",
   serverMigrateClientSetting: "server.migrateClientSetting",

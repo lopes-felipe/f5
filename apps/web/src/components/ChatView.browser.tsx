@@ -12,6 +12,7 @@ import {
   AGENTS_WS_METHODS,
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
+  USAGE_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
@@ -1323,6 +1324,10 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // The prompt cache indicator's history: a thread with no recorded turns.
+  if (tag === USAGE_WS_METHODS.getThreadTurns) {
+    return { turns: [], firstTurnId: null, earlierTurnCount: 0 };
+  }
   // `null` means the provider history is complete; `{}` would show the recovery banner.
   if (tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) return null;
   // The chat header lists the conversation's automations from the shared task list.
@@ -2086,6 +2091,35 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline (full app)", () => {
+  it("focuses search when the add-project intent opens the real palette submenu", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-palette-add-project-focus" as MessageId,
+        targetText: "Palette focus regression",
+      }),
+    });
+    try {
+      await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+      useCommandPaletteStore.getState().openAddProject();
+      const back = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="command-palette"] button[aria-label="Back"]',
+          ),
+        "Add-project submenu should render its Back button.",
+      );
+      await expect.element(page.elementLocator(back)).toBeVisible();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
+        "Add-project search should render.",
+      );
+      await expect.element(page.elementLocator(input)).toHaveFocus();
+    } finally {
+      useCommandPaletteStore.getState().setOpen(false);
+      await mounted.cleanup();
+    }
+  });
   it.each(["message", "plan"] as const)(
     "finds and reveals an unloaded older %s without changing the draft or sending",
     async (kind) => {
@@ -3624,9 +3658,10 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(() => expect(editor.textContent).toContain("Dismissed answer"));
 
       await mounted.router.navigate({ to: "/" });
-      await expect
-        .element(page.getByText("Which approach?", { exact: true }))
-        .not.toBeInTheDocument();
+      // Home lists the waiting thread with its question, so wait for the thread's composer to go.
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-chat-composer-shell="true"]')).toBeNull(),
+      );
       const dismissal = createThreadActivity({
         id: "question-dismissed",
         createdAt: isoAt(202),

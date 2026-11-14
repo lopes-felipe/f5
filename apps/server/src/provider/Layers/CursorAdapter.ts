@@ -39,6 +39,7 @@ import {
 } from "@t3tools/contracts";
 import { cursorModelOptionsToProviderOptionSelections } from "@t3tools/shared/model";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import {
   DateTime,
   Deferred,
@@ -443,7 +444,7 @@ export function makeCursorAdapter(
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-    const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.make(id));
+    const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.make(timeOrderedUuid(id)));
     const makeEventStamp = (ctx?: CursorSessionContext) => {
       const identity = ctx?.eventIdentity;
       return Effect.all({ eventId: nextEventId, createdAt: nowIso }).pipe(

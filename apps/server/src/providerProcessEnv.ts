@@ -13,6 +13,7 @@ import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
+import { SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
 const CODEX_PACKAGE_MANAGER_ENV = new Set<string>(CODEX_PACKAGE_MANAGER_ENV_NAMES);
 
@@ -21,9 +22,15 @@ function isBlockedProviderEnvKey(key: string): boolean {
   return (
     // Only the spawn site that knows the thread may set a browser-open token; an inherited one
     // (for example, F5 started from another F5's terminal) never reaches F5's children.
-    ["F5_STANDALONE", "F5_STANDALONE_DIR", "F5_INSTALL_ROOT", BROWSER_OPEN_TOKEN_ENV].includes(
-      normalizedKey,
-    ) ||
+    // The backend's own credential never reaches them either: a child holding it could connect
+    // as a client, answer its own approval requests and open terminals.
+    [
+      "F5_STANDALONE",
+      "F5_STANDALONE_DIR",
+      "F5_INSTALL_ROOT",
+      BROWSER_OPEN_TOKEN_ENV,
+      SERVER_AUTH_TOKEN_ENV,
+    ].includes(normalizedKey) ||
     CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
     BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
   );
