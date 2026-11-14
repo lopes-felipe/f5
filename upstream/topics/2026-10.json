@@ -4710,11 +4710,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-14T01:16:37.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-13130",
-      "status": "port",
+      "reason": "Skipped at your request.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
