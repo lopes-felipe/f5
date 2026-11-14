@@ -1,4 +1,5 @@
 import { DesktopAppActivationCoordinator } from "../components/DesktopAppActivationCoordinator";
+import { RunningThreadSync } from "../components/RunningThreadSync";
 import { createOrchestrationSyncController } from "../orchestration/syncController";
 export {
   applyProviderAdvisoriesToServerConfig,
@@ -102,6 +103,7 @@ function RootRouteView() {
       <ToastProvider position={toastPosition}>
         <AnchoredToastProvider>
           <EventRouter />
+          <RunningThreadSync />
           <DesktopProjectBootstrap />
           <HtmlPreviewHost />
           <SlowRpcWarningToastCoordinator />

@@ -22,6 +22,21 @@ Repository action templates from `f5.json` or `t3.json` can be reviewed and impo
 one at a time. Automatic execution and shortcuts are not imported from repository files.
 Each project keeps its own checkout and settings scope in F5.
 
+For its icon, choose **Automatic**, a custom monogram, an emoji, a colored symbol, or
+**Image from project**. For an image, enter a path relative to the project, such as
+`assets/logo.png`, and select **Save image**. Images outside the project and symlinks
+are rejected. Automatic icons use the discovered project favicon and fall back to a
+monogram.
+
+Two optional controls live in global **Settings → Conversation**:
+
+- **Proactive panels** opens linked pull requests and completed-turn diffs. A manual
+  panel choice made during a turn takes priority, and a dismissed diff stays dismissed.
+- **Keep running threads synced** keeps active desktop threads ready to open, including
+  threads outside the recent-thread cache. It uses additional memory while they run.
+
+Both controls start off.
+
 ## Where values come from
 
 F5 uses the first value it finds:

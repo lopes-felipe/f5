@@ -422,6 +422,42 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it("serves a chosen project image instead of automatic discovery", async () => {
+    const root = makeTempDir("f5-manual-icon-");
+    fs.writeFileSync(path.join(root, "favicon.svg"), "<svg>automatic</svg>");
+    fs.writeFileSync(path.join(root, "chosen.svg"), "<svg>chosen</svg>");
+    await withRouteServer(new Map([[PROJECT_ID, root]]), async (baseUrl) => {
+      const response = await request(
+        baseUrl,
+        `/api/project-favicon?projectId=${PROJECT_ID}&iconPath=chosen.svg`,
+      );
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe("<svg>chosen</svg>");
+    });
+  });
+
+  it("rejects chosen icons outside the project and symlinks, without reading their content", async () => {
+    const root = makeTempDir("f5-manual-icon-root-");
+    const outside = makeTempDir("f5-manual-icon-outside-");
+    fs.writeFileSync(path.join(outside, "outside.svg"), "<svg>outside</svg>");
+    fs.symlinkSync(path.join(outside, "outside.svg"), path.join(root, "linked.svg"));
+    await withRouteServer(new Map([[PROJECT_ID, root]]), async (baseUrl) => {
+      for (const iconPath of [
+        path.join(outside, "outside.svg"),
+        "../outside.svg",
+        "linked.svg",
+        "x".repeat(513),
+      ]) {
+        const response = await request(
+          baseUrl,
+          `/api/project-favicon?projectId=${PROJECT_ID}&iconPath=${encodeURIComponent(iconPath)}`,
+        );
+        expect(response.statusCode).not.toBe(200);
+        expect(response.body).not.toContain("<svg>outside</svg>");
+      }
+    });
+  });
+
   it("resolves authorized icon metadata regardless of attribute ordering", async () => {
     const projectRoot = makeTempDir("f5-favicon-route-source-");
     const iconPath = path.join(projectRoot, "public", "brand", "logo.svg");

@@ -585,6 +585,14 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
   ),
+  proactivePanelsEnabled: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  keepRunningThreadsSynced: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
   workLogMode: Schema.Literals(WORK_LOG_MODE_OPTIONS).pipe(
     Schema.withConstructorDefault(() => Option.some("essential" as const)),
     Schema.withDecodingDefault(() => "essential" as const),

@@ -422,6 +422,32 @@ export function ConversationSettings() {
               }
             />
             <SettingsRow
+              title="Proactive panels"
+              description="Open linked pull requests and completed turn diffs in the side panel. Your manual panel choices take priority."
+              control={
+                <Switch
+                  checked={settings.proactivePanelsEnabled}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ proactivePanelsEnabled: Boolean(checked) })
+                  }
+                  aria-label="Proactive panels"
+                />
+              }
+            />
+            <SettingsRow
+              title="Keep running threads synced"
+              description="On desktop, keep active conversations ready to open without a message-sync flash. Uses additional memory for running threads."
+              control={
+                <Switch
+                  checked={settings.keepRunningThreadsSynced}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ keepRunningThreadsSynced: Boolean(checked) })
+                  }
+                  aria-label="Keep running threads synced"
+                />
+              }
+            />
+            <SettingsRow
               title="Show file diffs inline"
               description="Display the full diff for each file change. When off, only the file name and line counts appear."
               control={

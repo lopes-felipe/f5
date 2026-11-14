@@ -6,6 +6,12 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
+
+- Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.
+
+- Opt into **Proactive panels** in Conversation settings to open linked pull requests and completed-turn diffs. Manual panel choices take priority and dismissed turn diffs stay dismissed.
+
 - Linux builds include a Debian/Ubuntu package alongside the AppImage. Installed Debian packages can download and install updates from F5.
 
 - Open a project in the running desktop app with `f5 app [path]` (or `t3 app [path]`). F5 adds or reuses the project, focuses its window, and starts a new thread.
