@@ -24,7 +24,8 @@ satisfy the `Changelog` check; see CONTRIBUTING.md for when no entry is needed.
 
 `bun run changelog:preview` prints what the next stable release will list. Stable release
 preparation moves every fragment into a new `## [x.y.z]` section of `CHANGELOG.md`, in the order
-the fragments landed on main, and deletes them. Beta release notes list the fragments added since
-the previous published release.
+the fragments landed on main, and deletes them. A fragment that lands while the preparation PR is
+open ships with that release: its notes include it, and the next preparation adds it to that
+release's section. Beta release notes list the entries added since the previous published release.
 
 This README is never treated as a fragment.

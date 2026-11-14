@@ -31,7 +31,7 @@ import {
   type PublicationQualification,
 } from "./release-upgrade-proof.ts";
 import { releasePool } from "./release-concurrency.ts";
-import { betaReleaseNotes, collectBetaChanges, previousReleaseTag } from "./beta-notes.ts";
+import { releaseNotesFor } from "./release-notes.ts";
 import { releaseFields, releasePhase, releaseRetry } from "./release-observability.ts";
 import {
   createDraft,
@@ -166,22 +166,6 @@ export async function verifyCandidateCertification(candidate: ReleaseCandidate):
   });
   if (problems.length) throw new Error("Certification blocks candidate: " + problems.join("; "));
 }
-/** Whether release tag `name` points at an ancestor of `sha`, fetching the tag when missing. */
-function isAncestorTag(name: string, sha: string): boolean {
-  const ref = "refs/tags/" + name;
-  try {
-    git(["rev-parse", "--verify", "--quiet", ref + "^{commit}"]);
-  } catch {
-    git(["fetch", "--no-tags", "origin", ref + ":" + ref]);
-  }
-  try {
-    git(["merge-base", "--is-ancestor", ref, sha]);
-    return true;
-  } catch (error) {
-    if ((error as { status?: unknown }).status === 1) return false;
-    throw error;
-  }
-}
 export async function publishCandidate(
   candidate: ReleaseCandidate,
   directory: string,
@@ -280,31 +264,18 @@ export async function publishCandidate(
   git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
   if (!release) {
     const notes = join(directory, "..", "notes.md");
-    if (candidate.kind === "stable") {
-      const text = show(candidate.sourceSha, "CHANGELOG.md") ?? "";
-      const section = text.split("## [" + candidate.version + "]")[1];
-      if (!section) throw new Error("Stable changelog entry missing");
-      writeFileSync(
-        notes,
-        section
-          .split("\n## [")[0]!
-          .replace(/^\s*-\s*\d{4}-\d{2}-\d{2}\s*/, "")
-          .trim() + "\n",
-      );
-    } else {
-      const previousTag = previousReleaseTag(releases, tag, (name) =>
-        isAncestorTag(name, candidate.sourceSha),
-      );
-      writeFileSync(
-        notes,
-        betaReleaseNotes({
-          previousTag,
-          ...collectBetaChanges({ sourceSha: candidate.sourceSha, previousTag, git, show }),
-          sourceSha: candidate.sourceSha,
-          runUrl: "https://github.com/" + repository + "/actions/runs/" + candidate.runId,
-        }),
-      );
-    }
+    writeFileSync(
+      notes,
+      releaseNotesFor({
+        kind: candidate.kind,
+        version: candidate.version,
+        sourceSha: candidate.sourceSha,
+        runUrl: "https://github.com/" + repository + "/actions/runs/" + candidate.runId,
+        releases,
+        git,
+        show,
+      }),
+    );
     release = await releasePhase("draftCreation", () =>
       createDraft(tag, candidate.kind === "beta", notes),
     );

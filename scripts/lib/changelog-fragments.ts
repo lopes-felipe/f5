@@ -83,26 +83,36 @@ export function parseFragmentPath(path: string): { category: Category; slug: str
 }
 
 /**
- * Splits lines into entries: each top-level line starts an entry, and indented lines (with any
- * blank lines between them) continue it. Trailing whitespace and blank lines between entries go.
+ * Splits lines into entries. A top-level `- ` bullet or heading, or any top-level line after a
+ * blank line, starts an entry. Indented lines (with any blank lines between them), lazy
+ * continuation lines directly below an entry, and everything inside a fenced code block continue
+ * it. Trailing whitespace and blank lines between entries go.
  */
 export function splitEntries(lines: readonly string[]): string[] {
   const entries: string[][] = [];
   let blanks = 0;
+  let fence: string | undefined;
   for (const raw of lines) {
     const line = raw.trimEnd();
-    if (line === "") {
-      if (entries.length > 0) blanks++;
+    const current = entries.at(-1);
+    if (fence !== undefined && current) {
+      current.push(line);
+      if (line.trimStart().startsWith(fence)) fence = undefined;
       continue;
     }
-    const current = entries.at(-1);
-    if (current && /^\s/.test(line)) {
+    if (line === "") {
+      if (current) blanks++;
+      continue;
+    }
+    const continues = /^\s/.test(line) || (blanks === 0 && !/^(- |#)/.test(line));
+    if (current && continues) {
       for (; blanks > 0; blanks--) current.push("");
       current.push(line);
     } else {
       entries.push([line]);
     }
     blanks = 0;
+    fence = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
   }
   return entries.map((entry) => entry.join("\n"));
 }
@@ -203,6 +213,83 @@ export function readFragments(root: string): Fragment[] {
   return orderFragments(fragments, addTimesAt(root));
 }
 
+export type Git = (args: readonly string[]) => string;
+export type Show = (rev: string, path: string) => string | undefined;
+
+/** Paths of every file under changes/ at `rev`. */
+export function fragmentPathsAt(rev: string, git: Git): string[] {
+  return git(["ls-tree", "-r", "--name-only", rev, "--", FRAGMENTS_DIR + "/"])
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(isFragmentDirPath);
+}
+
+/**
+ * The fragments at `rev` (all of them, or only `paths`), in release order using add times from
+ * `timesRange` (default `rev`). Release publication must not fail over a malformed fragment, which
+ * the Changelog check already rejects, so invalid ones are skipped with a warning.
+ */
+export function fragmentsAt(input: {
+  rev: string;
+  paths?: readonly string[];
+  timesRange?: string;
+  git: Git;
+  show: Show;
+  warn: (message: string) => void;
+}): Fragment[] {
+  const { rev, git, show, warn } = input;
+  const fragments: Fragment[] = [];
+  for (const path of input.paths ?? fragmentPathsAt(rev, git)) {
+    if (!isFragmentDirPath(path)) continue;
+    try {
+      const parsed = parseFragmentPath(path);
+      if (parsed === null) continue;
+      const entries = validateFragment(path, show(rev, path) ?? "");
+      fragments.push({ path, category: parsed.category, entries });
+    } catch (error) {
+      warn("Skipping changelog fragment: " + (error as Error).message);
+    }
+  }
+  if (fragments.length === 0) return [];
+  const range = input.timesRange ?? rev;
+  return orderFragments(
+    fragments,
+    parseAddTimes(git([...ADD_TIMES_ARGS, range, "--", FRAGMENTS_DIR + "/"])),
+  );
+}
+
+/** Top-level bullet lines of every fragment at `rev`. */
+export function fragmentBulletLinesAt(rev: string, git: Git): string[] {
+  try {
+    const pathspec = [FRAGMENTS_DIR + "/", ":(exclude)" + FRAGMENTS_README];
+    return git(["grep", "-h", "-I", "--no-color", "-e", "^- ", rev, "--", ...pathspec])
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => /^- \S/.test(line));
+  } catch (error) {
+    // git grep exits 1 when nothing matches.
+    if ((error as { status?: unknown }).status === 1) return [];
+    throw error;
+  }
+}
+
+/** Removes entries whose first line is in `existing`, dropping fragments left empty. */
+export function withoutExisting(
+  fragments: readonly Fragment[],
+  existing: ReadonlySet<string>,
+): Fragment[] {
+  return fragments
+    .map((fragment) => ({
+      ...fragment,
+      entries: fragment.entries.filter((entry) => !existing.has(entry.split("\n")[0]!)),
+    }))
+    .filter((fragment) => fragment.entries.length > 0);
+}
+
+export function lineSet(...texts: readonly string[]): Set<string> {
+  return new Set(texts.flatMap((text) => text.split(/\r?\n/).map((line) => line.trimEnd())));
+}
+
 export function emptyGroups(): SectionGroups {
   return { preamble: [], known: new Map(), unknown: [] };
 }
@@ -241,9 +328,8 @@ export function addFragments(groups: SectionGroups, fragments: readonly Fragment
   return { preamble: [...groups.preamble], known, unknown: [...groups.unknown] };
 }
 
-/** Keeps only entries whose first line appears nowhere in `before`. */
-export function newEntries(groups: SectionGroups, before: string): SectionGroups {
-  const existing = new Set(before.split(/\r?\n/).map((line) => line.trimEnd()));
+/** Keeps only entries whose first line is not in `existing`. */
+export function newEntries(groups: SectionGroups, existing: ReadonlySet<string>): SectionGroups {
   const fresh = (entries: readonly string[]) =>
     entries.filter((entry) => !existing.has(entry.split("\n")[0]!));
   return {

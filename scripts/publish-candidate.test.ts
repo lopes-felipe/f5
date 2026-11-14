@@ -42,6 +42,8 @@ const state = vi.hoisted(() => ({
   rehearsalCandidate: null as ReleaseCandidate | null,
   uploadedBytes: new Map<string, Buffer>(),
   summaries: [] as string[],
+  /** Files at the candidate source, for release notes. */
+  sourceFiles: {} as Record<string, string>,
 }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -87,7 +89,7 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
     show: (_sha: string, path: string) =>
       state.rehearsalCandidate && path.endsWith("ci.yml")
         ? "jobs:\n  test:\n    runs-on: ubuntu-latest\n  ci-result:\n    name: CI result\n    needs: [test]\n"
-        : undefined,
+        : state.sourceFiles[path],
     stableRequests: () => [],
     publisherIdentity: () => "fixture-publisher",
     releaseProfileAt: () => "all",
@@ -98,6 +100,8 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
         return (state.tagSource || state.source) + "\trefs/tags/" + state.tag;
       if (args[0] === "rev-list" && args.includes("-n")) return state.tagSource || state.source;
       if (args[0] === "show") return "2026-10-30T00:00:00Z";
+      if (args[0] === "ls-tree") return Object.keys(state.sourceFiles).join("\n");
+      if (args[0] === "log") return "";
       return state.source;
     },
     downloadArtifact: async (artifact: Parameters<typeof original.downloadArtifact>[0]) =>
@@ -364,6 +368,7 @@ async function candidateFixture() {
 }
 beforeEach(() => {
   state.source = "a".repeat(40);
+  state.sourceFiles = {};
   state.tag = "";
   state.tagSource = "";
   state.draft = true;
@@ -607,6 +612,22 @@ describe("publisher integration with immutable platform fixtures", () => {
     await publishCandidate(candidate, directory);
     expect(state.writes).toHaveLength(writes);
     expect(state.writes.every((w) => !w.includes("--clobber"))).toBe(true);
+  });
+  it("creates beta drafts with the changelog entries since the previous release", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.sourceFiles = {
+      "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Legacy fix.\n",
+      "changes/added/new-thing.md": "- New thing.\n",
+    };
+    await publishCandidate(candidate, directory);
+    const draft = state.writes.find((write) => write.includes("draft=true"))!;
+    expect(draft).toContain(
+      "body=Changes in this beta.\n\n### Added\n\n- New thing.\n\n### Fixed\n\n- Legacy fix.\n\n" +
+        "Automated beta from " +
+        candidate.sourceSha +
+        ".\n\nSource and validation: https://github.com/lopes-felipe/f5/actions/runs/100\n",
+    );
   });
   it("rejects corrupt components before draft creation", async () => {
     const { candidate, directory } = await candidateFixture();

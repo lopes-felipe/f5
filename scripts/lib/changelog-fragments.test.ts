@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  fragmentBulletLinesAt,
+  fragmentsAt,
+  lineSet,
   newEntries,
+  withoutExisting,
   parseFragmentPath,
   parseSection,
   readFragments,
@@ -57,7 +61,8 @@ describe("validateFragment", () => {
     ["\n\n", /empty/],
     ["### Fixed\n\n- x\n", /heading/],
     ["Fixed a thing.\n", /outside a "- " bullet/],
-    ["- x\nLazy continuation.\n", /outside a "- " bullet/],
+    ["- x\n\nA separate paragraph.\n", /outside a "- " bullet/],
+    ["```\ncode\n```\n", /outside a "- " bullet/],
     ["-\n", /outside a "- " bullet/],
   ])("rejects %j", (content, message) =>
     expect(() => validateFragment(path, content)).toThrow(message),
@@ -90,7 +95,92 @@ describe("sections", () => {
 
   it("keeps only entries the earlier changelog did not have", () => {
     const groups = parseSection(["### Fixed", "- Old.", "- New."]);
-    expect(renderSection(newEntries(groups, "## [0.1.0]\n\n- Old.\n"))).toBe("### Fixed\n\n- New.");
+    expect(renderSection(newEntries(groups, lineSet("## [0.1.0]\n\n- Old.\n")))).toBe(
+      "### Fixed\n\n- New.",
+    );
+  });
+
+  it("keeps hard-wrapped bullets and fenced code blocks intact when re-rendered", () => {
+    const lines = [
+      "### Fixed",
+      "",
+      "- A long entry that was",
+      "hard wrapped without indentation.",
+      "- Another.",
+      "",
+      "```sh",
+      "bun run thing",
+      "",
+      "echo done",
+      "```",
+      "- After the code.",
+    ];
+    expect(renderSection(parseSection(lines))).toBe(
+      [
+        "### Fixed",
+        "",
+        "- A long entry that was",
+        "hard wrapped without indentation.",
+        "- Another.",
+        "",
+        "```sh",
+        "bun run thing",
+        "",
+        "echo done",
+        "```",
+        "",
+        "- After the code.",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps a fenced block directly below a bullet inside that bullet", () => {
+    expect(splitEntries(["- Run:", "```", "x", "", "y", "```", "- Next."])).toEqual([
+      "- Run:\n```\nx\n\ny\n```",
+      "- Next.",
+    ]);
+  });
+
+  it("drops fragment entries that already exist, and fragments left empty", () => {
+    const fragments = [
+      { path: "changes/fixed/a.md", category: "fixed" as const, entries: ["- Old.", "- New."] },
+      { path: "changes/fixed/b.md", category: "fixed" as const, entries: ["- Old.\n  detail"] },
+    ];
+    expect(withoutExisting(fragments, new Set(["- Old."]))).toEqual([
+      { path: "changes/fixed/a.md", category: "fixed", entries: ["- New."] },
+    ]);
+  });
+});
+
+describe("fragments at a revision", { timeout: 60_000 }, () => {
+  it("reads, validates and orders the fragments and their bullet lines at a commit", () => {
+    const fixture = gitFixture();
+    fixture.write("changes/README.md", "# Fragments\n- not a fragment\n");
+    fixture.write("changes/fixed/b.md", "- B.\n  more\n");
+    fixture.commit("first", 1_000);
+    fixture.write("changes/added/a.md", "- A.\n");
+    fixture.write("changes/fixed/bad.md", "Prose.\n");
+    const head = fixture.commit("second", 2_000);
+    const show = (rev: string, path: string) => fixture.git(["show", rev + ":" + path]);
+    const warnings: string[] = [];
+
+    expect(
+      fragmentsAt({ rev: head, git: fixture.git, show, warn: (m) => warnings.push(m) }),
+    ).toEqual([
+      { path: "changes/fixed/b.md", category: "fixed", entries: ["- B.\n  more"] },
+      { path: "changes/added/a.md", category: "added", entries: ["- A."] },
+    ]);
+    expect(warnings).toEqual([expect.stringContaining("changes/fixed/bad.md")]);
+    // The README's bullets are not entries.
+    expect(fragmentBulletLinesAt(head, fixture.git).toSorted()).toEqual(["- A.", "- B."]);
+    expect(fragmentBulletLinesAt(head + "~1", fixture.git)).toEqual(["- B."]);
+  });
+
+  it("returns no bullet lines when there are no fragments", () => {
+    const fixture = gitFixture();
+    fixture.write("README.md", "x\n");
+    const head = fixture.commit("first", 1_000);
+    expect(fragmentBulletLinesAt(head, fixture.git)).toEqual([]);
   });
 });
 

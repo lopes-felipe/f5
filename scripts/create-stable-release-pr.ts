@@ -6,7 +6,7 @@ import { pendingStableRequests } from "./release/release-candidate.ts";
 import { parseReleaseIntent } from "./release/release-intent.ts";
 import { gh, git, repository, stableRequests } from "./release/release-github.ts";
 import { fetchReleaseSummaries } from "./lib/release-profile.ts";
-import { releaseChangelog } from "./prepare-release.ts";
+import { refoldChangelog, releaseChangelog } from "./prepare-release.ts";
 import {
   releasePackageFiles,
   updateReleasePackageVersions,
@@ -116,6 +116,8 @@ if ("action" in intent) {
 } else if (intent.supersedes) {
   if (current !== intent.version)
     throw new Error("Recovery must retain the same unpublished version");
+  // Fragments that landed after the failed preparation belong to this same version.
+  refoldChangelog(".", intent.version);
 } else {
   if (compareCliReleaseVersions(intent.version, current) <= 0)
     throw new Error("Stable version must increase");

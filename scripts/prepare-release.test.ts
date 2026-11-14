@@ -3,7 +3,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Fragment } from "./lib/changelog-fragments.ts";
 import { createGitFixture, type GitFixture } from "./lib/git-fixture.ts";
-import { validateReleaseVersion, prepareChangelog, releaseChangelog } from "./prepare-release.ts";
+import {
+  foldIntoRelease,
+  prepareChangelog,
+  refoldChangelog,
+  releaseChangelog,
+  splitShippedFragments,
+  validateReleaseVersion,
+} from "./prepare-release.ts";
 it("enforces stable/beta canonical increasing versions", () => {
   for (const version of [
     "0.1.0-rc.1",
@@ -177,5 +184,72 @@ describe("releaseChangelog", { timeout: 60_000 }, () => {
     fixture.write("changes/fixed/bad.md", "Prose.\n");
     expect(() => releaseChangelog(fixture.root, "0.2.0", "2026-11-14")).toThrow(/bullet/);
     expect(readFileSync(join(fixture.root, "CHANGELOG.md"), "utf8")).toBe(original);
+  });
+
+  it("adds fragments that landed while the last stable's preparation was open to that release", () => {
+    const fixture = createGitFixture("release-changelog-");
+    fixtures.push(fixture);
+    fixture.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n");
+    fixture.write("changes/README.md", "# Fragments\n");
+    fixture.write("changes/fixed/before-prep.md", "- Before preparation.\n");
+    fixture.commit("work", 1_000);
+    // The preparation branch folds the fragment; meanwhile another fragment lands on main.
+    releaseChangelog(fixture.root, "0.2.0", "2026-11-14");
+    fixture.write("changes/added/during-prep.md", "- During preparation.\n");
+    fixture.commit("Release 0.2.0 merged together with a late fragment", 2_000);
+    fixture.git(["tag", "v0.2.0"]);
+    fixture.write("changes/changed/after.md", "- After the release.\n");
+    fixture.commit("next", 3_000);
+
+    expect(splitShippedFragments(fixture.root, []).shipped).toBeUndefined();
+    releaseChangelog(fixture.root, "0.3.0", "2026-11-20");
+    expect(readFileSync(join(fixture.root, "CHANGELOG.md"), "utf8")).toBe(
+      [
+        "# Changelog",
+        "",
+        "## [Unreleased]",
+        "",
+        "## [0.3.0] - 2026-11-20",
+        "",
+        "### Changed",
+        "",
+        "- After the release.",
+        "",
+        "## [0.2.0] - 2026-11-14",
+        "",
+        "### Added",
+        "",
+        "- During preparation.",
+        "",
+        "### Fixed",
+        "",
+        "- Before preparation.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("refolds late fragments into an unpublished version for recovery", () => {
+    const fixture = createGitFixture("release-changelog-");
+    fixtures.push(fixture);
+    fixture.write(
+      "CHANGELOG.md",
+      "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-11-14\n\n### Fixed\n\n- Folded.\n\n## [0.1.0] - 2026-10-01\n\n- Old.\n",
+    );
+    fixture.write("changes/fixed/late.md", "- Late.\n");
+    fixture.commit("late", 1_000);
+    expect(refoldChangelog(fixture.root, "0.2.0")).toEqual(["changes/fixed/late.md"]);
+    expect(readFileSync(join(fixture.root, "CHANGELOG.md"), "utf8")).toContain(
+      "## [0.2.0] - 2026-11-14\n\n### Fixed\n\n- Folded.\n- Late.\n\n## [0.1.0]",
+    );
+    expect(() => refoldChangelog(fixture.root, "9.9.9")).not.toThrow();
+  });
+});
+
+describe("foldIntoRelease", () => {
+  it("requires the release section when there is something to fold", () => {
+    const fragment: Fragment = { path: "changes/fixed/a.md", category: "fixed", entries: ["- A."] };
+    expect(foldIntoRelease("# Changelog\n", "0.2.0", [])).toBe("# Changelog\n");
+    expect(() => foldIntoRelease("# Changelog\n", "0.2.0", [fragment])).toThrow(/0\.2\.0/);
   });
 });
