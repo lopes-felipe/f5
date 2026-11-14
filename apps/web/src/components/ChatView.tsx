@@ -1547,8 +1547,8 @@ export default memo(function ChatView({
   } = useComposerDispatchSettings({
     threadId,
     composerDraft,
-    thread: activeThread,
-    isServerThread,
+    serverThread,
+    localDraftThread,
     project: activeProject,
     providerStatuses,
     serverConfig: serverConfigQuery.data,

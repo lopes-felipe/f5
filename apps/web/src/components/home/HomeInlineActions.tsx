@@ -9,14 +9,19 @@ import {
   type Ref,
   useCallback,
   useEffect,
-  useRef,
-  useState,
 } from "react";
 
+import { useComposerDraftStore } from "../../composerDraftStore";
+import { requestComposerFocus } from "../../composerFocusRequestStore";
 import { useSettings } from "../../hooks/useSettings";
+import type { HomeThreadItemKind } from "../../lib/homeQueue";
 import { fetchAndSyncThreadDetail } from "../../lib/orchestrationReactQuery";
 import { respondToApproval } from "../../lib/respondToApproval";
-import { sendThreadReply, type ThreadReplyInput } from "../../lib/sendThreadReply";
+import {
+  replyNeedsComposer,
+  sendThreadReply,
+  type ThreadReplyInput,
+} from "../../lib/sendThreadReply";
 import { readNativeApi } from "../../nativeApi";
 import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { loadPendingApprovalRequestIds } from "../../notificationCenter/inlineApproval";
@@ -33,7 +38,19 @@ import { useChatViewBranchDriftGuard } from "../ChatViewBranchDriftGuard";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { toastManager } from "../ui/toast";
+import {
+  beginHomeThreadAction,
+  endHomeThreadAction,
+  forgetSettledHomeApprovals,
+  homeApprovalClosedState,
+  type HomeClosedApprovalState,
+  isHomeThreadBusy,
+  markHomeApprovalClosed,
+  setHomeReplyDraft,
+  useHomeInlineStore,
+} from "./homeInlineStore";
 import type { HomeThreadDecision } from "./homeItems";
+import { appendQuickStartText } from "./HomeQuickStart";
 
 function errorDetail(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "An unexpected error occurred.";
@@ -66,11 +83,33 @@ export function approvalDenyDecision(approval: PendingApproval): ProviderApprova
     : null;
 }
 
-export type HomeApprovalState = "open" | "sent" | "answered";
+export type HomeApprovalState = "open" | HomeClosedApprovalState;
+
+/** What Home's Enter and D would do on the item shown, for the key hints. */
+export interface HomePreviewKeys {
+  readonly primary: "approve" | "implement" | null;
+  readonly deny: boolean;
+}
+
+export function homePreviewKeys(input: {
+  readonly kind: HomeThreadItemKind;
+  /** The approval on screen while it can still be answered. */
+  readonly openApproval: PendingApproval | null;
+  readonly hasPlan: boolean;
+}): HomePreviewKeys {
+  if (input.kind === "plan") return { primary: input.hasPlan ? "implement" : null, deny: false };
+  if (input.kind !== "approval" || !input.openApproval) return { primary: null, deny: false };
+  return {
+    primary: approvalEnterDecision(input.openApproval) ? "approve" : null,
+    deny: approvalDenyDecision(input.openApproval) !== null,
+  };
+}
 
 export interface HomeInlineActions {
   /** False while an action is in flight or the server cannot take one. */
   readonly enabled: boolean;
+  /** An action on this thread is in flight, from this preview or one before it. */
+  readonly busy: boolean;
   /** The oldest open approval, as the store has it. */
   readonly approval: PendingApproval | null;
   /**
@@ -85,7 +124,10 @@ export interface HomeInlineActions {
   ) => void;
   /** Starts a turn that implements the plan shown; false when there is none to act on. */
   readonly implementPlan: () => boolean;
-  /** Resolves true once the server took the message. */
+  /**
+   * Resolves true once the message left Home: the server took it, or, for a leading
+   * command or skill, the thread's composer has it and is open.
+   */
   readonly reply: (
     text: string,
     options?: Pick<ThreadReplyInput, "interactionMode" | "intent">,
@@ -97,8 +139,9 @@ export interface HomeInlineActions {
 
 /**
  * The actions Home can take on a thread without opening it. Each one is bound to what the
- * preview shows (the request id, the plan id), runs one at a time, and is refused while the
- * server is unreachable.
+ * preview shows (the request id, the plan id), runs one at a time per thread, and is
+ * refused while the server is unreachable. What is in flight is kept in `homeInlineStore`,
+ * so it holds when the selection moves away and back during a round trip.
  */
 export function useHomeInlineActions(input: {
   readonly thread: Thread;
@@ -107,46 +150,63 @@ export function useHomeInlineActions(input: {
   readonly cwd: string | undefined;
   /** Returns focus to the queue when the control that held it went away. */
   readonly focusQueue: () => void;
+  /** Opens the thread, for a reply only its composer can send. */
+  readonly openThread: (threadId: ThreadId) => void;
 }): HomeInlineActions {
-  const { thread, decision, focusQueue } = input;
+  const { thread, decision, focusQueue, openThread } = input;
   const queryClient = useQueryClient();
   const available = useServerMutationsAvailable();
   const streaming = useSettings((settings) => settings.enableAssistantStreaming, thread.projectId);
   const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(thread.id);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
-  // Requests closed from here, in memory only: the store catches up through its events.
-  const [closedRequests, setClosedRequests] = useState<
-    ReadonlyMap<string, Exclude<HomeApprovalState, "open">>
-  >(() => new Map());
+  const busy = useHomeInlineStore((state) => state.busyThreadIds.has(thread.id));
+  // Requests closed from Home, in memory only: the store catches up through its events.
+  const closedApprovals = useHomeInlineStore((state) => state.closedApprovals);
   // A thread without a project has a folder but no repository to ask about its branch.
   const gitCwd = isScratchProject(input.project) ? undefined : input.cwd;
 
-  const run = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
-    // The ref closes the gap between two key presses in one frame.
-    if (busyRef.current) return undefined;
-    busyRef.current = true;
-    setBusy(true);
-    try {
-      return await action();
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  }, []);
+  const run = useCallback(
+    async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+      // Read from the store, not from a render: two key presses in one frame, or one
+      // after the preview remounted, still find the first action in flight.
+      if (!beginHomeThreadAction(thread.id)) return undefined;
+      try {
+        return await action();
+      } finally {
+        endHomeThreadAction(thread.id);
+      }
+    },
+    [thread.id],
+  );
 
   // A button that was clicked may be gone once its action is done.
   useEffect(() => {
     if (!busy && document.activeElement === document.body) focusQueue();
-  }, [busy, closedRequests, focusQueue]);
+  }, [busy, closedApprovals, focusQueue]);
 
-  const markClosed = useCallback((requestId: string, state: Exclude<HomeApprovalState, "open">) => {
-    setClosedRequests((current) => new Map(current).set(requestId, state));
-  }, []);
+  // A closed request is remembered until the store stops listing it as open.
+  const openRequestIdsKey = decision.approvals.map((approval) => approval.requestId).join("\n");
+  useEffect(() => {
+    forgetSettledHomeApprovals(thread.id, openRequestIdsKey ? openRequestIdsKey.split("\n") : []);
+  }, [openRequestIdsKey, thread.id]);
+
+  const markClosed = useCallback(
+    (requestId: string, state: HomeClosedApprovalState) =>
+      markHomeApprovalClosed(thread.id, requestId, state),
+    [thread.id],
+  );
 
   const respond = useCallback(
     (approval: PendingApproval, approvalDecision: ProviderApprovalDecision) => {
       if (!available) return;
+      // Already answered from Home; its closing event is still on the way.
+      if (
+        homeApprovalClosedState(
+          useHomeInlineStore.getState().closedApprovals,
+          thread.id,
+          approval.requestId,
+        )
+      )
+        return;
       void run(async () => {
         // The store can lag behind the server; never answer a request that is already closed.
         const pending = await loadPendingApprovalRequestIds(thread.id);
@@ -218,13 +278,32 @@ export function useHomeInlineActions(input: {
 
   const plan = decision.plan;
   const implementPlan = useCallback(() => {
-    if (!plan || !available || busyRef.current) return false;
+    if (!plan || !available || isHomeThreadBusy(thread.id)) return false;
     void send(buildPlanImplementationPrompt(plan.planMarkdown), {
       interactionMode: "default",
       sourceProposedPlanId: plan.id,
     });
     return true;
-  }, [available, plan, send]);
+  }, [available, plan, send, thread.id]);
+
+  const reply = useCallback(
+    async (
+      text: string,
+      options: Pick<ThreadReplyInput, "interactionMode" | "intent"> = {},
+    ): Promise<boolean> => {
+      if (!replyNeedsComposer(text)) return send(text, options);
+      // A leading command or skill is resolved by the thread's composer: hand the text
+      // over, as Home's quick start does, instead of sending it as plain words.
+      const drafts = useComposerDraftStore.getState();
+      const existingPrompt = drafts.draftsByThreadId[thread.id]?.prompt ?? "";
+      drafts.setPrompt(thread.id, appendQuickStartText(existingPrompt, text));
+      if (options.interactionMode) drafts.setInteractionMode(thread.id, options.interactionMode);
+      requestComposerFocus(thread.id);
+      openThread(thread.id);
+      return true;
+    },
+    [openThread, send, thread.id],
+  );
 
   const resumeQueue = useCallback(() => {
     if (!available) return;
@@ -250,6 +329,8 @@ export function useHomeInlineActions(input: {
           : snapshot;
         const store = useNextTurnQueueStore.getState();
         store.applySnapshot(next);
+        // The preview explains the pause from this read; it must not describe the old one.
+        queryClient.setQueryData(homeQueueSnapshotQueryKey(thread.id), next);
         // Home lists paused queues from the summary, which the server also pushes.
         store.applySummary(await api.nextTurnQueue.summary());
       } catch (error) {
@@ -260,16 +341,19 @@ export function useHomeInlineActions(input: {
         });
       }
     });
-  }, [available, run, thread.id]);
+  }, [available, queryClient, run, thread.id]);
 
   const approval = decision.approvals[0] ?? null;
   return {
     enabled: available && !busy,
+    busy,
     approval,
-    approvalState: (approval && closedRequests.get(approval.requestId)) ?? "open",
+    approvalState:
+      (approval && homeApprovalClosedState(closedApprovals, thread.id, approval.requestId)) ??
+      "open",
     respondToApproval: respond,
     implementPlan,
-    reply: send,
+    reply,
     resumeQueue,
     dialog: branchDriftDialog,
   };
@@ -339,30 +423,39 @@ export function HomeApprovalActions(props: {
   );
 }
 
-/** Unsent replies, per thread, for as long as the page lives: selecting another row keeps them. */
-const replyDrafts = new Map<ThreadId, string>();
+/** The paused-queue preview's read of the thread's queue. */
+export function homeQueueSnapshotQueryKey(threadId: ThreadId) {
+  return ["home-queue-snapshot", threadId] as const;
+}
 
-/** A one-line box that sends a message to the thread; the full composer stays in the thread. */
+/**
+ * A one-line box that sends a message to the thread; the full composer stays in the thread.
+ * Its text is kept per thread for as long as the page lives, so selecting another row
+ * keeps it.
+ */
 export function HomeReplyBox(props: {
   readonly threadId: ThreadId;
   /** Names the box and its button, e.g. "Reply" or "Queue message". */
   readonly label: string;
   readonly placeholder: string;
   readonly enabled: boolean;
+  /** An action on the thread is in flight: the text is what is being sent. */
+  readonly busy: boolean;
   readonly inputRef: Ref<HTMLTextAreaElement>;
   readonly onSubmit: (text: string) => Promise<boolean>;
 }) {
-  const [text, setText] = useState(() => replyDrafts.get(props.threadId) ?? "");
-  const update = (next: string) => {
-    setText(next);
-    if (next) replyDrafts.set(props.threadId, next);
-    else replyDrafts.delete(props.threadId);
-  };
+  const { threadId } = props;
+  const text = useHomeInlineStore((state) => state.replyDrafts.get(threadId) ?? "");
+  const update = (next: string) => setHomeReplyDraft(threadId, next);
   const submit = async () => {
     const trimmed = text.trim();
     if (!trimmed || !props.enabled) return;
     // A failed send keeps the text.
-    if (await props.onSubmit(trimmed)) update("");
+    if (!(await props.onSubmit(trimmed))) return;
+    // The box is read-only while it sends, here and in a preview mounted meanwhile. Still,
+    // only what was sent is cleared: anything else in the box was never sent.
+    const current = useHomeInlineStore.getState().replyDrafts.get(threadId) ?? "";
+    if (current.trim() === trimmed) update("");
   };
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -386,6 +479,9 @@ export function HomeReplyBox(props: {
         placeholder={props.placeholder}
         value={text}
         rows={1}
+        // Text typed while a send is in flight would be cleared with it, or sent by no one.
+        readOnly={props.busy}
+        aria-busy={props.busy}
         onChange={(event) => update(event.target.value)}
         onKeyDown={onKeyDown}
         className="field-sizing-content block max-h-32 min-h-7 min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground"

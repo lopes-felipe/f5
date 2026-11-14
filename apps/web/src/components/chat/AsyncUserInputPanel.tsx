@@ -33,12 +33,17 @@ function initialAsyncDraft(questions: ReadonlyArray<UserInputQuestion>): AsyncUs
 
 /**
  * A blocking request is answered on the provider's own request, whose adapters read one
- * value per question (a string, an array for several, "" for a skipped optional one), as the
- * composer sends it.
+ * value per question. The value follows the composer's rule (`resolvePendingUserInputAnswer`):
+ * typed text is the answer and replaces any selected options; otherwise one option is a
+ * string and several are an array. A skipped optional question sends "".
  */
-export function blockingUserInputAnswer(values: ReadonlyArray<string>): string | string[] {
-  if (values.length === 0) return "";
-  return values.length === 1 ? values[0]! : [...values];
+export function blockingUserInputAnswer(
+  selected: ReadonlyArray<string>,
+  typed: string,
+): string | string[] {
+  if (typed) return typed;
+  if (selected.length === 0) return "";
+  return selected.length === 1 ? selected[0]! : [...selected];
 }
 
 /**
@@ -92,10 +97,11 @@ export function AsyncUserInputPanel({
     (customOpen[question.id] || question.options.length === 0)
       ? (custom[question.id]?.trim() ?? "")
       : "";
+  const selectedFor = (question: UserInputQuestion) =>
+    resolvePendingUserInputOptionValues(question, answers[question.id]);
   const answerFor = (question: UserInputQuestion) => {
     const text = customTextFor(question);
-    const selected = resolvePendingUserInputOptionValues(question, answers[question.id]);
-    return [...selected, ...(text ? [text] : [])];
+    return [...selectedFor(question), ...(text ? [text] : [])];
   };
   const isAnswered = (question: UserInputQuestion) => answerFor(question).length > 0;
   const canSend = questions.every((question) => question.optional || isAnswered(question));
@@ -137,7 +143,7 @@ export function AsyncUserInputPanel({
                 questions.map((question) => [
                   question.id,
                   blocking
-                    ? blockingUserInputAnswer(answerFor(question))
+                    ? blockingUserInputAnswer(selectedFor(question), customTextFor(question))
                     : { answers: answerFor(question) },
                 ]),
               ),

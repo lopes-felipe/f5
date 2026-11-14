@@ -144,8 +144,8 @@ export default function HomeComposerControls(props: {
   const dispatch = useComposerDispatchSettings({
     threadId: draftId,
     composerDraft,
-    thread: draftThread,
-    isServerThread: false,
+    serverThread: undefined,
+    localDraftThread: draftThread,
     project,
     providerStatuses,
     serverConfig,

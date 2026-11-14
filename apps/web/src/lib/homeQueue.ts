@@ -26,11 +26,17 @@ export type HomeThreadItemKind =
   | "running"
   | "pinned";
 
-export type HomeQueueThread = ListedThread & { readonly status: ThreadStatus };
+export type HomeQueueThread = ListedThread & {
+  readonly status: ThreadStatus;
+  /** The latest turn's request time: where a running thread sits in its group. */
+  readonly latestTurn?: { readonly requestedAt: string } | null | undefined;
+};
 
 /** A workflow as the queue needs it; `active` is "a phase is running". */
 export interface HomeQueueWorkflow {
   readonly key: string;
+  /** When the workflow was created: where it sits among the running rows. */
+  readonly startedAt: string;
   readonly activityAt: string;
   readonly active: boolean;
 }
@@ -87,7 +93,9 @@ function decisionKind(status: ThreadStatus, workflowOwned: boolean): HomeThreadI
  *
  * 1. decision: waits on the user (approval, question, plan, paused queue), most urgent first;
  * 2. review: an unseen failure, then an unread completion;
- * 3. running: working threads and active workflows, newest activity first;
+ * 3. running: working threads and active workflows, most recently started first. The order
+ *    does not follow activity, which moves with every streamed chunk: rows would trade
+ *    places under the pointer and the selection;
  * 4. pinned: the remaining pinned threads, in pin order.
  *
  * `threads` are the standalone threads by recency and `workflowThreads` the ones a workflow
@@ -136,13 +144,13 @@ export function buildHomeQueue<T extends HomeQueueThread, W extends HomeQueueWor
 
   const running = [
     ...buckets.working.map((thread) => ({
-      activityAt: thread.lastInteractionAt,
+      startedAt: thread.latestTurn?.requestedAt ?? thread.createdAt,
       item: threadItem(thread, "running", "running"),
     })),
     ...input.workflows
       .filter((workflow) => workflow.active)
       .map((workflow) => ({
-        activityAt: workflow.activityAt,
+        startedAt: workflow.startedAt,
         item: {
           type: "workflow",
           id: homeWorkflowItemId(workflow.key),
@@ -153,8 +161,7 @@ export function buildHomeQueue<T extends HomeQueueThread, W extends HomeQueueWor
   ]
     .toSorted(
       (left, right) =>
-        right.activityAt.localeCompare(left.activityAt) ||
-        left.item.id.localeCompare(right.item.id),
+        right.startedAt.localeCompare(left.startedAt) || left.item.id.localeCompare(right.item.id),
     )
     .map((entry) => entry.item);
 

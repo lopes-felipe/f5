@@ -232,6 +232,28 @@ describe("async questions", () => {
       await screen.unmount();
     }
   });
+  it("answers a blocking question with the typed text alone, as the composer does", async () => {
+    const { responseMode: _responseMode, ...blocking } = question;
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={blocking} />);
+    try {
+      await page.getByRole("button", { name: "A", exact: true }).click();
+      await page.getByRole("button", { name: "B", exact: true }).click();
+      await page.getByRole("button", { name: "Other…" }).click();
+      await page.getByRole("textbox", { name: "Other answer: Choose tools" }).fill("Typed detail");
+      await page.getByRole("button", { name: /^Send/ }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "thread.user-input.respond",
+            // Not ["A", "B", "Typed detail"]: the provider's request takes the text as the answer.
+            answers: { "0": "Typed detail" },
+          }),
+        ),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
   it("steps through questions without auto-sending the last one", async () => {
     const screen = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
     try {
