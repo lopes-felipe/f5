@@ -19,9 +19,20 @@ export interface DiskUsageResult {
   readonly directoryCount: number;
   readonly errors: ReadonlyArray<StoragePathWarning>;
 }
+/**
+ * A stat that also carries its inode with all 64 bits. `ino` is a double and
+ * rounds above 2^53, where NTFS file ids routinely are (their top 16 bits
+ * count how often the record was reused), so two files that both exist can
+ * report the same `ino`.
+ */
+export interface StorageStats extends Stats {
+  /** The inode in decimal, exact. */
+  readonly exactIno: string;
+}
 export interface FileIdentity {
   readonly dev: number;
-  readonly ino: number;
+  /** The exact inode in decimal: see `StorageStats`. */
+  readonly ino: string;
   readonly size: number;
   readonly mtimeMs: number;
   readonly mode: number;
@@ -34,7 +45,7 @@ export interface EnumeratedFile {
   readonly identity?: FileIdentity;
 }
 export interface DiskUsageFs {
-  readonly lstat: (path: string) => Promise<Stats>;
+  readonly lstat: (path: string) => Promise<StorageStats>;
   readonly readdir: (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
 }
 export interface DiskUsageOptions {
@@ -59,8 +70,12 @@ async function fsCall<A>(call: () => Promise<A>, signal?: AbortSignal): Promise<
     else activeCalls--;
   }
 }
-/** Bun 1.3.9 truncates numeric stat timestamps; its nanosecond fields remain exact. */
-export function normalizeStorageStat(stat: BigIntStats): Stats {
+/**
+ * A numeric stat built from a bigint one, which is the only kind that reports
+ * the inode exactly. Bun 1.3.9 also truncates numeric stat timestamps; its
+ * nanosecond fields remain exact.
+ */
+export function normalizeStorageStat(stat: BigIntStats): StorageStats {
   const milliseconds = (ns: bigint) => {
     const seconds = ns / 1_000_000_000n;
     return Number(seconds) * 1_000 + Number(ns % 1_000_000_000n) / 1_000_000;
@@ -68,6 +83,7 @@ export function normalizeStorageStat(stat: BigIntStats): Stats {
   return {
     dev: Number(stat.dev),
     ino: Number(stat.ino),
+    exactIno: String(stat.ino),
     mode: Number(stat.mode),
     nlink: Number(stat.nlink),
     uid: Number(stat.uid),
@@ -93,11 +109,10 @@ export function normalizeStorageStat(stat: BigIntStats): Stats {
     isSocket: () => stat.isSocket(),
   };
 }
-const readStorageStat = async (path: string): Promise<Stats> =>
-  process.versions.bun
-    ? normalizeStorageStat(await FS.lstat(path, { bigint: true }))
-    : FS.lstat(path);
-export const storageLstat = (path: string, signal?: AbortSignal): Promise<Stats> =>
+/** `storageLstat` without a permit, for a caller that already holds one. */
+export const readStorageStat = async (path: string): Promise<StorageStats> =>
+  normalizeStorageStat(await FS.lstat(path, { bigint: true }));
+export const storageLstat = (path: string, signal?: AbortSignal): Promise<StorageStats> =>
   fsCall(() => readStorageStat(path), signal);
 export function storageReadDir(
   path: string,
@@ -126,8 +141,14 @@ export function allocatedBytes(
   // non-empty files. POSIX zero blocks remains valid for sparse files.
   return platform !== "win32" && typeof stat.blocks === "number" ? stat.blocks * 512 : stat.size;
 }
-export function fileIdentity(stat: Stats): FileIdentity {
-  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, mode: stat.mode };
+export function fileIdentity(stat: StorageStats): FileIdentity {
+  return {
+    dev: stat.dev,
+    ino: stat.exactIno,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    mode: stat.mode,
+  };
 }
 export function sameFileIdentity(a: FileIdentity, b: FileIdentity): boolean {
   return (
@@ -143,7 +164,7 @@ function within(root: string, path: string): boolean {
 }
 export interface WalkEntry {
   readonly path: string;
-  readonly stat: Stats;
+  readonly stat: StorageStats;
   readonly bytes: number;
   /** Only enclosing checkpoints, inherited through the DFS frontier. */
   readonly checkpoints: ReadonlyArray<string>;
@@ -193,7 +214,7 @@ export async function walkTree(
       processing++;
       try {
         const { path } = next;
-        let stat: Stats;
+        let stat: StorageStats;
         try {
           stat = await fsCall(() => fs.lstat(path), options.signal);
         } catch (error) {
@@ -203,7 +224,7 @@ export async function walkTree(
         }
         let bytes = allocatedBytes(stat);
         if (stat.nlink > 1 && !stat.isDirectory()) {
-          const key = `${stat.dev}:${stat.ino}`;
+          const key = `${stat.dev}:${stat.exactIno}`;
           if (seen.has(key)) bytes = 0;
           else seen.add(key);
         }

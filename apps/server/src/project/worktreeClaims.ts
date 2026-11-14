@@ -841,7 +841,8 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
   readonly path: string;
   readonly policy: WorktreeRemovalPolicy;
   readonly expectedHead?: string | null;
-  readonly expectedRootIdentity?: { readonly dev: number; readonly ino: number } | null | undefined;
+  /** The reviewed directory: its device and its exact inode in decimal. */
+  readonly expectedRootIdentity?: { readonly dev: number; readonly ino: string } | null | undefined;
   /**
    * Storage cleanup: the uncommitted changes the user reviewed for discarding.
    * Removal is refused when the current discardable changes differ.
@@ -969,15 +970,17 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
             );
           if (checked.blockedReasons.length === 0) {
             if (input.expectedRootIdentity !== undefined) {
-              const stat = yield* Effect.tryPromise(() => FS.lstat(input.path)).pipe(
-                Effect.orElseSucceed(() => null),
-              );
+              // A numeric stat rounds inodes above 2^53, where a replacement
+              // directory can report the number the reviewed one did.
+              const stat = yield* Effect.tryPromise(() =>
+                FS.lstat(input.path, { bigint: true }),
+              ).pipe(Effect.orElseSucceed(() => null));
               if (
                 !input.expectedRootIdentity ||
                 !stat?.isDirectory() ||
                 stat.isSymbolicLink() ||
-                stat.dev !== input.expectedRootIdentity.dev ||
-                stat.ino !== input.expectedRootIdentity.ino
+                Number(stat.dev) !== input.expectedRootIdentity.dev ||
+                String(stat.ino) !== input.expectedRootIdentity.ino
               ) {
                 checked.blockedReasons.push(
                   "Worktree directory was replaced since inspection. Rescan before removal.",

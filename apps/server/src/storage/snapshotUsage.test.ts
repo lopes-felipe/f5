@@ -356,19 +356,31 @@ describe("snapshot usage cache file", () => {
     const root = makeRoot();
     const path = Path.join(root, "snapshot-usage-cache.json");
     expect(await readSnapshotUsageCache(path)).toEqual([]);
-    const identity = { dev: 1, ino: 2, size: 3, mtimeMs: 4, mode: 0o100644 };
+    const identity = { dev: 1, ino: "2", size: 3, mtimeMs: 4, mode: 0o100644 };
     const entries = [
       {
         older: "/a/state.sqlite",
         olderIdentity: identity,
         newer: "/b/state.sqlite",
-        newerIdentity: { ...identity, ino: 5 },
+        newerIdentity: { ...identity, ino: "5" },
         unsharedBytes: 4096,
       },
     ];
     await writeSnapshotUsageCache(path, entries);
     expect(await readSnapshotUsageCache(path)).toEqual(entries);
     expect(FS.readdirSync(root)).toEqual(["snapshot-usage-cache.json"]);
+    // A cache written when inodes were numbers: kept when the number is
+    // exact, dropped when it may have been rounded.
+    const numbered = (older: number, newer: number) => ({
+      ...entries[0],
+      olderIdentity: { ...identity, ino: older },
+      newerIdentity: { ...identity, ino: newer },
+    });
+    FS.writeFileSync(
+      path,
+      JSON.stringify({ version: 1, entries: [numbered(2, 5), numbered(2, 2 ** 53)] }),
+    );
+    expect(await readSnapshotUsageCache(path)).toEqual(entries);
     FS.writeFileSync(path, JSON.stringify({ version: 99, entries }));
     expect(await readSnapshotUsageCache(path)).toEqual([]);
     FS.writeFileSync(path, "not json");

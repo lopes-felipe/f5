@@ -58,6 +58,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
 - Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
+- On Windows, storage cleanup no longer mistakes a folder that replaced the one you reviewed for the original. Windows file IDs are too large to compare as ordinary numbers, so two different folders could look identical and the newer one could be deleted. F5 now compares the full ID and asks for a rescan.
 
 ## [0.1.8] - 2026-11-12
 
