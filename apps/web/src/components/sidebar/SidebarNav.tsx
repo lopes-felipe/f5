@@ -10,13 +10,11 @@ import {
   type LucideIcon,
   SearchIcon,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-import { upstreamProjectsQueryOptions } from "../../lib/upstreamPortsReactQuery";
+import { usePrHubNeedsYouCount, useUpstreamNav } from "../../hooks/useSurfaceCounts";
 import { cn } from "../../lib/utils";
 
-import { readNativeApi } from "../../nativeApi";
 import { SidebarThreadSearchInput } from "../SidebarThreadSearch";
 import { formatCompactCount } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -25,41 +23,6 @@ import { Kbd } from "../ui/kbd";
 /** Shared look for sidebar navigation rows: 32px, `text-ui`, 16px icon. */
 export const SIDEBAR_NAV_ROW_CLASS_NAME =
   "h-8 gap-2 px-2 text-ui text-muted-foreground hover:bg-accent/60 hover:text-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-foreground";
-
-/** PR Hub "needs you" count, kept live through the native API. */
-function usePrHubNeedsYouCount(): number {
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    const api = readNativeApi();
-    if (!api?.prHub) return;
-
-    const updateCount = (snapshot: { counts: { needs_you: number } }) => {
-      setCount(snapshot.counts.needs_you);
-    };
-    void api.prHub
-      .getOverview()
-      .then(updateCount)
-      .catch(() => setCount(0));
-    return api.prHub.onChanged(updateCount);
-  }, []);
-  return count;
-}
-
-/** Projects with an `upstream` block and their inbox total; refreshed by `upstreamPorts.changed`. */
-function useUpstreamNav(): { readonly visible: boolean; readonly inbox: number } {
-  const query = useQuery({
-    ...upstreamProjectsQueryOptions(),
-    enabled: Boolean(readNativeApi()?.upstreamPorts),
-  });
-  const projects = query.data?.projects ?? [];
-  return {
-    visible: projects.length > 0,
-    inbox: projects.reduce(
-      (sum, project) => sum + (project.managedByThisProfile ? project.inboxCount : 0),
-      0,
-    ),
-  };
-}
 
 /** The sidebar's two views; `Sidebar.tsx` persists the choice with a schema built from this. */
 export const SIDEBAR_VIEWS = ["projects", "recent"] as const;
@@ -210,13 +173,18 @@ export function SidebarNav(props: {
   onSearchQueryChange: (query: string) => void;
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
+  pullRequestsShortcutLabel: string | null;
+  homeShortcutLabel: string | null;
   view: SidebarView;
   onViewChange: (view: SidebarView) => void;
 }) {
   const navigate = useNavigate();
   const isOnScheduled = useLocation({ select: (loc) => loc.pathname === "/scheduled" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
+  const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
+  const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const isOnUpstream = useLocation({ select: (loc) => loc.pathname === "/upstream" });
+  const prHubNeedsYouCount = usePrHubNeedsYouCount();
   const upstream = useUpstreamNav();
   const [searchOpen, setSearchOpen] = useState(false);
   const searchButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -230,6 +198,7 @@ export function SidebarNav(props: {
         <NavIconButton
           icon={HomeIcon}
           label="Home"
+          shortcutLabel={props.homeShortcutLabel}
           isActive={isOnHome}
           onSelect={() => void navigate({ to: "/" })}
         />
@@ -249,6 +218,14 @@ export function SidebarNav(props: {
             setSearchOpen(true);
           }}
         />
+        <NavIconButton
+          icon={GitPullRequestIcon}
+          label="Pull requests"
+          isActive={isOnPullRequests}
+          shortcutLabel={props.pullRequestsShortcutLabel}
+          badge={{ count: prHubNeedsYouCount, label: "need you", tone: "warning" }}
+          onSelect={() => void navigate({ to: "/pull-requests" })}
+        />
         {upstream.visible ? (
           <NavIconButton
             icon={GitMergeIcon}
@@ -263,6 +240,12 @@ export function SidebarNav(props: {
           label="Scheduled"
           isActive={isOnScheduled}
           onSelect={() => void navigate({ to: "/scheduled" })}
+        />
+        <NavIconButton
+          icon={GaugeIcon}
+          label="Usage"
+          isActive={isOnUsage}
+          onSelect={() => void navigate({ to: "/usage" })}
         />
         <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border" />
         <SidebarViewToggle view={props.view} onViewChange={props.onViewChange} />
@@ -285,32 +268,5 @@ export function SidebarNav(props: {
         </div>
       ) : null}
     </nav>
-  );
-}
-/** Workspace utilities live together in the sidebar footer. */
-export function SidebarWorkspaceNavigation({
-  pullRequestsShortcutLabel,
-}: {
-  pullRequestsShortcutLabel: string | null;
-}) {
-  const navigate = useNavigate();
-  const count = usePrHubNeedsYouCount();
-  return (
-    <>
-      <NavIconButton
-        icon={GitPullRequestIcon}
-        label="Pull requests"
-        shortcutLabel={pullRequestsShortcutLabel}
-        isActive={false}
-        badge={{ count, label: "need you", tone: "warning" }}
-        onSelect={() => void navigate({ to: "/pull-requests" })}
-      />
-      <NavIconButton
-        icon={GaugeIcon}
-        label="Usage"
-        isActive={false}
-        onSelect={() => void navigate({ to: "/usage" })}
-      />
-    </>
   );
 }
