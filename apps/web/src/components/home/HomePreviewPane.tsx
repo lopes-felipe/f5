@@ -60,6 +60,7 @@ import {
   type HomeThreadItem,
   type HomeWorkflowItem,
   type HomeWorkflowRow,
+  homeSettleBlocker,
   runningTurnElapsed,
 } from "./homeItems";
 import { type HomeThreadTail, useHomeThreadTail } from "./useHomeThreadTail";
@@ -153,6 +154,23 @@ function PaneHeader(props: {
         {props.title}
       </h2>
     </header>
+  );
+}
+
+/**
+ * The pane's scrolling body. A click in its text focuses the body, not the pane: Home's
+ * letter keys keep working, the arrow keys scroll what is being read, and Enter, which
+ * the pane gets only while it stands in for the queue, does not act on it.
+ */
+function PaneBody(props: { readonly children: React.ReactNode }) {
+  return (
+    <div
+      tabIndex={-1}
+      data-slot="home-preview-body"
+      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3 outline-none"
+    >
+      {props.children}
+    </div>
   );
 }
 
@@ -417,6 +435,7 @@ function ThreadActions(props: {
   const { item, actions, snoozeMenu } = props;
   const threadId = item.thread.id;
   const pinned = item.thread.pinnedAt != null;
+  const settleBlocker = homeSettleBlocker({ kind: item.kind, pinned });
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Button
@@ -438,9 +457,9 @@ function ThreadActions(props: {
       <Button
         size="sm"
         variant="outline"
-        // The server refuses to settle a pinned thread.
-        disabled={pinned}
-        title={pinned ? "Unpin the thread to settle it" : undefined}
+        // The server refuses these; the title says what to do first.
+        disabled={settleBlocker !== null}
+        title={settleBlocker ?? undefined}
         onClick={() => actions.settle(threadId)}
       >
         <CheckCircle2Icon />
@@ -501,7 +520,11 @@ interface ThreadPreviewProps {
   readonly onBack?: (() => void) | undefined;
 }
 
-/** Focuses the preview when it stands alone and nothing else holds focus. */
+/**
+ * Focuses the preview when it stands alone and nothing else holds focus: as it opens over
+ * the queue, and again when it remounts for the next item (the last one was settled or
+ * snoozed and took the focused button with it).
+ */
 function useHoldFocus(holdsFocus: boolean | undefined) {
   const ref = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -600,7 +623,7 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
           </>
         }
       />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+      <PaneBody>
         {item.kind === "approval" ? (
           <ApprovalBody decision={decision} state={inline.approvalState} />
         ) : null}
@@ -629,7 +652,7 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
             replyLabel={REPLY_LABEL_BY_KIND[item.kind]}
           />
         )}
-      </div>
+      </PaneBody>
       <footer className="flex flex-col gap-2.5 border-t border-border px-4 py-3">
         {openApproval ? (
           <HomeApprovalActions
@@ -723,7 +746,7 @@ function WorkflowPreview(props: {
           </>
         }
       />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+      <PaneBody>
         <Block label="Phases">
           <ol className="flex flex-col gap-2">
             {workflow.meta.phases.map((phase) => (
@@ -753,7 +776,7 @@ function WorkflowPreview(props: {
             ))}
           </ol>
         </Block>
-      </div>
+      </PaneBody>
       <footer className="flex flex-wrap items-center gap-1.5 border-t border-border px-4 py-3">
         <Button size="sm" onClick={() => props.actions.openWorkflow(workflow)}>
           Open workflow

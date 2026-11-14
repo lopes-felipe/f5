@@ -1094,13 +1094,168 @@ describe("HomeMissionControl", () => {
         await expect
           .element(page.getByRole("article", { name: "Finished refactor" }))
           .toBeVisible();
-        (document.activeElement as HTMLElement | null)?.blur();
-        page
-          .getByRole("button", { name: /Open thread/ })
-          .element()
-          .focus();
         await userEvent.keyboard("{Escape}");
         await expect.element(queue).toHaveFocus();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("keeps its keys while the preview stands alone in a narrow window", async () => {
+      await page.viewport(600, 800);
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        const queue = page.getByRole("listbox", { name: "Queue" });
+        await expect.element(queue).toHaveFocus();
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Broken build");
+
+        // Enter replaces the queue, which held focus, with the preview: the preview takes it.
+        await userEvent.keyboard("{Enter}");
+        await expect.element(page.getByRole("article", { name: "Broken build" })).toHaveFocus();
+        await userEvent.keyboard("{Escape}");
+        await expect.element(queue).toHaveFocus();
+        await expect.poll(selectedTitle).toBe("Broken build");
+
+        // J steps to the next item without going back to the queue.
+        await userEvent.keyboard("{Enter}");
+        await expect.element(page.getByRole("article", { name: "Broken build" })).toHaveFocus();
+        await userEvent.keyboard("j");
+        const done = page.getByRole("article", { name: "Finished refactor" });
+        await expect.element(done).toHaveFocus();
+
+        // Settling takes the focused button away with its item; the next preview has the keys.
+        await done.getByRole("button", { name: /Settle/ }).click();
+        await vi.waitFor(() =>
+          expect(dispatchCommand).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "thread.settle", threadId: DONE_THREAD.id }),
+          ),
+        );
+        useStore.setState((state) => ({
+          threads: state.threads.map((thread) =>
+            thread.id === DONE_THREAD.id ? { ...thread, settledAt: NOW_ISO } : thread,
+          ),
+        }));
+        await expect.element(page.getByRole("article", { name: "Busy refactor" })).toHaveFocus();
+        await userEvent.keyboard("k");
+        await expect.element(page.getByRole("article", { name: "Broken build" })).toHaveFocus();
+        await userEvent.keyboard("{Escape}");
+        await expect.element(queue).toHaveFocus();
+        await expect.poll(selectedTitle).toBe("Broken build");
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("keeps J and K after a click in the preview, without giving it Enter or the arrows", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await page.getByRole("option", { name: "Broken build" }).click();
+        const preview = page.getByRole("article", { name: "Broken build" });
+        // Reading: a click in the text, then on the pane's own header.
+        for (const target of [
+          preview.getByText("Usage limit reached"),
+          preview.getByRole("heading", { name: "Broken build" }),
+        ]) {
+          await target.click();
+          expect(preview.element().contains(document.activeElement)).toBe(true);
+          await userEvent.keyboard("{Enter}");
+          await userEvent.keyboard("{ArrowDown}");
+          await userEvent.keyboard("{End}");
+          await expect.poll(selectedTitle).toBe("Broken build");
+          expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+        }
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        await userEvent.keyboard("k");
+        await expect.poll(selectedTitle).toBe("Broken build");
+        expect(dispatchCommand).not.toHaveBeenCalled();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("does not offer to settle a thread the server would refuse", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        for (const [title, reason] of [
+          ["Needs an approval", "Answer the approval to settle the thread"],
+          ["Busy refactor", "A running thread cannot be settled"],
+        ] as const) {
+          await page.getByRole("option", { name: title }).click();
+          const settle = page.getByRole("article", { name: title }).getByRole("button", {
+            name: /Settle/,
+          });
+          await expect.element(settle).toBeDisabled();
+          await expect.element(settle).toHaveAttribute("title", reason);
+          await userEvent.keyboard("e");
+        }
+        // A finished thread still settles.
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        await userEvent.keyboard("e");
+        await vi.waitFor(() => expect(dispatchCommand).toHaveBeenCalledTimes(1));
+        expect(dispatchCommand).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "thread.settle", threadId: DONE_THREAD.id }),
+        );
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("keeps running rows in place and reads no peeks again while their output streams", async () => {
+      const runningTurn = (id: string, requestedAt: string): NonNullable<Thread["latestTurn"]> => ({
+        turnId: `${id}-turn` as never,
+        state: "running",
+        assistantMessageId: null,
+        requestedAt,
+        startedAt: requestedAt,
+        completedAt: null,
+      });
+      const older = {
+        ...WORKING_THREAD,
+        id: ThreadId.makeUnsafe("thread-stream-older"),
+        title: "Older stream",
+        latestTurn: runningTurn("thread-stream-older", "2026-03-09T09:00:00.000Z"),
+        lastInteractionAt: "2026-03-09T09:00:00.000Z",
+      };
+      const newer = {
+        ...WORKING_THREAD,
+        id: ThreadId.makeUnsafe("thread-stream-newer"),
+        title: "Newer stream",
+        latestTurn: runningTurn("thread-stream-newer", "2026-03-09T10:00:00.000Z"),
+        lastInteractionAt: "2026-03-09T10:00:00.000Z",
+      };
+      const earlierDone = {
+        ...DONE_THREAD,
+        id: ThreadId.makeUnsafe("thread-done-earlier"),
+        title: "Earlier refactor",
+        lastInteractionAt: "2026-03-09T08:00:00.000Z",
+      };
+      const view = await renderHome([older, newer, DONE_THREAD, earlierDone]);
+      try {
+        const queue = page.getByRole("listbox", { name: "Queue" });
+        const rows = (name: string) => rowTitles(queue.getByRole("group", { name }).element());
+        await vi.waitFor(() => expect(rows("Running")).toEqual(["Newer stream", "Older stream"]));
+        await vi.waitFor(() => expect(getThreadPeeks).toHaveBeenCalledTimes(1));
+
+        // Each streamed message moves its thread's activity past the other's.
+        const touch = (threadId: string, at: string) =>
+          useStore.setState((state) => ({
+            threads: state.threads.map((thread) =>
+              thread.id === threadId ? { ...thread, lastInteractionAt: at } : thread,
+            ),
+          }));
+        touch(older.id, "2026-03-09T10:01:00.000Z");
+        touch(newer.id, "2026-03-09T10:02:00.000Z");
+        touch(older.id, "2026-03-09T10:03:00.000Z");
+        // Rows that do trade places (review follows recency) read nothing either.
+        touch(earlierDone.id, new Date(Date.now() + 60_000).toISOString());
+        await vi.waitFor(() =>
+          expect(rows("Ready for review")).toEqual(["Earlier refactor", "Finished refactor"]),
+        );
+        expect(rows("Running")).toEqual(["Newer stream", "Older stream"]);
+        expect(getThreadPeeks).toHaveBeenCalledTimes(1);
       } finally {
         await view.cleanup();
       }

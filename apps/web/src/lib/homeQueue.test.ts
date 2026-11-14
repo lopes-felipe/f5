@@ -25,11 +25,29 @@ function thread(id: string, status: ThreadStatus, minutesAgo: number): HomeQueue
   };
 }
 
-function workflow(key: string, active: boolean, minutesAgo: number): HomeQueueWorkflow {
+function minutesAgoIso(minutesAgo: number): string {
+  return new Date(Date.UTC(2026, 10, 14, 12, 0) - minutesAgo * 60_000).toISOString();
+}
+
+/** A working thread whose turn was requested `startedMinutesAgo` and last produced output `activeMinutesAgo`. */
+function running(id: string, startedMinutesAgo: number, activeMinutesAgo: number): HomeQueueThread {
+  return {
+    ...thread(id, "working", activeMinutesAgo),
+    latestTurn: { requestedAt: minutesAgoIso(startedMinutesAgo) },
+  };
+}
+
+function workflow(
+  key: string,
+  active: boolean,
+  startedMinutesAgo: number,
+  activeMinutesAgo = startedMinutesAgo,
+): HomeQueueWorkflow {
   return {
     key,
     active,
-    activityAt: new Date(Date.UTC(2026, 10, 14, 12, 0) - minutesAgo * 60_000).toISOString(),
+    startedAt: minutesAgoIso(startedMinutesAgo),
+    activityAt: minutesAgoIso(activeMinutesAgo),
   };
 }
 
@@ -101,7 +119,7 @@ describe("buildHomeQueue", () => {
     ]);
   });
 
-  it("lists working threads and active workflows together, newest activity first", () => {
+  it("lists working threads and active workflows together, most recently started first", () => {
     const queue = build({
       threads: [thread("working", "working", 4), thread("connecting", "connecting", 1)],
       workflows: [workflow("planning:w1", true, 2), workflow("planning:idle", false, 0)],
@@ -109,6 +127,20 @@ describe("buildHomeQueue", () => {
     expect(summary(queue)).toEqual([
       ["running", ["connecting:running", "workflow:planning:w1", "working:running"]],
     ]);
+  });
+
+  it("keeps running rows in place while their output streams", () => {
+    const order = (activity: { first: number; second: number; flow: number }) =>
+      summary(
+        build({
+          threads: [running("first", 9, activity.first), running("second", 5, activity.second)],
+          workflows: [workflow("planning:w1", true, 7, activity.flow)],
+        }),
+      );
+    const expected = [["running", ["second:running", "workflow:planning:w1", "first:running"]]];
+    expect(order({ first: 3, second: 2, flow: 1 })).toEqual(expected);
+    // The oldest turn streams last: activity order would move it to the top.
+    expect(order({ first: 0, second: 2, flow: 1 })).toEqual(expected);
   });
 
   it("surfaces a workflow thread only while it is blocked on the user", () => {

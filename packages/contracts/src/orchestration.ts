@@ -3101,6 +3101,10 @@ export const THREAD_PEEK_USER_TEXT_MAX_CHARS = 200;
 /** Max length of `OrchestrationThreadPeek.lastAssistantText`. */
 export const THREAD_PEEK_ASSISTANT_TEXT_MAX_CHARS = 600;
 
+/**
+ * One thread's peek. The thread is not looked up: an unknown or deleted id is answered with
+ * a peek whose fields are all null, where `getThreadPeeks` leaves that id out.
+ */
 export const OrchestrationGetThreadPeekInput = Schema.Struct({
   threadId: ThreadId,
 });

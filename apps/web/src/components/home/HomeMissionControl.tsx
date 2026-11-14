@@ -29,7 +29,12 @@ import type { Project } from "../../types";
 import { workflowRouteForType } from "../sidebar/sidebarLists";
 import { Kbd } from "../ui/kbd";
 import { Skeleton } from "../ui/skeleton";
-import { HOME_REPLY_BOX_BY_KIND, type HomeItem, type HomeWorkflowRow } from "./homeItems";
+import {
+  HOME_REPLY_BOX_BY_KIND,
+  type HomeItem,
+  homeSettleBlocker,
+  type HomeWorkflowRow,
+} from "./homeItems";
 import type { HomePreviewActions, HomePreviewHandle } from "./HomePreviewPane";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 import { HomeQueueList } from "./HomeQueueList";
@@ -289,7 +294,8 @@ export function HomeMissionControl() {
   // ── Focus ──────────────────────────────────────────────────────────
   // Home's keys are handled on this section, so something in it has to hold focus. The
   // queue takes it when Home opens with focus nowhere, and again when the focused control
-  // went away with its item (answered, settled) and focus fell back to the page.
+  // went away with its item (answered, settled) and focus fell back to the page. In the
+  // narrow layout the preview replaces the queue and takes its place here too.
   const selectedKind = selectedItem?.type === "thread" ? selectedItem.kind : null;
   const hasItems = itemIds.length > 0;
   useEffect(() => {
@@ -329,8 +335,12 @@ export function HomeMissionControl() {
     }
     // Text boxes, and panels with keys of their own (the question form), keep their keys.
     if (typing || target.closest('[data-home-keys="ignore"]')) return;
-    // The queue, or the preview while it stands in for the queue.
-    const onQueue = target === listRef.current || target.dataset.slot === "home-preview";
+    // The queue, or the preview only while it stands in for the queue. A click in the
+    // preview beside the queue focuses it too: that is reading, and must not hand it
+    // Enter (which approves or implements) or the arrow keys.
+    const onQueue =
+      target === listRef.current ||
+      (narrow && detailOpen && target.dataset.slot === "home-preview");
     const selectedKind = selectedItem?.type === "thread" ? selectedItem.kind : null;
     const move = (delta: 1 | -1) => {
       const next = stepHomeSelection(itemIds, selectedId, delta);
@@ -390,9 +400,17 @@ export function HomeMissionControl() {
         openItem(selectedItem);
         return;
       case "e":
-        if (!selectedThread || selectedThread.pinnedAt != null) return;
+        if (selectedItem?.type !== "thread") return;
+        // The same rule as the Settle button, which says why.
+        if (
+          homeSettleBlocker({
+            kind: selectedItem.kind,
+            pinned: selectedItem.thread.pinnedAt != null,
+          }) !== null
+        )
+          return;
         event.preventDefault();
-        actions.settle(selectedThread.id);
+        actions.settle(selectedItem.thread.id);
         return;
       case "p":
         if (!selectedThread) return;
