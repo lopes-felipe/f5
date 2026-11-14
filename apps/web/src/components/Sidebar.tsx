@@ -2,6 +2,7 @@ import { ArrowLeftIcon, FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } f
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
   DndContext,
@@ -24,7 +25,13 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import {
+  useCanGoBack,
+  useLocation,
+  useNavigate,
+  useParams,
+  useRouter,
+} from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
@@ -34,7 +41,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { gitStatusQueryOptions } from "../lib/gitReactQuery";
-import { resolveThreadPullRequests } from "../lib/threadPullRequests";
+import { resolveThreadPullRequests, threadBranchPullRequest } from "../lib/threadPullRequests";
 import {
   linkedPullRequestLookupCwd,
   useLinkedPullRequestStates,
@@ -102,6 +109,7 @@ import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjec
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
 import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
+import { useNotificationInboxPopover } from "../notificationCenter/inboxStore";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
 import type { SidebarIndicatorsForThread } from "./sidebar/SidebarWorkflowItem";
@@ -112,7 +120,6 @@ import {
   type ThreadPr,
   buildProjectSidebarLists,
   prStatusIndicator,
-  terminalStatusFromRunningIds,
   threadIdFromPinnedSortableId,
   workflowEntryKey,
 } from "./sidebar/sidebarLists";
@@ -181,7 +188,13 @@ export default function Sidebar() {
   const projectDraftThreadIdByProjectId = useComposerDraftStore(
     (store) => store.projectDraftThreadIdByProjectId,
   );
-  const terminalStateByThreadId = useTerminalStateStore((state) => state.terminalStateByThreadId);
+  const runningTerminalThreadIds = useTerminalStateStore(
+    useShallow((state) =>
+      Object.entries(state.terminalStateByThreadId)
+        .filter(([, terminal]) => terminal.runningTerminalIds.length > 0)
+        .map(([id]) => ThreadId.makeUnsafe(id)),
+    ),
+  );
   const clearProjectDraftThreadId = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadId,
   );
@@ -190,6 +203,7 @@ export default function Sidebar() {
   const router = useRouter();
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
+  const canGoBack = useCanGoBack();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const appSettings = useAppSettingsSelector(selectSidebarSettings);
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
@@ -341,9 +355,7 @@ export default function Sidebar() {
     const pending = new Set<ThreadId>();
     for (const target of threadGitTargets) {
       const status = target.cwd ? statusByCwd.get(target.cwd) : undefined;
-      const branchMatches =
-        target.branch !== null && status?.branch !== null && status?.branch === target.branch;
-      map.set(target.threadId, branchMatches ? (status?.pr ?? null) : null);
+      map.set(target.threadId, threadBranchPullRequest(target.branch, status));
       if (target.branch !== null && target.cwd !== null && pendingCwds.has(target.cwd)) {
         pending.add(target.threadId);
       }
@@ -399,9 +411,6 @@ export default function Sidebar() {
     isUnread: unreadThreadIds.has(thread.id),
     prStatus: prStatusByThreadId.get(thread.id) ?? null,
     prPending: prPendingThreadIds.has(thread.id),
-    terminalStatus: terminalStatusFromRunningIds(
-      selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,
-    ),
   });
   const projectSidebarListsById = useMemo(
     () =>
@@ -448,14 +457,13 @@ export default function Sidebar() {
     if (routeThreadId) ids.add(routeThreadId);
     for (const [threadId, status] of threadStatusById)
       if (isWorkingStatus(status) || isAttentionStatus(status)) ids.add(threadId);
-    for (const [threadId, terminalState] of Object.entries(terminalStateByThreadId))
-      if (terminalState.runningTerminalIds.length > 0) ids.add(ThreadId.makeUnsafe(threadId));
+    for (const threadId of runningTerminalThreadIds) ids.add(threadId);
     for (const threadId of pausedQueueThreadIds) ids.add(threadId);
     return ids;
   }, [
     pausedQueueThreadIds,
     routeThreadId,
-    terminalStateByThreadId,
+    runningTerminalThreadIds,
     threadStatusById,
     unreadThreadIds,
   ]);
@@ -748,7 +756,7 @@ export default function Sidebar() {
           : [
               { id: "worktrees", label: "Worktrees…" },
               { id: "settle-idle", label: "Settle idle threads" },
-              { id: "icon", label: "Change project icon..." },
+              { id: "settings", label: "Project settings…" },
               { id: "change-path", label: "Change project path..." },
               { id: "rename", label: "Rename project" },
               { id: "delete", label: "Remove project", destructive: true },
@@ -773,10 +781,10 @@ export default function Sidebar() {
         await navigate({ to: "/worktrees", search: { projectId } });
         return;
       }
-      if (clicked === "icon") {
+      if (clicked === "settings") {
         await navigate({
           to: "/settings",
-          search: { category: "project", item: "project.icon", project: projectId },
+          search: { category: "project", project: projectId },
         });
         return;
       }
@@ -930,7 +938,10 @@ export default function Sidebar() {
         context: {
           terminalFocus: isTerminalFocused(),
           terminalOpen: routeThreadId
-            ? selectThreadTerminalState(terminalStateByThreadId, routeThreadId).terminalOpen
+            ? selectThreadTerminalState(
+                useTerminalStateStore.getState().terminalStateByThreadId,
+                routeThreadId,
+              ).terminalOpen
             : false,
         },
       });
@@ -957,6 +968,13 @@ export default function Sidebar() {
         event.preventDefault();
         event.stopPropagation();
         void navigate({ to: "/pull-requests" });
+        return;
+      }
+
+      if (command === "notifications.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        useNotificationInboxPopover.getState().toggle();
         return;
       }
 
@@ -1015,7 +1033,6 @@ export default function Sidebar() {
     routeThreadId,
     scratchDisabled,
     startScratchThread,
-    terminalStateByThreadId,
     wsInteractionBlocked,
   ]);
 
@@ -1063,6 +1080,10 @@ export default function Sidebar() {
   );
   const pullRequestsShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
+    [keybindings],
+  );
+  const homeShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "home.open"),
     [keybindings],
   );
   const handleOpenCommandPalette = useStableCallback(() => {
@@ -1237,18 +1258,19 @@ export default function Sidebar() {
           }}
           onAddProject={addProject.handleStartAddProject}
         />
+        <SidebarNav
+          searchQuery={sidebarSearchQuery}
+          onSearchQueryChange={setSidebarSearchQuery}
+          onOpenCommandPalette={handleOpenCommandPalette}
+          commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+          pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+          homeShortcutLabel={homeShortcutLabel}
+          view={sidebarView}
+          onViewChange={setSidebarView}
+        />
 
         <SidebarPeekScrollDismissArea className="contents">
           <SidebarContent className="gap-0">
-            <SidebarNav
-              searchQuery={sidebarSearchQuery}
-              onSearchQueryChange={setSidebarSearchQuery}
-              onOpenCommandPalette={handleOpenCommandPalette}
-              commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-              pullRequestsShortcutLabel={pullRequestsShortcutLabel}
-              view={sidebarView}
-              onViewChange={setSidebarView}
-            />
             <SidebarArm64Warning update={desktopUpdate} />
             {sidebarSearchQuery.trim().length > 0 ? (
               <SidebarThreadSearchResults
@@ -1416,7 +1438,10 @@ export default function Sidebar() {
                 {isOnSettings || isOnUsage ? (
                   <SidebarMenuButton
                     className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                    onClick={() => window.history.back()}
+                    onClick={() => {
+                      if (canGoBack) window.history.back();
+                      else void navigate({ to: "/" });
+                    }}
                   >
                     <ArrowLeftIcon className="size-4" />
                     <span>Back</span>

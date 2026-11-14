@@ -17,6 +17,7 @@ import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
 import { editorLaunchTotal, increment } from "./observability/Metrics.ts";
 import {
   isCommandAvailable,
+  PathDirectoryListings,
   resolveExecutables,
   resolveInvocation,
 } from "./spawn/resolveCommand.ts";
@@ -183,9 +184,10 @@ function resolveEditorExecutables(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
+  pathDirectoryListings?: PathDirectoryListings,
 ): ReadonlyArray<string> {
   return resolveEditorCommandCandidates(editor, platform, env)
-    .flatMap((candidate) => resolveExecutables(candidate, env, { platform }))
+    .flatMap((candidate) => resolveExecutables(candidate, env, { platform, pathDirectoryListings }))
     .filter((executable) => !isEditorShim(editor.id, executable));
 }
 
@@ -218,11 +220,16 @@ export function resolveAvailableEditors(
   env: NodeJS.ProcessEnv = process.env,
 ): ReadonlyArray<EditorId> {
   const available: EditorId[] = [];
+  const pathDirectoryListings = new PathDirectoryListings();
 
   for (const editor of EDITORS) {
     const commandAvailable = editor.command
-      ? resolveEditorExecutables(editor, platform, env).length > 0
-      : isCommandAvailable(fileManagerCommandForPlatform(platform), { platform, env });
+      ? resolveEditorExecutables(editor, platform, env, pathDirectoryListings).length > 0
+      : isCommandAvailable(fileManagerCommandForPlatform(platform), {
+          platform,
+          env,
+          pathDirectoryListings,
+        });
     if (commandAvailable) {
       available.push(editor.id);
     }

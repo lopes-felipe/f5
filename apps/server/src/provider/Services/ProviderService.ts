@@ -208,6 +208,7 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly instanceId: ProviderInstanceId;
     readonly text: string;
+    readonly cwd?: string | undefined;
   }) => Effect.Effect<"prompt" | "native-command">;
 
   /**

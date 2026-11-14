@@ -10,6 +10,10 @@ paths:
       # The workflow policy test checks queue=max and cancel-in-progress=false.
       # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
       - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
+  .github/workflows/release-status.yml:
+    ignore:
+      # Same concurrency.queue support gap as ci-main-status.yml.
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
   .github/workflows/release.yml:
     ignore:
       # Single-quoted node -e template literals intentionally reach Node unchanged.

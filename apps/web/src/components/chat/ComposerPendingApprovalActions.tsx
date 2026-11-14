@@ -31,6 +31,51 @@ const DEFAULT_OPTIONS: ReadonlyArray<ProviderApprovalOption> = [
   { decision: "accept", label: "Approve once" },
 ];
 
+/**
+ * The choices an approval offers, in button order: the provider's own when it sent any,
+ * else the defaults for the request kind. Shared with Home, which answers approvals too.
+ */
+export function resolveApprovalOptions(input: {
+  readonly requestKind: PendingApproval["requestKind"];
+  readonly requestedPermissions?: PendingApproval["requestedPermissions"];
+  readonly approvalOptions?: ReadonlyArray<ProviderApprovalOption> | undefined;
+  readonly suppressAlwaysAllowRule?: boolean | undefined;
+}): ReadonlyArray<ProviderApprovalOption> {
+  const advertised = input.approvalOptions?.length
+    ? input.approvalOptions
+    : input.requestKind === "mcp-elicitation"
+      ? [
+          { decision: "cancel" as const, label: "Cancel" },
+          { decision: "decline" as const, label: "Decline" },
+        ]
+      : input.requestKind === "permission" || input.requestedPermissions
+        ? DEFAULT_OPTIONS.filter((option) => option.decision !== "cancel")
+        : DEFAULT_OPTIONS;
+  return input.suppressAlwaysAllowRule
+    ? advertised.filter(
+        (option) => option.decision !== "acceptForSession" && option.decision !== "acceptAlways",
+      )
+    : advertised;
+}
+
+/** A permission request without a permission profile has nothing to grant. */
+export function canApproveRequest(
+  approval: Pick<PendingApproval, "requestKind" | "requestedPermissions">,
+): boolean {
+  return approval.requestKind !== "permission" || approval.requestedPermissions !== undefined;
+}
+
+export function approvalOptionVariant(input: {
+  readonly decision: ProviderApprovalDecision;
+  readonly providerOptions: boolean;
+  readonly defaultToNo: boolean;
+}): "default" | "outline" | "ghost" | "destructive-outline" {
+  if (input.providerOptions) {
+    return input.decision === "accept" && !input.defaultToNo ? "default" : "outline";
+  }
+  return optionVariant(input.decision, input.defaultToNo);
+}
+
 function optionVariant(
   decision: ProviderApprovalDecision,
   defaultToNo: boolean,
@@ -52,21 +97,12 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   isResponding,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
-  const advertised = approvalOptions?.length
-    ? approvalOptions
-    : requestKind === "mcp-elicitation"
-      ? [
-          { decision: "cancel" as const, label: "Cancel" },
-          { decision: "decline" as const, label: "Decline" },
-        ]
-      : requestKind === "permission" || requestedPermissions
-        ? DEFAULT_OPTIONS.filter((option) => option.decision !== "cancel")
-        : DEFAULT_OPTIONS;
-  const options = suppressAlwaysAllowRule
-    ? advertised.filter(
-        (option) => option.decision !== "acceptForSession" && option.decision !== "acceptAlways",
-      )
-    : advertised;
+  const options = resolveApprovalOptions({
+    requestKind,
+    requestedPermissions,
+    approvalOptions,
+    suppressAlwaysAllowRule,
+  });
   const focusDecision: ProviderApprovalDecision | undefined = defaultToNo
     ? options.some((option) => option.decision === "decline")
       ? "decline"
@@ -78,13 +114,11 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         <Button
           key={option.decision}
           size="sm"
-          variant={
-            approvalOptions?.length
-              ? option.decision === "accept" && !defaultToNo
-                ? "default"
-                : "outline"
-              : optionVariant(option.decision, defaultToNo)
-          }
+          variant={approvalOptionVariant({
+            decision: option.decision,
+            providerOptions: Boolean(approvalOptions?.length),
+            defaultToNo,
+          })}
           // The provider asked for Decline to be the focused choice.
           autoFocus={option.decision === focusDecision}
           disabled={isResponding || (option.decision.startsWith("accept") && !canApprove)}

@@ -148,6 +148,36 @@ func secureAuditSearch(
     return results
   }
 }
+/// A row container's items and the ones AppKit reports visible, for the capture audit and
+/// inspect. nil when any read fails or returns the wrong type, so callers walk every child.
+func axRowItems(_ element: AXUIElement, role: String) -> ComputerSecureAuditRowItems<AXUIElement>? {
+  func elements(_ name: String) -> [AXUIElement]? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
+      let value, CFGetTypeID(value) == CFArrayGetTypeID()
+    else { return nil }
+    let list = value as! [AnyObject]
+    guard list.allSatisfy({ CFGetTypeID($0) == AXUIElementGetTypeID() }) else { return nil }
+    return list.map { unsafeBitCast($0, to: AXUIElement.self) }
+  }
+  switch role {
+  case "AXTable", "AXOutline":
+    guard let rows = elements(kAXRowsAttribute), let visible = elements(kAXVisibleRowsAttribute),
+      let children = elements(kAXChildrenAttribute)
+    else { return nil }
+    let rowSet = Set(rows)
+    return ComputerSecureAuditRowItems(
+      all: rows, visible: visible, others: children.filter { !rowSet.contains($0) },
+      header: axElement(attribute(element, kAXHeaderAttribute)))
+  case "AXList":
+    guard let children = elements(kAXChildrenAttribute),
+      let visible = elements(kAXVisibleChildrenAttribute)
+    else { return nil }
+    return ComputerSecureAuditRowItems(all: children, visible: visible, others: [])
+  default:
+    return nil
+  }
+}
 private typealias AXWindowIDFunction =
   @convention(c) (
     AXUIElement, UnsafeMutablePointer<CGWindowID>
@@ -214,7 +244,7 @@ func display(_ id: String) throws -> Display {
 }
 // Background accessibility delivery is always advertised; Electron's preview gate decides
 // whether a session may use it.
-let helperCapabilities: [String] = ["background-ax-v1", "computer-cooperation-v1"]
+let helperCapabilities: [String] = ["background-ax-v1", "computer-cooperation-v1", "background-shared-app-v1", "background-events-v1"]
 /// Per-generation permits. Lock order: never hold `permits`' lock with any other lock.
 let permits = ExecutionPermits()
 /// Guards grants, scopes' target PIDs, the window cache, frontmost PID, input sequence, the
@@ -262,7 +292,10 @@ var frontmostBundleId: String?
 var lastInputUptime: TimeInterval = 0
 var inputSequence = 0
 var targetWatches: [String: ComputerTargetWatch] = [:]
+var heldInputTracker = HeldInputTracker()
+var reportedHeldInputs: [HeldInput] = []
 var postedRequests = Set<String>()
+var pendingSettleDeadline: TimeInterval = 0
 var pendingInputs: [ActionableInput] = []
 var enqueuedInputSequence = 0
 var resolvedInputSequence = 0
@@ -412,17 +445,50 @@ func pids(for appId: String) -> Set<Int> {
       Int($0.processIdentifier)
     })
 }
-func physicalInputHeld() -> Bool {
-  let state = CGEventSourceStateID.combinedSessionState
-  if !CGEventSource.flagsState(state).intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]).isEmpty {
-    return true
+/// The flag a modifier key code sets while down. Caps Lock is a toggle and is never a hold.
+/// Keys, modifiers and buttons the user is holding, oldest first (diagnostic codes only).
+/// A hold counts only when the session tap saw it go down from a HID-system source and the
+/// HID system still reports it; see `HeldInputTracker`. HID state alone cannot tell who pressed
+/// a key or when: a lost key-up, a virtual device, another tool's posts or Caps Lock's key code
+/// would otherwise block a foreground takeover forever while nobody touches the keyboard or
+/// mouse. Input that arrives as software events (Screen Sharing, Universal Control,
+/// accessibility drivers) does not count as held.
+func heldPhysicalInputs() -> [HeldInput] {
+  let sampled = locked { heldInputTracker.sample() }
+  let state = CGEventSourceStateID.hidSystemState
+  let flags = CGEventSource.flagsState(state)
+  // HID queries stay outside the state lock. Reconciliation drops an entry only if it was not
+  // pressed again after this sample.
+  let system = Set(sampled.keys.filter { input in
+    switch input.kind {
+    case .key: CGEventSource.keyState(state, key: CGKeyCode(input.code))
+    case .button:
+      CGMouseButton(rawValue: UInt32(input.code)).map {
+        CGEventSource.buttonState(state, button: $0)
+      } ?? false
+    // Per-key state separates left from right; Fn has no reliable key state, so its flag.
+    case .modifier:
+      CGEventSource.keyState(state, key: CGKeyCode(input.code))
+        || (input.code == HeldInputTracker.fnKeyCode && flags.contains(.maskSecondaryFn))
+    }
+  })
+  let now = ProcessInfo.processInfo.systemUptime
+  let (held, changed) = locked {
+    () -> ([HeldInput], Bool) in
+    let held = heldInputTracker.held(now: now, sampled: sampled, systemHeld: system)
+    defer { reportedHeldInputs = held }
+    return (held, held != reportedHeldInputs)
   }
-  return (0..<256).contains { CGEventSource.keyState(state, key: CGKeyCode($0)) }
-    || (0..<32).contains { CGEventSource.buttonState(state, button: CGMouseButton(rawValue: UInt32($0))!) }
+  // One diagnostic per transition, so a stuck input can be named without per-beat noise.
+  if changed {
+    telemetryQueue.async { emit(["type": "heldInput", "heldInputs": held.map(\.diagnostic)]) }
+  }
+  return held
 }
 func targetReadiness(_ appId: String?) -> [String: Any] {
   let healthy = monitorHealthy
-  let held = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  let held = !heldInputs.isEmpty
   return locked {
     let now = ProcessInfo.processInfo.systemUptime
     let watch = appId.flatMap { targetWatches[$0] }
@@ -433,6 +499,7 @@ func targetReadiness(_ appId: String?) -> [String: Any] {
       "inputSequence": inputSequence,
       "lastUserInputAgeMs": lastInputUptime > 0 ? Int((now - lastInputUptime) * 1000) : -1,
       "inputHeld": held,
+      "heldInputs": heldInputs.map(\.diagnostic),
     ]
   }
 }
@@ -511,9 +578,10 @@ func installMonitor() {
   let types: [CGEventType] = [
     .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
     .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged, .rightMouseDragged,
-    .scrollWheel,
+    .otherMouseDragged, .scrollWheel,
   ]
   let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+  locked { heldInputTracker.reset() }
   eventTap = CGEvent.tapCreate(
     tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
     eventsOfInterest: mask,
@@ -523,11 +591,24 @@ func installMonitor() {
         // Never auto-resume: everything stays suspended until Electron re-arms it.
         suspendAllReporting()
         monitorHealthy = false
+        // Edges were missed while the tap was off; tracked holds restart from the next press.
+        locked { heldInputTracker.reset() }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
       }
       if event.getIntegerValueField(.eventSourceUserData) == 0xF5C0 {
         return Unmanaged.passUnretained(event)
+      }
+      if HeldInputTracker.physical(
+        userData: event.getIntegerValueField(.eventSourceUserData),
+        sourceStateID: event.getIntegerValueField(.eventSourceStateID))
+      {
+        let held = HeldInputEvent.from(
+          type: type, keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)),
+          flags: event.flags,
+          buttonNumber: Int(event.getIntegerValueField(.mouseEventButtonNumber)))
+        let now = ProcessInfo.processInfo.systemUptime
+        locked { heldInputTracker.observe(held, now: now) }
       }
       let flags = event.flags
       if type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 53
@@ -566,7 +647,7 @@ func installMonitor() {
           inputSequence += 1
         }
         guard let kind else { return false }
-        if kind == .scroll, let last = pendingInputs.last, last.kind == .scroll,
+        if kind == .scroll || kind == .dragStart, let last = pendingInputs.last, last.kind == kind,
           hypot(last.location.x - event.location.x, last.location.y - event.location.y) < 20
         {
           return false
@@ -595,7 +676,8 @@ func installMonitor() {
         let cause = type == .mouseMoved ? "move"
           : type == .scrollWheel ? "scroll"
           : type == .keyDown || type == .keyUp || type == .flagsChanged ? "key"
-          : type == .leftMouseDragged || type == .rightMouseDragged ? "drag" : "pointer"
+          : type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged
+            ? "drag" : "pointer"
         let foreground = permits.suspendForeground(cause: cause)
         for generation in foreground {
           interrupt(generation, ["type": "physicalInput", "cause": cause])
@@ -726,6 +808,9 @@ func focused(_ request: [String: Any], _ host: [String: Any], needed: String) th
 ) {
   guard let app = NSWorkspace.shared.frontmostApplication else {
     throw Failure("TargetBlocked", "kind", "focus-unknown")
+  }
+  if let requested = request["appId"] as? String, requested != app.bundleIdentifier {
+    throw Failure("TargetBlocked", "kind", "other-app")
   }
   _ = try grant(app, request: request, host: host, needed: needed)
   let root = applicationElement(app.processIdentifier)
@@ -923,15 +1008,27 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
   let foregroundOnly = background && backgroundForegroundOnly(id, session: session)
   let inspectDeadline = ProcessInfo.processInfo.systemUptime + 6
   var byteBudget = ComputerInspectByteBudget()
+  // Off-screen rows of a large list were left out; inspecting the list itself lists them.
+  var rowsOmitted = false
   func visit(_ element: AXUIElement) throws -> (children: [AXUIElement], emitted: Bool) {
     try checkGrants(request)
-    let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
-    let rect = axRect(element)
+    let attributes = computerInspectReadAttributes(
+      batch: {
+        var values: CFArray?
+        let status = AXUIElementCopyMultipleAttributeValues(
+          element, computerInspectAttributes, [], &values)
+        return (status, values as? [AnyObject])
+      }, single: { attribute(element, $0) })
+    let role = attributes.role ?? "unknown"
+    let (children, omitted) = computerInspectChildren(
+      role: role, children: attributes.children, isRoot: CFEqual(element, inspectRoot)
+    ) { axRowItems(element, role: role) }
+    if omitted { rowsOmitted = true }
+    let rect = attributes.frame
     if let rect, let windowFrame, !rect.intersects(windowFrame) { return (children, false) }
-    let role = attribute(element, kAXRoleAttribute) as? String ?? "unknown"
     let secure =
       role == "AXSecureTextField"
-      || (attribute(element, kAXSubroleAttribute) as? String) == "AXSecureTextField"
+      || attributes.subrole == "AXSecureTextField"
     var actionNames: CFArray?
     _ = AXUIElementCopyActionNames(element, &actionNames)
     let axActions = actionNames as? [String] ?? []
@@ -954,10 +1051,9 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
       actions.append("setValue")
     }
     let name = String(
-      ((attribute(element, kAXTitleAttribute) as? String)
-        ?? (attribute(element, kAXDescriptionAttribute) as? String) ?? "").prefix(200))
+      (attributes.title ?? attributes.description ?? "").prefix(200))
     let value = secure ? nil : attribute(element, kAXValueAttribute) as? String
-    let focused = attribute(element, kAXFocusedAttribute) as? Bool ?? false
+    let focused = attributes.focused ?? false
     if computerInspectIsWrapper(
       role: role, name: name, value: value, focused: focused, actions: actions)
     {
@@ -968,7 +1064,7 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
       "elementRef": ref, "role": String(role.prefix(200)),
       "name": name,
       "focused": focused,
-      "enabled": attribute(element, kAXEnabledAttribute) as? Bool ?? true,
+      "enabled": attributes.enabled ?? true,
       // In background, list only actions that execute without the foreground.
       "actions": secure || foregroundOnly
         ? [] : background ? actions.filter { ["press", "setValue"].contains($0) } : actions,
@@ -1037,7 +1133,7 @@ func inspect(_ request: [String: Any], _ host: [String: Any]) throws -> [String:
   var result: [String: Any] = [
     "snapshotId": snapshotId, "appId": id, "accessible": true, "nodes": nodes,
   ]
-  if walkTruncated || byteBudget.exceeded { result["truncated"] = true }
+  if walkTruncated || byteBudget.exceeded || rowsOmitted { result["truncated"] = true }
   if foregroundOnly {
     result["executionNote"] =
       "This app needs the foreground; call computer_request_foreground before acting."
@@ -1122,6 +1218,7 @@ func resolveSnapshotElement(_ request: [String: Any], app: NSRunningApplication)
   return (snapshot, element, role)
 }
 /// Returns read-back verification facts for background deliveries; never document text.
+/// A foreground dispatch whose AX result cannot confirm its effect returns `verified: false`.
 @discardableResult
 func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [String: Any]? {
   let id = string(request, "appId")
@@ -1148,9 +1245,10 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     throw Failure("StaleElement", "reason", "element-gone")
   }
   try checkPermit(request)
-  // A slow app may take longer than the process-wide ceiling to act; only this element.
-  if background { _ = AXUIElementSetMessagingTimeout(element, 2) }
-  defer { if background { _ = AXUIElementSetMessagingTimeout(element, 0.25) } }
+  // A slow app may take longer than the process-wide ceiling to act (in the foreground too:
+  // a swatch applies its color, closes its popover and re-renders); only this element.
+  _ = AXUIElementSetMessagingTimeout(element, 2)
+  defer { _ = AXUIElementSetMessagingTimeout(element, 0.25) }
   let result: AXError
   if action == "setValue" || action == "focus" {
     var settable = DarwinBoolean(false)
@@ -1182,13 +1280,40 @@ func elementAction(_ request: [String: Any], _ host: [String: Any]) throws -> [S
     result = AXUIElementPerformAction(element, native as CFString)
     if let dispatch { try endBackgroundAction(dispatch, succeeded: result == .success) }
   }
-  guard result == .success else {
-    // After an AX dispatch that did not confirm, the action may or may not have happened.
-    if background && result == .cannotComplete { throw Failure("OutcomeUnknown") }
-    if result == .actionUnsupported || result == .attributeUnsupported {
-      throw Failure("UnsupportedAction")
-    }
-    throw Failure("StaleElement", "reason", "element-gone")
+  var outcome = computerElementDispatchOutcome(
+    action: action, error: result, background: background)
+  if !background && result == .cannotComplete {
+    // One bounded probe: a press that already removed its own element was received.
+    _ = AXUIElementSetMessagingTimeout(element, 0.25)
+    var probed: CFTypeRef?
+    let probe = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &probed)
+    outcome = computerElementTimeoutOutcome(action: action, elementGone: probe == .invalidUIElement)
+  }
+  switch outcome {
+  case .success: break
+  case .unverified:
+    // A foreground press that removed its own element (a swatch closing its popover) worked
+    // as far as AX can tell; the agent observes before acting, as for a background AXPress.
+    return ["verified": false]
+  case .failed(let tag, let reason, let started):
+    // Errors proving nothing happened stay typed instead of escalating to OutcomeUnknown.
+    if !started { locked { _ = postedRequests.remove(string(request, "requestId")) } }
+    if let reason { throw Failure(tag, "reason", reason) }
+    // The AX code is diagnostic only: the response's error stays a bare OutcomeUnknown.
+    if tag == "OutcomeUnknown" { throw Failure(tag, "axError", Int(result.rawValue)) }
+    throw Failure(tag)
+  }
+  if action == "focus" {
+    let verified = computerPollUntil(
+      timeout: 0.5, cancelled: { requestCancelled(string(request, "requestId")) },
+      predicate: {
+        if attribute(element, kAXFocusedAttribute) as? Bool == true { return true }
+        // Web content may expose focus on the application's focused element only.
+        guard let focused = axElement(attribute(
+          applicationElement(app.processIdentifier), kAXFocusedUIElementAttribute)) else { return false }
+        return CFEqual(focused, element)
+      })
+    return ["verified": verified]
   }
   guard background else { return nil }
   // Bounded read-back. A read-back failure after confirmed success stays success.
@@ -1332,21 +1457,14 @@ func applicationActivated(_ app: NSRunningApplication) {
     interrupt(generation, ["type": "targetInterrupted", "appId": appId, "cause": "frontmost"])
   }
 }
-/// Background typing: accessibility text insertion into the target's focused element only.
-/// AX errors returned before the target accepted the write; anything else is ambiguous.
-func computerAXWriteRejected(_ error: AXError) -> Bool {
-  [.attributeUnsupported, .illegalArgument, .notImplemented, .apiDisabled, .invalidUIElement]
-    .contains(error)
-}
 /// The OS action is done; an optional screenshot follows. Lets Electron keep a known success
 /// even if a stop or activation incident arrives during capture.
 func confirmAction(_ request: [String: Any]) {
-  let payload: [String: Any] = [
-    "type": "actionConfirmed", "requestId": string(request, "requestId"),
-    "executionGeneration": integer(authorization(request), "executionGeneration"),
-  ]
-  telemetryQueue.async { emit(payload) }
+  computerConfirmAction(
+    requestId: string(request, "requestId"),
+    executionGeneration: integer(authorization(request), "executionGeneration"), emit: emit)
 }
+/// Background typing: accessibility text insertion into the target's focused element only.
 func backgroundType(_ request: [String: Any], _ host: [String: Any]) throws -> (
   NSRunningApplication, CGRect, [String: Any]
 ) {
@@ -1562,7 +1680,7 @@ func captureScreenshot(_ request: [String: Any], _ host: [String: Any]) async th
       auditDiagnostics.append([
         "windowIndex": index, "complete": complete,
         "elapsedMs": max(0, Int((ProcessInfo.processInfo.systemUptime - started) * 1000)),
-        "visitedNodes": diagnostics.visitedNodes,
+        "visitedNodes": diagnostics.visitedNodes, "prunedRows": diagnostics.prunedRows,
         "nodeReadElapsedMs": diagnostics.nodeReadElapsedMs, "maxChildren": diagnostics.maxChildren,
         "textFieldQueries": diagnostics.textFieldQueries, "frameQueries": diagnostics.frameQueries,
         "searchResults": diagnostics.searchResults, "searchFallbacks": diagnostics.searchFallbacks,
@@ -1609,7 +1727,14 @@ func captureScreenshot(_ request: [String: Any], _ host: [String: Any]) async th
       expired: expired,
       search: searchEnabled
         ? { secureAuditSearch($0, expired: expired, diagnostics: diagnostics) } : nil,
-      diagnostics: diagnostics)
+      rowItems: { element, role in
+        // The row lists are AX reads too; count their time with the node reads.
+        let started = ProcessInfo.processInfo.systemUptime
+        defer {
+          diagnostics.nodeReadDuration(seconds: ProcessInfo.processInfo.systemUptime - started)
+        }
+        return axRowItems(element, role: role)
+      }, diagnostics: diagnostics)
     complete = audit?.complete ?? false
     if let audit {
       maskOutcomes.append(
@@ -1802,7 +1927,7 @@ func openInstalledApp(
   _ = try grant(app, request: request, host: host, needed: "click")
   return app
 }
-/// Background deliveries: accessibility only, no pointer movement, no focus change.
+/// Background accessibility and certified process-directed events; no pointer or focus change.
 func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [String:
   Any]
 {
@@ -1813,6 +1938,7 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
     switch op {
     case "elementAction": verification = try elementAction(request, host)
     case "type": verification = try backgroundType(request, host).2
+    case "key", "scroll": verification = try backgroundEvents(request, host)
     case "openApp":
       let id = string(request, "appId")
       if tier(id) == "blocked" { throw Failure("TargetBlocked", "kind", "protection-unknown") }
@@ -1860,12 +1986,17 @@ func backgroundMutate(_ request: [String: Any], _ host: [String: Any]) async thr
   }
   return result
 }
-func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [String: Any] {
+/// Performs one input action. Once input is posted, a thrown failure means the outcome is
+/// unknown, so outcomes the action caused itself (focus moved by a shortcut, an element
+/// removed by its own press) are returned as unverified success instead of thrown.
+func mutate(_ request: [String: Any], _ host: [String: Any], deferredSettle: inout Bool) async throws -> [String: Any] {
   let op = string(request, "op")
   try checkPermit(request)
   let owner = inputOwner(request)
   defer { releaseHeldInput(where: { $0 == owner }) }
   if isBackground(request) { return try await backgroundMutate(request, host) }
+  var verification: [String: Any]?
+  var keyFocusUnchanged: (() -> Bool)?
   if ["click", "move", "drag", "scroll"].contains(op) {
     let target = try display(string(request, "displayId"))
     guard target.generation == string(request, "geometryGeneration") else {
@@ -1963,25 +2094,56 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
     } else {
       let chords = request["chords"] as? [String] ?? []
       guard !chords.isEmpty && chords.count <= 16 else { throw Failure("UnsupportedAction") }
-      for _ in 0..<max(1, min(20, integer(request, "repeat"))) {
+      let repeats = max(1, min(20, integer(request, "repeat")))
+      var delivered = 0
+      func focusUnchanged() -> Bool {
+        guard let current = try? focused(request, host, needed: "type") else { return false }
+        return computerFocusUnchanged(
+          initialPid: Int(initial.0.processIdentifier),
+          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
+          sameElement: CFEqual(current.1, initial.1), typing: false)
+      }
+      chordLoop: for _ in 0..<repeats {
         for raw in chords {
           let (code, flags) = try keyChord(raw)
-          for down in [true, false] {
-            try validateFocus()
-            try inputLock.withLock {
-              guard let event = computerKeyboardEvent(keyCode: code, keyDown: down, modifiers: flags)
-              else { throw Failure("UnsupportedAction") }
-              try checkPermit(request)
-              if down { pressedKeys.insert(code, owner: owner) }
-              postActionEvent(event, request)
-              if !down { pressedKeys.remove(code) }
-            }
+          // Focus is checked before each keydown only. A shortcut such as Cmd+N moves focus
+          // as its own effect, so checking between keydown and keyup would misreport it.
+          try checkPermit(request)
+          // Before any chord, nothing happened yet: the original failure stays exact.
+          if delivered == 0 { _ = try focused(request, host, needed: "type") }
+          switch computerChordStep(chordsDelivered: delivered, focusUnchanged: focusUnchanged()) {
+          case .send: break
+          case .blocked: throw Failure("TargetBlocked", "kind", "focus-unknown")
+          case .stop:
+            // The remaining chords were never sent; say how many were.
+            verification = [
+              "verified": false, "chordsDelivered": delivered,
+              "chordsRequested": chords.count * repeats,
+            ]
+            break chordLoop
           }
+          guard let down = computerKeyboardEvent(keyCode: code, keyDown: true, modifiers: flags),
+            let up = computerKeyboardEvent(keyCode: code, keyDown: false, modifiers: flags)
+          else { throw Failure("UnsupportedAction") }
+          try inputLock.withLock {
+            try checkPermit(request)
+            pressedKeys.insert(code, owner: owner)
+            postActionEvent(down, request)
+          }
+          // A posted keydown always gets its keyup, even after a stop or focus change.
+          inputLock.withLock {
+            postActionEvent(up, request)
+            pressedKeys.remove(code)
+          }
+          delivered += 1
         }
       }
+      // A last chord that moves focus (a single Cmd+N) must still tell the agent to observe;
+      // the app may open its window after the keyup, so the check runs during settling.
+      if verification == nil { keyFocusUnchanged = focusUnchanged }
     }
   } else if op == "elementAction" {
-    try elementAction(request, host)
+    verification = try elementAction(request, host)
   } else if op == "activateApp" || op == "openApp" {
     let id = string(request, "appId")
     if tier(id) == "blocked" { throw Failure("TargetBlocked", "kind", "protection-unknown") }
@@ -2005,11 +2167,30 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
     throw Failure("UnsupportedAction")
   }
   confirmAction(request)
-  try await Task.sleep(nanoseconds: 300_000_000)
+  // See execute's pending deadline: defer only when metadata cannot select a later target.
+  let settle = computerPostActionSettleMs(
+    op: op, screenshot: request["screenshot"] as? Bool == true,
+    appTargeted: !string(request, "appId").isEmpty, displayCount: displays().count)
+  deferredSettle = settle == 0
+  if let keyFocusUnchanged {
+    // Spend the settle window watching for the shortcut's own focus change. Waiting it out
+    // inline replaces the deferred settle; an early exit keeps the gap for the next action.
+    let started = ProcessInfo.processInfo.systemUptime
+    let moved = computerPollUntil(
+      timeout: 0.3, cancelled: { requestCancelled(string(request, "requestId")) },
+      predicate: { !keyFocusUnchanged() })
+    if moved { verification = ["verified": false] }
+    let remaining = Double(settle) / 1000 - (ProcessInfo.processInfo.systemUptime - started)
+    if remaining > 0 { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
+    deferredSettle = moved && settle == 0
+  } else if settle > 0 {
+    try await Task.sleep(nanoseconds: UInt64(settle) * 1_000_000)
+  }
   var result: [String: Any] = [
     "frontmostApp": NSWorkspace.shared.frontmostApplication.flatMap(appRecord) ?? NSNull(),
     "cursor": NSNull(), "actionCompleted": true,
   ]
+  if let verification { result["verification"] = verification }
   let allDisplays = displays()
   let windowFrame = NSWorkspace.shared.frontmostApplication.flatMap { app in
     axElement(attribute(applicationElement(app.processIdentifier), kAXFocusedWindowAttribute))
@@ -2041,6 +2222,8 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
   }
   return result
 }
+/// Runs one request and emits exactly one response; failures carry the agent-facing error
+/// and, for `OutcomeUnknown`, a separate log-only diagnostic.
 func execute(_ message: [String: Any]) {
   let request = message["request"] as? [String: Any] ?? [:]
   let host = message["hostAuthorization"] as? [String: Any] ?? [:]
@@ -2071,7 +2254,20 @@ func execute(_ message: [String: Any]) {
       completed.signal()
     }
     do {
+      // Deferred foreground settle applies across queues, before any authorization checks.
+      // See mutate's metadata-dependent inline settle rule.
+      if !["status", "listApps", "resolveApps"].contains(op) {
+        while true {
+          if requestCancelled(id) {
+            throw Failure("Interrupted", "cause", "paused")
+          }
+          let remaining = locked { pendingSettleDeadline } - ProcessInfo.processInfo.systemUptime
+          if remaining <= 0 { break }
+          try await Task.sleep(nanoseconds: UInt64(min(0.025, remaining) * 1_000_000_000))
+        }
+      }
       let result: Any
+      var deferredSettle = false
       switch op {
       case "status": result = permissions()
       case "listApps": result = protectAppRecords(listApps(), host)
@@ -2079,20 +2275,37 @@ func execute(_ message: [String: Any]) {
         result = protectAppRecords(resolveApps(request["queries"] as? [String] ?? []), host)
       case "inspect": result = try inspect(request, host)
       case "screenshot", "zoom": result = try await screenshot(request, host)
-      default: result = try await mutate(request, host)
+      default: result = try await mutate(request, host, deferredSettle: &deferredSettle)
+      }
+      if deferredSettle {
+        locked { pendingSettleDeadline = ProcessInfo.processInfo.systemUptime + 0.3 }
       }
       emit(["type": "response", "requestId": id, "result": result])
     } catch let failure as Failure {
-      var error = failure.payload
-      if tracked && error["_tag"] as? String == "Interrupted" {
-        let started = locked { postedRequests.contains(id) }
-        error = started ? ["_tag": "OutcomeUnknown"] : error.merging(["actionStarted": false]) { _, new in new }
+      let started = locked { postedRequests.contains(id) }
+      if tracked && !isBackground(request) && started {
+        locked { pendingSettleDeadline = ProcessInfo.processInfo.systemUptime + 0.3 }
       }
-      emit(["type": "response", "requestId": id, "error": error])
+      let error = computerActionFailure(
+        failure.payload, tracked: tracked, background: isBackground(request), posted: started)
+      var response: [String: Any] = [
+        "type": "response", "requestId": id, "error": computerAgentFacingError(error),
+      ]
+      if let diagnostic = computerOutcomeUnknownDiagnostic(
+        error: error, failure: failure.payload, op: op, appId: string(request, "appId"),
+        background: isBackground(request))
+      {
+        response["diagnostic"] = diagnostic
+      }
+      emit(response)
     } catch {
+      let started = tracked && locked { postedRequests.contains(id) }
+      if started && !isBackground(request) {
+        locked { pendingSettleDeadline = ProcessInfo.processInfo.systemUptime + 0.3 }
+      }
       emit([
         "type": "response", "requestId": id,
-        "error": ["_tag": "Execution", "message": "Native action failed."],
+        "error": started ? ["_tag": "OutcomeUnknown"] : ["_tag": "Execution", "message": "Native action failed."],
       ])
     }
   }
@@ -2175,7 +2388,9 @@ heartbeat.setEventHandler {
   ]
   if inputAge >= 0 { beat["lastUserInputAgeMs"] = Int(inputAge) }
   if let front { beat["frontmostAppId"] = front }
-  beat["inputHeld"] = physicalInputHeld()
+  let heldInputs = heldPhysicalInputs()
+  beat["inputHeld"] = !heldInputs.isEmpty
+  beat["heldInputs"] = heldInputs.map(\.diagnostic)
   beat["targets"] = locked {
     targetWatches.map { appId, watch in
       ["appId": appId, "activityEpoch": watch.activityEpoch,
@@ -2220,9 +2435,11 @@ DispatchQueue.global(qos: .userInteractive).async {
             "error": ["_tag": "Execution", "message": "Computer target watch limit reached."]])
           continue
         }
-        conflictQueue.sync { refreshWindowCache(); resolveInputs() }
+        conflictQueue.async {
+          refreshWindowCache(); resolveInputs()
         emit(["type": "response", "requestId": message["requestId"] ?? "",
           "result": targetReadiness(appId)])
+        }
       case "watchRelease":
         let appId = string(message, "appId")
         let owner = string(message, "owner")
@@ -2237,9 +2454,11 @@ DispatchQueue.global(qos: .userInteractive).async {
             "error": ["_tag": "Execution", "message": "Computer target is not watched."]])
           continue
         }
-        conflictQueue.sync { refreshWindowCache(); resolveInputs() }
+        conflictQueue.async {
+          refreshWindowCache(); resolveInputs()
         emit(["type": "response", "requestId": message["requestId"] ?? "",
           "result": targetReadiness(appId)])
+        }
       case "permit":
         let duration = Double(integer(message, "expiresInMs")) / 1000
         // The first permit fixes the scope; renewals carry only the generation. A permit with

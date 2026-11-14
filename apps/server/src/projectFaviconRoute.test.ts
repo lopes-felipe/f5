@@ -76,9 +76,177 @@ async function request(baseUrl: string, pathname: string): Promise<HttpResponse>
 
 describe("tryHandleProjectFaviconRequest", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const directory of tempDirs.splice(0)) {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("caches discoveries for ten minutes and validates only the cached image on hits", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const root = makeTempDir("f5-favicon-cache-");
+    fs.mkdirSync(path.join(root, "public"));
+    fs.writeFileSync(path.join(root, "public/favicon.svg"), "<svg>public</svg>");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const readImage = vi.fn(reader.readImage);
+    const cachedAuthorizer = {
+      ...authorizer,
+      forProject: async () => ({ ...reader, readImage }),
+    };
+    expect(await findFaviconRelativePath(cachedAuthorizer, PROJECT_ID)).toBe("public/favicon.svg");
+    fs.writeFileSync(path.join(root, "favicon.svg"), "<svg>root</svg>");
+    readImage.mockClear();
+    expect(await findFaviconRelativePath(cachedAuthorizer, PROJECT_ID)).toBe("public/favicon.svg");
+    expect(readImage).toHaveBeenCalledTimes(1);
+    now = 600_001;
+    expect(await findFaviconRelativePath(cachedAuthorizer, PROJECT_ID)).toBe("favicon.svg");
+  });
+
+  it("expires misses after one minute and immediately replaces deleted cached icons", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const root = makeTempDir("f5-favicon-cache-miss-");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBeNull();
+    fs.writeFileSync(path.join(root, "favicon.svg"), "<svg>root</svg>");
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBeNull();
+    now = 60_001;
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBe("favicon.svg");
+    fs.unlinkSync(path.join(root, "favicon.svg"));
+    fs.writeFileSync(path.join(root, "favicon.ico"), "invalid");
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBeNull();
+  });
+
+  it("bounds the cache to 512 projects and still authorizes cached misses", async () => {
+    const root = makeTempDir("f5-favicon-cache-capacity-");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const readText = vi.fn(async () => {
+      throw new Error("missing");
+    });
+    const forProject = vi.fn(async () => ({ ...reader, readText }));
+    const cachedAuthorizer = { ...authorizer, forProject };
+    for (let index = 0; index < 512; index++) {
+      await findFaviconRelativePath(cachedAuthorizer, String(index));
+    }
+    // Recently used entries survive eviction even when inserted first.
+    await findFaviconRelativePath(cachedAuthorizer, "0");
+    await findFaviconRelativePath(cachedAuthorizer, "512");
+    readText.mockClear();
+    expect(await findFaviconRelativePath(cachedAuthorizer, "0")).toBeNull();
+    expect(readText).not.toHaveBeenCalled();
+    expect(await findFaviconRelativePath(cachedAuthorizer, "1")).toBeNull();
+    expect(readText).toHaveBeenCalledTimes(7);
+    forProject.mockRejectedValueOnce(new Error("project removed"));
+    await expect(findFaviconRelativePath(cachedAuthorizer, "512")).rejects.toThrow(
+      "project removed",
+    );
+    expect(await findFaviconRelativePath(cachedAuthorizer, "512")).toBeNull();
+  });
+
+  it.each([true, false])("re-discovers after a root change (cached hit=%s)", async (hit) => {
+    const oldRoot = makeTempDir("f5-favicon-old-root-");
+    const newRoot = makeTempDir("f5-favicon-new-root-");
+    if (hit) {
+      fs.mkdirSync(path.join(oldRoot, "public"));
+      fs.writeFileSync(path.join(oldRoot, "public/favicon.svg"), "<svg>old</svg>");
+    }
+    fs.mkdirSync(path.join(newRoot, "public"));
+    fs.writeFileSync(path.join(newRoot, "public/favicon.svg"), "<svg>lower rank</svg>");
+    fs.writeFileSync(path.join(newRoot, "favicon.svg"), "<svg>preferred</svg>");
+    let root = oldRoot;
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBe(
+      hit ? "public/favicon.svg" : null,
+    );
+    root = newRoot;
+    expect(await findFaviconRelativePath(authorizer, PROJECT_ID)).toBe("favicon.svg");
+  });
+
+  it("bounds image validation reads across cached requests", async () => {
+    const root = makeTempDir("f5-favicon-cached-budget-");
+    fs.writeFileSync(path.join(root, "favicon.svg"), "<svg>icon</svg>");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const gate = Promise.withResolvers<void>();
+    let gated = false;
+    let active = 0;
+    let peak = 0;
+    const readImage = vi.fn(async (input: Parameters<typeof reader.readImage>[0]) => {
+      if (!gated) return reader.readImage(input);
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await gate.promise;
+        return await reader.readImage(input);
+      } finally {
+        active--;
+      }
+    });
+    const cachedAuthorizer = { ...authorizer, forProject: async () => ({ ...reader, readImage }) };
+    await findFaviconRelativePath(cachedAuthorizer, PROJECT_ID);
+    readImage.mockClear();
+    gated = true;
+    const requests = Array.from({ length: 100 }, () =>
+      findFaviconRelativePath(cachedAuthorizer, PROJECT_ID),
+    );
+    try {
+      await vi.waitFor(() => expect(readImage).toHaveBeenCalledTimes(32));
+      expect(active).toBe(32);
+    } finally {
+      gate.resolve();
+    }
+    expect(await Promise.all(requests)).toEqual(Array(100).fill("favicon.svg"));
+    expect(peak).toBe(32);
+    expect(active).toBe(0);
+  });
+
+  it("shares pending lookups, retries expired ones, and ignores late old results", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const root = makeTempDir("f5-favicon-pending-");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => root,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const gate = Promise.withResolvers<void>();
+    let blocked = true;
+    const readImage = vi.fn(async (input: Parameters<typeof reader.readImage>[0]) => {
+      if (input.relativePath === "favicon.svg" && blocked) {
+        await gate.promise;
+        throw new Error("old lookup missed");
+      }
+      return reader.readImage(input);
+    });
+    const forProject = vi.fn(async () => ({ ...reader, readImage }));
+    const cachedAuthorizer = { ...authorizer, forProject };
+    const first = findFaviconRelativePath(cachedAuthorizer, PROJECT_ID);
+    const second = findFaviconRelativePath(cachedAuthorizer, PROJECT_ID);
+    try {
+      await vi.waitFor(() => expect(readImage).toHaveBeenCalledTimes(22));
+      expect(forProject).toHaveBeenCalledTimes(2);
+      blocked = false;
+      now = 30_001;
+      fs.writeFileSync(path.join(root, "favicon.svg"), "<svg>recovered</svg>");
+      // The original promise has not settled, but a fresh request can recover.
+      expect(await findFaviconRelativePath(cachedAuthorizer, PROJECT_ID)).toBe("favicon.svg");
+    } finally {
+      gate.resolve();
+    }
+    expect(await Promise.all([first, second])).toEqual([null, null]);
+    expect(await findFaviconRelativePath(cachedAuthorizer, PROJECT_ID)).toBe("favicon.svg");
   });
 
   it("starts well-known probes and source reads concurrently while preserving stages", async () => {

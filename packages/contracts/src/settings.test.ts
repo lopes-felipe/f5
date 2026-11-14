@@ -17,6 +17,26 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeProjectSettingsResult = Schema.decodeUnknownSync(ProjectSettingsResult);
 
+describe("usageMonthlyBudget", () => {
+  it("defaults to no budget and accepts a cost, token, or cleared budget", () => {
+    expect(decodeServerSettings({}).usageMonthlyBudget).toBeNull();
+    expect(DEFAULT_SERVER_SETTINGS.usageMonthlyBudget).toBeNull();
+    expect(
+      decodeServerSettings({ usageMonthlyBudget: { costUsd: 100, tokens: null } })
+        .usageMonthlyBudget,
+    ).toEqual({ costUsd: 100, tokens: null });
+    expect(decodeServerSettingsPatch({ usageMonthlyBudget: null })).toEqual({
+      usageMonthlyBudget: null,
+    });
+    expect(() =>
+      decodeServerSettingsPatch({ usageMonthlyBudget: { costUsd: -1, tokens: null } }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ usageMonthlyBudget: { costUsd: null, tokens: 1.5 } }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings project overrides across versions", () => {
   const projectId = ProjectId.make("project-a");
 

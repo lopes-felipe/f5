@@ -11,6 +11,7 @@ function deferred<T>() {
 function fixture(
   check = vi.fn(async (): Promise<{ version: string; releaseNotes: null } | null> => null),
   timeoutMs = 1000,
+  isQuitting = () => false,
 ) {
   let state = {
     ...createInitialDesktopUpdateState("0.1.0", {
@@ -31,6 +32,7 @@ function fixture(
     },
     writePreferences,
     timeoutMs,
+    isQuitting,
     port: { check, download, applySettings },
   });
   return {
@@ -48,6 +50,82 @@ function fixture(
   };
 }
 describe("update queue", () => {
+  it("restores a cached installer only after the native check finishes", async () => {
+    const pending = deferred<{ version: string; releaseNotes: null; cachedDownload: boolean }>();
+    const f = fixture(vi.fn(() => pending.promise));
+    f.download.mockImplementation(async () => {
+      f.state = { ...f.state, status: "downloaded", downloadedVersion: "0.2.0" };
+    });
+    const check = f.controller.requestCheck("startup");
+    await Promise.resolve();
+    expect(f.download).not.toHaveBeenCalled();
+    pending.resolve({ version: "0.2.0", releaseNotes: null, cachedDownload: true });
+    await check;
+    await f.controller.download(); // Drain the separately queued recovery.
+    expect(f.download).toHaveBeenCalledTimes(1);
+    expect(f.state.status).toBe("downloaded");
+    expect(f.state.downloadedVersion).toBe("0.2.0");
+  });
+  it("settles the check while recovery is pending and reports recovery download failures", async () => {
+    const recovery = deferred<void>();
+    const f = fixture(
+      vi.fn(async () => ({ version: "0.2.0", releaseNotes: null, cachedDownload: true })),
+    );
+    f.download.mockImplementation(async () => {
+      await recovery.promise;
+      throw new Error("download failed");
+    });
+    await f.controller.requestCheck("startup");
+    await vi.waitFor(() => expect(f.download).toHaveBeenCalledTimes(1));
+    expect(f.state.status).toBe("downloading");
+    recovery.resolve();
+    await vi.waitFor(() => expect(f.state.errorContext).toBe("download"));
+    expect(f.state.status).toBe("available");
+    expect(f.state.errorContext).toBe("download");
+    expect(f.state.canRetry).toBe(true);
+  });
+  it.each(["channel", "downloaded", "quitting"] as const)(
+    "abandons queued recovery after %s changes",
+    async (change) => {
+      const pending = deferred<{ version: string; releaseNotes: null; cachedDownload: boolean }>();
+      let quitting = false;
+      const nativeCheck = vi
+        .fn()
+        .mockImplementationOnce(() => pending.promise)
+        .mockResolvedValue(null);
+      const f = fixture(nativeCheck, 1000, () => quitting);
+      const check = f.controller.requestCheck("startup");
+      // An already queued action runs before cache recovery.
+      const intervening = f.controller.setChannel("beta");
+      f.writePreferences.mockImplementation(() => {
+        if (change === "quitting") quitting = true;
+        if (change === "downloaded")
+          f.state = { ...f.state, status: "downloaded", downloadedVersion: "0.2.0" };
+      });
+      pending.resolve({ version: "0.2.0", releaseNotes: null, cachedDownload: true });
+      await check;
+      await intervening;
+      await f.controller.download();
+      expect(f.download).not.toHaveBeenCalled();
+    },
+  );
+  it.each([false, true])(
+    "keeps uncached updates manual and abandons recovery when quitting (%s)",
+    async (quitting) => {
+      const f = fixture(
+        vi.fn(async () => ({
+          version: "0.2.0",
+          releaseNotes: null,
+          cachedDownload: quitting,
+        })),
+        1000,
+        () => quitting,
+      );
+      await f.controller.requestCheck("startup");
+      expect(f.state.status).toBe("available");
+      expect(f.download).not.toHaveBeenCalled();
+    },
+  );
   it("coalesces checks and timestamps completion", async () => {
     const pending = deferred<null>();
     const f = fixture(vi.fn(() => pending.promise));

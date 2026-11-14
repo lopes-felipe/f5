@@ -3816,6 +3816,7 @@ describe("MessagesTimeline row stability", () => {
       revertPopover: null,
       revertImpact: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
+      cacheMissByAssistantMessageId: new Map(),
       changedFilesPresentationOverrides: {},
       newestTurnDiffId: null,
       expandedCommandExecutions: {},
@@ -3861,6 +3862,44 @@ describe("MessagesTimeline row stability", () => {
     expect(externalsAfter.get("row-work")).toBe(externalsBefore.get("row-work"));
     // Rebuilding the same entries returns the same array.
     expect(buildRows([user, work, grown], cache)).toBe(after);
+  });
+
+  it("hands a missed turn's summary to its reply and nowhere else", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("row-user", "hello", 0);
+    const missed = makeAssistantEntry("row-missed", "Done.", 1);
+    const warm = makeAssistantEntry("row-warm", "Also done.", 2);
+    const rows = buildRows([user, missed, warm], cache);
+    const miss = {
+      turnId: TurnId.makeUnsafe("turn-missed"),
+      turnNumber: 2,
+      state: "miss" as const,
+      ratio: 0.02,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 500,
+      uncachedInputTokens: 0,
+      outputTokens: 20,
+      rewrittenTokens: 500,
+      idleMs: null,
+      completedAt: "2026-03-04T12:00:01.000Z",
+    };
+    const without = buildTimelineRowExternals(rows, externalsInputs(), new Map());
+    const withMiss = buildTimelineRowExternals(
+      rows,
+      externalsInputs({ cacheMissByAssistantMessageId: new Map([[missed.id as MessageId, miss]]) }),
+      without,
+    );
+    const externalsOf = (map: typeof without, id: string) => {
+      const externals = map.get(id)?.externals;
+      if (externals?.kind !== "assistant-message") throw new Error("expected an assistant row");
+      return externals;
+    };
+    expect(externalsOf(without, "row-missed").cacheMiss).toBeUndefined();
+    expect(externalsOf(withMiss, "row-missed").cacheMiss).toBe(miss);
+    expect(withMiss.get("row-missed")?.version).not.toBe(without.get("row-missed")?.version);
+    // The warm reply keeps its entry, so its row does not re-render.
+    expect(withMiss.get("row-warm")).toBe(without.get("row-warm"));
+    expect(externalsOf(withMiss, "row-warm").cacheMiss).toBeUndefined();
   });
 
   it("skips revert and checkpoint lookups while only message text streams", () => {
@@ -4253,7 +4292,7 @@ describe("MessagesTimeline HTML renders", () => {
           makeUserEntry("anchor-user", "Show the chart", 0),
           makeHtmlRenderEntry(
             "html-grows",
-            "<div id=g style=\"height:200px\">Chart</div><script>setTimeout(()=>{document.getElementById('g').style.height='3200px'},1500)</script>",
+            "<div id=g style=\"height:200px\">Chart</div><script>addEventListener('message',e=>{if(e.data==='grow-test-page')document.getElementById('g').style.height='3200px'})</script>",
             1,
           ),
           // More than the growth below the viewport: LegendList applies its anchor
@@ -4286,17 +4325,20 @@ describe("MessagesTimeline HTML renders", () => {
         host
           .querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!
           .getBoundingClientRect().top;
-      // The page grows 1.5s after loading, while it sits above the viewport. Scrolling
-      // may recycle its row and reload the frame; it reconnects and still reports.
+      // Grow only after capturing the anchor. Scrolling may recycle and reload
+      // the frame, so retry the idempotent request until its listener is ready.
+      // Frame height and the virtual list's scroll correction settle separately.
       await vi.waitFor(
-        () =>
+        () => {
+          frameFor(host, "html-grows")?.contentWindow?.postMessage("grow-test-page", "*");
           expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBeGreaterThan(
             3000,
-          ),
+          );
+          expect(Math.abs(anchorTop() - before)).toBeLessThan(4);
+          expect(node.scrollTop).toBeGreaterThan(3000);
+        },
         { timeout: 5000 },
       );
-      await vi.waitFor(() => expect(Math.abs(anchorTop() - before)).toBeLessThan(4));
-      expect(node.scrollTop).toBeGreaterThan(3000);
     } finally {
       await screen.unmount();
       host.remove();

@@ -272,6 +272,9 @@ describe("modelPreferencesStore", () => {
   });
 
   it("records recent model selections most-recent-first and caps the list length", () => {
+    recordModelSelection("cursor", "composer-2", { cursor: { fastMode: false } });
+    recordModelSelection("cursor", "composer-2.5", undefined);
+    expect(useModelPreferencesStore.getState().lastModelOptions?.cursor?.fastMode).toBe(false);
     recordModelSelection("codex", "gpt-5.4-mini", {
       codex: { reasoningEffort: "xhigh" },
     });

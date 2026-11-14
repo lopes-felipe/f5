@@ -1,5 +1,12 @@
 use super::*;
 
+pub(super) fn confirm_action(request: &Value) {
+    emit(
+        json!({"type":"actionConfirmed","requestId":request["requestId"],
+        "executionGeneration":generation(request)}),
+    );
+}
+
 pub(super) fn auth_key(auth: &Value) -> String {
     format!("{}\0{}", s(auth, "profileId"), s(auth, "threadId"))
 }

@@ -1,4 +1,8 @@
-import type { DesktopKeepAwakeState, DesktopKeepAwakeBlockedReason } from "@t3tools/contracts";
+import type {
+  DesktopKeepAwakeState,
+  DesktopKeepAwakeBlockedReason,
+  DesktopKeepAwakeDisplayPausedReason,
+} from "@t3tools/contracts";
 import type { Preferences } from "./preferences";
 import type { MacPower } from "./macPower";
 import type { LidMarker, LidOwnership } from "./lidOwnership";
@@ -6,11 +10,12 @@ import type { LidMarker, LidOwnership } from "./lidOwnership";
 export const AGENT_POLL_MS = 10_000;
 export const COOLDOWN_MS = 300_000;
 export const MAINTENANCE_MS = 30_000;
+export type BlockerType = "prevent-app-suspension" | "prevent-display-sleep";
 export interface KeepAwakeDependencies {
   platform: string;
   now(): number;
   blocker: {
-    start(type: "prevent-app-suspension"): number;
+    start(type: BlockerType): number;
     stop(id: number): void;
     isStarted(id: number): boolean;
   };
@@ -26,6 +31,7 @@ export class KeepAwakeController {
   private epoch = 0;
   private disposed = false;
   private blockerId: number | null = null;
+  private blockerType: BlockerType | null = null;
   private busy = 0;
   private cooldown: number | null = null;
   private marker: LidMarker | null = null;
@@ -37,6 +43,8 @@ export class KeepAwakeController {
   private batteryHold = false;
   private batteryUnknown = false;
   private thermalHold = false;
+  /** The hold flags above came from a guard pass during the current display demand. */
+  private guardsFresh = false;
   private external = false;
   private suppressed = false;
   private failure: DesktopKeepAwakeBlockedReason | null = null;
@@ -67,6 +75,26 @@ export class KeepAwakeController {
         (this.prefs.mode === "agents" &&
           (this.busy > 0 || (this.cooldown !== null && this.d.now() < this.cooldown))))
     );
+  }
+  private displayRequested() {
+    return this.activeDemand() && this.prefs.keepDisplayOn;
+  }
+  private displayPausedReason(): DesktopKeepAwakeDisplayPausedReason | null {
+    if (!this.prefs.keepDisplayOn) return null;
+    if (this.displayDone) return "panel-off";
+    if (this.thermalHold) return "thermal";
+    if (this.batteryUnknown) return "battery-unknown";
+    if (this.batteryHold) return "battery-low";
+    return null;
+  }
+  private wantedBlocker(): BlockerType | null {
+    if (!this.activeDemand()) return null;
+    // Never upgrade on hold flags that predate the current display demand: a
+    // guard pass must finish first. A darkened closed panel, low or unknown
+    // battery, or heat falls back to system-only.
+    return this.displayRequested() && this.guardsFresh && this.displayPausedReason() === null
+      ? "prevent-display-sleep"
+      : "prevent-app-suspension";
   }
   private lidDemand() {
     return (
@@ -105,10 +133,13 @@ export class KeepAwakeController {
           : this.blockerFailed
             ? "blocker-failed"
             : null;
+    const active = this.blockerId !== null && this.d.blocker.isStarted(this.blockerId);
     return {
       revision: this.revision,
       ...this.prefs,
-      active: this.blockerId !== null && this.d.blocker.isStarted(this.blockerId),
+      active,
+      displayActive: active && this.blockerType === "prevent-display-sleep",
+      displayPausedReason: this.displayRequested() ? this.displayPausedReason() : null,
       busyThreadCount: this.prefs.mode === "agents" ? this.busy : 0,
       cooldownUntil: this.prefs.mode === "agents" ? this.cooldown : null,
       lid: {
@@ -134,18 +165,34 @@ export class KeepAwakeController {
     this.d.broadcast(this.snapshot);
   }
   private idle() {
-    const wanted = this.activeDemand();
-    if (wanted && (this.blockerId === null || !this.d.blocker.isStarted(this.blockerId))) {
+    const wanted = this.wantedBlocker();
+    const running = this.blockerId !== null && this.d.blocker.isStarted(this.blockerId);
+    if (wanted && (!running || this.blockerType !== wanted)) {
+      // Start the replacement before stopping the old blocker so a type switch
+      // never leaves a window without any assertion.
+      const previous = running ? this.blockerId : null;
+      let id: number;
       try {
-        this.blockerId = this.d.blocker.start("prevent-app-suspension");
-        this.blockerFailed = !this.d.blocker.isStarted(this.blockerId);
+        id = this.d.blocker.start(wanted);
       } catch (error) {
         this.blockerFailed = true;
         this.d.log(error);
+        return;
       }
+      if (!this.d.blocker.isStarted(id)) {
+        // A start that did not take keeps whatever assertion is still held.
+        this.blockerFailed = true;
+        return;
+      }
+      this.blockerId = id;
+      this.blockerType = wanted;
+      this.blockerFailed = false;
+      if (previous !== null && previous !== id && this.d.blocker.isStarted(previous))
+        this.d.blocker.stop(previous);
     } else if (!wanted && this.blockerId !== null) {
       if (this.d.blocker.isStarted(this.blockerId)) this.d.blocker.stop(this.blockerId);
       this.blockerId = null;
+      this.blockerType = null;
     }
   }
   private enqueue(operation: () => Promise<void>) {
@@ -191,13 +238,26 @@ export class KeepAwakeController {
       this.batteryHold = false;
       this.batteryUnknown = false;
     } else {
-      const percent = await this.d.power.readBatteryPercent();
+      // The level is only readable through pmset; elsewhere battery power counts as unknown.
+      const percent = this.d.platform === "darwin" ? await this.d.power.readBatteryPercent() : null;
       this.batteryUnknown = percent === null;
       if (percent !== null) {
         if (percent < 20) this.batteryHold = true;
         else if (percent >= 25) this.batteryHold = false;
       }
     }
+    this.guardsFresh = true;
+  }
+  /** Display-only demand needs the battery and thermal guards, never pmset writes. */
+  private async reconcileDisplay(clearHolds: boolean) {
+    if (this.displayRequested()) await this.guards();
+    else if (clearHolds) {
+      this.thermalHold = false;
+      this.batteryHold = false;
+      this.batteryUnknown = false;
+      this.guardsFresh = false;
+    }
+    this.idle();
   }
   private async refreshPermission() {
     this.permission = (await this.d.power.sudoRuleAvailable()) ? "available" : "missing";
@@ -271,17 +331,25 @@ export class KeepAwakeController {
     }
   }
   private async reconcileLid() {
-    if (this.d.platform !== "darwin") return;
-    if (!(await this.recoverStartup())) return;
+    if (this.d.platform !== "darwin") return this.reconcileDisplay(true);
+    // Display guards do not depend on pmset recovery; keep them current while it is pending.
+    if (!(await this.recoverStartup())) return this.reconcileDisplay(false);
     if (!this.lidDemand() && !this.marker) {
-      this.thermalHold = false;
-      this.batteryHold = false;
-      this.batteryUnknown = false;
       this.external = false;
       this.readFailed = false;
-      return;
+      return this.reconcileDisplay(true);
     }
     await this.guards();
+    // Re-derive the darkened-panel fallback from live state: Electron reports no
+    // event when the lid reopens or an external display is attached.
+    if (
+      this.displayDone &&
+      (!this.marker ||
+        this.d.environment.hasExternalDisplay() ||
+        (await this.d.power.readLidClosed()) === false)
+    )
+      this.displayDone = false;
+    this.idle();
     this.sleepDisabled = await this.d.power.readSleepDisabled();
     this.readFailed = this.sleepDisabled === null;
     if (this.marker && this.sleepDisabled === 0) {
@@ -366,6 +434,9 @@ export class KeepAwakeController {
             return;
           if (closed) {
             this.displayDone = true;
+            // Drop any display assertion first so it cannot contest the forced sleep.
+            this.idle();
+            this.publish();
             await this.d.power.displaySleepNow();
           } else this.scheduleDisplay();
         })
@@ -374,6 +445,10 @@ export class KeepAwakeController {
   }
   userActive() {
     this.displayDone = false;
+    if (!this.disposed) {
+      this.idle();
+      this.publish();
+    }
     this.scheduleDisplay();
   }
   powerChanged() {
@@ -391,13 +466,21 @@ export class KeepAwakeController {
     }
     if (this.disposed) return;
     if (!this.activeDemand()) this.suppressed = false;
+    if (!this.displayRequested()) this.guardsFresh = false;
     this.idle();
     const lidDemand = this.lidDemand();
     const released = this.previousLidDemand && !lidDemand;
     this.previousLidDemand = lidDemand;
+    // New display demand needs a guard pass right away. Only macOS polls the
+    // battery level; elsewhere powerMonitor events keep the holds current.
+    const displayStale = this.displayRequested() && !this.guardsFresh;
     if (
-      (lidDemand || this.marker || this.startupRecovery) &&
-      (released || this.d.now() - this.lastMaintenance >= MAINTENANCE_MS) &&
+      (lidDemand ||
+        this.marker ||
+        this.startupRecovery ||
+        displayStale ||
+        (this.displayRequested() && this.d.platform === "darwin")) &&
+      (released || displayStale || this.d.now() - this.lastMaintenance >= MAINTENANCE_MS) &&
       !this.maintenanceQueued
     ) {
       this.lastMaintenance = this.d.now();
@@ -416,7 +499,10 @@ export class KeepAwakeController {
     if (this.disposed) throw new Error("Keep awake is closed");
     this.epoch++;
     const previousMode = this.prefs.mode;
+    const displayWasRequested = this.displayRequested();
     this.prefs = { ...this.prefs, ...input };
+    // Newly requested display-on waits for the guard pass queued below.
+    if (!displayWasRequested) this.guardsFresh = false;
     this.suppressed = false;
     this.blockerFailed = false;
     if (!this.marker) this.failure = null;

@@ -21,6 +21,12 @@ reconciliation. GitHub may delay scheduled runs when capacity is constrained.
 After the third attempt, or for a cancelled run, manually rerun failed jobs with
 `gh run rerun <run-id> --failed`. Shadow mode never reruns candidates.
 
+Every failed or recovered publisher run updates one `release-blocked` issue titled
+"Release publication blocked" through `release-status.yml`. A failure opens it with
+the run link and the last error lines, and comments again only when that error
+changes. The next successful publisher run closes it. Cancelled and out-of-order
+results are ignored. Dispatch the workflow with a `run_id` to report a specific run.
+
 CI queue cleanup supersedes older queued runs before their replacement passes.
 If that replacement later fails, intermediate sources whose CI was cancelled
 cannot qualify until manually rerun; publication may wait for a newer eligible
@@ -39,6 +45,10 @@ That commit produces no beta. Subsequent main commits target 0.1.3-beta.N.
 
 A pending stable request holds later betas across build failures, reruns, missed
 events and restarts. Later merges never cancel or silently change its candidate.
+Its main CI is retried like its build: in beta/all mode the publisher reruns failed
+or timed-out CI jobs on the stable source up to three total attempts. After that,
+or for a cancelled CI run, the publisher fails with `Stable CI is blocked` and the
+rerun command instead of waiting silently.
 After automatic retries are exhausted, rerun failed jobs when the source is sound.
 For a source fix, merge it and request an explicit recovery PR for the same
 unpublished version:

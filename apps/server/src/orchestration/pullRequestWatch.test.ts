@@ -60,6 +60,38 @@ const remark = (
 const noRemarks: ReadonlyArray<PullRequestComment> = [];
 
 describe("evaluatePullRequestWatch", () => {
+  it("preserves an unread head and reports conflicts again after a push", () => {
+    const first = evaluatePullRequestWatch(
+      watch(),
+      detail({ mergeability: "conflicting" }),
+      noRemarks,
+    );
+    const unread = evaluatePullRequestWatch(
+      first.next,
+      detail({ headSha: undefined, mergeability: "conflicting" }),
+      noRemarks,
+    );
+    assert.deepEqual(unread.changes, []);
+    assert.equal(unread.next.headSha, first.next.headSha);
+    assert.deepEqual(
+      evaluatePullRequestWatch(unread.next, detail({ mergeability: "conflicting" }), noRemarks)
+        .changes,
+      [],
+    );
+    const pushed = evaluatePullRequestWatch(
+      unread.next,
+      detail({ headSha: "new-head", mergeability: "unknown" }),
+      noRemarks,
+    );
+    assert.deepEqual(
+      evaluatePullRequestWatch(
+        pushed.next,
+        detail({ headSha: "new-head", mergeability: "conflicting" }),
+        noRemarks,
+      ).changes,
+      [{ kind: "conflicting" }],
+    );
+  });
   it("reports each failure at once, even while another check never finishes", () => {
     const bot = check("CodeRabbit", "pending");
     const first = detail({ checks: [check("lint", "failure"), check("test", "pending"), bot] });

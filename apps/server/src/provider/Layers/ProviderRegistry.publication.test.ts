@@ -13,6 +13,82 @@ const infra = ServerConfig.layerTest(process.cwd(), { prefix: "catalog-publicati
   Layer.provideMerge(NodeServices.layer),
 );
 
+it.effect("ignores a retired instance's late probe result or failure", () =>
+  Effect.gen(function* () {
+    for (const fails of [false, true]) {
+      const id = ProviderInstanceId.make("codex");
+      const driver = ProviderDriverKind.make("codex");
+      const snapshot: ServerProvider = {
+        instanceId: id,
+        driver,
+        enabled: true,
+        installed: true,
+        version: "new",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-11-01T00:00:00Z",
+        models: [],
+        skills: [],
+        slashCommands: [],
+      };
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let probing = false;
+      const makeInstance = (retired: boolean): ProviderInstance => ({
+        instanceId: id,
+        driverKind: driver,
+        displayName: undefined,
+        enabled: true,
+        continuationIdentity: { driverKind: driver, continuationKey: "test" },
+        snapshot: {
+          getSnapshot: Effect.succeed(retired ? { ...snapshot, version: "old" } : snapshot),
+          refresh: Effect.gen(function* () {
+            if (retired && probing) {
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              if (fails) return yield* Effect.die("retired failure");
+            }
+            return snapshot;
+          }),
+          streamChanges: Stream.empty,
+        },
+        adapter: {} as ProviderInstance["adapter"],
+        textGeneration: {} as ProviderInstance["textGeneration"],
+      });
+      const old = makeInstance(true);
+      const current = yield* Ref.make(old);
+      const changes = yield* PubSub.unbounded<void>();
+      yield* Effect.gen(function* () {
+        const registry = yield* ProviderRegistry;
+        probing = true;
+        const refresh = yield* registry.refreshInstance(id).pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        const published = yield* Stream.toPull(
+          registry.streamChanges.pipe(
+            Stream.filter((providers) => providers[0]?.version === "new"),
+          ),
+        );
+        yield* Ref.set(current, makeInstance(false));
+        yield* PubSub.publish(changes, undefined);
+        yield* published;
+        yield* Deferred.succeed(release, undefined);
+        expect((yield* Fiber.join(refresh))[0]?.version).toBe("new");
+        expect((yield* registry.getProviders)[0]?.version).toBe("new");
+      }).pipe(
+        Effect.provide(ProviderRegistryLive),
+        Effect.provideService(ProviderInstanceRegistry, {
+          getInstance: () => Ref.get(current),
+          listInstances: Ref.get(current).pipe(Effect.map((instance) => [instance])),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.fromPubSub(changes),
+          subscribeChanges: PubSub.subscribe(changes),
+        }),
+        Effect.scoped,
+      );
+    }
+  }).pipe(Effect.provide(infra)),
+);
+
 it.live("publishes merged models in order and refreshes rebuilt instances once", () =>
   Effect.scoped(
     Effect.gen(function* () {

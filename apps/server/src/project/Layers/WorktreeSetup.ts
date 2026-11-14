@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
@@ -59,6 +60,7 @@ import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isDefinitelyUncommittedDispatchError } from "../../wsServer/bootstrapTurnStart.ts";
 import { startOwnedSetupScript, type OwnedSetupScript } from "../ownedSetupScript.ts";
 import { removeWorktreeSafely } from "../worktreeClaims.ts";
+import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../worktreeBase.ts";
 import {
   WorktreeSetup,
   WorktreeSetupError,
@@ -93,7 +95,7 @@ interface Tracked {
 
 const nowIso = () => new Date().toISOString();
 const serverCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`server:worktree-setup:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`server:worktree-setup:${tag}:${timeOrderedUuid()}`);
 
 function clamp(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -181,6 +183,17 @@ function activitySummary(snapshot: WorktreeSetupSnapshot): string {
 const decodeSnapshotJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(WorktreeSetupSnapshotSchema),
 );
+
+/**
+ * Every worktree-setup activity, read once at startup. The kind is a SQL
+ * literal, not a parameter: SQLite uses the partial index
+ * `idx_projection_thread_activities_worktree_setup` only when the query text
+ * matches the index predicate, and without it this scans every activity.
+ */
+export const WORKTREE_SETUP_STARTUP_ROWS_SQL = `
+      SELECT thread_id AS "threadId", payload_json AS payload
+      FROM projection_thread_activities
+      WHERE kind = '${WORKTREE_SETUP_ACTIVITY_KIND.replaceAll("'", "''")}'`;
 
 export const makeWorktreeSetup = Effect.gen(function* () {
   const services = yield* Effect.services<
@@ -581,70 +594,26 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           );
         } else {
           update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "running"));
-          const hasRemote = yield* git
-            .hasRemote(request.projectCwd)
-            .pipe(Effect.orElseSucceed(() => false));
-          let baseRef: string = request.baseBranch;
-          if (hasRemote) {
-            const remote = yield* git
-              .fetchRemoteBranchCommit({
-                cwd: request.projectCwd,
-                branch: request.baseBranch,
-                allowMissingBranch: true,
-              })
-              .pipe(
-                // The raw git error is internal and unreadable in the card; log it
-                // and show the user what actually happened instead.
-                Effect.catch((error) =>
-                  Effect.logWarning("worktree setup could not fetch the remote base branch", {
-                    threadId,
-                    baseBranch: request.baseBranch,
-                    error: error.message,
-                  }).pipe(
-                    Effect.andThen(
-                      Effect.sync(() => {
-                        update(threadId, (snapshot) =>
-                          stageStatus(
-                            snapshot,
-                            "fetch",
-                            "warning",
-                            `Couldn't reach the remote; using local ${request.baseBranch}`,
-                          ),
-                        );
-                        return null;
-                      }),
-                    ),
-                  ),
-                ),
-              );
-            if (remote) {
-              baseRef = remote.commit;
-              update(threadId, (snapshot) =>
-                stageStatus(
-                  snapshot,
-                  "fetch",
-                  "done",
-                  `${remote.refName} at ${remote.commit.slice(0, 7)}`,
-                ),
-              );
-            } else if (
-              tracked.get(threadId)?.snapshot.stages.find((stage) => stage.id === "fetch")
-                ?.status === "running"
-            ) {
-              update(threadId, (snapshot) =>
-                stageStatus(
-                  snapshot,
-                  "fetch",
-                  "warning",
-                  `${request.baseBranch} is not on the remote; using the local branch`,
-                ),
-              );
-            }
-          } else {
-            update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "skipped", "no remote"));
-          }
-
-          const baseSha = yield* git.resolveCommit(request.projectCwd, baseRef);
+          const base = yield* resolveWorktreeBase(git, {
+            projectCwd: request.projectCwd,
+            baseBranch: request.baseBranch,
+            logAnnotations: { threadId },
+          });
+          // Warn only when the base may lack upstream work. A local-only or ahead
+          // branch is the user's selection working as intended.
+          update(threadId, (snapshot) =>
+            stageStatus(
+              snapshot,
+              "fetch",
+              isPossiblyStaleWorktreeBase(base.outcome)
+                ? "warning"
+                : base.outcome === "no-remote"
+                  ? "skipped"
+                  : "done",
+              base.detail,
+            ),
+          );
+          const { baseRef, baseSha } = base;
           if (baseSha === null) {
             return yield* new WorktreeSetupError({
               message: `Base branch ${request.baseBranch} has no commit to start from.`,
@@ -1375,7 +1344,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
 
       yield* input.persistAttachments.pipe(Effect.catch((error) => rollbackThread(error.message)));
 
-      const itemId = CommandId.makeUnsafe(crypto.randomUUID());
+      const itemId = CommandId.makeUnsafe(timeOrderedUuid());
       const startedAt = nowIso();
       const snapshot: WorktreeSetupSnapshot = {
         threadId,
@@ -1788,11 +1757,12 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       ),
     );
     yield* preparation.startup;
-    const rows = yield* sql<{ readonly threadId: ThreadId; readonly payload: string }>`
-      SELECT thread_id AS "threadId", payload_json AS payload
-      FROM projection_thread_activities
-      WHERE kind = ${WORKTREE_SETUP_ACTIVITY_KIND}
-    `.pipe(Effect.orElseSucceed(() => []));
+    const rows = yield* sql
+      .unsafe<{
+        readonly threadId: ThreadId;
+        readonly payload: string;
+      }>(WORKTREE_SETUP_STARTUP_ROWS_SQL)
+      .pipe(Effect.orElseSucceed(() => []));
     for (const row of rows) {
       const decoded = Option.getOrNull(decodeSnapshotJson(row.payload));
       if (decoded && (yield* finishLocalHandoff(row.threadId))) continue;

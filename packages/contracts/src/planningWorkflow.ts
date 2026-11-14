@@ -131,6 +131,7 @@ export const WorkflowBranch = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   errorStage: Schema.NullOr(WorkflowBranchErrorStage).pipe(Schema.withDecodingDefault(() => null)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  /** Turn whose captured output (document or proposed plan) was rejected for this stage. */
   rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -153,6 +154,7 @@ export const WorkflowMerge = Schema.Struct({
   approvedPlanId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   status: WorkflowMergeStatus,
   error: Schema.NullOr(Schema.String),
+  /** Turn whose captured output (document or proposed plan) was rejected for this stage. */
   rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
     Schema.withDecodingDefault(() => null),
   ),

@@ -9,6 +9,53 @@ import {
 const CLAUDE_SLOT = { provider: "claudeAgent" as const, model: "claude-sonnet-4-6" };
 const CODEX_SLOT = { provider: "codex" as const, model: "gpt-5.6-sol" };
 
+const PULL_REQUEST = {
+  url: "https://github.com/acme/widgets/pull/123",
+  key: "github:github.com/acme/widgets#123",
+};
+const REVIEWS = [
+  { label: "Reviewer A", text: "A findings" },
+  { label: "Reviewer B", text: "B findings" },
+];
+
+describe("codeReviewWorkflowPrompts pull request target", () => {
+  it("names the resolved PR for reviewers only when one resolved", () => {
+    const input = {
+      workflowId: "review-1",
+      reviewPrompt: "Review PR 123",
+      reviewerLabel: "Reviewer A",
+      lensBranch: "a" as const,
+      branch: null,
+      reviewerSlot: CODEX_SLOT,
+    };
+    expect(buildCodeReviewReviewerPrompt({ ...input, pullRequest: PULL_REQUEST })).toContain(
+      "F5 resolved the review target to pull request https://github.com/acme/widgets/pull/123.",
+    );
+    expect(buildCodeReviewReviewerPrompt(input)).not.toContain("F5 resolved the review target");
+  });
+
+  it("asks for a layout whose title links the PR only when a PR resolved", () => {
+    const input = {
+      workflowId: "review-1",
+      reviewPrompt: "Review PR 123",
+      reviews: REVIEWS,
+      consolidationSlot: CODEX_SLOT,
+    };
+    const withPullRequest = buildCodeReviewConsolidationPrompt({
+      ...input,
+      pullRequest: PULL_REQUEST,
+    });
+    expect(withPullRequest).toContain(
+      "linking the pull request as [acme/widgets#123](https://github.com/acme/widgets/pull/123)",
+    );
+    expect(withPullRequest).toContain("**Verdict:**");
+    expect(withPullRequest).toContain("Write nothing before the title");
+    const withoutPullRequest = buildCodeReviewConsolidationPrompt(input);
+    expect(withoutPullRequest).toContain("Start with a `#` title that names what was reviewed.");
+    expect(withoutPullRequest).not.toContain("acme/widgets#123");
+  });
+});
+
 describe("codeReviewWorkflowPrompts", () => {
   it("uses the original review style while treating branch refs as opaque", () => {
     const text = buildCodeReviewReviewerPrompt({

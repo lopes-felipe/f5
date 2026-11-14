@@ -4,6 +4,7 @@ import {
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
   claudeChromeSupportsIsolatedProfiles,
+  claudeChromeSupportsSharedNativeHost,
   evidenceMismatches,
   recordCertifies,
   type ClaudeChromeRecord,
@@ -158,6 +159,38 @@ describe("Claude in Chrome record merge", () => {
     expect(
       coveringClaudeChromeRecord([capable], { ...record, versions: { ...record.versions } }),
     ).toBe(capable);
+  });
+
+  it("claims the shared-native-host capability only when all its assertions passed", () => {
+    const shared = Object.fromEntries(
+      INTEGRATION_CAPABILITY_ASSERTIONS["shared-native-host"].map((name) => [name, true]),
+    );
+    expect(claudeChromeSupportsSharedNativeHost(current(stamped))).toBe(false);
+    const capable = current(
+      mergeIntegrationRecords({
+        existing: [],
+        record,
+        report: { ...report, assertions: { ...report.assertions, ...shared } },
+      }),
+    );
+    expect(capable.capabilities).toEqual(["shared-native-host"]);
+    expect(claudeChromeSupportsSharedNativeHost(capable)).toBe(true);
+    expect(claudeChromeSupportsIsolatedProfiles(capable)).toBe(false);
+    for (const failed of INTEGRATION_CAPABILITY_ASSERTIONS["shared-native-host"]) {
+      const partial = current(
+        mergeIntegrationRecords({
+          existing: [],
+          record,
+          report: { ...report, assertions: { ...report.assertions, ...shared, [failed]: false } },
+        }),
+      );
+      expect(partial.capabilities).toBeUndefined();
+    }
+    expect(evidenceMismatches(capable, report)).toEqual(
+      INTEGRATION_CAPABILITY_ASSERTIONS["shared-native-host"].map(
+        (name) => `capability shared-native-host: assertion ${name}`,
+      ),
+    );
   });
 });
 

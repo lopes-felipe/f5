@@ -22,6 +22,7 @@ import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Textarea } from "../../ui/textarea";
 import { ProjectIcon } from "../../ProjectIcon";
+import { DraftInput } from "../../ui/draft-input";
 
 export { PROJECT_SETTINGS_DESCRIPTORS } from "./ProjectSettings.descriptors";
 
@@ -121,6 +122,23 @@ export function ProjectSettings() {
 
   return (
     <>
+      {selectedProject && (
+        <section className="rounded-xl border border-border bg-card p-5">
+          <label className="block space-y-2">
+            <span className="text-sm font-medium">Project name</span>
+            <DraftInput
+              aria-label="Project name"
+              value={selectedProject.name}
+              disabled={projectMetadataPending}
+              normalizeDraft={(value) => value.trim() || selectedProject.name}
+              onCommit={(title) => updateSelectedProjectMetadata({ title })}
+            />
+          </label>
+          <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
+            {selectedProject.cwd}
+          </p>
+        </section>
+      )}
       <ProjectScopeGate>
         <ProjectOverridesResetCard />
         <ProjectProviderControls />

@@ -183,6 +183,16 @@ nodeRepl.write("finished");`;
         correlated: async () => ({ ok: true }),
         send: () => undefined,
       } as never,
+      acquireChromeLease: async () => undefined,
+      registerChromeReleaser: () => () => undefined,
+      // This certification harness never acquires native leases.
+      registerCodexHandoff: () => () => undefined,
+      waitForChromeRelease: async () => {
+        await Promise.all(kills);
+      },
+      prepareCodexBrowser: async () => {
+        throw new Error("Native handoff is not simulated by this harness.");
+      },
       pause,
       generation: () => GENERATION,
       chromeRecoveryRequired: () => false,

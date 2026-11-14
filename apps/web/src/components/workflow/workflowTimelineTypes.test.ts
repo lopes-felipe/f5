@@ -59,11 +59,12 @@ describe("phaseSummariesFromPhases", () => {
       ]),
     ).toEqual([
       {
+        id: "Plan",
         label: "Plan",
         state: "completed",
         steps: [{ label: "Draft", state: "completed", threadId: "a", modelSlot: null }],
       },
-      { label: "Merge", state: "pending", steps: [] },
+      { id: "Merge", label: "Merge", state: "pending", steps: [] },
     ]);
   });
 });

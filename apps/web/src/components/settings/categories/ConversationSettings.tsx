@@ -409,6 +409,19 @@ export function ConversationSettings() {
               }
             />
             <SettingsRow
+              title="Show prompt cache misses"
+              description="Flag replies whose turn re-sent most of its context instead of reading it from the provider's cache, and show the thread's cache history in the context meter."
+              control={
+                <Switch
+                  checked={settings.showPromptCacheIndicator}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ showPromptCacheIndicator: Boolean(checked) })
+                  }
+                  aria-label="Show prompt cache misses"
+                />
+              }
+            />
+            <SettingsRow
               title="Show file diffs inline"
               description="Display the full diff for each file change. When off, only the file name and line counts appear."
               control={

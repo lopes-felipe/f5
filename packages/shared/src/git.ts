@@ -71,6 +71,9 @@ export function resolveAutoFeatureBranchName(
 /** Treat filenames containing glob or pathspec magic as literal filenames. */
 export const literalGitPathspec = (path: string): string => `:(literal)${path}`;
 
+/** Resolve status paths from the repository root even in nested projects. */
+export const topLiteralGitPathspec = (path: string): string => `:(top,literal)${path}`;
+
 const GIT_CONFIG_OVERRIDE_KEYS = new Set([
   "core.splitindex",
   "splitindex.sharedindexexpire",

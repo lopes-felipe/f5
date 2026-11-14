@@ -108,6 +108,43 @@ describe("CodexTraitsPicker", () => {
     }
   });
 
+  it("shows inherited Fast and keeps an explicit off choice after reopening", async () => {
+    const models: ReadonlyArray<ServerProviderModel> = [
+      {
+        slug: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        isCustom: false,
+        capabilities: createReportedCodexModelCapabilities({
+          model: "gpt-6.1-sol",
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+          defaultServiceTier: "priority",
+        }),
+      },
+    ];
+    const mounted = await mountPicker({ model: "gpt-6.1-sol", models });
+    try {
+      await vi.waitFor(() =>
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).not.toBeNull(),
+      );
+      await page.getByRole("button").click();
+      await page.getByRole("menuitemcheckbox", { name: "Fast Mode" }).click();
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions?.codex
+            ?.fastMode,
+        ).toBe(false);
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).toBeNull();
+      });
+      await userEvent.keyboard("{Escape}");
+      await page.getByRole("button").click();
+      await expect
+        .element(page.getByRole("menuitemcheckbox", { name: "Fast Mode" }))
+        .toHaveAttribute("aria-checked", "false");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("ranks efforts high to low and fills the battery up to the selected level", async () => {
     const mounted = await mountPicker({ model: "gpt-6.1-sol", effort: "high" });
     const threadId = ThreadId.makeUnsafe("thread-codex-traits");

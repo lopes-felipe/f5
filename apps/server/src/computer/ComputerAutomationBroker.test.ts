@@ -1,14 +1,20 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { ComputerControlError, computerRequestPayload } from "@t3tools/shared/computerControl";
+import {
+  ComputerControlError,
+  computerRequestPayload,
+  CHROME_OWN_STOPPING_MESSAGE,
+} from "@t3tools/shared/computerControl";
 import { describe, expect, it, vi } from "vitest";
 import type { ComputerLeaseHolder, DesktopComputerHostMessage } from "@t3tools/contracts";
 import {
   CHROME_OTHER_PROFILE_LINGER_MS,
+  COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS,
   ComputerAutomationBrokerRuntime,
   type ComputerInvocationContext,
 } from "./ComputerAutomationBroker";
 import { DesktopComputerHost } from "./DesktopComputerHost";
+import * as computerApps from "@t3tools/shared/computerApps";
 
 class Ipc extends EventEmitter {
   connected = true;
@@ -94,6 +100,7 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
   const broker = new ComputerAutomationBrokerRuntime(host, {
     resolve: async (_thread, generation) => ({ ...context, sessionGeneration: generation }),
+    threadTitle: async (threadId) => (threadId === "chrome-thread" ? "Chrome work" : undefined),
     platform,
     storage: {
       load: async () => [
@@ -114,6 +121,297 @@ async function harness(platform: "darwin" | "win32" = "darwin") {
   };
 }
 describe("computer broker safety boundaries", () => {
+  it("waits for its own Codex handoff before dispatching native work", async () => {
+    const h = await harness();
+    try {
+      let release!: () => void;
+      const native = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      h.broker.registerCodexHandoff("t", "s", {
+        native,
+        browser: async () => {},
+        status: () => ({ state: "ready" }),
+      });
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "sunflower" });
+      await vi.waitFor(() => expect(native).toHaveBeenCalledOnce());
+      expect(h.ipc.messages.some((m) => m.type === "leaseAcquire" || m.type === "request")).toBe(
+        false,
+      );
+      release();
+      await pending;
+      expect(h.ipc.messages.some((m) => m.type === "leaseAcquire")).toBe(true);
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("does not dispatch native work after pause during handoff", async () => {
+    const h = await harness();
+    try {
+      let release!: () => void;
+      const native = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      h.broker.registerCodexHandoff("t", "s", {
+        native,
+        browser: async () => {},
+        status: () => ({ state: "ready" }),
+      });
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "sunflower" });
+      const refused = expect(pending).rejects.toMatchObject({
+        error: { _tag: "Interrupted", cause: "paused" },
+      });
+      await vi.waitFor(() => expect(native).toHaveBeenCalledOnce());
+      h.broker.setPaused("t", true);
+      h.broker.setPaused("t", false);
+      release();
+      await refused;
+      expect(h.ipc.messages.some((m) => m.type === "leaseAcquire" || m.type === "request")).toBe(
+        false,
+      );
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("exposes parked Chrome separately from backend availability without changing grants", async () => {
+    const h = await harness();
+    try {
+      h.broker.registerCodexHandoff("t", "s", {
+        native: async () => {},
+        browser: async () => {},
+        status: () => ({ state: "parked-for-native", nextAction: "browser_resume" }),
+      });
+      await h.broker.invoke("t", "s", { op: "status" });
+      const grants = h.broker.access.grants("t");
+      expect(await h.broker.invoke("t", "s", { op: "status" })).toMatchObject({
+        available: true,
+        control: { chrome: { state: "parked-for-native", nextAction: "browser_resume" } },
+      });
+      expect(h.broker.access.grants("t")).toEqual(grants);
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("waits for desktop lease release rather than trusting the stop request", async () => {
+    const h = await harness();
+    try {
+      const holder = { profileId: "p", threadId: "t", sessionGeneration: "s", provider: "codex" };
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder });
+      await expect(
+        h.broker.waitForChromeRelease("t", "s", performance.now() + 5, async () => {}),
+      ).rejects.toThrow(CHROME_OWN_STOPPING_MESSAGE);
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null });
+      await h.broker.waitForChromeRelease("t", "s", performance.now() + 100, async () => {});
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("releases a Chrome reservation if pause arrives with the acquire reply", async () => {
+    const h = await harness();
+    try {
+      const original = h.ipc.send.bind(h.ipc);
+      vi.spyOn(h.ipc, "send").mockImplementation((raw, callback) => {
+        const message = raw as DesktopComputerHostMessage;
+        if (message.type !== "chromeLeaseAcquire") return original(raw, callback);
+        h.ipc.messages.push(message);
+        callback(null);
+        queueMicrotask(() => {
+          h.broker.setPaused("t", true);
+          h.ipc.emit("message", { type: "response", requestId: message.requestId, result: true });
+        });
+        return true;
+      });
+      await expect(
+        h.broker.prepareCodexBrowser("t", "s", performance.now() + 1000, async () => {
+          if (h.broker.pause.has("t")) throw new Error("paused");
+        }),
+      ).rejects.toThrow("paused");
+      expect(h.ipc.messages.some((m) => m.type === "chromeLeaseRelease")).toBe(true);
+    } finally {
+      h.broker.close();
+    }
+  });
+
+  it("does not dispatch a mutation when context consumes its absolute batch deadline", async () => {
+    const h = await harness();
+    try {
+      const handle = await h.broker.beginBatch("t", "s", "foreground");
+      const original = h.broker.context.bind(h.broker);
+      vi.spyOn(h.broker, "context").mockImplementation(async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return original(...args);
+      });
+      const start = performance.now();
+      await expect(
+        h.broker.invoke("t", "s", { op: "type", text: "x" }, 30_000, {
+          batch: handle,
+          deadlineMs: start + 30,
+        }),
+      ).rejects.toMatchObject({ error: { _tag: "Execution" } });
+      expect(performance.now() - start).toBeLessThan(90);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+      handle.release();
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("bounds slow resolution before any native dispatch", async () => {
+    const h = await harness();
+    try {
+      const original = h.broker.context.bind(h.broker);
+      vi.spyOn(h.broker, "context").mockImplementation(async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return original(...args);
+      });
+      const start = performance.now();
+      await expect(
+        h.broker.invoke("t", "s", { op: "resolveApps", queries: ["TextEdit"] }, 50),
+      ).rejects.toMatchObject({ error: { _tag: "Execution" } });
+      expect(performance.now() - start).toBeLessThan(120);
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("waits for the desktop outcome when an already dispatched batch mutation is aborted", async () => {
+    const h = await harness();
+    try {
+      const handle = await h.broker.beginBatch("t", "s", "foreground");
+      h.ipc.holdRequests = true;
+      let finished = false;
+      const pending = h.broker
+        .invoke("t", "s", { op: "type", text: "x" }, 1000, {
+          batch: handle,
+          signal: handle.controller.signal,
+        })
+        .finally(() => {
+          finished = true;
+        });
+      const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "OutcomeUnknown" } });
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((message) => message.type === "request")).toBe(true),
+      );
+      h.broker.setPaused("t", true);
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      expect(handle.controller.signal.reason).toMatchObject({
+        error: { _tag: "Interrupted", cause: "paused" },
+      });
+      const request = h.ipc.messages.findLast((message) => message.type === "request");
+      if (request?.type !== "request") throw new Error("Missing request");
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: request.request.requestId,
+        error: { _tag: "OutcomeUnknown" },
+      });
+      await rejected;
+      handle.release();
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each(["end", "pause", "policy", "release"] as const)(
+    "revokes a batch across %s transitions",
+    async (transition) => {
+      const h = await harness();
+      try {
+        const handle = await h.broker.beginBatch("t", "s", "foreground");
+        if (transition === "end") h.broker.endTurn("t", "turn", "s");
+        if (transition === "pause") {
+          h.broker.setPaused("t", true);
+          h.broker.setPaused("t", false);
+        }
+        if (transition === "policy") await h.broker.policyTransition(async () => {});
+        if (transition === "release") h.broker.releaseSession("t", "s");
+        expect(handle.controller.signal.aborted).toBe(true);
+        expect(() => h.broker.assertBatchLive(handle)).toThrow();
+        await expect(
+          h.broker.invoke("t", "s", { op: "type", text: "x" }, 1000, { batch: handle }),
+        ).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+        expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+        handle.release();
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
+  it("settles only after a complete tree remains stable and returns the latest snapshot", async () => {
+    const h = await harness();
+    const tree = (snapshotId: string, name: string, truncated = false) => ({
+      accessible: true,
+      appId: "com.apple.TextEdit",
+      snapshotId,
+      truncated,
+      nodes: [
+        { elementRef: "one", role: "AXButton", name, actions: [], enabled: true, focused: false },
+      ],
+    });
+    h.ipc.inspectResults = [tree("a", "A"), tree("b", "B"), tree("c", "B"), tree("d", "B")];
+    try {
+      const start = performance.now();
+      const result = await h.broker.wait("t", "s", {
+        deadlineMs: start + 2000,
+        settle: { appId: "com.apple.TextEdit", maxNodes: 400, onPartial: "return" },
+      });
+      expect(result).toMatchObject({ settled: true, tree: { snapshotId: "d" } });
+      expect(performance.now() - start).toBeGreaterThanOrEqual(750);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it.each(["wait", "return"] as const)(
+    "never settles a truncated prefix (%s)",
+    async (onPartial) => {
+      const h = await harness();
+      h.ipc.inspectResults = [
+        {
+          accessible: true,
+          snapshotId: "partial",
+          truncated: true,
+          nodes: [{ elementRef: "one", role: "AXButton", name: "A" }],
+        },
+      ];
+      try {
+        const start = performance.now();
+        const result = await h.broker.wait("t", "s", {
+          deadlineMs: start + 150,
+          settle: { appId: "com.apple.TextEdit", maxNodes: 400, onPartial },
+        });
+        expect(result).toMatchObject({ settled: false, reason: "partial-tree" });
+        if (onPartial === "wait") expect(performance.now() - start).toBeGreaterThanOrEqual(140);
+      } finally {
+        h.broker.close();
+      }
+    },
+  );
+  it("holds the mutation queue until the batch releases and rejects forged handles", async () => {
+    const h = await harness();
+    h.set({ runtimeMode: "full-access" });
+    try {
+      const handle = await h.broker.beginBatch("t", "s", "foreground");
+      expect(() => h.broker.assertBatchLive({ ...handle })).toThrow();
+      const pending = h.broker.invoke("t", "s", { op: "type", text: "x" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(h.ipc.messages.some((message) => message.type === "request")).toBe(false);
+      handle.release();
+      handle.release();
+      await pending;
+      expect(() => h.broker.assertBatchLive(handle)).toThrow();
+    } finally {
+      h.broker.close();
+    }
+  });
   it("awaits main's correlated forget result and surfaces persistence failure to Settings", async () => {
     const h = await harness();
     try {
@@ -596,9 +894,62 @@ describe("computer broker safety boundaries", () => {
   });
   it("says why another profile's control refuses an agent", () => {
     expect(new ComputerControlError({ _tag: "Busy", holder: "other-profile" }).message).toBe(
-      "Busy: an agent in another F5 profile holds computer or Chrome control; wait or ask the user.",
+      "Busy: an agent in another F5 profile holds computer or Chrome control. Wait for it with computer_wait_for_target; ask the user only if that times out.",
     );
-    expect(new ComputerControlError({ _tag: "Busy", holder: "same-profile" }).message).toBe("Busy");
+    // Main names the profile (never its threads) and what the holder is doing.
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "other-profile",
+        resource: "chrome",
+        activity: "chrome-call",
+        holderProfileName: "Dev",
+      }).message,
+    ).toBe(
+      'Busy: an agent in profile "Dev" is using Chrome. Wait for it with computer_wait_for_target; ask the user only if that times out.',
+    );
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "other-profile",
+        resource: "chrome",
+        activity: "chrome-session",
+      }).message,
+    ).toContain("an agent in another F5 profile holds a Chrome session.");
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "other-profile",
+        resource: "computer",
+        activity: "computer",
+        holderProfileName: "Work",
+      }).message,
+    ).toContain('an agent in profile "Work" is controlling the computer.');
+    expect(new ComputerControlError({ _tag: "Busy", holder: "same-profile" }).message).toBe(
+      "Busy: Computer or Chrome control is in use in this F5 profile; wait and retry.",
+    );
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "same-profile",
+        resource: "chrome",
+        holderThreadId: "t1",
+        threadTitle: "Fix login",
+        holderIdle: false,
+      }).message,
+    ).toBe(
+      'Busy: Chrome is held by thread "Fix login" (working). F5 releases idle holders automatically; if it\'s working, wait or ask the user to stop it.',
+    );
+    expect(
+      new ComputerControlError({
+        _tag: "Busy",
+        holder: "same-profile",
+        resource: "computer",
+        holderThreadId: "t1",
+      }).message,
+    ).toBe(
+      "Busy: Computer control is held by another thread. F5 releases idle holders automatically; if it's working, wait or ask the user to stop it.",
+    );
   });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();
@@ -717,6 +1068,44 @@ describe("computer broker safety boundaries", () => {
 });
 
 describe("background delivery", () => {
+  it("cleans up a failed foreground handoff so browser_resume can succeed in the same turn", async () => {
+    const h = await backgroundHarness();
+    h.ipc.appResults = [
+      {
+        appId: "com.apple.TextEdit",
+        name: "TextEdit",
+        tier: "full",
+        running: true,
+        frontmost: false,
+      },
+    ];
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.broker.registerCodexHandoff("t", "s", {
+        native: async () => {
+          throw new Error("Chrome call still running");
+        },
+        browser: (deadline, check) => h.broker.prepareCodexBrowser("t", "s", deadline, check),
+        status: () => ({ state: "ready" }),
+      });
+      await expect(h.broker.requestForeground("t", "s", "TextEdit", "Drag")).rejects.toThrow(
+        "Chrome call still running",
+      );
+      const acquire = vi.spyOn(h.broker, "acquireChromeLease").mockResolvedValue(undefined);
+      await expect(h.broker.resumeCodexBrowser("t", "s")).resolves.toMatchObject({
+        state: "ready",
+      });
+      expect(acquire).toHaveBeenCalledOnce();
+    } finally {
+      h.broker.close();
+    }
+  });
   async function backgroundHarness(platform: "darwin" | "win32" = "darwin") {
     const h = await harness(platform);
     h.set({
@@ -797,6 +1186,79 @@ describe("background delivery", () => {
       },
     });
   }
+  it("selects background events only with certification, capability and an app-local key or element target", async () => {
+    const h = await backgroundHarness();
+    try {
+      await expect(
+        h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+      ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+      const certified = vi
+        .spyOn(computerApps, "computerBackgroundEventAppAllowed")
+        .mockReturnValue(true);
+      try {
+        await expect(
+          h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+        ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+        h.ipc.emit("message", {
+          type: "hostCapabilities",
+          capabilities: ["background-ax-v1", "background-events-v1"],
+        });
+        await expect(
+          h.broker.classify("t", "s", "key", "com.apple.TextEdit", { chords: ["Down"] }),
+        ).resolves.toBe("background");
+        await expect(
+          h.broker.classify("t", "s", "scroll", "com.apple.TextEdit", { elementRef: "element" }),
+        ).resolves.toBe("background");
+        for (const [op, input] of [
+          ["key", { chords: ["Meta+Tab"] }],
+          ["scroll", {}],
+          ["click", {}],
+        ] as const)
+          await expect(
+            h.broker.classify("t", "s", op, "com.apple.TextEdit", input),
+          ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+      } finally {
+        certified.mockRestore();
+      }
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("reselects delivery after pre-dispatch admission contention and stops when it becomes foreground", async () => {
+    const h = await backgroundHarness();
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.ipc.messages.length = 0;
+      const delivery = vi
+        .spyOn(h.broker, "selectDelivery")
+        .mockReturnValueOnce("background")
+        .mockReturnValue("foreground");
+      const acquire = vi
+        .spyOn(h.broker.host, "correlated")
+        .mockRejectedValueOnce(
+          new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" }),
+        );
+      try {
+        await expect(
+          h.broker.invoke("t", "s", { op: "type", appId: "com.apple.TextEdit", text: "x" }),
+        ).rejects.toMatchObject({ error: { _tag: "ForegroundRequired" } });
+        expect(delivery).toHaveBeenCalledTimes(2);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(h.ipc.messages.filter((message) => message.type === "request")).toEqual([]);
+      } finally {
+        delivery.mockRestore();
+        acquire.mockRestore();
+      }
+    } finally {
+      h.broker.close();
+    }
+  });
   it("waits for a takeover reservation before showing exactly one consent, and none on Busy", async () => {
     const h = await backgroundHarness();
     h.ipc.emit("message", {
@@ -863,6 +1325,64 @@ describe("background delivery", () => {
         result: { ...next.holder, executionGeneration: 9 },
       });
       await expect(approved).resolves.toMatchObject({ foreground: true });
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("names the thread holding Chrome when main refuses a takeover over it", async () => {
+    const h = await backgroundHarness();
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1", "takeover-reservation-v1"],
+    });
+    h.ipc.appResults = [
+      {
+        appId: "com.apple.TextEdit",
+        name: "TextEdit",
+        tier: "full",
+        running: true,
+        frontmost: false,
+      },
+    ];
+    try {
+      const initial = h.broker.invoke("t", "s", {
+        op: "type",
+        appId: "com.apple.TextEdit",
+        text: "x",
+      });
+      await approveBackgroundSession(h);
+      await initial;
+      h.ipc.emit("message", {
+        type: "chromeLeaseChanged",
+        holder: {
+          profileId: "p",
+          threadId: "chrome-thread",
+          sessionGeneration: "chrome-gen",
+          provider: "claude",
+        },
+      });
+      h.broker.reportChromeCalls("chrome-thread", "chrome-gen", true);
+      h.ipc.messages.length = 0;
+      const failed = h.broker.requestForeground("t", "s", "TextEdit", "Drag");
+      const rejected = expect(failed).rejects.toThrow(
+        'Busy: Chrome is held by thread "Chrome work" (working).',
+      );
+      await vi.waitFor(() =>
+        expect(h.ipc.messages.some((m) => m.type === "foregroundTakeoverAcquire")).toBe(true),
+      );
+      const acquire = h.ipc.messages.findLast((m) => m.type === "foregroundTakeoverAcquire");
+      if (acquire?.type !== "foregroundTakeoverAcquire") throw new Error("no acquire");
+      h.ipc.emit("message", {
+        type: "response",
+        requestId: acquire.requestId,
+        error: {
+          _tag: "Busy",
+          holder: "same-profile",
+          resource: "chrome",
+          holderThreadId: "chrome-thread",
+        },
+      });
+      await rejected;
     } finally {
       h.broker.close();
     }
@@ -1109,6 +1629,33 @@ describe("background delivery", () => {
       ]);
       h.broker.releaseSession("t", "s");
       expect(h.broker.computerUse().holders).toEqual([]);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("shows who a waiting thread waits for, only while it waits for an agent", async () => {
+    const h = await backgroundHarness();
+    try {
+      const blockedBy = { token: "tok", activity: "chrome-call" as const, profileName: "Dev" };
+      h.ipc.emit("message", {
+        type: "executionStateChanged",
+        threadId: "t",
+        sessionGeneration: "s",
+        state: "waiting-agent",
+        delivery: "foreground",
+        blockedBy,
+      });
+      expect(h.broker.computerUse().holders).toMatchObject([
+        { threadId: "t", state: "waiting-agent", leaseHeld: false, blockedBy },
+      ]);
+      h.ipc.emit("message", {
+        type: "executionStateChanged",
+        threadId: "t",
+        sessionGeneration: "s",
+        state: "paused",
+        blockedBy,
+      });
+      expect(h.broker.computerUse().holders[0]).not.toHaveProperty("blockedBy");
     } finally {
       h.broker.close();
     }
@@ -1370,7 +1917,7 @@ describe("computer_wait", () => {
       ];
       const result = await h.broker.wait("t", "s", {
         deadlineMs: performance.now() + 500,
-        condition: { app: "TextEdit", role: "AXButton", name: "Ready" },
+        condition: { appId: "com.apple.TextEdit", role: "AXButton", name: "Ready" },
       });
       expect(result).toMatchObject({ matched: true, snapshotId: "snapshot", elementRefs: ["one"] });
       const inspections = h.ipc.messages.filter(
@@ -1388,7 +1935,7 @@ describe("computer_wait", () => {
     try {
       const result = await h.broker.wait("t", "s", {
         deadlineMs: performance.now() + 100,
-        condition: { app: "TextEdit", name: "Ready" },
+        condition: { appId: "com.apple.TextEdit", name: "Ready" },
       });
       expect(result).toMatchObject({ timedOut: true, matched: false });
       expect(result.waitedMs).toBeLessThan(200);
@@ -1635,6 +2182,70 @@ it("uses the existing per-thread wait slot for foreground availability and valid
           message.type === "request" && ["screenshot", "inspect"].includes(message.request.op),
       ),
     ).toBe(false);
+  } finally {
+    h.broker.close();
+  }
+});
+
+it("ends target waits at the deadline as timeouts, letting the desktop answer first with its reason", async () => {
+  const h = await harness();
+  try {
+    h.broker.beginTurn("t", "turn");
+    h.ipc.emit("message", {
+      type: "hostCapabilities",
+      capabilities: ["background-ax-v1", "computer-cooperation-v1"],
+    });
+    const targetWaits = () =>
+      h.ipc.messages.flatMap((message) => (message.type === "targetWait" ? [message] : []));
+
+    // The desktop gets less than the broker's budget and its timeout passes through intact.
+    const answered = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(1));
+    const first = targetWaits()[0]!;
+    expect(first.timeoutMs).toBeLessThanOrEqual(5000 - COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS);
+    expect(first.timeoutMs).toBeGreaterThan(4000);
+    h.ipc.emit("message", {
+      type: "response",
+      requestId: first.requestId,
+      result: {
+        available: false,
+        timedOut: true,
+        reason: "user-active",
+        detail: "input-held",
+        requiresFreshObservation: true,
+      },
+    });
+    await expect(answered).resolves.toMatchObject({
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      detail: "input-held",
+    });
+
+    // A desktop that never answers still ends in a timeout, not an interruption. The budget
+    // leaves slow runners ample time to dispatch the request before the broker deadline.
+    const silent = h.broker.waitForTarget("t", "s", { timeoutMs: 2000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(2));
+    const second = targetWaits()[1]!;
+    await expect(silent).resolves.toMatchObject({ available: false, timedOut: true });
+    expect(h.ipc.messages).toContainEqual({ type: "cancel", requestId: second.requestId });
+
+    // A pause keeps its own cause instead of reading as a turn end.
+    const paused = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(3));
+    h.broker.setPaused("t", true);
+    await expect(paused).rejects.toMatchObject({
+      error: { _tag: "Interrupted", cause: "paused" },
+    });
+    h.broker.setPaused("t", false);
+
+    // A turn that really ends still interrupts the wait.
+    const ended = h.broker.waitForTarget("t", "s", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(targetWaits()).toHaveLength(4));
+    h.broker.endTurn("t", "turn", "s");
+    await expect(ended).rejects.toMatchObject({
+      error: { _tag: "Interrupted", cause: "turn-ended" },
+    });
   } finally {
     h.broker.close();
   }

@@ -62,6 +62,7 @@ const makeProjectSetupScriptRunner = Effect.gen(function* () {
       }
 
       yield* terminalManager.open({
+        stopOnSettle: script.stopOnSettle ?? false,
         threadId: input.threadId,
         terminalId,
         cwd,

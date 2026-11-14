@@ -2,12 +2,17 @@ import {
   UsageSummary as UsageSummarySchema,
   UsageAccounts,
   UsageQuotaHistory as UsageQuotaHistorySchema,
+  UsageThreadTurns as UsageThreadTurnsSchema,
   type ProjectId,
+  type ThreadId,
+  type UsageThreadTurns,
+  type UsageTurnFact,
   type UsageRange,
   type ProviderKind,
 } from "@t3tools/contracts";
 import { queryOptions, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { Schema } from "effect";
+import { mergeThreadTurn } from "../components/chat/cacheIndicator.logic";
 import { ensureNativeApi } from "../nativeApi";
 import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
@@ -19,6 +24,7 @@ export const usageQueryKeys = {
     provider?: ProviderKind,
     projectId?: ProjectId,
     hiddenProviders: ReadonlyArray<ProviderKind> = [],
+    comparePrevious = false,
   ) =>
     [
       "usage",
@@ -28,10 +34,64 @@ export const usageQueryKeys = {
       provider ?? "all",
       projectId ?? "all",
       hiddenProviders.toSorted().join(","),
+      // Only comparison summaries carry the extra segment, so plain keys keep their shape.
+      ...(comparePrevious ? (["compare"] as const) : []),
     ] as const,
   accounts: ["usage", "accounts"] as const,
   quotaHistory: ["usage", "quota-history"] as const,
+  threadTurns: (threadId: ThreadId) => ["usage", "thread-turns", threadId] as const,
 };
+
+export function decodeUsageThreadTurns(value: unknown) {
+  return Schema.decodeUnknownSync(UsageThreadTurnsSchema)(value);
+}
+
+// Facts recorded while a thread's history request is in flight, per request.
+// The server may have read its rows before the projector wrote such a fact,
+// and the response replaces whatever was merged into the cache meanwhile.
+const inFlightThreadFacts = new Map<ThreadId, Set<UsageTurnFact[]>>();
+
+/** Hands a live fact to every in-flight history request for its thread. */
+export function noteLiveThreadTurnFact(fact: UsageTurnFact): void {
+  for (const buffer of inFlightThreadFacts.get(fact.threadId) ?? []) buffer.push(fact);
+}
+
+async function fetchThreadTurns(
+  threadId: ThreadId,
+  context: Parameters<typeof rpcQueryContext>[0],
+): Promise<UsageThreadTurns> {
+  const buffer: UsageTurnFact[] = [];
+  const buffers = inFlightThreadFacts.get(threadId) ?? new Set();
+  inFlightThreadFacts.set(threadId, buffers.add(buffer));
+  try {
+    const history = decodeUsageThreadTurns(
+      await ensureNativeApi().usage.getThreadTurns({ threadId }, rpcQueryContext(context)),
+    );
+    // Merging is idempotent, so facts the response already holds are no-ops.
+    return buffer.reduce(mergeThreadTurn, history);
+  } finally {
+    buffers.delete(buffer);
+    if (buffers.size === 0) inFlightThreadFacts.delete(threadId);
+  }
+}
+
+/** One thread's recorded turn usage; live facts are merged in by `useThreadCacheTurns`. */
+export function usageThreadTurnsQueryOptions(input: {
+  readonly threadId: ThreadId;
+  readonly enabled: boolean;
+}) {
+  return queryOptions({
+    queryKey: usageQueryKeys.threadTurns(input.threadId),
+    queryFn: (context) => fetchThreadTurns(input.threadId, context),
+    meta: rpcQueryMeta("refresh-background"),
+    // Facts are merged live only while the thread is open, so reopening it
+    // refetches what was recorded meanwhile. Focus adds nothing the live
+    // merge has not; reconnects refetch explicitly.
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    enabled: input.enabled,
+  });
+}
 
 /** Stable mutation key so a pending forced refresh survives Limits remounts. */
 export const USAGE_ACCOUNTS_FORCE_MUTATION_KEY = ["usage", "accounts", "force"] as const;
@@ -46,12 +106,22 @@ export function usageSummaryQueryOptions(input: {
   readonly provider?: ProviderKind | undefined;
   readonly projectId?: ProjectId | undefined;
   readonly hiddenProviders?: ReadonlyArray<ProviderKind>;
+  /** Also fetch the previous period's buckets for the chart overlay. */
+  readonly comparePrevious?: boolean;
   readonly enabled?: boolean;
 }) {
   const { range, timeZone, provider, projectId } = input;
+  const comparePrevious = input.comparePrevious ?? false;
   const hiddenProviders = input.hiddenProviders?.toSorted() ?? [];
   return queryOptions({
-    queryKey: usageQueryKeys.summary(range, timeZone, provider, projectId, hiddenProviders),
+    queryKey: usageQueryKeys.summary(
+      range,
+      timeZone,
+      provider,
+      projectId,
+      hiddenProviders,
+      comparePrevious,
+    ),
     queryFn: async (context) =>
       decodeUsageSummary(
         await ensureNativeApi().usage.getSummary(
@@ -61,12 +131,15 @@ export function usageSummaryQueryOptions(input: {
             ...(provider ? { provider } : {}),
             ...(projectId ? { projectId } : {}),
             ...(hiddenProviders.length > 0 ? { hiddenProviders } : {}),
+            ...(comparePrevious ? { includePreviousBuckets: true } : {}),
           },
           rpcQueryContext(context),
         ),
       ),
     meta: rpcQueryMeta("refresh-background"),
     staleTime: 30_000,
+    refetchInterval: (query) =>
+      query.state.data?.nativeHistoryStatus === "refreshing" ? 1_000 : false,
     enabled: input.enabled ?? true,
   });
 }

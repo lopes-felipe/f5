@@ -23,6 +23,20 @@ afterEach(() => {
 });
 
 describe("imageAttachmentActions", () => {
+  it("bounds downloaded source bytes and cancels oversized streams", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8));
+      },
+      cancel,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(body));
+    await expect(fetchImageAttachmentBlob(IMAGE_ITEM, { maxBytes: 4 })).rejects.toThrow(
+      "source size limit",
+    );
+    expect(cancel).toHaveBeenCalled();
+  });
   it("uses retained optimistic bytes without fetching a possibly revoked preview URL", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const sourceBlob = new Blob(["fresh image"], { type: "image/png" });

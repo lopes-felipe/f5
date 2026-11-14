@@ -32,6 +32,18 @@ import {
   type TriageCommitDigest,
   type TriageTopicRow,
 } from "@t3tools/shared/upstreamPortsPrompts";
+import {
+  asChangeKind,
+  asSecuritySeverity,
+  buildAreaAliasMap,
+  combineCoverage,
+  coverageOfCommits,
+  featureAreaPolicy,
+  maxSeverity,
+  normalizeAreas,
+  topicKindFromCommits,
+  type AreaPolicy,
+} from "@t3tools/shared/upstreamPortsScore";
 import { Effect, Ref, Semaphore } from "effect";
 
 import type { TextGenerationError } from "../git/Errors.ts";
@@ -52,6 +64,14 @@ export interface ChunkCommit {
   /** Every changed path (uncapped). */
   readonly paths: ReadonlyArray<string>;
   readonly digest: TriageCommitDigest;
+  /**
+   * Every changed path outside ignored prefixes with its fork presence, for
+   * coverage; null or absent when the fork's paths could not be read.
+   */
+  readonly coverageFiles?: ReadonlyArray<{
+    readonly path: string;
+    readonly existsInFork: boolean;
+  }> | null;
 }
 
 /** What the view knows about a commit outside this chunk (for revert targets). */
@@ -116,6 +136,8 @@ export interface TriageChunkInput {
   readonly semaphore?: Semaphore.Semaphore;
   /** Consecutive provider failures, shared across a run's chunks. */
   readonly circuit?: { consecutiveFailures: number };
+  /** The user's area follow list; features in ignored areas are suggested skip. */
+  readonly areaPolicy?: Readonly<Record<string, AreaPolicy>>;
   /**
    * The run's remaining LLM calls and its deadline, checked before every
    * batch and retry. Commits whose batch would exceed either fall back to the inbox.
@@ -166,7 +188,9 @@ export function moreConservative(
 /**
  * Combines two suggestions for one topic. The more conservative status wins,
  * and every source of doubt survives: the lower confidence, any question or
- * triage error, and a conflict when the statuses differ.
+ * triage error, and a conflict when the statuses differ. Classification merges
+ * on its own: security from either side wins with the higher severity, and
+ * coverage combines (unknown on either side makes it unknown).
  */
 export function mergeSuggestions(
   a: UpstreamTopicSuggestion,
@@ -176,8 +200,21 @@ export function mergeSuggestions(
   const other = kept === a ? b : a;
   const question = kept.question ?? other.question;
   const triageError = kept.triageError ?? other.triageError;
+  const { kind: _kind, severity: _severity, f5Coverage: _coverage, ...rest } = kept;
+  const security = a.kind === "security" || b.kind === "security";
+  const kind = security ? "security" : (kept.kind ?? other.kind);
+  const severity = security
+    ? maxSeverity(
+        a.kind === "security" ? a.severity : undefined,
+        b.kind === "security" ? b.severity : undefined,
+      )
+    : undefined;
+  const f5Coverage = combineCoverage([a.f5Coverage, b.f5Coverage]);
   return {
-    ...kept,
+    ...rest,
+    ...(kind ? { kind } : {}),
+    ...(severity ? { severity } : {}),
+    ...(f5Coverage ? { f5Coverage } : {}),
     confidence: Math.min(a.confidence, b.confidence),
     ...(question !== undefined ? { question } : {}),
     ...(triageError !== undefined ? { triageError } : {}),
@@ -437,7 +474,10 @@ export function validateBatchOutput(
     if (commits.length === 0) return;
     const ordered = input.filter((sha) => commits.includes(sha));
     const reasonKey =
-      group.suggestion === "skip" && group.reasonKey && isValidReasonKey(rules, group.reasonKey)
+      group.suggestion === "skip" &&
+      group.reasonKey &&
+      !MODEL_RESERVED_REASON_KEYS.has(group.reasonKey) &&
+      isValidReasonKey(rules, group.reasonKey)
         ? group.reasonKey
         : undefined;
     const question = group.question?.trim();
@@ -468,6 +508,11 @@ export function validateBatchOutput(
         ...(question
           ? { question: truncate(oneLine(question), UPSTREAM_SUGGESTION_QUESTION_MAX) }
           : {}),
+        // The model's kind and severity; `classifyGroup` reconciles them with the commits.
+        ...(asChangeKind(group.kind) ? { kind: asChangeKind(group.kind)! } : {}),
+        ...(asSecuritySeverity(group.severity)
+          ? { severity: asSecuritySeverity(group.severity)! }
+          : {}),
         // An unknown reason key keeps the reason but becomes ineligible for auto-skip.
         ...(group.suggestion === "skip" && !reasonKey && group.reasonKey
           ? { triageError: `unknown reason key ${group.reasonKey}` }
@@ -476,6 +521,111 @@ export function validateBatchOutput(
     });
   });
   return { groups, omitted: input.filter((sha) => !seen.has(sha)) };
+}
+
+// ── Classification ──────────────────────────────────────────────────────
+
+export const SECURITY_HINT_QUESTION =
+  "The commit text mentions a security fix; confirm whether it applies to f5 and how severe it is.";
+export const AREA_IGNORED_REASON_KEY = "area-ignored";
+export const AGED_OUT_REASON_KEY = "aged-out";
+
+/**
+ * Reason keys F5 applies itself: the model never sees them in the prompt and
+ * a model skip naming one counts as an unknown key, so it never auto-skips.
+ */
+export const MODEL_RESERVED_REASON_KEYS: ReadonlySet<string> = new Set([
+  "not-applicable",
+  AGED_OUT_REASON_KEY,
+  AREA_IGNORED_REASON_KEY,
+]);
+
+/** The rules the triage model sees: without reason keys F5 reserves for itself. */
+export const modelVisibleRules = (rules: Rules): Rules => ({
+  ...rules,
+  reasonKeys: rules.reasonKeys.filter((key) => !MODEL_RESERVED_REASON_KEYS.has(key)),
+});
+
+export interface ClassifyCommit {
+  readonly subject: string;
+  /** Commit body and PR body; scanned for CVE and GHSA ids. */
+  readonly body: string | null;
+  /** Every changed file with fork presence; null when unknown. */
+  readonly files: ReadonlyArray<{ readonly path: string; readonly existsInFork: boolean }> | null;
+}
+
+export const classifyCommitOf = (commit: ChunkCommit): ClassifyCommit => ({
+  subject: commit.subject,
+  body: [commit.body, commit.digest.prBody].filter(Boolean).join("\n") || null,
+  // The digest lists at most 15 files; coverage needs all of them.
+  files: commit.coverageFiles ?? null,
+});
+
+/**
+ * Sets `kind`, `severity`, `f5Coverage` and normalized areas. A kind already on
+ * the suggestion (from the model, or an earlier classification) wins over the
+ * commit prefixes, except that a security hint in the commit text always
+ * keeps the topic in the security lane, with a question when the model disagreed.
+ */
+export function classifySuggestion(
+  suggestion: UpstreamTopicSuggestion,
+  commits: ReadonlyArray<ClassifyCommit>,
+  rules: Pick<Rules, "areas">,
+): UpstreamTopicSuggestion {
+  const deterministic = topicKindFromCommits(commits);
+  const {
+    kind: givenKind,
+    severity: givenSeverity,
+    f5Coverage: givenCoverage,
+    question: givenQuestion,
+    ...rest
+  } = suggestion;
+  let kind = givenKind ?? deterministic;
+  let severity = kind === "security" ? givenSeverity : undefined;
+  let question = givenQuestion;
+  if (deterministic === "security" && kind !== "security") {
+    kind = "security";
+    severity = "low";
+    question ??= SECURITY_HINT_QUESTION;
+  }
+  if (kind === "security") severity ??= "low";
+  // Without complete file evidence the stored coverage stays.
+  const coverage = coverageOfCommits(commits) ?? givenCoverage;
+  return {
+    ...rest,
+    areas: normalizeAreas(rest.areas, buildAreaAliasMap(rules.areas)).slice(
+      0,
+      UPSTREAM_SUGGESTION_AREAS_MAX,
+    ),
+    kind,
+    ...(severity ? { severity } : {}),
+    ...(coverage ? { f5Coverage: coverage } : {}),
+    ...(question ? { question } : {}),
+  };
+}
+
+/** Feature suggestions in areas that are all ignored become skips (`area-ignored`). */
+export function applyAreaPolicy(
+  suggestion: UpstreamTopicSuggestion,
+  rules: Rules,
+  areaPolicy: Readonly<Record<string, AreaPolicy>>,
+): UpstreamTopicSuggestion {
+  if (
+    suggestion.kind !== "feat" ||
+    (suggestion.status !== "port" && suggestion.status !== "watch") ||
+    !isValidReasonKey(rules, AREA_IGNORED_REASON_KEY) ||
+    featureAreaPolicy(suggestion.areas, areaPolicy) !== "ignore"
+  )
+    return suggestion;
+  return {
+    ...suggestion,
+    status: "skip",
+    reasonKey: AREA_IGNORED_REASON_KEY,
+    reason: truncate(
+      `${reasonLabel(rules, AREA_IGNORED_REASON_KEY)}: ${suggestion.areas.join(", ")}`,
+      UPSTREAM_SUGGESTION_REASON_MAX,
+    ),
+  };
 }
 
 export function autoDecision(
@@ -499,7 +649,8 @@ export function autoDecision(
     status: "skip",
     reasonKey: suggestion.reasonKey,
     reason: suggestion.reason || reasonLabel(rules, suggestion.reasonKey),
-    decidedBy: "llm",
+    // An ignored area is the writer's setting, not the model's verdict.
+    decidedBy: suggestion.reasonKey === AREA_IGNORED_REASON_KEY ? "rule" : "llm",
   };
 }
 
@@ -605,7 +756,7 @@ export function triageChunk(
         const { prompt, policyTruncated: truncated } = buildTriageBatchPrompt({
           repository: input.repository,
           policy: input.policy,
-          rules,
+          rules: modelVisibleRules(rules),
           openTopics: input.openTopics,
           newGroups: newRows,
           commits: shas.map(digestFor),
@@ -725,7 +876,15 @@ export function triageChunk(
               existingNew.revertChain = existingNew.revertChain || chain;
               continue;
             }
-            const attachTo = target && input.attachable.has(target) ? target : null;
+            // A security follow-up becomes its own (related) topic: attaching it would leave
+            // it under the existing topic's classification, outside the security lane.
+            const securityFollowUp =
+              suggestion.kind === "security" ||
+              topicKindFromCommits(
+                group.commits.map((sha) => classifyCommitOf(bySha.get(sha)!)),
+              ) === "security";
+            const attachTo =
+              target && input.attachable.has(target) && !securityFollowUp ? target : null;
             const related = [
               ...(target && !attachTo && !newGroups.some((candidate) => candidate.key === target)
                 ? [target]
@@ -748,6 +907,16 @@ export function triageChunk(
           }
         }
       }
+    }
+    const areaPolicy = input.areaPolicy ?? {};
+    for (const group of [...groups, ...newGroups]) {
+      if (!group.suggestion || group.attachTo) continue;
+      const commits = group.commits.map((sha) => classifyCommitOf(bySha.get(sha)!));
+      group.suggestion = applyAreaPolicy(
+        classifySuggestion(group.suggestion, commits, rules),
+        rules,
+        areaPolicy,
+      );
     }
     for (const group of newGroups) if (!group.attachTo) group.decision = autoDecision(group, rules);
     return {

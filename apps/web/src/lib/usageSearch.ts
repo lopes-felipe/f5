@@ -1,6 +1,7 @@
 import { ProjectId, type UsageRange } from "@t3tools/contracts";
 
-export type UsageTab = "activity" | "limits";
+export type UsageTab = "activity" | "limits" | "pricing";
+export const USAGE_TABS: ReadonlyArray<UsageTab> = ["activity", "limits", "pricing"];
 export type UsageMetric = "tokens" | "cost" | "turns";
 
 export interface UsageSearch {
@@ -8,6 +9,8 @@ export interface UsageSearch {
   readonly range?: UsageRange;
   readonly projectId?: ProjectId;
   readonly metric?: UsageMetric;
+  /** Overlay the previous period on the chart; only `true` is kept in URLs. */
+  readonly compare?: true;
 }
 
 /** A search update; `undefined` clears a param. */
@@ -22,7 +25,9 @@ const NON_DEFAULT_METRICS: ReadonlySet<string> = new Set(["cost", "turns"]);
 /** Drops invalid values and the default metric so URLs stay canonical. */
 export function validateUsageSearch(search: Record<string, unknown>): UsageSearch {
   return {
-    ...(search.tab === "activity" || search.tab === "limits" ? { tab: search.tab } : {}),
+    ...(typeof search.tab === "string" && (USAGE_TABS as ReadonlyArray<string>).includes(search.tab)
+      ? { tab: search.tab as UsageTab }
+      : {}),
     ...(typeof search.range === "string" && RANGES.has(search.range)
       ? { range: search.range as UsageRange }
       : {}),
@@ -31,6 +36,9 @@ export function validateUsageSearch(search: Record<string, unknown>): UsageSearc
       : {}),
     ...(typeof search.metric === "string" && NON_DEFAULT_METRICS.has(search.metric)
       ? { metric: search.metric as UsageMetric }
+      : {}),
+    ...(search.compare === true || search.compare === 1 || search.compare === "1"
+      ? { compare: true as const }
       : {}),
   };
 }

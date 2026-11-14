@@ -130,13 +130,13 @@ export function ComputerAccessInbox() {
   const pending = usePendingComputerAccessRequests();
   const request = pending[0];
   const requests = useAgentComputerActivityStore((state) => state.requests);
-  const [dismissed, setDismissed] = useState<string>();
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
   const persistenceFailure = Object.values(requests).findLast(
     (entry) =>
       entry?.settled &&
       entry.allowed &&
       entry.persistence === "session-only" &&
-      entry.requestId !== dismissed,
+      !dismissed.has(entry.requestId),
   );
   const canReview = !!window.desktopBridge?.computerAutomation;
   const [announcement, setAnnouncement] = useState("");
@@ -262,7 +262,9 @@ export function ComputerAccessInbox() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => setDismissed(persistenceFailure.requestId)}
+            onClick={() =>
+              setDismissed((previous) => new Set([...previous, persistenceFailure.requestId]))
+            }
           >
             Dismiss
           </Button>

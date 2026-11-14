@@ -10,7 +10,9 @@ import "../index.css";
 
 import {
   AGENTS_WS_METHODS,
+  BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
+  USAGE_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
@@ -74,6 +76,7 @@ import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelSt
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
+import { reconcileDraftThreadsAfterStartupSnapshot } from "../orchestration/syncController";
 import { createTestServerProvider } from "../testServerProvider";
 import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workflowFixtures";
 import {
@@ -193,7 +196,7 @@ interface TestWsClient {
 
 type WsRequestResolution =
   | { type: "result"; result: unknown }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string }
   | { type: "close" };
 
 type MaybePromise<T> = T | Promise<T>;
@@ -1321,6 +1324,10 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // The prompt cache indicator's history: a thread with no recorded turns.
+  if (tag === USAGE_WS_METHODS.getThreadTurns) {
+    return { turns: [], firstTurnId: null, earlierTurnCount: 0 };
+  }
   // `null` means the provider history is complete; `{}` would show the recovery banner.
   if (tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) return null;
   // The chat header lists the conversation's automations from the shared task list.
@@ -1570,6 +1577,7 @@ const worker = setupWorker(
               id: request.id,
               error: {
                 message: resolution.message,
+                ...(resolution.code ? { code: resolution.code } : {}),
               },
             }),
           );
@@ -2083,6 +2091,35 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline (full app)", () => {
+  it("focuses search when the add-project intent opens the real palette submenu", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-palette-add-project-focus" as MessageId,
+        targetText: "Palette focus regression",
+      }),
+    });
+    try {
+      await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+      useCommandPaletteStore.getState().openAddProject();
+      const back = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="command-palette"] button[aria-label="Back"]',
+          ),
+        "Add-project submenu should render its Back button.",
+      );
+      await expect.element(page.elementLocator(back)).toBeVisible();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
+        "Add-project search should render.",
+      );
+      await expect.element(page.elementLocator(input)).toHaveFocus();
+    } finally {
+      useCommandPaletteStore.getState().setOpen(false);
+      await mounted.cleanup();
+    }
+  });
   it.each(["message", "plan"] as const)(
     "finds and reveals an unloaded older %s without changing the draft or sending",
     async (kind) => {
@@ -3621,9 +3658,10 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(() => expect(editor.textContent).toContain("Dismissed answer"));
 
       await mounted.router.navigate({ to: "/" });
-      await expect
-        .element(page.getByText("Which approach?", { exact: true }))
-        .not.toBeInTheDocument();
+      // Home lists the waiting thread with its question, so wait for the thread's composer to go.
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-chat-composer-shell="true"]')).toBeNull(),
+      );
       const dismissal = createThreadActivity({
         id: "question-dismissed",
         createdAt: isoAt(202),
@@ -6335,13 +6373,15 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it.each([
-    { model: "gpt-5.4", source: "draft", reset: false },
-    { model: "5.4", source: "draft", reset: false },
-    { model: "gpt-5.4", source: "project", reset: false },
-    { model: "5.4", source: "project", reset: true },
+    { model: "gpt-5.4", source: "draft", reset: false, unscoped: false },
+    { model: "5.4", source: "draft", reset: false, unscoped: false },
+    { model: "gpt-5.4", source: "project", reset: false, unscoped: false },
+    { model: "5.4", source: "project", reset: true, unscoped: false },
+    { model: "gpt-5.5", source: "draft", reset: false, unscoped: false },
+    { model: "gpt-5.5", source: "draft", reset: false, unscoped: true },
   ])(
-    "keeps $source effort visible and dispatchable on same-driver fallback from $model (reset=$reset)",
-    async ({ model, source, reset }) => {
+    "keeps $source effort visible and dispatchable on same-driver fallback from $model (reset=$reset, unscoped=$unscoped)",
+    async ({ model, source, reset, unscoped }) => {
       useComposerDraftStore.setState({
         draftThreadsByThreadId: {
           [THREAD_ID]: {
@@ -6365,34 +6405,32 @@ describe("ChatView timeline (full app)", () => {
           projects: snapshot.projects.map((project) => ({
             ...project,
             defaultModelSelection: {
-              instanceId: ProviderInstanceId.make("codex"),
-              model,
+              instanceId: unscoped ? fallback : ProviderInstanceId.make("codex"),
+              model: source === "draft" ? "gpt-5.4" : model,
               options: [{ id: "reasoningEffort", value: "low" }],
             },
           })),
         },
         configureFixture: (fixture) => {
           const stock = createTestServerProvider("codex", {
-            models: [
-              {
-                slug: "gpt-5.4",
-                name: "GPT-5.4",
-                isCustom: false,
-                capabilities: {
-                  optionDescriptors: [
-                    {
-                      id: "reasoningEffort",
-                      label: "Effort",
-                      type: "select",
-                      options: [
-                        { id: "low", label: "Low" },
-                        { id: "high", label: "High", isDefault: true },
-                      ],
-                    },
-                  ],
-                },
+            models: ["gpt-5.4", "gpt-5.5"].map((slug) => ({
+              slug,
+              name: slug,
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Effort",
+                    type: "select",
+                    options: [
+                      { id: "low", label: "Low" },
+                      { id: "high", label: "High", isDefault: true },
+                    ],
+                  },
+                ],
               },
-            ],
+            })),
           });
           fixture.serverConfig = {
             ...fixture.serverConfig,
@@ -6413,7 +6451,7 @@ describe("ChatView timeline (full app)", () => {
       try {
         const draft = useComposerDraftStore.getState();
         draft.setProvider(THREAD_ID, "codex");
-        draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
+        if (!unscoped) draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
         draft.setModel(THREAD_ID, model);
         if (source === "draft") {
           draft.setModelOptions(THREAD_ID, { codex: { reasoningEffort: "low" } });
@@ -6448,7 +6486,10 @@ describe("ChatView timeline (full app)", () => {
         ) as {
           modelSelection?: { instanceId: string; model: string; options?: unknown };
         };
-        expect(command.modelSelection).toMatchObject({ instanceId: fallback, model: "gpt-5.4" });
+        expect(command.modelSelection).toMatchObject({
+          instanceId: fallback,
+          model: model === "5.4" ? "gpt-5.4" : model,
+        });
         expect(command.modelSelection?.options).toContainEqual({
           id: "reasoningEffort",
           value: reset ? "high" : "low",
@@ -8373,89 +8414,185 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("shows recovery actions after reconnect, retries with the original command id, and avoids duplicate optimistic rows", async () => {
-    const sentText = "Retry this pending send";
-    let firstCommandId: string | null = null;
-    let firstMessageId: MessageId | null = null;
-
-    useComposerDraftStore.setState({
-      draftThreadsByThreadId: {
-        [THREAD_ID]: {
-          projectId: PROJECT_ID,
-          createdAt: NOW_ISO,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          envMode: "local",
+  it.each(["accepted", "rolled-back"] as const)(
+    "retains first-send context when server sync precedes admission: %s",
+    async (outcome) => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+      store.setPrompt(THREAD_ID, "Preserve this first send");
+      let admit!: (result: WsRequestResolution) => void;
+      let submissionId = "";
+      let currentFixture!: TestFixture;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          currentFixture = next;
+          next.resolveWsRequest = (body) => {
+            const command = getSubmittedTurnCommand(body);
+            if (!command) return null;
+            submissionId = command.commandId!;
+            return new Promise((resolve) => {
+              admit = resolve;
+            });
+          };
         },
-      },
-      projectDraftThreadIdByProjectId: {
-        [PROJECT_ID]: THREAD_ID,
-      },
-    });
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createDraftOnlySnapshot(),
-      configureFixture: (nextFixture) => {
-        nextFixture.resolveWsRequest = (body) => {
-          const command = getSubmittedTurnCommand(body);
-          if (!command) return null;
-          firstCommandId ??= command.commandId ?? null;
-          firstMessageId ??= command.message?.messageId ?? null;
-          return { type: "close" };
-        };
-      },
-    });
-
-    try {
-      useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
-
-      const sendButton = await waitForSendButton();
-      await vi.waitFor(
-        () => {
-          expect(sendButton.disabled).toBe(false);
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-      sendButton.click();
-
-      const retryButton = await waitForButtonByText("Retry send");
-      await vi.waitFor(
-        () => {
-          expect(firstMessageId).not.toBeNull();
-          expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
-            1,
+      });
+      try {
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        send.click();
+        await vi.waitFor(() => expect(admit).toBeTypeOf("function"));
+        const temporary = createSnapshotForTargetUser({
+          targetMessageId: "temporary-bootstrap-message" as MessageId,
+          targetText: "Temporary server shell",
+          fillerPairCount: 0,
+        });
+        currentFixture.snapshot = temporary;
+        useStore.getState().syncStartupSnapshot(temporary);
+        reconcileDraftThreadsAfterStartupSnapshot(temporary);
+        await vi.waitFor(() => {
+          expect(store.getDraftThread(THREAD_ID)?.promoting).toBe(true);
+          expect(usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID]?.status).toBe(
+            "dispatching",
           );
-        },
-        { timeout: 12_000, interval: 16 },
-      );
+        });
+        if (outcome === "accepted") {
+          admit({ type: "result", result: { disposition: "started", submissionId, sequence: 1 } });
+          await vi.waitFor(() => expect(store.getDraftThread(THREAD_ID)).toBeNull());
+        } else {
+          currentFixture.snapshot = createDraftOnlySnapshot();
+          useStore.getState().syncStartupSnapshot(currentFixture.snapshot);
+          reconcileDraftThreadsAfterStartupSnapshot(currentFixture.snapshot);
+          expect(store.getDraftThread(THREAD_ID)?.promoting).toBe(true);
+          admit({
+            type: "error",
+            code: BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
+            message: "Bootstrap rolled back",
+          });
+          await vi.waitFor(() => {
+            expect(mounted.router.state.location.pathname).toMatch(UUID_ROUTE_RE);
+            const retryId = mounted.router.state.location.pathname.slice(1) as ThreadId;
+            expect(retryId).not.toBe(THREAD_ID);
+            expect(store.getDraftThread(retryId)?.promoting).toBe(false);
+            expect(useComposerDraftStore.getState().draftsByThreadId[retryId]?.prompt).toBe(
+              "Preserve this first send",
+            );
+          });
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
-      retryButton.click();
+  it.each(["transport", "rejected"] as const)(
+    "shows recovery actions after reconnect and retries the original command: %s",
+    async (outcome) => {
+      const sentText = "Retry this pending send";
+      let firstCommandId: string | null = null;
+      let firstMessageId: MessageId | null = null;
 
-      await vi.waitFor(
-        () => {
-          const dispatchRequests = getDispatchCommandRequests("thread.turn.start");
-          expect(dispatchRequests).toHaveLength(2);
-          const retriedCommand = dispatchRequests[1]?.command as
-            | {
-                commandId?: string;
-                message?: { messageId?: MessageId };
-              }
-            | undefined;
-          expect(retriedCommand?.commandId).toBe(firstCommandId);
-          expect(retriedCommand?.message?.messageId).toBe(firstMessageId);
-          expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
-            1,
-          );
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
         },
-        { timeout: 12_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+        projectDraftThreadIdByProjectId: {
+          [PROJECT_ID]: THREAD_ID,
+        },
+      });
+
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (nextFixture) => {
+          nextFixture.resolveWsRequest = (body) => {
+            const command = getSubmittedTurnCommand(body);
+            if (!command) return null;
+            firstCommandId ??= command.commandId ?? null;
+            firstMessageId ??= command.message?.messageId ?? null;
+            if (
+              outcome === "rejected" &&
+              getDispatchCommandRequests("thread.turn.start").length > 1
+            ) {
+              return { type: "error", message: "Admission rejected" };
+            }
+            return { type: "close" };
+          };
+        },
+      });
+
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
+
+        const sendButton = await waitForSendButton();
+        await vi.waitFor(
+          () => {
+            expect(sendButton.disabled).toBe(false);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        sendButton.click();
+
+        const retryButton = await waitForButtonByText("Retry send");
+        await vi.waitFor(
+          () => {
+            expect(firstMessageId).not.toBeNull();
+            expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
+              1,
+            );
+          },
+          { timeout: 12_000, interval: 16 },
+        );
+
+        retryButton.click();
+
+        await vi.waitFor(
+          () => {
+            const dispatchRequests = getDispatchCommandRequests("thread.turn.start");
+            expect(dispatchRequests).toHaveLength(2);
+            const retriedCommand = dispatchRequests[1]?.command as
+              | {
+                  commandId?: string;
+                  message?: { messageId?: MessageId };
+                }
+              | undefined;
+            expect(retriedCommand?.commandId).toBe(firstCommandId);
+            expect(retriedCommand?.message?.messageId).toBe(firstMessageId);
+            if (outcome === "rejected") {
+              expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(
+                false,
+              );
+              expect(
+                useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)?.threadId,
+              ).toBe(THREAD_ID);
+              expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+                sentText,
+              );
+              return;
+            }
+            expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(
+              true,
+            );
+            expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
+              1,
+            );
+          },
+          { timeout: 12_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("restores the draft prompt, image, and terminal context after an unresolved send", async () => {
     const otherThreadId = "thread-recovery-navigation" as ThreadId;
@@ -8544,6 +8681,10 @@ describe("ChatView timeline (full app)", () => {
         () => {
           const draft = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
           expect(draft?.prompt).toBe(prompt);
+          expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(false);
+          expect(
+            useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)?.threadId,
+          ).toBe(THREAD_ID);
           expect(draft?.mentions).toEqual(mentions);
           expect(useComposerMentionHistoryStore.getState().entries).toEqual([]);
           expect(draft?.images).toHaveLength(1);
@@ -9780,6 +9921,77 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+  it("quotes a real assistant row across tool and metadata boundaries", async () => {
+    const snapshot = createSnapshotWithRichAssistantTarget();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                checkpoints: [],
+                messages: [
+                  createAssistantMessage({
+                    id: "quote-first" as MessageId,
+                    text: "Selected response.\n\nSecond paragraph.",
+                    offsetSeconds: 123,
+                  }),
+                  createAssistantMessage({
+                    id: "quote-next" as MessageId,
+                    text: "Next response.",
+                    offsetSeconds: 126,
+                  }),
+                ],
+                activities: [
+                  createThreadActivity({
+                    id: "quote-tool",
+                    createdAt: isoAt(124),
+                    kind: "tool.completed",
+                    summary: "Tool call",
+                    payload: {
+                      itemType: "command_execution",
+                      command: "echo ok",
+                      status: "completed",
+                    },
+                    sequence: 1,
+                  }),
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      await waitForTimelineScrollToSettle();
+      const first = document.querySelector('[data-message-id="quote-first"] .chat-markdown p')!;
+      const next = document.querySelector('[data-message-id="quote-next"] .chat-markdown p')!;
+      expect(first).not.toBeNull();
+      expect(next).not.toBeNull();
+      expect(document.querySelector('[data-timeline-row-kind="work"]')).not.toBeNull();
+      expect(document.querySelector('[data-message-id="quote-next"] h2.sr-only')).not.toBeNull();
+      first.scrollIntoView({ block: "center" });
+      // Paragraph selection can end at the following tool row's empty start,
+      // outside the assistant wrapper. Include the real timestamp but no tool text.
+      const tool = document.querySelector('[data-timeline-row-kind="work"]')!;
+      window.getSelection()!.setBaseAndExtent(first.firstChild!, 0, tool, 0);
+      first.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+      await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
+      await vi.waitFor(() => {
+        const prompt = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
+        expect(prompt).toContain("> Selected response.\n> \n> Second paragraph.");
+        expect(prompt).not.toContain("Next response.");
+        expect(prompt).not.toContain("echo ok");
+        expect(prompt).not.toContain("> Assistant");
+      });
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      await mounted.cleanup();
+    }
+  });
+
   it("does not submit a selected pending answer when sending a quote", async () => {
     const snapshot = createSnapshotWithRichAssistantTarget();
     const question = createThreadActivity({

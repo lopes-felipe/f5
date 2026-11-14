@@ -17,7 +17,7 @@ export interface Observation {
 }
 export interface PerformanceReport {
   schemaVersion: 1;
-  scope: "server-component" | "interactive";
+  scope: "server-component" | "interactive" | "computer";
   mode: "smoke" | "measurement";
   metadata: ReturnType<typeof metadata>;
   method: { warmups: number; repetitions: number };
@@ -26,6 +26,19 @@ export interface PerformanceReport {
   notMeasured: string[];
   /** Report-only counters/timings until a controlled baseline establishes numeric gates. */
   diagnostics?: Record<string, number>;
+  computer?: {
+    coverage: "inspection" | "tasks";
+    fixtureDigest: string;
+    harnessDigest: string;
+    platform: string;
+    displays: unknown;
+    masking: string;
+    build: string;
+    helperIdentity: string;
+    desktopIdentity?: string;
+    executionMode: string;
+    nodesDigests: Record<string, string>;
+  };
   memory?: MemorySample[];
 }
 
@@ -138,10 +151,16 @@ export function percentile95(samples: ReadonlyArray<number>): number {
   const sorted = [...samples].sort((a, b) => a - b);
   return sorted[Math.ceil(sorted.length * 0.95) - 1]!;
 }
+export function median(samples: ReadonlyArray<number>): number {
+  percentile95(samples);
+  const sorted = [...samples].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
 
 export async function measure(
   operation: () => Promise<void>,
-  method = fixture.method,
+  method: { warmups: number; repetitions: number } = fixture.method,
   prepare?: () => Promise<void>,
 ): Promise<Samples> {
   const result: Samples = { wallMs: [], cpuMs: [] };
@@ -206,7 +225,7 @@ export function compareReports(
   for (const report of [base, next]) {
     if (
       report.schemaVersion !== 1 ||
-      !["server-component", "interactive"].includes(report.scope) ||
+      !["server-component", "interactive", "computer"].includes(report.scope) ||
       report.scope !== base.scope ||
       report.mode !== "measurement" ||
       report.method.warmups !== 5 ||
@@ -215,6 +234,33 @@ export function compareReports(
       failures.push("Comparison requires full server measurements (5 warmups, 30 repetitions)");
   }
   failures.push(...compareReportMetadata(base, next));
+  if (base.scope === "computer") {
+    if (
+      base.metadata.dependencyLockDigest !== next.metadata.dependencyLockDigest ||
+      base.metadata.runtime.versions.electron !== next.metadata.runtime.versions.electron
+    )
+      failures.push("Incompatible computer dependencies or Electron version");
+    if (!base.computer || !next.computer) failures.push("Missing computer configuration");
+    else {
+      if (
+        !["inspection", "tasks"].includes(base.computer.coverage) ||
+        !["inspection", "tasks"].includes(next.computer.coverage)
+      )
+        failures.push("Missing computer measurement coverage");
+      const {
+        helperIdentity: _baseHelper,
+        desktopIdentity: _baseDesktop,
+        ...previous
+      } = base.computer;
+      const {
+        helperIdentity: _nextHelper,
+        desktopIdentity: _nextDesktop,
+        ...candidate
+      } = next.computer;
+      if (JSON.stringify(previous) !== JSON.stringify(candidate))
+        failures.push("Incompatible computer fixture, harness, configuration or inspection output");
+    }
+  }
   const names = Object.keys(base.measurements);
   if (
     names.length === 0 ||
@@ -248,6 +294,56 @@ export function compareReports(
       !comparisonGate(percentile95(previous.cpuMs), percentile95(current.cpuMs), true)
     )
       failures.push(`CPU improvement below 20%: ${name}`);
+  }
+  if (base.scope === "computer" && base.computer && next.computer) {
+    const valid = (values: number[] | undefined): values is number[] =>
+      !!values &&
+      values.length === 30 &&
+      values.every((value) => Number.isFinite(value) && value >= 0);
+    const taskCoverage = base.computer.coverage === "tasks";
+    const inspect = taskCoverage ? "inspect.large" : "inspect.large.400";
+    const ratio = (name: string, maximum: number) => {
+      const before = base.measurements[name]?.wallMs,
+        after = next.measurements[name]?.wallMs;
+      if (!valid(before) || !valid(after) || median(after) > median(before) * maximum)
+        failures.push("Computer median improvement target missed: " + name);
+    };
+    ratio(inspect, base.computer.platform === "win32" ? 0.75 : 0.7);
+    if (taskCoverage) {
+      for (const report of [base, next]) {
+        for (let index = 0; index < 5; index++) {
+          const sample = report.diagnostics?.["cold." + index + ".wallMs"];
+          if (sample === undefined || !Number.isFinite(sample) || sample < 0)
+            failures.push("Missing computer cold-start diagnostic sample " + index);
+        }
+      }
+      for (const [name, minimum] of [
+        ["task.foreground-no-capture", 250],
+        ["overlay.animated", 80],
+      ] as const) {
+        const before = base.measurements[name]?.wallMs,
+          after = next.measurements[name]?.wallMs;
+        if (!valid(before) || !valid(after) || median(before) - median(after) < minimum)
+          failures.push("Computer median latency target missed: " + name);
+      }
+      for (const name of [
+        "task.accessibility",
+        "task.coordinates",
+        "task.conditional-wait",
+        "task.batch",
+      ])
+        ratio(name, 0.85);
+      if (base.computer.platform === "win32")
+        for (const name of ["resolution.early", "resolution.late"]) ratio(name, 0.75);
+      for (const [name, maximum] of [
+        ["overlay.non-animated", 5],
+        ["wait.static", 1200],
+      ] as const) {
+        const values = next.measurements[name]?.wallMs;
+        if (!valid(values) || median(values) >= maximum)
+          failures.push("Computer absolute latency target missed: " + name);
+      }
+    }
   }
   for (const observation of next.observations)
     if (

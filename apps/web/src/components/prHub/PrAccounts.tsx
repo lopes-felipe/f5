@@ -8,15 +8,10 @@ import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
 import { Input, fieldSurfaceClassName } from "../ui/input";
 
-const PROVIDERS = [
-  ["github", "GitHub", "github.com"],
-  ["gitlab", "GitLab", "gitlab.com"],
-  ["bitbucket", "Bitbucket Cloud", "bitbucket.org"],
-  ["azure-devops", "Azure DevOps", "dev.azure.com"],
-  ["forgejo", "Forgejo / Gitea", ""],
-] as const;
-const providerLabel = (provider: SourceControlProviderKind) =>
-  PROVIDERS.find(([kind]) => kind === provider)?.[1] ?? provider;
+import {
+  FORGE_PROVIDERS as PROVIDERS,
+  forgeProviderLabel as providerLabel,
+} from "./forgePresentation";
 const accountLabel = (account: ForgeAccount) =>
   `${providerLabel(account.provider)} · ${account.host} · ${account.login}`;
 const selectClass = `${fieldSurfaceClassName} h-8 px-2 text-sm`;

@@ -1,4 +1,8 @@
-import { ignoreMacosTypeOfServiceEinval, keepOutboundFetchOnHttp1 } from "./outboundHttp.ts";
+import {
+  extendConnectionAttemptTimeout,
+  ignoreMacosTypeOfServiceEinval,
+  keepOutboundFetchOnHttp1,
+} from "./outboundHttp.ts";
 import * as NodePath from "node:path";
 import { runDistributionCommand } from "./distribution/commands";
 import { watchLauncher } from "./distribution/activation";
@@ -26,6 +30,7 @@ const RuntimeLayer = Layer.empty.pipe(
 );
 
 export function startServer(): void {
+  extendConnectionAttemptTimeout();
   ignoreMacosTypeOfServiceEinval();
   keepOutboundFetchOnHttp1();
   watchLauncher();

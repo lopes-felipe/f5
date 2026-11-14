@@ -71,6 +71,23 @@ it("refreshes observe-only app epochs from heartbeat while no generation is arme
     inputSequence: 2,
   });
 });
+it("keeps input-held foreground blocking while ignoring the diagnostic held-input list", () => {
+  const h = fixture();
+  const foreground = { ...h.holder(), scope: { kind: "foreground" as const } };
+  const beat = (inputHeld: boolean) =>
+    h.cooperation.heartbeat({
+      inputSequence: 3,
+      inputHeld,
+      monitorHealthy: true,
+      lastUserInputAgeMs: 60_000,
+      heldInputs: inputHeld ? [{ kind: "modifier", code: 56 }] : [],
+    });
+  beat(true);
+  expect(h.cooperation.blockedDetail(foreground)).toBe("input-held");
+  beat(false);
+  expect(h.cooperation.blockedDetail(foreground)).toBeUndefined();
+  expect(h.cooperation.readiness(foreground)).not.toHaveProperty("heldInputs");
+});
 it("backs off repeated yielding, resets after sixty seconds, and releases a turn's native watch", async () => {
   const h = fixture();
   const holder = h.holder();

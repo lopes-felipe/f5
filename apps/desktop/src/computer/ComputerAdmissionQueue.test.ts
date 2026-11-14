@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComputerLeaseHolder, ComputerLeaseScope } from "@t3tools/contracts";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { ComputerAdmissionQueue } from "./ComputerAdmissionQueue";
+import { CHROME_OWN_CALL_RUNNING_MESSAGE, CHROME_OWN_CODEX_MESSAGE } from "./ChromeLeaseAuthority";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
 
 const holder = (
@@ -147,5 +148,47 @@ describe("computer admission FIFO", () => {
     h.queue.cancel(() => true);
     expect((await results).every((result) => result.status === "rejected")).toBe(true);
     expect(h.lease.holders().map((input) => input.threadId)).toEqual(["active"]);
+  });
+  it("waits out the requester's own Chrome call, and reports it if the wait runs out", async () => {
+    const h = fixture();
+    let chromeCall = true;
+    const ownCall = new ComputerControlError({
+      _tag: "Execution",
+      message: CHROME_OWN_CALL_RUNNING_MESSAGE,
+    });
+    const admitOwn = (input: ComputerLeaseHolder) =>
+      h.queue.admit({
+        kind: "lease",
+        holder: input,
+        profileId: input.profileId,
+        requestId: input.threadId,
+        waitMs: 20_000,
+        admit: () => {
+          if (chromeCall) throw ownCall;
+          return h.lease.acquire(input);
+        },
+      });
+    const waited = admitOwn(holder("chrome-holder"));
+    h.advance(1000);
+    chromeCall = false;
+    h.advance(250);
+    await expect(waited).resolves.toMatchObject({ threadId: "chrome-holder" });
+    h.lease.release(h.lease.holders()[0]!);
+    chromeCall = true;
+    const expired = admitOwn(holder("chrome-holder"));
+    h.advance(20_000);
+    await expect(expired).rejects.toBe(ownCall);
+    // A refusal that doesn't clear by itself still fails at once.
+    const codex = h.queue.admit({
+      kind: "lease",
+      holder: holder("codex-holder"),
+      profileId: "p",
+      requestId: "codex-holder",
+      waitMs: 20_000,
+      admit: () => {
+        throw new ComputerControlError({ _tag: "Execution", message: CHROME_OWN_CODEX_MESSAGE });
+      },
+    });
+    await expect(codex).rejects.toMatchObject({ error: { message: CHROME_OWN_CODEX_MESSAGE } });
   });
 });

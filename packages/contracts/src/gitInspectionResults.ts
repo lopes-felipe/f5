@@ -51,6 +51,7 @@ export const GitStatusResult = Schema.Struct({
   branch: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
   hasWorkingTreeChanges: Schema.Boolean,
   workingTree: Schema.Struct({
+    rootPath: Schema.optionalKey(FilesystemPath),
     files: Schema.Array(
       Schema.Struct({
         path: FilesystemPath,
@@ -74,6 +75,7 @@ export const GitListBranchesResult = Schema.Struct({
   worktreeMissing: Schema.optionalKey(Schema.Boolean),
   branches: Schema.Array(GitBranch),
   isRepo: Schema.Boolean,
+  // Legacy field name: true when any remote is configured.
   hasOriginRemote: Schema.Boolean,
 });
 export type GitListBranchesResult = typeof GitListBranchesResult.Type;

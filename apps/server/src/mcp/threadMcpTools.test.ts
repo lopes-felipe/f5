@@ -216,7 +216,7 @@ it.effect(
         });
         for (const args of [
           { threadId: "source 1" },
-          { threadId: "source-1", limit: 51 },
+          { threadId: "source-1", limit: 0 },
           { threadId: "source-1", item: { kind: "message", id: "m", offset: -1 } },
           { threadId: "source-1", before: "c", item: { kind: "plan", id: "p" } },
           { threadId: "source-1", limit: 2, item: { kind: "plan", id: "p" } },
@@ -229,6 +229,14 @@ it.effect(
           (yield* Effect.promise(() => callThreadTool(context, "thread_settle", {}))).isError,
         );
         assert.lengthOf(seen, 1);
+        const oversized = yield* Effect.promise(() =>
+          callThreadTool(context, "thread_read", { threadId: "source-1", limit: 500 }),
+        );
+        assert.isUndefined(oversized.isError);
+        assert.deepStrictEqual(seen[1], {
+          name: "thread_read",
+          input: { threadId: "source-1", limit: 50 },
+        });
       }),
     ),
 );

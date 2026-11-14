@@ -140,6 +140,10 @@ function shellCandidateFromCommand(command: string | null): ShellCandidate | nul
   if (process.platform !== "win32" && shellName === "zsh") {
     return { shell: command, args: ["-o", "nopromptsp"] };
   }
+  // Login shells load ~/.bash_profile, matching macOS terminal startup.
+  if (process.platform === "darwin" && shellName === "bash") {
+    return { shell: command, args: ["-l"] };
+  }
   return { shell: command };
 }
 
@@ -397,6 +401,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           history = new BoundedTerminalHistory(this.historyLineLimit);
           history.append(neutralized);
         }
+        // Restored bytes belong to a dead process, never to the new shell's parser state.
+        history.finish();
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         const session: TerminalSessionState = {
@@ -416,6 +422,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeExit: null,
           hasRunningSubprocess: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          stopOnSettle: input.stopOnSettle ?? false,
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
@@ -423,6 +430,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         return this.snapshot(session);
       }
 
+      if (input.stopOnSettle !== undefined) existing.stopOnSettle = input.stopOnSettle;
       const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
       const currentRuntimeEnv = existing.runtimeEnv;
       const targetCols = input.cols ?? existing.cols;
@@ -564,6 +572,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeExit: null,
           hasRunningSubprocess: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          stopOnSettle: false,
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
@@ -614,6 +623,15 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       }
       this.updateSubprocessPollingState();
     });
+  }
+
+  async closeOnSettleForThread(threadId: string): Promise<void> {
+    await this.runWithThreadLock(threadId, async () => {
+      for (const session of this.sessionsForThread(threadId)) {
+        if (session.stopOnSettle) await this.closeSession(threadId, session.terminalId, false);
+      }
+    });
+    await this.closeIdleForThread(threadId);
   }
 
   async closeIdleForThread(threadId: string): Promise<void> {
@@ -1671,6 +1689,12 @@ export const TerminalManagerLive = Layer.effect(
           try: () => runtime.closeIdleForThread(threadId),
           catch: (cause) =>
             new TerminalError({ message: "Could not verify and close idle terminals", cause }),
+        }),
+      closeOnSettleForThread: (threadId) =>
+        Effect.tryPromise({
+          try: () => runtime.closeOnSettleForThread(threadId),
+          catch: (cause) =>
+            new TerminalError({ message: "Could not close settled terminals", cause }),
         }),
       createAccountProcess: (input) =>
         ptyAdapter

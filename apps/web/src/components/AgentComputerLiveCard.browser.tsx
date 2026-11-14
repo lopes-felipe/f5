@@ -1,4 +1,6 @@
-import { CHROME_BANNER_LINGER_MS, ComputerUseBanner } from "./ComputerUseBanner";
+import { ComputerUseBanner } from "./ComputerUseBanner";
+import { CHROME_BANNER_LINGER_MS } from "./computerControls";
+import { useStore } from "../store";
 import "../index.css";
 import { ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -23,44 +25,80 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => ({}),
 }));
 const threadId = ThreadId.makeUnsafe("computer-ui-fixture");
-it.each(["waiting-user", "waiting-agent"] as const)(
-  "shows ambient %s without Resume",
+it.each(["paused", "recovery"] as const)(
+  "uses server-only %s state after a renderer reload",
   async (state) => {
     window.desktopBridge = { computerAutomation: { setPaused: vi.fn() } } as never;
-    const store = useAgentComputerActivityStore.getState();
-    store.setLeases({
+    useAgentComputerActivityStore.getState().setLeases({
       holders: [
         {
           threadId,
           backend: "native",
-          delivery: "background",
-          appId: "com.apple.TextEdit",
-          appName: "TextEdit",
+          delivery: "foreground",
           state,
           leaseHeld: false,
         },
       ],
     });
-    const screen = await render(
-      <>
-        <ComputerUseBanner />
-        <AgentComputerLiveCard threadId={threadId} />
-      </>,
-    );
+    const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
     try {
-      const text =
-        state === "waiting-user"
-          ? "Waiting for you to finish in TextEdit"
-          : "Waiting for another agent";
-      await expect.element(page.getByText(text, { exact: true }).first()).toBeVisible();
       await expect
-        .element(page.getByRole("button", { name: "Resume", exact: true }))
-        .not.toBeInTheDocument();
+        .element(page.getByText(state === "paused" ? "Paused" : "Needs recovery", { exact: true }))
+        .toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
     } finally {
       await screen.unmount();
     }
   },
 );
+it.each([
+  ["waiting-user", "background"],
+  ["waiting-agent", "background"],
+  ["waiting-user", "foreground"],
+  ["waiting-agent", "foreground"],
+] as const)("shows ambient %s/%s without Resume", async (state, delivery) => {
+  window.desktopBridge = { computerAutomation: { setPaused: vi.fn() } } as never;
+  const store = useAgentComputerActivityStore.getState();
+  store.setLeases({
+    holders: [
+      {
+        threadId,
+        backend: "native",
+        delivery,
+        ...(delivery === "background" ? { appId: "com.apple.TextEdit", appName: "TextEdit" } : {}),
+        state,
+        leaseHeld: false,
+      },
+    ],
+  });
+  const screen = await render(
+    <>
+      <ComputerUseBanner />
+      <AgentComputerLiveCard threadId={threadId} />
+    </>,
+  );
+  try {
+    const text =
+      state === "waiting-user"
+        ? delivery === "background"
+          ? "Waiting for you to finish in TextEdit"
+          : "Waiting while you use the computer"
+        : "Waiting for another agent";
+    await expect.element(page.getByText(text, { exact: true }).first()).toBeVisible();
+    await expect.element(page.getByTestId("computer-use-banner")).toHaveClass("border-border");
+    await expect
+      .element(page.getByRole("button", { name: "Pause", exact: true }).first())
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Stop", exact: true }).first())
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Resume", exact: true }))
+      .not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
 it("shows session-only persistence after the native request closes", async () => {
   window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
   const store = useAgentComputerActivityStore.getState();
@@ -557,6 +595,8 @@ it("shows the tier badge and browser warning in the consent dialog", async () =>
 });
 
 it("shows consent deadlines and the number waiting, and records tool actions only once", async () => {
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
   const store = useAgentComputerActivityStore.getState();
   window.desktopBridge = { computerAutomation: { answerAccess: vi.fn() } } as never;
   store.request({ ...accessRequest("deadline", "Review"), expiresAtMs: Date.now() + 65_000 });
@@ -637,6 +677,44 @@ it("Pause all always pauses its snapshot and a partial failure never resumes ano
     await screen.unmount();
   }
 });
+it("names the agent a waiting thread waits for and stops only that agent", async () => {
+  const stopHolder = vi.fn(async (token: string) => token === "live");
+  window.desktopBridge = { computerAutomation: { setPaused: vi.fn(), stopHolder } } as never;
+  useAgentComputerActivityStore.getState().setLeases({
+    holders: [
+      {
+        threadId,
+        delivery: "foreground",
+        state: "waiting-agent",
+        leaseHeld: false,
+        blockedBy: { token: "live", activity: "chrome-call", profileName: "Dev" },
+      },
+    ],
+  });
+  const screen = await render(<ComputerUseBanner />);
+  try {
+    await expect
+      .element(page.getByText(/Waiting for an agent in “Dev” · using Chrome/))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Stop that agent" }).click();
+    await vi.waitFor(() => expect(stopHolder).toHaveBeenCalledWith("live"));
+    useAgentComputerActivityStore.getState().setLeases({
+      holders: [
+        {
+          threadId,
+          delivery: "foreground",
+          state: "waiting-agent",
+          leaseHeld: false,
+          blockedBy: { token: "stale", activity: "computer", profileName: "Dev" },
+        },
+      ],
+    });
+    await page.getByRole("button", { name: "Stop that agent" }).click();
+    await expect.element(page.getByText("That agent no longer holds control.")).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
+});
 it("keeps a failed suspension unconfirmed after successful interruption and exposes an explicit retry", async () => {
   const store = useAgentComputerActivityStore.getState();
   const dispatch = vi.fn(async () => {});
@@ -691,7 +769,7 @@ it.each([
     await screen.unmount();
   }
 });
-it("keeps the Chrome banner up between calls and hides it once the runtime stays idle", async () => {
+it("keeps the Chrome banner up between calls and hides it once the runtime is idle", async () => {
   const store = useAgentComputerActivityStore.getState();
   const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
   const banner = () => document.querySelector('[data-testid="computer-use-banner"]');
@@ -713,9 +791,203 @@ it("keeps the Chrome banner up between calls and hides it once the runtime stays
     expect(banner()?.textContent).toContain("An agent is using Chrome");
     await settle("idle");
     await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS);
+    // Another thread preempts an idle holder, so only its own card shows it.
     await vi.waitFor(() => expect(banner()).toBeNull());
   } finally {
     await screen.unmount();
     vi.useRealTimers();
+  }
+});
+
+type ReleaseResult = { released: boolean; outcome?: string };
+
+it("collapses an idle Chrome reservation to a strip whose Release reports refusals", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  let refuseFirst: (result: ReleaseResult) => void = () => {};
+  const releaseChrome = vi
+    .fn(
+      async (_input: { threadId: string }): Promise<ReleaseResult> => ({
+        released: true,
+        outcome: "released",
+      }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise<ReleaseResult>((resolve) => {
+          refuseFirst = resolve;
+        }),
+    );
+  nativeMock.api = { computer: { releaseChrome } } as never;
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    const strip = page.getByTestId("computer-idle-strip");
+    await expect.element(strip).toBeVisible();
+    await expect.element(strip.getByText("Chrome idle")).toBeVisible();
+    await expect.element(page.getByTestId("computer-live-card")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    const release = page.getByRole("button", { name: "Release" });
+    await release.click();
+    expect(releaseChrome).toHaveBeenCalledWith({ threadId });
+    // One request at a time.
+    await expect.element(release).toBeDisabled();
+    refuseFirst({ released: false, outcome: "working" });
+    await expect.element(page.getByText(/This thread is busy now .* keeps Chrome/)).toBeVisible();
+    await release.click();
+    expect(releaseChrome).toHaveBeenCalledTimes(2);
+    await expect.element(page.getByText(/keeps Chrome/)).not.toBeInTheDocument();
+    // Main drops the lease: nothing is left to pause or stop, so no full card appears.
+    store.setLeases({ holders: [] });
+    await expect.element(page.getByTestId("computer-idle-strip")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("computer-live-card")).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("keeps the full card during the Chrome linger and collapses once it passes", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
+  const strip = () => document.querySelector('[data-testid="computer-idle-strip"]');
+  const card = () => document.querySelector('[data-testid="computer-live-card"]');
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  store.setLeases({ holders: [{ ...chrome, browser: "working" }] });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await vi.waitFor(() => expect(card()?.textContent).toContain("Agent is using Chrome"));
+    store.setLeases({ holders: [{ ...chrome, browser: "idle" }] });
+    // The idle render is committed, so its linger timer is scheduled.
+    await vi.waitFor(() => expect(card()?.textContent).toContain("Chrome ready · not in use"));
+    await vi.advanceTimersByTimeAsync(CHROME_BANNER_LINGER_MS - 500);
+    expect(card()).not.toBeNull();
+    expect(strip()).toBeNull();
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(strip()).not.toBeNull());
+    expect(card()).toBeNull();
+  } finally {
+    await screen.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  ["an app is granted", { grant: true, paused: false }],
+  ["the thread is paused", { grant: false, paused: true }],
+])("keeps the full card for idle Chrome when %s", async (_label, options) => {
+  const store = useAgentComputerActivityStore.getState();
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  if (options.grant)
+    store.setGrants(threadId, [{ appId: "fixture", tier: "full", allowTyping: false }]);
+  if (options.paused) store.setPaused(threadId, true);
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await expect.element(page.getByTestId("computer-live-card")).toBeVisible();
+    await expect.element(page.getByTestId("computer-idle-strip")).not.toBeInTheDocument();
+    // Chrome at rest stays releasable from its own thread whatever keeps the full card.
+    await expect.element(page.getByRole("button", { name: "Release" })).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("keeps the full card without Release while the thread's turn runs between Chrome calls", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const threads = useStore.getState().threads;
+  const setSession = (status: "running" | "ready") =>
+    useStore.setState({
+      threads: [{ id: threadId, title: "Fixture", session: { status } }],
+    } as never);
+  setSession("running");
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await expect.element(page.getByTestId("computer-live-card")).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Stop" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Release" })).not.toBeInTheDocument();
+    setSession("ready");
+    await expect.element(page.getByTestId("computer-idle-strip")).toBeVisible();
+  } finally {
+    await screen.unmount();
+    useStore.setState({ threads });
+  }
+});
+
+it("lets an old refusal go but keeps the full card for a recent unknown outcome", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
+  store.record({
+    source: "tool",
+    threadId,
+    backend: "native",
+    op: "click",
+    status: "failed",
+    outcome: "Busy",
+    heldByThreadId: ThreadId.makeUnsafe("holder-thread"),
+  });
+  clock.mockReturnValue(200000);
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await expect.element(page.getByTestId("computer-idle-strip")).toBeVisible();
+    await expect.element(page.getByTestId("computer-held-by")).not.toBeInTheDocument();
+    store.record({
+      source: "tool",
+      threadId,
+      backend: "native",
+      op: "click",
+      status: "failed",
+      outcome: "OutcomeUnknown",
+    });
+    await expect.element(page.getByTestId("computer-live-card")).toBeVisible();
+    await expect.element(page.getByText(/Check the app before resuming/)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Release" })).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("shows an idle Chrome reservation's unconfirmed Stop as a warning", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  store.setLeases({
+    holders: [{ threadId, delivery: "foreground", state: "active", browser: "idle" }],
+  });
+  store.markStopUnconfirmed(threadId);
+  const screen = await render(<ComputerUseBanner />);
+  try {
+    await expect.element(page.getByText(/Stop unconfirmed/)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Retry Stop" })).toBeVisible();
+    expect(page.getByTestId("computer-use-banner").element().className).toContain("border-warning");
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("links a refused call to the thread holding control", async () => {
+  const store = useAgentComputerActivityStore.getState();
+  const holderThread = ThreadId.makeUnsafe("holder-thread");
+  store.record({
+    source: "tool",
+    threadId,
+    backend: "native",
+    op: "click",
+    status: "failed",
+    outcome: "Busy",
+    heldByThreadId: holderThread,
+  });
+  const screen = await render(<AgentComputerLiveCard threadId={threadId} />);
+  try {
+    await expect.element(page.getByText("Held by")).toBeVisible();
+    await expect.element(page.getByTestId("computer-held-by")).toHaveTextContent("another thread");
+  } finally {
+    await screen.unmount();
   }
 });

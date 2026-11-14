@@ -30,6 +30,34 @@ function status(overrides: Partial<GitStatusResult> = {}): GitStatusResult {
   };
 }
 
+describe("when: local changes are behind upstream", () => {
+  it.each([false, true])("offers Commit with an open PR: %s", (hasOpenPr) => {
+    const behind = status({
+      hasWorkingTreeChanges: true,
+      aheadCount: 1,
+      behindCount: 2,
+      pr: hasOpenPr
+        ? {
+            number: 13,
+            title: "Open PR",
+            url: "https://example.com/pr/13",
+            baseBranch: "main",
+            headBranch: "feature/test",
+            state: "open",
+          }
+        : null,
+    });
+    for (const isDefaultBranch of [false, true]) {
+      assert.deepEqual(resolveQuickAction(behind, false, isDefaultBranch), {
+        label: "Commit",
+        disabled: false,
+        kind: "run_action",
+        action: "commit",
+      });
+    }
+  });
+});
+
 describe("when: branch is clean and has an open PR", () => {
   it("resolveQuickAction opens the existing PR", () => {
     const quick = resolveQuickAction(
@@ -450,15 +478,15 @@ describe("when: on default branch without open PR", () => {
 });
 
 describe("when: working tree has local changes and branch is behind upstream", () => {
-  it("resolveQuickAction still prefers commit, push, and create PR", () => {
+  it("resolveQuickAction offers commit without pushing", () => {
     const quick = resolveQuickAction(
       status({ hasWorkingTreeChanges: true, behindCount: 1 }),
       false,
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      action: "commit_push_pr",
-      label: "Commit, push & PR",
+      action: "commit",
+      label: "Commit",
     });
   });
 
@@ -655,7 +683,7 @@ describe("when: branch has no upstream configured", () => {
     assert.deepEqual(quick, {
       kind: "show_hint",
       label: "Push",
-      hint: 'Add an "origin" remote before pushing or creating a PR.',
+      hint: "Add a remote before pushing or creating a PR.",
       disabled: true,
     });
   });

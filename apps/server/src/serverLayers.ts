@@ -477,6 +477,12 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(textGenerationLayer),
   );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+    // History recovery verifies projected command output before repairing it.
+    Layer.provide(
+      ThreadCommandExecutionQueryLive.pipe(
+        Layer.provide(ProjectionThreadCommandExecutionRepositoryLive),
+      ),
+    ),
     Layer.provideMerge(usageServiceLayer),
     Layer.provideMerge(runtimeServicesLayer),
   );

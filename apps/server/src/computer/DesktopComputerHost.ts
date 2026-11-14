@@ -9,9 +9,14 @@ import {
   COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
   COMPUTER_COOPERATION_CAPABILITY,
   COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   COMPUTER_CHROME_CALLS_CAPABILITY,
+  COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
+  COMPUTER_CHROME_RELEASE_CAPABILITY,
+  COMPUTER_CHROME_SHARED_CAPABILITY,
   DesktopComputerHostMessage,
   type ComputerAutomationBackendStatus,
   type ComputerAutomationRequest,
@@ -44,6 +49,7 @@ export class DesktopComputerHost {
   >();
   private readonly listeners = new Set<(message: DesktopComputerHostMessage) => void>();
   private connected = false;
+  private awaitingHost = false;
   private hostCapabilities = new Set<string>();
   constructor(
     readonly profileId: string,
@@ -53,6 +59,7 @@ export class DesktopComputerHost {
   ) {
     if (!enabled || !ipc.send || ipc.connected === false) return;
     this.connected = true;
+    this.awaitingHost = true;
     this.state = {
       available: false,
       reason: "no-host",
@@ -74,9 +81,14 @@ export class DesktopComputerHost {
         COMPUTER_REMEMBERED_CONSENT_CAPABILITY,
         COMPUTER_COOPERATION_CAPABILITY,
         COMPUTER_TAKEOVER_RESERVATION_CAPABILITY,
+        COMPUTER_SHARED_APP_CAPABILITY,
+        COMPUTER_BACKGROUND_EVENTS_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
         COMPUTER_CHROME_CALLS_CAPABILITY,
+        COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY,
+        COMPUTER_CHROME_RELEASE_CAPABILITY,
+        COMPUTER_CHROME_SHARED_CAPABILITY,
       ],
     });
   }
@@ -101,6 +113,9 @@ export class DesktopComputerHost {
   }
   takeoverReservationCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_TAKEOVER_RESERVATION_CAPABILITY);
+  }
+  backgroundEventsCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_BACKGROUND_EVENTS_CAPABILITY);
   }
   /** Install before sending the corresponding request, including synchronous IPC transports. */
   awaitEvent(
@@ -142,12 +157,7 @@ export class DesktopComputerHost {
   }
   /** Main sends capabilities before status; a legacy host settles readiness with status alone. */
   async handshake(): Promise<void> {
-    if (
-      !this.connected ||
-      this.hostCapabilities.size ||
-      this.state.available ||
-      this.state.detail !== "Waiting for desktop host."
-    )
+    if (!this.connected || this.hostCapabilities.size || this.state.available || !this.awaitingHost)
       return;
     await new Promise<void>((resolve) => {
       const off = this.onMessage((message) => {
@@ -162,6 +172,9 @@ export class DesktopComputerHost {
       }, 2000);
     });
   }
+  awaitingHandshake(): boolean {
+    return this.connected && this.awaitingHost;
+  }
   supportsAgentIdentity(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_AGENT_IDENTITY_CAPABILITY);
   }
@@ -171,6 +184,22 @@ export class DesktopComputerHost {
   /** Main understands `chromeCallsChanged`; older mains disconnect on unknown messages. */
   chromeCallsCapable(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_CALLS_CAPABILITY);
+  }
+  /** Main admits each Chrome call (`callId`) and understands `chromeCallEnded`. */
+  chromeCallAdmissionCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY);
+  }
+  /** Main routes Chrome release requests across profiles and sends waiting blockers. */
+  chromeReleaseCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(COMPUTER_CHROME_RELEASE_CAPABILITY);
+  }
+  /** Main lets certified Claude sessions share Chrome and relays their registrations. */
+  chromeSharedCapable(): boolean {
+    return (
+      this.connected &&
+      this.hostCapabilities.has(COMPUTER_CHROME_SHARED_CAPABILITY) &&
+      this.hostCapabilities.has(COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY)
+    );
   }
   notificationsCapable(): boolean {
     return this.connected && this.hostCapabilities.has(SCHEDULED_NOTIFICATIONS_CAPABILITY);
@@ -218,8 +247,14 @@ export class DesktopComputerHost {
       this.disconnect();
       return;
     }
-    if (message.type === "hostCapabilities") this.hostCapabilities = new Set(message.capabilities);
-    if (message.type === "status") this.state = message.status;
+    if (message.type === "hostCapabilities") {
+      this.hostCapabilities = new Set(message.capabilities);
+      this.awaitingHost = false;
+    }
+    if (message.type === "status") {
+      this.state = message.status;
+      this.awaitingHost = false;
+    }
     if (message.type === "openExternalUrlResult") {
       const pending = this.browserPending.get(message.id);
       if (pending) {
@@ -286,8 +321,13 @@ export class DesktopComputerHost {
       this.send(message);
     });
   }
-  /** Cancel a correlated exchange locally and on the desktop; late replies are ignored. */
-  abandon(requestId: string, error: ComputerControlError): void {
+  /**
+   * Cancel a correlated exchange locally and on the desktop; late replies are ignored. The
+   * rejection is usually a `ComputerControlError`, but abort-driven callers pass their signal's
+   * reason as-is (e.g. a wait's deadline sentinel), so their own handlers can tell the causes
+   * apart. Consumers must not assume an error shape.
+   */
+  abandon(requestId: string, error: unknown): void {
     const pending = this.pending.get(requestId);
     if (!pending) return;
     this.pending.delete(requestId);

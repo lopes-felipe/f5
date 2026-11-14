@@ -4,6 +4,10 @@ mod composition;
 mod desktop;
 #[cfg(any(windows, test))]
 mod geometry;
+#[cfg(any(windows, test))]
+mod held;
+#[cfg(any(windows, test))]
+mod inspection;
 mod permits;
 #[cfg(any(windows, test))]
 mod protocol;
@@ -11,6 +15,8 @@ mod protocol;
 mod safety;
 #[cfg(any(windows, test))]
 mod scheduler;
+#[cfg(any(windows, test))]
+mod timing;
 #[cfg(any(windows, test))]
 mod traversal;
 #[cfg(windows)]

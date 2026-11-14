@@ -53,6 +53,7 @@ import {
   ServerConfigUpdatedPayload,
   type ServerConfig,
   ServerConfigForwardCompatibleFields,
+  ServerHealth,
   ServerKeybindingMutationResult,
   type DiskSpaceStatus,
   type StorageStatus,
@@ -131,6 +132,10 @@ const decodeServerConfigForwardCompatibleFields = Schema.decodeUnknownSync(
   ServerConfigForwardCompatibleFields,
 );
 const decodeKeybindingMutationResult = Schema.decodeUnknownSync(ServerKeybindingMutationResult);
+// `server.getHealth` shipped without a protocol bump, so a server of another
+// version can answer in another shape. The card reads nested fields; a shape it
+// does not know must fail the request, not the render.
+const decodeServerHealth = Schema.decodeUnknownSync(ServerHealth);
 
 function decodeServerConfig(result: unknown): ServerConfig {
   return {
@@ -613,6 +618,7 @@ export function createWsNativeApi(): NativeApi {
             listener(message.data),
           ),
       },
+      releaseChrome: requestMethod(WS_METHODS.computerChromeRelease),
       onObservationsInvalidated: (listener) =>
         transport.subscribe(WS_CHANNELS.computerObservationsInvalidated, (message) =>
           listener(message.data),
@@ -844,6 +850,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.serverUndoClaudeTranscriptRepair, input),
       getConfig: async () =>
         decodeServerConfig(await transport.request(WS_METHODS.serverGetConfig)),
+      getHealth: async () =>
+        decodeServerHealth(await transport.request(WS_METHODS.serverGetHealth)),
       getProjectSettings: requestMethod(WS_METHODS.serverGetProjectSettings),
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),
@@ -1067,6 +1075,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(USAGE_WS_METHODS.getSummary, input, context),
       getQuotaHistory: () => transport.request(USAGE_WS_METHODS.getQuotaHistory, {}),
       analyzeClaudeUsage: (input) => transport.request(USAGE_WS_METHODS.analyzeClaudeUsage, input),
+      getThreadTurns: (input, context) =>
+        transport.request(USAGE_WS_METHODS.getThreadTurns, input, context),
     },
     nativeOperations: {
       markRead: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.markRead, input),
@@ -1178,6 +1188,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(ORCHESTRATION_WS_METHODS.getRewindDrafts, input),
       getThreadPeek: (input, context) =>
         transport.request(ORCHESTRATION_WS_METHODS.getThreadPeek, input, context),
+      getThreadPeeks: (input, context) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getThreadPeeks, input, context),
       getThreadHistoryPage: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getThreadHistoryPage, input),
       getThreadDetails: (input) =>
@@ -1229,6 +1241,8 @@ export function createWsNativeApi(): NativeApi {
         transport
           .request(ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow, input)
           .then(decodeRetryWorkflowResult),
+      postCodeReviewWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow, input),
       retryInvestigationWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow, input),
       startImplementation: (input) =>

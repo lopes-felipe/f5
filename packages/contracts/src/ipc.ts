@@ -109,6 +109,8 @@ import type {
   UpstreamTopicDetail,
   UpstreamTopicFiles,
   UpstreamUndoDecisionsInput,
+  UpstreamExpireBacklogInput,
+  UpstreamExpireBacklogResult,
   UpstreamUnlinkPortInput,
   UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
@@ -206,6 +208,7 @@ import type {
 } from "./providerInventory";
 import type {
   ServerConfig,
+  ServerHealth,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
   ServerKeybindingMutationResult,
@@ -235,8 +238,10 @@ import type {
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
+  UsageGetThreadTurnsInput,
   UsageSummary,
   UsageQuotaHistory,
+  UsageThreadTurns,
 } from "./usage";
 import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitation";
 import type {
@@ -495,7 +500,9 @@ import type {
   OrchestrationGetRewindDraftsInput,
   OrchestrationGetRewindDraftsResult,
   OrchestrationGetThreadPeekInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationThreadPeek,
+  OrchestrationThreadPeeks,
   OrchestrationThreadHistoryPage,
   OrchestrationThreadTailDetails,
   OrchestrationGetTurnDiffInput,
@@ -503,6 +510,8 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowResult,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationRetryWorkflowResult,
@@ -530,6 +539,8 @@ export interface ContextMenuItem<T extends string = string> {
   destructive?: boolean;
   disabled?: boolean;
   separatorBefore?: boolean;
+  icon?: string;
+  children?: readonly ContextMenuItem<T>[];
 }
 
 export type DesktopUpdateChannel = "stable" | "beta";
@@ -721,11 +732,22 @@ export type DesktopKeepAwakeBlockedReason =
   | "permission-missing"
   | "command-failed"
   | "blocker-failed";
+export type DesktopKeepAwakeDisplayPausedReason =
+  | "panel-off"
+  | "thermal"
+  | "battery-low"
+  | "battery-unknown";
 export interface DesktopKeepAwakeState {
   readonly revision: number;
   readonly mode: DesktopKeepAwakeMode;
   readonly closedLid: boolean;
+  /** Also prevent idle display sleep (and so the idle screen lock) while active. */
+  readonly keepDisplayOn: boolean;
   readonly active: boolean;
+  /** True while the running blocker also keeps the display on. */
+  readonly displayActive: boolean;
+  /** Why requested display-on currently falls back to system-only keep-awake. */
+  readonly displayPausedReason: DesktopKeepAwakeDisplayPausedReason | null;
   readonly busyThreadCount: number;
   readonly cooldownUntil: number | null;
   readonly lid: {
@@ -743,6 +765,7 @@ export interface DesktopKeepAwakeBridge {
   setPreferences(input: {
     mode?: DesktopKeepAwakeMode;
     closedLid?: boolean;
+    keepDisplayOn?: boolean;
   }): Promise<DesktopKeepAwakeState>;
   installLidPermission(): Promise<DesktopKeepAwakeState>;
   removeLidPermission(): Promise<DesktopKeepAwakeState>;
@@ -752,8 +775,56 @@ export type DesktopTrackpadScrollEvent =
   // `precise` is false for a mouse wheel, and absent when Chromium did not report it.
   { readonly phase: "begin"; readonly precise?: boolean } | { readonly phase: "end" };
 
+/** Where clicking an OS notification (or its in-app counterpart) takes the user. */
+export type DesktopNotificationTarget =
+  | { readonly kind: "thread"; readonly threadId: string }
+  | { readonly kind: "prHub"; readonly prKey?: string }
+  | { readonly kind: "scheduled"; readonly taskId: string }
+  /** `view: "features"` opens the newest Inbox features (the weekly digest). */
+  | { readonly kind: "upstream"; readonly projectId: string; readonly view?: "features" }
+  | { readonly kind: "update" }
+  | { readonly kind: "none" };
+
+export interface DesktopNotificationShowInput {
+  /** Echoed back on activation so the renderer can match its own record. */
+  readonly id: string;
+  readonly title: string;
+  readonly body?: string;
+  /** A later notification with the same tag replaces the earlier one. */
+  readonly tag?: string;
+  readonly silent?: boolean;
+  /** A PNG data URL. Shown on Windows and Linux; macOS always shows the app icon. */
+  readonly icon?: string;
+  readonly target: DesktopNotificationTarget;
+}
+
+export interface DesktopNotificationActivation {
+  readonly id: string;
+  readonly target: DesktopNotificationTarget;
+}
+
+/**
+ * OS notifications owned by the main process, so a click still reaches the app after the
+ * renderer reloads, its window closes, or the user clicks it in Notification Center.
+ */
+export interface DesktopNotificationsBridge {
+  show(input: DesktopNotificationShowInput): Promise<boolean>;
+  /**
+   * Takes the clicked notifications meant for this window that it hasn't handled yet, oldest
+   * first. Unclaimed clicks expire after a minute.
+   */
+  takeActivations(): Promise<readonly DesktopNotificationActivation[]>;
+  onActivationsAvailable(listener: () => void): () => void;
+}
+
 export interface DesktopBridge {
+  takeAppActivations?: () => Promise<
+    readonly import("./desktopAppActivation").DesktopAppActivationRequest[]
+  >;
+  onAppActivationsAvailable?: (listener: () => void) => () => void;
+  completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
+  readonly notifications?: DesktopNotificationsBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;
@@ -781,8 +852,11 @@ export interface DesktopBridge {
   }>;
   onPromptLinksAvailable?: (listener: () => void) => () => void;
   getWsUrl: () => string | null;
+  revealWindow?: () => Promise<void>;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
+  resolveActivationPaths?: (paths: readonly string[]) => Promise<(string | null)[]>;
+  isAppActivationPending?: (id: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
@@ -977,6 +1051,15 @@ export interface NativeApi {
       onSettled: (listener: (event: typeof ComputerAccessSettled.Type) => void) => () => void;
       onGrantsChanged: (listener: (event: typeof ComputerGrantsChanged.Type) => void) => () => void;
     };
+    /**
+     * Frees Chrome from an idle holder thread. `outcome` says why it didn't: the thread no
+     * longer holds Chrome (`not-holder`), it is busy (`working`), or it didn't let go in
+     * time (`timeout`).
+     */
+    releaseChrome: (input: { threadId: ThreadId }) => Promise<{
+      released: boolean;
+      outcome?: "released" | "not-holder" | "working" | "timeout";
+    }>;
     onObservationsInvalidated: (listener: (event: { threadId: string }) => void) => () => void;
     onActivity: (listener: (event: ComputerActivity) => void) => () => void;
     onLeaseChanged: (listener: (event: typeof AgentComputerUseChanged.Type) => void) => () => void;
@@ -1147,6 +1230,8 @@ export interface NativeApi {
     }>;
     undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;
     getConfig: () => Promise<ServerConfig>;
+    /** Slow routes, slow SQL statements and event-loop delay since the server started. */
+    getHealth: () => Promise<ServerHealth>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
@@ -1346,6 +1431,11 @@ export interface NativeApi {
     getQuotaHistory: () => Promise<UsageQuotaHistory>;
     /** Scan local Claude transcripts for usage recommendations (up to a minute). */
     analyzeClaudeUsage: (input: UsageAnalyzeClaudeUsageInput) => Promise<ClaudeUsageAnalysis>;
+    /** One thread's recorded per-turn token counts, oldest first. */
+    getThreadTurns: (
+      input: UsageGetThreadTurnsInput,
+      context?: NativeRequestContext,
+    ) => Promise<UsageThreadTurns>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {
@@ -1389,6 +1479,7 @@ export interface NativeApi {
     decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
     acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
     undoDecisions: (input: UpstreamUndoDecisionsInput) => Promise<UpstreamDecideResult>;
+    expireBacklog: (input: UpstreamExpireBacklogInput) => Promise<UpstreamExpireBacklogResult>;
     run: (input: UpstreamRunInput) => Promise<UpstreamRunResult>;
     startPort: (input: UpstreamStartPortInput) => Promise<UpstreamStartPortResult>;
     previewPortGroups: (
@@ -1509,6 +1600,10 @@ export interface NativeApi {
       input: OrchestrationGetThreadPeekInput,
       context?: NativeRequestContext,
     ) => Promise<OrchestrationThreadPeek>;
+    getThreadPeeks: (
+      input: OrchestrationGetThreadPeeksInput,
+      context?: NativeRequestContext,
+    ) => Promise<OrchestrationThreadPeeks>;
     getThreadHistoryPage: (
       input: OrchestrationGetThreadHistoryPageInput,
     ) => Promise<OrchestrationThreadHistoryPage>;
@@ -1569,6 +1664,9 @@ export interface NativeApi {
     retryCodeReviewWorkflow: (
       input: OrchestrationRetryCodeReviewWorkflowInput,
     ) => Promise<OrchestrationRetryWorkflowResult>;
+    postCodeReviewWorkflow: (
+      input: OrchestrationPostCodeReviewWorkflowInput,
+    ) => Promise<OrchestrationPostCodeReviewWorkflowResult>;
     retryInvestigationWorkflow: (
       input: OrchestrationRetryInvestigationWorkflowInput,
     ) => Promise<void>;

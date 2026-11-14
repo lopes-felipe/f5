@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 
 /** Opens the authorized inode; callers stream this handle instead of reopening its path. */
 export async function openContainedFile(root: string, relativePath: string): Promise<FileHandle> {
@@ -78,7 +79,9 @@ const MIME: Readonly<Record<string, string>> = {
   ".otf": "font/otf",
 };
 export const assetMimeType = (name: string): string =>
-  MIME[path.extname(name).toLowerCase()] ?? "application/octet-stream";
+  MIME[path.extname(name).toLowerCase()] ??
+  hostPreviewMimeTypeFromExtension(path.extname(name)) ??
+  "application/octet-stream";
 
 /**
  * Explicit "Open in preview browser" pages may run their own scripts, but every

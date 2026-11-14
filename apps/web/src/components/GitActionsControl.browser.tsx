@@ -8,6 +8,7 @@ const fixture = vi.hoisted(() => {
   const suggestedMessage =
     "Review this generated subject\n\nKeep the entire generated body for inspection.";
   return {
+    openEditor: vi.fn(async () => {}),
     suggestedMessage,
     run: vi.fn(async () => ({
       action: "commit",
@@ -31,6 +32,7 @@ vi.mock("../appSettings", () => ({
   }),
 }));
 vi.mock("../hooks/useOpenLink", () => ({ useOpenLink: () => vi.fn() }));
+vi.mock("../editorPreferences", () => ({ openInPreferredEditor: fixture.openEditor }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useParams: () => ({}),
@@ -42,6 +44,7 @@ vi.mock("../nativeApi", () => {
         branch: "feature/test",
         hasWorkingTreeChanges: true,
         workingTree: {
+          rootPath: "/repo",
           files: [{ path: "README.md", insertions: 1, deletions: 0 }],
           insertions: 1,
           deletions: 0,
@@ -83,7 +86,7 @@ describe("commit context changed", () => {
     const screen = await render(
       <QueryClientProvider client={client}>
         <ToastProvider>
-          <GitActionsControl gitCwd="/project" activeThreadId={null} isServerThread />
+          <GitActionsControl gitCwd="/repo/nested" activeThreadId={null} isServerThread />
         </ToastProvider>
       </QueryClientProvider>,
     );
@@ -98,6 +101,8 @@ describe("commit context changed", () => {
       await page.getByRole("button", { name: "Review suggestion", exact: true }).click();
       await expect.element(page.getByRole("dialog", { name: "Commit changes" })).toBeVisible();
       await expect.element(page.getByRole("textbox")).toHaveValue(fixture.suggestedMessage);
+      await page.getByRole("button", { name: /README.md/ }).click();
+      expect(fixture.openEditor).toHaveBeenCalledWith(expect.anything(), "/repo/README.md");
       expect(fixture.run).toHaveBeenCalledTimes(1);
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       expect(fixture.run).toHaveBeenCalledTimes(1);

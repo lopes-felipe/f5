@@ -10,13 +10,11 @@ import {
   type LucideIcon,
   SearchIcon,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-import { upstreamProjectsQueryOptions } from "../../lib/upstreamPortsReactQuery";
+import { usePrHubNeedsYouCount, useUpstreamNav } from "../../hooks/useSurfaceCounts";
 import { cn } from "../../lib/utils";
 
-import { readNativeApi } from "../../nativeApi";
 import { SidebarThreadSearchInput } from "../SidebarThreadSearch";
 import { formatCompactCount } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -25,41 +23,6 @@ import { Kbd } from "../ui/kbd";
 /** Shared look for sidebar navigation rows: 32px, `text-ui`, 16px icon. */
 export const SIDEBAR_NAV_ROW_CLASS_NAME =
   "h-8 gap-2 px-2 text-ui text-muted-foreground hover:bg-accent/60 hover:text-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-foreground";
-
-/** PR Hub "needs you" count, kept live through the native API. */
-function usePrHubNeedsYouCount(): number {
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    const api = readNativeApi();
-    if (!api?.prHub) return;
-
-    const updateCount = (snapshot: { counts: { needs_you: number } }) => {
-      setCount(snapshot.counts.needs_you);
-    };
-    void api.prHub
-      .getOverview()
-      .then(updateCount)
-      .catch(() => setCount(0));
-    return api.prHub.onChanged(updateCount);
-  }, []);
-  return count;
-}
-
-/** Projects with an `upstream` block and their inbox total; refreshed by `upstreamPorts.changed`. */
-function useUpstreamNav(): { readonly visible: boolean; readonly inbox: number } {
-  const query = useQuery({
-    ...upstreamProjectsQueryOptions(),
-    enabled: Boolean(readNativeApi()?.upstreamPorts),
-  });
-  const projects = query.data?.projects ?? [];
-  return {
-    visible: projects.length > 0,
-    inbox: projects.reduce(
-      (sum, project) => sum + (project.managedByThisProfile ? project.inboxCount : 0),
-      0,
-    ),
-  };
-}
 
 /** The sidebar's two views; `Sidebar.tsx` persists the choice with a schema built from this. */
 export const SIDEBAR_VIEWS = ["projects", "recent"] as const;
@@ -211,6 +174,7 @@ export function SidebarNav(props: {
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
   pullRequestsShortcutLabel: string | null;
+  homeShortcutLabel: string | null;
   view: SidebarView;
   onViewChange: (view: SidebarView) => void;
 }) {
@@ -227,12 +191,14 @@ export function SidebarNav(props: {
   const searchVisible = searchOpen || props.searchQuery.length > 0;
 
   return (
-    // Top padding keeps the count badges, which rise above their buttons, inside the scroll area.
+    // Pinned above the scroll area. Top padding keeps the count badges, which rise above their
+    // buttons, clear of the New thread row.
     <nav aria-label="Primary" className="shrink-0 p-2">
       <div className="flex items-center justify-between gap-0.5 border-b border-sidebar-border pb-2">
         <NavIconButton
           icon={HomeIcon}
           label="Home"
+          shortcutLabel={props.homeShortcutLabel}
           isActive={isOnHome}
           onSelect={() => void navigate({ to: "/" })}
         />

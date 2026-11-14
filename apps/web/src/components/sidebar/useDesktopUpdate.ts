@@ -19,6 +19,7 @@ import {
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
 import { toastManager } from "../ui/toast";
+import { notify } from "../../notificationCenter/notify";
 
 /**
  * Desktop auto-update state and the sidebar's update pill behaviour.
@@ -160,14 +161,20 @@ export function useDesktopUpdate(options: { announce?: boolean } = {}) {
   // the same Restart action as ones started from the pill.
   useEffect(() => {
     if (!announce || !completedDownload) return;
-    toastManager.add({
-      type: "success",
+    notify({
+      source: "update",
+      severity: "success",
       title: "Update downloaded",
-      description: `F5 ${completedDownload.version ?? "update"} is ready. Restart to install it.`,
-      actionProps: {
-        children: "Restart to update",
-        onClick: () => void runAction("install"),
-      },
+      body: `F5 ${completedDownload.version ?? "update"} is ready. Restart to install it.`,
+      dedupeKey: `update:${completedDownload.version ?? "latest"}`,
+      target: { kind: "update" },
+      actions: [
+        {
+          label: "Restart to update",
+          variant: "primary",
+          onClick: () => void runAction("install"),
+        },
+      ],
     });
   }, [announce, completedDownload, runAction]);
 

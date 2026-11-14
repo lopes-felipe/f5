@@ -4,6 +4,7 @@ Let Claude and Codex open, read and click through pages in F5's preview browser.
 On macOS and Windows they can also request control of apps you approve.
 Browser access and computer use are enabled by default, with background computer
 execution. You can change these settings or take control back at any time.
+Computer batches stop at the first failure or unconfirmed effect; completed steps must not be repeated.
 
 ![Settings → Browser & Computer with agent browser access and computer use toggles](../images/settings-browser.webp)
 
@@ -53,7 +54,8 @@ and control apps you approve:
 3. Start a new turn. When the agent asks for an app, approve it in F5's dialog.
 
 Computer use is enabled by default, and background is the default execution mode.
-Your input pauses foreground control. Press **⌃⌘Esc** on macOS or
+Your input makes Full access foreground agents wait; other foreground agents pause.
+Press **⌃⌘Esc** on macOS or
 **Ctrl+Alt+Shift+F12** on Windows to stop every scope. While paused, the agent can't
 take screenshots or inspect apps either.
 
@@ -63,9 +65,11 @@ stop, display transitions, Windows 10 and installer checks remain pending; see t
 [acceptance record](../computer-certification/windows-preview.md#rollout-record).
 Elevated/protected system UI stays outside the agent's control.
 
-Foreground uses the mouse and keyboard. Background uses accessibility inside one
-approved app per agent; interacting with that app pauses its agent while other
-background apps can continue. Actions that need the foreground request a takeover.
+Foreground uses the mouse and keyboard. Background uses accessibility inside approved
+apps, and several agents can share an app while their writes run one at a time.
+Interacting with a background app makes its agents wait until you leave and conflicting
+activity stops. Other background apps can continue. Actions that need the foreground
+request a takeover.
 Windows app approvals apply to F5 computer tools; other agent code retains its
 own Windows permissions.
 
@@ -88,8 +92,9 @@ Claude Code creates its browser connection in seven browser folders (Chrome, Bra
 Chromium, Vivaldi and Opera). **Settings → Browser & Computer** lists each setup and can restore the
 earlier files, even after F5 restarts. Running `claude --chrome` in a terminal takes the connection
 back; reconnect in F5 afterwards. In Full access, Claude skips the extension's per-site permission
-prompts. Claude in Chrome works only in profiles that use your real home folder; isolated F5
-profiles keep their own and show it as unavailable.
+prompts. Claude in Chrome works in every F5 profile on macOS, isolated profiles included: they keep
+your real home folder and only Claude's settings folder is separate. Replacing another profile's
+setup always asks.
 
 **Codex Chrome**
 
@@ -114,9 +119,50 @@ non-frontmost window counts too; typing in another app does not delay it. The ag
 computer_wait_for_target and observes the app again before continuing. Waiting reserves no
 control and never repeats an interrupted action automatically.
 
+When another agent holds conflicting control, F5 waits fairly for up to twenty seconds.
+A takeover reserves its place before asking for consent, so a busy computer does not
+produce an approval dialog early. Foreground and takeover control remain exclusive:
+there is one cursor and keyboard focus in a desktop session.
+
+A Claude in Chrome session doesn't block other agents just by being open. Other threads and
+profiles can take foreground control, or control Chrome in the background, whenever none of
+its Chrome calls is running. Its next Chrome call then waits up to twenty seconds for that
+control to end; after that the agent is told to retry. While a native request waits, its
+banner and card name who it is waiting for: another profile by name, a thread in this
+profile by title, and whether that agent is using Chrome or controlling the computer.
+**Stop that agent** pauses only that agent, even in another profile. Resume it from its own
+thread.
+
+Claude threads in different profiles share Claude in Chrome when the installed Claude
+version is certified for it. Each keeps its own tab group, and their Chrome calls run one
+at a time: a call waits up to twenty seconds for another agent's call to finish. A call
+waiting for your approval doesn't hold anyone up. Threads in the same profile still take
+turns with Chrome, as before. Each profile's Claude must be connected to the browser once: run `claude --chrome` with that
+profile's Claude settings folder, open `/chrome` and choose **Select browser…**. Until
+then its Chrome calls report that the extension isn't connected.
+
+An idle Chrome session in another profile also gives Chrome up when a thread here needs
+Chrome and can't share it, the same way one in this profile does. A Codex Chrome session, or one from an older
+F5 backend, still blocks foreground control while it is open; when it is idle, a thread here
+that needs foreground control stops it, as one in the same profile would.
+
+Agents sharing an app must inspect again after another agent changes it. If another
+agent changed focus, the next agent presses the intended field before typing or sending
+keys, or sets that field's value directly. This prevents typing into the other agent's
+selected field. A background screenshot still never authorizes coordinate input.
+
+Background key presses use a named app; background scrolling uses an element from a
+fresh inspection. Both require app-specific native support verified by real rehearsals.
+**No apps are enabled for background key presses or element scrolling yet on macOS or
+Windows.** Until an app passes those checks, it needs foreground approval for these
+operations. The delivery APIs and rehearsal runner are available for certification;
+see [background cooperation acceptance](../computer-certification/background-cooperation.md).
+Desktop shortcuts, coordinate scrolling, clicks, moves and drags still require foreground
+control, and protected system shortcuts remain blocked.
+
 In Full access threads, moving the mouse or typing during foreground control also makes the
-agent wait. The overlay says **Waiting while you use the computer**, then counts down after
-three seconds of idle input; movement keeps you in control. Held keys or mouse buttons block
+agent wait. The overlay says **Waiting while you use the computer**, then counts down through
+a three-second idle period; movement keeps you in control. Held keys or mouse buttons block
 continuation. Other foreground threads still pause and require Resume. After repeated
 contention the idle delay grows, up to fifteen seconds. Foreground ownership is released after
 sixty seconds without continuation.
@@ -162,17 +208,17 @@ their existing pause behavior.
 <details>
 <summary>Details and limits</summary>
 
-| Topic            | Detail                                                                                                                                                          |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Preview hosts    | At most 2 headless previews pinned of 4 instances; a pin is released when you close it or after 10 minutes without agent activity                               |
-| Action queue     | Per thread, first in first out, up to 32 queued actions; **Take over** stops the running action at its next checkpoint and fails the queued ones                |
-| Snapshot size    | Images up to 2,560 px and 8 MiB; structured data trimmed to 256 KiB; whole response up to 16 MiB                                                                |
-| Diagnostics      | Last 50 console messages, navigations, failed loads and the tab's action timeline                                                                               |
-| Chat screenshots | PNG, JPEG or WebP, 8 MiB each; one per tool call and 200 per thread                                                                                             |
-| Allowlist rules  | IP literals never match wildcards. Ports, paths, credentials and other schemes are rejected                                                                     |
-| Page scripts     | The agent can run JavaScript only on local pages                                                                                                                |
-| Approvals        | Kept in memory by the desktop app; editing `computer-access.json` cannot create one. Revoking a session also invalidates its approval                           |
-| Sandbox          | Agent processes on macOS can't reach Apple Events, synthesized input, screen capture or accessibility directly. All GUI control goes through F5's approval flow |
+| Topic            | Detail                                                                                                                                                                                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Preview hosts    | At most 2 headless previews pinned of 4 instances; a pin is released when you close it or after 10 minutes without agent activity                                                                                                                                             |
+| Action queue     | Per thread, first in first out, up to 32 queued actions; **Take over** stops the running action at its next checkpoint and fails the queued ones                                                                                                                              |
+| Snapshot size    | Images up to 2,560 px and 8 MiB; structured data trimmed to 256 KiB; whole response up to 16 MiB                                                                                                                                                                              |
+| Diagnostics      | Last 50 console messages, navigations, failed loads and the tab's action timeline                                                                                                                                                                                             |
+| Chat screenshots | PNG, JPEG or WebP, 8 MiB each; one per tool call and 200 per thread                                                                                                                                                                                                           |
+| Allowlist rules  | IP literals never match wildcards. Ports, paths, credentials and other schemes are rejected                                                                                                                                                                                   |
+| Page scripts     | The agent can run JavaScript only on local pages                                                                                                                                                                                                                              |
+| Approvals        | Remembered policy is signed by desktop main with a keychain key and scoped to an F5 profile and project. Execution receipts are fresh for each main lifetime; editing `computer-access.json` cannot create approval. Revoke in Settings removes current authority immediately |
+| Sandbox          | Agent processes on macOS can't reach Apple Events, synthesized input, screen capture or accessibility directly. All GUI control goes through F5's approval flow                                                                                                               |
 
 </details>
 

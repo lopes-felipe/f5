@@ -4,13 +4,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComputerControlError } from "@t3tools/shared/computerControl";
+import {
+  CHROME_WAITING_FOR_NATIVE_MESSAGE,
+  CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
+  ComputerControlError,
+} from "@t3tools/shared/computerControl";
 import {
   PROVIDER_INTEGRATION_RECORDS,
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import { ChromeArtifactCache, defaultChromeArtifactCacheIo } from "./chromeArtifactCache";
-import { claudeChromeDescriptor, parseNativeHostManifest } from "./chromeNativeHost";
+import type { ChromeSharedRegistration } from "@t3tools/contracts";
+import { claudeChromeDescriptor, parseNativeHostManifest, sha256 } from "./chromeNativeHost";
 import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
 import { ChromeSessionRuntime, type ChromeRuntimeDeps } from "./chromeSessionRuntime";
@@ -255,6 +260,180 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     expect(await h.runtime.admit(call("read_page"), "t")).toBe(CLAUDE_IN_CHROME_EXTERNAL_CONFLICT);
   });
 
+  describe("sharing Chrome with another profile's session", () => {
+    const peerWrapperBytes = `${record.identity.wrapperHeader.join("\n")}\nexec /peer/claude --chrome-native-host\n`;
+    /** Another profile's launch: its wrapper, and the manifests pointed at it. */
+    async function peerLaunch() {
+      const peerWrapper = join(root, "peer", "chrome", "chrome-native-host");
+      await mkdir(dirname(peerWrapper), { recursive: true });
+      await writeFile(peerWrapper, peerWrapperBytes, { mode: 0o755 });
+      const registration = {
+        manifests: [{ location: manifestPath, sha256: sha256(manifest(peerWrapper)) }],
+        wrapper: { location: peerWrapper, sha256: sha256(peerWrapperBytes) },
+      };
+      return { peerWrapper, registration };
+    }
+
+    it("acquires as shared and reports its own verified registration", async () => {
+      const registrationVerified = vi.fn();
+      const h = await setup({ shared: () => true, registrationVerified });
+      await connected(h);
+      expect(h.deps.acquire).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), true);
+      expect(h.runtime.shared("t", "g1")).toBe(true);
+      expect(registrationVerified).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "t" }),
+        {
+          manifests: [{ location: manifestPath, sha256: sha256(manifest(wrapperPath)) }],
+          wrapper: { location: wrapperPath, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+        },
+      );
+    });
+
+    it("accepts a peer's verified registration, and only while its wrapper is unchanged", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const h = await setup({ shared: () => true, sharedRegistrations: () => peers });
+      await connected(h);
+      const { peerWrapper, registration } = await peerLaunch();
+      await writeFile(manifestPath, manifest(peerWrapper));
+      // Not relayed yet: an unknown registration is an external change.
+      peers.push(registration);
+      expect(await h.runtime.admit(call("read_page"), "t")).toBeUndefined();
+      // The peer's wrapper changed after its launch: no longer a verified registration.
+      await writeFile(peerWrapper, `${peerWrapperBytes}# edited\n`);
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+    });
+
+    it("waits out a peer's launch until its registration arrives, without a reconnect", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      let launching = true;
+      const h = await setup({
+        shared: () => true,
+        sharedRegistrations: () => peers,
+        peerLaunching: () => launching,
+      });
+      await connected(h);
+      const { peerWrapper, registration } = await peerLaunch();
+      // The peer's CLI rewrote the registration; its verified copy is still on its way.
+      await writeFile(manifestPath, manifest(peerWrapper));
+      const admitted = h.runtime.admit(call("read_page"), "t");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      peers.push(registration);
+      launching = false;
+      expect(await admitted).toBeUndefined();
+      expect(h.runtime.status("t", "g1")?.state).toBe("connected");
+    });
+
+    it("gives up waiting on a peer's launch with a retryable refusal, not a conflict", async () => {
+      const h = await setup({
+        shared: () => true,
+        sharedRegistrations: () => [],
+        peerLaunching: () => true,
+        nativeWaitMs: 300,
+      });
+      await connected(h);
+      const { peerWrapper } = await peerLaunch();
+      await writeFile(manifestPath, manifest(peerWrapper));
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
+      );
+      expect(h.runtime.status("t", "g1")?.state).toBe("connected");
+    });
+
+    it("recovers from a conflict once the peer's registration arrives late", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const h = await setup({ shared: () => true, sharedRegistrations: () => peers });
+      await connected(h);
+      const { peerWrapper, registration } = await peerLaunch();
+      await writeFile(manifestPath, manifest(peerWrapper));
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+      peers.push(registration);
+      expect(await h.runtime.admit(call("read_page"), "t")).toBeUndefined();
+      expect(h.runtime.status("t", "g1")?.state).toBe("connected");
+    });
+
+    it("holds main's launch lock from inspection until the launch is recorded", async () => {
+      const order: string[] = [];
+      const launchLock = vi.fn(async () => {
+        order.push("lock");
+        return true;
+      });
+      const launchUnlock = vi.fn(() => order.push("unlock"));
+      const registrationVerified = vi.fn(() => order.push("verified"));
+      const h = await setup({
+        shared: () => true,
+        launchLock,
+        launchUnlock,
+        registrationVerified,
+      });
+      await h.runtime.prepare(session());
+      expect(order).toEqual(["lock"]);
+      await cliLaunch();
+      expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(true);
+      // Peers learn the registration before the lock goes.
+      expect(order).toEqual(["lock", "verified", "unlock"]);
+      // A session that doesn't share never locks.
+      const unshared = await setup({ launchLock, launchUnlock, profileId: "other" });
+      await unshared.runtime.prepare({ ...session(), threadId: "u" });
+      expect(launchLock).toHaveBeenCalledTimes(1);
+    });
+
+    it("lets the launch lock go while the user is asked, and takes it again after", async () => {
+      await writeFile(manifestPath, manifest("/Applications/Other.app/host"));
+      const order: string[] = [];
+      const h = await setup({
+        shared: () => true,
+        launchLock: async () => {
+          order.push("lock");
+          return true;
+        },
+        launchUnlock: () => order.push("unlock"),
+        consent: async () => {
+          order.push("consent");
+          return true;
+        },
+      });
+      expect(await h.runtime.prepare(session())).toEqual({
+        kind: "launch",
+        targetPath: wrapperPath,
+      });
+      expect(order).toEqual(["lock", "unlock", "consent", "lock"]);
+      await h.runtime.finalize("t", "g1");
+      expect(order.at(-1)).toBe("unlock");
+    });
+
+    it("still requires this session's own wrapper to match", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const h = await setup({ shared: () => true, sharedRegistrations: () => peers });
+      await connected(h);
+      const { peerWrapper, registration } = await peerLaunch();
+      peers.push(registration);
+      await writeFile(manifestPath, manifest(peerWrapper));
+      await writeFile(wrapperPath, "#!/bin/sh\nexec /tmp/evil --chrome-native-host\n");
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+    });
+
+    it("treats a peer's registration as a conflict for a session that doesn't share", async () => {
+      const peers: Array<ChromeSharedRegistration> = [];
+      const registrationVerified = vi.fn();
+      const h = await setup({ sharedRegistrations: () => peers, registrationVerified });
+      await connected(h);
+      expect(h.deps.acquire).toHaveBeenCalledWith(expect.anything(), false);
+      expect(registrationVerified).not.toHaveBeenCalled();
+      const { peerWrapper, registration } = await peerLaunch();
+      peers.push(registration);
+      await writeFile(manifestPath, manifest(peerWrapper));
+      expect(await h.runtime.admit(call("read_page"), "t")).toBe(
+        CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+      );
+    });
+  });
+
   it("re-inspects after an approval wait even for the same tool use", async () => {
     const h = await setup();
     await connected(h);
@@ -322,6 +501,85 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     );
   });
 
+  it("names each call to main and reports the end of one refused after admission", async () => {
+    const validate = vi.fn(async (_holder: unknown, _callId?: string) => {});
+    const callEnded = vi.fn();
+    const h = await setup({ validate, callEnded });
+    await connected(h);
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "use-1" }), "t")).toBe(
+      undefined,
+    );
+    expect(validate).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: "t" }), "use-1");
+    // Admitted calls run; their end comes from the session's own call tracking.
+    expect(callEnded).not.toHaveBeenCalled();
+    // Without a tool-use id nothing could report the end, so main isn't asked to admit it.
+    await h.runtime.admit(call("read_page"), "t");
+    expect(validate.mock.calls.at(-1)?.[1]).toBeUndefined();
+    // Refused after main admitted it: the registration changed, so it never runs.
+    await writeFile(manifestPath, manifest("/elsewhere/claude/chrome/chrome-native-host-long"));
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "use-2" }), "t")).toBe(
+      CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
+    );
+    expect(callEnded).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), "use-2");
+  });
+
+  it("waits through another agent's native control, bounded, before refusing", async () => {
+    // Setup validates too, so each refusal is armed once the session is connected.
+    const refusing = (message: string, times: number) => {
+      const state = { left: 0 };
+      const validate = vi.fn(async () => {
+        if (state.left === 0) return;
+        state.left -= 1;
+        throw new ComputerControlError({ _tag: "Execution", message });
+      });
+      return { validate, arm: () => (state.left = times) };
+    };
+    const waiting = refusing(CHROME_WAITING_FOR_NATIVE_MESSAGE, 3);
+    const h = await setup({ validate: waiting.validate });
+    await connected(h);
+    waiting.validate.mockClear();
+    waiting.arm();
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "w" }), "t")).toBeUndefined();
+    expect(waiting.validate).toHaveBeenCalledTimes(4);
+    // Past its budget the refusal reaches the agent.
+    const stuck = refusing(CHROME_WAITING_FOR_NATIVE_MESSAGE, Number.POSITIVE_INFINITY);
+    const s = await setup({ nativeWaitMs: 600, validate: stuck.validate });
+    await connected(s);
+    stuck.arm();
+    expect(await s.runtime.admit(call("read_page"), "t")).toBe(CHROME_WAITING_FOR_NATIVE_MESSAGE);
+    // Other refusals are not retried.
+    const own = refusing("own native control", Number.POSITIVE_INFINITY);
+    const o = await setup({ validate: own.validate });
+    await connected(o);
+    own.validate.mockClear();
+    own.arm();
+    expect(await o.runtime.admit(call("read_page"), "t")).toBe("own native control");
+    expect(own.validate).toHaveBeenCalledOnce();
+  });
+
+  it("reports the end of a call abandoned at the admission deadline", async () => {
+    let finish!: () => void;
+    let hang = false;
+    const validate = vi.fn(async (_holder: unknown, _callId?: string) => {
+      if (hang)
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+    });
+    const callEnded = vi.fn();
+    const h = await setup({ validate, callEnded });
+    await connected(h);
+    hang = true;
+    expect(await h.runtime.admit(call("read_page", {}, { toolUseId: "late" }), "t")).toContain(
+      "could not be verified in time",
+    );
+    expect(callEnded).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() =>
+      expect(callEnded).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t" }), "late"),
+    );
+  });
+
   it("keeps the restart fingerprint stable across connection health changes", async () => {
     const h = await setup();
     await h.runtime.prepare(session());
@@ -346,6 +604,36 @@ describe.skipIf(process.platform === "win32")("Claude in Chrome session runtime"
     await h.runtime.finalize("t", "g1");
     expect(h.deps.release).toHaveBeenCalledTimes(1);
     expect(h.runtime.status("t", "g1")).toBeUndefined();
+  });
+
+  it("asks before replacing another profile's setup in the shared real home, and restores it", async () => {
+    // macOS isolated profiles keep the real HOME, so every profile's CLI writes the same
+    // manifest files; only the wrapper under each profile's CLAUDE_CONFIG_DIR differs.
+    const defaultWrapper = join(root, ".claude", "chrome", "chrome-native-host");
+    const defaultSetup = manifest(defaultWrapper);
+    await writeFile(manifestPath, defaultSetup);
+    const h = await setup();
+    expect(await h.runtime.prepare(session())).toEqual({ kind: "launch", targetPath: wrapperPath });
+    expect(h.deps.consent).toHaveBeenCalledWith(
+      session(),
+      expect.objectContaining({ previousTargets: [defaultWrapper] }),
+    );
+    await cliLaunch();
+    expect(await h.runtime.connected("t", "g1", verifiedStatus())).toBe(true);
+    expect(await readChromeArtifact(manifestPath)).toMatchObject({
+      bytes: manifest(wrapperPath),
+    });
+    await h.runtime.finalize("t", "g1");
+    const [transaction] = await h.storage.listTransactions("claude");
+    expect(transaction?.slots.find((slot) => slot.location === manifestPath)).toMatchObject({
+      originalBytes: defaultSetup,
+    });
+    await new ChromeNativeHostTransactions(h.storage).restore(transaction!, {
+      stopSessions: async () => {},
+      validateSlot: async () => true,
+    });
+    expect(await readChromeArtifact(manifestPath)).toMatchObject({ bytes: defaultSetup });
+    expect(await readChromeArtifact(wrapperPath)).toEqual({ bytes: null });
   });
 
   describe("isolated profile", () => {

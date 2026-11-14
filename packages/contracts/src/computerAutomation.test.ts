@@ -11,9 +11,92 @@ import {
   ComputerExecutionState,
   ComputerInterruptionCause,
   ComputerTargetReadiness,
+  ComputerTargetAvailability,
+  isComputerUserActiveDetail,
 } from "./computerAutomation";
 
 describe("computer observation and error metadata", () => {
+  it("decodes app keys and mutually exclusive coordinate/element scroll requests", () => {
+    const base = {
+      requestId: "r",
+      payloadHash: "0".repeat(64),
+      deadlineAtMs: 1,
+      authorization: {
+        profileId: "p",
+        threadId: "t",
+        sessionGeneration: "s",
+        turnId: "turn",
+        executionGeneration: 1,
+        grantVersion: 1,
+        grants: [],
+      },
+      agent: { provider: "claude", threadTitle: "Thread" },
+    };
+    const element = {
+      ...base,
+      op: "scroll",
+      delivery: "background",
+      appId: "app",
+      snapshotId: "snapshot",
+      elementRef: "element",
+      deltaX: 0,
+      deltaY: 3,
+    };
+    const coordinates = {
+      ...base,
+      op: "scroll",
+      displayId: "display",
+      geometryGeneration: "g",
+      x: 10,
+      y: 10,
+      deltaX: 0,
+      deltaY: 3,
+    };
+    for (const request of [
+      element,
+      coordinates,
+      { ...base, op: "key", appId: "app", chords: ["Down"], repeat: 1 },
+    ])
+      expect(Schema.decodeUnknownSync(ComputerAutomationRequest)(request)).toEqual(request);
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerAutomationRequest)({ ...coordinates, ...element }),
+    ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(ComputerAutomationError)({
+        _tag: "TargetBlocked",
+        kind: "shared-focus",
+      }),
+    ).toEqual({ _tag: "TargetBlocked", kind: "shared-focus" });
+  });
+  it("round-trips the optional user-active detail on errors and target availability", () => {
+    for (const error of [
+      { _tag: "TargetBlocked", kind: "user-active" },
+      { _tag: "TargetBlocked", kind: "user-active", detail: "input-held" },
+    ])
+      expect(Schema.decodeUnknownSync(ComputerAutomationError)(error)).toEqual(error);
+    // A value a newer peer adds must not break the transport; it is only diagnostic.
+    const future = { _tag: "TargetBlocked", kind: "user-active", detail: "remote-session" };
+    expect(Schema.decodeUnknownSync(ComputerAutomationError)(future)).toEqual(future);
+    expect(isComputerUserActiveDetail("remote-session")).toBe(false);
+    expect(isComputerUserActiveDetail("input-held")).toBe(true);
+    const availability = {
+      available: false,
+      timedOut: true,
+      reason: "user-active",
+      detail: "recent-input",
+      requiresFreshObservation: true,
+    };
+    expect(Schema.decodeUnknownSync(ComputerTargetAvailability)(availability)).toEqual(
+      availability,
+    );
+    const { detail: _detail, ...withoutDetail } = availability;
+    expect(Schema.decodeUnknownSync(ComputerTargetAvailability)(withoutDetail)).toEqual(
+      withoutDetail,
+    );
+    expect(
+      Schema.decodeUnknownSync(ComputerTargetAvailability)({ ...availability, detail: "new" }),
+    ).toEqual({ ...availability, detail: "new" });
+  });
   it.each(["waiting-user", "waiting-agent"])("decodes execution state %s", (state) => {
     expect(Schema.decodeUnknownSync(ComputerExecutionState)(state)).toBe(state);
   });
@@ -215,6 +298,40 @@ describe("computer observation and error metadata", () => {
       },
     };
     expect(Schema.decodeUnknownSync(ComputerScreenshot)(value)).toEqual(value);
+    const unreadableSubrole = {
+      ...value,
+      secureAudit: {
+        ...value.secureAudit,
+        windows: [
+          {
+            ...value.secureAudit.windows[0],
+            complete: true,
+            stopReasons: ["unreadable-subrole"],
+            axFailures: [{ operation: "subrole", error: -25200, count: 1 }],
+          },
+        ],
+      },
+    };
+    expect(Schema.decodeUnknownSync(ComputerScreenshot)(unreadableSubrole)).toEqual(
+      unreadableSubrole,
+    );
+    const pruned = {
+      ...value,
+      secureAudit: {
+        ...value.secureAudit,
+        windows: [{ ...value.secureAudit.windows[0], complete: true, prunedRows: 11980 }],
+      },
+    };
+    expect(Schema.decodeUnknownSync(ComputerScreenshot)(pruned)).toEqual(pruned);
+    expect(() =>
+      Schema.decodeUnknownSync(ComputerScreenshot)({
+        ...value,
+        secureAudit: {
+          ...value.secureAudit,
+          windows: [{ ...value.secureAudit.windows[0], prunedRows: -1 }],
+        },
+      }),
+    ).toThrow();
     const { secureAudit: _, passwordMasking: _mode, ...legacy } = value;
     expect(Schema.decodeUnknownSync(ComputerScreenshot)(legacy)).toEqual(legacy);
     expect(

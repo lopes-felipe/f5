@@ -1,26 +1,19 @@
-import type { ProjectId } from "@t3tools/contracts";
-
-import type { AppNotificationConstructor, AppNotificationInstance } from "./notifications";
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 export function formatUpstreamInboxTitle(count: number): string {
-  return `Upstream: ${count} new topic${count === 1 ? "" : "s"} to review`;
+  return `Upstream: ${plural(count, "new topic")} to review`;
 }
 
-export function showUpstreamInboxNotification(input: {
-  NotificationConstructor: AppNotificationConstructor;
-  projectId: ProjectId;
-  count: number;
-  focusWindow: () => void;
-  navigateToUpstream: (projectId: ProjectId) => void | Promise<void>;
-}): AppNotificationInstance {
-  const notification = new input.NotificationConstructor(formatUpstreamInboxTitle(input.count), {
-    tag: `upstream:${input.projectId}`,
-    data: { projectId: input.projectId },
-  });
-  notification.addEventListener("click", () => {
-    notification.close();
-    input.focusWindow();
-    void input.navigateToUpstream(input.projectId);
-  });
-  return notification;
+export function formatUpstreamAutoQueuedTitle(count: number): string {
+  return `Upstream: auto-queued ${plural(count, "port")}`;
+}
+
+export function formatUpstreamDigestTitle(digest: {
+  readonly followed: number;
+  readonly other: number;
+}): string {
+  const total = digest.followed + digest.other;
+  return `Upstream: ${plural(total, "new feature")} this week${
+    digest.followed > 0 ? ` (${digest.followed} in followed areas)` : ""
+  }`;
 }

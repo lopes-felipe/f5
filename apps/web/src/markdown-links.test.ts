@@ -64,6 +64,41 @@ describe("collectMarkdownLinkHrefs", () => {
 
 describe("resolveMarkdownFileLinkTarget", () => {
   it.each([
+    ["app/routes/posts.$postId.tsx", "app/routes/posts.$postId.tsx"],
+    ["(group)/[id]/+page.svelte:12", "(group)/[id]/+page.svelte:12"],
+    ["pages/posts/%5Bid%5D.tsx", "pages/posts/[id].tsx"],
+    ["@scope/pkg", "@scope/pkg"],
+    ["@scope/", "@scope/"],
+    ["+page.svelte", "+page.svelte"],
+    ["[id].tsx", "[id].tsx"],
+    ["$postId.tsx", "$postId.tsx"],
+    ["docs/My(draft).md", "docs/My(draft).md"],
+  ])("resolves routing punctuation in %s", (href, path) => {
+    expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + path);
+  });
+
+  it.each(["foo/", "foo /", "docs/My Folder /"])(
+    "preserves existing folder matching for %s",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBe("/repo/" + href);
+    },
+  );
+
+  it.each(["線性代數/考試.pdf", "a b.md", "a/b c.ts", "README (copy).md"])(
+    "leaves other relative filename expansions out of scope: %s",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBeNull();
+    },
+  );
+
+  it.each(["me@example.com", "foo(bar)", "$HOME", "patches", "TODO:12"])(
+    "does not treat %s as a file",
+    (href) => {
+      expect(resolveMarkdownFileLinkTarget(href, "/repo")).toBeNull();
+    },
+  );
+
+  it.each([
     "//attacker/share/a.png",
     String.raw`\\attacker\share\a.png`,
     String.raw`/\attacker/share/a.png`,

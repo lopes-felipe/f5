@@ -1,5 +1,6 @@
 import { TextQuoteIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import { captureAssistantQuoteSelection } from "../../lib/assistantQuoteSelection";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
@@ -61,22 +62,15 @@ export function AssistantQuoteToolbar({
         setSelection(null);
         return;
       }
-      const selected = window.getSelection();
-      const messageElement = (node: Node | null | undefined) =>
-        (node instanceof Element ? node : node?.parentElement)?.closest(
-          '[data-message-role="assistant"][data-message-id]',
-        );
-      const anchor = messageElement(selected?.anchorNode);
-      const focus = messageElement(selected?.focusNode);
-      const text = selected?.toString().trim();
-      if (!selected || selected.rangeCount === 0 || !anchor || anchor !== focus || !text) {
+      const selected = captureAssistantQuoteSelection(window.getSelection());
+      if (!selected) {
         setSelection(null);
         return;
       }
       setSelection({
-        messageId: anchor.getAttribute("data-message-id")!,
-        text: text.slice(0, 4000),
-        anchor: createSelectionAnchor(selected.getRangeAt(0).cloneRange(), anchor),
+        messageId: selected.source.getAttribute("data-message-id")!,
+        text: selected.text,
+        anchor: createSelectionAnchor(selected.range, selected.source),
       });
     };
     document.addEventListener("pointerup", capture);

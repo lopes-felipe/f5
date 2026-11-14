@@ -297,6 +297,25 @@ describe("TerminalManager", () => {
     }
   });
 
+  it("stops only opted-in busy actions on settlement and keeps their output", async () => {
+    const { manager, ptyAdapter } = makeManager(5, {
+      processTableReader: async () => new Set([9000, 9001, 9002]),
+    });
+    try {
+      await manager.open({ ...openInput(), stopOnSettle: true });
+      ptyAdapter.processes[0]!.emitData("action output\n");
+      await manager.open({ ...openInput(), terminalId: "busy" });
+      await manager.open({ ...openInput(), threadId: "thread-2", stopOnSettle: true });
+      await manager.closeIdleForThread("thread-1");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      await manager.closeOnSettleForThread("thread-1");
+      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([true, false, false]);
+      expect((await manager.open(openInput())).history).toContain("action output");
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it("preserves a terminal that receives input while its idle probe is in flight", async () => {
     let hold = false;
     let release: ((parents: ReadonlySet<number>) => void) | undefined;
@@ -813,6 +832,45 @@ describe("TerminalManager", () => {
     } finally {
       await manager.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it("filters capability traffic only from retained and persisted output", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager();
+    const events: TerminalEvent[] = [];
+    manager.on("event", (event) => events.push(event));
+    try {
+      await manager.open(openInput());
+      const data = "prompt \x1b[?2026$p\x1bP+q544e\x1b\\\x1b[?31uvisible\n";
+      for (const ch of data) ptyAdapter.processes[0]!.emitData(ch);
+      expect(
+        events
+          .filter((event) => event.type === "output")
+          .map((event) => event.data)
+          .join(""),
+      ).toBe(data);
+      expect((await manager.open(openInput())).history).toBe("prompt visible\n");
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).toBe("prompt visible\n");
+      expect((await manager.open(openInput())).history).toBe("prompt visible\n");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("does not carry an unfinished restored string into new shell output", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager();
+    fs.writeFileSync(historyLogPath(logsDir), "old\x1b]8;;https://example.com/unfinished");
+    try {
+      await manager.open(openInput());
+      ptyAdapter.processes[0]!.emitData("\x1b[?2026$pnew output\n");
+      const snapshot = await manager.open(openInput());
+      expect(snapshot.history).toContain("new output\n");
+      expect(snapshot.history).not.toContain("\x1b[?2026$p");
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).not.toContain("\x1b[?2026$p");
+    } finally {
+      await manager.dispose();
     }
   });
 
@@ -1398,6 +1456,29 @@ describe("TerminalManager", () => {
       await manager.dispose();
     },
   );
+
+  it.each([
+    ["darwin", "/bin/bash", ["-l"]],
+    ["darwin", "/opt/homebrew/bin/bash", ["-l"]],
+    ["darwin", "bash", ["-l"]],
+    ["linux", "/bin/bash", undefined],
+    ["win32", "C:\\Program Files\\Git\\bin\\bash.exe", undefined],
+    ["darwin", "/bin/zsh", ["-o", "nopromptsp"]],
+    ["linux", "/bin/zsh", ["-o", "nopromptsp"]],
+    ["darwin", "/bin/sh", undefined],
+  ] as const)("starts %s %s with platform-specific arguments", async (platform, shell, args) => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+    const { manager, ptyAdapter } = makeManager(5, { shellResolver: () => shell });
+    try {
+      await manager.open(openInput());
+      expect(ptyAdapter.spawnInputs[0]?.shell).toBe(shell);
+      expect(ptyAdapter.spawnInputs[0]?.args).toEqual(args);
+    } finally {
+      await manager.dispose();
+      Object.defineProperty(process, "platform", descriptor);
+    }
+  });
 
   it.skipIf(process.platform === "win32")(
     "starts zsh with prompt spacer disabled to avoid `%` end markers",

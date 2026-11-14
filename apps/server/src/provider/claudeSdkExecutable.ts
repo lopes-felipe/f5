@@ -16,6 +16,17 @@ import {
 const DEFAULT_CLAUDE_BINARY = "claude";
 const NODE_SCRIPT_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
 
+/** Node mode belongs to this spawn, not Claude's general child environment. */
+export function claudeCliSpawnEnvironment(
+  invocation: ResolvedCliInvocation,
+  environment: NodeJS.ProcessEnv,
+  host = { execPath: process.execPath, electron: Boolean(process.versions.electron) },
+): NodeJS.ProcessEnv {
+  return host.electron && invocation.kind === "nodeScript" && invocation.file === host.execPath
+    ? { ...environment, ELECTRON_RUN_AS_NODE: "1" }
+    : environment;
+}
+
 export interface ClaudeSdkExecutableOptions {
   readonly pathToClaudeCodeExecutable?: string;
   readonly executable?: "node";

@@ -35,11 +35,12 @@ public enum ComputerExecutionScope: Equatable {
 
 /// Operations a background generation may execute through accessibility alone.
 /// Mirrors `computerBackgroundOpAllowed` in packages/shared/src/computerExecution.ts.
-public func computerBackgroundOpAllowed(op: String, action: String?) -> Bool {
+public func computerBackgroundOpAllowed(op: String, action: String?, events: Bool = false) -> Bool {
   switch op {
   case "status", "listApps", "resolveApps", "inspect", "screenshot", "zoom", "type", "openApp":
     return true
   case "elementAction": return action == "press" || action == "setValue"
+  case "key", "scroll": return events
   default: return false
   }
 }
@@ -51,7 +52,8 @@ public func computerScopeAllows(
 ) -> Bool {
   if delivery == "background" {
     guard case .app(let scoped) = scope, appId == scoped, op != "activateApp" else { return false }
-    return computerBackgroundOpAllowed(op: op, action: action)
+    return computerBackgroundOpAllowed(op: op, action: action,
+      events: appId.map(computerBackgroundEventAppAllowed) ?? false)
   }
   switch scope {
   case .foreground: return true

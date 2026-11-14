@@ -1,3 +1,4 @@
+import { DesktopAppActivationCoordinator } from "../components/DesktopAppActivationCoordinator";
 import { createOrchestrationSyncController } from "../orchestration/syncController";
 export {
   applyProviderAdvisoriesToServerConfig,
@@ -65,6 +66,7 @@ function RootRouteView() {
   usePreviewArtifactRetentionSync();
   const { resolvedTheme } = useTheme();
   const { palette } = useThemePaletteSync(resolvedTheme);
+  const toastPosition = useAppSettingsSelector((settings) => settings.toastPosition);
 
   useEffect(() => {
     const showPersistenceError = () => {
@@ -97,7 +99,7 @@ function RootRouteView() {
       settings={appearanceSettings}
       appearance={resolvedTheme}
     >
-      <ToastProvider>
+      <ToastProvider position={toastPosition}>
         <AnchoredToastProvider>
           <EventRouter />
           <DesktopProjectBootstrap />
@@ -267,5 +269,5 @@ function EventRouter() {
 
 function DesktopProjectBootstrap() {
   // Desktop hydration runs through EventRouter project + orchestration sync.
-  return null;
+  return <DesktopAppActivationCoordinator />;
 }

@@ -86,7 +86,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(
         "desktop:keep-awake-set",
         input,
-        (input.mode !== undefined && input.mode !== "off") || input.closedLid === true
+        (input.mode !== undefined && input.mode !== "off") ||
+          input.closedLid === true ||
+          input.keepDisplayOn === true
           ? takeKeepAwakeGesture()
           : false,
       ),
@@ -143,6 +145,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       if (!paused) computerGestureAt = -Infinity;
       return ipcRenderer.invoke("desktop-computer:pause", threadId, paused, trusted);
     },
+    stopHolder: (token) => {
+      const trusted = performance.now() - computerGestureAt < 1000;
+      computerGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop-computer:stop-holder", token, trusted);
+    },
     onStatus: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) =>
         listener(status);
@@ -178,6 +185,17 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
   },
   takePromptLinks: () => ipcRenderer.invoke("desktop:take-prompt-links"),
+  resolveActivationPaths: (values) =>
+    ipcRenderer.invoke("desktop:resolve-activation-paths", values),
+  takeAppActivations: () => ipcRenderer.invoke("desktop:take-app-activations"),
+  isAppActivationPending: (id) => ipcRenderer.invoke("desktop:is-app-activation-pending", id),
+  completeAppActivation: (id, error) =>
+    ipcRenderer.invoke("desktop:complete-app-activation", id, error),
+  onAppActivationsAvailable: (listener) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("desktop:app-activations-available", wrapped);
+    return () => ipcRenderer.removeListener("desktop:app-activations-available", wrapped);
+  },
   onPromptLinksAvailable: (listener) => {
     const wrapped = () => listener();
     ipcRenderer.on("desktop:prompt-links-available", wrapped);
@@ -185,6 +203,18 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener("desktop:prompt-links-available", wrapped);
     };
   },
+  notifications: {
+    show: (input) => ipcRenderer.invoke("desktop:notification-show", input),
+    takeActivations: () => ipcRenderer.invoke("desktop:take-notification-activations"),
+    onActivationsAvailable: (listener) => {
+      const wrapped = () => listener();
+      ipcRenderer.on("desktop:notification-activations-available", wrapped);
+      return () => {
+        ipcRenderer.removeListener("desktop:notification-activations-available", wrapped);
+      };
+    },
+  },
+  revealWindow: () => ipcRenderer.invoke("desktop:reveal-window"),
   getPathForFile: (file) => {
     const resolvedPath = webUtils.getPathForFile(file);
     return resolvedPath.length > 0 ? resolvedPath : null;

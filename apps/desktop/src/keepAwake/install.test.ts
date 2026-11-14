@@ -28,6 +28,8 @@ it("validates all fields strictly", () => {
     {},
     { mode: "invalid" },
     { closedLid: 1 },
+    { keepDisplayOn: "yes" },
+    { keepDisplayOn: true, unexpected: true },
     { unexpected: true },
     { mode: undefined },
   ])
@@ -36,6 +38,7 @@ it("validates all fields strictly", () => {
     mode: "off",
     closedLid: false,
   });
+  expect(validatePreferences({ keepDisplayOn: true })).toEqual({ keepDisplayOn: true });
 });
 it("authorizes every IPC request and gates only escalating mutations", async () => {
   const set = vi
@@ -54,10 +57,17 @@ it("authorizes every IPC request and gates only escalating mutations", async () 
     );
   }
   const handler = mocks.handlers.get("desktop:keep-awake-set")!;
-  for (const input of [{ mode: "always" }, { mode: "agents" }, { closedLid: true }])
+  for (const input of [
+    { mode: "always" },
+    { mode: "agents" },
+    { closedLid: true },
+    { keepDisplayOn: true },
+  ])
     expect(() => handler("trusted-frame", input, false)).toThrow("gesture");
   await handler("trusted-frame", { mode: "off", closedLid: false }, false);
   expect(set).toHaveBeenCalledWith({ mode: "off", closedLid: false });
+  await handler("trusted-frame", { keepDisplayOn: false }, false);
+  expect(set).toHaveBeenCalledWith({ keepDisplayOn: false });
   await handler("trusted-frame", { mode: "always" }, true);
   for (const action of ["install", "remove"]) {
     const request = mocks.handlers.get("desktop:keep-awake-" + action)!;

@@ -71,19 +71,20 @@ export function normalizeProviderModelOptions(
     readCodexReasoningEffort(codexCandidate?.reasoningEffort) ??
     (provider === "codex" ? readCodexReasoningEffort(legacy?.effort) : undefined);
   const codexFastMode =
-    codexCandidate?.fastMode === true ||
-    (provider === "codex" && legacy?.codexFastMode === true) ||
-    legacy?.serviceTier === "fast";
+    readBoolean(codexCandidate?.fastMode) ??
+    ((provider === "codex" && legacy?.codexFastMode === true) || legacy?.serviceTier === "fast"
+      ? true
+      : undefined);
   // No model is known here, so every valid effort is kept: a model's reported
   // default can differ from the provider-wide one (Sol reports "low"), and only
   // `normalizeCodexModelOptions` knows which effort is the default to omit.
   const codex = codexReasoningEffort
     ? {
         reasoningEffort: codexReasoningEffort,
-        ...(codexFastMode ? { fastMode: true } : {}),
+        ...(codexFastMode !== undefined ? { fastMode: codexFastMode } : {}),
       }
-    : codexFastMode
-      ? { fastMode: true }
+    : codexFastMode !== undefined
+      ? { fastMode: codexFastMode }
       : undefined;
 
   const claudeThinking = claudeCandidate?.thinking === false ? false : undefined;

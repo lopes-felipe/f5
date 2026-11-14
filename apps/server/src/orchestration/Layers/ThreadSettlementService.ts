@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { GitHubRequestPolicy } from "../../git/githubRequestPolicy.ts";
 import { GitHubCliError } from "../../git/Errors.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
@@ -117,7 +118,7 @@ export const makeThreadSettlementService = Effect.gen(function* () {
       Effect.flatMap((now) =>
         engine.dispatch({
           type: "thread.settle",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId: thread.id,
           createdAt: new Date(now).toISOString(),
           settledBy,
@@ -178,9 +179,10 @@ export const makeThreadSettlementService = Effect.gen(function* () {
       return { settled: false, deferred: true };
     }).pipe(Effect.mapError(failure));
   const closeIdleTerminals = (threadId: ThreadId, settledAt: string) => {
-    if (Option.isNone(terminal) || !terminal.value.closeIdleForThread) return Effect.void;
+    if (Option.isNone(terminal)) return Effect.void;
     const manager = terminal.value;
-    const close = manager.closeIdleForThread;
+    const close = manager.closeOnSettleForThread ?? manager.closeIdleForThread;
+    if (!close) return Effect.void;
     return Effect.scoped(
       Effect.gen(function* () {
         const sessions = yield* manager.listSessions;
@@ -204,7 +206,7 @@ export const makeThreadSettlementService = Effect.gen(function* () {
       if (!(yield* readCandidate(thread)).hasQueuedWork) return;
       yield* engine.dispatch({
         type: "thread.unsettle",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         threadId,
         reason: "wake",
         createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),

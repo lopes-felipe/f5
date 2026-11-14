@@ -1,5 +1,10 @@
 import type { ComputerAgentProvider } from "@t3tools/shared/agentAutomationSupport";
-import { selectComputerApp, appTier, grantAllows } from "@t3tools/shared/computerApps";
+import {
+  selectComputerApp,
+  appTier,
+  grantAllows,
+  computerBackgroundEventAppAllowed,
+} from "@t3tools/shared/computerApps";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { createHash, randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
@@ -17,6 +22,7 @@ import {
   type ComputerExecutionState,
   type ComputerLeaseScope,
   type ComputerPauseCause,
+  type ComputerBlocker,
   type ComputerAutomationRequest,
   type ComputerAuthorization,
   type ComputerAccessRequested,
@@ -26,24 +32,53 @@ import {
   type ComputerApp,
   type DesktopComputerHostMessage,
   type ChromeLeaseHolder,
+  type ChromeSharedRegistration,
   type ChromeProcessAdoption,
   ChromeProcessRegistration,
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
+  computerError,
   computerRequestPayload,
   isComputerMutation,
+  CHROME_OWN_STOPPING_MESSAGE,
+  CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE,
 } from "@t3tools/shared/computerControl";
 import {
+  COMPUTER_CHROME_APP_IDS,
   computerBackgroundOpAllowed,
   computerOpRequiresApp,
+  computerBackgroundKeyAllowed,
 } from "@t3tools/shared/computerExecution";
 import { ServerConfig } from "../config";
+import { computerRemainingBudget, computerWithinDeadline } from "./computerDeadline";
+import { waitForControl, handoffError, type CodexHandoff } from "./CodexControlHandoff";
+import { PerformanceStageProbe } from "../observability/Metrics";
+
+export const COMPUTER_WAIT_POLL_MS = 250;
+export const COMPUTER_WAIT_POLL_MAX_MS = 500;
+export const COMPUTER_SETTLE_STABLE_MS = 500;
+/** The desktop ends a target wait this much before the broker, so its timeout carries a reason. */
+export const COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS = 500;
+
+export function computerInspectFingerprint(nodes: ComputerInspectResult["nodes"]): string {
+  return JSON.stringify(
+    nodes.map((node) => [
+      node.role,
+      node.name ?? "",
+      node.value ?? null,
+      node.focused ?? false,
+      node.enabled ?? true,
+      node.bounds,
+      node.displayId ?? null,
+    ]),
+  );
+}
 
 /**
  * Electron decides every takeover: its worst case is 300 s consent + 30 s idle window + up to
- * 5 s drain and 1 s readiness per arming attempt. This sits well above that and below the
- * tool transport timeout.
+ * 5 s drain and 1 s readiness per arming attempt, plus a 20 s reservation wait and 2 s
+ * transport margin. This sits above that budget and below the tool transport timeout.
  */
 export const COMPUTER_TAKEOVER_HOST_TIMEOUT_MS = 380_000;
 import { ServerSettingsService } from "../serverSettings";
@@ -78,10 +113,26 @@ interface ComputerBinding {
   endedTurnId?: string;
   /** Monotonic; every policy transition bumps it before any async work. */
   policyRevision: number;
+  /** Pause remains a cancellation even if the user resumes before an await returns. */
+  pauseRevision?: number;
   /** The policy last applied to this binding, compared on settings changes. */
   appliedPolicy?: string;
   takeover?: { acquireId: string; approvalId: string; appId: string };
   acquiring?: { requestId: string; turnId: string };
+}
+export interface ComputerBatchHandle {
+  readonly threadId: string;
+  readonly binding: ComputerBinding;
+  readonly generation: string;
+  readonly turnId: string;
+  readonly turnRevision: number;
+  readonly policyRevision: number;
+  readonly grantVersion: number;
+  readonly yieldEpoch: number;
+  readonly delivery: ComputerDelivery;
+  readonly deadline: number;
+  readonly controller: AbortController;
+  readonly release: () => void;
 }
 /** Bounded summary of the merged lease state for the WebSocket banner. */
 export interface ComputerUseSnapshot {
@@ -97,6 +148,7 @@ export interface ComputerUseSnapshot {
     state: ComputerExecutionState;
     pauseCause?: ComputerPauseCause;
     browser?: "idle" | "working" | "unknown";
+    blockedBy?: ComputerBlocker;
   }>;
   readonly pendingTakeover?: {
     threadId: string;
@@ -108,6 +160,26 @@ export interface ComputerUseSnapshot {
 }
 /** Matches the web banner's `CHROME_BANNER_LINGER_MS` after the owner's last Chrome call. */
 export const CHROME_OTHER_PROFILE_LINGER_MS = 3000;
+/**
+ * How long a preempting acquisition waits for an idle holder to give Chrome up: main sends
+ * SIGTERM, SIGKILL after 1 s, and observes the group exit within 5 s.
+ */
+export const CHROME_PREEMPT_WAIT_MS = 8000;
+/**
+ * Holders one exclusive acquisition releases before giving up. Shared sessions come one per
+ * profile, so this covers several profiles while keeping the wait bounded.
+ */
+export const CHROME_PREEMPT_MAX_RELEASES = 8;
+/** How long a shared launch waits for another profile's; main frees a lock after 45 s. */
+export const CHROME_LAUNCH_LOCK_WAIT_MS = 50_000;
+/** How a Chrome-holding session gives the lease up (see `registerChromeReleaser`). */
+export interface ChromeReleaser {
+  /** Idle by the session's own account: nothing it runs would die with the release. */
+  readonly idle: () => boolean;
+  /** Stops what holds Chrome; answers whether it did (it may refuse if work started). */
+  readonly release: () => boolean | Promise<boolean>;
+}
+export type ChromeReleaseOutcome = "released" | "not-holder" | "working" | "timeout";
 function chromeCallsKey(threadId: string, generation: string): string {
   return `${threadId}\u0000${generation}`;
 }
@@ -186,6 +258,7 @@ export class ComputerAutomationBrokerRuntime {
       appId?: string;
       delivery?: ComputerDelivery;
       pauseCause?: ComputerPauseCause;
+      blockedBy?: ComputerBlocker;
     }
   >();
   private pendingTakeover: { threadId: string; appId: string } | undefined;
@@ -221,12 +294,32 @@ export class ComputerAutomationBrokerRuntime {
   >();
   private readonly observationEpochs = new Map<string, number>();
   private readonly yieldEpochs = new Map<string, number>();
+  private readonly batches = new Map<string, ComputerBatchHandle>();
+  private abortBatch(
+    threadId: string,
+    error = new ComputerControlError({
+      _tag: "Interrupted",
+      cause: "access-changed",
+    }),
+  ): void {
+    this.batches.get(threadId)?.controller.abort(error);
+  }
   private readonly listeners = new Set<(event: ComputerBrokerEvent) => void>();
   private readonly nativePaused = new Set<string>();
   private mainHolders: ReadonlyArray<ComputerLeaseHolder> = [];
-  private chromeHolder: ChromeLeaseHolder | null = null;
+  /** This profile's Chrome holders; more than one only while certified sessions share it. */
+  private chromeHolders: ReadonlyArray<ChromeLeaseHolder> = [];
+  /** Verified registrations of shared sessions in every profile (`chromeRegistrations`). */
+  private chromeSharedRegistrations: ReadonlyArray<ChromeSharedRegistration> = [];
+  /** Another profile's shared session holds the launch lock (`chromeRegistrations`). */
+  private chromePeerLaunching = false;
   /** Whether a browser call runs, per thread and session generation (`reportChromeCalls`). */
   private readonly chromeCalls = new Map<string, boolean>();
+  /** How each Chrome-holding session gives the lease up, per thread and generation. */
+  private readonly chromeReleasers = new Map<string, ChromeReleaser>();
+  private readonly codexHandoffs = new Map<string, CodexHandoff>();
+  /** Preemptions waiting for main to report the lease gone. */
+  private readonly chromeReleaseWaiters = new Set<() => void>();
   private readonly setupConsents = new Map<
     string,
     {
@@ -241,6 +334,8 @@ export class ComputerAutomationBrokerRuntime {
   private readonly sessionConsentRequests = new Map<string, Promise<boolean>>();
   private nativeOtherProfile = false;
   private chromeOtherProfile = false;
+  /** Main says another profile's Chrome holder refuses this profile's native control. */
+  private chromeOtherProfileBlocksNative = false;
   /** Holds another profile's Chrome control in the banner briefly after it goes idle. */
   private chromeOtherLinger: ReturnType<typeof setTimeout> | undefined;
   private chromeRecovery = false;
@@ -259,12 +354,16 @@ export class ComputerAutomationBrokerRuntime {
       storage: ConstructorParameters<typeof ComputerAccessService>[0]["storage"];
       platform: "darwin" | "win32";
       pause?: AgentControlPause;
+      performanceStageProbe?: ((stage: string, durationMs: number) => void) | null;
+      /** Thread titles for attributing a same-profile `Busy`. */
+      threadTitle?: (threadId: string) => Promise<string | undefined>;
     },
   ) {
     this.pause = options.pause ?? new AgentControlPause();
     this.offPause = this.pause.subscribe((threadId, paused) => {
       const binding = this.bindings.get(threadId);
       if (paused && binding) {
+        binding.pauseRevision = (binding.pauseRevision ?? 0) + 1;
         this.host.send({ type: "pauseChanged", threadId, paused });
         this.invalidateObservations(threadId);
         this.cancelTurn(threadId, binding.generation, binding.turnId, "paused");
@@ -339,6 +438,7 @@ export class ComputerAutomationBrokerRuntime {
         });
       },
       changed: (threadId) => {
+        this.abortBatch(threadId);
         this.waits.get(threadId)?.cancel("policy-changed");
         this.invalidateObservations(threadId);
         const binding = this.bindings.get(threadId);
@@ -386,6 +486,9 @@ export class ComputerAutomationBrokerRuntime {
               ...(message.appId ? { appId: message.appId } : {}),
               ...(message.delivery ? { delivery: message.delivery } : {}),
               ...(message.pauseCause ? { pauseCause: message.pauseCause } : {}),
+              ...(message.blockedBy && message.state === "waiting-agent"
+                ? { blockedBy: message.blockedBy }
+                : {}),
             });
           if (message.state === "paused" || message.state === "recovery")
             this.invalidateObservations(message.threadId);
@@ -398,6 +501,10 @@ export class ComputerAutomationBrokerRuntime {
         this.bindings.get(message.threadId)?.generation === message.sessionGeneration
       ) {
         this.yieldEpochs.set(message.threadId, (this.yieldEpochs.get(message.threadId) ?? 0) + 1);
+        this.abortBatch(
+          message.threadId,
+          new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" }),
+        );
         this.invalidateObservations(message.threadId);
         const contention = new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
         this.queue.flush(message.threadId, contention);
@@ -413,17 +520,39 @@ export class ComputerAutomationBrokerRuntime {
       }
       if (message.type === "chromeLeaseChanged") {
         // A lease that ended takes its call report with it; the session needn't say so.
-        const previous = this.chromeHolder;
-        if (
-          previous &&
-          (previous.threadId !== message.holder?.threadId ||
-            previous.sessionGeneration !== message.holder.sessionGeneration)
-        )
-          this.chromeCalls.delete(chromeCallsKey(previous.threadId, previous.sessionGeneration));
-        this.chromeHolder = message.holder;
+        const next = message.holders ?? (message.holder ? [message.holder] : []);
+        const live = new Set(
+          next.map((holder) => chromeCallsKey(holder.threadId, holder.sessionGeneration)),
+        );
+        for (const previous of this.chromeHolders) {
+          const key = chromeCallsKey(previous.threadId, previous.sessionGeneration);
+          if (!live.has(key)) this.chromeCalls.delete(key);
+        }
+        this.chromeHolders = next;
         this.setChromeOtherProfile(message.otherProfile ?? false);
+        this.chromeOtherProfileBlocksNative = message.otherProfileBlocksNative ?? false;
         this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
+        // A waiter that finishes deletes itself; Set iteration tolerates that.
+        for (const check of this.chromeReleaseWaiters) check();
+      }
+      if (message.type === "chromeRegistrations") {
+        this.chromeSharedRegistrations = message.registrations;
+        this.chromePeerLaunching = message.peerLaunching === true;
+      }
+      // Main forwards another profile's request to release this profile's idle Chrome holder.
+      if (message.type === "chromeReleaseRequest") {
+        const { requestId, threadId, sessionGeneration } = message;
+        const holder = this.chromeHolderOf(threadId);
+        const outcome =
+          holder?.sessionGeneration === sessionGeneration
+            ? this.releaseChromeHolderOutcome(threadId)
+            : Promise.resolve<ChromeReleaseOutcome>("not-holder");
+        void outcome
+          .catch((): ChromeReleaseOutcome => "working")
+          .then((result) =>
+            this.host.send({ type: "chromeReleaseResult", requestId, outcome: result }),
+          );
       }
       // Reports made before main answered the handshake reach it now.
       if (message.type === "hostCapabilities")
@@ -436,7 +565,8 @@ export class ComputerAutomationBrokerRuntime {
       if (message.type === "rememberedChanged") {
         for (const session of message.revokedSessions ?? [])
           if (this.bindings.get(session.threadId)?.generation === session.sessionGeneration)
-            this.access.revokeSessionApproval(session.threadId);
+            if (message.backgroundOnly) this.access.revokeBackgroundApproval(session.threadId);
+            else this.access.revokeSessionApproval(session.threadId);
         void this.access.refreshRemembered(message.projectId).catch(() => undefined);
       }
       if (
@@ -454,12 +584,17 @@ export class ComputerAutomationBrokerRuntime {
         message.status.reason === "no-host"
       ) {
         this.mainHolders = [];
-        this.chromeHolder = null;
+        this.chromeHolders = [];
+        // Main relays them again to the next host connection.
+        this.chromeSharedRegistrations = [];
+        this.chromePeerLaunching = false;
         this.chromeCalls.clear();
+        for (const check of this.chromeReleaseWaiters) check();
         this.pendingTakeover = undefined;
         this.executionStates.clear();
         this.nativeOtherProfile = false;
         this.chromeOtherProfile = false;
+        this.chromeOtherProfileBlocksNative = false;
         this.clearChromeOtherLinger();
         for (const [threadId, binding] of this.bindings)
           this.releaseSession(threadId, binding.generation);
@@ -509,9 +644,23 @@ export class ComputerAutomationBrokerRuntime {
         this.publish({ channel: "computer.host", data: message });
     });
   }
+  private async measureStage<A>(stage: string, operation: () => Promise<A>): Promise<A> {
+    const probe = this.options.performanceStageProbe;
+    if (!probe) return operation();
+    const started = performance.now();
+    try {
+      return await operation();
+    } finally {
+      try {
+        probe(stage, performance.now() - started);
+      } catch {
+        /* Diagnostics only. */
+      }
+    }
+  }
   async initialize(): Promise<void> {
     await this.host.handshake();
-    await this.access.initialize();
+    if (!this.host.awaitingHandshake()) await this.access.initialize();
     this.initialized = true;
   }
   bindSession(threadId: string, generation: string, provider: ComputerAgentProvider): void {
@@ -577,6 +726,7 @@ export class ComputerAutomationBrokerRuntime {
         ...(appName ? { appName } : {}),
         state: execution?.state ?? "active",
         ...(execution?.pauseCause ? { pauseCause: execution.pauseCause } : {}),
+        ...(execution?.blockedBy ? { blockedBy: execution.blockedBy } : {}),
       };
     });
     // Paused and recovering threads keep their banner state after the lease is released.
@@ -599,16 +749,15 @@ export class ComputerAutomationBrokerRuntime {
             : {}),
           state: execution.state,
           ...(execution.pauseCause ? { pauseCause: execution.pauseCause } : {}),
+          ...(execution.blockedBy ? { blockedBy: execution.blockedBy } : {}),
         });
-    if (
-      this.chromeHolder &&
-      !holders.some((holder) => holder.threadId === this.chromeHolder!.threadId)
-    ) {
+    for (const chrome of this.chromeHolders) {
+      if (holders.some((holder) => holder.threadId === chrome.threadId)) continue;
       const running = this.chromeCalls.get(
-        chromeCallsKey(this.chromeHolder.threadId, this.chromeHolder.sessionGeneration),
+        chromeCallsKey(chrome.threadId, chrome.sessionGeneration),
       );
       holders.push({
-        threadId: this.chromeHolder.threadId,
+        threadId: chrome.threadId,
         delivery: "foreground",
         state: "active",
         browser: running === undefined ? "unknown" : running ? "working" : "idle",
@@ -720,7 +869,8 @@ export class ComputerAutomationBrokerRuntime {
     return {
       holders: this.mainHolders,
       computerUse: this.computerUse(),
-      chromeHolder: this.chromeHolder,
+      chromeHolder: this.chromeHolders[0] ?? null,
+      chromeHolders: this.chromeHolders,
       otherProfile: this.nativeOtherProfile || this.chromeOtherProfile,
       pausedThreads: this.pause.list(),
       pending: this.access
@@ -835,6 +985,413 @@ export class ComputerAutomationBrokerRuntime {
     this.sendChromeCalls(threadId, generation, running);
     this.publishUse();
   }
+  /** A Chrome call main admitted (`chromeLeaseValidate.callId`) ended or never ran. */
+  reportChromeCallEnded(threadId: string, generation: string, callId: string): void {
+    if (!this.host.chromeCallAdmissionCapable()) return;
+    this.host.send({ type: "chromeCallEnded", threadId, sessionGeneration: generation, callId });
+  }
+  /**
+   * A session holding the Chrome lease registers how to give it up. `idle` says whether
+   * it could (its own work, such as background tasks, counts); `release` answers whether
+   * it stopped, refusing when work started since.
+   */
+  registerChromeReleaser(
+    threadId: string,
+    generation: string,
+    releaser: ChromeReleaser,
+  ): () => void {
+    const key = chromeCallsKey(threadId, generation);
+    this.chromeReleasers.set(key, releaser);
+    return () => {
+      if (this.chromeReleasers.get(key) === releaser) this.chromeReleasers.delete(key);
+    };
+  }
+  registerCodexHandoff(threadId: string, generation: string, handoff: CodexHandoff): () => void {
+    const key = chromeCallsKey(threadId, generation);
+    this.codexHandoffs.set(key, handoff);
+    return () => {
+      if (this.codexHandoffs.get(key) === handoff) this.codexHandoffs.delete(key);
+    };
+  }
+
+  private async handoffCheckpoint(
+    threadId: string,
+    generation: string,
+  ): Promise<() => Promise<void>> {
+    const binding = this.bindings.get(threadId);
+    if (!binding || binding.generation !== generation)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    const revision = binding.policyRevision;
+    const turnRevision = binding.turnRevision;
+    const pauseRevision = binding.pauseRevision;
+    const check = async () => {
+      const ctx = await this.context(threadId, generation);
+      this.assertRevision(binding, revision, turnRevision);
+      if (
+        this.bindings.get(threadId) !== binding ||
+        ctx.turnId === "observation" ||
+        binding.endedTurnId === ctx.turnId
+      )
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+      if (this.pause.has(threadId) || binding.pauseRevision !== pauseRevision)
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+      if (ctx.interactionMode === "plan")
+        throw handoffError("Control handoff is unavailable in plan mode.");
+      if (this.chromeRecoveryRequired())
+        throw handoffError("Browser control requires recovery on the computer running F5.");
+    };
+    await check();
+    return check;
+  }
+
+  /** Main confirms the process group exit by removing this exact generation's lease. */
+  async waitForChromeRelease(
+    threadId: string,
+    generation: string,
+    deadline: number,
+    check: () => Promise<void>,
+  ): Promise<void> {
+    await waitForControl(
+      () => this.chromeHolderOf(threadId)?.sessionGeneration !== generation,
+      deadline,
+      check,
+      () => CHROME_OWN_STOPPING_MESSAGE,
+    );
+  }
+
+  /** Called outside MCP, since restarting Chrome reloads every MCP connection. */
+  async resumeCodexBrowser(threadId: string, generation: string): Promise<unknown> {
+    const handoff = this.codexHandoffs.get(chromeCallsKey(threadId, generation));
+    if (!handoff) throw handoffError("Chrome control is unavailable for this session.");
+    const check = await this.handoffCheckpoint(threadId, generation);
+    await handoff.browser(performance.now() + 20_000, check);
+    await check();
+    return {
+      state: "ready",
+      resetRequired: true,
+      message:
+        "Chrome is ready. Recreate browser variables and tab handles; native observations are stale.",
+    };
+  }
+
+  /** Drain our native calls, release takeover, then reserve Chrome through main's authority. */
+  async prepareCodexBrowser(
+    threadId: string,
+    generation: string,
+    deadline: number,
+    check: () => Promise<void>,
+  ): Promise<void> {
+    await waitForControl(
+      () =>
+        ![...this.inFlight.values()].some(
+          (p) => p.threadId === threadId && p.generation === generation,
+        ),
+      deadline,
+      check,
+    );
+    const binding = this.bindings.get(threadId);
+    if (!binding || binding.generation !== generation)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (binding.acquiring || binding.takeover)
+      throw handoffError(
+        "A native control request is still pending; finish it before resuming Chrome.",
+      );
+    this.endTakeover(threadId, binding);
+    if (binding.holder) {
+      this.host.send({ type: "leaseRelease", requestId: randomUUID(), holder: binding.holder });
+      delete binding.holder;
+    }
+    this.invalidateObservations(threadId);
+    const holder = {
+      profileId: this.host.profileId,
+      threadId,
+      sessionGeneration: generation,
+      provider: "codex" as const,
+    };
+    let reserved = false;
+    try {
+      await waitForControl(
+        async () => {
+          try {
+            await this.acquireChromeLease(
+              holder,
+              Math.min(5000, computerRemainingBudget(deadline)),
+            );
+            reserved = true;
+            return true;
+          } catch (error) {
+            if (computerError(error)._tag !== "Busy") throw error;
+            return false;
+          }
+        },
+        deadline,
+        check,
+        () => "Native computer work is still finishing; retry browser_resume once it finishes.",
+      );
+    } catch (error) {
+      if (reserved) this.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder });
+      throw error;
+    }
+  }
+  /**
+   * Between turns, no Chrome call running, not paused, not recovering, and idle by the
+   * session's own account when it registered one.
+   */
+  chromeHolderIdle(threadId: string, generation: string): boolean {
+    const key = chromeCallsKey(threadId, generation);
+    if (this.chromeCalls.get(key) === true) return false;
+    if (this.pause.has(threadId)) return false;
+    if (this.executionStates.get(threadId)?.state === "recovery") return false;
+    const binding = this.bindings.get(threadId);
+    if (
+      binding?.generation === generation &&
+      binding.turnId !== undefined &&
+      binding.endedTurnId !== binding.turnId
+    )
+      return false;
+    return this.chromeReleasers.get(key)?.idle() ?? true;
+  }
+  /**
+   * Asks this profile's Chrome holder to release when it is idle, and resolves once main
+   * reports the lease gone (`released`), the holder isn't this thread or has no way to
+   * release (`not-holder`), it is busy or refused (`working`), or it didn't let go within
+   * `timeoutMs` (`timeout`).
+   */
+  async releaseChromeHolderOutcome(
+    threadId: string,
+    timeoutMs = CHROME_PREEMPT_WAIT_MS,
+  ): Promise<ChromeReleaseOutcome> {
+    const holder = this.chromeHolderOf(threadId);
+    if (!holder || holder.profileId !== this.host.profileId) return "not-holder";
+    const releaser = this.chromeReleasers.get(
+      chromeCallsKey(holder.threadId, holder.sessionGeneration),
+    );
+    if (!releaser) return "not-holder";
+    if (!this.chromeHolderIdle(holder.threadId, holder.sessionGeneration)) return "working";
+    const released = () =>
+      this.chromeHolderOf(holder.threadId)?.sessionGeneration !== holder.sessionGeneration;
+    // Watching starts before the release, so a lease change it causes isn't missed.
+    let settle: (outcome: ChromeReleaseOutcome) => void = () => {};
+    const outcome = new Promise<ChromeReleaseOutcome>((resolve) => (settle = resolve));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      if (released()) finish("released");
+    };
+    const finish = (result: ChromeReleaseOutcome) => {
+      if (timer) clearTimeout(timer);
+      this.chromeReleaseWaiters.delete(check);
+      settle(result);
+    };
+    this.chromeReleaseWaiters.add(check);
+    let accepted = false;
+    try {
+      accepted = await releaser.release();
+    } catch {
+      accepted = false;
+    }
+    // A refusal gives up at once; an accepted release waits for main to see the exit.
+    if (!accepted) finish("working");
+    else {
+      timer = setTimeout(() => finish("timeout"), timeoutMs);
+      check();
+    }
+    return outcome;
+  }
+  async releaseChromeHolder(
+    threadId: string,
+    timeoutMs = CHROME_PREEMPT_WAIT_MS,
+  ): Promise<boolean> {
+    return (await this.releaseChromeHolderOutcome(threadId, timeoutMs)) === "released";
+  }
+  /**
+   * Fills in who holds a same-profile `Busy`: the thread's title and whether it is idle.
+   * Anything else passes through unchanged.
+   */
+  async attributeBusy(error: unknown): Promise<unknown> {
+    if (!(error instanceof ComputerControlError) || error.error._tag !== "Busy") return error;
+    const busy = error.error;
+    if (busy.holder !== "same-profile" || !busy.holderThreadId) return error;
+    const chrome =
+      busy.resource === "chrome" ? this.chromeHolderOf(busy.holderThreadId) : undefined;
+    const title =
+      busy.threadTitle ??
+      (await this.options.threadTitle?.(busy.holderThreadId).catch(() => undefined));
+    // Native leases live only inside a turn, so their holder is always working. A Chrome
+    // holder this broker hasn't seen yet (main's report in flight) is left unstated.
+    const holderIdle =
+      busy.resource === "computer"
+        ? false
+        : chrome
+          ? this.chromeHolderIdle(chrome.threadId, chrome.sessionGeneration)
+          : undefined;
+    return new ComputerControlError({
+      ...busy,
+      ...(title ? { threadTitle: title.slice(0, 200) } : {}),
+      ...(holderIdle !== undefined ? { holderIdle } : {}),
+    });
+  }
+  /**
+   * Runs an acquisition that main may refuse because a Chrome holder has the lease. Each
+   * idle holder in the way is released in turn (several shared sessions may hold Chrome)
+   * and the acquisition retried; a working holder's refusal comes back naming it. Bounded:
+   * it stops once a release makes no progress.
+   */
+  async withChromePreemption<A>(acquire: () => Promise<A>): Promise<A> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await acquire();
+      } catch (error) {
+        const busy =
+          error instanceof ComputerControlError &&
+          error.error._tag === "Busy" &&
+          error.error.resource === "chrome"
+            ? error.error
+            : undefined;
+        const released =
+          attempt >= CHROME_PREEMPT_MAX_RELEASES
+            ? false
+            : busy?.holder === "same-profile" && busy.holderThreadId
+              ? await this.releaseChromeHolder(busy.holderThreadId)
+              : busy?.holder === "other-profile"
+                ? (await this.releaseOtherProfileChromeHolder()) === "released"
+                : false;
+        if (!released) throw await this.attributeBusy(error);
+      }
+    }
+  }
+  /**
+   * Before a native lease that the Chrome lease would block (foreground, takeover, or a
+   * registered browser in background), asks an idle Chrome holder in this profile to
+   * release. A working holder keeps Chrome and main queues the request behind it.
+   *
+   * Codex parks its own runtime through its generation's handoff queue. A Claude holder
+   * cannot stop its CLI mid-turn: main admits its own native work while Chrome calls are idle.
+   */
+  async preemptChromeFor(
+    threadId: string,
+    scope: ComputerLeaseScope,
+    deadline = performance.now() + CHROME_PREEMPT_WAIT_MS,
+  ): Promise<void> {
+    if (scope.kind === "app" && !COMPUTER_CHROME_APP_IDS.includes(scope.appId)) return;
+    const generation = this.bindings.get(threadId)?.generation;
+    const handoff = generation && this.codexHandoffs.get(chromeCallsKey(threadId, generation));
+    if (handoff && generation) {
+      const check = await this.handoffCheckpoint(threadId, generation);
+      await handoff.native(Math.min(deadline, performance.now() + CHROME_PREEMPT_WAIT_MS), check);
+      await check();
+    }
+    // Another profile's holder is asked only when main says it refuses this profile's
+    // native control (an idle Claude session doesn't), so ordinary acquisitions make no
+    // extra round trip.
+    if (this.chromeOtherProfileBlocksNative)
+      await this.releaseOtherProfileChromeHolder(threadId, scope, deadline);
+    for (const holder of this.chromeHolders) {
+      if (holder.threadId === threadId || holder.profileId !== this.host.profileId) continue;
+      // Main admits native control beside an idle Claude session and queues it behind a
+      // running call, so stopping one would only end its CLI.
+      if (holder.provider === "claude" && this.host.chromeCallAdmissionCapable()) continue;
+      await this.releaseChromeHolderOutcome(holder.threadId);
+    }
+  }
+  /** This profile's Chrome holder for `threadId`, if it holds Chrome. */
+  private chromeHolderOf(threadId: string | undefined): ChromeLeaseHolder | undefined {
+    return threadId === undefined
+      ? undefined
+      : this.chromeHolders.find((holder) => holder.threadId === threadId);
+  }
+  /** Verified registrations of every profile's shared Chrome sessions, as main relays them. */
+  sharedChromeRegistrations(): ReadonlyArray<ChromeSharedRegistration> {
+    return this.chromeSharedRegistrations;
+  }
+  /** Whether another profile's shared session is launching, as main last said. */
+  chromePeerLaunchInProgress(): boolean {
+    return this.chromePeerLaunching;
+  }
+  /**
+   * Takes main's shared launch lock for `holder`, waiting while another profile launches.
+   * Answers whether it holds the lock. Without one (main refused sharing, or the wait ran out)
+   * the launch goes ahead as it did before the lock existed.
+   */
+  async lockChromeLaunch(holder: ChromeLeaseHolder, waitMs = CHROME_LAUNCH_LOCK_WAIT_MS) {
+    if (!this.host.chromeSharedCapable()) return false;
+    const deadline = performance.now() + waitMs;
+    for (;;) {
+      try {
+        await this.host.correlated(
+          { type: "chromeLaunchLock", requestId: randomUUID(), holder },
+          5_000,
+          false,
+        );
+        return true;
+      } catch (error) {
+        const waiting =
+          error instanceof ComputerControlError &&
+          error.error._tag === "Execution" &&
+          error.error.message === CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE;
+        if (!waiting || performance.now() + 250 >= deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+  unlockChromeLaunch(holder: ChromeLeaseHolder): void {
+    if (this.host.chromeSharedCapable()) this.host.send({ type: "chromeLaunchUnlock", holder });
+  }
+  /** A shared session's launch verified: main relays its registration to shared peers. */
+  reportChromeRegistration(holder: ChromeLeaseHolder, registration: ChromeSharedRegistration) {
+    if (!this.host.chromeSharedCapable()) return;
+    this.host.send({ type: "chromeRegistrationVerified", holder, registration });
+  }
+  /**
+   * Asks main to have another profile's idle Chrome holder release. With `scope`, main asks
+   * only when that holder blocks native control of it for `threadId`.
+   */
+  async releaseOtherProfileChromeHolder(
+    threadId = "chrome-lease",
+    scope?: ComputerLeaseScope,
+    deadline = performance.now() + CHROME_PREEMPT_WAIT_MS + 1000,
+  ): Promise<ChromeReleaseOutcome> {
+    if (!this.host.chromeReleaseCapable()) return "not-holder";
+    const timeoutMs = Math.min(CHROME_PREEMPT_WAIT_MS + 1000, deadline - performance.now());
+    if (timeoutMs <= 0) return "timeout";
+    try {
+      const result = await this.host.correlated(
+        {
+          type: "chromeHolderRelease",
+          requestId: randomUUID(),
+          threadId,
+          ...(scope ? { scope } : {}),
+        },
+        timeoutMs,
+        false,
+      );
+      return result === "released" || result === "working" || result === "timeout"
+        ? result
+        : "not-holder";
+    } catch {
+      return "timeout";
+    }
+  }
+  /**
+   * A session's Chrome lease, taken from an idle holder in this profile when needed. With
+   * `shared` (a Claude session whose certified record claims `shared-native-host`),
+   * main lets it hold Chrome beside other such sessions when it negotiated sharing.
+   */
+  acquireChromeLease(holder: ChromeLeaseHolder, timeoutMs = 5000, shared = false): Promise<void> {
+    return this.withChromePreemption(() =>
+      this.host
+        .correlated(
+          {
+            type: "chromeLeaseAcquire",
+            requestId: randomUUID(),
+            holder,
+            ...(shared && this.host.chromeSharedCapable() ? { shared: true } : {}),
+          },
+          timeoutMs,
+          false,
+        )
+        .then(() => undefined),
+    );
+  }
   /** Main hides an idle Chrome lease from other profiles' banners, as this one does. */
   private sendChromeCalls(threadId: string, generation: string, running: boolean | undefined) {
     if (!this.host.chromeCallsCapable()) return;
@@ -901,7 +1458,9 @@ export class ComputerAutomationBrokerRuntime {
     if (!binding || binding.generation !== sessionGeneration)
       throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
     const turnRevision = binding.turnRevision;
-    const ctx = await this.options.resolve(threadId, sessionGeneration, binding.provider);
+    const ctx = await this.measureStage("broker.context", () =>
+      this.options.resolve(threadId, sessionGeneration, binding.provider),
+    );
     if (this.bindings.get(threadId) !== binding || binding.turnRevision !== turnRevision)
       throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
     this.access.bind(threadId, ctx.projectId, sessionGeneration);
@@ -947,6 +1506,150 @@ export class ComputerAutomationBrokerRuntime {
       },
     });
   }
+  async beginBatch(
+    threadId: string,
+    generation: string,
+    delivery: ComputerDelivery,
+    budgetMs = 15_000,
+  ): Promise<ComputerBatchHandle> {
+    const yieldEpoch = this.yieldEpochs.get(threadId) ?? 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new ComputerControlError({
+              _tag: "Execution",
+              message: "Batch admission timed out.",
+            }),
+          ),
+        budgetMs,
+      );
+    });
+    let ctx: ComputerInvocationContext;
+    try {
+      ctx = await Promise.race([
+        (async () => {
+          await this.admitted();
+          return this.context(threadId, generation);
+        })(),
+        expired,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const binding = this.bindings.get(threadId);
+    if (
+      !binding ||
+      binding.generation !== generation ||
+      ctx.turnId === "observation" ||
+      binding.endedTurnId === ctx.turnId
+    )
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (!ctx.policy.computerUse)
+      throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
+    const status = this.host.status();
+    if (!status.available)
+      throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
+    if (this.pause.has(threadId))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+    if (ctx.interactionMode === "plan")
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Computer control is unavailable in plan mode.",
+      });
+    binding.turnId = ctx.turnId;
+    const revision = binding.policyRevision;
+    const turnRevision = binding.turnRevision;
+    await this.ensureSessionApproval(threadId, ctx, delivery);
+    if (this.batches.has(threadId))
+      throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+    let slot: { release: () => void } | undefined;
+    let released = false;
+    const handle: ComputerBatchHandle = {
+      threadId,
+      generation,
+      binding,
+      delivery,
+      turnId: ctx.turnId,
+      turnRevision,
+      policyRevision: revision,
+      grantVersion: this.access.version(threadId),
+      yieldEpoch,
+      controller: new AbortController(),
+      deadline: performance.now() + 60_000,
+      release: () => {
+        if (released) return;
+        released = true;
+        if (this.batches.get(threadId) === handle) this.batches.delete(threadId);
+        slot?.release();
+      },
+    };
+    this.batches.set(threadId, handle);
+    try {
+      this.assertBatchLive(handle);
+      slot = await this.queue.acquire(threadId, handle.controller.signal, 30_000);
+      this.assertBatchLive(handle);
+      return handle;
+    } catch (cause) {
+      handle.release();
+      throw cause;
+    }
+  }
+  assertBatchLive(handle: ComputerBatchHandle): void {
+    const { threadId, binding } = handle;
+    if ((this.yieldEpochs.get(threadId) ?? 0) !== handle.yieldEpoch)
+      throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
+    if (this.pause.has(threadId))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
+    if (
+      this.batches.get(threadId) !== handle ||
+      this.bindings.get(threadId) !== binding ||
+      binding.generation !== handle.generation ||
+      binding.turnId !== handle.turnId ||
+      binding.turnRevision !== handle.turnRevision ||
+      binding.endedTurnId === handle.turnId
+    )
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    if (handle.controller.signal.aborted) throw handle.controller.signal.reason;
+    if (
+      binding.policyRevision !== handle.policyRevision ||
+      this.access.version(threadId) !== handle.grantVersion
+    )
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+  }
+  private async ensureSessionApproval(
+    threadId: string,
+    ctx: ComputerInvocationContext,
+    delivery: ComputerDelivery,
+  ): Promise<void> {
+    // Background control needs one native session approval, including full-access sessions.
+    if (delivery === "background" && !this.access.backgroundApproved(threadId)) {
+      await this.access.requestAccess(
+        threadId,
+        ctx.turnId,
+        [],
+        "Allow this agent session to control apps you approve, while you work elsewhere?",
+        {
+          kind: "session-actions",
+          background: true,
+          fullAccess: ctx.runtimeMode === "full-access",
+        },
+      );
+      if (!this.access.backgroundApproved(threadId))
+        throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    } else if (ctx.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId)) {
+      await this.access.requestAccess(
+        threadId,
+        ctx.turnId,
+        [],
+        "Allow this agent session to control apps you approve?",
+        { kind: "session-actions" },
+      );
+      if (!this.access.actionsApproved(threadId))
+        throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    }
+  }
   async invoke(
     threadId: string,
     generation: string,
@@ -957,11 +1660,39 @@ export class ComputerAutomationBrokerRuntime {
       beforeDispatch?: () => Promise<void>;
       suppressActivity?: boolean;
       onDispatch?: (delivery: ComputerDelivery) => void;
+      batch?: ComputerBatchHandle;
+      deadlineMs?: number;
     },
   ): Promise<unknown> {
-    const yieldEpoch = this.yieldEpochs.get(threadId) ?? 0;
-    await this.admitted();
-    const ctx = await this.context(threadId, generation);
+    const batch = options?.batch;
+    let invokeDeadline = Math.min(
+      performance.now() + timeoutMs,
+      options?.deadlineMs ?? Infinity,
+      batch?.deadline ?? Infinity,
+    );
+    const remainingBudget = () => computerRemainingBudget(invokeDeadline);
+    const bounded = <A>(operation: () => Promise<A>) =>
+      computerWithinDeadline(invokeDeadline, operation, options?.signal);
+    if (
+      batch &&
+      this.batches.get(threadId) === batch &&
+      batch.delivery === "background" &&
+      !this.access.backgroundApproved(threadId)
+    )
+      throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+    if (batch) this.assertBatchLive(batch);
+    const yieldEpoch = batch?.yieldEpoch ?? this.yieldEpochs.get(threadId) ?? 0;
+    await bounded(() => this.measureStage("broker.admission", () => this.admitted()));
+    const ctx = await bounded(() => this.context(threadId, generation));
+    if (batch) {
+      this.assertBatchLive(batch);
+      if (
+        batch.threadId !== threadId ||
+        batch.generation !== generation ||
+        batch.turnId !== ctx.turnId
+      )
+        throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
+    }
     if (!ctx.policy.computerUse)
       throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
     const status = this.host.status();
@@ -973,10 +1704,17 @@ export class ComputerAutomationBrokerRuntime {
         ...(status.missing ? { missing: status.missing } : {}),
       });
     }
-    if (input.op === "status")
+    if (input.op === "status") {
+      const handoff = this.codexHandoffs.get(chromeCallsKey(threadId, generation));
+      const control = {
+        paused: this.pause.has(threadId),
+        recoveryRequired: this.chromeRecoveryRequired(),
+        ...(handoff ? { chrome: handoff.status() } : {}),
+      };
       return ctx.policy.computerUseExecutionMode === "background"
-        ? { ...status, background: this.backgroundStatus(), executionMode: "background" }
-        : status;
+        ? { ...status, background: this.backgroundStatus(), executionMode: "background", control }
+        : { ...status, control };
+    }
     const mutation = isComputerMutation(input.op);
     const binding = this.bindings.get(threadId);
     if (!binding || binding.generation !== generation)
@@ -989,8 +1727,12 @@ export class ComputerAutomationBrokerRuntime {
     let delivery = this.selectDelivery(ctx, binding, input.op, appId, {
       executionMode: input.executionMode,
       action: input.action,
+      chords: input.chords,
+      elementRef: input.elementRef,
     });
     delete input.executionMode;
+    if (batch && delivery !== batch.delivery)
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "access-changed" });
     if (delivery === "background") {
       input.delivery = "background";
       if (computerOpRequiresApp(input.op) && !appId)
@@ -1011,68 +1753,48 @@ export class ComputerAutomationBrokerRuntime {
           _tag: "Execution",
           message: "Computer control is unavailable in plan mode.",
         });
-      // Background control needs one native session approval, including full-access sessions.
-      if (delivery === "background" && !this.access.backgroundApproved(threadId)) {
-        await this.access.requestAccess(
-          threadId,
-          ctx.turnId,
-          [],
-          "Allow this agent session to control apps you approve, while you work elsewhere?",
-          {
-            kind: "session-actions",
-            background: true,
-            fullAccess: ctx.runtimeMode === "full-access",
-          },
-        );
-        if (!this.access.backgroundApproved(threadId))
+      if (batch) {
+        if (
+          (delivery === "background" && !this.access.backgroundApproved(threadId)) ||
+          (ctx.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId))
+        )
           throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
-      } else if (ctx.runtimeMode !== "full-access" && !this.access.actionsApproved(threadId)) {
-        await this.access.requestAccess(
-          threadId,
-          ctx.turnId,
-          [],
-          "Allow this agent session to control apps you approve?",
-          { kind: "session-actions" },
-        );
-        if (!this.access.actionsApproved(threadId))
-          throw new ComputerControlError({ _tag: "NotGranted", needed: "click" });
+      } else {
+        const consentStarted = performance.now();
+        await this.ensureSessionApproval(threadId, ctx, delivery);
+        // Ordinary interactive consent has its own budget. Explicit wait/batch deadlines never move.
+        if (options?.deadlineMs === undefined) invokeDeadline += performance.now() - consentStarted;
       }
     }
     let requestId = randomUUID();
     let dispatched = false;
+    let retrying = false;
     // Queueing, admission and retries share one budget; contention never renews it.
-    const invokeDeadline = performance.now() + timeoutMs;
-    /** Reject expiry before admitting more work or dispatching any native action. */
-    const remainingBudget = () => {
-      const remaining = Math.floor(invokeDeadline - performance.now());
-      if (remaining <= 0)
-        throw new ComputerControlError({
-          _tag: "Execution",
-          message: "Computer request timed out before dispatch.",
-        });
-      return remaining;
-    };
     const retryDeadline = Math.min(
       invokeDeadline - 5000,
       performance.now() + COMPUTER_LEASE_WAIT_MAX_MS,
     );
     const controller = new AbortController();
-    const slot = mutation
-      ? await this.queue.acquire(threadId, controller.signal, Math.min(60_000, timeoutMs))
-      : { release: () => undefined };
+    const slot =
+      mutation && !batch
+        ? await this.queue.acquire(threadId, controller.signal, Math.min(60_000, remainingBudget()))
+        : { release: () => undefined };
     try {
       for (;;) {
         try {
-          const live = await this.context(threadId, generation);
+          const live = await bounded(() => this.context(threadId, generation));
           if (!live.policy.computerUse)
             throw new ComputerControlError({ _tag: "Unavailable", reason: "disabled" });
           // Revision checkpoint after context resolution and queue admission.
           this.assertRevision(binding, revision, turnRevision);
+          if (batch) this.assertBatchLive(batch);
           if (options?.signal?.aborted) throw options.signal.reason;
-          if (dispatched) {
+          if (retrying) {
             delivery = this.selectDelivery(live, binding, input.op, appId, {
               executionMode: requestedMode,
               action: input.action,
+              chords: input.chords,
+              elementRef: input.elementRef,
             });
             if (delivery !== "background")
               throw new ComputerControlError({
@@ -1112,7 +1834,7 @@ export class ComputerAutomationBrokerRuntime {
               input.appId,
               !mutation
                 ? "view"
-                : input.action === "setValue" || input.op === "type"
+                : input.action === "setValue" || input.op === "type" || input.op === "key"
                   ? "type"
                   : "click",
             );
@@ -1146,6 +1868,10 @@ export class ComputerAutomationBrokerRuntime {
             const waitMs = this.host.cooperationCapable()
               ? Math.min(COMPUTER_LEASE_WAIT_MAX_MS, Math.max(0, remainingMs - 5000))
               : 0;
+            // Main queues this behind a Chrome holder for up to the wait; an idle one in this
+            // profile gives way first, so the queue admits as soon as the lease is gone.
+            await bounded(() => this.preemptChromeFor(threadId, scope, invokeDeadline));
+            this.assertRevision(binding, revision, turnRevision);
             binding.acquiring = { requestId: acquisitionId, turnId: ctx.turnId };
             let holder: ComputerLeaseHolder;
             const abortAcquire = () => this.host.abandon(acquisitionId, options!.signal!.reason);
@@ -1173,7 +1899,14 @@ export class ComputerAutomationBrokerRuntime {
               );
               options?.signal?.addEventListener("abort", abortAcquire, { once: true });
               if (options?.signal?.aborted) abortAcquire();
-              holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(await acquisition);
+              holder = Schema.decodeUnknownSync(ComputerLeaseHolder)(
+                // A refusal after the queue's wait names who held control.
+                await this.measureStage("broker.lease-acquisition", () =>
+                  acquisition.catch(async (cause: unknown) => {
+                    throw await this.attributeBusy(cause);
+                  }),
+                ),
+              );
             } finally {
               options?.signal?.removeEventListener("abort", abortAcquire);
               if (binding.acquiring?.requestId === acquisitionId) delete binding.acquiring;
@@ -1194,9 +1927,10 @@ export class ComputerAutomationBrokerRuntime {
             binding.holder = holder;
             executionGeneration = holder.executionGeneration;
           }
-          if (!dispatched) await options?.beforeDispatch?.();
+          if (!dispatched && options?.beforeDispatch) await bounded(options.beforeDispatch);
           if (options?.signal?.aborted) throw options.signal.reason;
           // Revision checkpoint immediately before dispatch.
+          if (batch) this.assertBatchLive(batch);
           this.assertRevision(binding, revision, turnRevision);
           this.pushGrants(threadId, generation, live.turnId, executionGeneration);
           const { passwordMasking: _callerMasking, ...payloadInput } = input;
@@ -1221,10 +1955,15 @@ export class ComputerAutomationBrokerRuntime {
           const request = Schema.decodeUnknownSync(
             (await import("@t3tools/contracts")).ComputerAutomationRequest,
           )({ ...envelope, payloadHash });
+          remainingBudget();
+          if (batch) this.assertBatchLive(batch);
+          if (options?.signal?.aborted) throw options.signal.reason;
           if (mutation && !dispatched) this.invalidateObservations(threadId, "action");
           if (mutation && (this.yieldEpochs.get(threadId) ?? 0) !== yieldEpoch)
             throw new ComputerControlError({ _tag: "TargetBlocked", kind: "user-active" });
           if (!dispatched) options?.onDispatch?.(delivery);
+          remainingBudget();
+          if (batch) this.assertBatchLive(batch);
           dispatched = true;
           this.inFlight.set(requestId, {
             threadId,
@@ -1235,12 +1974,24 @@ export class ComputerAutomationBrokerRuntime {
             ...(options?.suppressActivity ? { suppressActivity: true } : {}),
           });
           const onAbort = () => this.host.abandon(requestId, options!.signal!.reason);
-          options?.signal?.addEventListener("abort", onAbort, { once: true });
+          if (!mutation) options?.signal?.addEventListener("abort", onAbort, { once: true });
           let result: unknown;
           try {
             const pending = this.host.request(request);
-            if (options?.signal?.aborted) onAbort();
-            result = await pending;
+            if (!mutation && options?.signal?.aborted) onAbort();
+            result = await this.measureStage("broker.desktop-round-trip", () =>
+              mutation
+                ? pending
+                : bounded(() => pending).catch((cause) => {
+                    this.host.abandon(
+                      requestId,
+                      cause instanceof ComputerControlError
+                        ? cause
+                        : new ComputerControlError(computerError(cause)),
+                    );
+                    throw cause;
+                  }),
+            );
           } finally {
             options?.signal?.removeEventListener("abort", onAbort);
           }
@@ -1294,6 +2045,7 @@ export class ComputerAutomationBrokerRuntime {
             options?.signal?.addEventListener("abort", abort, { once: true });
             if (options?.signal?.aborted) abort();
           });
+          retrying = true;
         } finally {
           this.inFlight.delete(requestId);
         }
@@ -1320,7 +2072,7 @@ export class ComputerAutomationBrokerRuntime {
     binding: ComputerBinding,
     op: ComputerAutomationRequest["op"],
     appId: string | undefined,
-    input: { executionMode?: unknown; action?: unknown },
+    input: { executionMode?: unknown; action?: unknown; chords?: unknown; elementRef?: unknown },
     classifyOnly = false,
   ): ComputerDelivery {
     if (op === "status" || op === "listApps" || op === "resolveApps") return "foreground";
@@ -1332,6 +2084,15 @@ export class ComputerAutomationBrokerRuntime {
         message: `Background computer control is unavailable (${background.reason ?? "unknown"}); set Computer use to foreground mode in Settings.`,
       });
     const takeover = binding.holder?.scope.kind === "takeover" ? binding.holder.scope : undefined;
+    if (
+      (op === "key" || (op === "scroll" && input.elementRef !== undefined)) &&
+      !appId &&
+      !takeover
+    )
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "Specify app: the app to act in.",
+      });
     if (input.executionMode === "background") {
       if (takeover && !classifyOnly) this.endTakeover(ctx.threadId, binding);
     } else if (takeover && (appId === undefined || appId === takeover.appId)) return "foreground";
@@ -1347,6 +2108,18 @@ export class ComputerAutomationBrokerRuntime {
       !computerBackgroundOpAllowed(
         op,
         typeof input.action === "string" ? (input.action as ComputerElementAction) : undefined,
+        {
+          events:
+            this.host.backgroundEventsCapable() &&
+            !!appId &&
+            computerBackgroundEventAppAllowed(appId, this.options.platform ?? "darwin") &&
+            (op === "scroll"
+              ? typeof input.elementRef === "string"
+              : op === "key" &&
+                Array.isArray(input.chords) &&
+                input.chords.every((chord) => typeof chord === "string") &&
+                computerBackgroundKeyAllowed(input.chords, this.options.platform ?? "darwin")),
+        },
       )
     )
       throw new ComputerControlError({
@@ -1361,7 +2134,7 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     op: ComputerAutomationRequest["op"],
     appId: string | undefined,
-    input: { executionMode?: unknown; action?: unknown },
+    input: { executionMode?: unknown; action?: unknown; chords?: unknown; elementRef?: unknown },
   ): Promise<ComputerDelivery> {
     await this.admitted();
     const ctx = await this.context(threadId, generation);
@@ -1456,8 +2229,14 @@ export class ComputerAutomationBrokerRuntime {
     this.cancelTurn(threadId, generation, ctx.turnId, "paused", false, false);
     const acquireId = randomUUID();
     const approvalId = randomUUID();
-    binding.takeover = { acquireId, approvalId, appId: app.appId };
     const live = await this.context(threadId, generation);
+    // A takeover excludes Chrome control and main checks Chrome before it reserves: an idle
+    // Chrome holder in this profile gives way first instead of the takeover waiting on it.
+    await this.preemptChromeFor(threadId, { kind: "foreground" });
+    this.assertRevision(binding, revision, turnRevision);
+    if (this.bindings.get(threadId) !== binding || this.pause.has(threadId))
+      throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+    binding.takeover = { acquireId, approvalId, appId: app.appId };
     const reservationController = new AbortController();
     const reserved = this.host.takeoverReservationCapable()
       ? this.host.awaitEvent(
@@ -1517,7 +2296,8 @@ export class ComputerAutomationBrokerRuntime {
       this.host.abandon(acquireId, error as ComputerControlError);
       await acquired.catch(() => undefined);
       if (binding.takeover?.acquireId === acquireId) delete binding.takeover;
-      throw error;
+      // Main's Busy names only the holder's thread id; say which thread and whether it works.
+      throw await this.attributeBusy(error);
     } finally {
       reservationController.abort();
     }
@@ -1549,6 +2329,8 @@ export class ComputerAutomationBrokerRuntime {
         name: app.name,
         note: "Take a fresh computer_screenshot before coordinate actions.",
       };
+    } catch (error) {
+      throw await this.attributeBusy(error);
     } finally {
       if (binding.takeover?.acquireId === acquireId) delete binding.takeover;
       this.access.cancelRequest(approvalId);
@@ -1627,7 +2409,7 @@ export class ComputerAutomationBrokerRuntime {
       this.nativePaused.has(threadId) ||
       this.mainHolders.some((holder) => holder.threadId === threadId) ||
       this.pendingTakeover?.threadId === threadId ||
-      this.chromeHolder?.threadId === threadId
+      this.chromeHolderOf(threadId) !== undefined
     )
       throw new Error("Resume computer control on the computer running F5.");
   }
@@ -1654,6 +2436,7 @@ export class ComputerAutomationBrokerRuntime {
     const binding = this.bindings.get(threadId);
     if (!binding || binding.generation !== generation || (turnId && binding.turnId !== turnId))
       return;
+    this.abortBatch(threadId, new ComputerControlError({ _tag: "Interrupted", cause }));
     this.waits.get(threadId)?.cancel(cause);
     if (cancelSetup)
       for (const pending of this.setupConsents.values())
@@ -1720,7 +2503,11 @@ export class ComputerAutomationBrokerRuntime {
         sessionGeneration: binding.generation,
         turnId,
       });
-    if (this.executionStates.delete(threadId)) this.publishUse();
+    if (
+      ["waiting-user", "waiting-agent"].includes(this.executionStates.get(threadId)?.state ?? "") &&
+      this.executionStates.delete(threadId)
+    )
+      this.publishUse();
     ++binding.turnRevision;
     // Startup waiters are pinned to the lifecycle turn before resolving context.
     const waiter = this.waits.get(threadId);
@@ -1864,9 +2651,16 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     input: {
       deadlineMs: number;
+      batch?: ComputerBatchHandle;
       target?: { app?: string };
+      settle?: {
+        appId: string;
+        executionMode?: "foreground" | "background";
+        maxNodes: number;
+        onPartial: "wait" | "return";
+      };
       condition?: {
-        app: string;
+        appId: string;
         role?: string;
         name?: string;
         executionMode?: "foreground" | "background";
@@ -1879,7 +2673,10 @@ export class ComputerAutomationBrokerRuntime {
     snapshotId?: string;
     elementRefs?: string[];
     available?: boolean;
-    reason?: ComputerTargetAvailability["reason"];
+    reason?: ComputerTargetAvailability["reason"] | "partial-tree";
+    detail?: ComputerTargetAvailability["detail"];
+    settled?: boolean;
+    tree?: ComputerInspectResult;
     requiresFreshObservation?: true;
   }> {
     if (this.waits.has(threadId))
@@ -1896,6 +2693,8 @@ export class ComputerAutomationBrokerRuntime {
       controller.abort(reason);
       rejectCancellation(reason);
     };
+    const abortBatch = () => abort(input.batch!.controller.signal.reason);
+    input.batch?.controller.signal.addEventListener("abort", abortBatch, { once: true });
     const waiter: {
       generation: string;
       turnId?: string;
@@ -1916,6 +2715,7 @@ export class ComputerAutomationBrokerRuntime {
     const race = <A>(work: Promise<A>) => Promise.race([work, cancelled]);
     const result = () => ({ waitedMs: Math.max(0, Math.round(performance.now() - startedAt)) });
     let started = false;
+    let lastTree: ComputerInspectResult | undefined;
     try {
       const ctx = await race(this.context(threadId, generation));
       const binding = this.bindings.get(threadId);
@@ -1931,6 +2731,7 @@ export class ComputerAutomationBrokerRuntime {
       const revision = binding.policyRevision;
       const grants = this.access.version(threadId);
       const validate = async () => {
+        if (input.batch) this.assertBatchLive(input.batch);
         if (this.pause.has(threadId))
           throw new ComputerControlError({ _tag: "Interrupted", cause: "paused" });
         if (
@@ -1994,16 +2795,20 @@ export class ComputerAutomationBrokerRuntime {
         }
         await validate();
         const requestId = randomUUID();
-        const cancel = () =>
-          this.host.abandon(
-            requestId,
-            new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" }),
-          );
+        // Abandon with the real cause: the deadline sentinel becomes a timeout below, while a
+        // turn end, pause or batch abort keeps its own interruption.
+        const cancel = () => this.host.abandon(requestId, controller.signal.reason);
         controller.signal.addEventListener("abort", cancel, { once: true });
         try {
+          // The desktop owns the deadline: it answers first with the condition that held.
           const remaining = Math.max(
             100,
-            Math.min(30_000, Math.floor(input.deadlineMs - performance.now())),
+            Math.min(
+              30_000,
+              Math.floor(
+                input.deadlineMs - performance.now() - COMPUTER_TARGET_WAIT_DESKTOP_MARGIN_MS,
+              ),
+            ),
           );
           const outcome = Schema.decodeUnknownSync(ComputerTargetAvailability)(
             await race(
@@ -2035,7 +2840,7 @@ export class ComputerAutomationBrokerRuntime {
           controller.signal.removeEventListener("abort", cancel);
         }
       }
-      if (!input.condition) {
+      if (!input.condition && !input.settle) {
         await cancelled;
         throw deadline;
       }
@@ -2047,58 +2852,104 @@ export class ComputerAutomationBrokerRuntime {
             generation,
             request,
             Math.max(1, input.deadlineMs - performance.now()),
-            { signal: controller.signal, beforeDispatch: validate, suppressActivity: true },
+            {
+              signal: controller.signal,
+              beforeDispatch: validate,
+              suppressActivity: true,
+              ...(input.batch ? { batch: input.batch } : {}),
+            },
           ),
         );
-      const apps = selectComputerApp(
-        (await invoke({
-          op: "resolveApps",
-          queries: [condition.app],
-        })) as ReadonlyArray<ComputerApp>,
-        condition.app,
-      );
-      if (apps.length !== 1)
-        throw new ComputerControlError({
-          _tag: "Execution",
-          message: "App could not be resolved uniquely; use an appId from computer_list_apps.",
-        });
+      let fingerprint: string | undefined;
+      let stableSince = 0;
       let attempt = 0;
       while (true) {
         await validate();
-        const inspected = (await invoke({
-          op: "inspect",
-          appId: apps[0]!.appId,
-          maxNodes: 100,
-          ...(condition.executionMode ? { executionMode: condition.executionMode } : {}),
-        })) as ComputerInspectResult;
-        await validate();
-        if (!inspected.accessible)
-          throw new ComputerControlError({
-            _tag: "Execution",
-            message: "The app's accessibility tree is unavailable.",
-          });
-        const matches = inspected.nodes
-          .filter(
-            (node) =>
-              (condition.role === undefined || node.role === condition.role) &&
-              (condition.name === undefined || node.name === condition.name),
+        let inspected: ComputerInspectResult | undefined;
+        try {
+          inspected = (await invoke({
+            op: "inspect",
+            appId: (input.settle ?? condition)!.appId,
+            maxNodes: input.settle?.maxNodes ?? 100,
+            ...((input.settle ?? condition)?.executionMode
+              ? { executionMode: (input.settle ?? condition)!.executionMode }
+              : {}),
+          })) as ComputerInspectResult;
+        } catch (cause) {
+          if (!input.settle) throw cause;
+          const error = computerError(cause);
+          if (
+            !["Execution", "Busy", "StaleElement", "ResultTooLarge"].includes(error._tag) &&
+            !(error._tag === "TargetBlocked" && error.kind === "foreground-busy")
           )
-          .slice(0, 10);
-        if (matches.length) {
-          await validate();
-          this.publish({
-            channel: "computer.activity",
-            data: { threadId, backend: "native", op: "wait", status: "completed" },
-          });
-          return {
-            ...result(),
-            matched: true,
-            snapshotId: inspected.snapshotId,
-            elementRefs: matches.map((node) => node.elementRef),
-          };
+            throw cause;
+        }
+        await validate();
+        if (input.settle) {
+          if (inspected) lastTree = inspected;
+          if (inspected?.truncated) {
+            if (input.settle.onPartial === "wait") {
+              await cancelled;
+              throw deadline;
+            }
+            this.publish({
+              channel: "computer.activity",
+              data: { threadId, backend: "native", op: "wait", status: "completed" },
+            });
+            return { ...result(), settled: false, reason: "partial-tree" };
+          }
+          if (inspected?.accessible && inspected.nodes.length) {
+            const next = computerInspectFingerprint(inspected.nodes);
+            if (fingerprint !== next) {
+              fingerprint = next;
+              stableSince = performance.now();
+            } else if (performance.now() - stableSince >= COMPUTER_SETTLE_STABLE_MS) {
+              this.publish({
+                channel: "computer.activity",
+                data: { threadId, backend: "native", op: "wait", status: "completed" },
+              });
+              return { ...result(), settled: true, tree: inspected };
+            }
+          } else {
+            fingerprint = undefined;
+          }
+        } else {
+          if (!inspected)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "Inspection unavailable.",
+            });
+          if (!inspected.accessible)
+            throw new ComputerControlError({
+              _tag: "Execution",
+              message: "The app's accessibility tree is unavailable.",
+            });
+          const matches = inspected.nodes
+            .filter(
+              (node) =>
+                (condition!.role === undefined || node.role === condition!.role) &&
+                (condition!.name === undefined || node.name === condition!.name),
+            )
+            .slice(0, 10);
+          if (matches.length) {
+            await validate();
+            this.publish({
+              channel: "computer.activity",
+              data: { threadId, backend: "native", op: "wait", status: "completed" },
+            });
+            return {
+              ...result(),
+              matched: true,
+              tree: inspected,
+              snapshotId: inspected.snapshotId,
+              elementRefs: matches.map((node) => node.elementRef),
+            };
+          }
         }
         const delay = Math.min(
-          [250, 500, 1000][Math.min(attempt++, 2)]!,
+          input.settle
+            ? COMPUTER_WAIT_POLL_MS
+            : Math.min(COMPUTER_WAIT_POLL_MS * ++attempt, COMPUTER_WAIT_POLL_MAX_MS),
           Math.max(0, input.deadlineMs - performance.now()),
         );
         let sleep: ReturnType<typeof setTimeout> | undefined;
@@ -2126,7 +2977,15 @@ export class ComputerAutomationBrokerRuntime {
             channel: "computer.activity",
             data: { threadId, backend: "native", op: "wait", status: "completed" },
           });
-        return { ...result(), ...(input.condition ? { matched: false, timedOut: true } : {}) };
+        return {
+          ...result(),
+          ...(input.condition ? { matched: false, timedOut: true } : {}),
+          ...(input.settle
+            ? lastTree?.truncated
+              ? { settled: false, reason: "partial-tree" as const }
+              : { settled: false, timedOut: true, ...(lastTree ? { tree: lastTree } : {}) }
+            : {}),
+        };
       }
       if (started)
         this.publish({
@@ -2136,6 +2995,7 @@ export class ComputerAutomationBrokerRuntime {
       throw error;
     } finally {
       clearTimeout(timer);
+      input.batch?.controller.signal.removeEventListener("abort", abortBatch);
       if (this.waits.get(threadId) === waiter) this.waits.delete(threadId);
     }
   }
@@ -2169,11 +3029,21 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     op: string,
     outcome: ComputerToolOutcomeCode,
+    /** A same-profile `Busy`'s holder, so the card can link to it. */
+    heldByThreadId?: string,
   ): void {
     if (this.generation(threadId) !== generation) return;
     this.publish({
       channel: "computer.activity",
-      data: { source: "tool", threadId, backend: "native", op, status: "failed", outcome },
+      data: {
+        source: "tool",
+        threadId,
+        backend: "native",
+        op,
+        status: "failed",
+        outcome,
+        ...(heldByThreadId && heldByThreadId !== threadId ? { heldByThreadId } : {}),
+      },
     });
   }
   subscribe(listener: (event: ComputerBrokerEvent) => void): () => void {
@@ -2230,6 +3100,7 @@ export const ComputerAutomationBrokerLive = Layer.effect(
     );
     yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
     const pause = yield* Effect.serviceOption(AgentControlPauseService);
+    const performanceStageProbe = yield* PerformanceStageProbe;
     const storage = computerAccessStorage({
       exists: () => run(fs.exists(file)),
       read: () => run(fs.readFileString(file)),
@@ -2239,6 +3110,7 @@ export const ComputerAutomationBrokerLive = Layer.effect(
       write: (contents) => run(writeFileStringAtomically({ filePath: file, contents })),
     });
     const broker = new ComputerAutomationBrokerRuntime(host, {
+      performanceStageProbe,
       ...(Option.isSome(pause) ? { pause: pause.value } : {}),
       platform: process.platform === "win32" ? "win32" : "darwin",
       storage: {
@@ -2266,6 +3138,14 @@ export const ComputerAutomationBrokerLive = Layer.effect(
           }
           return verified;
         },
+      },
+      threadTitle: async (threadId) => {
+        const rows = await run(
+          sql<{
+            title: string;
+          }>`SELECT title FROM projection_threads WHERE thread_id=${threadId}`,
+        );
+        return rows[0]?.title;
       },
       resolve: async (threadId, sessionGeneration, provider) => {
         const rows = await run(

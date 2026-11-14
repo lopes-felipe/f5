@@ -38,6 +38,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
 
 const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
 const CLAUDE_FABLE_5_1_MODEL = "claude-fable-5-1";
+const CLAUDE_FABLE_5_2_MODEL = "claude-fable-5-2";
 const CLAUDE_SONNET_5_MODEL = "claude-sonnet-5";
 const CLAUDE_OPUS_5_5_MODEL = "claude-opus-5-5";
 const CLAUDE_OPUS_5_MODEL = "claude-opus-5";
@@ -86,6 +87,11 @@ const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata>
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
     defaultEffort: "high",
     supportsFastMode: true,
+  },
+  [CLAUDE_FABLE_5_2_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "high",
   },
   [CLAUDE_FABLE_5_1_MODEL]: {
     contextWindowTokens: 1_000_000,
@@ -577,7 +583,8 @@ function stripClaudeContextWindowSuffix(model: string): string {
   return model.replace(/\[(?:1m|200k)\]$/i, "");
 }
 
-export function normalizeModelSlug(
+/** Clean a custom slug without rewriting names that also happen to be static aliases. */
+export function normalizeCustomModelSlug(
   model: string | null | undefined,
   provider: ProviderKind | ProviderDriverKind = "codex",
 ): ModelSlug | null {
@@ -593,7 +600,19 @@ export function normalizeModelSlug(
   const builtInProvider = toBuiltInProviderKind(provider);
   const slug =
     builtInProvider === "claudeAgent" ? stripClaudeContextWindowSuffix(trimmed) : trimmed;
-  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[builtInProvider] as Record<string, ModelSlug>;
+  return slug as ModelSlug;
+}
+
+export function normalizeModelSlug(
+  model: string | null | undefined,
+  provider: ProviderKind | ProviderDriverKind = "codex",
+): ModelSlug | null {
+  const slug = normalizeCustomModelSlug(model, provider);
+  if (slug === null) return null;
+  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[toBuiltInProviderKind(provider)] as Record<
+    string,
+    ModelSlug
+  >;
   const aliased = Object.prototype.hasOwnProperty.call(aliases, slug) ? aliases[slug] : undefined;
   return typeof aliased === "string" ? aliased : (slug as ModelSlug);
 }
@@ -804,6 +823,17 @@ export function resolveCodexReasoningEffortForModel(
   return getDefaultReasoningEffort("codex", model);
 }
 
+/** An omitted choice inherits Codex's global service tier. Explicit off remains off. */
+export function resolveCodexFastMode(
+  options: CodexModelOptions | null | undefined,
+  reported?: ModelCapabilities | null,
+): boolean {
+  return (
+    options?.fastMode ??
+    (reported?.defaultServiceTier === "fast" || reported?.defaultServiceTier === "priority")
+  );
+}
+
 export function normalizeCodexModelOptions(
   model: string | null | undefined,
   modelOptions: CodexModelOptions | null | undefined,
@@ -819,8 +849,10 @@ export function normalizeCodexModelOptions(
       : undefined;
     const reportedOptions: CodexModelOptions = {
       ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
-      ...(modelOptions?.fastMode === true && capabilities.supportsFastMode
-        ? { fastMode: true }
+      ...(modelOptions?.fastMode !== undefined &&
+      capabilities.supportsFastMode &&
+      (modelOptions.fastMode || resolveCodexFastMode(undefined, reported))
+        ? { fastMode: modelOptions.fastMode }
         : {}),
     };
     return Object.keys(reportedOptions).length > 0 ? reportedOptions : undefined;

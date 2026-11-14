@@ -107,6 +107,7 @@ import {
   buildCommandPaletteRows,
   buildFileSearchActionItems,
   buildNestedSearchItems,
+  buildNewThreadInProjectItems,
   buildProjectActionItems,
   buildRootGroups,
   buildThreadActionItems,
@@ -238,6 +239,12 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           event.stopPropagation();
           setOpen(false);
           void navigate({ to: "/usage" });
+          return;
+        case "home.open":
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          void navigate({ to: "/" });
           return;
         default:
           return;
@@ -633,28 +640,26 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const projectThreadItems = useMemo(
-    () => [
-      // First, so it stays in reach however many projects follow.
-      {
-        kind: "action" as const,
-        value: "new-thread-in:no-project",
-        searchTerms: ["no project", "scratch", "without a project"],
-        title: "No project",
-        icon: <FolderIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await startScratchThread();
+    () =>
+      buildNewThreadInProjectItems({
+        projects,
+        currentProjectId,
+        noProjectItem: {
+          kind: "action" as const,
+          value: "new-thread-in:no-project",
+          searchTerms: ["no project", "scratch", "without a project"],
+          title: "No project",
+          icon: <FolderIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            await startScratchThread();
+          },
         },
-      },
-      ...buildProjectActionItems({
-        projects: listedProjects,
-        valuePrefix: "new-thread-in",
         icon: projectIcon,
         runProject: async (project) => {
           await handleNewThread(project.id);
         },
       }),
-    ],
-    [handleNewThread, listedProjects, projectIcon, startScratchThread],
+    [currentProjectId, handleNewThread, projects, projectIcon, startScratchThread],
   );
 
   const sortedActiveThreads = useMemo(
@@ -1098,8 +1103,9 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:go-home",
-      searchTerms: ["home", "dashboard", "mission control", "start"],
+      searchTerms: ["home", "dashboard", "mission control", "start", "triage", "queue"],
       title: "Go to Home",
+      shortcutCommand: "home.open",
       icon: <HomeIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/" });
@@ -1129,6 +1135,22 @@ function OpenCommandPaletteDialog(props: {
       await navigate({
         to: "/settings",
         search: resolveSettingsNavigationSearch(location),
+      });
+    },
+  });
+  actionItems.push({
+    kind: "action",
+    value: "action:project-settings",
+    searchTerms: ["project", "settings", "scripts", "model", "rename", "checkout"],
+    title: "Project settings",
+    icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({
+        to: "/settings",
+        search: {
+          category: "projects",
+          ...(currentProjectId ? { project: currentProjectId } : {}),
+        },
       });
     },
   });

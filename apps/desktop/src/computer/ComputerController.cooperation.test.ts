@@ -115,6 +115,65 @@ function fixture(
     event: (message: Record<string, unknown>) => event(message),
   };
 }
+it("arms a new takeover after an app yield without inheriting the old yielded generation", async () => {
+  const h = fixture();
+  try {
+    const held = await h.acquire();
+    h.event({
+      type: "targetInterrupted",
+      cause: "frontmost",
+      executionGeneration: held.executionGeneration,
+    });
+    await vi.waitFor(() => expect(h.lease.holders()).toEqual([]));
+    const takeover = {
+      ...h.holder,
+      scope: { kind: "takeover" as const, appId: "app", approvalReceipt: "approval" },
+    };
+    const armed = h.lease.armTakeover(h.lease.reserveTakeover(takeover), "receipt");
+    expect(h.controller.cooperation.yielded.size).toBe(0);
+    expect(h.helper.control).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "permit",
+        executionGeneration: armed.executionGeneration,
+      }),
+    );
+  } finally {
+    h.controller.close();
+  }
+});
+it("clears retained foreground waiting state when its lease is released", async () => {
+  const h = fixture({ kind: "foreground" });
+  try {
+    const held = await h.acquire();
+    h.event({
+      type: "physicalInput",
+      cause: "move",
+      executionGeneration: held.executionGeneration,
+    });
+    h.lease.release(held);
+    expect(h.controller.cooperation.yielded.size).toBe(0);
+    expect(h.state).toHaveBeenLastCalledWith("p", expect.objectContaining({ state: null }));
+  } finally {
+    h.controller.close();
+  }
+});
+it("does not shorten native activity dwell when the wall clock jumps forward", async () => {
+  const h = fixture();
+  let clock: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    const held = await h.acquire();
+    h.ready.lastActivityAgeMs = 0;
+    await h.controller.prepareAcquisition(held);
+    const wall = Date.now();
+    clock = vi.spyOn(Date, "now").mockReturnValue(wall + 60_000);
+    expect(() => h.controller.acquire(h.holder)).toThrow(
+      expect.objectContaining({ error: { _tag: "TargetBlocked", kind: "user-active" } }),
+    );
+  } finally {
+    clock?.mockRestore();
+    h.controller.close();
+  }
+});
 it.each([
   ["native", true],
   ["native", false],
@@ -383,6 +442,119 @@ describe("cooperative computer control", () => {
       h.controller.close();
     }
   });
+  it("reports a takeover wait available only when the takeover could arm", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      h.ready.inputHeld = true;
+      await expect(h.controller.waitForTarget("held", h.holder, undefined, 300)).resolves.toEqual({
+        available: false,
+        timedOut: true,
+        reason: "user-active",
+        detail: "input-held",
+        requiresFreshObservation: true,
+      });
+      h.ready.inputHeld = false;
+      h.ready.lastUserInputAgeMs = 0;
+      await expect(
+        h.controller.waitForTarget("recent", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: false, reason: "user-active", detail: "recent-input" });
+      h.ready.monitorHealthy = false;
+      await expect(
+        h.controller.waitForTarget("monitor", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ detail: "monitor-unhealthy" });
+      h.ready.monitorHealthy = true;
+      h.ready.lastUserInputAgeMs = 5000;
+      await expect(h.controller.waitForTarget("idle", h.holder, undefined, 300)).resolves.toEqual({
+        available: true,
+        timedOut: false,
+        requiresFreshObservation: true,
+      });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("reports a takeover ready only when admission would accept its first action", async () => {
+    const h = fixture({ kind: "foreground" });
+    const takeover = {
+      ...h.holder,
+      scope: { kind: "takeover" as const, appId: "app", approvalReceipt: "approval" },
+    };
+    try {
+      // Past a 1.5 s idle rule but inside the 3 s foreground admission dwell.
+      h.ready.lastUserInputAgeMs = 2000;
+      await expect(
+        h.controller.waitForTarget("early", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: false, reason: "user-active", detail: "recent-input" });
+      expect(h.controller.takeoverIdle(takeover)).toEqual({ idle: false, detail: "recent-input" });
+      expect(h.controller.cooperation.blocked(takeover)).toBe(true);
+      h.ready.lastUserInputAgeMs = 3500;
+      await expect(
+        h.controller.waitForTarget("ready", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: true });
+      const armed = h.lease.armTakeover(h.lease.reserveTakeover(takeover), "receipt");
+      await expect(h.controller.invoke(action(armed))).resolves.toEqual({ ok: true });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("waits out another agent's foreground, reported ahead of user activity", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      h.lease.acquire({ ...h.holder, threadId: "other", scope: { kind: "foreground" } });
+      h.ready.inputHeld = true;
+      await expect(
+        h.controller.waitForTarget("busy", h.holder, undefined, 300),
+      ).resolves.toMatchObject({ available: false, timedOut: true, reason: "foreground-busy" });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("resolves a takeover wait once another agent's foreground ends", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      const other = h.lease.acquire({
+        ...h.holder,
+        threadId: "other",
+        scope: { kind: "foreground" },
+      });
+      h.ready.lastUserInputAgeMs = 5000;
+      const waiting = h.controller.waitForTarget("busy", h.holder, undefined, 5000);
+      setTimeout(() => h.lease.release(other), 50);
+      await expect(waiting).resolves.toEqual({
+        available: true,
+        timedOut: false,
+        requiresFreshObservation: true,
+      });
+    } finally {
+      h.controller.close();
+    }
+  });
+  it("waits out a refusal from outside the lease, waking on availabilityChanged", async () => {
+    const h = fixture({ kind: "foreground" });
+    try {
+      let chromeBusy = true;
+      h.controller.setAdmissionCheck(() => {
+        if (chromeBusy)
+          throw new ComputerControlError({
+            _tag: "Busy",
+            holder: "other-profile",
+            resource: "chrome",
+          });
+      });
+      h.ready.lastUserInputAgeMs = 5000;
+      await expect(
+        h.controller.waitForTarget("short", h.holder, undefined, 200),
+      ).resolves.toMatchObject({ available: false, timedOut: true, reason: "agent-busy" });
+      const waiting = h.controller.waitForTarget("long", h.holder, undefined, 5000);
+      setTimeout(() => {
+        chromeBusy = false;
+        h.controller.availabilityChanged();
+      }, 50);
+      await expect(waiting).resolves.toMatchObject({ available: true });
+    } finally {
+      h.controller.close();
+    }
+  });
   it("the kill chord latches every yielded thread, including more than sixteen", async () => {
     const h = fixture();
     try {
@@ -433,4 +605,76 @@ describe("cooperative computer control", () => {
       h.controller.close();
     }
   });
+});
+it("publishes who a queued thread waits for, again only when that changes", async () => {
+  const h = fixture();
+  try {
+    await h.acquire();
+    let token = "first";
+    h.controller.setBlockerLookup(() => ({ token, activity: "computer", profileName: "Dev" }));
+    const queued = { ...h.holder, threadId: "waiting", executionGeneration: 1 };
+    h.controller.updateGrants(queued);
+    await h.controller.prepareAcquisition(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "queued",
+      waitMs: 20_000,
+      admit: () => h.controller.acquire(queued),
+    });
+    const waitingStates = () =>
+      h.state.mock.calls.filter(
+        ([, update]) => update.threadId === "waiting" && update.state === "waiting-agent",
+      );
+    expect(waitingStates().at(-1)?.[1]).toMatchObject({
+      blockedBy: { token: "first", activity: "computer", profileName: "Dev" },
+    });
+    h.controller.availabilityChanged();
+    expect(waitingStates()).toHaveLength(1);
+    token = "second";
+    h.controller.availabilityChanged();
+    expect(waitingStates()).toHaveLength(2);
+    expect(waitingStates().at(-1)?.[1]).toMatchObject({ blockedBy: { token: "second" } });
+    const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+    h.controller.setPaused("p", "waiting", true);
+    await rejected;
+  } finally {
+    h.controller.close();
+  }
+});
+it("re-publishes when only the blocker's activity changes", async () => {
+  const h = fixture();
+  try {
+    await h.acquire();
+    let activity: "chrome-call" | "computer" = "chrome-call";
+    h.controller.setBlockerLookup(() => ({ token: "same", activity, profileName: "Dev" }));
+    const queued = { ...h.holder, threadId: "waiting", executionGeneration: 1 };
+    h.controller.updateGrants(queued);
+    await h.controller.prepareAcquisition(queued);
+    const pending = h.controller.admitWhenFree({
+      kind: "lease",
+      holder: queued,
+      profileId: "p",
+      requestId: "queued",
+      waitMs: 20_000,
+      admit: () => h.controller.acquire(queued),
+    });
+    const waitingStates = () =>
+      h.state.mock.calls.filter(
+        ([, update]) => update.threadId === "waiting" && update.state === "waiting-agent",
+      );
+    expect(waitingStates()).toHaveLength(1);
+    activity = "computer";
+    h.controller.availabilityChanged();
+    expect(waitingStates()).toHaveLength(2);
+    expect(waitingStates().at(-1)?.[1]).toMatchObject({
+      blockedBy: { token: "same", activity: "computer" },
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
+    h.controller.setPaused("p", "waiting", true);
+    await rejected;
+  } finally {
+    h.controller.close();
+  }
 });

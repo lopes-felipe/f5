@@ -183,6 +183,16 @@ export function selectThreadRightPanelState(
   return byThreadId[threadKey(threadId)] ?? EMPTY_THREAD_RIGHT_PANEL_STATE;
 }
 
+/** A visible file owns the editor shortcut even when its open action is unavailable. */
+export function selectFilePreviewVisible(state: ThreadRightPanelState): boolean {
+  return (
+    state.isOpen &&
+    state.surfaces.some(
+      (surface) => surface.id === state.activeSurfaceId && surface.kind === "file",
+    )
+  );
+}
+
 /** How a surface's header toggle presents: hidden, open behind another tab, or visible. */
 export type RightPanelSurfaceHeaderState = "closed" | "background" | "active";
 

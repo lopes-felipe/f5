@@ -201,8 +201,12 @@ export const useAgentComputerActivityStore = create<ComputerState>((set) => ({
   setLeases: (leases) =>
     set((state) => {
       const now = Date.now();
+      // An idle Chrome lease ending (Release, the idle stop, preemption) leaves nothing to
+      // pause or stop, so it opens no recent-lease window that would show the full card.
       const removed = state.leases.holders.filter(
-        (holder) => !leases.holders.some((next) => next.threadId === holder.threadId),
+        (holder) =>
+          holder.browser !== "idle" &&
+          !leases.holders.some((next) => next.threadId === holder.threadId),
       );
       return {
         leases,

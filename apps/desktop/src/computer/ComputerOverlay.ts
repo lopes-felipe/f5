@@ -7,16 +7,39 @@ import type {
 } from "@t3tools/contracts";
 import { computerModelToNative } from "@t3tools/shared/computerGeometry";
 import type { ComputerOverlaySurface, ComputerOverlayTarget } from "./ComputerController";
+import { COMPUTER_OVERLAY_ANIMATION_MS } from "./computerOverlayTiming";
 
 const DOCUMENT = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;pointer-events:none}body{box-sizing:border-box;border:2px solid var(--accent);box-shadow:inset 0 0 14px var(--accent)}#cursor{position:absolute;left:0;top:0;transition:transform 180ms ease-out;color:var(--accent);font:12px system-ui}#label{color:white;background:var(--accent);border-radius:8px;padding:4px 8px;white-space:nowrap;margin:3px 0 0 15px}#point{font-size:25px;text-shadow:0 1px 3px black}#ripple{position:absolute;width:30px;height:30px;border:2px solid var(--accent);border-radius:50%;transform:translate(-50%,-50%);animation:ripple .5s ease-out forwards}@keyframes ripple{to{opacity:0;scale:1.8}}@media(prefers-reduced-motion:reduce){#cursor{transition:none}#ripple{animation:none}}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;pointer-events:none}body{box-sizing:border-box;border:2px solid var(--accent);box-shadow:inset 0 0 14px var(--accent)}#cursor{position:absolute;left:0;top:0;transition:transform 90ms ease-out;color:var(--accent);font:12px system-ui}#label{color:white;background:var(--accent);border-radius:8px;padding:4px 8px;white-space:nowrap;margin:3px 0 0 15px}#point{font-size:25px;text-shadow:0 1px 3px black}#ripple{position:absolute;width:30px;height:30px;border:2px solid var(--accent);border-radius:50%;transform:translate(-50%,-50%);animation:ripple .5s ease-out forwards}@keyframes ripple{to{opacity:0;scale:1.8}}@media(prefers-reduced-motion:reduce){#cursor{transition:none}#ripple{animation:none}}
 #outline{position:absolute;border:2px dashed var(--accent);border-radius:4px;box-sizing:border-box}svg{position:absolute;inset:0;width:100%;height:100%}line{stroke:var(--accent);stroke-width:3;stroke-dasharray:5 5;opacity:.7}
 </style></head><body><div id="outline" hidden></div><svg><line id="trail"/></svg><div id="cursor"><div id="point">➤</div><div id="label"></div></div><script>
-window.drawComputerAction=(action)=>{document.body.style.setProperty('--accent',action.accent);document.getElementById('label').textContent=action.label;const cursor=document.getElementById('cursor');cursor.style.transform='translate('+action.x+'px,'+action.y+'px)';document.getElementById('point').style.display=action.point?'block':'none';cursor.style.transition=action.animate?'transform 180ms ease-out':'none';const outline=document.getElementById('outline');outline.hidden=!action.outline;if(action.outline){for(const key of ['left','top','width','height'])outline.style[key]=action.outline[key]+'px'}const trail=document.getElementById('trail');trail.style.display=action.from?'block':'none';if(action.from){trail.setAttribute('x1',action.from.x);trail.setAttribute('y1',action.from.y);trail.setAttribute('x2',action.x);trail.setAttribute('y2',action.y)}if(action.click){const ripple=document.createElement('div');ripple.id='ripple';ripple.style.left=action.x+'px';ripple.style.top=action.y+'px';document.body.append(ripple);setTimeout(()=>ripple.remove(),550)}};
+window.drawComputerAction=(action)=>{document.body.style.setProperty('--accent',action.accent);document.getElementById('label').textContent=action.label;const cursor=document.getElementById('cursor');cursor.style.transform='translate('+action.x+'px,'+action.y+'px)';document.getElementById('point').style.display=action.point?'block':'none';cursor.style.transition=action.animate?'transform 90ms ease-out':'none';const outline=document.getElementById('outline');outline.hidden=!action.outline;if(action.outline){for(const key of ['left','top','width','height'])outline.style[key]=action.outline[key]+'px'}const trail=document.getElementById('trail');trail.style.display=action.from?'block':'none';if(action.from){trail.setAttribute('x1',action.from.x);trail.setAttribute('y1',action.from.y);trail.setAttribute('x2',action.x);trail.setAttribute('y2',action.y)}if(action.click){const ripple=document.createElement('div');ripple.id='ripple';ripple.style.left=action.x+'px';ripple.style.top=action.y+'px';document.body.append(ripple);setTimeout(()=>ripple.remove(),550)}};
 window.f5Waiting=(message)=>{let banner=document.getElementById('waiting');if(!banner){banner=document.createElement('div');banner.id='waiting';banner.style.cssText='position:absolute;top:16px;left:50%;transform:translateX(-50%);border-radius:10px;padding:10px 16px;background:rgba(20,20,20,.92);color:white;font:14px system-ui;white-space:nowrap;pointer-events:none';document.body.append(banner)}banner.textContent=message||'';banner.hidden=!message;document.getElementById('cursor').hidden=!!message;document.getElementById('outline').hidden=true;document.getElementById('trail').style.display='none'};
 </script></body></html>`;
 export class ComputerOverlay implements ComputerOverlaySurface {
   private readonly windows = new Map<string, BrowserWindow>();
+  private readonly renders = new Map<BrowserWindow, { queued?: string }>();
+  private draw(window: BrowserWindow, script: string): void {
+    if (window.isDestroyed()) {
+      this.renders.delete(window);
+      return;
+    }
+    const pending = this.renders.get(window);
+    if (pending) {
+      pending.queued = script;
+      return;
+    }
+    const state: { queued?: string } = {};
+    this.renders.set(window, state);
+    void window.webContents
+      .executeJavaScript(script)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.renders.get(window) !== state) return;
+        this.renders.delete(window);
+        if (state.queued && !window.isDestroyed()) this.draw(window, state.queued);
+      });
+  }
   private holder: ComputerLeaseHolder | undefined;
   private lastPoint: { x: number; y: number } | undefined;
   private readonly rebuild = () => {
@@ -66,6 +89,7 @@ export class ComputerOverlay implements ComputerOverlaySurface {
           if (!window.isDestroyed()) window.showInactive();
         });
       this.windows.set(String(display.id), window);
+      window.once("closed", () => this.renders.delete(window));
     }
   }
   waiting(holder: ComputerLeaseHolder, seconds?: number): void {
@@ -135,8 +159,9 @@ export class ComputerOverlay implements ComputerOverlaySurface {
     const animate =
       !!point &&
       (!this.lastPoint || Math.hypot(point.x - this.lastPoint.x, point.y - this.lastPoint.y) >= 4);
-    const renders: Promise<unknown>[] = [];
+    if (point) this.lastPoint = point;
     for (const window of this.windows.values()) {
+      if (window.isDestroyed()) continue;
       const bounds = window.getBounds();
       const here =
         point &&
@@ -157,27 +182,11 @@ export class ComputerOverlay implements ComputerOverlaySurface {
           ? { outline: { ...outline, left: outline.left - bounds.x, top: outline.top - bounds.y } }
           : {}),
       };
-      if (!window.isDestroyed())
-        renders.push(
-          window.webContents
-            .executeJavaScript(`window.drawComputerAction(${JSON.stringify(action)})`)
-            .catch(() => undefined),
-        );
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        Promise.allSettled(renders),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, 100);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
+      this.draw(window, `window.drawComputerAction(${JSON.stringify(action)})`);
     }
     // Bounded cursor animation; authorization is rechecked after this wait.
-    if (animate) await new Promise<void>((resolve) => setTimeout(resolve, 180));
-    if (point) this.lastPoint = point;
+    if (animate)
+      await new Promise<void>((resolve) => setTimeout(resolve, COMPUTER_OVERLAY_ANIMATION_MS));
   }
   windowIds(): ReadonlyArray<number> {
     return [...this.windows.values()]
@@ -196,6 +205,7 @@ export class ComputerOverlay implements ComputerOverlaySurface {
     this.lastPoint = undefined;
     for (const window of this.windows.values()) if (!window.isDestroyed()) window.close();
     this.windows.clear();
+    this.renders.clear();
   }
   close(): void {
     this.clear();

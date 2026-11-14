@@ -5,12 +5,16 @@ import {
   COMPUTER_APP_TIERS,
   COMPUTER_BACKGROUND_POLICY,
   COMPUTER_BROWSER_IDS,
+  BACKGROUND_EVENT_APPS,
+  BACKGROUND_EVENT_CANDIDATES,
 } from "@t3tools/shared/computerApps";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const json = JSON.stringify({
   tiers: COMPUTER_APP_TIERS,
   browsers: COMPUTER_BROWSER_IDS,
   background: COMPUTER_BACKGROUND_POLICY,
+  backgroundEvents: BACKGROUND_EVENT_APPS,
+  backgroundEventCandidates: BACKGROUND_EVENT_CANDIDATES,
 });
 const files = [
   ["apps/desktop/native/computer-tiers.json", `${json}\n`],

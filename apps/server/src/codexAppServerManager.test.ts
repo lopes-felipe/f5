@@ -326,6 +326,33 @@ describe("CodexAppServerManager protocol diagnostics", () => {
     expect(rejectedError?.message).toContain(`turn/start failed: ${original}`);
     expect(rejectedError?.message).toContain("Choose another model");
   });
+  it("preserves the raw -32600 writer conflict and never treats it as missing history", () => {
+    const manager = new CodexAppServerManager();
+    const reject = vi.fn();
+    const raw = "thread not found: thread already has an active writer";
+    const context = {
+      pending: new Map([
+        [
+          "1",
+          {
+            method: "thread/resume",
+            timeout: setTimeout(() => {}, 60_000),
+            resolve: vi.fn(),
+            reject,
+          },
+        ],
+      ]),
+    };
+    (
+      manager as unknown as { handleResponse: (context: unknown, response: unknown) => void }
+    ).handleResponse(context, { id: 1, error: { code: -32600, message: raw } });
+    const error = reject.mock.calls[0]![0] as CodexJsonRpcError;
+    expect(error.code).toBe(-32600);
+    expect(error.rawMessage).toBe(raw);
+    expect(error.message).toContain("Quit the other Codex");
+    expect(isRecoverableThreadResumeError(error)).toBe(false);
+    expect(context.pending.size).toBe(0);
+  });
 
   it("does not classify model/list method errors as unsupported-model errors", () => {
     const manager = new CodexAppServerManager();
@@ -548,7 +575,12 @@ describe("isRecoverableThreadResumeError", () => {
         new Error("thread/resume failed: no rollout found for thread id abc"),
       ),
     ).toBe(true);
-    for (const reason of ["rate limit exceeded", "unauthorized", "permission denied"]) {
+    for (const reason of [
+      "rate limit exceeded",
+      "unauthorized",
+      "permission denied",
+      "thread not found: already has an active writer",
+    ]) {
       expect(isRecoverableThreadResumeError(new Error(`thread/resume failed: ${reason}`))).toBe(
         false,
       );
@@ -762,6 +794,114 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("retires a broken writer and fails requests already waiting for a response", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-writer-failure-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.166.0");
+    const internal = manager as unknown as {
+      sessions: Map<
+        string,
+        {
+          child: { stdin: import("node:stream").Writable };
+          phase?: string;
+          pending: Map<string, { wasWritten: boolean }>;
+        }
+      >;
+      sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+    };
+    const bootstrap = () =>
+      vi
+        .spyOn(internal, "sendRequest")
+        .mockImplementation(async (_context, method) =>
+          method === "thread/start" ? { thread: { id: "native-thread" } } : {},
+        );
+    const initial = bootstrap();
+    const input = {
+      threadId: asThreadId("writer-failure"),
+      cwd: directory,
+      runtimeMode: "full-access" as const,
+      providerOptions: { codex: { binaryPath } },
+    };
+    try {
+      await manager.startSession(input);
+      initial.mockRestore();
+      const context = internal.sessions.get(input.threadId)!;
+      const pending = internal.sendRequest(context, "thread/read", {});
+      const rejected = expect(pending).rejects.toThrow("EPIPE");
+      await vi.waitFor(() =>
+        expect([...context.pending.values()].some((entry) => entry.wasWritten)).toBe(true),
+      );
+      context.child.stdin.emit("error", new Error("EPIPE"));
+      await rejected;
+      expect(context.pending.size).toBe(0);
+      expect(context.phase).toBe("draining");
+      await expect(internal.sendRequest(context, "thread/read", {})).rejects.toThrow();
+      const replacementBootstrap = bootstrap();
+      try {
+        await manager.startSession(input);
+        expect(internal.sessions.get(input.threadId)).not.toBe(context);
+      } finally {
+        replacementBootstrap.mockRestore();
+      }
+    } finally {
+      initial.mockRestore();
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
+
+  it("removes a stale browser tool flag when resume falls back to a fresh thread", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-browser-fallback-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.166.0");
+    let resumed = false;
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockImplementation(async (_context, method) => {
+      if (method === "thread/resume" && !resumed) {
+        resumed = true;
+        throw new Error("thread/resume failed: thread not found");
+      }
+      if (method === "thread/start" || method === "thread/resume")
+        return { thread: { id: "fresh-without-tool" } };
+      return {};
+    });
+    try {
+      const input = {
+        threadId: asThreadId("browser-fallback"),
+        cwd: directory,
+        runtimeMode: "full-access" as const,
+        providerOptions: { codex: { binaryPath } },
+      };
+      const first = await manager.startSession({
+        ...input,
+        resumeCursor: { threadId: "missing", f5BrowserResume: true, unrelated: "keep" },
+      });
+      expect(first.resumeCursor).toMatchObject({
+        threadId: "fresh-without-tool",
+        unrelated: "keep",
+      });
+      expect(first.resumeCursor).not.toHaveProperty("f5BrowserResume");
+      await manager.startSession({
+        ...input,
+        resumeCursor: first.resumeCursor,
+        browserResume: async () => ({}),
+      });
+      expect(manager.browserResumeAvailable(input.threadId)).toBe(false);
+    } finally {
+      await cleanupCodexFixture(manager, directory);
+    }
+  });
   it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
     const binaryPath = path.join(directory, "codex.cjs");
@@ -1404,13 +1544,40 @@ describe("sendTurn", () => {
       expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
     });
 
-    it("clears the tier only after F5 applied fast to the thread", async () => {
+    it("preserves native project/profile tiers and clears any tier F5 explicitly applied", async () => {
       const { manager, context, sendRequest } = createSendTurnHarness();
       const tierSent = () => {
         const params = sendRequest.mock.calls.at(-1)?.[2] as Record<string, unknown>;
         return Object.hasOwn(params, "serviceTier") ? params.serviceTier : "omitted";
       };
       // Fast never enabled: a tier from the user's config.toml is left alone.
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBe("omitted");
+      // Native config (including a project Standard override of global Fast)
+      // is authoritative when F5 has not applied a tier.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Continue",
+        model: "gpt-test",
+      });
+      expect(tierSent()).toBe("omitted");
+
+      // Explicit Standard must override an inherited global Fast tier immediately.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Go",
+        serviceTier: "default",
+      });
+      expect(tierSent()).toBe("default");
+      // A native continuation without Codex options keeps that explicit Standard.
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Continue",
+        model: "gpt-test",
+      });
+      expect(tierSent()).toBe("omitted");
+      await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
+      expect(tierSent()).toBeNull();
       await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
       expect(tierSent()).toBe("omitted");
 
@@ -1426,7 +1593,7 @@ describe("sendTurn", () => {
       expect(tierSent()).toBe("omitted");
 
       // A thread started with fast is cleared by the first fast-off turn.
-      (context as { fastTierApplied?: boolean }).fastTierApplied = true;
+      (context as { serviceTierApplied?: boolean }).serviceTierApplied = true;
       await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Go", serviceTier: null });
       expect(tierSent()).toBeNull();
     });
@@ -4308,6 +4475,37 @@ it("ends the session when codex app-server sends a message over the size cap", (
   expect(internal.sessions.has("oversized")).toBe(false);
 });
 describe("Release 5 native operations", () => {
+  it("unarchives and retries a fork with identical parameters, without retrying other errors", async () => {
+    const manager = new CodexAppServerManager();
+    const fork = manager as unknown as {
+      forkWithArchivedRecovery: (
+        context: unknown,
+        params: Record<string, unknown>,
+        request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+      ) => Promise<unknown>;
+    };
+    const params = { threadId: "archived", lastTurnId: "boundary", deferGoalContinuation: true };
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("session archived is archived. Run codex unarchive archived"),
+      )
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ thread: { id: "forked" } });
+    await expect(fork.forkWithArchivedRecovery({}, params, request)).resolves.toEqual({
+      thread: { id: "forked" },
+    });
+    expect(request.mock.calls).toEqual([
+      ["thread/fork", params],
+      ["thread/unarchive", { threadId: "archived" }],
+      ["thread/fork", params],
+    ]);
+    const failed = vi.fn().mockRejectedValue(new Error("connection lost"));
+    await expect(fork.forkWithArchivedRecovery({}, params, failed)).rejects.toThrow(
+      "connection lost",
+    );
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
   it.each(["receipt", "history"] as const)(
     "preserves cancellation while awaiting %s before sample dispatch",
     async (phase) => {
@@ -5172,6 +5370,42 @@ describe("Codex process settlement and source draining", () => {
       expect(f.child.eventNames()).toEqual([]);
     },
   );
+  it("includes launcher stderr in pending request failures and terminal events", () => {
+    const f = fixture();
+    const reason = "Error: Missing optional dependency @openai/codex-darwin-arm64.";
+    f.child.stderr.emit(
+      "data",
+      Buffer.from("source excerpt\n" + reason + "\n at launcher\nNode.js v26\n"),
+    );
+    f.child.emit("exit", 1, null);
+    expect(f.reject.mock.calls[0]?.[0].message).toContain(reason);
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.stringContaining(reason),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+  });
+
+  it("retains late stderr in the terminal event and session error", () => {
+    const f = fixture();
+    f.child.emit("exit", 1, null);
+    f.child.stderr.emit("data", Buffer.from("Error: invalid config"));
+    f.output.emit("close");
+    f.child.stderr.emit("end");
+    expect(f.lifecycle).toHaveBeenCalledWith(
+      f.context,
+      "session/exited",
+      expect.stringContaining("Error: invalid config"),
+      TurnId.makeUnsafe("draining-turn"),
+    );
+    expect((f.context.session as { lastError?: string }).lastError).toContain(
+      "Error: invalid config",
+    );
+  });
+
   it("publishes final output and split stderr after exit before one terminal event", () => {
     const f = fixture();
     f.child.stderr.emit("data", Buffer.from("ERROR final "));

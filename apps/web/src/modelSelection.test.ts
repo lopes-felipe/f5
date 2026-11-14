@@ -220,12 +220,12 @@ describe("instance-scoped model selection", () => {
       "claude-opus-5-5",
     );
   });
-  it("keeps Fable 5.1 gated per instance and falls back for persisted bare aliases", () => {
+  it("keeps Fable 5.2 gated per instance and falls back for persisted bare aliases", () => {
     const providers = [
       provider({
         provider: ProviderDriverKind.make("claudeAgent"),
         instanceId: "claudeAgent",
-        models: ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"],
+        models: ["claude-opus-5", "claude-fable-5-2", "claude-fable-5"],
       }),
       provider({ instanceId: "claude_old", models: ["claude-opus-5", "claude-fable-5"] }),
     ];
@@ -234,12 +234,12 @@ describe("instance-scoped model selection", () => {
       getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entries[0]!).map(
         (option) => option.slug,
       ),
-    ).toContain("claude-fable-5-1");
+    ).toContain("claude-fable-5-2");
     expect(
       getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entries[1]!).map(
         (option) => option.slug,
       ),
-    ).not.toContain("claude-fable-5-1");
+    ).not.toContain("claude-fable-5-2");
     expect(
       resolveAppModelSelectionForInstance(
         ProviderInstanceId.make("claudeAgent"),
@@ -247,7 +247,7 @@ describe("instance-scoped model selection", () => {
         providers,
         "fable",
       ),
-    ).toBe("claude-fable-5-1");
+    ).toBe("claude-fable-5-2");
     expect(
       resolveAppModelSelectionForInstance(
         ProviderInstanceId.make("claude_old"),

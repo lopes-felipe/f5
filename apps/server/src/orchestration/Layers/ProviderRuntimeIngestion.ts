@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
@@ -52,6 +53,7 @@ import {
   type TaskItem,
   ThreadId,
   TurnId,
+  USAGE_ASIDE_TURN_ID_PREFIX,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -90,6 +92,7 @@ import {
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeState.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 import {
   makeOrphanedSessionExitedEvent,
   PROVIDER_SHUTDOWN_RUNTIME_EVENTS,
@@ -97,7 +100,10 @@ import {
   readPersistedLastRuntimeEvent,
   readPersistedLastRuntimeEventAt,
 } from "../../provider/orphanedTurnRecovery.ts";
-import { readPersistedInstructionContext } from "../../provider/runtimePayload.ts";
+import {
+  readIncompleteHistory,
+  readPersistedInstructionContext,
+} from "../../provider/runtimePayload.ts";
 import {
   INSTRUCTION_PROFILE_CONFIG_KEY,
   readInstructionProfile,
@@ -121,6 +127,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
+import { commandExecutionIdForRuntimeItem } from "../commandExecutionIds.ts";
 import { isSupersedableToolUpdate, makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import {
@@ -146,6 +153,7 @@ import {
   makeTurnCompletedSessionSetCommand,
   mergeProviderReportedContextTokens,
   providerCommandId,
+  retainIncompleteHistoryError,
   runtimeTurnErrorMessage,
   runtimeTurnState,
 } from "../providerTerminalLifecycle.ts";
@@ -260,6 +268,35 @@ const REASONING_HEADING_REGEX = /^\s*\*\*([^*\n]{1,200}?)\*\*/;
 // tokens since the last dispatch (or when it drops, signalling a new thinking
 // block within the same turn).
 const THINKING_TOKENS_DISPATCH_THRESHOLD = 500;
+// Providers report context usage after every model step, and each report used to become a
+// durable `thread.session.set` (about a fifth of a long-lived profile's event log). While a
+// turn runs, a report is persisted only once it moves the stored estimate by this much; the
+// latest unpersisted one is carried by the next lifecycle dispatch, so a settled turn still
+// stores the exact final value.
+const CONTEXT_TOKENS_DISPATCH_MIN_DELTA = 2_000;
+const CONTEXT_TOKENS_DISPATCH_WINDOW_FRACTION = 0.01;
+export const contextTokensDispatchThreshold = (modelContextWindowTokens: number | null) =>
+  Math.max(
+    CONTEXT_TOKENS_DISPATCH_MIN_DELTA,
+    Math.round((modelContextWindowTokens ?? 0) * CONTEXT_TOKENS_DISPATCH_WINDOW_FRACTION),
+  );
+interface PendingContextTokens {
+  readonly estimatedContextTokens: number;
+  readonly tokenUsageSource: "provider" | "estimated";
+  /** The stored estimate this report was held against. */
+  readonly storedContextTokens: number;
+}
+/**
+ * A held report is only current while the stored estimate is the one it was held against.
+ * Anything else that moved the estimate since (a compaction, for example) is newer.
+ */
+const currentPendingContextTokens = (
+  pending: PendingContextTokens | null,
+  thread: Pick<OrchestrationThread, "estimatedContextTokens">,
+) =>
+  pending !== null && pending.storedContextTokens === (thread.estimatedContextTokens ?? null)
+    ? pending
+    : null;
 const PROFILED_WORKFLOW_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
 // Tool items that never complete are evicted oldest first past this many.
 const MAX_TRACKED_TOOL_UPDATES = 512;
@@ -849,13 +886,6 @@ function commandExecutionStatusFromLifecycleEvent(
           : "completed"
         : "running";
   }
-}
-
-function commandExecutionIdForRuntimeItem(
-  threadId: ThreadId,
-  itemId: string,
-): OrchestrationCommandExecutionId {
-  return OrchestrationCommandExecutionId.makeUnsafe(`cmdexec:${threadId}:${itemId}`);
 }
 
 function fileChangeIdForRuntimeItem(threadId: ThreadId, itemId: string): OrchestrationFileChangeId {
@@ -2542,6 +2572,7 @@ const make = Effect.gen(function* () {
   let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
     Effect.void;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
+  const threadCommandExecutionQuery = yield* ThreadCommandExecutionQuery;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
@@ -2716,7 +2747,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: CommandId.makeUnsafe(
-        `workflow-profile-failure:${input.threadId}:${input.turnId}:${crypto.randomUUID()}`,
+        `workflow-profile-failure:${input.threadId}:${input.turnId}:${timeOrderedUuid()}`,
       ),
       threadId: input.threadId,
       session: {
@@ -2856,6 +2887,14 @@ const make = Effect.gen(function* () {
     capacity: LAST_THINKING_TOKENS_BY_THREAD_CACHE_CAPACITY,
     timeToLive: LAST_THINKING_TOKENS_BY_THREAD_TTL,
     lookup: () => Effect.succeed(0),
+  });
+
+  // Per-thread context-token report that was not persisted on its own (see
+  // CONTEXT_TOKENS_DISPATCH_MIN_DELTA). Cleared when it is persisted or superseded.
+  const pendingContextTokensByThread = yield* Cache.make<ThreadId, PendingContextTokens | null>({
+    capacity: LAST_THINKING_TOKENS_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: LAST_THINKING_TOKENS_BY_THREAD_TTL,
+    lookup: () => Effect.succeed(null),
   });
 
   // One upserted `reasoning.status` record per turn. The stored sequence and
@@ -3711,6 +3750,15 @@ const make = Effect.gen(function* () {
     OrchestrationCommandExecutionId,
     PendingCommandExecutionOutputState
   >();
+  // Closed commands can still receive provider tails after turn cleanup.
+  const closedCommandExecutionTurns = new Map<OrchestrationCommandExecutionId, TurnId>();
+  const rememberClosedCommandExecution = (id: OrchestrationCommandExecutionId, turnId: TurnId) => {
+    closedCommandExecutionTurns.delete(id);
+    closedCommandExecutionTurns.set(id, turnId);
+    if (closedCommandExecutionTurns.size > 512) {
+      closedCommandExecutionTurns.delete(closedCommandExecutionTurns.keys().next().value!);
+    }
+  };
   const pendingFileChanges = new Map<OrchestrationFileChangeId, PendingFileChangeState>();
   let enqueueCommandOutputFlush:
     | ((commandExecutionId: OrchestrationCommandExecutionId) => void)
@@ -3747,7 +3795,7 @@ const make = Effect.gen(function* () {
     const chunk = commandExecution.bufferedOutput;
     yield* orchestrationEngine.dispatch({
       type: "thread.command-execution.output.append",
-      commandId: CommandId.makeUnsafe(`provider:cmd-output:${crypto.randomUUID()}`),
+      commandId: CommandId.makeUnsafe(`provider:cmd-output:${timeOrderedUuid()}`),
       threadId: commandExecution.threadId,
       commandExecutionId: commandExecution.id,
       chunk,
@@ -3780,6 +3828,7 @@ const make = Effect.gen(function* () {
           continue;
         }
         clearCommandExecutionFlushTimer(commandExecution);
+        rememberClosedCommandExecution(commandExecution.id, commandExecution.turnId);
         openCommandExecutions.delete(commandExecution.id);
       }
     });
@@ -4117,6 +4166,38 @@ const make = Effect.gen(function* () {
     const commandExecution = openCommandExecutions.get(input.commandExecutionId);
     if (!commandExecution) {
       const existingPendingOutput = pendingCommandExecutionOutput.get(input.commandExecutionId);
+      let closedTurnId = closedCommandExecutionTurns.get(input.commandExecutionId);
+      if (!closedTurnId && !existingPendingOutput) {
+        // One lookup distinguishes a resumed command from output preceding its
+        // lifecycle. Further pre-lifecycle chunks reuse the pending buffer.
+        const persisted = yield* threadCommandExecutionQuery.getThreadCommandExecution({
+          threadId: input.event.threadId,
+          commandExecutionId: input.commandExecutionId,
+        });
+        if (persisted.commandExecution) {
+          closedTurnId = persisted.commandExecution.turnId;
+          rememberClosedCommandExecution(input.commandExecutionId, closedTurnId);
+        }
+      }
+      if (closedTurnId && closedTurnId !== toTurnId(input.event.turnId)) {
+        yield* Effect.logWarning("dropping command output attributed to a different turn", {
+          eventId: input.event.eventId,
+          commandExecutionId: input.commandExecutionId,
+        });
+        return;
+      }
+      if (closedTurnId) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.command-execution.output.append",
+          commandId: providerCommandId(input.event, "late-command-output"),
+          threadId: input.event.threadId,
+          commandExecutionId: input.commandExecutionId,
+          chunk: input.event.payload.delta,
+          updatedAt: input.event.createdAt,
+          createdAt: input.event.createdAt,
+        });
+        return;
+      }
       pendingCommandExecutionOutput.set(input.commandExecutionId, {
         bufferedOutput: `${existingPendingOutput?.bufferedOutput ?? ""}${input.event.payload.delta}`,
         updatedAt:
@@ -4193,6 +4274,7 @@ const make = Effect.gen(function* () {
         createdAt: input.updatedAt,
       });
       clearCommandExecutionFlushTimer(commandExecution);
+      rememberClosedCommandExecution(commandExecution.id, commandExecution.turnId);
       openCommandExecutions.delete(commandExecution.id);
     }
   });
@@ -4257,7 +4339,7 @@ const make = Effect.gen(function* () {
     yield* orchestrationEngine.dispatch({
       type: "thread.proposed-plan.upsert",
       commandId: CommandId.makeUnsafe(
-        `provider:source-proposed-plan-implemented:${implementationThreadId}:${crypto.randomUUID()}`,
+        `provider:source-proposed-plan-implemented:${implementationThreadId}:${timeOrderedUuid()}`,
       ),
       threadId: sourceThread.id,
       proposedPlan: {
@@ -4280,6 +4362,7 @@ const make = Effect.gen(function* () {
         orchestrationEngine,
         providerService,
         providerSessionDirectory,
+        threadCommandExecutionQuery,
       },
       {
         threadIds: [input.threadId],
@@ -4748,6 +4831,7 @@ const make = Effect.gen(function* () {
             orchestrationEngine,
             providerService,
             providerSessionDirectory,
+            threadCommandExecutionQuery,
           },
           {
             threadIds: [event.threadId],
@@ -4981,10 +5065,17 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" ||
         event.type === "turn.completed"
       ) {
+        const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+          threadId: thread.id,
+        });
+        const hasPendingTurnStart =
+          Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
         const reportedStatus = (() => {
           switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+            case "session.state.changed": {
+              const status = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              return hasPendingTurnStart && status === "ready" ? "starting" : status;
+            }
             case "turn.started":
               return "running";
             case "session.exited":
@@ -4995,7 +5086,7 @@ const make = Effect.gen(function* () {
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
               // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
+              return activeTurnId !== null ? "running" : hasPendingTurnStart ? "starting" : "ready";
           }
         })();
         // Providers can emit generic `ready` transitions for setup milestones
@@ -5041,6 +5132,17 @@ const make = Effect.gen(function* () {
             : isNewFailure
               ? now
               : (thread.session?.lastErrorOccurredAt ?? now);
+        // Settling a turn must not hide that sends are still fenced by an
+        // incomplete-history marker.
+        const incompleteHistory =
+          shouldApplyThreadLifecycle && lastError === null
+            ? yield* providerSessionDirectory.getBinding(thread.id).pipe(
+                Effect.map((binding) =>
+                  readIncompleteHistory(Option.getOrUndefined(binding)?.runtimePayload),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              )
+            : undefined;
 
         if (shouldApplyThreadLifecycle) {
           // Reset the live thinking-token estimate at turn boundaries so each turn
@@ -5052,20 +5154,33 @@ const make = Effect.gen(function* () {
           }
           const turnCostUsd =
             event.type === "turn.completed" ? event.payload?.totalCostUsd : undefined;
+          // This dispatch carries the latest context-token report that was not persisted on
+          // its own, so no separate event is needed for it.
+          const heldContextTokens = yield* Cache.get(pendingContextTokensByThread, thread.id);
+          if (heldContextTokens !== null) {
+            yield* Cache.set(pendingContextTokensByThread, thread.id, null);
+          }
+          const pendingContextTokens = currentPendingContextTokens(heldContextTokens, thread);
           const providerReportedContextTokens =
             event.type === "turn.completed" ? extractTurnCompletedContextTokens(event) : undefined;
-          const estimatedContextTokens = mergeProviderReportedContextTokens({
-            provider: event.provider,
-            eventType: "turn.completed",
-            providerReportedContextTokens,
-            previousEstimatedContextTokens: thread.estimatedContextTokens ?? null,
-          });
+          const estimatedContextTokens =
+            mergeProviderReportedContextTokens({
+              provider: event.provider,
+              eventType: "turn.completed",
+              providerReportedContextTokens,
+              previousEstimatedContextTokens:
+                pendingContextTokens?.estimatedContextTokens ??
+                thread.estimatedContextTokens ??
+                null,
+            }) ?? pendingContextTokens?.estimatedContextTokens;
           const tokenUsageSource =
             estimatedContextTokens === undefined
               ? undefined
-              : estimatedContextTokens === providerReportedContextTokens
-                ? ("provider" as const)
-                : ("estimated" as const);
+              : providerReportedContextTokens === undefined
+                ? pendingContextTokens?.tokenUsageSource
+                : estimatedContextTokens === providerReportedContextTokens
+                  ? ("provider" as const)
+                  : ("estimated" as const);
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -5087,9 +5202,19 @@ const make = Effect.gen(function* () {
           }
 
           if (event.type === "turn.completed") {
-            yield* orchestrationEngine.dispatch(
-              makeTurnCompletedSessionSetCommand({ event, thread, createdAt: now }),
-            );
+            const command = makeTurnCompletedSessionSetCommand({ event, thread, createdAt: now });
+            yield* orchestrationEngine.dispatch({
+              ...command,
+              session: retainIncompleteHistoryError(
+                // Without a pending report this repeats the command's own values.
+                estimatedContextTokens !== undefined
+                  ? { ...command.session, estimatedContextTokens, tokenUsageSource }
+                  : command.session,
+                thread.session,
+                incompleteHistory,
+                now,
+              ),
+            });
           } else {
             yield* orchestrationEngine.dispatch({
               type: "thread.session.set",
@@ -5098,25 +5223,30 @@ const make = Effect.gen(function* () {
               ...(event.type === "session.exited" && activeTurnId !== null
                 ? { settledTurnId: activeTurnId }
                 : {}),
-              session: {
-                threadId: thread.id,
-                status,
-                providerName: event.provider,
-                providerInstanceId:
-                  event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
-                runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-                ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
-                activeTurnId: nextActiveTurnId,
-                lastError,
-                lastErrorId,
-                lastErrorOccurredAt,
-                ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
-                ...(estimatedContextTokens !== undefined
-                  ? { estimatedContextTokens, tokenUsageSource }
-                  : {}),
-                ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
-                updatedAt: now,
-              },
+              session: retainIncompleteHistoryError(
+                {
+                  threadId: thread.id,
+                  status,
+                  providerName: event.provider,
+                  providerInstanceId:
+                    event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
+                  runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+                  ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
+                  activeTurnId: nextActiveTurnId,
+                  lastError,
+                  lastErrorId,
+                  lastErrorOccurredAt,
+                  ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
+                  ...(estimatedContextTokens !== undefined
+                    ? { estimatedContextTokens, tokenUsageSource }
+                    : {}),
+                  ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
+                  updatedAt: now,
+                },
+                thread.session,
+                incompleteHistory,
+                now,
+              ),
               createdAt: now,
             });
           }
@@ -5277,15 +5407,52 @@ const make = Effect.gen(function* () {
         const normalizedContextTokens = event.payload.contextTokens;
         const providerReportedContextTokens =
           normalizedContextTokens ?? extractThreadTokenUsageContextTokens(event.payload?.usage);
+        const storedContextTokens = thread.estimatedContextTokens ?? null;
+        const pendingContextTokens = currentPendingContextTokens(
+          yield* Cache.get(pendingContextTokensByThread, thread.id),
+          thread,
+        );
         const estimatedContextTokens = mergeProviderReportedContextTokens({
           provider: event.provider,
           eventType: "thread.token-usage.updated",
           providerReportedContextTokens,
-          previousEstimatedContextTokens: thread.estimatedContextTokens ?? null,
+          // An unpersisted report is still the previous value this one builds on.
+          previousEstimatedContextTokens:
+            pendingContextTokens?.estimatedContextTokens ?? storedContextTokens,
           authoritativeSnapshot: normalizedContextTokens !== undefined,
         });
         const modelContextWindowTokens = event.payload.modelContextWindowTokens;
-        if (estimatedContextTokens !== undefined || modelContextWindowTokens !== undefined) {
+        const tokenUsageSource =
+          estimatedContextTokens === providerReportedContextTokens
+            ? ("provider" as const)
+            : ("estimated" as const);
+        // Only a running turn is certain to end in a lifecycle dispatch that carries the
+        // report; a changed source or context window is persisted at once.
+        const persistedLater =
+          estimatedContextTokens !== undefined &&
+          storedContextTokens !== null &&
+          thread.session?.status === "running" &&
+          thread.session.activeTurnId !== null &&
+          thread.session.tokenUsageSource === tokenUsageSource &&
+          (modelContextWindowTokens === undefined ||
+            modelContextWindowTokens === thread.session.modelContextWindowTokens) &&
+          Math.abs(estimatedContextTokens - storedContextTokens) <
+            contextTokensDispatchThreshold(
+              modelContextWindowTokens ?? thread.session.modelContextWindowTokens ?? null,
+            );
+        if (estimatedContextTokens !== undefined) {
+          yield* Cache.set(
+            pendingContextTokensByThread,
+            thread.id,
+            persistedLater
+              ? { estimatedContextTokens, tokenUsageSource, storedContextTokens }
+              : null,
+          );
+        }
+        if (
+          !persistedLater &&
+          (estimatedContextTokens !== undefined || modelContextWindowTokens !== undefined)
+        ) {
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "thread-token-usage-set"),
@@ -5302,13 +5469,7 @@ const make = Effect.gen(function* () {
               lastErrorId: thread.session?.lastErrorId ?? null,
               lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
               ...(estimatedContextTokens !== undefined
-                ? {
-                    estimatedContextTokens,
-                    tokenUsageSource:
-                      estimatedContextTokens === providerReportedContextTokens
-                        ? ("provider" as const)
-                        : ("estimated" as const),
-                  }
+                ? { estimatedContextTokens, tokenUsageSource }
                 : {}),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
               updatedAt: now,
@@ -6044,7 +6205,10 @@ const make = Effect.gen(function* () {
               providerInstanceId:
                 event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-              activeTurnId: eventTurnId ?? null,
+              activeTurnId:
+                activeTurnId === null && thread.session?.usageLimit?.turnId === eventTurnId
+                  ? null
+                  : (eventTurnId ?? null),
               lastError: runtimeErrorMessage,
               lastErrorId: event.eventId,
               usageLimit: toOrchestrationUsageLimit(event.payload.usageLimit, event, thread),
@@ -6096,7 +6260,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "aside-usage"),
             threadId: thread.id,
             usageFact: {
-              turnId: TurnId.makeUnsafe("aside:" + event.eventId),
+              turnId: TurnId.makeUnsafe(USAGE_ASIDE_TURN_ID_PREFIX + event.eventId),
               threadId: thread.id,
               projectId: thread.projectId,
               provider: event.provider,

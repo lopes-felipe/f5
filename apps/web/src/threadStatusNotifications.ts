@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ThreadId } from "@t3tools/contracts";
-import { isVisibleThreadStatus, threadStatusLabel, type ThreadStatus } from "./threadStatus";
+import { isVisibleThreadStatus, type ThreadStatus } from "./threadStatus";
 import {
   getNotificationPermissionState,
   isAppWindowFocused,
@@ -195,21 +195,7 @@ export function diffThreadStatusNotifications(
   return { nextStatusByThreadId, transitions };
 }
 
-export function shouldDispatchThreadStatusNotification(input: {
-  enabled: boolean;
-  permission: ThreadStatusNotificationPermissionState;
-  appFocused: boolean;
-  status: ThreadStatus;
-}): boolean {
-  return (
-    input.enabled &&
-    input.permission === "granted" &&
-    !input.appFocused &&
-    isVisibleThreadStatus(input.status)
-  );
-}
-
-function formatThreadStatusNotificationBody(input: {
+export function formatThreadStatusNotificationBody(input: {
   threadTitle: string;
   projectName: string | null;
 }): string {
@@ -242,37 +228,4 @@ export function threadNotificationIcon(status: ThreadStatus): string | undefined
             "</svg>",
         )
     : undefined;
-}
-
-export function showThreadStatusNotification(input: {
-  NotificationConstructor: ThreadStatusNotificationConstructor;
-  silent?: boolean;
-  transition: ThreadStatusNotificationTransition;
-  focusWindow: () => void;
-  navigateToThread: (threadId: ThreadId) => void | Promise<void>;
-}): ThreadStatusNotificationInstance {
-  const title = threadStatusLabel(input.transition.status);
-  if (!title) {
-    throw new Error("Cannot dispatch a notification for a hidden thread status.");
-  }
-
-  const icon = threadNotificationIcon(input.transition.status);
-  const notification = new input.NotificationConstructor(title, {
-    body: formatThreadStatusNotificationBody({
-      threadTitle: input.transition.threadTitle,
-      projectName: input.transition.projectName,
-    }),
-    tag: input.transition.threadId,
-    ...(icon ? { icon } : {}),
-    ...(input.silent ? { silent: true } : {}),
-    data: { threadId: input.transition.threadId },
-  });
-
-  notification.addEventListener("click", () => {
-    notification.close();
-    input.focusWindow();
-    void input.navigateToThread(input.transition.threadId);
-  });
-
-  return notification;
 }

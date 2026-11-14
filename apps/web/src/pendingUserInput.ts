@@ -113,6 +113,14 @@ export function resolvePendingUserInputAnswer(
   return labels;
 }
 
+export function appendPendingUserInputFileReferences(
+  draft: PendingUserInputDraftAnswer | undefined,
+  paths: ReadonlyArray<string>,
+): PendingUserInputDraftAnswer {
+  const text = [draft?.customAnswer ?? "", ...paths].filter(Boolean).join("\n");
+  return setPendingUserInputCustomAnswer(draft, text, draft?.mentions);
+}
+
 export function setPendingUserInputCustomAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,

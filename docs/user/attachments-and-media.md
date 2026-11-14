@@ -27,6 +27,21 @@ audio. Markdown and HTML also have a source view. Images can switch between Fit 
 and chat images open in a zoomable gallery. Other files can be downloaded, and desktop offers
 **Reveal** for workspace files.
 
+The viewer also opens Word (.docx), Excel (.xlsx), PowerPoint (.pptx), OpenDocument,
+EPUB, RTF, saved notebooks, fonts, Mermaid diagrams, ZIP/TAR/GZip archives and
+SQLite databases. Office rendering and parsing happen locally in workers; saved
+notebook code is never executed. HEIC and TIFF images are decoded locally.
+Large text, CSV and TSV files use virtual rows instead of rendering the entire file.
+Audio links shared by an agent have inline playback controls.
+
+Claude and Antigravity can receive PDFs as native document content, including
+scanned pages. Files outside the provider's size or page limits, and PDFs whose
+page count cannot safely be determined, remain available by path. Document request
+budgets persist across restarts; exhausted budgets fall back to file paths.
+The current conservative counter supports direct page trees; encrypted PDFs,
+compressed object streams and cross-reference streams remain path-only. This is
+not a guarantee that a document fits the model's token context.
+
 ## HTML previews
 
 The viewer shows HTML in a sandbox, with scripts, network requests, forms and frames disabled.

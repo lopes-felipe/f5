@@ -1,6 +1,7 @@
+import { useEffect, useState } from "react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
-import type { ThreadId } from "@t3tools/contracts";
+import type { AgentComputerUseHolder, ThreadId } from "@t3tools/contracts";
 import { readNativeApi } from "../nativeApi";
 import { newCommandId } from "../lib/utils";
 export function computerStopShortcutLabel(host?: {
@@ -37,6 +38,35 @@ export async function stopComputerTurn(threadId: ThreadId): Promise<void> {
   if (failures.length)
     throw new AggregateError(failures, "Stop unconfirmed. Check the app and retry Stop.");
   useAgentComputerActivityStore.getState().confirmStopIfReleased(threadId);
+}
+/**
+ * Names who a waiting thread waits for, as main described it: another profile by name
+ * only, a thread in this profile by title.
+ */
+export function waitingForAgentText(blocker: AgentComputerUseHolder["blockedBy"]): string {
+  if (!blocker) return "Waiting for another agent";
+  const who = blocker.profileName
+    ? `an agent in “${blocker.profileName}”`
+    : blocker.threadTitle
+      ? `“${blocker.threadTitle}”`
+      : "another agent";
+  const doing =
+    blocker.activity === "chrome-call"
+      ? "using Chrome"
+      : blocker.activity === "chrome-session"
+        ? "holding Chrome"
+        : "controlling the computer";
+  return `Waiting for ${who} · ${doing}`;
+}
+
+/**
+ * Pauses the agent a waiting thread is blocked by, named only by main's opaque token.
+ * Resolves false when that agent no longer holds control.
+ */
+export async function stopBlockingAgent(token: string): Promise<boolean> {
+  const stopHolder = window.desktopBridge?.computerAutomation?.stopHolder;
+  if (!stopHolder) throw new Error("Stop it on the computer running F5.");
+  return stopHolder(token);
 }
 export async function pauseComputerThread(threadId: ThreadId, paused: boolean): Promise<void> {
   const bridge = window.desktopBridge?.computerAutomation;
@@ -87,4 +117,56 @@ export async function pausePreviewThread(threadId: ThreadId, paused: boolean): P
     return; // The authoritative main echo updates both stores.
   }
   if (!paused) useAgentBrowserActivityStore.getState().setPaused(threadId, false);
+}
+
+/** How long Chrome keeps reading as in use after its last call ends. */
+export const CHROME_BANNER_LINGER_MS = 3000;
+
+/** True while `active` and for `ms` after it last was, so back-to-back calls don't flicker. */
+export function useLinger(active: boolean, ms = CHROME_BANNER_LINGER_MS): boolean {
+  const [linger, setLinger] = useState(active);
+  useEffect(() => {
+    if (active) {
+      setLinger(true);
+      return;
+    }
+    const timer = setTimeout(() => setLinger(false), ms);
+    return () => clearTimeout(timer);
+  }, [active, ms]);
+  return active || linger;
+}
+
+/**
+ * Why Release didn't free Chrome, from the server's outcome (older servers send none).
+ * Release lives on the holding thread's own card, so the text speaks of "this thread".
+ */
+export function chromeReleaseFailureText(
+  outcome: "released" | "not-holder" | "working" | "timeout" | undefined,
+): string {
+  switch (outcome) {
+    case "not-holder":
+      return "This thread no longer holds Chrome.";
+    case "timeout":
+      return "This thread is stopping but hasn't let go of Chrome yet. Try again shortly.";
+    case "working":
+      return "This thread is busy now (a turn, a Chrome call or background work), so it keeps Chrome.";
+    default:
+      return "Chrome wasn't released. Try again.";
+  }
+}
+
+/** Tooltip for the holding thread's Release button. */
+export const CHROME_RELEASE_TITLE =
+  "Stops this thread's idle Chrome session; its next message restarts Chrome control";
+
+/** Releases a thread's idle Chrome lease: "" on success, otherwise the text to show. */
+export async function releaseChromeReservation(threadId: ThreadId): Promise<string> {
+  const api = readNativeApi();
+  if (!api?.computer) return "The host is disconnected.";
+  try {
+    const { released, outcome } = await api.computer.releaseChrome({ threadId });
+    return released ? "" : chromeReleaseFailureText(outcome);
+  } catch {
+    return "Chrome could not be released. Try again.";
+  }
 }

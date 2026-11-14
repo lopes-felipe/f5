@@ -4,6 +4,7 @@ export type DesktopStagePlatform = "mac" | "linux" | "win";
 export type DesktopStageArch = "arm64" | "x64" | "universal";
 
 function resolveDesktopRuntimeDependencies(
+  platform: DesktopStagePlatform,
   dependencies: Record<string, unknown> | undefined,
   catalog: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -12,7 +13,12 @@ function resolveDesktopRuntimeDependencies(
   }
 
   const runtimeDependencies = Object.fromEntries(
-    Object.entries(dependencies).filter(([dependencyName]) => dependencyName !== "electron"),
+    Object.entries(dependencies).filter(
+      ([dependencyName]) =>
+        dependencyName !== "electron" &&
+        // The settings portal transport includes a Unix-only native addon.
+        (dependencyName !== "dbus-next" || platform === "linux"),
+    ),
   );
 
   return resolveCatalogDependencies(runtimeDependencies, catalog, "apps/desktop");
@@ -67,6 +73,6 @@ export function stagedDesktopDependencies(input: {
       input.arch,
       input.serverDependencies["@ff-labs/fff-node"],
     ),
-    ...resolveDesktopRuntimeDependencies(input.desktopDependencies, input.catalog),
+    ...resolveDesktopRuntimeDependencies(input.platform, input.desktopDependencies, input.catalog),
   };
 }

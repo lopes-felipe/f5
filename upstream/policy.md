@@ -6,7 +6,7 @@ Edit it in a normal pull request. When you answer an open triage question, recor
 ## Port when
 
 - The change is a user-visible capability or UX improvement in a surface f5 has: threads, timeline and composer; panels; PR hub and forges; providers (Codex, Claude, Cursor, OpenCode, Grok, Antigravity, Muse, Pi); terminal; git, worktrees and checkpoints; preview browser; usage; settings; desktop.
-- It fixes a bug whose symptom can occur in f5's equivalent subsystem. Judge by behavior, not by path.
+- It fixes a bug whose symptom can occur in f5's equivalent subsystem. Judge by behavior, not by path. A fix in code f5 does not have gets `userImpact` low unless the symptom clearly reaches f5.
 - It is a measurable performance, reliability or observability improvement.
 
 ## Skip
@@ -35,6 +35,7 @@ Use the reason keys in `rules.json`.
 ## Porting defaults
 
 - Final upstream behavior wins; never restore reverted behavior.
+- Every port PR that changes shipped code adds a top-level bullet under `## [Unreleased]` in `CHANGELOG.md` (the required `Changelog` check fails without one). Describe what an f5 user notices, under Added, Changed or Fixed; a grouped port may use one bullet per user-visible change. Only a port with no user-visible effect (refactor, tests, tooling) skips the entry, and says so in the PR so it can get the `no-changelog` label.
 - New automatic behavior ships off.
 - Keep f5 defaults for `autoResumeUsageLimitedThreads`, `resumeActiveTurnsAfterRestart`, `autoPullDefaultBranch` and `storageCleanup.enabled`.
 - Keep f5's Agents panel; port only fixes that improve it.

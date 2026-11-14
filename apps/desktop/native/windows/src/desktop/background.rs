@@ -9,7 +9,9 @@ unsafe fn target(request: &Value, host: &Value, needed: &str) -> Result<HWND, Va
     let hwnd =
         app_window(s(request, "appId")).map_err(|_| foreground_required("window-unavailable"))?;
     authorize(hwnd, request, host, needed)?;
-    if owner(GetForegroundWindow()).is_ok_and(|(id, _)| id == s(request, "appId")) {
+    if owner(GetForegroundWindow())
+        .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
+    {
         return Err(blocked("user-active"));
     }
     if let Some(slot) = control(generation(request)) {
@@ -27,7 +29,7 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
     let hwnd = target(
         request,
         host,
-        if op == "type" || s(request, "action") == "setValue" {
+        if op == "type" || op == "key" || s(request, "action") == "setValue" {
             "type"
         } else {
             "click"
@@ -186,14 +188,19 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                 .map_err(|_| fail("OutcomeUnknown"))?;
             verification = Some(read_back(pattern, &text));
         }
+        "key" | "scroll" => {
+            _activation = Some(cooperation::background_action(request, before));
+            verification = Some(background_events::execute(request, host, hwnd)?);
+        }
         "openApp" => {} // Already running: do not activate it. New launches require takeover.
         _ => return Err(foreground_required("unsupported-in-background")),
     }
-    emit(json!({"type":"actionConfirmed","requestId":request["requestId"]}));
+    confirm_action(request);
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
         if GetForegroundWindow() != before
-            && owner(GetForegroundWindow()).is_ok_and(|(id, _)| id == s(request, "appId"))
+            && owner(GetForegroundWindow())
+                .is_ok_and(|(id, _)| id.eq_ignore_ascii_case(s(request, "appId")))
         {
             suspend_generation(Some(generation(request)));
             emit(

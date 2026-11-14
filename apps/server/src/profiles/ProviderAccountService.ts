@@ -17,7 +17,10 @@ import type { PtyProcess } from "../terminal/Services/PTY";
 import type { ServerSettingsShape } from "../serverSettings";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
-import { resolveClaudeCliInvocation } from "../provider/claudeSdkExecutable";
+import {
+  claudeCliSpawnEnvironment,
+  resolveClaudeCliInvocation,
+} from "../provider/claudeSdkExecutable";
 import { resolveCodexCommand } from "../provider/codexExecutable.ts";
 import { resolveInvocation } from "../spawn/resolveCommand";
 import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
@@ -126,7 +129,7 @@ export class ProviderAccountService {
       resolved.instance.driver === "codex" ? ["login", "status"] : ["auth", "status"],
     );
     const result = await runProcess(command.file, command.args, {
-      env: resolved.environment,
+      env: claudeCliSpawnEnvironment(command, resolved.environment),
       timeoutMs: 15000,
       allowNonZeroExit: true,
     });
@@ -234,7 +237,7 @@ export class ProviderAccountService {
               createProcess!({
                 shell: command.file,
                 args: [...command.args],
-                env: resolved!.environment,
+                env: claudeCliSpawnEnvironment(command, resolved!.environment),
                 cwd: this.config.stateDir,
                 cols: 100,
                 rows: 26,

@@ -10,6 +10,7 @@ import {
   resolvePendingUserInputAnswer,
   seedPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
+  appendPendingUserInputFileReferences,
   togglePendingUserInputOption,
 } from "./pendingUserInput";
 
@@ -43,6 +44,14 @@ describe("resolvePendingUserInputAnswer", () => {
     expect(setPendingUserInputCustomAnswer(draft, answer, []).mentions).toBeUndefined();
     expect(setPendingUserInputCustomAnswer(draft, "Use @src/b.ts").mentions).toBeUndefined();
   });
+  it("appends folder references without losing selected mentions in an answer", () => {
+    const customAnswer = "Use @src/a.ts";
+    const mentions = [createComposerMention("src/a.ts", 4)];
+    const next = appendPendingUserInputFileReferences({ customAnswer, mentions }, ["/repo/folder"]);
+    expect(next.customAnswer).toBe("Use @src/a.ts\n/repo/folder");
+    expect(next.mentions).toEqual(mentions);
+  });
+
   it("prefers a custom answer over a selected option", () => {
     expect(
       resolvePendingUserInputAnswer({

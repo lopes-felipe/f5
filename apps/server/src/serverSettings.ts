@@ -540,6 +540,20 @@ const makeServerSettings = Effect.gen(function* () {
       };
 
       const nextSecretKeys = new Set<string>();
+      const keptSecretKeys = new Set<string>();
+      const writtenSecretKeys = new Set<string>();
+      const inlineValues = new Map<string, string>();
+      const inlineWrites = new Map<string, SecretChange>();
+      for (const [instanceId, instance] of Object.entries(current.providerInstances)) {
+        for (const variable of instance.environment ?? []) {
+          if (variable.sensitive && !variable.valueRedacted && variable.value.length > 0) {
+            inlineValues.set(
+              providerEnvironmentSecretName({ instanceId, name: variable.name }),
+              variable.value,
+            );
+          }
+        }
+      }
       for (const [instanceId, instance] of Object.entries(next.providerInstances)) {
         if (!instance.environment) continue;
         const environment: ProviderInstanceEnvironmentVariable[] = [];
@@ -552,20 +566,20 @@ const makeServerSettings = Effect.gen(function* () {
           }
 
           nextSecretKeys.add(secretName);
-          // Provider environment resolution uses the last entry for duplicate names.
-          const previous = variable.valueRedacted
-            ? current.providerInstances[ProviderInstanceId.make(instanceId)]?.environment?.findLast(
-                (entry) => entry.name === variable.name,
-              )
-            : undefined;
-          const inlineValue =
-            previous?.sensitive && !previous.valueRedacted && previous.value.length > 0
-              ? previous.value
-              : undefined;
-          const value = inlineValue ?? variable.value;
-          if (!variable.valueRedacted || inlineValue !== undefined) {
-            if (value.length > 0) {
-              changes.push({ name: secretName, value: textEncoder.encode(value) });
+          if (variable.valueRedacted) {
+            // A redacted row still owns this slot, even when a duplicate would remove it.
+            keptSecretKeys.add(secretName);
+            const inlineValue = inlineValues.get(secretName);
+            if (inlineValue !== undefined) {
+              inlineWrites.set(secretName, {
+                name: secretName,
+                value: textEncoder.encode(inlineValue),
+              });
+            }
+          } else {
+            if (variable.value.length > 0) {
+              writtenSecretKeys.add(secretName);
+              changes.push({ name: secretName, value: textEncoder.encode(variable.value) });
               environment.push({ ...variable, value: "", valueRedacted: true });
             } else {
               changes.push({ name: secretName, value: null });
@@ -583,6 +597,11 @@ const makeServerSettings = Effect.gen(function* () {
         } satisfies ProviderInstanceConfig;
       }
 
+      // Migrate legacy inline values only when this save does not replace them.
+      for (const [name, change] of inlineWrites) {
+        if (!writtenSecretKeys.has(name)) changes.push(change);
+      }
+
       for (const [instanceId, instance] of Object.entries(current.providerInstances)) {
         for (const variable of instance.environment ?? []) {
           if (!variable.sensitive) continue;
@@ -597,7 +616,9 @@ const makeServerSettings = Effect.gen(function* () {
           ...next,
           providerInstances: providerInstances as ServerSettings["providerInstances"],
         },
-        changes,
+        changes: changes.filter(
+          (change) => change.value !== null || !keptSecretKeys.has(change.name),
+        ),
       };
     });
 

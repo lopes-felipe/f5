@@ -78,6 +78,8 @@ describe("profile Git identity", () => {
     const stateDir = process.cwd();
     for (const remote of [
       "git@github.com:org/repo.git",
+      "github.com:org/repo.git",
+      "github-work:org/repo.git",
       "https://user:password@github.com/org/repo.git",
     ]) {
       await expect(

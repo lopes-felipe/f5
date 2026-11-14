@@ -78,6 +78,24 @@ const cleanErrors = (errors: readonly unknown[]) =>
     .slice(0, MAX_ERRORS)
     .map((error) => truncateUtf8(error, MAX_ERROR_BYTES));
 
+/**
+ * A failure message from Vitest's JSON report, with a timeout named as one.
+ *
+ * The report stores each error's stack. For a test or hook that timed out, Vitest
+ * swaps in the stack of a placeholder error it created when the test was
+ * registered, so the entry reads `Error: STACK_TRACE_ERROR` followed by runner
+ * frames and says nothing about a timeout. The limit itself is not in the report;
+ * the test's duration is.
+ */
+export function describeReportedFailure(message: unknown, durationMs: unknown): unknown {
+  if (typeof message !== "string" || !/^Error: STACK_TRACE_ERROR\b/u.test(message)) return message;
+  const after =
+    typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0
+      ? ` after ${Math.round(durationMs)} ms`
+      : "";
+  return `Test or hook timed out${after}. Vitest's JSON report keeps no message or location for a timeout.`;
+}
+
 /** GitHub checks out to `<work>/<repo>/<repo>/`; keep the repository-relative part. */
 export function workspaceRelative(path: string, repoName: string): string {
   const normalized = path.replaceAll("\\", "/");
@@ -173,7 +191,9 @@ function rerunOccurrences(
           ? assertion.ancestorTitles.filter((title): title is string => typeof title === "string")
           : [];
         const title = typeof assertion.title === "string" ? assertion.title : "(unnamed test)";
-        const errors = Array.isArray(assertion.failureMessages) ? assertion.failureMessages : [];
+        const errors = (
+          Array.isArray(assertion.failureMessages) ? assertion.failureMessages : []
+        ).map((message) => describeReportedFailure(message, assertion.duration));
         occurrences.push(
           testOccurrence("rerun", file, [...ancestors, title].join(" > "), {
             ...fields,

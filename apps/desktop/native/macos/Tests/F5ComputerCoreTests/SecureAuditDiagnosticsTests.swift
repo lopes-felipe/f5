@@ -36,6 +36,19 @@ final class SecureAuditDiagnosticsTests: XCTestCase {
     }
   }
 
+  func testUnreadableSubroleIsReportedWithoutForcingAMask() {
+    XCTAssertEqual(
+      ComputerSecureAuditDiagnostics.StopReason.unreadableSubrole.rawValue, "unreadable-subrole")
+    var nodes = tree
+    nodes[2]?.subroleReadable = false
+    let diagnostics = ComputerSecureAuditDiagnostics()
+    let audit = computerSecureAudit(
+      root: 0, read: { nodes[$0] }, maxDepth: 256, maxNodes: 20000, expired: { false },
+      diagnostics: diagnostics)
+    XCTAssertEqual(audit, ComputerSecureAudit(rects: [frame], complete: true))
+    XCTAssertEqual(diagnostics.stopReasons, [.unreadableSubrole])
+  }
+
   func testRootSearchFallbackAndWalkDeadlineAreDistinguishable() {
     let nodes = tree
     let diagnostics = ComputerSecureAuditDiagnostics()

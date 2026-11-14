@@ -103,6 +103,8 @@ export const WS_METHODS = {
   previewAutomationSetPaused: "preview.automation.setPaused",
   computerAccessRevoke: "computer.access.revoke",
   computerAccessList: "computer.access.list",
+  /** Asks this profile's idle Chrome holder to give the lease up. */
+  computerChromeRelease: "computer.chrome.release",
   computerAccessListRemembered: "computer.access.listRemembered",
   computerAccessForgetRemembered: "computer.access.forgetRemembered",
   claudeChromeRestoreNativeHost: "claudeChrome.restoreNativeHost",
@@ -117,6 +119,7 @@ export const WS_METHODS = {
   serverUndoClaudeTranscriptRepair: "server.undoClaudeTranscriptRepair",
   serverReportClientDiagnostics: "server.reportClientDiagnostics",
   serverGetConfig: "server.getConfig",
+  serverGetHealth: "server.getHealth",
   serverUpdateSettings: "server.updateSettings",
   serverGetProjectSettings: "server.getProjectSettings",
   serverMigrateClientSetting: "server.migrateClientSetting",

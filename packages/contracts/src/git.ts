@@ -1,5 +1,6 @@
 import { FilesystemPath } from "./baseSchemas";
 import { Option, Schema } from "effect";
+import { GitStatusResult } from "./gitInspectionResults";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
 export * from "./gitInspectionResults";
@@ -41,6 +42,8 @@ export const GitStatusInput = Schema.Struct({
   cwd: FilesystemPath,
   /** false skips the stale-upstream fetch; passive callers such as sidebar rows read local state. */
   includeRemote: Schema.optionalKey(Schema.Boolean),
+  /** false skips forge lookup for the interim local scan; independent of upstream fetching. */
+  includePullRequest: Schema.optionalKey(Schema.Boolean),
 });
 export type GitStatusInput = typeof GitStatusInput.Type;
 
@@ -172,6 +175,7 @@ export type GitRunStackedActionResult = typeof GitRunStackedActionResult.Type;
 
 export const GitStatusInvalidatedPayload = Schema.Struct({
   cwd: Schema.NullOr(FilesystemPath),
+  status: Schema.optional(GitStatusResult),
 });
 export type GitStatusInvalidatedPayload = typeof GitStatusInvalidatedPayload.Type;
 

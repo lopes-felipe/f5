@@ -1,5 +1,8 @@
 import { useState } from "react";
-import type { DesktopKeepAwakeBlockedReason } from "@t3tools/contracts";
+import type {
+  DesktopKeepAwakeBlockedReason,
+  DesktopKeepAwakeDisplayPausedReason,
+} from "@t3tools/contracts";
 import { useDesktopKeepAwake } from "../../hooks/useDesktopKeepAwake";
 import { SettingsRow } from "./SettingsCard";
 import { Button } from "../ui/button";
@@ -18,6 +21,12 @@ const REASONS: Record<DesktopKeepAwakeBlockedReason, string> = {
   "permission-missing": "Set up is required.",
   "command-failed": "Could not change the sleep setting.",
   "blocker-failed": "Could not prevent idle sleep.",
+};
+const DISPLAY_PAUSED: Record<DesktopKeepAwakeDisplayPausedReason, string> = {
+  "panel-off": "lid closed",
+  thermal: "running hot",
+  "battery-low": "battery below 20%",
+  "battery-unknown": "battery level unavailable",
 };
 const MODES = {
   off: "Off",
@@ -48,6 +57,13 @@ export function KeepAwakeSettings() {
       !state.lid.pending &&
       (state.lid.sleepDisabled === null ||
         (state.lid.sleepDisabled !== 0 && state.lid.blockedReason === "reset-failed")));
+  const display =
+    state.active && state.displayActive
+      ? " · display on"
+      : state.active && state.keepDisplayOn
+        ? " · display may sleep" +
+          (state.displayPausedReason ? " (" + DISPLAY_PAUSED[state.displayPausedReason] + ")" : "")
+        : "";
   const status = recovery
     ? "Recovery required: sleep may still be disabled"
     : state.lid.engaged && state.lid.sleepDisabled === 0 && !state.lid.pending
@@ -55,13 +71,13 @@ export function KeepAwakeSettings() {
       : state.lid.engaged && !state.active
         ? "Releasing closed-lid keep awake…"
         : state.active
-          ? state.busyThreadCount > 0
-            ? "Awake: " +
-              state.busyThreadCount +
-              (state.busyThreadCount === 1 ? " agent working" : " agents working")
-            : state.mode === "agents"
-              ? "Awake until a few minutes after agents finish"
-              : "Awake"
+          ? (state.busyThreadCount > 0
+              ? "Awake: " +
+                state.busyThreadCount +
+                (state.busyThreadCount === 1 ? " agent working" : " agents working")
+              : state.mode === "agents"
+                ? "Awake until a few minutes after agents finish"
+                : "Awake") + display
           : state.mode === "agents"
             ? "Waiting for agents"
             : "Off";
@@ -71,7 +87,8 @@ export function KeepAwakeSettings() {
         title="Keep computer awake"
         description={
           <>
-            Prevents idle sleep. The display can still turn off. <span role="status">{status}</span>
+            Prevents idle sleep.{state.keepDisplayOn ? " " : " The display can still turn off. "}
+            <span role="status">{status}</span>
           </>
         }
         control={
@@ -93,6 +110,20 @@ export function KeepAwakeSettings() {
               ))}
             </SelectPopup>
           </Select>
+        }
+      />
+      <SettingsRow
+        title="Keep display on"
+        description="Also stops the display from sleeping and the screen from locking on idle, so your computer stays unlocked while unattended. Uses more power."
+        control={
+          <Switch
+            aria-label="Keep display on"
+            checked={state.keepDisplayOn}
+            disabled={state.mode === "off"}
+            onCheckedChange={(keepDisplayOn) =>
+              mutate(bridge.setPreferences({ keepDisplayOn: Boolean(keepDisplayOn) }))
+            }
+          />
         }
       />
       {state.lid.supported && (

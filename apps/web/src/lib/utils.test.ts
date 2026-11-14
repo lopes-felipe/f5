@@ -1,6 +1,20 @@
 import { assert, describe, it } from "vitest";
 
-import { cn, isWindowsPlatform } from "./utils";
+import { cn, isWindowsPlatform, newCommandId } from "./utils";
+
+describe("newCommandId", () => {
+  it("makes time-ordered IDs", () => {
+    const before = Date.now();
+    const id = newCommandId();
+    const after = Date.now();
+
+    assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    const createdAt = Number.parseInt(id.replaceAll("-", "").slice(0, 12), 16);
+    assert.isAtLeast(createdAt, before);
+    assert.isAtMost(createdAt, after);
+    assert.notStrictEqual(newCommandId(), id);
+  });
+});
 
 describe("cn", () => {
   it("keeps custom font sizes alongside text colours", () => {

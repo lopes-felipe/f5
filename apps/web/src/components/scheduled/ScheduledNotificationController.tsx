@@ -1,11 +1,9 @@
 import { useEffect } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { readNativeApi } from "../../nativeApi";
+import { notify } from "../../notificationCenter/notify";
 import { subscribeWsConnectionState, getWsConnectionState } from "../../wsConnectionState";
-import { toastManager } from "../ui/toast";
 /** Push/reconnect/lease driven. Notification permission is requested only by the page's button. */
 export function ScheduledNotificationController() {
-  const navigate = useNavigate();
   useEffect(() => {
     // Hosts without the scheduled-tasks API (older bridges, route tests) have nothing to drain.
     const api = readNativeApi()?.scheduledTasks;
@@ -28,34 +26,21 @@ export function ScheduledNotificationController() {
         const ids: string[] = [];
         for (const notice of batch.notifications) {
           if (stopped) break;
-          const open = () => {
-            window.focus();
-            if (notice.threadId)
-              void navigate({ to: "/$threadId", params: { threadId: notice.threadId } });
-            else void navigate({ to: "/scheduled", search: { taskId: notice.taskId } });
-          };
-          let presented = false;
-          if ("Notification" in window && Notification.permission === "granted") {
-            try {
-              const notification = new Notification(notice.title, {
-                body: notice.body,
-                tag: notice.id,
-              });
-              notification.onclick = () => {
-                notification.close();
-                open();
-              };
-              presented = true;
-            } catch {
-              /* OS presentation may be unavailable even after permission was granted. */
-            }
-          }
-          if (!presented)
-            toastManager.add({
-              title: notice.title,
-              description: notice.body,
-              actionProps: { children: "Open", onClick: open },
-            });
+          // `notify` picks toast, OS notification or both from focus and preferences, and
+          // records the run in the inbox.
+          notify({
+            id: `scheduled:${notice.id}`,
+            source: "scheduled",
+            severity: "info",
+            title: notice.title,
+            body: notice.body,
+            sourceLabel: "Scheduled",
+            dedupeKey: `scheduled:${notice.id}`,
+            target: notice.threadId
+              ? { kind: "thread", threadId: notice.threadId }
+              : { kind: "scheduled", taskId: notice.taskId },
+            os: { tag: notice.id },
+          });
           ids.push(notice.id);
         }
         if (ids.length) await api.acknowledgeNotifications({ owner, ids });
@@ -86,6 +71,6 @@ export function ScheduledNotificationController() {
       off();
       reconnect();
     };
-  }, [navigate]);
+  }, []);
   return null;
 }

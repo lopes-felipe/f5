@@ -15,6 +15,16 @@ server, or hung the writer. The patch guards child stdin and input fds, and make
 `apps/server/src/spawn/childStdin.test.ts` covers it. Drop the patch once Effect
 ships an equivalent fix.
 
+## Pierre collapsed diffs
+
+`@pierre%2Fdiffs@1.1.0-beta.19.patch` renders collapsed file headers directly,
+loading only theme data instead of building a plain or highlighted diff AST.
+Expansion uses the normal renderer. `CollapsedDiff.browser.ts` covers worker
+and main-thread rendering, updates, theme changes, and expansion. Drop this
+patch when the installed Pierre release includes equivalent behavior.
+The published Pierre package has no `src/` tree; regenerate its shipped JavaScript
+patch with `git diff --no-index` and keep the surrounding context.
+
 ## Regenerating a patch
 
 `bun patch --commit` cannot find packages installed from a URL (the pkg.pr.new

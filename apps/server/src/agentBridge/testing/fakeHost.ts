@@ -124,7 +124,20 @@ export class FakeAgentBridgeHost {
   readonly queueChanges = Effect.runSync(PubSub.unbounded<ThreadId>());
   readonly domainEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
 
+  /** Activities of threads flagged `activitiesOmitted`, loaded on request. */
+  storedActivities = new Map<string, OrchestrationThread["activities"]>();
+
   readonly shape: AgentBridgeHostShape = {
+    ensureThreadActivities: (threadIds) =>
+      Effect.sync(() => {
+        this.threads = this.threads.map((entry) => {
+          const activities = this.storedActivities.get(entry.id);
+          if (!threadIds.includes(entry.id) || !entry.activitiesOmitted || !activities)
+            return entry;
+          const { activitiesOmitted: _omitted, ...loaded } = entry;
+          return { ...loaded, activities };
+        });
+      }),
     readSnapshot: Effect.sync(() => {
       this.snapshotReads += 1;
       return {

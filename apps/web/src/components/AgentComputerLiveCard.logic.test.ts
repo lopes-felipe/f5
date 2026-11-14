@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canReleaseChrome,
   cardActivity,
   COMPUTER_TIER_LABEL,
   computerBackendLabel,
   computerGrantLabel,
   computerStatusTone,
   describeComputerAction,
+  isIdleChromeReservation,
 } from "./AgentComputerLiveCard.logic";
 
 const done = (op: string) => ({ op, status: "completed" as const });
@@ -160,5 +162,54 @@ describe("computer status tone", () => {
     expect(computerStatusTone(undefined, { held: true })).toBe("pending");
     expect(computerStatusTone(done("click"), {})).toBe("ok");
     expect(computerStatusTone(undefined, {})).toBe("off");
+  });
+});
+
+describe("canReleaseChrome", () => {
+  const idle = { browser: "idle" as const, state: "active" };
+
+  it("is true only for an idle Chrome holder at rest", () => {
+    expect(canReleaseChrome({ holder: idle })).toBe(true);
+    expect(canReleaseChrome({ holder: undefined })).toBe(false);
+    expect(canReleaseChrome({ holder: { ...idle, browser: "working" } })).toBe(false);
+    expect(canReleaseChrome({ holder: { ...idle, browser: "unknown" } })).toBe(false);
+    expect(canReleaseChrome({ holder: { state: "active" } })).toBe(false);
+    expect(canReleaseChrome({ holder: { ...idle, state: "paused" } })).toBe(false);
+    // Between Chrome calls in a turn, the agent may call Chrome again at any moment.
+    expect(canReleaseChrome({ holder: idle, turnRunning: true })).toBe(false);
+    expect(canReleaseChrome({ holder: idle, lingering: true })).toBe(false);
+  });
+});
+
+describe("isIdleChromeReservation", () => {
+  const base = {
+    holder: { browser: "idle" as const, state: "active" },
+    grantCount: 0,
+    recentActivityStatus: "completed" as const,
+  };
+
+  it("is true when the thread only holds an idle Chrome lease", () => {
+    expect(isIdleChromeReservation(base)).toBe(true);
+    expect(isIdleChromeReservation({ ...base, recentActivityStatus: undefined })).toBe(true);
+  });
+
+  it.each([
+    ["no holder", { holder: undefined }],
+    ["working Chrome", { holder: { browser: "working" as const, state: "active" } }],
+    ["unknown Chrome", { holder: { browser: "unknown" as const, state: "active" } }],
+    ["native holder", { holder: { state: "active" } }],
+    ["paused holder", { holder: { browser: "idle" as const, state: "paused" } }],
+    ["recovery holder", { holder: { browser: "idle" as const, state: "recovery" } }],
+    ["running turn", { turnRunning: true }],
+    ["linger", { lingering: true }],
+    ["local pause", { paused: true }],
+    ["grants", { grantCount: 1 }],
+    ["stop unconfirmed", { stopUnconfirmed: true }],
+    ["pending takeover", { pendingTakeover: true }],
+    ["started activity", { recentActivityStatus: "started" as const }],
+    ["recent failure", { recentActivityStatus: "failed" as const }],
+    ["recent interruption", { recentActivityStatus: "interrupted" as const }],
+  ])("is false with %s", (_label, override) => {
+    expect(isIdleChromeReservation({ ...base, ...override })).toBe(false);
   });
 });

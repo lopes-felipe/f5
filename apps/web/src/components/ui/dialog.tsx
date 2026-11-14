@@ -2,6 +2,7 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
+import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
@@ -38,6 +39,7 @@ function DialogViewport({ className, ...props }: DialogPrimitive.Viewport.Props)
     <DialogPrimitive.Viewport
       className={cn(
         "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center p-4",
+        isElectron && "pt-[max(1rem,env(titlebar-area-height,0px))]",
         className,
       )}
       data-slot="dialog-viewport"
@@ -65,6 +67,9 @@ function DialogPopup({
       <DialogViewport
         className={cn(
           bottomStickOnMobile && "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12",
+          bottomStickOnMobile &&
+            isElectron &&
+            "max-sm:pt-[max(3rem,env(titlebar-area-height,0px))]",
           layerClassName,
         )}
       >

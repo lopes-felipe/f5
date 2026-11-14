@@ -15,6 +15,13 @@ function file() {
   return path.join(directory, "history.log");
 }
 
+it("removes capability queries and replies from previously persisted history", async () => {
+  const name = file();
+  fs.writeFileSync(name, "prompt \x1b[?2026$p\x1bP+q544e\x1b\\\x9b?31u\x1b[32mdone\x1b[0m\n");
+  const { history } = await readTerminalHistory(name, 5000);
+  expect(history.value()).toBe("prompt \x1b[32mdone\x1b[0m\n");
+});
+
 it("loads only the bounded tail of a large log and returns valid UTF-8", async () => {
   const name = file();
   fs.writeFileSync(name, "🙂".repeat((2 * TERMINAL_HISTORY_MAX_BYTES) / 4) + "é");

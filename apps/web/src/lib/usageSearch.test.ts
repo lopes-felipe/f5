@@ -33,6 +33,18 @@ describe("validateUsageSearch", () => {
     ).toEqual({});
   });
 
+  it("accepts the pricing tab and keeps only a true compare flag", () => {
+    expect(validateUsageSearch({ tab: "pricing", compare: true })).toEqual({
+      tab: "pricing",
+      compare: true,
+    });
+    expect(validateUsageSearch({ compare: "1" })).toEqual({ compare: true });
+    expect(validateUsageSearch({ compare: false })).toEqual({});
+    expect(validateUsageSearch({ compare: "yes" })).toEqual({});
+    expect(needsSearchNormalization({ compare: "1" }, { compare: true })).toBe(true);
+    expect(needsSearchNormalization({ compare: true }, { compare: true })).toBe(false);
+  });
+
   it("materializes tab and range that fell back to saved defaults", () => {
     const defaults = { tab: "activity", range: "7d" } as const;
     expect(materializeUsageSearch({}, defaults)).toEqual({ tab: "activity", range: "7d" });

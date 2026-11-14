@@ -7,6 +7,8 @@ public final class ComputerSecureAuditDiagnostics {
     case depthLimit = "depth-limit"
     case unreadableNode = "unreadable-node"
     case unreadableChildren = "unreadable-children"
+    /// An element's subrole read failed. Masks only when the role can be a secure field.
+    case unreadableSubrole = "unreadable-subrole"
     case secureFieldWithoutFrame = "secure-field-without-frame"
     case searchLimit = "search-limit"
     case searchIncomplete = "search-incomplete"
@@ -24,6 +26,8 @@ public final class ComputerSecureAuditDiagnostics {
     public var count: Int
   }
   public private(set) var visitedNodes = 0
+  /// Row-container children skipped because they were scrolled out of a clipping scroll area.
+  public private(set) var prunedRows = 0
   private var nodeReadSeconds = 0.0
   public var nodeReadElapsedMs: Int { Int((nodeReadSeconds * 1000).rounded()) }
   public private(set) var maxChildren = 0
@@ -40,6 +44,7 @@ public final class ComputerSecureAuditDiagnostics {
 
   public init() {}
   public func visitNode() { visitedNodes += 1 }
+  public func pruneRows(_ count: Int) { prunedRows += max(0, count) }
   public func nodeReadDuration(seconds: Double) { nodeReadSeconds += max(0, seconds) }
   public func observedChildren(_ count: Int) { maxChildren = max(maxChildren, count) }
   public func stop(_ reason: StopReason) { stopReasons.insert(reason) }

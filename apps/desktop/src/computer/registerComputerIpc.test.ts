@@ -21,7 +21,7 @@ describe("renderer computer controls", () => {
       removeHandler: (name: string) => handlers.delete(name),
     };
     registerComputerIpc(ipc as unknown as IpcMain, input);
-    expect(handlers.size).toBe(10);
+    expect(handlers.size).toBe(11);
     expect([...handlers.keys()].some((name) => /execute|request$/.test(name))).toBe(false);
     const event = {} as IpcMainInvokeEvent;
     const answer = { requestId: "r", backendIncarnation: "b", decisions: [] };
@@ -39,11 +39,40 @@ describe("renderer computer controls", () => {
       throw new Error("monitor unhealthy");
     });
     expect(() => pause(event, "t", false, true)).toThrow("monitor unhealthy");
+    // Stopping another agent: needs a click, and without a handler nothing is stopped.
+    const stop = handlers.get("desktop-computer:stop-holder")!;
+    expect(() => stop(event, "token", false)).toThrow("trusted");
+    expect(() => stop(event, "", true)).toThrow("Invalid stop request");
+    expect(stop(event, "token", true)).toBe(false);
     input.authorize.mockImplementation(() => {
       throw new Error("Wrong profile");
     });
     for (const name of handlers.keys())
       expect(() => handlers.get(name)!(event)).toThrow("Wrong profile");
+  });
+  it("stops the holder a waiting thread names, scoped to the asking profile", async () => {
+    const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
+    const stopHolder = vi.fn(async (_profile: string, token: string) => token === "live");
+    registerComputerIpc(
+      {
+        handle: (name: string, fn: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) =>
+          handlers.set(name, fn),
+        removeHandler: (name: string) => handlers.delete(name),
+      } as unknown as IpcMain,
+      {
+        authorize: () => "profile",
+        status: () => ({ available: true as const }),
+        retry: vi.fn(),
+        answer: vi.fn(),
+        pause: vi.fn(),
+        stopHolder,
+      },
+    );
+    const stop = handlers.get("desktop-computer:stop-holder")!;
+    const event = {} as IpcMainInvokeEvent;
+    await expect(stop(event, "live", true)).resolves.toBe(true);
+    await expect(stop(event, "stale", true)).resolves.toBe(false);
+    expect(stopHolder).toHaveBeenCalledWith("profile", "live");
   });
   it("lists and revokes the profile's always-allow, and can't grant one", () => {
     const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();

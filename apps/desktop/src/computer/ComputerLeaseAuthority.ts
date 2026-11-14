@@ -38,8 +38,8 @@ interface Entry {
 }
 /**
  * Owned by Electron main, shared across every profile and provider. Holds at most one lease
- * per profile+thread: the legacy machine-wide foreground scope, one background app scope per
- * app, or one takeover (foreground limited to one app) at a time.
+ * per profile+thread: the machine-wide foreground scope, a background app scope, or a takeover
+ * (foreground limited to one app). Capable helpers allow several background leases in one app.
  */
 export class ComputerLeaseAuthority {
   private entries: Entry[] = [];
@@ -47,7 +47,14 @@ export class ComputerLeaseAuthority {
   private reservationId = 0;
   private pending: ComputerTakeoverReservation | null = null;
   private readonly listeners = new Set<(holders: ReadonlyArray<ComputerLeaseHolder>) => void>();
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly options: {
+      shareApps?: () => boolean;
+      /** A profile's display name, for other-profile refusals. */
+      profileName?: (profileId: string) => string | undefined;
+    } = {},
+  ) {}
   holders(): ReadonlyArray<ComputerLeaseHolder> {
     return this.entries.map((entry) => entry.holder);
   }
@@ -55,18 +62,21 @@ export class ComputerLeaseAuthority {
     return this.pending;
   }
   conflictsFor(input: ComputerLeaseHolder): boolean {
-    return (
-      this.entries.some(
-        ({ holder }) =>
-          !sameThread(holder, input) && computerScopesConflict(input.scope, holder.scope),
-      ) ||
-      (!!this.pending &&
-        !sameThread(this.pending.holder, input) &&
-        computerScopesConflict(input.scope, this.pending.holder.scope))
-    );
+    return this.conflictFor(input) !== undefined;
+  }
+  /** The holder or pending takeover of another thread whose scope `input` collides with. */
+  conflictFor(input: ComputerLeaseHolder): ComputerLeaseHolder | undefined {
+    const held = this.entries.find(
+      ({ holder }) => !sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope),
+    )?.holder;
+    if (held) return held;
+    const pending = this.pending?.holder;
+    return pending && !sameThread(pending, input) && this.scopesConflict(input.scope, pending.scope)
+      ? pending
+      : undefined;
   }
   scopesConflict(a: ComputerLeaseScope, b: ComputerLeaseScope): boolean {
-    return computerScopesConflict(a, b);
+    return computerScopesConflict(a, b, { shareApps: this.options.shareApps?.() ?? false });
   }
   renewal(input: ComputerLeaseHolder): boolean {
     return this.entries.some(
@@ -131,13 +141,15 @@ export class ComputerLeaseAuthority {
         holder.cooperative === input.cooperative &&
         holder.policyRevision === input.policyRevision &&
         sameComputerScope(holder.scope, input.scope)
-      )
+      ) {
+        own.lastMutationAt = this.now();
         return holder;
+      }
       // A scope change keeps the thread's single lease: only within the same session/turn.
       if (!sameTurn) throw this.busy(holder, input.profileId);
     }
     for (const { holder } of this.entries)
-      if (!sameThread(holder, input) && computerScopesConflict(input.scope, holder.scope))
+      if (!sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope))
         throw this.busy(holder, input.profileId);
     if (this.pending && !sameThread(this.pending.holder, input)) {
       if (input.scope.kind === "foreground" || input.scope.appId === this.pending.appId)
@@ -157,7 +169,7 @@ export class ComputerLeaseAuthority {
     const appId = input.scope.appId;
     if (this.pending) throw this.busy(this.pending.holder, input.profileId);
     for (const { holder } of this.entries)
-      if (!sameThread(holder, input) && computerScopesConflict(input.scope, holder.scope))
+      if (!sameThread(holder, input) && this.scopesConflict(input.scope, holder.scope))
         throw this.busy(holder, input.profileId);
     this.pending = { id: ++this.reservationId, holder: input, appId };
     this.notify();
@@ -181,7 +193,7 @@ export class ComputerLeaseAuthority {
       approvalReceipt,
     };
     for (const { holder } of this.entries)
-      if (!sameThread(holder, reservation.holder) && computerScopesConflict(scope, holder.scope))
+      if (!sameThread(holder, reservation.holder) && this.scopesConflict(scope, holder.scope))
         throw this.busy(holder, reservation.holder.profileId);
     this.pending = null;
     this.entries = this.entries.filter(({ holder }) => !sameThread(holder, reservation.holder));
@@ -260,14 +272,25 @@ export class ComputerLeaseAuthority {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-  private busy(
-    holder: Pick<ComputerLeaseHolder, "profileId" | "threadTitle">,
+  /** The refusal naming `holder` as `profileId` may see it: other profiles by name only. */
+  busy(
+    holder: Pick<ComputerLeaseHolder, "profileId" | "threadId" | "threadTitle">,
     profileId: string,
   ): ComputerControlError {
+    const name =
+      holder.profileId === profileId
+        ? undefined
+        : this.options.profileName?.(holder.profileId)?.trim();
     return new ComputerControlError({
       _tag: "Busy",
       holder: holder.profileId === profileId ? "same-profile" : "other-profile",
-      ...(holder.profileId === profileId ? { threadTitle: holder.threadTitle } : {}),
+      resource: "computer",
+      activity: "computer",
+      ...(holder.profileId === profileId
+        ? { threadTitle: holder.threadTitle, holderThreadId: holder.threadId }
+        : name
+          ? { holderProfileName: name.slice(0, 100) }
+          : {}),
     });
   }
   private notify(): void {

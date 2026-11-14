@@ -7,7 +7,9 @@ const readEnvironmentFromLoginShell = vi.fn(
   }),
 );
 const ensureWindowsPathHydrated = vi.fn(async () => undefined);
-vi.mock("@t3tools/shared/shell", () => ({ readEnvironmentFromLoginShell }));
+vi.mock("@t3tools/shared/shell", () => ({
+  readEnvironmentFromLoginShellAsync: readEnvironmentFromLoginShell,
+}));
 vi.mock("@t3tools/shared/windowsPath", () => ({ ensureWindowsPathHydrated }));
 
 const { fixPath, hydratePosixHome } = await import("./os-jank.ts");

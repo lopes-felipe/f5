@@ -45,9 +45,9 @@ describe("resolveAvailableWorkflowModelSlot", () => {
     } as const;
     expect(
       resolveAvailableWorkflowModelSlot(slot, [
-        claudeProvider(["claude-opus-5", "claude-fable-5-1"]),
+        claudeProvider(["claude-opus-5", "claude-fable-5-2"]),
       ]),
-    ).toEqual({ ...slot, model: "claude-fable-5-1" });
+    ).toEqual({ ...slot, model: "claude-fable-5-2" });
     expect(
       resolveAvailableWorkflowModelSlot(slot, [
         claudeProvider(["claude-opus-5", "claude-fable-5"]),

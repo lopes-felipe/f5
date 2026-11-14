@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReleaseCandidate, StableRequest } from "./release/release-candidate.ts";
 import type { WorkflowRun } from "./release/release-github.ts";
 import { parsePublicationLease } from "./release/release-lease.ts";
@@ -182,6 +182,12 @@ beforeEach(() => {
             ]
           : [],
       };
+    if (path.startsWith("actions/workflows/ci.yml/runs?"))
+      return {
+        workflow_runs: state.ci.filter((r) =>
+          path.endsWith("head_sha=" + r.head_sha + "&per_page=100"),
+        ),
+      };
     if (path.startsWith("releases/tags/")) return { published_at: "2026-10-30T10:15:00Z" };
     if (path.startsWith("commits/"))
       return { commit: { committer: { date: "2026-10-30T10:00:00Z" } } };
@@ -244,6 +250,72 @@ it("checks only the pinned stable source and holds it in beta mode", async () =>
   expect(state.qualification.mock.calls.map((c) => c[0])).toEqual([state.b]);
   expect(state.assemble).not.toHaveBeenCalled();
   expect(state.publish).not.toHaveBeenCalled();
+});
+describe("a pending stable source whose CI has not passed", () => {
+  beforeEach(() => {
+    vi.stubEnv("RELEASE_AUTOMATION_MODE", "all");
+    state.intents = [pinned()];
+    state.failedCi.add(state.b);
+  });
+  it.each([
+    { conclusion: "failure", attempt: 1 },
+    { conclusion: "timed_out", attempt: 2 },
+  ])("reruns $conclusion CI at attempt $attempt", async ({ conclusion, attempt }) => {
+    Object.assign(state.ci[0]!, { conclusion, run_attempt: attempt });
+    await expect(reconcileReleases()).resolves.toBeUndefined();
+    expect(state.gh).toHaveBeenCalledExactlyOnceWith([
+      "api",
+      "-X",
+      "POST",
+      "repos/lopes-felipe/f5/actions/runs/200/rerun-failed-jobs",
+    ]);
+    expect(state.assemble).not.toHaveBeenCalled();
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      status: "retrying-ci",
+      reason: `Re-running failed stable CI jobs (attempt ${attempt + 1} of 3)`,
+      ciRun: 200,
+      ciAttempt: attempt + 1,
+    });
+  });
+  it.each([
+    { mode: "all", conclusion: "failure", attempt: 3 },
+    { mode: "all", conclusion: "cancelled", attempt: 1 },
+    { mode: "shadow", conclusion: "failure", attempt: 1 },
+  ])(
+    "fails visibly for $conclusion CI at attempt $attempt in $mode mode",
+    async ({ mode, conclusion, attempt }) => {
+      vi.stubEnv("RELEASE_AUTOMATION_MODE", mode);
+      Object.assign(state.ci[0]!, { conclusion, run_attempt: attempt });
+      await expect(reconcileReleases()).rejects.toThrow(
+        /Stable CI is blocked.*gh run rerun 200 --failed/,
+      );
+      expect(state.gh).not.toHaveBeenCalled();
+      expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+        status: "blocked-stable-ci",
+        ciRun: 200,
+        ciAttempt: attempt,
+      });
+    },
+  );
+  it("fails visibly with the manual command when GitHub refuses the rerun", async () => {
+    Object.assign(state.ci[0]!, { conclusion: "failure", run_attempt: 1 });
+    state.gh.mockImplementationOnce(() => {
+      throw new Error("HTTP 403: This workflow is already running");
+    });
+    await expect(reconcileReleases()).rejects.toThrow(
+      /Stable CI is blocked \(failure, attempt 1\).*gh run rerun 200 --failed \(automatic rerun failed: Error: HTTP 403/,
+    );
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      status: "blocked-stable-ci",
+      ciRun: 200,
+      ciAttempt: 1,
+    });
+  });
+  it("waits without rerunning while stable CI is still running", async () => {
+    Object.assign(state.ci[0]!, { status: "in_progress", conclusion: null });
+    await expect(reconcileReleases()).resolves.toBeUndefined();
+    expect(state.gh).not.toHaveBeenCalled();
+  });
 });
 it.each([
   { mode: "all", conclusion: "failure", attempt: 1 },

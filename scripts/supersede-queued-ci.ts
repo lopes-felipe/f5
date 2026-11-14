@@ -1,12 +1,8 @@
 import { pathToFileURL } from "node:url";
 import { runGh, type Gh } from "./lib/github-cli.ts";
 import { acceptanceOnlyFiles } from "./lib/release-source.ts";
+import { protectsReleaseIntent, trustedMainCiRun, type CommitPage } from "./lib/main-ci-runs.ts";
 import type { WorkflowRun } from "./release/release-github.ts";
-
-interface CommitPage {
-  files: { filename: string; previous_filename?: string }[];
-  parents: { sha: string }[];
-}
 
 /** Supersede older main CI runs only while they are still observed queued. */
 export async function supersedeQueuedCi(repository: string, gh: Gh = runGh): Promise<number[]> {
@@ -16,13 +12,7 @@ export async function supersedeQueuedCi(repository: string, gh: Gh = runGh): Pro
     JSON.parse(await gh(["api", root + path])) as T;
   const pages = async <T>(path: string): Promise<T[]> =>
     JSON.parse(await gh(["api", "--paginate", "--slurp", root + path])) as T[];
-  const trusted = (run: WorkflowRun) =>
-    run.path === ".github/workflows/ci.yml" &&
-    run.event === "push" &&
-    run.head_branch === "main" &&
-    run.repository.full_name === repository &&
-    run.head_repository.full_name === repository &&
-    /^[a-f0-9]{40}$/.test(run.head_sha);
+  const trusted = (run: WorkflowRun) => trustedMainCiRun(run, repository);
   const workflow = "actions/workflows/ci.yml/runs?branch=main&event=push&";
   const newestRuns = (await read<{ workflow_runs: WorkflowRun[] }>(workflow + "per_page=100"))
     .workflow_runs;
@@ -41,19 +31,7 @@ export async function supersedeQueuedCi(repository: string, gh: Gh = runGh): Pro
     if (cached) return cached;
     const commits = await pages<CommitPage>("commits/" + sha + "?per_page=100");
     const files = commits.flatMap((commit) => commit.files);
-    // Truncated diffs and true merges cannot prove that first-parent intent
-    // changes are absent. Preserve those sources rather than infer eligibility.
-    protectedSources.set(
-      sha,
-      commits.length === 0 ||
-        files.length >= 3000 ||
-        commits.some((commit) => commit.parents.length > 1) ||
-        files.some(
-          (file) =>
-            file.filename === "release-intent.json" ||
-            file.previous_filename === "release-intent.json",
-        ),
-    );
+    protectedSources.set(sha, protectsReleaseIntent(commits));
     commitFiles.set(sha, files);
     return files;
   };

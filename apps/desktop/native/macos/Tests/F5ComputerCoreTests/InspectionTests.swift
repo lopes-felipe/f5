@@ -98,6 +98,62 @@ final class InspectionTests: XCTestCase {
     XCTAssertEqual(visited, [0, 1, 3, 2])
     XCTAssertFalse(truncated)
   }
+  func testLargeRowContainerListsVisibleRowsSoLaterSiblingsAreReached() {
+    // Window(0) > [table(1) with 12,000 rows, button(2)]; rows 0..<20 are visible.
+    let rows = Array(1000..<13000)
+    let column = 3
+    /// `truncated` combines the walk's caps with omitted rows, as the helper reports it.
+    func walk(items: ComputerSecureAuditRowItems<Int>?, root: Int = 0)
+      -> (visited: [Int], truncated: Bool)
+    {
+      var visited: [Int] = []
+      var omitted = false
+      let capped = computerInspectWalk(root: root, maxNodes: 400, stop: { false }) { id in
+        visited.append(id)
+        switch id {
+        case 0: return ([1, 2], true)
+        case 1:
+          let listed = computerInspectChildren(
+            role: "AXTable", children: rows + [column], isRoot: id == root, rowItems: { items })
+          omitted = omitted || listed.omitted
+          return (listed.children, true)
+        // Like the helper, rows outside the window are visited but not emitted.
+        default: return ([], id < 1020)
+        }
+      }
+      return (visited, capped || omitted)
+    }
+    let report = ComputerSecureAuditRowItems(
+      all: rows, visible: Array(rows.prefix(20)), others: [column])
+    let pruned = walk(items: report)
+    XCTAssertTrue(pruned.visited.contains(2))
+    XCTAssertTrue(pruned.visited.contains(column))
+    XCTAssertEqual(pruned.visited.count, 24)
+    XCTAssertTrue(pruned.truncated, "omitted rows are reported")
+    // Inspecting the table itself lists its rows from the top instead.
+    let drilled = walk(items: report, root: 1)
+    XCTAssertEqual(Array(drilled.visited.prefix(3)), [1, 1000, 1001])
+    XCTAssertTrue(drilled.visited.contains(1500))
+    // Without a visible-row report the off-screen rows spend the visited cap first.
+    let full = walk(items: nil)
+    XCTAssertTrue(full.truncated)
+    XCTAssertFalse(full.visited.contains(2))
+    let empty = walk(items: ComputerSecureAuditRowItems(all: rows, visible: [], others: [column]))
+    XCTAssertTrue(empty.truncated)
+  }
+  func testInspectChildrenKeepsSmallAndNonRowContainersWhole() {
+    let items = ComputerSecureAuditRowItems(all: [1, 2], visible: [1], others: [Int]())
+    let many = Array(0..<1000)
+    func children(_ role: String, _ list: [Int], isRoot: Bool = false) -> [Int] {
+      computerInspectChildren(role: role, children: list, isRoot: isRoot, rowItems: { items })
+        .children
+    }
+    // A 999-row Finder list is still listed in full; pruning starts at the visited-budget scale.
+    XCTAssertEqual(children("AXTable", Array(0..<999)), Array(0..<999))
+    XCTAssertEqual(children("AXGroup", many), many)
+    XCTAssertEqual(children("AXList", many), [1])
+    XCTAssertEqual(children("AXList", many, isRoot: true), many)
+  }
   func testEmittedAndVisitedCapsAreSoftAndReportTruncation() {
     var visits = 0
     XCTAssertTrue(

@@ -90,6 +90,43 @@ function lastDispatchedScripts(): ProjectScript[] | undefined {
 }
 
 describe("ProjectActionsSettings", () => {
+  it("persists an action's explicit stop-on-settlement opt-in", async () => {
+    await mount();
+    await page.getByRole("button", { name: "Add action" }).click();
+    await page.getByLabelText("Name").fill("Dev");
+    await page.getByLabelText("Command").fill("bun dev");
+    await page.getByRole("switch", { name: "Stop this action when the thread settles" }).click();
+    await page.getByRole("button", { name: "Save action" }).click();
+    await expect.poll(() => state.dispatchCommand.mock.calls.length).toBe(1);
+    expect(lastDispatchedScripts()).toEqual([
+      {
+        id: "dev",
+        name: "Dev",
+        command: "bun dev",
+        icon: "play",
+        runOnWorktreeCreate: false,
+        stopOnSettle: true,
+      },
+    ]);
+  });
+
+  it.each([true, false])(
+    "saves an edited action with stop-on-settlement enabled=%s",
+    async (enabled) => {
+      state.scripts = [{ ...SETUP_SCRIPT, stopOnSettle: true }];
+      await mount();
+      await page.getByRole("button", { name: "Edit Install" }).click();
+      const stop = page.getByRole("switch", { name: "Stop this action when the thread settles" });
+      await expect.element(stop).toBeChecked();
+      if (!enabled) await stop.click();
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await expect.poll(() => state.dispatchCommand.mock.calls.length).toBe(1);
+      expect(lastDispatchedScripts()).toEqual([
+        { ...SETUP_SCRIPT, ...(enabled ? { stopOnSettle: true } : {}) },
+      ]);
+    },
+  );
+
   it("shows the empty state and adds an action", async () => {
     await mount();
     await expect.element(page.getByText("No actions yet.", { exact: false })).toBeVisible();

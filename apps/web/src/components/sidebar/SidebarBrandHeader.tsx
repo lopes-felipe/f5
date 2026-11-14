@@ -10,10 +10,11 @@ import {
   useCanNavigateHistory,
   type HistoryDirection,
 } from "../../navigationHistory";
+import { NotificationsBell } from "../../notificationCenter/NotificationsBell";
 import { ProfileSwitcher } from "../ProfileSwitcher";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
-import { SidebarHeader, SidebarTrigger } from "../ui/sidebar";
+import { SidebarHeader, SidebarTrigger, useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { DesktopUpdateInstalledNotesDialog, DesktopUpdatePill } from "./DesktopUpdatePill";
 import type { DesktopUpdateController } from "./useDesktopUpdate";
@@ -44,9 +45,10 @@ function F5Wordmark() {
 
 /** Wordmark only; the version and release stage live in the tooltip. */
 function SidebarWordmark() {
+  const { isMobile } = useSidebar();
   return (
     <div className="flex min-w-0 items-center gap-1">
-      <SidebarTrigger className="shrink-0 text-muted-foreground md:hidden" />
+      {isMobile ? <SidebarTrigger className="shrink-0 text-muted-foreground" /> : null}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -97,7 +99,7 @@ function HistoryNavigationButton({ direction }: { direction: HistoryDirection })
   );
 }
 
-/** Wordmark, history navigation (desktop), profile switcher and update controls. */
+/** Wordmark, history navigation (desktop), notifications, profile switcher and update controls. */
 export function SidebarBrandHeader({ update }: { update: DesktopUpdateController }) {
   return (
     <SidebarHeader
@@ -115,6 +117,7 @@ export function SidebarBrandHeader({ update }: { update: DesktopUpdateController
       ) : null}
       <div className="ml-auto flex min-w-0 items-center gap-1">
         {isElectron && update.showButton ? <DesktopUpdatePill update={update} /> : null}
+        <NotificationsBell />
         <ProfileSwitcher />
       </div>
       {isElectron ? <DesktopUpdateInstalledNotesDialog update={update} /> : null}

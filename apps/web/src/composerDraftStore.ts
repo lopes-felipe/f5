@@ -31,7 +31,7 @@ import {
   type ProviderModelOptions,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { normalizeCustomModelSlug, normalizeModelSlug } from "@t3tools/shared/model";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { DEFAULT_INTERACTION_MODE, type ChatImageAttachment } from "./types";
 import {
@@ -65,6 +65,17 @@ export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
 export const MAX_PROMPT_STASH_IMAGE_DATA_CHARS = 3_000_000;
+
+/** Instance picks are resolved by the picker; only legacy picks need alias migration. */
+function normalizeDraftModel(
+  model: string | null | undefined,
+  provider: ProviderKind | null,
+  instanceId: ProviderInstanceId | null | undefined,
+) {
+  return instanceId
+    ? normalizeCustomModelSlug(model, provider ?? "codex")
+    : normalizeModelSlug(model, provider ?? "codex");
+}
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
@@ -571,6 +582,8 @@ export type PromptStashRestoreResult =
   | { readonly status: "failed"; readonly message: string };
 
 export interface DraftThreadState extends WorktreeCreationOptions {
+  /** True while admission is unresolved; "accepted" reserves until server sync. Never persisted. */
+  promoting?: boolean | "accepted";
   projectId: ProjectId;
   createdAt: string;
   runtimeMode: RuntimeMode;
@@ -678,7 +691,7 @@ export function selectProjectDraftThread(
       return null;
     }
     const draftThread = state.draftThreadsByThreadId[threadId];
-    if (!draftThread || draftThread.projectId !== projectId) {
+    if (!draftThread || draftThread.promoting || draftThread.projectId !== projectId) {
       return null;
     }
     return {
@@ -693,7 +706,7 @@ export function selectProjectDraftThread(
       continue;
     }
     const draftThread = state.draftThreadsByThreadId[threadId];
-    if (!draftThread || draftThread.projectId !== projectId) {
+    if (!draftThread || draftThread.promoting || draftThread.projectId !== projectId) {
       continue;
     }
     const draftThreadCreatedAtMs = Date.parse(draftThread.createdAt);
@@ -752,6 +765,7 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     options: {
       sharedFilesystemConfirmed?: boolean;
+      promoting?: boolean | "accepted";
       branch?: string | null;
       worktreePath?: string | null;
       projectId?: ProjectId;
@@ -1351,7 +1365,9 @@ function normalizePromptStashEntry(value: unknown): PromptStashEntry | null {
   const provider = normalizeProviderKind(draft.provider);
   const providerInstanceId = normalizeProviderInstanceId(draft.providerInstanceId);
   const model =
-    typeof draft.model === "string" ? normalizeModelSlug(draft.model, provider ?? "codex") : null;
+    typeof draft.model === "string"
+      ? normalizeDraftModel(draft.model, provider, providerInstanceId)
+      : null;
   const attachments = Array.isArray(draft.attachments)
     ? draft.attachments.flatMap((attachment) => {
         const normalized = normalizePersistedAttachment(attachment);
@@ -1564,7 +1580,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     const providerInstanceId = normalizeProviderInstanceId(draftCandidate.providerInstanceId);
     const model =
       typeof draftCandidate.model === "string"
-        ? normalizeModelSlug(draftCandidate.model, provider ?? "codex")
+        ? normalizeDraftModel(draftCandidate.model, provider, providerInstanceId)
         : null;
     const modelOptions = normalizeProviderModelOptions(draftCandidate.modelOptions, provider, {
       effort:
@@ -1779,7 +1795,11 @@ function toPersistedComposerDraftState(
   }
   return {
     draftsByThreadId: persistedDraftsByThreadId,
-    draftThreadsByThreadId: snapshot.draftThreadsByThreadId,
+    draftThreadsByThreadId: Object.fromEntries(
+      Object.entries(snapshot.draftThreadsByThreadId).map(
+        ([id, { promoting: _promoting, ...draft }]) => [id, draft],
+      ),
+    ),
     projectDraftThreadIdByProjectId: snapshot.projectDraftThreadIdByProjectId,
     promptStashes: snapshot.promptStashes,
   } as PersistedComposerDraftStoreState;
@@ -1962,6 +1982,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           if (
             previousThreadIdForProjectKey &&
             previousThreadIdForProjectKey !== threadId &&
+            !state.draftThreadsByThreadId[previousThreadIdForProjectKey]?.promoting &&
             !Object.values(nextProjectDraftThreadIdByProjectId).includes(
               previousThreadIdForProjectKey,
             )
@@ -1987,7 +2008,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           moved = true;
           const nextDraftThreadsByThreadId: Record<ThreadId, DraftThreadState> = {
             ...state.draftThreadsByThreadId,
-            [toThreadId]: { ...draftThread, createdAt: new Date().toISOString() },
+            [toThreadId]: { ...draftThread, promoting: false, createdAt: new Date().toISOString() },
           };
           delete nextDraftThreadsByThreadId[fromThreadId];
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
@@ -2033,6 +2054,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextWorktreePath = workspace.worktreePath;
           const nextDraftThread: DraftThreadState = {
             projectId: nextProjectId,
+            ...(existing.promoting !== undefined ? { promoting: existing.promoting } : {}),
+            ...(options.promoting !== undefined ? { promoting: options.promoting } : {}),
             createdAt:
               options.createdAt === undefined
                 ? existing.createdAt
@@ -2050,6 +2073,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               : {}),
           };
           const isUnchanged =
+            nextDraftThread.promoting === existing.promoting &&
             nextDraftThread.projectId === existing.projectId &&
             nextDraftThread.createdAt === existing.createdAt &&
             nextDraftThread.runtimeMode === existing.runtimeMode &&
@@ -2073,7 +2097,13 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             }
             nextProjectDraftThreadIdByProjectId[key] = existingThreadId;
           }
-          nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] = threadId;
+          if (
+            options.promoting === undefined ||
+            !nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] ||
+            nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] === threadId
+          ) {
+            nextProjectDraftThreadIdByProjectId[nextProjectDraftKey] = threadId;
+          }
           return {
             draftThreadsByThreadId: {
               ...state.draftThreadsByThreadId,
@@ -2343,12 +2373,17 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         });
       },
       setModel: (threadId, model) => {
+        // Set the provider instance first for resolved picks, so alias-shaped custom names stay exact.
         if (threadId.length === 0) {
           return;
         }
         set((state) => {
           const existing = state.draftsByThreadId[threadId];
-          const normalizedModel = normalizeModelSlug(model, existing?.provider ?? "codex") ?? null;
+          const normalizedModel = normalizeDraftModel(
+            model,
+            existing?.provider ?? null,
+            existing?.providerInstanceId,
+          );
           if (!existing && normalizedModel === null) {
             return state;
           }
@@ -3367,7 +3402,11 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           providerInstanceId: normalizeProviderInstanceId(selection.providerInstanceId),
           model:
             typeof selection.model === "string"
-              ? (normalizeModelSlug(selection.model, provider ?? "codex") ?? null)
+              ? normalizeDraftModel(
+                  selection.model,
+                  provider,
+                  normalizeProviderInstanceId(selection.providerInstanceId),
+                )
               : null,
           modelOptions: normalizeProviderModelOptions(selection.modelOptions) ?? null,
           runtimeMode: isRuntimeMode(selection.runtimeMode) ? selection.runtimeMode : null,
@@ -3582,6 +3621,7 @@ export function useComposerThreadDraft(threadId: ThreadId): ComposerThreadDraftS
 
 /**
  * Clear draft threads that have been promoted to server threads.
+ * Pending admission keeps its context for rollback; accepted admission can be reconciled.
  *
  * Call this after a snapshot sync so the route guard in `_chat.$threadId`
  * sees the server thread before the draft is removed — avoids a redirect
@@ -3591,9 +3631,26 @@ export function clearPromotedDraftThreads(serverThreadIds: ReadonlySet<ThreadId>
   const store = useComposerDraftStore.getState();
   const draftThreadIds = Object.keys(store.draftThreadsByThreadId) as ThreadId[];
   for (const draftId of draftThreadIds) {
-    if (serverThreadIds.has(draftId)) {
+    if (serverThreadIds.has(draftId) && store.getDraftThread(draftId)?.promoting !== true) {
       store.clearDraftThread(draftId);
     }
+  }
+}
+
+/** Settle admission without exposing an accepted draft for reuse before its server shell arrives. */
+export function settleDraftThreadPromotion(
+  threadId: ThreadId,
+  outcome: "accepted" | "restored",
+  serverThreadExists = false,
+): void {
+  const store = useComposerDraftStore.getState();
+  if (!store.getDraftThread(threadId)?.promoting) return;
+  if (outcome === "accepted" && serverThreadExists) {
+    store.clearDraftThread(threadId);
+  } else {
+    store.setDraftThreadContext(threadId, {
+      promoting: outcome === "accepted" ? "accepted" : false,
+    });
   }
 }
 
@@ -3639,7 +3696,11 @@ export function pruneOrphanedDraftThreads(validProjectIds: ReadonlySet<string>):
 
     const referencedThreadIds = new Set(Object.values(nextProjectDraftThreadIdByProjectId));
     for (const threadId of Object.keys(nextDraftThreadsByThreadId) as ThreadId[]) {
-      if (referencedThreadIds.has(threadId)) {
+      if (
+        referencedThreadIds.has(threadId) ||
+        nextDraftThreadsByThreadId[threadId]?.promoting ||
+        (state.draftsByThreadId[threadId] && !isEmptyThreadDraft(state.draftsByThreadId[threadId]!))
+      ) {
         continue;
       }
       delete nextDraftThreadsByThreadId[threadId];

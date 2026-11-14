@@ -424,9 +424,11 @@ export function recordModelSelection(
   const store = useModelPreferencesStore.getState();
   store.setLastProvider(provider);
   store.setLastModel(provider, model);
-  store.setLastModelOptions(provider, modelOptions);
+  if (modelOptions !== undefined) store.setLastModelOptions(provider, modelOptions);
 
-  const normalized = normalizeProviderModelOptions(modelOptions);
+  const normalized = normalizeProviderModelOptions(
+    modelOptions === undefined ? store.lastModelOptions : modelOptions,
+  );
   const slice = pickProviderModelOptions(provider, normalized);
   store.recordRecentModelSelection({
     provider,

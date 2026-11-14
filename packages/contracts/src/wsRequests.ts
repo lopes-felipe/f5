@@ -114,6 +114,7 @@ import {
   UpstreamControlPortQueueActionInput,
   UpstreamIgnorePortConflictsInput,
   UpstreamUndoDecisionsInput,
+  UpstreamExpireBacklogInput,
   UpstreamUnlinkPortInput,
   UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
@@ -201,6 +202,7 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetRewindDraftsInput,
   OrchestrationGetThreadPeekInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationGetSnapshotInput,
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetThreadCommandExecutionInput,
@@ -212,6 +214,7 @@ import {
   OrchestrationGetThreadTailDetailsInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationSkipDocumentReaderPassInput,
@@ -329,6 +332,7 @@ import {
   UsageGetAccountsInput,
   UsageGetQuotaHistoryInput,
   UsageGetSummaryInput,
+  UsageGetThreadTurnsInput,
 } from "./usage";
 import {
   WorkflowPlatformCreateRunInput,
@@ -414,6 +418,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
   tagRequestBody(USAGE_WS_METHODS.getQuotaHistory, UsageGetQuotaHistoryInput),
   tagRequestBody(USAGE_WS_METHODS.analyzeClaudeUsage, UsageAnalyzeClaudeUsageInput),
+  tagRequestBody(USAGE_WS_METHODS.getThreadTurns, UsageGetThreadTurnsInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.historyRecovery, NativeHistoryRecoveryInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.resolve, NativeOperationResolutionInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.fork, NativeForkInput),
@@ -437,6 +442,7 @@ const WebSocketRequestBody = Schema.Union([
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getRewindDrafts, OrchestrationGetRewindDraftsInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getThreadPeek, OrchestrationGetThreadPeekInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.getThreadPeeks, OrchestrationGetThreadPeeksInput),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.getThreadHistoryPage,
     OrchestrationGetThreadHistoryPageInput,
@@ -504,6 +510,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow,
     OrchestrationRetryCodeReviewWorkflowInput,
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow,
+    OrchestrationPostCodeReviewWorkflowInput,
   ),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow,
@@ -588,6 +598,7 @@ const WebSocketRequestBody = Schema.Union([
     Schema.Struct({ threadId: ThreadId, appId: Schema.String }),
   ),
   tagRequestBody(WS_METHODS.computerAccessList, Schema.Struct({ threadId: ThreadId })),
+  tagRequestBody(WS_METHODS.computerChromeRelease, Schema.Struct({ threadId: ThreadId })),
   tagRequestBody(
     WS_METHODS.claudeChromeRestoreNativeHost,
     Schema.Struct({ transactionId: Schema.String }),
@@ -614,6 +625,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverReportClientDiagnostics, ReportClientDiagnosticsInput),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverGetHealth, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
@@ -840,6 +852,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.decide, UpstreamDecideInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.acceptSuggestions, UpstreamAcceptSuggestionsInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.undoDecisions, UpstreamUndoDecisionsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.expireBacklog, UpstreamExpireBacklogInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.run, UpstreamRunInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.startPort, UpstreamStartPortInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.previewPortGroups, UpstreamPreviewPortGroupsInput),

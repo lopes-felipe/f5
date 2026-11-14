@@ -23,7 +23,7 @@ it("warns above the message threshold without truncating or replacing retained h
       level: "Warn",
       message: [
         "orchestration read model exceeds message warning threshold",
-        { threads: 1, messages: 200001, characters: 2400012 },
+        { threads: 1, messages: 200001, characters: 2400012, activities: 0 },
       ],
     },
   ]);
@@ -44,4 +44,29 @@ it("reports the heap change across hydrate when given the starting heap", async 
   expect(message).toBe("orchestration read model hydrated");
   // A collection during the call can make the change negative.
   expect(Number.isFinite(fields.heapUsedDeltaBytes)).toBe(true);
+});
+
+it("counts loaded activities and the threads whose activities were left in SQLite", async () => {
+  const logs: Array<unknown> = [];
+  const logger = Logger.make((entry) => {
+    logs.push(entry.message);
+  });
+  await Effect.runPromise(
+    observeReadModelRetention(
+      {
+        threads: [
+          { messages: [], activities: [{}, {}] },
+          { messages: [], activities: [] },
+        ],
+      },
+      undefined,
+      1,
+    ).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false }))),
+  );
+  expect(logs).toEqual([
+    [
+      "orchestration read model hydrated",
+      { threads: 2, messages: 0, characters: 0, activities: 2, coldThreads: 1 },
+    ],
+  ]);
 });

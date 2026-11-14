@@ -2,13 +2,23 @@ import { ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isAgentComputerActive, useAgentComputerActivityStore } from "./agentComputerActivityStore";
 import {
+  chromeIdleReservation,
   computerUseBannerAmbient,
   computerUseBannerTargets,
   computerUseBannerText,
   primaryComputerHolder,
 } from "./components/ComputerUseBanner";
+import { chromeReleaseFailureText, waitingForAgentText } from "./components/computerControls";
 const threadId = ThreadId.makeUnsafe("computer-thread");
 beforeEach(() => useAgentComputerActivityStore.getState().resetConnection());
+describe("Chrome release failures", () => {
+  it("says why Release didn't free Chrome", () => {
+    expect(chromeReleaseFailureText("not-holder")).toBe("This thread no longer holds Chrome.");
+    expect(chromeReleaseFailureText("working")).toContain("busy now");
+    expect(chromeReleaseFailureText("timeout")).toContain("hasn't let go");
+    expect(chromeReleaseFailureText(undefined)).toBe("Chrome wasn't released. Try again.");
+  });
+});
 describe("computer activity", () => {
   it("clears the last capture when a later action starts or completes without one", () => {
     const store = useAgentComputerActivityStore.getState();
@@ -49,6 +59,23 @@ describe("computer activity", () => {
     store.record(captured);
     store.resetConnection();
     expect(useAgentComputerActivityStore.getState().lastCapture).toEqual({});
+  });
+  it("opens no recent-lease window when an idle Chrome lease ends", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
+    try {
+      const store = useAgentComputerActivityStore.getState();
+      const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
+      store.setLeases({ holders: [{ ...chrome, browser: "idle" }] });
+      store.setLeases({ holders: [] });
+      expect(useAgentComputerActivityStore.getState().lastLeaseAt[threadId]).toBeUndefined();
+      // A lease that ends mid-call still keeps controls up briefly.
+      store.setLeases({ holders: [{ ...chrome, browser: "working" }] });
+      clock.mockReturnValue(130000);
+      store.setLeases({ holders: [] });
+      expect(useAgentComputerActivityStore.getState().lastLeaseAt[threadId]).toBe(130000);
+    } finally {
+      clock.mockRestore();
+    }
   });
   it("keeps controls visible for 15 seconds after lease release even when the last action is older", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(100000);
@@ -172,8 +199,15 @@ describe("computer use banner text", () => {
     state: "active" as const,
   };
   it("names the app for background control and counts several agents", () => {
+    for (const state of ["waiting-user", "waiting-agent"] as const)
+      expect(computerUseBannerText({ holders: [{ ...holder, state }] }, true)).toBe(
+        "Computer control paused",
+      );
+    expect(
+      computerUseBannerText({ holders: [{ ...holder, state: "pending-consent" }] }, true),
+    ).toBe("Agent waiting for computer access approval");
     expect(computerUseBannerText({ holders: [holder] }, false)).toBe(
-      "An agent is working in TextEdit in the background",
+      "Working in background · TextEdit",
     );
     expect(
       computerUseBannerText(
@@ -185,7 +219,7 @@ describe("computer use banner text", () => {
         },
         false,
       ),
-    ).toBe("2 agents are working in the background in TextEdit, Notes");
+    ).toBe("2 agents working in background · TextEdit, Notes");
     expect(
       computerUseBannerTargets({
         holders: [holder, { ...holder, threadId: ThreadId.makeUnsafe("b") }],
@@ -219,18 +253,51 @@ describe("computer use banner text", () => {
         { holders: [{ ...holder, state: "recovery", pauseCause: "outcome-unknown" }] },
         false,
       ),
-    ).toBe(
-      "Computer control stopped · check TextEdit before resuming · last action's result is unknown",
-    );
+    ).toBe("Needs recovery · check TextEdit before resuming · last action's result is unknown");
     expect(computerUseBannerText({ holders: [], otherProfile: true }, false)).toBe(
       "An agent in another F5 profile is controlling this computer",
     );
     expect(computerUseBannerText({ holders: [] }, false)).toBeNull();
   });
+  it("names who a waiting thread waits for, by profile across profiles", () => {
+    const waiting = { ...holder, state: "waiting-agent" as const };
+    expect(computerUseBannerText({ holders: [waiting] }, false)).toBe("Waiting for another agent");
+    expect(
+      computerUseBannerText(
+        {
+          holders: [
+            {
+              ...waiting,
+              blockedBy: { token: "t", activity: "chrome-call", profileName: "Dev" },
+            },
+          ],
+        },
+        false,
+      ),
+    ).toBe("Waiting for an agent in “Dev” · using Chrome");
+    expect(waitingForAgentText({ token: "t", activity: "computer", threadTitle: "Refactor" })).toBe(
+      "Waiting for “Refactor” · controlling the computer",
+    );
+    expect(waitingForAgentText({ token: "t", activity: "chrome-session" })).toBe(
+      "Waiting for another agent · holding Chrome",
+    );
+  });
   it("says whether an agent is using Chrome, not that it controls the computer", () => {
     const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
-    // An idle runtime shows nothing, except just after a call ended.
+    // An idle runtime only reserves Chrome, which another thread preempts, so the banner
+    // says nothing, except just after a call ended.
     expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBeNull();
+    expect(chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(true);
+    expect(chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false, true)).toBe(
+      false,
+    );
+    // Mid-turn, between Chrome calls, the banner keeps Pause and Stop.
+    expect(
+      chromeIdleReservation({ holders: [{ ...chrome, browser: "idle" }] }, false, false, true),
+    ).toBe(false);
+    expect(
+      computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false, false, true),
+    ).toBe("An agent is using Chrome");
     expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false, true)).toBe(
       "An agent is using Chrome",
     );
@@ -254,7 +321,7 @@ describe("computer use banner text", () => {
         false,
       ),
     ).toBe("An agent in another F5 profile is controlling this computer");
-    // Chrome never gets the quieter style; background control does.
+    // Chrome in use never gets the quieter style; background control does.
     const ambient = (browser: "idle" | "working" | "unknown") =>
       computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, false);
     expect(ambient("idle")).toBe(false);
@@ -267,7 +334,7 @@ describe("computer use banner text", () => {
     const idle = { ...chrome, threadId: ThreadId.makeUnsafe("b"), browser: "idle" as const };
     expect(primaryComputerHolder({ holders: [idle, holder] })).toBe(holder);
     expect(computerUseBannerText({ holders: [idle, holder] }, false)).toBe(
-      "An agent is working in TextEdit in the background",
+      "Working in background · TextEdit",
     );
     expect(
       computerUseBannerText({ holders: [{ ...chrome, browser: "idle", state: "paused" }] }, false),

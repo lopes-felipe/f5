@@ -9,12 +9,18 @@ default.
 ## How to
 
 1. Open **Settings**.
+   You can also choose **Project settings** from the command palette, then configure a project.
 2. Click **Global settings** at the top and pick a project.
 3. Change a setting. The field shows that it is now a project override.
 4. Use **Reset** on a field, or **Reset all project overrides**, to go back to the inherited value.
 
 Project scope only lists settings a project can override. Accounts, profiles and models stay in
 global settings.
+
+The project's settings page also lets you rename it and add, edit or remove its actions.
+Repository action templates from `f5.json` or `t3.json` can be reviewed and imported
+one at a time. Automatic execution and shortcuts are not imported from repository files.
+Each project keeps its own checkout and settings scope in F5.
 
 ## Where values come from
 

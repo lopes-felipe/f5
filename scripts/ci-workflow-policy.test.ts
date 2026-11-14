@@ -1,9 +1,11 @@
 import { globSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
 
 interface Job {
+  env?: Record<string, string>;
   environment?: string;
   needs?: string[];
   if?: string;
@@ -37,6 +39,24 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("runs browser CI with bundled browsers matching the installed Playwright version", () => {
+    const job = workflow.jobs.browser!;
+    const requireWeb = createRequire(new URL("../apps/web/package.json", import.meta.url));
+    const version = requireWeb("playwright/package.json").version;
+    expect(job.env?.PLAYWRIGHT_IMAGE).toMatch(
+      new RegExp(
+        "^mcr\\.microsoft\\.com/playwright:v" +
+          version.replaceAll(".", "\\.") +
+          "-noble@sha256:[a-f0-9]{64}$",
+      ),
+    );
+    expect(job.steps?.some((step) => step.run?.includes("test:browser:install"))).toBe(false);
+    const command = job.steps?.find((step) => step.name === "Browser tests")?.run;
+    expect(command).toContain("docker run");
+    expect(command).toContain("source=$(command -v node),target=/usr/local/bin/node,readonly");
+    expect(command).toContain("--env F5_CI_REPORT_DIR");
+  });
+
   it("keeps push runs per SHA and delegates queue cleanup to an isolated workflow", () => {
     const ci = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
     expect(ci.concurrency).toEqual({

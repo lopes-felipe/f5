@@ -55,6 +55,33 @@ function harness(order: string[]) {
 }
 
 describe("bulk deletion cleanup", () => {
+  it.each(["snoozed", "settled", "archived"] as const)(
+    "skips a %s survivor when deleting the open thread",
+    async (state) => {
+      const input = harness(["b"]);
+      const parked = input.threads[0]!;
+      if (state === "snoozed") parked.snoozedUntil = "2099-01-01T00:00:00Z";
+      if (state === "settled") parked.settledAt = "2026-01-01T00:00:00Z";
+      if (state === "archived") parked.archivedAt = "2026-01-01T00:00:00Z";
+      input.threads.push({
+        ...parked,
+        id: ThreadId.makeUnsafe("visible"),
+        snoozedUntil: "2020-01-01T00:00:00Z",
+        settledAt: null,
+        archivedAt: null,
+        lastInteractionAt: "2025-01-01T00:00:00Z",
+      });
+      mocks.dispatch.mockResolvedValue(undefined);
+      await deleteThreadsWithCleanup(input);
+      expect(input.navigateToThread).toHaveBeenCalledWith("visible");
+      input.navigateToThread.mockClear();
+      input.threads.pop();
+      await deleteThreadsWithCleanup(input);
+      expect(input.navigateToThread).not.toHaveBeenCalled();
+      expect(input.navigateHome).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([
     ["a", "b"],
     ["b", "a"],

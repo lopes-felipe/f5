@@ -370,6 +370,7 @@ describe("ProviderRuntimeIngestion", () => {
               getSummary: () => Effect.die("unused"),
               getQuotaHistory: Effect.die("unused"),
               analyzeClaudeUsage: () => Effect.die("unused"),
+              getThreadTurns: () => Effect.die("unused"),
             })
           : Layer.empty,
       ),
@@ -688,6 +689,25 @@ describe("ProviderRuntimeIngestion", () => {
     expect(terminal.session?.activeTurnId).toBeNull();
     expect(terminal.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
     expect(refreshes).toBe(1);
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("post-terminal-limit-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("limited-turn"),
+      createdAt: "2026-10-01T00:00:00Z",
+      payload: {
+        message: "usage limit reached",
+        usageLimit: { ...usageLimit, resetsAt: "2026-10-01T03:00:00Z" },
+      },
+    });
+    const afterError = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.lastErrorId === "post-terminal-limit-error",
+    );
+    expect(afterError.session?.activeTurnId).toBeNull();
+    expect(afterError.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
   });
 
   it.each([false, true])(
@@ -896,6 +916,71 @@ describe("ProviderRuntimeIngestion", () => {
         expect(thread.session?.status).toBe("running");
       }
       expect(refreshes).toBe(1);
+    },
+  );
+
+  it.each(["session.started", "session.state.changed", "thread.started"] as const)(
+    "keeps a pending turn starting through %s",
+    async (type) => {
+      const harness = await createHarness();
+      const threadId = asThreadId("thread-1");
+      const createdAt = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("pending-turn-request"),
+          threadId,
+          message: {
+            messageId: asMessageId("pending-user"),
+            role: "user",
+            text: "Work",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("pending-turn-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+      harness.emit({
+        type,
+        eventId: asEventId("pending-ready"),
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        ...(type === "session.state.changed" ? { payload: { state: "ready" as const } } : {}),
+      });
+      await harness.drain();
+      const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0]!;
+      expect(thread.session?.status).toBe("starting");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("pending-started"),
+        provider: "codex",
+        threadId,
+        turnId: asTurnId("started-turn"),
+        createdAt: new Date().toISOString(),
+      });
+      expect(
+        (await waitForThread(harness.engine, (entry) => entry.session?.status === "running"))
+          .session?.activeTurnId,
+      ).toBe("started-turn");
     },
   );
 
@@ -2678,6 +2763,145 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.estimatedContextTokens).toBe(900);
   });
 
+  it("persists small context-token reports of a running turn with its next lifecycle event", async () => {
+    const harness = await createHarness();
+    const usage = (eventId: string, totalTokens: number) =>
+      harness.emit({
+        type: "thread.token-usage.updated",
+        eventId: asEventId(eventId),
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        payload: { usage: { total_tokens: totalTokens } },
+      });
+    const sessionSetCount = async () =>
+      (
+        await Effect.runPromise(
+          Stream.runCollect(harness.engine.readEvents(0)).pipe(
+            Effect.map((events) => Array.from(events)),
+          ),
+        )
+      ).filter((event) => event.type === "thread.session-set").length;
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-usage-turn-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-usage-coalesce"),
+      createdAt: new Date().toISOString(),
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.activeTurnId === "turn-usage-coalesce",
+    );
+
+    // The first report has nothing stored to compare with, so it is persisted.
+    usage("evt-usage-first", 50_000);
+    await waitForThread(harness.engine, (entry) => entry.estimatedContextTokens === 50_000);
+    const afterFirst = await sessionSetCount();
+
+    // Below the threshold (2,000 tokens here): held, not persisted.
+    usage("evt-usage-small-1", 50_700);
+    usage("evt-usage-small-2", 51_400);
+    await harness.drain();
+    expect((await waitForThread(harness.engine, () => true)).estimatedContextTokens).toBe(50_000);
+    expect(await sessionSetCount()).toBe(afterFirst);
+
+    // Past the threshold: persisted at once.
+    usage("evt-usage-large", 53_000);
+    await waitForThread(harness.engine, (entry) => entry.estimatedContextTokens === 53_000);
+    expect(await sessionSetCount()).toBe(afterFirst + 1);
+
+    // Held again, then carried by the event that settles the turn.
+    usage("evt-usage-small-3", 53_600);
+    await harness.drain();
+    const completedAt = new Date().toISOString();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-usage-turn-completed"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAt,
+      turnId: asTurnId("turn-usage-coalesce"),
+      payload: { state: "completed" },
+    });
+    const settled = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.updatedAt === completedAt && entry.session?.status === "ready",
+    );
+    expect(settled.estimatedContextTokens).toBe(53_600);
+    expect(settled.session?.tokenUsageSource).toBe("provider");
+    expect(await sessionSetCount()).toBe(afterFirst + 2);
+  });
+
+  it("drops a held context-token report once something else moves the stored estimate", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-usage-superseded");
+    const usage = (eventId: string, totalTokens: number) =>
+      harness.emit({
+        type: "thread.token-usage.updated",
+        eventId: asEventId(eventId),
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        payload: { usage: { total_tokens: totalTokens } },
+      });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-superseded-turn-started"),
+      provider: "codex",
+      threadId,
+      turnId,
+      createdAt: new Date().toISOString(),
+    });
+    await waitForThread(harness.engine, (entry) => entry.session?.activeTurnId === turnId);
+    usage("evt-superseded-first", 180_000);
+    await waitForThread(harness.engine, (entry) => entry.estimatedContextTokens === 180_000);
+    usage("evt-superseded-held", 180_900);
+    await harness.drain();
+
+    // A compaction, for example: the stored estimate changes without a runtime report.
+    const compactedAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("superseding-estimate"),
+        threadId,
+        createdAt: compactedAt,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          estimatedContextTokens: 30_000,
+          tokenUsageSource: "estimated",
+          updatedAt: compactedAt,
+        },
+      }),
+    );
+
+    const completedAt = new Date().toISOString();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-superseded-turn-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: completedAt,
+      turnId,
+      payload: { state: "completed" },
+    });
+    const settled = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.updatedAt === completedAt && entry.session?.status === "ready",
+    );
+    expect(settled.estimatedContextTokens).toBe(30_000);
+  });
+
   it("throttles high-frequency thinking-token frames into coalesced session updates", async () => {
     const harness = await createHarness();
 
@@ -3141,6 +3365,79 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBeNull();
     expect(thread.session?.lastErrorId).toBeNull();
     expect(thread.session?.lastErrorOccurredAt).toBeNull();
+  });
+
+  it("keeps the incomplete-history error visible while its marker fences sends", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1"),
+      turnId = asTurnId("overflowed-turn");
+    const marker = {
+      eventId: "incomplete:lost-delta",
+      turnId,
+      historyIdentity: "native-thread",
+    };
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        runtimePayload: { historyReconciliationRequired: marker },
+      }),
+    );
+    const base = { provider: "codex" as const, threadId, createdAt: new Date().toISOString() };
+    harness.emit({ ...base, type: "turn.started", eventId: asEventId("overflow-start"), turnId });
+    const message =
+      "Provider output is incomplete because notification admission was exhausted. Native history must be reconciled before continuing.";
+    harness.emit({
+      ...base,
+      type: "runtime.error",
+      eventId: asEventId(marker.eventId),
+      turnId,
+      payload: { class: "transport_error", historyReconciliationRequired: true, message },
+    });
+    harness.emit({
+      ...base,
+      type: "turn.completed",
+      eventId: asEventId("overflow-completed"),
+      turnId,
+      payload: { state: "interrupted" },
+    });
+    let thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session).toMatchObject({ lastError: message, lastErrorId: marker.eventId });
+
+    harness.emit({
+      ...base,
+      type: "session.state.changed",
+      eventId: asEventId("overflow-ready"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "ready" },
+    });
+    await harness.drain();
+    thread = await waitForThread(harness.engine, (entry) => entry.session?.status === "ready");
+    expect(thread.session).toMatchObject({ lastError: message, lastErrorId: marker.eventId });
+
+    // Without a marker (recovered or accepted), ready clears the error as before.
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        runtimePayload: { historyReconciliationRequired: null },
+      }),
+    );
+    harness.emit({
+      ...base,
+      type: "session.state.changed",
+      eventId: asEventId("recovered-ready"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "ready" },
+    });
+    thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.lastError === null,
+    );
+    expect(thread.session?.lastErrorId).toBeNull();
   });
 
   it("does not settle an active turn when a provider reports generic ready", async () => {
@@ -7394,93 +7691,111 @@ describe("ProviderRuntimeIngestion", () => {
     expect(result.executions[0]?.title).toBe("Search workspace");
   });
 
-  it("captures late command output deltas that arrive after item completion", async () => {
-    const harness = await createHarness();
-    const now = new Date().toISOString();
+  for (const afterTurn of [false, true]) {
+    it(`captures late command output after ${afterTurn ? "turn" : "item"} completion`, async () => {
+      const harness = await createHarness();
+      const reads = vi.spyOn(harness.threadCommandExecutionQuery, "getThreadCommandExecution");
+      const now = new Date().toISOString();
 
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-command-turn-started"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      payload: {},
-    });
-    harness.emit({
-      type: "item.started",
-      eventId: asEventId("evt-command-started"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      itemId: asItemId("item-command-output"),
-      payload: {
-        itemType: "command_execution",
-        status: "in_progress",
-        title: "Ran command",
-        detail: "/bin/zsh -lc 'uname -a'",
-      },
-    });
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-command-completed"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      itemId: asItemId("item-command-output"),
-      payload: {
-        itemType: "command_execution",
-        status: "completed",
-        title: "Ran command",
-        detail: "/bin/zsh -lc 'uname -a'",
-      },
-    });
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-command-output"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      itemId: asItemId("item-command-output"),
-      payload: {
-        streamKind: "command_output",
-        delta: "Darwin kernel-version\n",
-      },
-    });
-    harness.emit({
-      type: "turn.completed",
-      eventId: asEventId("evt-command-turn-completed"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-command-output"),
-      payload: {
-        state: "completed",
-      },
-    });
-
-    await harness.drain();
-
-    const result = await Effect.runPromise(
-      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-command-turn-started"),
+        provider: "codex",
+        createdAt: now,
         threadId: asThreadId("thread-1"),
-      }),
-    );
-
-    expect(result.executions).toHaveLength(1);
-    expect(result.executions[0]?.command).toBe("/bin/zsh -lc 'uname -a'");
-    expect(result.executions[0]?.cwd).toBe(harness.workspaceRoot);
-    const detail = await Effect.runPromise(
-      harness.threadCommandExecutionQuery.getThreadCommandExecution({
+        turnId: asTurnId("turn-command-output"),
+        payload: {},
+      });
+      harness.emit({
+        type: "item.started",
+        eventId: asEventId("evt-command-started"),
+        provider: "codex",
+        createdAt: now,
         threadId: asThreadId("thread-1"),
-        commandExecutionId: result.executions[0]!.id,
-      }),
-    );
-    expect(detail.commandExecution?.output).toContain("Darwin kernel-version");
-  });
+        turnId: asTurnId("turn-command-output"),
+        itemId: asItemId("item-command-output"),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: "Ran command",
+          detail: "/bin/zsh -lc 'uname -a'",
+        },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId("evt-command-completed"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-command-output"),
+        itemId: asItemId("item-command-output"),
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          title: "Ran command",
+          detail: "/bin/zsh -lc 'uname -a'",
+        },
+      });
+      const completeTurn = () =>
+        harness.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-command-turn-completed"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-command-output"),
+          payload: { state: "completed" },
+        });
+      if (afterTurn) {
+        completeTurn();
+        await harness.drain();
+        harness.emit({
+          type: "content.delta",
+          eventId: asEventId("evt-command-wrong-turn"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("wrong-turn"),
+          itemId: asItemId("item-command-output"),
+          payload: { streamKind: "command_output", delta: "wrong output\n" },
+        });
+      }
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-command-output"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-command-output"),
+        itemId: asItemId("item-command-output"),
+        payload: {
+          streamKind: "command_output",
+          delta: "Darwin kernel-version\n",
+        },
+      });
+      if (!afterTurn) completeTurn();
+
+      await harness.drain();
+
+      const result = await Effect.runPromise(
+        harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+          threadId: asThreadId("thread-1"),
+        }),
+      );
+
+      expect(result.executions).toHaveLength(1);
+      expect(result.executions[0]?.command).toBe("/bin/zsh -lc 'uname -a'");
+      expect(result.executions[0]?.cwd).toBe(harness.workspaceRoot);
+      expect(reads).not.toHaveBeenCalled();
+      const detail = await Effect.runPromise(
+        harness.threadCommandExecutionQuery.getThreadCommandExecution({
+          threadId: asThreadId("thread-1"),
+          commandExecutionId: result.executions[0]!.id,
+        }),
+      );
+      expect(detail.commandExecution?.output).toBe("Darwin kernel-version\n");
+    });
+  }
 
   describe("PRs a command creates", () => {
     const prUrl = "https://github.com/lopes-felipe/f5/pull/493";
@@ -7748,6 +8063,7 @@ describe("ProviderRuntimeIngestion", () => {
 
   it("captures command output deltas that arrive before the lifecycle record", async () => {
     const harness = await createHarness();
+    const reads = vi.spyOn(harness.threadCommandExecutionQuery, "getThreadCommandExecution");
     const now = new Date().toISOString();
 
     harness.emit({
@@ -7772,6 +8088,17 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "/Users/felipelopes/dev/project\n",
       },
     });
+    for (let index = 0; index < 10; index++)
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-command-early-output-${index}`),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-command-early-output"),
+        itemId: asItemId("item-command-early-output"),
+        payload: { streamKind: "command_output", delta: `line ${index}\n` },
+      });
     harness.emit({
       type: "item.started",
       eventId: asEventId("evt-command-early-output-started"),
@@ -7824,6 +8151,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(result.executions).toHaveLength(1);
     expect(result.executions[0]?.command).toBe("/bin/zsh -lc 'pwd'");
+    expect(reads).toHaveBeenCalledTimes(1);
     const detail = await Effect.runPromise(
       harness.threadCommandExecutionQuery.getThreadCommandExecution({
         threadId: asThreadId("thread-1"),
@@ -7831,6 +8159,7 @@ describe("ProviderRuntimeIngestion", () => {
       }),
     );
     expect(detail.commandExecution?.output).toContain("/Users/felipelopes/dev/project");
+    expect(detail.commandExecution?.output).toContain("line 9\n");
   });
 
   it("records exact file-change transcripts with compact activity fileChangeIds", async () => {

@@ -1,4 +1,4 @@
-import { UsageModelAliases, UsagePriceOverride } from "./usage";
+import { UsageModelAliases, UsageMonthlyBudget, UsagePriceOverride } from "./usage";
 import { AgentBridgeSettings, AgentBridgeSettingsPatch } from "./agentBridge";
 import { Effect } from "effect";
 import * as Combiner from "effect/Combiner";
@@ -122,11 +122,23 @@ export const CustomModelSetting = Schema.Union([
 ]);
 export type CustomModelSetting = typeof CustomModelSetting.Type;
 
+// Keep the legacy empty-home sentinel, but never trim a real directory name.
+const CodexHomePathSetting = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(value.trim().length > 0 ? value : ""),
+      encode: (value) => Effect.succeed(value),
+    }),
+  ),
+  Schema.withDecodingDefault(() => ""),
+);
+
 export const CodexSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
-  homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  shadowHomePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  homePath: CodexHomePathSetting,
+  shadowHomePath: CodexHomePathSetting,
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
@@ -492,6 +504,9 @@ export const ServerSettings = Schema.Struct({
   autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
   usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
+  usageMonthlyBudget: Schema.NullOr(UsageMonthlyBudget).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   /** Background account-limit sampling for quota history and forecasts. */
   usageBackgroundSampling: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoResumeUsageLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -720,6 +735,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
   /** Replaces every mapping. */
   usageModelAliases: Schema.optionalKey(UsageModelAliases),
+  usageMonthlyBudget: Schema.optionalKey(Schema.NullOr(UsageMonthlyBudget)),
   usageBackgroundSampling: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),

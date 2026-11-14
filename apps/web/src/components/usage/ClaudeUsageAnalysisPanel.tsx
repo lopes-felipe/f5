@@ -8,8 +8,10 @@ import type {
 import { ensureNativeApi } from "../../nativeApi";
 import { invalidateUsageAccounts } from "../../lib/usageReactQuery";
 import { cn } from "../../lib/utils";
+import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { mergeUsageAnalysis, type UsageFactorRow } from "./claudeUsageAnalysis";
+import { UsageSubsection, usageTableClasses } from "./kit";
 
 function formatShare(pct: number): string {
   return `${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
@@ -63,7 +65,7 @@ function FactorTable(props: {
   series: ReadonlyArray<(typeof SERIES)[number]>;
 }) {
   return (
-    <table className="w-full text-left text-xs">
+    <table className={usageTableClasses.table}>
       <caption className="sr-only">What drives usage</caption>
       <thead className="text-2xs text-muted-foreground">
         <tr>
@@ -159,24 +161,23 @@ export function ClaudeUsageAnalysisPanel(props: {
   const series = analysis ? SERIES.filter((entry) => analysis[entry.window] !== null) : [];
   const rows = analysis ? mergeUsageAnalysis(analysis.day, analysis.week) : [];
   return (
-    <section aria-label="What drives usage" className="space-y-3 border-t border-border/60 pt-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h4 className="text-xs font-medium">What drives usage</h4>
-          <p className="text-2xs text-muted-foreground">
-            {analysis
-              ? `Analyzed ${new Date(analysis.analyzedAt).toLocaleString()} from this machine's transcripts.`
-              : "Find what drives this account's usage from this machine's transcripts."}
-          </p>
-        </div>
-        <Button size="sm" variant="outline" onClick={analyze} disabled={pending}>
+    <UsageSubsection
+      label="What drives usage"
+      actions={
+        <Button size="xs" variant="outline" onClick={analyze} disabled={pending}>
           {pending ? "Analyzing…" : analysis ? "Analyze again" : "Analyze usage"}
         </Button>
-      </div>
+      }
+    >
+      <p className="text-2xs text-muted-foreground">
+        {analysis
+          ? `Analyzed ${new Date(analysis.analyzedAt).toLocaleString()} from this machine's transcripts.`
+          : "Find what drives this account's usage from this machine's transcripts."}
+      </p>
       {error && (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {error}
-        </p>
+        <Alert variant="error">
+          <AlertDescription className="text-xs">{error}</AlertDescription>
+        </Alert>
       )}
       {analysis && series.length === 0 && (
         <p className="text-xs text-muted-foreground">
@@ -207,6 +208,6 @@ export function ClaudeUsageAnalysisPanel(props: {
           )}
         </>
       )}
-    </section>
+    </UsageSubsection>
   );
 }

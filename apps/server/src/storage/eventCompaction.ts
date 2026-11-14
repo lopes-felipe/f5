@@ -24,6 +24,24 @@ import { truncateMiddleByBytes } from "../orchestration/outputTruncation.ts";
  *   Message receipts are kept: delta command IDs derive from provider event
  *   IDs, some of them stable, and the receipt is what stops a redelivered
  *   delta from being appended twice.
+ * - Token-estimate session updates. Providers report context and thinking
+ *   tokens many times per turn, each as a `session-set` that changes nothing
+ *   but those estimates. Among consecutive session updates that carry the same
+ *   state otherwise, one written for a token report is removed when the update
+ *   before it carries that same state and a later one in the run restates every
+ *   estimate it set. The first and the last update of a run always stay, so a
+ *   replay passes through the same session states and ends on the same
+ *   estimates. The context estimate and its source count as one value that a
+ *   single later update must restate: between session updates, message events
+ *   recompute the context estimate whenever the source is not the provider, so
+ *   restating the two in separate updates could leave a different estimate.
+ *   Their receipts are kept, for the same reason as message receipts.
+ * - Superseded planning workflow updates ({@link compactWorkflowEvents}). Each
+ *   `project.workflow-upserted` stores the whole workflow, and both projections
+ *   replace the stored workflow with it, so only the newest matters. Older
+ *   updates are removed once a newer one for the same workflow is an hour old
+ *   and projected. A workflow's first event and the update before a deletion
+ *   stay.
  *
  * A thread is compacted once it has been idle for an hour and has no active
  * turn, and only when every projector has applied all of its events, so the
@@ -59,11 +77,32 @@ const OUTPUT_COMMAND_ID_PREFIX = "provider:cmd-output:";
 const OUTPUT_EVENT = "thread.command-execution-output-appended";
 const MESSAGE_EVENT = "thread.message-sent";
 const REASONING_TOKENS_EVENT = "thread.message-reasoning-tokens-added";
+const SESSION_EVENT = "thread.session-set";
+/** Session fields a token report changes, as bit flags in scan order. */
+const SESSION_ESTIMATE_PATHS = [
+  "$.session.estimatedContextTokens",
+  "$.session.estimatedThinkingTokens",
+  "$.session.tokenUsageSource",
+  "$.session.modelContextWindowTokens",
+] as const;
+/** Flags of the context estimate and its source, which message events read and rewrite together. */
+const CONTEXT_ESTIMATE_FLAGS = 1 | 4;
+/** Commands `ProviderRuntimeIngestion` dispatches for a token report and nothing else. */
+const TOKEN_REPORT_COMMAND_ID = /^provider:.*:thread-(?:token-usage|thinking-tokens)-set$/u;
+const SESSION_UPDATES_PER_GROUP = 1_000;
+const WORKFLOW_CREATED_EVENT = "project.workflow-created";
+const WORKFLOW_UPSERTED_EVENT = "project.workflow-upserted";
+const WORKFLOW_DELETED_EVENT = "project.workflow-deleted";
+const WORKFLOW_SCAN_KEY = "@workflow-scan";
+/** Workflow payloads run to tens of kilobytes, so pages stay small. */
+const WORKFLOW_SCAN_PAGE_SIZE = 25;
 
 export interface EventCompactionResult {
   readonly threadsCompacted: number;
   readonly commandOutputsCompacted: number;
   readonly messagesCompacted: number;
+  /** Token-estimate session updates removed. */
+  readonly sessionUpdatesCompacted: number;
   readonly eventsRemoved: number;
   readonly receiptsRemoved: number;
   /** Approximate payload bytes removed from the event log. */
@@ -173,8 +212,45 @@ const isMessagePayload = (value: Record<string, unknown>) =>
   typeof value.createdAt === "string" &&
   (value.reasoningText === undefined || typeof value.reasoningText === "string");
 
+interface SessionUpdate {
+  readonly sequence: number;
+  readonly bytes: number;
+  /** Bit flags of the estimates this update sets (see SESSION_ESTIMATE_PATHS). */
+  readonly estimates: number;
+  readonly tokenReport: boolean;
+}
+
+/**
+ * Which updates of one run (consecutive session updates with the same state
+ * apart from the estimates) can go: token reports that are neither first nor
+ * last and whose every estimate a later update restates. An update that sets
+ * the context estimate or its source needs one later update that sets both.
+ */
+export function removableSessionUpdates(
+  run: ReadonlyArray<SessionUpdate>,
+): ReadonlyArray<SessionUpdate> {
+  const removable: SessionUpdate[] = [];
+  let restatedLater = 0;
+  let contextRestatedLater = false;
+  for (let index = run.length - 1; index > 0; index -= 1) {
+    const update = run[index]!;
+    const setsContext = (update.estimates & CONTEXT_ESTIMATE_FLAGS) !== 0;
+    if (
+      index < run.length - 1 &&
+      update.tokenReport &&
+      (update.estimates & ~CONTEXT_ESTIMATE_FLAGS & ~restatedLater) === 0 &&
+      (!setsContext || contextRestatedLater)
+    ) {
+      removable.push(update);
+    }
+    restatedLater |= update.estimates;
+    contextRestatedLater ||= (update.estimates & CONTEXT_ESTIMATE_FLAGS) === CONTEXT_ESTIMATE_FLAGS;
+  }
+  return removable.toReversed();
+}
+
 interface EventGroup {
-  readonly kind: "output" | "message";
+  readonly kind: "output" | "message" | "session";
   readonly id: string;
   readonly sequences: number[];
   /** Payload bytes of every event in the group, from the scan. */
@@ -225,6 +301,18 @@ const deleteOps = (sequences: ReadonlyArray<number>, outputReceipts: boolean): W
 
 const opCost = (op: WriteOp) => (op.kind === "rewrite" ? 1 : op.sequences.length);
 
+/** Events above the slowest projector's cursor are still to be projected. */
+const readProjectedThrough = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const cursors = yield* sql<{ readonly projector: string; readonly sequence: number }>`
+    SELECT projector, last_applied_sequence AS "sequence" FROM projection_state
+  `;
+  const cursorByProjector = new Map(cursors.map((row) => [row.projector, row.sequence]));
+  return Math.min(
+    ...Object.values(ORCHESTRATION_PROJECTOR_NAMES).map((name) => cursorByProjector.get(name) ?? 0),
+  );
+});
+
 export const compactThreadEvents = (input: {
   readonly nowMs: number;
   /** Stop starting new work after this long. */
@@ -242,6 +330,7 @@ export const compactThreadEvents = (input: {
       threadsCompacted: 0,
       commandOutputsCompacted: 0,
       messagesCompacted: 0,
+      sessionUpdatesCompacted: 0,
       eventsRemoved: 0,
       receiptsRemoved: 0,
       bytesRemoved: 0,
@@ -249,15 +338,7 @@ export const compactThreadEvents = (input: {
       threadsFailed: 0,
     };
 
-    // Events above the slowest projector's cursor are still to be projected.
-    const projectorNames = Object.values(ORCHESTRATION_PROJECTOR_NAMES);
-    const cursors = yield* sql<{ readonly projector: string; readonly sequence: number }>`
-      SELECT projector, last_applied_sequence AS "sequence" FROM projection_state
-    `;
-    const cursorByProjector = new Map(cursors.map((row) => [row.projector, row.sequence]));
-    const projectedThrough = Math.min(
-      ...projectorNames.map((name) => cursorByProjector.get(name) ?? 0),
-    );
+    const projectedThrough = yield* readProjectedThrough;
 
     const nowIso = new Date(input.nowMs).toISOString();
     const idleCutoff = new Date(input.nowMs - EVENT_COMPACTION_IDLE_MS).toISOString();
@@ -409,6 +490,10 @@ export const compactThreadEvents = (input: {
         if (head === null || head > projectedThrough) return true;
 
         const groups = new Map<string, EventGroup>();
+        // The current run of session updates with one state; only its removable
+        // updates are kept once it ends.
+        let sessionRun: { state: string; updates: SessionUpdate[] } | undefined;
+        const removableSessions: SessionUpdate[] = [];
         let cursor = 0;
         while (true) {
           if (outOfTime()) return false;
@@ -419,10 +504,30 @@ export const compactThreadEvents = (input: {
             readonly streaming: number | null;
             readonly payloadBytes: number;
             readonly valid: number;
+            readonly sessionState: string | null;
+            readonly sessionEstimates: number | null;
+            readonly commandId: string | null;
           }>`
             SELECT
               sequence,
               event_type AS "eventType",
+              command_id AS "commandId",
+              CASE WHEN event_type = ${SESSION_EVENT} AND json_valid(payload_json)
+                THEN json_remove(
+                  payload_json,
+                  ${SESSION_ESTIMATE_PATHS[0]},
+                  ${SESSION_ESTIMATE_PATHS[1]},
+                  ${SESSION_ESTIMATE_PATHS[2]},
+                  ${SESSION_ESTIMATE_PATHS[3]},
+                  '$.session.updatedAt'
+                )
+              END AS "sessionState",
+              CASE WHEN event_type = ${SESSION_EVENT} AND json_valid(payload_json)
+                THEN (json_type(payload_json, ${SESSION_ESTIMATE_PATHS[0]}) IS NOT NULL)
+                  + 2 * (json_type(payload_json, ${SESSION_ESTIMATE_PATHS[1]}) IS NOT NULL)
+                  + 4 * (json_type(payload_json, ${SESSION_ESTIMATE_PATHS[2]}) IS NOT NULL)
+                  + 8 * (json_type(payload_json, ${SESSION_ESTIMATE_PATHS[3]}) IS NOT NULL)
+              END AS "sessionEstimates",
               CASE
                 WHEN NOT json_valid(payload_json) THEN NULL
                 WHEN event_type = ${OUTPUT_EVENT}
@@ -439,7 +544,9 @@ export const compactThreadEvents = (input: {
               AND stream_id = ${threadId}
               AND sequence > ${cursor}
               AND sequence <= ${head}
-              AND event_type IN (${OUTPUT_EVENT}, ${MESSAGE_EVENT}, ${REASONING_TOKENS_EVENT})
+              AND event_type IN (
+                ${OUTPUT_EVENT}, ${MESSAGE_EVENT}, ${REASONING_TOKENS_EVENT}, ${SESSION_EVENT}
+              )
             ORDER BY sequence ASC
             LIMIT ${SCAN_PAGE_SIZE}
           `;
@@ -451,6 +558,22 @@ export const compactThreadEvents = (input: {
                 sequence: row.sequence,
                 cause: "payload is not valid JSON",
               });
+            }
+            if (row.eventType === SESSION_EVENT) {
+              if (row.sessionState === null) continue;
+              if (sessionRun?.state !== row.sessionState) {
+                if (sessionRun) {
+                  removableSessions.push(...removableSessionUpdates(sessionRun.updates));
+                }
+                sessionRun = { state: row.sessionState, updates: [] };
+              }
+              sessionRun.updates.push({
+                sequence: row.sequence,
+                bytes: row.payloadBytes,
+                estimates: row.sessionEstimates ?? 0,
+                tokenReport: row.commandId !== null && TOKEN_REPORT_COMMAND_ID.test(row.commandId),
+              });
+              continue;
             }
             if (row.groupId === null) continue;
             if (row.eventType === REASONING_TOKENS_EVENT) {
@@ -484,11 +607,26 @@ export const compactThreadEvents = (input: {
           yield* Effect.yieldNow;
         }
 
+        if (sessionRun) removableSessions.push(...removableSessionUpdates(sessionRun.updates));
+        // Each removal stands alone, so a long thread's updates go in several groups.
+        chunks(removableSessions, SESSION_UPDATES_PER_GROUP).forEach((updates, index) =>
+          groups.set(`session:${index}`, {
+            kind: "session",
+            id: `session:${index}`,
+            sequences: updates.map((update) => update.sequence),
+            bytes: updates.reduce((sum, update) => sum + update.bytes, 0),
+            lastStreaming: false,
+            lastPayloadBytes: 0,
+          }),
+        );
+
         const eligible = [...groups.values()].filter((group) =>
-          group.kind === "output"
-            ? group.sequences.length > 1 ||
-              group.lastPayloadBytes > COMPACTED_COMMAND_OUTPUT_MAX_BYTES + 1_024
-            : group.sequences.length > 1 && !group.lastStreaming,
+          group.kind === "session"
+            ? true
+            : group.kind === "output"
+              ? group.sequences.length > 1 ||
+                group.lastPayloadBytes > COMPACTED_COMMAND_OUTPUT_MAX_BYTES + 1_024
+              : group.sequences.length > 1 && !group.lastStreaming,
         );
 
         let pending: Array<{ group: EventGroup; prepared: PreparedGroup }> = [];
@@ -521,7 +659,8 @@ export const compactThreadEvents = (input: {
                   for (const { group, prepared } of batch) {
                     totals.bytesRemoved += prepared.bytesRemoved;
                     if (group.kind === "output") totals.commandOutputsCompacted++;
-                    else totals.messagesCompacted++;
+                    else if (group.kind === "message") totals.messagesCompacted++;
+                    else totals.sessionUpdatesCompacted += group.sequences.length;
                   }
                 }),
               ),
@@ -545,7 +684,14 @@ export const compactThreadEvents = (input: {
             continue;
           }
           const prepared = yield* (
-            group.kind === "output" ? prepareOutputGroup(group) : prepareMessageGroup(group)
+            group.kind === "session"
+              ? Effect.succeed({
+                  ops: deleteOps(group.sequences, false),
+                  bytesRemoved: group.bytes,
+                } satisfies PreparedGroup)
+              : group.kind === "output"
+                ? prepareOutputGroup(group)
+                : prepareMessageGroup(group)
           ).pipe(
             Effect.catchTag("MalformedEventPayload", (error) =>
               Effect.logWarning("event compaction skipped a group with a malformed payload", {
@@ -630,4 +776,155 @@ export const compactThreadEvents = (input: {
       }
     }
     return { ...totals, complete } satisfies EventCompactionResult;
+  });
+
+export interface WorkflowEventCompactionResult {
+  readonly eventsRemoved: number;
+  /** Approximate payload bytes removed from the event log. */
+  readonly bytesRemoved: number;
+  /** False when the time budget ran out before the scan reached the newest eligible event. */
+  readonly complete: boolean;
+  /**
+   * The event the scan stopped at because it is dated after `nowMs` (clock skew, restored
+   * data); null otherwise. Updates after it are not compacted until an hour past that date.
+   */
+  readonly futureDatedEvent: { readonly sequence: number; readonly occurredAt: string } | null;
+}
+
+/**
+ * Removes planning workflow updates that a newer update of the same workflow
+ * has replaced.
+ *
+ * The scan reads workflow events in sequence order from where the last pass
+ * stopped, and `orchestration_event_keep_last` holds, per workflow, the newest
+ * update read so far that may still be removed. Reading another update of that
+ * workflow removes the remembered one and remembers the new one. Creation and
+ * deletion forget it, so a workflow's first event and its last update before a
+ * deletion stay, and an update with no earlier event of its workflow (a log
+ * that starts mid-history) is treated as the first. A deletion also drops the
+ * workflow's row, so the table holds one row per workflow that still exists.
+ * Workflow events are never removed any other way: a thread purge deletes only
+ * that thread's own events.
+ *
+ * Only events every projector has applied and that are an hour old are read;
+ * the scan stops at the first that is not, so events are always handled in
+ * order. An event dated in the future therefore holds the scan until its date
+ * has passed, which the result reports. Each page commits its removals
+ * together with the scan position.
+ */
+export const compactWorkflowEvents = (input: {
+  readonly nowMs: number;
+  /** Stop starting new pages after this long. */
+  readonly maxDurationMs: number;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const deadlineMs = Date.now() + input.maxDurationMs;
+    const totals = { eventsRemoved: 0, bytesRemoved: 0 };
+    const stopped = () => getDatabaseDamage() !== null || Date.now() > deadlineMs;
+    const projectedThrough = yield* readProjectedThrough;
+    const cutoff = new Date(input.nowMs - EVENT_COMPACTION_IDLE_MS).toISOString();
+    const nowIso = new Date(input.nowMs).toISOString();
+    let futureDatedEvent: WorkflowEventCompactionResult["futureDatedEvent"] = null;
+    const keptKey = (workflowId: string) => `workflow:${workflowId}`;
+    const position = yield* sql<{ readonly sequence: number | null }>`
+      SELECT kept_sequence AS "sequence" FROM orchestration_event_keep_last
+      WHERE group_key = ${WORKFLOW_SCAN_KEY}
+    `;
+    let cursor = position[0]?.sequence ?? 0;
+
+    while (true) {
+      if (stopped())
+        return {
+          ...totals,
+          complete: false,
+          futureDatedEvent,
+        } satisfies WorkflowEventCompactionResult;
+      // No payload columns here: the type index answers this without touching a payload.
+      const page = yield* sql<{ readonly sequence: number; readonly occurredAt: string }>`
+        SELECT sequence, occurred_at AS "occurredAt"
+        FROM orchestration_events
+        WHERE event_type IN (
+            ${WORKFLOW_CREATED_EVENT}, ${WORKFLOW_UPSERTED_EVENT}, ${WORKFLOW_DELETED_EVENT}
+          )
+          AND sequence > ${cursor}
+          AND sequence <= ${projectedThrough}
+        ORDER BY sequence ASC
+        LIMIT ${WORKFLOW_SCAN_PAGE_SIZE}
+      `;
+      const tooRecent = page.findIndex((row) => row.occurredAt >= cutoff);
+      const ready = tooRecent === -1 ? page : page.slice(0, tooRecent);
+      const blocking = tooRecent === -1 ? undefined : page[tooRecent];
+      if (blocking && blocking.occurredAt > nowIso) futureDatedEvent = blocking;
+      if (ready.length === 0) break;
+      const rows = yield* sql<{
+        readonly sequence: number;
+        readonly eventType: string;
+        readonly workflowId: string | null;
+      }>`
+        SELECT
+          sequence,
+          event_type AS "eventType",
+          CASE WHEN json_valid(payload_json) THEN COALESCE(
+            json_extract(payload_json, '$.workflow.id'),
+            json_extract(payload_json, '$.workflowId')
+          ) END AS "workflowId"
+        FROM orchestration_events
+        WHERE sequence IN ${sql.in(ready.map((row) => row.sequence))}
+        ORDER BY sequence ASC
+      `;
+      const last = ready[ready.length - 1]!.sequence;
+      const removed = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const counts = { events: 0, bytes: 0 };
+          for (const row of rows) {
+            // An event without a workflow ID belongs to no group and stays as it is.
+            if (typeof row.workflowId !== "string") continue;
+            const key = keptKey(row.workflowId);
+            const known = yield* sql<{ readonly sequence: number | null }>`
+              SELECT kept_sequence AS "sequence" FROM orchestration_event_keep_last
+              WHERE group_key = ${key}
+            `;
+            const kept = known[0]?.sequence ?? null;
+            const next =
+              row.eventType === WORKFLOW_UPSERTED_EVENT && known.length > 0 ? row.sequence : null;
+            if (next !== null && kept !== null) {
+              const gone = yield* sql<{ readonly payloadBytes: number }>`
+                DELETE FROM orchestration_events
+                WHERE sequence = ${kept} AND event_type = ${WORKFLOW_UPSERTED_EVENT}
+                RETURNING LENGTH(CAST(payload_json AS BLOB)) AS "payloadBytes"
+              `;
+              counts.events += gone.length;
+              counts.bytes += gone[0]?.payloadBytes ?? 0;
+            }
+            if (row.eventType === WORKFLOW_DELETED_EVENT) {
+              // Nothing more is expected for a deleted workflow, so its row goes too.
+              yield* sql`DELETE FROM orchestration_event_keep_last WHERE group_key = ${key}`;
+              continue;
+            }
+            yield* sql`
+              INSERT INTO orchestration_event_keep_last (group_key, kept_sequence)
+              VALUES (${key}, ${next})
+              ON CONFLICT (group_key) DO UPDATE SET kept_sequence = excluded.kept_sequence
+            `;
+          }
+          yield* sql`
+            INSERT INTO orchestration_event_keep_last (group_key, kept_sequence)
+            VALUES (${WORKFLOW_SCAN_KEY}, ${last})
+            ON CONFLICT (group_key) DO UPDATE SET kept_sequence = excluded.kept_sequence
+          `;
+          return counts;
+        }),
+      );
+      totals.eventsRemoved += removed.events;
+      totals.bytesRemoved += removed.bytes;
+      cursor = last;
+      if (tooRecent !== -1) break;
+      yield* Effect.yieldNow;
+    }
+    return {
+      ...totals,
+      complete: true,
+      futureDatedEvent,
+    } satisfies WorkflowEventCompactionResult;
   });

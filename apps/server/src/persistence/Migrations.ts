@@ -1,6 +1,15 @@
 import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
+import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
+import Migration0156 from "./Migrations/156_UpstreamReclassifyRuns.ts";
+import Migration0157 from "./Migrations/157_ProjectionThreadActivitiesWorktreeSetupIndex.ts";
+import Migration0158 from "./Migrations/158_ProviderTurnDeliveryPendingIndex.ts";
+import Migration0159 from "./Migrations/159_EventCompactionKeepLast.ts";
+import Migration0160 from "./Migrations/160_DropUnreadEventIndexes.ts";
+import Migration0162 from "./Migrations/162_UsageFactsThreadIndex.ts";
+import Migration0163 from "./Migrations/163_DropUnreadReceiptIndexes.ts";
+import Migration0164 from "./Migrations/164_UpstreamPortReviewRecovery.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -188,8 +197,17 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "161_UsageNativeIdentity": Migration0161,
   "154_DesktopActivityPendingIndex": Migration0154,
   "155_BackgroundWorkNativeParentSession": Migration0155,
+  "156_UpstreamReclassifyRuns": Migration0156,
+  "157_ProjectionThreadActivitiesWorktreeSetupIndex": Migration0157,
+  "158_ProviderTurnDeliveryPendingIndex": Migration0158,
+  "159_EventCompactionKeepLast": Migration0159,
+  "160_DropUnreadEventIndexes": Migration0160,
+  "162_UsageFactsThreadIndex": Migration0162,
+  "163_DropUnreadReceiptIndexes": Migration0163,
+  "164_UpstreamPortReviewRecovery": Migration0164,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.

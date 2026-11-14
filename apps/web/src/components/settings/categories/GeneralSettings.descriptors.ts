@@ -17,6 +17,13 @@ export const GENERAL_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="traces collector URL"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["general.server-health"],
+    label: "Server health",
+    description: "See slow requests, slow database statements and event loop delay.",
+    keywords: ["performance", "slow", "sql", "database", "latency", "memory", "event loop", "lag"],
+    targetSelector: '[data-settings-search-target="general.server-health"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["general.sidebar-preview"],
     label: "Sidebar thread preview count",
     description: "Set how many threads appear before Show more.",

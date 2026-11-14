@@ -1,4 +1,5 @@
 import "./stdioErrors";
+import { systemLocale } from "./systemLocale";
 import { installKeepAwake } from "./keepAwake/install";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import {
@@ -7,7 +8,13 @@ import {
   zoomAppContents,
   type AppZoomDirection,
 } from "./appZoom";
-import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
+import {
+  desktopCloseWindowItem,
+  desktopRuntimeName,
+  desktopWindowMenu,
+  selectAppMenuWindow,
+  selectReloadContents,
+} from "./windowMenu";
 import {
   BackendOutputTail,
   STARTUP_FAILURE_RESTART_ATTEMPTS,
@@ -30,7 +37,9 @@ import { recoverUpdateSession, restoreUpdateWindows } from "./updateRecovery";
 import { createUpdaterInstallerAdapter } from "./updateInstallerAdapter";
 import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
+import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
+import { hasCachedUpdate } from "./updateCache";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
@@ -74,6 +83,7 @@ import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
 import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
+import { createDesktopTheme } from "./desktopTheme";
 import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
@@ -81,10 +91,15 @@ import {
   chromeControlCertified,
   verifyCodexChromeAdoption,
 } from "./computer/certification";
-import { COMPUTER_BACKGROUND_CAPABILITY, type ComputerBackgroundStatus } from "@t3tools/contracts";
+import {
+  COMPUTER_BACKGROUND_CAPABILITY,
+  COMPUTER_SHARED_APP_CAPABILITY,
+  type ComputerBackgroundStatus,
+} from "@t3tools/contracts";
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
 import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
+import { computerScreenshotThumbnail } from "./computer/computerThumbnail";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
 import { ComputerConsentStore } from "./computer/ComputerConsentStore";
@@ -106,7 +121,9 @@ import { getSafeExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
+import { applyComputerPause } from "./computer/computerPause";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
+import { clickPreviewGuest } from "./preview/guestFocus";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -208,13 +225,28 @@ import {
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
-import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
+import { formatErrorMessage, loadPreviewURL } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { fetchPreviewFaviconDataUrl } from "./preview/previewFavicon";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
+import {
+  DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL,
+  DESKTOP_NOTIFICATION_SHOW_CHANNEL,
+  DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL,
+  DesktopNotificationRegistry,
+  parseDesktopNotificationInput,
+} from "./desktopNotifications";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
+import { buildContextMenuTemplate } from "./contextMenuTemplate";
+import { createWindowWithOptionalControl } from "./optionalAppControl";
+import {
+  takeAppActivations,
+  completeAppActivation,
+  type AppActivationEntry,
+} from "./appActivationQueue";
+import { startDesktopAppControl, type DesktopAppRequest } from "@t3tools/shared/desktopAppControl";
 
 const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
@@ -356,6 +388,38 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
+function profileWindows(profileId: string): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter(
+    (window) =>
+      !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+  );
+}
+const desktopNotifications = new DesktopNotificationRegistry({
+  create: ({ icon, ...input }) =>
+    new Notification({
+      ...input,
+      // macOS always shows the app icon; Windows and Linux show the status glyph.
+      ...(icon && process.platform !== "darwin"
+        ? { icon: nativeImage.createFromDataURL(icon) }
+        : {}),
+    }),
+  // Resolved at click time; `openProfile` is declared further down.
+  openProfile: (profileId) => openProfile(profileId),
+  // `openProfile` focuses the profile's first window or creates one, so after it resolves the
+  // focused window of the profile is the one it brought forward.
+  selectWindow: (profileId) => {
+    const windows = profileWindows(profileId);
+    const focused = BrowserWindow.getFocusedWindow();
+    const chosen = windows.find((window) => window === focused) ?? windows[0];
+    return chosen ? chosen.webContents.id : null;
+  },
+  announce: (profileId, webContentsId) => {
+    for (const window of profileWindows(profileId))
+      if (webContentsId === null || window.webContents.id === webContentsId)
+        window.webContents.send(DESKTOP_NOTIFICATION_ACTIVATIONS_AVAILABLE_CHANNEL);
+  },
+  log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
+});
 const browserOpenWindows = {
   window: (profileId: string) =>
     BrowserWindow.getAllWindows().find(
@@ -442,7 +506,10 @@ function initializeComputerSystem(): void {
     root,
     Path.join(root, process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"),
   );
-  const lease = new ComputerLeaseAuthority();
+  const lease = new ComputerLeaseAuthority(Date.now, {
+    shareApps: () => helper.capabilities().includes(COMPUTER_SHARED_APP_CAPABILITY),
+    profileName: (profileId) => backends.get(profileId)?.profile.name,
+  });
   const overlay = new ComputerOverlay();
   const nativeStatus = () => {
     const gate = computerCertificationStatus(
@@ -502,15 +569,7 @@ function initializeComputerSystem(): void {
     platform: process.platform === "win32" ? "win32" : "darwin",
     activity: (profileId, activity) =>
       computerSystem?.channel.send(profileId, { type: "activity", activity }),
-    thumbnail: (screenshot) => {
-      const image = nativeImage.createFromDataURL(
-        `data:${screenshot.mimeType};base64,${screenshot.data}`,
-      );
-      if (image.isEmpty()) return undefined;
-      const bytes = image.resize({ width: 320 }).toJPEG(50);
-      const data = `data:image/jpeg;base64,${bytes.toString("base64")}`;
-      return Buffer.byteLength(data) <= 40 * 1024 ? data : undefined;
-    },
+    thumbnail: computerScreenshotThumbnail,
     paused: (holder, cause) => {
       computerSystem?.channel.cancelSessionAccess(
         holder.profileId,
@@ -550,6 +609,7 @@ function initializeComputerSystem(): void {
       ),
     executionState: (profileId, update) =>
       computerSystem?.channel.sendExecutionState(profileId, update),
+    log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
     takeoverValid: (holder) =>
       computerSystem?.channel.execution.validTakeover(
         holder,
@@ -619,7 +679,7 @@ function initializeComputerSystem(): void {
         controller.stop("kill-switch");
         // Invalidate synchronously and stop every registered integration group here;
         // the server is told afterwards, but nothing depends on it answering.
-        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? null;
+        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? [];
         // Idle integrations (Codex holds the lease only per call) are stopped too; their
         // generations stay invalidated in main until the user resumes the thread.
         const stopped = supervisor.stop(() => true, "emergency");
@@ -628,15 +688,11 @@ function initializeComputerSystem(): void {
           { profileId: string; threadId: string; generation: string }
         >();
         for (const entry of [
-          ...(chrome
-            ? [
-                {
-                  profileId: chrome.profileId,
-                  threadId: chrome.threadId,
-                  generation: chrome.sessionGeneration,
-                },
-              ]
-            : []),
+          ...chrome.map((holder) => ({
+            profileId: holder.profileId,
+            threadId: holder.threadId,
+            generation: holder.sessionGeneration,
+          })),
           ...stopped.map((registration) => ({
             profileId: registration.profileId,
             threadId: registration.threadId,
@@ -663,7 +719,12 @@ function initializeComputerSystem(): void {
     status,
     (profileId, request) => {
       if (!Notification.isSupported()) return;
-      const notice = new Notification({
+      // Held by the registry so the click survives garbage collection; the latest request
+      // replaces an older one still on screen.
+      desktopNotifications.show(profileId, {
+        id: `computer-access:${Date.now()}`,
+        tag: "computer-access",
+        target: { kind: "none" },
         title: "Computer access requested",
         body:
           request.kind === "chrome-setup"
@@ -676,10 +737,6 @@ function initializeComputerSystem(): void {
                   ? `An agent wants the foreground in ${request.takeover?.appName ?? "an app"}.`
                   : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
       });
-      notice.on("click", () => {
-        void openProfile(profileId);
-      });
-      notice.show();
     },
     {
       certified: (provider) => chromeControlCertified(provider),
@@ -692,10 +749,12 @@ function initializeComputerSystem(): void {
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
+      log: (message) => writeDesktopLogHeader(sanitizeLogValue(message)),
     },
     computerGrants,
     {
       consents: computerConsents,
+      profileName: (profileId) => backends.get(profileId)?.profile.name,
       grantForgetFailed: (_profileId, message) =>
         dialog.showErrorBox("Could not forget this app", message),
       ...(process.platform === "darwin"
@@ -711,28 +770,16 @@ function initializeComputerSystem(): void {
       notificationAvailable: () => Notification.isSupported(),
       notification: (profileId, payload) => {
         if (!Notification.isSupported()) return false;
-        const notice = new Notification({ title: payload.title, body: payload.body });
-        notice.on("click", () => {
-          void openProfile(profileId)
-            .then(() => {
-              const window = BrowserWindow.getAllWindows().find(
-                (w) => profileByWebContentsId.get(w.webContents.id) === profileId,
-              );
-              if (!window || window.isDestroyed()) return;
-              const base = window.webContents.getURL().split("#")[0]!;
-              const target = payload.threadId
-                ? rendererUrlForThread(base, payload.threadId)
-                : `${base}#/scheduled?taskId=${encodeURIComponent(payload.taskId)}`;
-              void window.loadURL(target);
-            })
-            .catch((error) =>
-              writeDesktopLogHeader(
-                `scheduled notification navigation failed: ${formatErrorMessage(error)}`,
-              ),
-            );
+        // The renderer navigates in place when it takes the activation; no full reload.
+        return desktopNotifications.show(profileId, {
+          id: payload.id,
+          tag: payload.id,
+          title: payload.title,
+          body: payload.body,
+          target: payload.threadId
+            ? { kind: "thread", threadId: payload.threadId }
+            : { kind: "scheduled", taskId: payload.taskId },
         });
-        notice.show();
-        return true;
       },
       background: backgroundStatus,
       advertiseBackground: computerBackgroundGate(
@@ -807,26 +854,25 @@ function initializeComputerSystem(): void {
         helper.retry();
     },
     answer: (profile, answer) => consent.review(profile, answer),
-    pause: async (profileId, threadId, paused) => {
-      const target = controller.resumeTarget(profileId, threadId);
-      const chromeHolder = channel.chrome.current();
-      if (
-        !paused &&
-        (controller.requiresLocalResume(profileId, threadId) ||
-          (chromeHolder?.profileId === profileId && chromeHolder.threadId === threadId))
-      ) {
-        if (!(await consent.confirmResume(profileId, target.title, { recovery: target.recovery })))
-          throw new Error("Computer control remains paused.");
-        if (
-          controller.resumeTarget(profileId, threadId).authorization !== target.authorization ||
-          channel.chrome.current() !== chromeHolder
-        )
-          throw new Error("The computer session changed while Resume was being confirmed.");
-      }
-      if (!channel.pauseChrome(profileId, threadId, paused))
-        controller.setPaused(profileId, threadId, paused);
-      if (!paused) supervisor.resumed(profileId, threadId);
-      channel.send(profileId, { type: "pauseChanged", threadId, paused });
+    pause: (profileId, threadId, paused) =>
+      applyComputerPause({ controller, channel, consent, supervisor }, profileId, threadId, paused),
+    // A waiting thread's Stop pauses only the holder it waits for, even in another profile.
+    // Pausing only removes agent power; resuming stays with the holder's own profile.
+    stopHolder: async (profileId, token) => {
+      const target = channel.resolveBlocker(profileId, token);
+      if (!target) return false;
+      writeDesktopLogHeader(
+        sanitizeLogValue(
+          `computer: profile=${profileId} stopped the holder profile=${target.profileId} thread=${target.threadId}`,
+        ),
+      );
+      await applyComputerPause(
+        { controller, channel, consent, supervisor },
+        target.profileId,
+        target.threadId,
+        true,
+      );
+      return true;
     },
   });
   if (
@@ -1912,10 +1958,7 @@ async function previewAutomationClick(
     const point = await resolveAutomationClickPoint(guest, input, checkpoint);
     const x = Math.round(point.x);
     const y = Math.round(point.y);
-    checkpoint.check();
-    guest.sendInputEvent({ type: "mouseMove", x, y });
-    guest.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
-    guest.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    await clickPreviewGuest(guest, x, y, checkpoint);
     return { point: { x, y } };
   });
 }
@@ -2471,6 +2514,18 @@ function zoomMainWindow(direction: AppZoomDirection): void {
   }
 }
 
+function reloadFocusedContents(ignoreCache: boolean): void {
+  const focused = electronWebContents.getFocusedWebContents();
+  const target = selectReloadContents(
+    focused,
+    BrowserWindow.getFocusedWindow()?.webContents,
+    isPreviewGuestWebContents,
+  );
+  if (!target || target.isDestroyed()) return;
+  if (ignoreCache) target.reloadIgnoringCache();
+  else target.reload();
+}
+
 function dispatchMenuAction(action: string): void {
   const existingWindow = selectAppMenuWindow(
     BrowserWindow.getFocusedWindow(),
@@ -2589,9 +2644,9 @@ function configureApplicationMenu(): void {
 
   if (process.platform === "darwin") {
     template.push({
-      label: app.name,
+      label: APP_DISPLAY_NAME,
       submenu: [
-        { role: "about" },
+        { role: "about", label: `About ${APP_DISPLAY_NAME}` },
         {
           label: "Check for Updates...",
           click: () => handleCheckForUpdatesMenuClick(),
@@ -2605,7 +2660,7 @@ function configureApplicationMenu(): void {
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
-        { role: "hide" },
+        { role: "hide", label: `Hide ${APP_DISPLAY_NAME}` },
         { role: "hideOthers" },
         { role: "unhide" },
         { type: "separator" },
@@ -2650,8 +2705,12 @@ function configureApplicationMenu(): void {
     {
       label: "View",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
+        { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedContents(false) },
+        {
+          label: "Force Reload",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => reloadFocusedContents(true),
+        },
         { role: "toggleDevTools" },
         { type: "separator" },
         ...appZoomMenu(zoomMainWindow),
@@ -2721,7 +2780,7 @@ function resolveUserDataPath(): string {
 }
 
 function configureAppIdentity(): void {
-  app.setName(APP_DISPLAY_NAME);
+  app.setName(desktopRuntimeName(isDevelopment));
   const commitHash = resolveAboutCommitHash();
   app.setAboutPanelOptions({
     applicationName: APP_DISPLAY_NAME,
@@ -2935,6 +2994,7 @@ function configureAutoUpdater(): void {
   autoUpdater.autoInstallOnAppQuit = false;
   let lastLoggedDownloadMilestone = -1;
   updateController = createUpdateController({
+    isQuitting: () => isQuitting,
     getState: () => updateState,
     emit: (state) => setUpdateState(state),
     writePreferences: (value) => writeUpdatePreferences(preferencesPath, value),
@@ -2949,6 +3009,13 @@ function configureAutoUpdater(): void {
         return result?.isUpdateAvailable
           ? {
               version: result.updateInfo.version,
+              cachedDownload: await hasCachedUpdate(
+                autoUpdater,
+                result.updateInfo.files,
+                desktopRuntimeInfo,
+                process.platform,
+                process.resourcesPath,
+              ),
               releaseNotes: normalizeDesktopUpdateReleaseNotes(result.updateInfo.releaseNotes),
             }
           : null;
@@ -3525,6 +3592,58 @@ async function openProfileOnce(
 const PROMPT_LINK_SCHEME_FOR_BUILD = promptLinkSchemeFor(isDevelopment);
 const PROMPT_LINKS_AVAILABLE_CHANNEL = "desktop:prompt-links-available";
 const promptLinks = new PromptLinkInbox(PROMPT_LINK_SCHEME_FOR_BUILD);
+const appActivations = new Map<string, AppActivationEntry>();
+
+function activateProject(request: DesktopAppRequest): Promise<void> {
+  if (appActivations.has(request.id))
+    return Promise.reject(new Error("Duplicate desktop request."));
+  if (appActivations.size >= 32)
+    return Promise.reject(new Error("Too many pending desktop requests."));
+  const profileId = reopenTargetProfileId();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        complete(
+          "Desktop activation is taking longer than expected and may still complete. Retry to reuse the project.",
+        ),
+      15_000,
+    );
+    const complete = (error?: string) => {
+      clearTimeout(timer);
+      appActivations.delete(request.id);
+      if (error) reject(new Error(error));
+      else resolve();
+    };
+    appActivations.set(request.id, { request, profileId, senderId: -1, complete });
+    void openProfile(profileId)
+      .then((opened) => {
+        const entry = appActivations.get(request.id);
+        if (!entry) return;
+        if (!opened) {
+          complete("The desktop app is quitting.");
+          return;
+        }
+        const focused = BrowserWindow.getFocusedWindow();
+        const window =
+          focused && profileByWebContentsId.get(focused.webContents.id) === profileId
+            ? focused
+            : BrowserWindow.getAllWindows().find(
+                (candidate) => profileByWebContentsId.get(candidate.webContents.id) === profileId,
+              );
+        if (!window || window.isDestroyed()) {
+          complete("No desktop window is available.");
+          return;
+        }
+        entry.senderId = window.webContents.id;
+        if (process.platform === "darwin") app.focus({ steal: true });
+        window.focus();
+        window.webContents.send("desktop:app-activations-available");
+      })
+      .catch((error: unknown) =>
+        complete(error instanceof Error ? error.message : "Could not open the desktop window."),
+      );
+  });
+}
 
 function registerPromptLinkProtocol(): void {
   const entryScript = entryScriptInArgv(process.argv);
@@ -3583,6 +3702,33 @@ function reopenApplication(): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle("desktop:is-app-activation-pending", (event, id: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    const entry = appActivations.get(id);
+    return entry?.profileId === runtime.profile.id && entry.senderId === event.sender.id;
+  });
+  ipcMain.handle("desktop:resolve-activation-paths", async (event, values: unknown) => {
+    authorizeAppMainFrame(event, "Resolve activation paths");
+    if (!Array.isArray(values) || values.length > 10_000) throw new Error("Invalid paths");
+    const fs = await import("node:fs/promises");
+    const result: (string | null)[] = [];
+    for (const value of values) {
+      result.push(typeof value === "string" ? await fs.realpath(value).catch(() => null) : null);
+    }
+    return result;
+  });
+  ipcMain.handle("desktop:reveal-window", (event) => {
+    revealSenderWindow(
+      () => {
+        authorizeAppMainFrame(event, "Window reveal");
+      },
+      () => BrowserWindow.fromWebContents(event.sender),
+      () => {
+        if (process.platform === "darwin") app.focus({ steal: true });
+      },
+    );
+  });
   const assertFileCaller = (event: Electron.IpcMainInvokeEvent) => {
     assertFileActionCaller({
       registered: appRendererWebContentsIds.has(event.sender.id),
@@ -3681,6 +3827,27 @@ function registerIpcHandlers(): void {
     // With several profiles, the user is told which one the link opened in.
     return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
   });
+  ipcMain.handle("desktop:take-app-activations", (event) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    return takeAppActivations(appActivations, runtime.profile.id, event.sender.id);
+  });
+  ipcMain.handle("desktop:complete-app-activation", (event, id: string, error?: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
+    const profileId = authorizeAppMainFrame(event, "Notification");
+    if (!Notification.isSupported()) return false;
+    const input = parseDesktopNotificationInput(raw);
+    if (!input) throw new Error("Invalid notification.");
+    return desktopNotifications.show(profileId, input);
+  });
+  ipcMain.handle(DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL, (event) => {
+    const profileId = authorizeAppMainFrame(event, "Notification activation");
+    return desktopNotifications.take(profileId, event.sender.id);
+  });
   ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
     runtimeForRenderer(event.sender.id);
     if (typeof id !== "string") return false;
@@ -3727,7 +3894,8 @@ function registerIpcHandlers(): void {
       return;
     }
 
-    nativeTheme.themeSource = theme;
+    if (desktopTheme) desktopTheme.setSource(theme);
+    else nativeTheme.themeSource = theme;
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
@@ -3740,16 +3908,7 @@ function registerIpcHandlers(): void {
       fileAction?: { editorTarget: string },
     ) => {
       if (fileAction) assertFileCaller(event);
-      const normalizedItems = items
-        .filter((item) => typeof item.id === "string" && typeof item.label === "string")
-        .map((item) => ({
-          id: item.id,
-          label: item.label,
-          destructive: item.destructive === true,
-          disabled: item.disabled === true,
-          separatorBefore: item.separatorBefore === true,
-        }));
-      if (normalizedItems.length === 0) {
+      if (!Array.isArray(items) || items.length === 0) {
         return null;
       }
 
@@ -3761,32 +3920,18 @@ function registerIpcHandlers(): void {
       );
 
       return new Promise<string | null>((resolve) => {
-        const template: MenuItemConstructorOptions[] = [];
-        let hasInsertedDestructiveSeparator = false;
-        for (const item of normalizedItems) {
-          if (
-            template.length > 0 &&
-            (item.separatorBefore || (item.destructive && !hasInsertedDestructiveSeparator))
-          ) {
-            template.push({ type: "separator" });
-          }
-          if (item.destructive) hasInsertedDestructiveSeparator = true;
-          const itemOption: MenuItemConstructorOptions = {
-            label: item.label,
-            enabled: !item.disabled,
-            click: () => {
-              if (item.id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
-                fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
-              resolve(item.id);
-            },
-          };
-          if (item.destructive) {
-            const destructiveIcon = getDestructiveMenuIcon();
-            if (destructiveIcon) {
-              itemOption.icon = destructiveIcon;
-            }
-          }
-          template.push(itemOption);
+        const template = buildContextMenuTemplate(
+          items,
+          (id) => {
+            if (id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
+              fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
+            resolve(id);
+          },
+          getDestructiveMenuIcon() ?? undefined,
+        );
+        if (template.length === 0) {
+          resolve(null);
+          return;
         }
 
         const menu = Menu.buildFromTemplate(template);
@@ -4145,10 +4290,10 @@ function registerIpcHandlers(): void {
         // interrupted rather than report success or a load failure.
         const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
         try {
-          await guest.loadURL(url);
+          await loadPreviewURL(guest, url);
         } catch (error) {
           takeover?.check();
-          if (!isPreviewNavigationAbortError(error)) throw error;
+          throw error;
         }
         takeover?.check();
       },
@@ -4253,8 +4398,8 @@ function createWindow(
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 840,
-    minHeight: 620,
+    minWidth: 400,
+    minHeight: 360,
     show: false,
     autoHideMenuBar: true,
     ...getIconOption(),
@@ -4265,7 +4410,7 @@ function createWindow(
       ...(partition ? { partition } : {}),
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
-        `--f5-system-locale=${app.getSystemLocale()}`,
+        `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
       ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -4534,18 +4679,32 @@ async function bootstrap(): Promise<void> {
     registryWatcher.close();
     if (profileWatchTimer) clearTimeout(profileWatchTimer);
   });
+  const shellEnvironmentMs = await shellEnvironmentReady;
+  writeDesktopLogHeader(
+    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
+  );
   await previewRuntime.initialize();
   initializeComputerSystem();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   configureBackendRequestAuthentication();
   writeDesktopLogHeader("bootstrap backend request authentication configured");
-  mainWindow = createWindow();
+  mainWindow = createWindowWithOptionalControl({
+    createWindow: () => createWindow(),
+    startControl: () =>
+      startDesktopAppControl(STATE_DIR, activateProject, (error) =>
+        writeDesktopLogHeader("desktop CLI connection error: " + formatErrorMessage(error)),
+      ),
+    onError: (error) =>
+      writeDesktopLogHeader("desktop CLI control unavailable: " + formatErrorMessage(error)),
+    onReady: (stop) => {
+      app.once("quit", () => {
+        for (const entry of appActivations.values()) entry.complete("The desktop app is quitting.");
+        void stop();
+      });
+    },
+  });
   writeDesktopLogHeader("bootstrap main window created");
-  const shellEnvironmentMs = await shellEnvironmentReady;
-  writeDesktopLogHeader(
-    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
-  );
   if (!isQuitting) {
     try {
       await ensureBackendRunning(defaultBackend);
@@ -4671,10 +4830,28 @@ async function initializeKeepAwake(): Promise<void> {
   });
 }
 
+let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
+
 app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
+    // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
+    const watchLinuxColorScheme =
+      process.platform === "linux"
+        ? (await import("./linuxColorScheme")).watchLinuxColorScheme
+        : undefined;
+    desktopTheme = createDesktopTheme(
+      nativeTheme,
+      watchLinuxColorScheme
+        ? (onChange, onError) => watchLinuxColorScheme(onChange, undefined, onError)
+        : undefined,
+      (cause) =>
+        writeDesktopLogHeader(
+          `Linux system appearance watcher failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+    );
+    app.once("quit", () => desktopTheme?.stop());
     configureAppIdentity();
     if (
       app.isPackaged &&

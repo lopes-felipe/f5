@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -6,6 +6,18 @@ import { describe, expect, it } from "vitest";
 import { museWorkspaceRoot, resolveMuseInvocation } from "./MusePaths.ts";
 
 describe("Muse on Windows", () => {
+  it("canonicalizes non-Windows roots with native realpath", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "MuseRoot-"));
+    try {
+      const alias = join(cwd, "alias");
+      await symlink(cwd, alias, "junction");
+      expect(await museWorkspaceRoot(alias, "darwin")).toBe(await realpath(cwd));
+      if (await realpath(cwd.toUpperCase()).catch(() => undefined))
+        expect(await museWorkspaceRoot(cwd.toUpperCase(), "darwin")).toBe(await realpath(cwd));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it("uses verbatim drive and UNC roots and preserves existing prefixes", async () => {
     expect(await museWorkspaceRoot("C:/missing-f5-muse/repo", "win32")).toBe(
       "\\\\?\\C:\\missing-f5-muse\\repo",

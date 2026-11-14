@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   resolveThreadPullRequests,
+  threadBranchPullRequest,
   summarizeThreadPullRequestState,
   threadPullRequestTooltipLines,
 } from "./threadPullRequests";
@@ -17,6 +18,14 @@ const branchPr = (
   baseBranch: "main",
   headBranch: "feature",
   state,
+});
+
+it("only associates a checkout PR with its stored thread branch, including worktrees", () => {
+  const pr = branchPr(1, "open");
+  expect(threadBranchPullRequest("feature", { branch: "feature", pr })).toBe(pr);
+  expect(threadBranchPullRequest("stack/base", { branch: "feature", pr })).toBeNull();
+  expect(threadBranchPullRequest(null, { branch: "feature", pr })).toBeNull();
+  expect(threadBranchPullRequest("feature", null)).toBeNull();
 });
 
 const link = (number: number, repository = "o/r"): ThreadPullRequestLink => ({

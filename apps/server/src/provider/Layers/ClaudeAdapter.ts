@@ -1,3 +1,8 @@
+import { normalizeUserInputOptions } from "../userInputOptions.ts";
+import {
+  resolveClaudeBypassAvailability,
+  type ClaudeBypassResolution,
+} from "../claudeBypassAvailability.ts";
 import { resolveClaudeSubagentFile } from "../agentTranscript/claudeSubagentTranscript.ts";
 import {
   classifyToolItemType,
@@ -33,12 +38,19 @@ import {
   MCP_RUNTIME_SERVER_LIMIT,
 } from "@t3tools/shared/mcpValidation";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
 import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import type { ChromeSessionRuntime } from "../chromeSessionRuntime";
 import {
+  CLAUDE_SCHEDULING_TOOLS,
+  ClaudeChromeActivity,
+  claudeSessionBackgroundBusy,
+} from "../claudeChromeActivity";
+import {
   claudeChromeAvailability,
+  claudeChromeAvailabilityInput,
   makeChromeSessionRuntime,
   registerChromeSession,
   releaseChromeSession,
@@ -46,6 +58,10 @@ import {
 } from "../chromeSessionRuntimeFactory";
 import { spawnRegisteredProcess } from "../registeredIntegrationProcess";
 import { readClaudeNativeResumeMetadata } from "../claudeResumeState.ts";
+import {
+  rememberClaudeToolResultCorrelation,
+  type ClaudeToolResultCorrelation,
+} from "../claudeToolResultCorrelations.ts";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import {
   ClaudeTranscriptRejoinCancelled,
@@ -217,6 +233,7 @@ import {
   filterReservedClaudeLaunchArgs,
 } from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import {
   buildMcpToolFilters,
   claudeDisallowedMcpToolNames,
@@ -284,6 +301,7 @@ import type {
   ProviderOneOffPromptResult,
 } from "../Services/ProviderAdapter.ts";
 import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import { pdfDocuments } from "../pdfDocuments.ts";
 import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.ts";
 import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import {
@@ -461,6 +479,7 @@ interface PendingUserInput {
 }
 
 interface ToolInFlight {
+  readonly turnId?: TurnId;
   readonly itemId: string;
   readonly itemType: CanonicalItemType;
   readonly toolName: string;
@@ -522,6 +541,12 @@ interface ClaudeSessionContext {
   chromeHealthFiber?: Fiber.Fiber<void, never> | undefined;
   /** The Chrome-enabled CLI, registered with desktop main before stdio flowed. */
   chromeProcess?: { kill: (signal: NodeJS.Signals) => boolean } | undefined;
+  /** Turns and Chrome calls: an idle session stops to free Chrome. */
+  chromeActivity?: ClaudeChromeActivity | undefined;
+  /** The session scheduled a wake-up or cron job, which would die with its CLI. */
+  chromeScheduledWork?: boolean | undefined;
+  /** Unregisters the broker's release hook for this session's Chrome lease. */
+  chromeReleaserOff?: (() => void) | undefined;
   replyOwned?: boolean | undefined;
   hostContractVersion?: string | undefined;
   hostContractMigrationMessageUuid?: string | undefined;
@@ -569,6 +594,9 @@ interface ClaudeSessionContext {
   readonly startedAt: string;
   /** Mode restored after plan turns; `auto` only while the model and CLI support it. */
   basePermissionMode: PermissionMode | undefined;
+  bypassPolicyCache?: { cwd: string | undefined; resolution: ClaudeBypassResolution };
+  bypassCliRestricted?: boolean;
+  bypassWarning?: string;
   /** The session's runtime mode asked for Claude `auto` review. */
   readonly autoRequested: boolean;
   resumeSessionId: string | undefined;
@@ -593,6 +621,9 @@ interface ClaudeSessionContext {
     approximateChars: number;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  /** Background calls outlive content-block indexes and sometimes their task notification. */
+  readonly pendingBackgroundToolResults: Map<string, ClaudeToolResultCorrelation>;
+  readonly completedTaskNotifications: Map<string, string | undefined>;
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly taskLaunchesByTool: Map<string, ClaudeSubagentLaunch>;
@@ -613,6 +644,8 @@ interface ClaudeSessionContext {
   latestCacheWrites?: { ephemeral5mInputTokens: number; ephemeral1hInputTokens: number };
   lastThreadStartedId: string | undefined;
   configuredBase: Record<string, unknown>;
+  /** A failed live update can leave the CLI running a different model. */
+  modelSelectionUnknown?: boolean;
   /**
    * Turn IDs whose turnState was cleared while interrupt was in-flight. Late
    * SDK output for these turns (result/assistant messages arriving after the
@@ -732,6 +765,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
 }
 
 export interface ClaudeAdapterLiveOptions {
+  readonly resolveBypassAvailability?: typeof resolveClaudeBypassAvailability;
   readonly oneOffProviderOptions?: ProviderStartOptions["claudeAgent"];
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly createQuery?: (input: {
@@ -1933,6 +1967,8 @@ function buildUserMessageEffect(
   dependencies: {
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
+    readonly documentBudgetKey?: string;
+    readonly stateDir?: string;
     readonly activeModel?: string;
     readonly sessionModel?: string | undefined;
     readonly allowsWorkspaceEdits: boolean;
@@ -2014,6 +2050,30 @@ ${promptText}`
 
     if (text.length > 0) {
       sdkContent.push({ type: "text", text });
+    }
+    if (dependencies.stateDir && dependencies.documentBudgetKey) {
+      const documents = yield* Effect.tryPromise({
+        try: () =>
+          pdfDocuments({
+            stateDir: dependencies.stateDir!,
+            sessionKey: dependencies.documentBudgetKey!,
+            baseBytes: Buffer.byteLength(JSON.stringify(sdkContent)),
+            attachments: input.resolvedAttachments ?? [],
+          }),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: "Could not persist the document request budget.",
+            cause,
+          }),
+      });
+      sdkContent.unshift(
+        ...documents.map(({ data }) => ({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data },
+        })),
+      );
     }
     return buildUserMessage({ sdkContent, submissionSource: input.submissionSource });
   });
@@ -2274,6 +2334,22 @@ function findInFlightToolEntryByItemId(
   return Array.from(context.inFlightTools.entries()).find(([, tool]) => tool.itemId === itemId);
 }
 
+function claimTaskCompletion(context: ClaudeSessionContext, taskId: string): boolean {
+  const runId = context.nativeTaskRuns.get(taskId);
+  if (
+    context.completedTaskNotifications.has(taskId) &&
+    context.completedTaskNotifications.get(taskId) === runId
+  )
+    return false;
+  context.completedTaskNotifications.set(taskId, runId);
+  if (context.completedTaskNotifications.size > 512) {
+    context.completedTaskNotifications.delete(
+      context.completedTaskNotifications.keys().next().value!,
+    );
+  }
+  return true;
+}
+
 function findTaskStateEntryByToolUseId(
   context: ClaudeSessionContext,
   toolUseId: string,
@@ -2405,6 +2481,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
     const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
+    const resolveBypass = async (
+      directory: string,
+      cwd: string | undefined,
+    ): Promise<ClaudeBypassResolution> => {
+      try {
+        return await (options?.resolveBypassAvailability ?? resolveClaudeBypassAvailability)(
+          directory,
+          cwd,
+        );
+      } catch (error) {
+        return { bypassDisabled: true, autoDisabled: false, failureReason: String(error) };
+      }
+    };
     const toolSearchPath = yield* Path.Path;
     // MCP App snapshots are stored as activity attachments (Codex parity); without SQL
     // (some tests) completed app tools stay ordinary tool rows.
@@ -2483,20 +2572,43 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.agentBrowser?.chrome?.verified !== true
           )
             return context?.agentBrowser?.chrome?.detail ?? claudeInChromeUnavailableDetail();
-          return yield* Effect.promise(() =>
+          // Every call gets an id the activity tracks, so its end always reaches main: by its
+          // result, or with the turn when the SDK gave no tool-use id to match a result to.
+          const callId = call.toolUseId ?? randomUUID();
+          // Main admits named calls at validation and counts them running from there, so the
+          // call is tracked only once admitted: waiting for another agent's native control
+          // never reads as Chrome in use. Without that, the report goes first: it shares one
+          // ordered channel with validation, so main sees the call before validating it.
+          const admittedByMain = context.chromeRuntime.admitsCalls();
+          if (!admittedByMain) context.chromeActivity?.callStarted(callId);
+          const denial = yield* Effect.promise(() =>
             context.chromeRuntime!.admit(
               {
                 toolName,
                 input: call.input,
                 provenance: call.mcpServer,
-                toolUseId: call.toolUseId,
+                toolUseId: callId,
                 signal: call.signal,
                 generation: context.chromeGeneration!,
                 ...(call.fresh ? { fresh: true } : {}),
               },
               threadId,
             ),
+          ).pipe(
+            // Admitted: Chrome is in use until the call's result (or the turn's end). A denial
+            // means it never runs. An interruption may race main's admission, so it stays
+            // tracked until the turn ends.
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                const denied = Exit.isSuccess(exit) && exit.value !== undefined;
+                if (admittedByMain) {
+                  if (!denied) context.chromeActivity?.callStarted(callId);
+                } else if (denied || Exit.isFailure(exit))
+                  context.chromeActivity?.callEnded(callId);
+              }),
+            ),
           );
+          return denial;
         }
         if (isClaudeComputerUseTool(toolName)) {
           const policy = yield* resolveSessionBrowserPolicy(threadId);
@@ -2569,7 +2681,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const prepareRuntimeEvent = yield* makeAutomationRuntimeEventPreparer;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-    const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
+    // Time-ordered: command IDs derive from these (`provider:<event id>:<tag>`)
+    // and are indexed, so random IDs would rewrite random index pages.
+    const nextEventId = Effect.map(Random.nextUUIDv4, (id) =>
+      EventId.makeUnsafe(timeOrderedUuid(id)),
+    );
     // Runtime events are often emitted back to back (a tool's final
     // item.updated and item.completed); strictly increasing per-thread
     // timestamps keep their activities in emission order instead of tying on
@@ -3232,9 +3348,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           claudeChromeAvailability({
             executablePath,
             resolveDefaultExecutable: resolveBundledClaudeExecutable,
-            userHome: environment.HOME ?? process.env.HOME ?? "",
-            isolatedProfile: environment.F5_PROFILE_ISOLATED === "1",
-            stateDir: serverConfig.stateDir,
+            ...claudeChromeAvailabilityInput(environment, serverConfig.stateDir),
           }),
         );
         return "unavailable" in availability
@@ -3674,6 +3788,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (
+          context.basePermissionMode === "bypassPermissions" &&
+          (reported === "auto" || reported === "default" || reported === "acceptEdits")
+        ) {
+          // Keep an effective CLI downgrade across later plan-mode exits.
+          context.basePermissionMode = reported;
+          context.bypassCliRestricted = true;
+          context.configuredBase = { ...context.configuredBase, permissionMode: reported };
+          yield* warnBypassDowngrade(context, "Claude reported " + reported + " permission mode.");
+          return;
+        }
+        if (
           !claudeAutoModeRejected({
             base: context.basePermissionMode,
             reported,
@@ -3715,6 +3840,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           },
           providerRefs: nativeProviderRefs(context),
         });
+      });
+
+    const warnBypassDowngrade = (context: ClaudeSessionContext, reason: string) =>
+      Effect.gen(function* () {
+        if (context.workflowExecutionProfile || context.bypassWarning === reason) return;
+        context.bypassWarning = reason;
+        yield* emitRuntimeWarning(
+          context,
+          "Full access is running with approval checks. " + reason,
+          { category: "provider" },
+        );
       });
 
     const rememberTaskState = (
@@ -3848,6 +3984,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (
+          input.eventType === "task.completed" &&
+          !claimTaskCompletion(context, input.state.taskId)
+        )
+          return;
         const stamp = yield* makeEventStamp(context);
         const base = {
           ...stamp,
@@ -3929,7 +4070,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             type: "task-completed",
             taskId: state.taskId,
           });
-          if (tool) {
+          if (tool && (state.backgrounded ?? tool.input.run_in_background === true)) {
             yield* emitBackgroundToolLifecycle(context, {
               eventType: "item.completed",
               tool,
@@ -3949,7 +4090,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (inFlightEntry) {
               context.inFlightTools.delete(inFlightEntry[0]);
             }
-          } else {
+            if (inFlightEntry || context.pendingBackgroundToolResults.has(tool.itemId)) {
+              rememberClaudeToolResultCorrelation(context.pendingBackgroundToolResults, tool);
+            }
+          } else if (asUnknownRecord(message)?.subtype !== "task_notification") {
             yield* emitTaskUpdatedFallback(context, {
               eventType: "task.completed",
               state,
@@ -4239,6 +4383,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         for (const [index, tool] of context.inFlightTools.entries()) {
           if (hasBackgroundTaskStateForTool(context, tool.itemId)) {
+            rememberClaudeToolResultCorrelation(context.pendingBackgroundToolResults, tool);
             context.inFlightTools.delete(index);
             continue;
           }
@@ -4330,6 +4475,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
         };
         context.turnState = undefined;
+        context.chromeActivity?.turnEnded();
         context.pendingPrompts.length = 0;
         if (context.resumeInvalidatedTurnId === turnState.turnId) {
           context.resumeInvalidatedTurnId = undefined;
@@ -4624,6 +4770,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
 
           const toolName = block.name;
+          // Scheduled work runs later inside this CLI: never stop it to free Chrome.
+          if (CLAUDE_SCHEDULING_TOOLS.has(toolName)) context.chromeScheduledWork = true;
           const requestKind = classifyToolRequestKind(toolName, { blockType: block.type });
           const toolInput =
             typeof block.input === "object" && block.input !== null
@@ -4639,6 +4787,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             Object.keys(toolInput).length > 0 ? toolInputFingerprint(toolInput) : undefined;
 
           const tool: ToolInFlight = {
+            ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
             itemId,
             itemType,
             toolName,
@@ -4879,6 +5028,29 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
       });
 
+    const emitToolResultOutput = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      tool: ClaudeToolResultCorrelation,
+      text: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const streamKind = toolResultStreamKind(tool.itemType);
+        const turnId = tool.turnId ?? context.turnState?.turnId;
+        if (!streamKind || text.length === 0 || !turnId) return;
+        yield* offerRuntimeEvent({
+          ...(yield* makeEventStamp(context)),
+          type: "content.delta",
+          provider: PROVIDER,
+          threadId: context.session.threadId,
+          turnId,
+          itemId: asRuntimeItemId(tool.itemId),
+          payload: { streamKind, delta: text },
+          providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+          raw: { source: "claude.sdk.message", method: "claude/user", payload: message },
+        });
+      });
+
     const handleUserMessage = (
       context: ClaudeSessionContext,
       message: SDKMessage,
@@ -4894,8 +5066,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const toolResultBlocks = toolResultBlocksFromUserMessage(message);
         for (const toolResult of toolResultBlocks) {
+          context.chromeActivity?.callEnded(toolResult.toolUseId);
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
+            const pending = context.pendingBackgroundToolResults.get(toolResult.toolUseId);
+            if (pending) {
+              if (readBackgroundTaskIdFromToolResult(message, toolResult)) continue;
+              // The task owns completion; the result owns output. Neither needs an active turn.
+              context.pendingBackgroundToolResults.delete(toolResult.toolUseId);
+              yield* emitToolResultOutput(context, message, pending, toolResult.text);
+              continue;
+            }
             const subagentTool = context.subagentTaskTools.get(toolResult.toolUseId);
             if (subagentTool)
               yield* completeSubagentTaskTool(
@@ -4910,9 +5091,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
           const [index, tool] = toolEntry;
           const taskEntry = findTaskStateEntryByToolUseId(context, tool.itemId);
-          const backgroundTaskId =
-            readBackgroundTaskIdFromToolResult(message, toolResult) ??
-            (taskEntry?.[1].backgrounded === true ? taskEntry[0] : undefined);
+          const backgroundTaskId = readBackgroundTaskIdFromToolResult(message, toolResult);
 
           if (backgroundTaskId) {
             if (tool.itemType === "collab_agent_tool_call") {
@@ -4976,32 +5155,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
             });
 
-            const streamKind = toolResultStreamKind(tool.itemType);
-            if (streamKind && toolResult.text.length > 0 && context.turnState) {
-              const deltaStamp = yield* makeEventStamp(context);
-              yield* offerRuntimeEvent({
-                type: "content.delta",
-                ...deltaStamp,
-                eventId: deltaStamp.eventId,
-                provider: PROVIDER,
-                createdAt: deltaStamp.createdAt,
-                threadId: context.session.threadId,
-                turnId: context.turnState.turnId,
-                itemId: asRuntimeItemId(tool.itemId),
-                payload: {
-                  streamKind,
-                  delta: toolResult.text,
-                },
-                providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
-                raw: {
-                  source: "claude.sdk.message",
-                  method: "claude/user",
-                  payload: message,
-                },
-              });
-            }
+            yield* emitToolResultOutput(context, message, tool, toolResult.text);
 
             context.inFlightTools.delete(index);
+            rememberClaudeToolResultCorrelation(context.pendingBackgroundToolResults, tool);
             continue;
           }
 
@@ -5066,30 +5223,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             },
           });
 
-          const streamKind = toolResultStreamKind(tool.itemType);
-          if (streamKind && toolResult.text.length > 0 && context.turnState) {
-            const deltaStamp = yield* makeEventStamp(context);
-            yield* offerRuntimeEvent({
-              type: "content.delta",
-              ...deltaStamp,
-              eventId: deltaStamp.eventId,
-              provider: PROVIDER,
-              createdAt: deltaStamp.createdAt,
-              threadId: context.session.threadId,
-              turnId: context.turnState.turnId,
-              itemId: asRuntimeItemId(tool.itemId),
-              payload: {
-                streamKind,
-                delta: toolResult.text,
-              },
-              providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
-              raw: {
-                source: "claude.sdk.message",
-                method: "claude/user",
-                payload: message,
-              },
-            });
-          }
+          yield* emitToolResultOutput(context, message, tool, toolResult.text);
 
           const resultNote = completion.semanticSuccess
             ? claudeToolResultNote(tool.toolName, completion.structuredOutput)
@@ -5259,6 +5393,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (!context.turnState) {
           const turnId = TurnId.makeUnsafe(yield* Random.nextUUIDv4);
           const startedAt = yield* nowIso;
+          // Background work is a turn too: Chrome isn't idle while it runs.
+          context.chromeActivity?.turnStarted();
           context.turnState = {
             synthetic: true,
             turnId,
@@ -5480,6 +5616,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const status = turnStatusFromResult(message);
         const gatewayUsageLimit =
           status === "failed" &&
+          rejectedLimits.length === 0 &&
           !permissionDenied &&
           !context.turnState.authenticationFailureMessage
             ? claudeGatewayUsageLimit(message, yield* nowIso)
@@ -5911,6 +6048,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const taskId = normalizeOptionalString(message.task_id);
               const toolUseId = normalizeOptionalString(messageRecord?.tool_use_id);
               if (taskId) {
+                context.completedTaskNotifications.delete(taskId);
                 const tool = toolUseId
                   ? findInFlightToolEntryByItemId(context, toolUseId)?.[1]
                   : undefined;
@@ -5925,6 +6063,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
                   ...(description ? { description } : {}),
                   ...(taskType ? { taskType } : {}),
+                  ...(typeof messageRecord?.is_backgrounded === "boolean"
+                    ? { backgrounded: messageRecord.is_backgrounded }
+                    : {}),
                   ...(tool ? { tool } : {}),
                 });
               }
@@ -6021,19 +6162,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context.nativeTaskStops.delete(message.task_id);
             }
             yield* updateResumeCursor(context);
-            yield* offerRuntimeEvent({
-              ...base,
-              resumeCursor: context.session.resumeCursor,
-              type: "task.completed",
-              ...(completedTaskTurnId ? { turnId: completedTaskTurnId } : {}),
-              payload: {
-                taskId: RuntimeTaskId.makeUnsafe(message.task_id),
-                ...nativeTaskRunReference(context, message.task_id, message),
-                status: message.status,
-                ...(message.summary ? { summary: message.summary } : {}),
-                ...(message.usage ? { usage: message.usage } : {}),
-              },
-            });
+            if (claimTaskCompletion(context, message.task_id))
+              yield* offerRuntimeEvent({
+                ...base,
+                resumeCursor: context.session.resumeCursor,
+                type: "task.completed",
+                ...(completedTaskTurnId ? { turnId: completedTaskTurnId } : {}),
+                payload: {
+                  taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                  ...nativeTaskRunReference(context, message.task_id, message),
+                  status: message.status,
+                  ...(message.summary ? { summary: message.summary } : {}),
+                  ...(message.usage ? { usage: message.usage } : {}),
+                },
+              });
             context.taskStates.delete(message.task_id);
             return;
           case "files_persisted":
@@ -6072,7 +6214,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             return;
           case "informational":
-            if (message.level === "warning" || message.level === "notice") {
+            if (message.level !== "info") {
               yield* emitRuntimeWarning(context, message.content);
             } else {
               yield* Effect.logDebug("Claude informational message", { detail: message });
@@ -6843,12 +6985,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       options?: {
         readonly emitExitEvent?: boolean;
         readonly interruptStreamFiber?: boolean;
+        /** Shown as the exit reason; defaults to "Session stopped". */
+        readonly exitReason?: string;
       },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (context.stopped) return;
 
         context.stopped = true;
+        context.chromeActivity?.dispose();
         if (context.mcpStatusFiber) yield* Fiber.interrupt(context.mcpStatusFiber);
         if (context.forkCheckFiber) yield* Fiber.interrupt(context.forkCheckFiber);
         // Stop input immediately; retain provenance until final tool events are queued safely.
@@ -6920,6 +7065,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           rawPayload: { status: "stopped" },
         });
         context.taskStates.clear();
+        context.pendingBackgroundToolResults.clear();
+        context.completedTaskNotifications.clear();
         context.taskModelsByTool.clear();
         context.taskLaunchesByTool.clear();
 
@@ -6959,7 +7106,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ? { resumeCursor: context.session.resumeCursor }
               : {}),
             payload: {
-              reason: "Session stopped",
+              reason: options?.exitReason ?? "Session stopped",
               exitKind: "graceful",
             },
             providerRefs: {},
@@ -6985,6 +7132,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const generation = context.chromeGeneration;
         if (!generation) return;
         context.chromeGeneration = undefined;
+        context.chromeActivity?.dispose();
+        context.chromeActivity = undefined;
+        context.chromeReleaserOff?.();
+        context.chromeReleaserOff = undefined;
         if (context.chromeHealthFiber) {
           const fiber = context.chromeHealthFiber;
           context.chromeHealthFiber = undefined;
@@ -7501,12 +7652,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   typeof q.question === "string" && q.question.length > 0 ? q.question : `q-${idx}`,
                 header: typeof q.header === "string" ? q.header : `Question ${idx + 1}`,
                 question: typeof q.question === "string" ? q.question : "",
-                options: Array.isArray(q.options)
-                  ? q.options.map((opt: Record<string, unknown>) => ({
-                      label: typeof opt.label === "string" ? opt.label : "",
-                      description: typeof opt.description === "string" ? opt.description : "",
-                    }))
-                  : [],
+                options: Array.isArray(q.options) ? normalizeUserInputOptions(q.options) : [],
                 multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
               }),
             );
@@ -7865,11 +8011,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                         : `Question ${index + 1}`,
                     question: typeof question.question === "string" ? question.question : "",
                     options: Array.isArray(question.options)
-                      ? question.options.map((option: Record<string, unknown>) => ({
-                          label: typeof option.label === "string" ? option.label : "",
-                          description:
-                            typeof option.description === "string" ? option.description : "",
-                        }))
+                      ? normalizeUserInputOptions(question.options)
                       : [],
                     multiSelect:
                       typeof question.multiSelect === "boolean" ? question.multiSelect : false,
@@ -8022,9 +8164,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
-              // Full access never prompts, whatever the approval policy; plan
-              // mode still refuses workspace edits.
-              if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
+              // Bypass sessions in plan mode still refuse workspace edits.
+              if (
+                inPlanMode &&
+                (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access" &&
+                context.basePermissionMode === "bypassPermissions"
+              ) {
                 return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
                   plansDirectory,
                   cwd: input.cwd,
@@ -8045,10 +8190,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 : (input.runtimeMode ?? DEFAULT_RUNTIME_MODE);
               switch (runtimeMode) {
                 case "full-access":
-                  return {
-                    behavior: "allow",
-                    updatedInput: toolInput,
-                  } satisfies PermissionResult;
+                  // CLI-forwarded requests still require a decision under bypass:
+                  // ask rules and policy restrictions can override Full access.
+                  break;
                 case "approval-required":
                   break;
                 case "auto-accept-edits":
@@ -8117,6 +8261,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   },
                 },
               });
+
+              // Nothing runs in Chrome while the user decides. The admission this call got
+              // before the prompt ends here, so a peer's Chrome calls and other agents'
+              // native control don't wait on a person; approval admits it again (`fresh`).
+              if (isClaudeInChromeTool(toolName) && callbackOptions.toolUseID)
+                context.chromeActivity?.callEnded(callbackOptions.toolUseID);
 
               pendingApprovals.set(requestId, pendingApproval);
 
@@ -8245,6 +8395,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           launchReported,
         );
         const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+        const launchBypass =
+          runtimeMode === "full-access" && !input.workflowExecutionProfile
+            ? yield* Effect.promise(() =>
+                resolveBypass(resolveClaudeConfigDir(queryEnvironment, input.cwd), input.cwd),
+              )
+            : undefined;
         // `auto` fails closed to `default` unless the model reports support.
         const launchPermission = claudeRuntimePermissionMode(
           runtimeMode,
@@ -8253,6 +8409,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             runtimeModelSelection.baseModel ?? input.model,
             launchReported,
           ).supportsAutoMode,
+          launchBypass,
         );
         const runtimePermissionMode = launchPermission.mode;
         // Runtime mode is the user-visible enforcement boundary. Persisted
@@ -8650,10 +8807,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           const chromeResult = options?.chromeRuntime
             ? { runtime: options.chromeRuntime }
             : yield* makeChromeSessionRuntime({
-                stateDir: serverConfig.stateDir,
+                ...claudeChromeAvailabilityInput(queryEnvironment, serverConfig.stateDir),
                 providerHome,
-                userHome: queryEnvironment.HOME ?? process.env.HOME ?? "",
-                isolatedProfile: queryEnvironment.F5_PROFILE_ISOLATED === "1",
                 executablePath: sdkExecutableOptions.pathToClaudeCodeExecutable,
                 resolveDefaultExecutable: resolveBundledClaudeExecutable,
                 broker: computerBroker,
@@ -8687,20 +8842,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             registerChromeSession(threadId, chromeGeneration, chromeRuntime);
             // Masking is installed before the first SDK message can be logged.
             automationEventSanitizer.mask(threadId, CLAUDE_IN_CHROME_SERVER_NAME);
-            const decision = yield* Effect.tryPromise(() =>
-              chromeRuntime!.prepare({
-                threadId,
-                generation: chromeGeneration!,
-                providerHome,
-                providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
-              }),
-            ).pipe(
-              Effect.catch(() =>
-                Effect.succeed({
+            const decision = yield* Effect.promise(() =>
+              chromeRuntime!
+                .prepare({
+                  threadId,
+                  generation: chromeGeneration!,
+                  providerHome,
+                  providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
+                })
+                // A refused lease says who holds Chrome; anything else is verification.
+                .catch((cause: unknown) => ({
                   kind: "unknown" as const,
-                  detail: "Chrome setup failed verification.",
-                }),
-              ),
+                  detail:
+                    cause instanceof ComputerControlError && cause.error._tag === "Busy"
+                      ? cause.message
+                      : "Chrome setup failed verification.",
+                })),
             );
             chromeAllowed =
               decision.kind === "launch" &&
@@ -8900,6 +9057,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           streamFiber: undefined,
           startedAt,
           basePermissionMode: permissionMode,
+          ...(launchBypass && !launchBypass.failureReason
+            ? { bypassPolicyCache: { cwd: input.cwd, resolution: launchBypass } }
+            : {}),
           autoRequested: runtimeMode === "auto",
           resumeSessionId: sessionId,
           pendingApprovals,
@@ -8914,6 +9074,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             approximateChars: 0,
           })),
           inFlightTools,
+          pendingBackgroundToolResults: new Map(),
+          completedTaskNotifications: new Map(),
           taskStates,
           taskModelsByTool: new Map(),
           taskLaunchesByTool: new Map(),
@@ -8957,6 +9119,50 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
         yield* Ref.set(contextRef, context);
         sessions.set(threadId, context);
+        if (context.chromeGeneration && computerBroker) {
+          // The Chrome lease lives as long as this CLI: an idle session stops to free it,
+          // after CLAUDE_CHROME_IDLE_MS or when another thread needs Chrome.
+          const chromeLeaseGeneration = context.chromeGeneration;
+          const broker = computerBroker;
+          context.chromeActivity = new ClaudeChromeActivity({
+            reportCalls: (running) =>
+              broker.reportChromeCalls(threadId, chromeLeaseGeneration, running),
+            reportCallEnded: (toolUseId) =>
+              broker.reportChromeCallEnded(threadId, chromeLeaseGeneration, toolUseId),
+            // Compaction, background tasks and scheduled wake-ups die with the CLI.
+            busy: () => claudeSessionBackgroundBusy(context),
+            // Re-checked under the thread lock: a turn or background work that started
+            // since the idle check refuses the stop, and the tracker resumes.
+            stop: (reason) =>
+              Effect.runPromise(
+                withThreadLock(
+                  threadId,
+                  Effect.gen(function* () {
+                    if (
+                      sessions.get(threadId) !== context ||
+                      context.stopped ||
+                      context.turnState ||
+                      claudeSessionBackgroundBusy(context)
+                    )
+                      return false;
+                    yield* stopSessionInternal(context, {
+                      emitExitEvent: true,
+                      exitReason: reason,
+                    });
+                    return true;
+                  }),
+                ),
+              ),
+          });
+          context.chromeReleaserOff = broker.registerChromeReleaser(
+            threadId,
+            chromeLeaseGeneration,
+            {
+              idle: () => context.chromeActivity?.idle ?? false,
+              release: () => context.chromeActivity?.release() ?? false,
+            },
+          );
+        }
 
         if (pendingTranscriptWarning)
           yield* emitRuntimeWarning(context, pendingTranscriptWarning, {
@@ -8967,6 +9173,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* emitRuntimeWarning(context, CLAUDE_AUTO_UNAVAILABLE_WARNING, {
             category: "provider",
           });
+        if (launchBypass?.bypassDisabled)
+          yield* warnBypassDowngrade(
+            context,
+            launchBypass.failureReason
+              ? "Could not resolve Claude policy: " + launchBypass.failureReason
+              : "Claude settings disable bypass permissions.",
+          );
         if (resumeFallbackWarning) {
           yield* emitRuntimeWarning(
             context,
@@ -9117,6 +9330,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ? new ClaudeQueryEndedBeforePrompt(context, cause)
                 : toRequestError(input.threadId, method, cause),
           });
+        const applyPermissionMode = (mode: PermissionMode) =>
+          Effect.gen(function* () {
+            let effective = mode;
+            yield* controlRequest("turn/setPermissionMode", () =>
+              context.query.setPermissionMode(mode).catch(async (error) => {
+                if (mode !== "bypassPermissions") throw error;
+                await context.query.setPermissionMode("default");
+                effective = "default";
+                context.bypassCliRestricted = true;
+              }),
+            );
+            yield* ensureLive;
+            if (effective !== mode)
+              yield* warnBypassDowngrade(context, "Claude refused to restore bypass permissions.");
+            return effective;
+          });
         yield* ensureLive;
         if (
           input.workflowExecutionProfile !== undefined &&
@@ -9135,6 +9364,44 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             method: "turn/start",
             detail: "A Claude turn is already active. Use steering to add a prompt.",
           });
+        }
+        if (
+          context.session.runtimeMode === "full-access" &&
+          !context.workflowExecutionProfile &&
+          !context.bypassCliRestricted
+        ) {
+          const cwd = context.session.cwd;
+          let resolution =
+            context.bypassPolicyCache && context.bypassPolicyCache.cwd === cwd
+              ? context.bypassPolicyCache.resolution
+              : undefined;
+          if (!resolution) {
+            resolution = yield* Effect.promise(() =>
+              resolveBypass(resolveClaudeConfigDir(context.processEnvironment, cwd), cwd),
+            );
+            if (!resolution.failureReason) context.bypassPolicyCache = { cwd, resolution };
+          }
+          const reported = yield* reportedCapabilitiesFor(context.session.model);
+          let next = claudeRuntimePermissionMode(
+            "full-access",
+            resolveModelCapabilities("claudeAgent", context.session.model, reported)
+              .supportsAutoMode,
+            resolution,
+          ).mode;
+          if (context.basePermissionMode !== next) {
+            if (context.configuredBase?.permissionMode !== "plan") {
+              next = yield* applyPermissionMode(next);
+              context.configuredBase = { ...context.configuredBase, permissionMode: next };
+            }
+            context.basePermissionMode = next;
+          }
+          if (resolution.bypassDisabled)
+            yield* warnBypassDowngrade(
+              context,
+              resolution.failureReason
+                ? "Could not resolve Claude policy: " + resolution.failureReason
+                : "Claude settings disable bypass permissions.",
+            );
         }
         if (context.turnState?.synthetic) {
           // Auto-close a stale synthetic turn (from background agent responses
@@ -9179,8 +9446,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               autoRejected: context.autoRejectedForModel === runtimeModelSelection.baseModel,
             });
             const shouldSetModel =
+              context.modelSelectionUnknown === true ||
               runtimeModelSelection.baseModel !== previousModel ||
               runtimeModelSelection.contextWindow !== previousContextWindow;
+            context.modelSelectionUnknown = true;
             if (shouldSetModel) {
               yield* controlRequest("turn/setModel", () =>
                 context.query.setModel(runtimeModelSelection.apiModel),
@@ -9196,6 +9465,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             yield* ensureLive;
             appliedFastMode = runtimeTraits.fastMode;
+            context.modelSelectionUnknown = false;
             context.session = {
               ...context.session,
               model: runtimeModelSelection.baseModel,
@@ -9255,10 +9525,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             permissionMode: "plan",
           };
         } else if (input.interactionMode === "default") {
-          yield* controlRequest("turn/setPermissionMode", () =>
-            context.query.setPermissionMode(context.basePermissionMode ?? "default"),
+          context.basePermissionMode = yield* applyPermissionMode(
+            context.basePermissionMode ?? "default",
           );
-          yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: context.basePermissionMode ?? "default",
@@ -9293,6 +9562,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const updatedAt = yield* nowIso;
         yield* ensureLive;
         context.turnState = turnState;
+        context.chromeActivity?.turnStarted();
         context.lastAssistantUuid = undefined;
         context.session = {
           ...context.session,
@@ -9326,6 +9596,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const message = yield* buildUserMessageEffect(input, {
           fileSystem,
           attachmentsDir: serverConfig.attachmentsDir,
+          stateDir: serverConfig.stateDir,
+          documentBudgetKey: "claude:" + input.threadId,
           ...(activeModel ? { activeModel, sessionModel: activeModel } : {}),
           allowsWorkspaceEdits,
           // A turn that names no model runs on the session model.
@@ -9467,6 +9739,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           const message = yield* buildUserMessageEffect(input, {
             fileSystem,
             attachmentsDir: serverConfig.attachmentsDir,
+            stateDir: serverConfig.stateDir,
+            documentBudgetKey: "claude:" + input.threadId,
             allowsWorkspaceEdits: context.configuredBase.permissionMode !== "plan",
             sessionModel: getClaudeSessionModel(context),
             reportedCapabilities: yield* reportedCapabilitiesFor(

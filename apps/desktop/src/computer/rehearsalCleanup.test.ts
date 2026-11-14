@@ -1,7 +1,15 @@
 import { ChildProcess, spawn } from "node:child_process";
 import { describe, it, expect, vi } from "vitest";
-import { closeRehearsalChild } from "./rehearsalCleanup";
+import { closeRehearsalChild, requireRehearsalChildExit } from "./rehearsalCleanup";
 describe("owned rehearsal cleanup", () => {
+  it("fails the rehearsal until a retained child has actually exited", async () => {
+    const child = new ChildProcess();
+    vi.spyOn(child, "kill").mockReturnValue(true);
+    await expect(requireRehearsalChildExit(child, 10)).rejects.toThrow("did not exit");
+    expect(child.exitCode).toBeNull();
+    Object.defineProperty(child, "exitCode", { value: 0 });
+    await expect(requireRehearsalChildExit(child, 10)).resolves.toBeUndefined();
+  });
   it("requires an actual child exit, not merely a sent signal", async () => {
     const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
     await new Promise<void>((done) => child.once("spawn", () => done()));

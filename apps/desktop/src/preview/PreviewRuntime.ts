@@ -50,7 +50,6 @@ interface ActiveRecording {
     method: string,
     params: Record<string, unknown>,
   ) => void;
-  readonly detachDebuggerOnStop: boolean;
   readonly limitTimer: ReturnType<typeof setTimeout>;
   readonly removeGuestListeners: () => void;
   stopped: boolean;
@@ -197,7 +196,7 @@ export class PreviewRuntime {
       width: viewport?.width ?? captureSize.width,
       height: viewport?.height ?? captureSize.height,
     });
-    const detachDebuggerOnStop = !previewDebugger(guest).isAttached();
+    const needsDebugger = !previewDebugger(guest).isAttached();
 
     let recording!: ActiveRecording;
     const onGuestLost = () => {
@@ -211,7 +210,6 @@ export class PreviewRuntime {
       recordingId: recordingHandle.recordingId,
       tabId,
       guest,
-      detachDebuggerOnStop,
       limitTimer,
       removeGuestListeners: () => {
         guest.off("destroyed", onGuestLost);
@@ -254,7 +252,7 @@ export class PreviewRuntime {
     guest.once("render-process-gone", onGuestLost);
     previewDebugger(guest).on("message", recording.onDebuggerMessage);
     try {
-      if (detachDebuggerOnStop) previewDebugger(guest).attach("1.3");
+      if (needsDebugger) previewDebugger(guest).attach("1.3");
       await previewDebugger(guest).sendCommand("Page.enable");
       await previewDebugger(guest).sendCommand("Page.startScreencast", {
         format: "jpeg",
@@ -360,9 +358,8 @@ export class PreviewRuntime {
       await previewDebugger(recording.guest)
         .sendCommand("Page.stopScreencast")
         .catch(() => undefined);
-      if (recording.detachDebuggerOnStop && previewDebugger(recording.guest).isAttached()) {
-        previewDebugger(recording.guest).detach();
-      }
+      // The pinned debugger is shared with snapshots and input. Keep it for the guest's
+      // lifetime; recording shutdown must not detach a click waiting for its mouseup.
     }
   }
 }

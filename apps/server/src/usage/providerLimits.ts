@@ -293,9 +293,11 @@ async function readAntigravityHub(
     !(hub.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(hub.hostname))
   )
     throw new Error("Invalid hub URL.");
+  // Users often paste the hub's web panel URL, which ends in management.html.
+  hub.pathname = hub.pathname.replace(/(\/management\.html)?\/?$/i, "/");
   const files = asRecord(
     await fetchJsonWithTimeout(
-      new URL("/v0/management/auth-files", hub).toString(),
+      new URL("v0/management/auth-files", hub).toString(),
       key,
       signal,
       Math.min(ANTIGRAVITY_DISCOVERY_TIMEOUT_MS, remainingMs()),
@@ -313,7 +315,7 @@ async function readAntigravityHub(
       const requestedAt = Date.now();
       const response = asRecord(
         await fetchJsonWithTimeout(
-          new URL("/v0/management/api-call", hub).toString(),
+          new URL("v0/management/api-call", hub).toString(),
           key,
           signal,
           timeoutMs,

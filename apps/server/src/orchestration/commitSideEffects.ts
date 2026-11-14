@@ -9,6 +9,7 @@ import type { NextTurnQueueStoreShape } from "../nextTurnQueue/Services/NextTurn
 import type { WorkspaceTransitionsShape } from "../persistence/Services/WorkspaceTransitions.ts";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { stopThreadPullRequestWatches } from "./stopThreadPullRequestWatches.ts";
+import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 
 /** Queue pauses the user or environment chose, which a conversation revert must not undo. */
 const QUEUE_PAUSES_KEPT_ACROSS_REVERT: ReadonlySet<string> = new Set([
@@ -108,6 +109,17 @@ export function makeCommitSideEffects({
       ) {
         // Commit cancellation with the stop intent: a crash before live
         // subscribers run must never revive an unsent continuation.
+        const threadId = savedEvent.payload.threadId;
+        const limitKey = usageLimitFailureKey(
+          readModel.threads.find((thread) => thread.id === threadId)?.session?.usageLimit,
+        );
+        if (limitKey) {
+          yield* sql`INSERT INTO usage_limit_resumes
+          (thread_id,limit_key,state,source,auto_eligible_at_failure,created_at,updated_at)
+          VALUES (${threadId},${limitKey},'cancelled','auto',0,${savedEvent.occurredAt},${savedEvent.occurredAt})
+          ON CONFLICT(thread_id,limit_key) DO UPDATE SET state='cancelled',
+          auto_eligible_at_failure=0,updated_at=excluded.updated_at`;
+        }
         yield* sql`UPDATE usage_limit_resumes SET state = 'cancelled',
         updated_at = ${savedEvent.occurredAt}
         WHERE thread_id = ${savedEvent.payload.threadId} AND state = 'scheduled'`;

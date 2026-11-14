@@ -1,10 +1,12 @@
 import {
   ProjectId,
+  providerReportsCacheOutsideInput,
   ThreadId,
   type IsoDateTime,
   type ProviderKind,
   type UsageGetSummaryInput,
   type UsageMetrics,
+  type UsagePreviousBucket,
   type UsagePriceOverride,
   type UsageProjectBreakdown,
   type UsageProjectScope,
@@ -25,6 +27,8 @@ import type { UsageBucketPlan } from "./usageBuckets.ts";
 export const TOP_THREAD_LIMIT = 10;
 
 interface MutableMetrics {
+  nativeInferenceCount: number;
+  unpricedNativeInferenceCount: number;
   turnCount: number;
   reportedTokenTurnCount: number;
   inputTokens: number;
@@ -61,6 +65,8 @@ function emptyComposition(): MutableComposition {
 
 function emptyMetrics(): MutableMetrics {
   return {
+    nativeInferenceCount: 0,
+    unpricedNativeInferenceCount: 0,
     turnCount: 0,
     reportedTokenTurnCount: 0,
     inputTokens: 0,
@@ -85,8 +91,11 @@ function emptyMetrics(): MutableMetrics {
 }
 
 function addMetrics(target: MutableMetrics, row: UsageAggregateRow): void {
+  target.nativeInferenceCount += row.nativeInferenceCount ?? 0;
+  target.unpricedNativeInferenceCount += row.unpricedNativeInferenceCount ?? 0;
   target.reportedCostTurnCount += row.providerReportedCostUsd === null ? 0 : row.pricedTurnCount;
-  target.estimatedTurnCount += row.estimatedCostUsd !== undefined ? row.turnCount : 0;
+  target.estimatedTurnCount +=
+    row.estimatedCostUsd !== undefined ? row.turnCount + (row.nativeInferenceCount ?? 0) : 0;
   target.estimatedCostUsd += row.estimatedCostUsd ?? 0;
   target.turnCount += row.turnCount;
   target.reportedTokenTurnCount += row.reportedTokenTurnCount;
@@ -109,6 +118,12 @@ function addMetrics(target: MutableMetrics, row: UsageAggregateRow): void {
 
 function freezeMetrics(metrics: MutableMetrics): UsageMetrics {
   return {
+    ...(metrics.nativeInferenceCount > 0
+      ? {
+          nativeInferenceCount: metrics.nativeInferenceCount,
+          unpricedNativeInferenceCount: metrics.unpricedNativeInferenceCount,
+        }
+      : {}),
     turnCount: metrics.turnCount,
     reportedTokenTurnCount: metrics.reportedTokenTurnCount,
     inputTokens: metrics.inputTokens,
@@ -189,9 +204,9 @@ export function applyPriceOverride<Row extends UsageAggregateRow>(
     override &&
     row.providerReportedCostUsd === null &&
     (row.estimationEligibleTurnCount ?? row.reportedTokenTurnCount) === row.turnCount &&
-    row.turnCount > 0;
+    (row.turnCount > 0 || (row.nativeInferenceCount ?? 0) > 0);
   if (!canEstimate) return row;
-  const claude = row.provider === "claudeAgent";
+  const claude = providerReportsCacheOutsideInput(row.provider);
   return {
     ...row,
     estimatedCostUsd:
@@ -204,6 +219,7 @@ export function applyPriceOverride<Row extends UsageAggregateRow>(
       1_000_000,
     pricedTurnCount: row.turnCount,
     unpricedTurnCount: 0,
+    ...(row.nativeInferenceCount ? { unpricedNativeInferenceCount: 0 } : {}),
   };
 }
 
@@ -220,8 +236,8 @@ export function aggregateUsageMetrics(
 function addComposition(target: MutableComposition, row: UsageAggregateRow): void {
   // Only partitions with a known total contribute, so unknown-total rows
   // cannot inflate the stacked composition.
-  if (row.totalTokenTurnCount === 0) return;
-  const claude = row.provider === "claudeAgent";
+  if (row.totalTokenTurnCount === 0 && !row.nativeInferenceCount) return;
+  const claude = providerReportsCacheOutsideInput(row.provider);
   const segments: UsageTokenComposition = {
     uncachedInputTokens: claude
       ? row.inputTokens
@@ -246,6 +262,7 @@ export function buildUsageSummary(input: {
   readonly priceOverrides?: ReadonlyArray<UsagePriceOverride>;
   readonly projectScope?: UsageProjectScope | null;
   readonly previousMetrics?: UsageMetrics | null;
+  readonly previousBuckets?: ReadonlyArray<UsagePreviousBucket> | null;
 }): UsageSummary {
   const bucketMetrics = new Map(input.plan.buckets.map((bucket) => [bucket.key, emptyMetrics()]));
   const compositions = new Map(
@@ -301,7 +318,9 @@ export function buildUsageSummary(input: {
     .map(([provider]) => provider)
     .sort();
   const providersMissingCost = Array.from(providerAggregate.entries())
-    .filter(([, metrics]) => metrics.unpricedTurnCount > 0)
+    .filter(
+      ([, metrics]) => metrics.unpricedTurnCount > 0 || metrics.unpricedNativeInferenceCount > 0,
+    )
     .map(([provider]) => provider)
     .sort();
 
@@ -325,7 +344,50 @@ export function buildUsageSummary(input: {
     nextBucketAt: input.plan.nextBucketAt,
     projectScope: input.projectScope ?? null,
     previousMetrics: input.previousMetrics ?? null,
+    previousBuckets: input.previousBuckets ?? null,
   };
+}
+
+/**
+ * The previous period's buckets, index-aligned with the current plan: the same
+ * planner run with `now` just before the current start. Rows already carry aliases.
+ */
+/**
+ * The previous period's buckets, index-aligned with the current plan, or null
+ * when the earliest of them starts before complete coverage. Calendar buckets
+ * can start up to a day (an hour for 24h) before the equal-length window that
+ * `previousUsageWindow` validates, so the gate checks the buckets themselves.
+ */
+export function previousBucketWindows(input: {
+  readonly currentPlan: UsageBucketPlan;
+  readonly previousPlan: UsageBucketPlan;
+  readonly coverageStartedAt: IsoDateTime;
+  readonly factCutoverAt: IsoDateTime;
+}): UsageBucketPlan["buckets"] | null {
+  const buckets = input.previousPlan.buckets.slice(-input.currentPlan.buckets.length);
+  const first = buckets[0];
+  if (!first || buckets.length !== input.currentPlan.buckets.length) return null;
+  const completeFrom =
+    input.factCutoverAt > input.coverageStartedAt ? input.factCutoverAt : input.coverageStartedAt;
+  return first.startAt >= completeFrom ? buckets : null;
+}
+
+export function buildPreviousBuckets(input: {
+  readonly buckets: UsageBucketPlan["buckets"];
+  readonly rows: ReadonlyArray<BucketUsageSummaryRow>;
+  readonly priceOverrides?: ReadonlyArray<UsagePriceOverride>;
+}): Array<UsagePreviousBucket> {
+  const rowsByBucket = new Map<string, Array<BucketUsageSummaryRow>>();
+  for (const row of input.rows) {
+    const rows = rowsByBucket.get(row.bucketKey) ?? [];
+    rows.push(row);
+    rowsByBucket.set(row.bucketKey, rows);
+  }
+  return input.buckets.map((bucket) => ({
+    key: bucket.key,
+    startAt: bucket.startAt,
+    metrics: aggregateUsageMetrics(rowsByBucket.get(bucket.key) ?? [], input.priceOverrides),
+  }));
 }
 
 function compareBreakdown(

@@ -127,7 +127,7 @@ export type RememberedComputerConsent = typeof RememberedComputerConsent.Type;
 export const ComputerConsentPersistence = Schema.Literals(["durable", "session-only"]);
 export const RememberedComputerConsentEntry = Schema.Struct({
   consent: RememberedComputerConsent,
-  persistence: ComputerConsentPersistence,
+  persistence: Schema.optionalKey(ComputerConsentPersistence),
   reason: Schema.optionalKey(Schema.String),
 });
 export type RememberedComputerConsentEntry = typeof RememberedComputerConsentEntry.Type;
@@ -185,9 +185,58 @@ export const COMPUTER_AGENT_IDENTITY_CAPABILITY = "computer-agent-identity-v1";
 export const COMPUTER_ACTIVITY_CORRELATION_CAPABILITY = "computer-activity-correlation-v1";
 /** The backend reports whether its Chrome holder runs a browser call (`chromeCallsChanged`). */
 export const COMPUTER_CHROME_CALLS_CAPABILITY = "chrome-call-activity-v1";
+/**
+ * The backend names each Chrome call when main validates it (`chromeLeaseValidate.callId`)
+ * and reports its end (`chromeCallEnded`). Main marks the call running before it answers,
+ * so another thread's native lease and the call can never both be admitted. Only holders
+ * whose backend negotiated this stop blocking other threads' native control while idle.
+ */
+export const COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY = "chrome-call-admission-v1";
+/**
+ * Main routes a request to release an idle Chrome holder across profiles
+ * (`chromeHolderRelease` → `chromeReleaseRequest` → `chromeReleaseResult`).
+ */
+export const COMPUTER_CHROME_RELEASE_CAPABILITY = "chrome-release-v1";
+/**
+ * Claude in Chrome sessions whose certified record claims `shared-native-host` hold Chrome
+ * together (`chromeLeaseAcquire.shared`), across profiles. Main runs one of their Chrome
+ * calls at a time and relays each one's verified registration (`chromeRegistrationVerified`
+ * → `chromeRegistrations`), so a peer's launch isn't read as an external change.
+ */
+export const COMPUTER_CHROME_SHARED_CAPABILITY = "chrome-shared-v1";
+/** Main holds at most this many Chrome leases at once, so `chromeLeaseChanged` always fits. */
+export const CHROME_LEASE_HOLDERS_MAX = 64;
+/**
+ * Main frees a shared launch lock (`chromeLaunchLock`) its holder never unlocked after this
+ * long: a launch records its registration within the CLI's start plus a 10 s wait.
+ */
+export const CHROME_LAUNCH_LOCK_MAX_MS = 45_000;
+/** One manifest or wrapper as a verified launch left it. */
+export const ChromeRegistrationArtifact = Schema.Struct({
+  location: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+});
+export type ChromeRegistrationArtifact = typeof ChromeRegistrationArtifact.Type;
+/** A shared session's registration after its launch verified: manifests and its wrapper. */
+export const ChromeSharedRegistration = Schema.Struct({
+  manifests: Schema.Array(ChromeRegistrationArtifact).check(Schema.isMaxLength(32)),
+  wrapper: ChromeRegistrationArtifact,
+});
+export type ChromeSharedRegistration = typeof ChromeSharedRegistration.Type;
+/** How long main waits for another profile's Chrome holder to answer a release request. */
+export const COMPUTER_CHROME_RELEASE_WAIT_MS = 8_000;
+export const ChromeReleaseOutcome = Schema.Literals([
+  "released",
+  "working",
+  "not-holder",
+  "timeout",
+]);
+export type ChromeReleaseOutcome = typeof ChromeReleaseOutcome.Type;
 export const COMPUTER_COOPERATION_CAPABILITY = "computer-cooperation-v1";
 export const COMPUTER_TAKEOVER_RESERVATION_CAPABILITY = "takeover-reservation-v1";
 export const COMPUTER_LEASE_WAIT_MAX_MS = 20_000;
+export const COMPUTER_SHARED_APP_CAPABILITY = "background-shared-app-v1";
+export const COMPUTER_BACKGROUND_EVENTS_CAPABILITY = "background-events-v1";
 export const ComputerInterruptionCause = Schema.Literals([
   "pointer",
   "key",
@@ -214,10 +263,24 @@ export const ComputerTargetReadiness = Schema.Struct({
   inputHeld: Schema.Boolean,
 });
 export type ComputerTargetReadiness = typeof ComputerTargetReadiness.Type;
+/** Which idle condition kept a "user-active" foreground takeover from arming. */
+export const COMPUTER_USER_ACTIVE_DETAILS = [
+  "recent-input",
+  "input-held",
+  "monitor-unhealthy",
+] as const;
+/** The values producers send. Decoders accept any string so a newer peer's value never fails. */
+export type ComputerUserActiveDetail = (typeof COMPUTER_USER_ACTIVE_DETAILS)[number];
+export function isComputerUserActiveDetail(value: unknown): value is ComputerUserActiveDetail {
+  return (COMPUTER_USER_ACTIVE_DETAILS as ReadonlyArray<unknown>).includes(value);
+}
+/** Diagnostic only: decoded leniently, and unknown values are never shown to agents. */
+const ComputerUserActiveDetailWire = Schema.String;
 export const ComputerTargetAvailability = Schema.Struct({
   available: Schema.Boolean,
   timedOut: Schema.Boolean,
   reason: Schema.optionalKey(Schema.Literals(["user-active", "agent-busy", "foreground-busy"])),
+  detail: Schema.optionalKey(ComputerUserActiveDetailWire),
   requiresFreshObservation: Schema.Literal(true),
 });
 export type ComputerTargetAvailability = typeof ComputerTargetAvailability.Type;
@@ -299,7 +362,16 @@ export const ComputerAutomationRequest = Schema.Union([
     op: Schema.Literal("scroll"),
     deltaX: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
     deltaY: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
-  }),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...Envelope,
+    op: Schema.Literal("scroll"),
+    appId: Id,
+    snapshotId: Id,
+    elementRef: Id,
+    deltaX: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
+    deltaY: Schema.Finite.check(Schema.isBetween({ minimum: -50, maximum: 50 })),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
   Schema.Struct({
     ...Envelope,
     op: Schema.Literal("type"),
@@ -309,6 +381,7 @@ export const ComputerAutomationRequest = Schema.Union([
   Schema.Struct({
     ...Envelope,
     op: Schema.Literal("key"),
+    appId: Schema.optional(Id),
     chords: Schema.Array(Id).check(Schema.isMinLength(1), Schema.isMaxLength(16)),
     repeat: Positive.check(Schema.isLessThanOrEqualTo(20)),
   }),
@@ -337,6 +410,8 @@ const ComputerSecureAuditDiagnostics = Schema.Struct({
       complete: Schema.Boolean,
       elapsedMs: NonNegative,
       visitedNodes: NonNegative,
+      /** Row-container children skipped as scrolled out of view; absent on older helpers. */
+      prunedRows: Schema.optional(NonNegative),
       nodeReadElapsedMs: NonNegative,
       maxChildren: NonNegative,
       textFieldQueries: NonNegative,
@@ -352,6 +427,7 @@ const ComputerSecureAuditDiagnostics = Schema.Struct({
           "depth-limit",
           "unreadable-node",
           "unreadable-children",
+          "unreadable-subrole",
           "secure-field-without-frame",
           "search-limit",
           "search-incomplete",
@@ -413,6 +489,9 @@ export const ComputerActionResult = Schema.Struct({
       verified: Schema.Boolean,
       matchesRequestedValue: Schema.optional(Schema.Boolean),
       valueLength: Schema.optional(NonNegative),
+      /** Set when a key action stopped early after focus moved; later chords were not sent. */
+      chordsDelivered: Schema.optional(NonNegative),
+      chordsRequested: Schema.optional(NonNegative),
     }),
   ),
   /** Set when a background mutation waited for a secure field and did not run. */
@@ -465,6 +544,16 @@ export const ComputerAutomationError = Schema.Union([
     holder: Schema.Literals(["same-profile", "other-profile"]),
     threadTitle: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.Literal("observation-backlog")),
+    /** What is held: the Chrome lease or a native computer lease. */
+    resource: Schema.optional(Schema.Literals(["chrome", "computer"])),
+    /** The holding thread, same-profile holders only; other profiles stay anonymous. */
+    holderThreadId: Schema.optional(Schema.String),
+    /** Whether the holder is between turns with no call running (server-side enrichment). */
+    holderIdle: Schema.optional(Schema.Boolean),
+    /** The holding profile's display name, other-profile holders only (never its threads). */
+    holderProfileName: Schema.optional(Schema.String.check(Schema.isMaxLength(100))),
+    /** What the holder is doing: running a Chrome call, holding an idle Chrome session, or native control. */
+    activity: Schema.optional(Schema.Literals(["chrome-call", "chrome-session", "computer"])),
   }),
   Schema.Struct({
     _tag: Schema.Literal("Interrupted"),
@@ -502,7 +591,9 @@ export const ComputerAutomationError = Schema.Union([
       "user-active",
       "other-app",
       "foreground-busy",
+      "shared-focus",
     ]),
+    detail: Schema.optionalKey(ComputerUserActiveDetailWire),
   }),
   Schema.Struct({ _tag: Schema.Literal("Execution"), message: Schema.String }),
   Schema.Struct({
@@ -634,6 +725,18 @@ export const ComputerPauseCause = Schema.Literals([
   "access-changed",
 ]);
 export type ComputerPauseCause = typeof ComputerPauseCause.Type;
+/**
+ * Who a waiting thread waits for. `token` is minted by main for this recipient profile and
+ * holder generation, and names the holder only to main (`stop-holder`). Other profiles'
+ * holders carry their profile's name; same-profile holders may carry their thread title.
+ */
+export const ComputerBlocker = Schema.Struct({
+  token: Id,
+  activity: Schema.Literals(["chrome-call", "chrome-session", "computer"]),
+  profileName: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100))),
+  threadTitle: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
+});
+export type ComputerBlocker = typeof ComputerBlocker.Type;
 export const ChromeLeaseHolder = Schema.Struct({
   profileId: Id,
   threadId: Id,
@@ -766,6 +869,8 @@ export const ComputerActivity = Schema.Struct({
   appName: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   thumbnailDataUrl: Schema.optional(Schema.String.check(Schema.isMaxLength(40 * 1024))),
   delivery: Schema.optional(ComputerDelivery),
+  /** A `Busy` failure's holder in this profile, for "Held by" on the card. */
+  heldByThreadId: Schema.optional(Id),
 });
 export type ComputerActivity = typeof ComputerActivity.Type;
 export const SCHEDULED_NOTIFICATIONS_CAPABILITY = "scheduled-notifications-v1";
@@ -810,19 +915,102 @@ export const DesktopComputerHostMessage = Schema.Union([
      * skips the launch certification gate, so history stays restorable after an SDK
      * upgrade or a withdrawn record.
      */
-    type: Schema.Literals([
-      "chromeLeaseAcquire",
-      "chromeRestoreAcquire",
-      "chromeLeaseRelease",
-      "chromeLeaseValidate",
-    ]),
+    type: Schema.Literals(["chromeLeaseAcquire", "chromeRestoreAcquire", "chromeLeaseRelease"]),
+    requestId: Id,
+    holder: ChromeLeaseHolder,
+    /**
+     * `chromeLeaseAcquire` from a `COMPUTER_CHROME_SHARED_CAPABILITY` backend whose certified
+     * record claims `shared-native-host`: the session may hold Chrome beside other such
+     * sessions.
+     */
+    shared: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    /** Backend to main (`COMPUTER_CHROME_SHARED_CAPABILITY`): a shared holder's launch verified. */
+    type: Schema.Literal("chromeRegistrationVerified"),
+    holder: ChromeLeaseHolder,
+    registration: ChromeSharedRegistration,
+  }),
+  Schema.Struct({
+    /**
+     * Main to `COMPUTER_CHROME_SHARED_CAPABILITY` backends: the latest verified registration
+     * of each profile's shared sessions, so a peer's launch isn't an external change.
+     */
+    type: Schema.Literal("chromeRegistrations"),
+    registrations: Schema.Array(ChromeSharedRegistration).check(Schema.isMaxLength(32)),
+    /**
+     * Another profile's shared session holds the launch lock: its CLI may rewrite the
+     * registration before its verified copy arrives here, so that rewrite is waited out.
+     */
+    peerLaunching: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    /**
+     * Backend to main (`COMPUTER_CHROME_SHARED_CAPABILITY`): a shared holder takes the launch
+     * lock before it inspects and approves the registration, and holds it until its launch
+     * is recorded, so shared launches never overlap. Refused with the retryable
+     * `CHROME_WAITING_FOR_PEER_LAUNCH_MESSAGE` while another holder launches.
+     */
+    type: Schema.Literal("chromeLaunchLock"),
     requestId: Id,
     holder: ChromeLeaseHolder,
   }),
   Schema.Struct({
+    type: Schema.Literal("chromeLaunchUnlock"),
+    holder: ChromeLeaseHolder,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("chromeLeaseValidate"),
+    requestId: Id,
+    holder: ChromeLeaseHolder,
+    /** The Chrome call this validation admits (`COMPUTER_CHROME_CALL_ADMISSION_CAPABILITY`). */
+    callId: Schema.optionalKey(Id),
+  }),
+  Schema.Struct({
+    /**
+     * Backend to main (`COMPUTER_CHROME_RELEASE_CAPABILITY`): ask the Chrome holder in another
+     * profile to release if it is idle. With `scope`, only when that holder blocks this
+     * thread's native control of `scope`. Answered with a `ChromeReleaseOutcome`.
+     */
+    type: Schema.Literal("chromeHolderRelease"),
+    requestId: Id,
+    threadId: Id,
+    scope: Schema.optionalKey(ComputerLeaseScope),
+  }),
+  Schema.Struct({
+    /** Main to the holder's backend: release this Chrome lease if its session is idle. */
+    type: Schema.Literal("chromeReleaseRequest"),
+    requestId: Id,
+    threadId: Id,
+    sessionGeneration: Id,
+  }),
+  Schema.Struct({
+    /** The holder's backend answers a `chromeReleaseRequest`. */
+    type: Schema.Literal("chromeReleaseResult"),
+    requestId: Id,
+    outcome: ChromeReleaseOutcome,
+  }),
+  Schema.Struct({
+    /** Backend to main: a call admitted with `callId` finished or was refused after admission. */
+    type: Schema.Literal("chromeCallEnded"),
+    threadId: Id,
+    sessionGeneration: Id,
+    callId: Id,
+  }),
+  Schema.Struct({
     type: Schema.Literal("chromeLeaseChanged"),
+    /** This profile's first Chrome holder; `holders` lists all of them to shared peers. */
     holder: Schema.NullOr(ChromeLeaseHolder),
+    holders: Schema.optionalKey(
+      Schema.Array(ChromeLeaseHolder).check(Schema.isMaxLength(CHROME_LEASE_HOLDERS_MAX)),
+    ),
     otherProfile: Schema.optionalKey(Schema.Boolean),
+    /**
+     * `COMPUTER_CHROME_RELEASE_CAPABILITY` peers: another profile's Chrome holder refuses this
+     * profile's foreground control (a Codex or older-backend holder, or one running a call),
+     * so asking it to release can help a native request.
+     */
+    otherProfileBlocksNative: Schema.optionalKey(Schema.Boolean),
     /** Main could not observe a registered process exit; Chrome ownership is refused. */
     recoveryRequired: Schema.optionalKey(Schema.Boolean),
   }),
@@ -926,6 +1114,7 @@ export const DesktopComputerHostMessage = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("rememberedChanged"),
+    backgroundOnly: Schema.optionalKey(Schema.Boolean),
     projectId: Schema.optionalKey(Id),
     revokedSessions: Schema.optionalKey(
       Schema.Array(
@@ -965,6 +1154,8 @@ export const DesktopComputerHostMessage = Schema.Union([
     appId: Schema.optionalKey(Id),
     delivery: Schema.optionalKey(ComputerDelivery),
     pauseCause: Schema.optionalKey(ComputerPauseCause),
+    /** `waiting-agent` only: the holder this thread waits for. */
+    blockedBy: Schema.optionalKey(ComputerBlocker),
   }),
   Schema.Struct({
     type: Schema.Literal("takeoverReserved"),
@@ -1018,6 +1209,11 @@ export interface DesktopComputerAutomationBridge {
   readonly retryHelper: () => Promise<void>;
   readonly answerAccess: (answer: ComputerAccessAnswer) => Promise<void>;
   readonly setPaused: (threadId: string, paused: boolean) => Promise<void>;
+  /**
+   * Pauses the holder a waiting thread is blocked by (`ComputerBlocker.token`), even in
+   * another profile. Resolves false when the token is stale. Needs a trusted click.
+   */
+  readonly stopHolder?: (token: string) => Promise<boolean>;
   readonly onStatus: (callback: (status: ComputerAutomationBackendStatus) => void) => () => void;
   /** Integrations this profile always allows; only main's consent dialog adds one. */
   readonly integrationConsents?: () => Promise<ReadonlyArray<AlwaysAllowedIntegration>>;

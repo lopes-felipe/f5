@@ -11,7 +11,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 
-import { isArchivedThread, sortThreadsByActivity } from "./lib/threadOrdering";
+import { isArchivedThread, isSnoozedThread, sortThreadsByActivity } from "./lib/threadOrdering";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
 import { newCommandId } from "./lib/utils";
 import { readNativeApi } from "./nativeApi";
@@ -231,8 +231,13 @@ export async function deleteThreadsWithCleanup(
   const survivors = () =>
     (input.getThreads?.() ?? input.threads).filter((thread) => !deletedIds.has(thread.id));
   if (input.activeThreadId && deletedIds.has(input.activeThreadId)) {
+    const now = Date.now();
+    // Match the thread lifecycle checks in getVisibleThreads (lib/threadOrdering).
+    // Keep deletion's existing global fallback scope, including Scheduled-folder threads.
     const fallback = sortThreadsByActivity(
-      survivors().filter((thread) => !isArchivedThread(thread)),
+      survivors().filter(
+        (thread) => !isArchivedThread(thread) && !thread.settledAt && !isSnoozedThread(thread, now),
+      ),
     )[0];
     if (fallback) input.navigateToThread(fallback.id);
     else input.navigateHome();

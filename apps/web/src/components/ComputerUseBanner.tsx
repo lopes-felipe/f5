@@ -1,14 +1,18 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 import { useStore } from "../store";
+import { canReleaseChrome } from "./AgentComputerLiveCard.logic";
 import { Button } from "./ui/button";
 import {
   pauseComputerThread,
+  stopBlockingAgent,
   stopComputerTurn,
+  waitingForAgentText,
   computerStopShortcutLabel,
+  useLinger,
 } from "./computerControls";
 
 const PAUSE_CAUSE_LABEL: Record<NonNullable<AgentComputerUseHolder["pauseCause"]>, string> = {
@@ -50,13 +54,38 @@ export function computerUseBannerTargets(
     .map((entry) => entry.threadId);
 }
 /**
+ * A Chrome runtime that only holds its lease at rest (`canReleaseChrome`: idle, no turn,
+ * past the linger). Another thread in this profile that needs Chrome or foreground control
+ * preempts it, and main hides it from other profiles, so the banner stays out of the way;
+ * the holding thread's card shows it with Release. Mid-turn, between Chrome calls, the
+ * agent may call Chrome again at any moment, so the banner keeps Pause and Stop.
+ */
+export function chromeIdleReservation(
+  leases: typeof AgentComputerUseChanged.Type,
+  pausedLocally: boolean,
+  chromeLinger = false,
+  turnRunning = false,
+): boolean {
+  return (
+    !leases.pendingTakeover &&
+    !pausedLocally &&
+    canReleaseChrome({
+      holder: primaryComputerHolder(leases),
+      turnRunning,
+      lingering: chromeLinger,
+    })
+  );
+}
+/**
  * `chromeLinger`: a Chrome call ended moments ago, so an idle runtime still reads as in use
- * and the banner doesn't flicker between back-to-back calls.
+ * and the banner doesn't flicker between back-to-back calls. `turnRunning`: the primary
+ * holder's turn is running.
  */
 export function computerUseBannerText(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
   chromeLinger = false,
+  turnRunning = false,
 ): string | null {
   const pending = leases.pendingTakeover;
   if (pending) {
@@ -66,22 +95,24 @@ export function computerUseBannerText(
       : `An agent is asking to take over ${app}`;
   }
   const holder = primaryComputerHolder(leases);
-  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life, so an
-  // idle runtime past the linger after its last call has nothing to report.
-  const chromeIdle =
-    holder?.browser === "idle" && holder.state === "active" && !pausedLocally && !chromeLinger;
-  if (!holder || chromeIdle)
+  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
+  const reserved = chromeIdleReservation(leases, pausedLocally, chromeLinger, turnRunning);
+  // An idle reservation says nothing; another profile's control still shows.
+  if (!holder || reserved)
     return leases.otherProfile
       ? "An agent in another F5 profile is controlling this computer"
       : null;
   const app = holder.appName ?? (holder.appId ? "an app" : undefined);
   const cause = holder.pauseCause ? PAUSE_CAUSE_LABEL[holder.pauseCause] : "";
-  const state = pausedLocally && holder.state === "active" ? "paused" : holder.state;
+  const state =
+    pausedLocally && ["active", "waiting-user", "waiting-agent"].includes(holder.state)
+      ? "paused"
+      : holder.state;
   switch (state) {
     case "paused":
       return `Computer control paused${cause ? ` · ${cause}` : ""}`;
     case "recovery":
-      return `Computer control stopped${app ? ` · check ${app} before resuming` : ""}${cause ? ` · ${cause}` : ""}`;
+      return `Needs recovery${app ? ` · check ${app} before resuming` : ""}${cause ? ` · ${cause}` : ""}`;
     case "waiting-secure-input":
       return `Agent waiting${app ? ` in ${app}` : ""} while secure text entry is active`;
     case "pending-consent":
@@ -91,7 +122,7 @@ export function computerUseBannerText(
     case "waiting-user":
       return app ? `Waiting for you to finish in ${app}` : "Waiting while you use the computer";
     case "waiting-agent":
-      return "Waiting for another agent";
+      return waitingForAgentText(holder.blockedBy);
     case "active":
       break;
   }
@@ -111,9 +142,9 @@ export function computerUseBannerText(
   const background = leases.holders.filter(
     (entry) => entry.delivery === "background" && entry.state === "active",
   );
-  if (background.length <= 1) return `An agent is working in ${app ?? "an app"} in the background`;
+  if (background.length <= 1) return `Working in background · ${app ?? "an app"}`;
   const apps = [...new Set(background.flatMap((entry) => (entry.appName ? [entry.appName] : [])))];
-  return `${background.length} agents are working in the background${apps.length ? ` in ${apps.join(", ")}` : ""}`;
+  return `${background.length} agents working in background${apps.length ? ` · ${apps.join(", ")}` : ""}`;
 }
 
 /**
@@ -124,31 +155,12 @@ export function computerUseBannerAmbient(
   pausedLocally: boolean,
 ): boolean {
   const holder = primaryComputerHolder(leases);
+  if (leases.pendingTakeover || leases.otherProfile || pausedLocally) return false;
   return (
-    !leases.pendingTakeover &&
-    !leases.otherProfile &&
-    holder?.delivery === "background" &&
-    holder.state === "active" &&
-    !pausedLocally
+    holder?.state === "waiting-user" ||
+    holder?.state === "waiting-agent" ||
+    (holder?.delivery === "background" && holder.state === "active")
   );
-}
-
-/** How long the banner keeps saying Chrome is in use after its last call ends. */
-export const CHROME_BANNER_LINGER_MS = 3000;
-
-/** True while any Chrome call runs and for `CHROME_BANNER_LINGER_MS` after the last one. */
-function useChromeLinger(leases: typeof AgentComputerUseChanged.Type): boolean {
-  const working = leases.holders.some((holder) => holder.browser === "working");
-  const [linger, setLinger] = useState(working);
-  useEffect(() => {
-    if (working) {
-      setLinger(true);
-      return;
-    }
-    const timer = setTimeout(() => setLinger(false), CHROME_BANNER_LINGER_MS);
-    return () => clearTimeout(timer);
-  }, [working]);
-  return working || linger;
 }
 
 export function ComputerUseBanner() {
@@ -165,13 +177,19 @@ export function ComputerUseBanner() {
   const title = useStore((store) =>
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
-  const chromeLinger = useChromeLinger(leases);
-  const text = computerUseBannerText(leases, paused, chromeLinger);
+  const holderTurnRunning = useStore((store) =>
+    holder
+      ? store.threads.find((thread) => thread.id === holder.threadId)?.session?.status === "running"
+      : false,
+  );
+  const chromeLinger = useLinger(leases.holders.some((entry) => entry.browser === "working"));
+  const text = computerUseBannerText(leases, paused, chromeLinger, holderTurnRunning);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
   const ambient = computerUseBannerAmbient(leases, paused);
+  const blocker = holder?.state === "waiting-agent" ? holder.blockedBy : undefined;
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
@@ -250,6 +268,24 @@ export function ComputerUseBanner() {
           onClick={() => void run(stopComputerTurn, [...retryTargets])}
         >
           Retry Stop
+        </Button>
+      ) : null}
+      {blocker && window.desktopBridge?.computerAutomation?.stopHolder ? (
+        <Button
+          size="xs"
+          variant="outline"
+          title="Pauses only that agent's computer and Chrome control. Resume it from its own thread."
+          onClick={() => {
+            setError("");
+            void stopBlockingAgent(blocker.token).then(
+              (stopped) => {
+                if (!stopped) setError("That agent no longer holds control.");
+              },
+              () => setError("That agent could not be stopped. Use the stop shortcut."),
+            );
+          }}
+        >
+          Stop that agent
         </Button>
       ) : null}
       {holder?.pauseCause === "outcome-unknown" ? (

@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/contracts";
@@ -23,7 +24,7 @@ type ThreadCompactRequestedEvent = Extract<
 >;
 
 const compactionCommandId = (tag: string) =>
-  CommandId.makeUnsafe(`compaction:${tag}:${crypto.randomUUID()}`);
+  CommandId.makeUnsafe(`compaction:${tag}:${timeOrderedUuid()}`);
 
 function laterIsoString(left: string, right: string): string {
   return left.localeCompare(right) >= 0 ? left : right;
@@ -62,7 +63,7 @@ const make = Effect.gen(function* () {
       commandId: compactionCommandId("activity"),
       threadId: input.threadId,
       activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         tone: input.tone,
         kind: input.kind,
         summary: input.summary,

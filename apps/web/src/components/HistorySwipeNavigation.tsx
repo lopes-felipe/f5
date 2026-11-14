@@ -10,8 +10,9 @@ const SWIPE_TRIGGER_DISTANCE = 120;
 // Movement needed before the gesture picks an axis; first events are often diagonal.
 const SWIPE_AXIS_LOCK_DISTANCE = 8;
 const MOMENTUM_SAMPLE_SIZE = 5;
-// Popovers are non-modal dialogs; a swipe over one is not page navigation either.
-const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"]';
+// Popovers are non-modal dialogs; a swipe over one is not page navigation either. A sideways
+// swipe over a toast dismisses that toast instead.
+const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [data-slot="toast-root"]';
 
 type SwipeBounds = { left: number; top: number; width: number; height: number };
 // `distanceBefore` lets a momentum tail be taken back out once it is recognized.

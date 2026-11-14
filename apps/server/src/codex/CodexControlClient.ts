@@ -241,6 +241,7 @@ export class CodexControlClient extends EventEmitter<{
   static async create(
     environment: CodexControlEnvironmentConfig,
     signal?: AbortSignal,
+    options: { readonly probeConfigRead?: boolean } = {},
   ): Promise<CodexControlClient> {
     signal?.throwIfAborted();
     const binaryPath = resolveCodexCommand(environment.binaryPath);
@@ -304,7 +305,7 @@ export class CodexControlClient extends EventEmitter<{
       await client.writeMessage({
         method: "initialized",
       });
-      client.capabilities = await client.probeCapabilities();
+      client.capabilities = await client.probeCapabilities(options);
       client.cliVersion = cliVersion;
       return client;
     } catch (error) {
@@ -313,9 +314,15 @@ export class CodexControlClient extends EventEmitter<{
     }
   }
 
-  private async probeCapabilities(): Promise<CodexControlCapabilities> {
+  private async probeCapabilities(options: {
+    readonly probeConfigRead?: boolean;
+  }): Promise<CodexControlCapabilities> {
     return {
-      configRead: await this.probeMethod("config/read", { includeLayers: true }),
+      // Catalog enrichment handles unsupported config/read itself with a short
+      // deadline. Do not let an earlier mandatory probe consume its whole budget.
+      configRead:
+        options.probeConfigRead === false ||
+        (await this.probeMethod("config/read", { includeLayers: true })),
       listMcpServerStatus: await this.probeMethod("mcpServerStatus/list", { limit: 1 }),
     };
   }
@@ -511,13 +518,13 @@ export class CodexControlClient extends EventEmitter<{
     });
   }
 
-  async readConfig(): Promise<CodexControlConfigReadResult> {
+  async readConfig(includeLayers = true): Promise<CodexControlConfigReadResult> {
     if (!this.capabilities.configRead) {
       throw new Error("Codex control config/read is unsupported.");
     }
 
     const result = await this.sendRequest<Record<string, unknown>>("config/read", {
-      includeLayers: true,
+      includeLayers,
     });
     const config = isObject(result.config) ? result.config : {};
     return {

@@ -369,10 +369,11 @@ function PrActionConfirmation(props: {
   if (props.mode === "inline")
     return props.open ? (
       <section
+        data-pr-inline-confirmation
         ref={inlineRef}
         tabIndex={-1}
         aria-label={props.title}
-        className="rounded-lg border border-border bg-card outline-none"
+        className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border bg-card outline-none"
         onKeyDown={(event) => {
           if (event.key === "Escape" && !event.defaultPrevented) {
             event.stopPropagation();

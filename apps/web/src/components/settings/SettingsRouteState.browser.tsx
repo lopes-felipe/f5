@@ -424,10 +424,17 @@ describe("useSettingsRouteState", () => {
     },
     {
       name: "Claude Fable 5.1",
-      alias: "fable[1m]",
+      alias: "fable-5.1[1m]",
       slug: "claude-fable-5-1",
       before: "2.1.256",
       after: "2.1.257",
+    },
+    {
+      name: "Claude Fable 5.2",
+      alias: "fable[1m]",
+      slug: "claude-fable-5-2",
+      before: "2.1.289",
+      after: "2.1.290",
     },
   ])(
     "uses inherit for gated $name subagents and reactivates hidden selections after upgrade",

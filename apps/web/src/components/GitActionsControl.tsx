@@ -38,7 +38,11 @@ import {
   linkedPullRequestLookupCwd,
   useLinkedPullRequestStates,
 } from "../hooks/useLinkedPullRequestStates";
-import { resolveThreadPullRequests, type ThreadPullRequestItem } from "../lib/threadPullRequests";
+import {
+  resolveThreadPullRequests,
+  threadBranchPullRequest,
+  type ThreadPullRequestItem,
+} from "../lib/threadPullRequests";
 import { useStore } from "../store";
 import { selectThreadById } from "../threadSelectors";
 import {
@@ -179,7 +183,7 @@ function getMenuActionDisabledReason({
       return "Branch is behind upstream. Pull/rebase before pushing.";
     }
     if (!gitStatus.hasUpstream && !hasOriginRemote) {
-      return 'Add an "origin" remote before pushing.';
+      return "Add a remote before pushing.";
     }
     if (!isAhead) {
       return "No local commits to push.";
@@ -197,7 +201,7 @@ function getMenuActionDisabledReason({
     return "Commit local changes before creating a PR.";
   }
   if (!gitStatus.hasUpstream && !hasOriginRemote) {
-    return 'Add an "origin" remote before creating a PR.';
+    return "Add a remote before creating a PR.";
   }
   if (!isAhead) {
     return "No local commits to include in a PR.";
@@ -296,6 +300,7 @@ export default function GitActionsControl({
   const gitStatusForActions = isGitStatusOutOfSync ? null : gitStatus;
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
+  const workingTreeRoot = gitStatusForActions?.workingTree.rootPath ?? null;
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
@@ -331,6 +336,9 @@ export default function GitActionsControl({
   const threadPullRequestLinks = useStore((state) =>
     isServerThread ? selectThreadById(state, activeThreadId)?.pullRequests : undefined,
   );
+  const threadBranch = useStore((state) =>
+    isServerThread ? (selectThreadById(state, activeThreadId)?.branch ?? null) : null,
+  );
   const pullRequestLookupCwd = useStore((state) => {
     const thread = isServerThread ? selectThreadById(state, activeThreadId) : undefined;
     return linkedPullRequestLookupCwd(
@@ -350,11 +358,18 @@ export default function GitActionsControl({
   const threadPullRequests = useMemo(
     () =>
       resolveThreadPullRequests({
-        branchPr: gitStatusForActions?.pr ?? null,
+        branchPr: threadBranchPullRequest(threadBranch, gitStatusForActions),
         links: threadPullRequestLinks,
         linkState: (url) => linkedPullRequestState(pullRequestLookupCwd, url),
       }),
-    [gitStatusForActions?.pr, linkedPullRequestState, pullRequestLookupCwd, threadPullRequestLinks],
+    [
+      gitStatusForActions?.pr,
+      gitStatusForActions?.branch,
+      threadBranch,
+      linkedPullRequestState,
+      pullRequestLookupCwd,
+      threadPullRequestLinks,
+    ],
   );
   const pullRequestWatches = useThreadPullRequestWatches(isServerThread ? activeThreadId : null);
   const [isLinkPullRequestOpen, setIsLinkPullRequestOpen] = useState(false);
@@ -925,7 +940,7 @@ export default function GitActionsControl({
   const openChangedFileInEditor = useCallback(
     (filePath: string) => {
       const api = readNativeApi();
-      if (!api || !gitCwd) {
+      if (!api || !workingTreeRoot) {
         toastManager.add({
           type: "error",
           title: "Editor opening is unavailable.",
@@ -933,7 +948,7 @@ export default function GitActionsControl({
         });
         return;
       }
-      const target = resolvePathLinkTarget(filePath, gitCwd);
+      const target = resolvePathLinkTarget(filePath, workingTreeRoot);
       void openInPreferredEditor(api, target).catch((error) => {
         toastManager.add({
           type: "error",
@@ -943,7 +958,7 @@ export default function GitActionsControl({
         });
       });
     },
-    [gitCwd, threadToastData],
+    [workingTreeRoot, threadToastData],
   );
 
   if (!gitCwd) return null;
@@ -1274,6 +1289,7 @@ export default function GitActionsControl({
                               <button
                                 type="button"
                                 className="flex flex-1 items-center justify-between gap-3 text-left truncate"
+                                disabled={workingTreeRoot === null}
                                 onClick={() => openChangedFileInEditor(file.path)}
                               >
                                 <MiddleTruncate

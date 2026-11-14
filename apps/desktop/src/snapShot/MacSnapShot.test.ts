@@ -1,6 +1,53 @@
 import { it, expect, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
-import { captureMacWindow, accessibilityScript, activeWindowScript } from "./MacSnapShot";
+import { runInNewContext } from "node:vm";
+import {
+  captureMacWindow,
+  accessibilityScript,
+  activeWindowScript,
+  selectMacContentWindow,
+} from "./MacSnapShot";
+
+it("skips transparent windows and untitled helper strips without preferring the largest window", () => {
+  const window = (id: number, title: string, width: number, height: number, alpha = 1) => ({
+    id,
+    kCGWindowName: title,
+    kCGWindowOwnerPID: 42,
+    kCGWindowAlpha: alpha,
+    kCGWindowBounds: { X: 0, Y: 0, Width: width, Height: height },
+  });
+  const content = window(3, "content", 800, 600);
+  const helper = window(2, "", 800, 20);
+  const transparent = window(1, "transparent", 800, 600, 0);
+  expect(
+    selectMacContentWindow([transparent, helper, content, window(4, "large", 1600, 1200)]),
+  ).toBe(content);
+  expect(selectMacContentWindow([window(1, "", 20, 600), content])).toBe(content);
+  expect(selectMacContentWindow([window(1, "named strip", 800, 20), content])?.id).toBe(1);
+  expect(selectMacContentWindow([window(1, "", 800, 20)])?.id).toBe(1);
+  expect(selectMacContentWindow([transparent])).toBeUndefined();
+});
+
+it("runs content selection inside the generated JXA lookup and excludes F5", () => {
+  const window = (id: number, pid: number, height: number) => ({
+    kCGWindowNumber: id,
+    kCGWindowOwnerPID: pid,
+    kCGWindowLayer: 0,
+    kCGWindowAlpha: 1,
+    kCGWindowBounds: { X: 0, Y: 0, Width: 800, Height: height },
+  });
+  const result = runInNewContext(activeWindowScript(777), {
+    ObjC: { import: () => {}, deepUnwrap: (value: unknown) => value },
+    $: {
+      CGWindowListCopyWindowInfo: () => [
+        window(1, 777, 600),
+        window(2, 42, 20),
+        window(3, 42, 600),
+      ],
+    },
+  });
+  expect(JSON.parse(result)).toMatchObject({ id: 3, pid: 42 });
+});
 it("bounds window capture and accessibility text, then focuses the owning window", async () => {
   const image = {
     getSize: () => ({ width: 3000, height: 2000 }),

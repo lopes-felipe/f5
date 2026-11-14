@@ -739,7 +739,7 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("submits persisted Fable 5.1 aliases with supported effort only", async () => {
+  it("submits persisted Fable 5.2 aliases with supported effort only", async () => {
     await seedModelPreferences({
       lastProvider: "claudeAgent",
       lastModelByProvider: { claudeAgent: "fable[200k]" },
@@ -755,7 +755,7 @@ describe("WorkflowCreateDialog", () => {
       {
         container: host,
         providers: [
-          claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"]),
+          claudeProvider("2.1.290", ["claude-opus-5", "claude-fable-5-2", "claude-fable-5"]),
         ],
       },
     );
@@ -765,7 +765,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
         provider: "claudeAgent",
-        model: "claude-fable-5-1",
+        model: "claude-fable-5-2",
         modelOptions: { claudeAgent: { effort: "xhigh" } },
         providerOptions: { claudeAgent: { subagentsEnabled: true, subagentModel: "inherit" } },
       });
@@ -1367,6 +1367,53 @@ describe("WorkflowCreateDialog", () => {
       expect(nativeApiMocks.createRun.mock.calls[0]?.[0]).not.toHaveProperty("templateVersion");
       await vi.waitFor(() => {
         expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-2");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("enables auto-post only for a detected GitHub pull request", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+    const autoPost = () =>
+      page.getByRole("checkbox", { name: /Post merged review to the PR when it finishes/ });
+
+    try {
+      await page.getByRole("button", { name: "Code Review" }).click();
+      await typeRequirementPrompt("Review the workflow changes");
+      await expect.element(autoPost()).toBeDisabled();
+      await expect
+        .element(page.getByText("Add a GitHub PR link or PR #number to the review instructions."))
+        .toBeVisible();
+
+      await typeRequirementPrompt(" for issue #42");
+      await expect.element(autoPost()).toBeDisabled();
+
+      await typeRequirementPrompt(" in PR #42");
+      await expect
+        .element(page.getByText(/^PR #42 in this project's GitHub repo\. It posts from your/))
+        .toBeVisible();
+
+      await typeRequirementPrompt(" https://github.com/acme/app/pull/42");
+      await expect.element(page.getByText(/^Will post to acme\/app#42\./)).toBeVisible();
+      await expect.element(autoPost()).toBeEnabled();
+      await autoPost().click();
+
+      await vi.waitFor(() => {
+        expect(createWorkflowButton().disabled).toBe(false);
+      });
+      createWorkflowButton().click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createCodeReviewWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createCodeReviewWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        autoPost: true,
       });
     } finally {
       await screen.unmount();

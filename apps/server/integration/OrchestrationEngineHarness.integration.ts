@@ -40,6 +40,8 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/La
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionCheckpointRepositoryLive } from "../src/persistence/Layers/ProjectionCheckpoints.ts";
 import { ProjectionTurnRepositoryLive } from "../src/persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadCommandExecutionRepositoryLive } from "../src/persistence/Layers/ProjectionThreadCommandExecutions.ts";
+import { ThreadCommandExecutionQueryLive } from "../src/orchestration/Layers/ThreadCommandExecutionQuery.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../src/persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
@@ -420,6 +422,9 @@ export const makeOrchestrationIntegrationHarness = (
       RuntimeReceiptBusLive,
       ProviderTurnDeliveryRepositoryLive,
       ProjectionTurnRepositoryLive,
+      ThreadCommandExecutionQueryLive.pipe(
+        Layer.provideMerge(ProjectionThreadCommandExecutionRepositoryLive),
+      ),
     );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),

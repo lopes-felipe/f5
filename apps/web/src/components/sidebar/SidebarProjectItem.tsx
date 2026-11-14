@@ -43,6 +43,7 @@ import {
   workflowEntryKey,
 } from "./sidebarLists";
 import { liveSidebarActivityAt } from "./sidebarRecent";
+import { workflowActivityAt } from "./sidebarWorkflowGroups";
 import { SidebarThreadRow } from "./SidebarThreadRow";
 import {
   ScheduledShelfIndicator,
@@ -322,7 +323,14 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
       getKey: workflowEntryKey,
       // Only finished workflows fold; a pending or running one stays in view.
       getActivityAt: (entry) =>
-        workflowMeta(entry)?.overallState === "completed" ? entry.workflow.updatedAt : null,
+        workflowMeta(entry)?.overallState === "completed"
+          ? workflowActivityAt({
+              updatedAt: entry.workflow.updatedAt,
+              threads: workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [],
+              finished: true,
+              activityOf: (thread) => liveSidebarActivityAt(thread, props.liveActivityHours),
+            })
+          : null,
     },
   );
   const olderExpanded = isListExpanded("older");
@@ -414,6 +422,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
         routeThreadId={routeThreadId}
         expandByDefault={props.expandWorkflowThreadsByDefault}
         overrideExpanded={props.workflowExpandedById[entry.workflow.id]}
+        expansionOverrides={props.workflowExpandedById}
         onToggleCollapsed={projectActions.onToggleWorkflowCollapsed}
         onArchive={projectActions.onArchiveWorkflow}
         indicatorsForThread={indicatorsForThread}
@@ -703,7 +712,6 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                           orderedIds={orderedProjectThreadIds}
                           threadStatus={null}
                           prStatus={null}
-                          terminalStatus={null}
                           isUnread={indicatorsForThread(thread).isUnread}
                           isRenaming={false}
                           actions={threadActions}
@@ -720,7 +728,6 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                           actions={threadActions}
                           {...indicatorsForThread(thread)}
                           threadStatus={null}
-                          terminalStatus={null}
                         />
                       ))}
                       {visibleArchivedItems.map((item) =>

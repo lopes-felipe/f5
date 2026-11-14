@@ -180,39 +180,87 @@ describe("GitManager unit", () => {
     expect(github.calls).toEqual([]);
   });
 
-  it("adds current pull-request metadata to Git status", async () => {
-    const { manager } = await makeManager({
+  it.each([true, false])(
+    "keeps branch PR metadata with includeRemote=%s",
+    async (includeRemote) => {
+      const { manager, git } = await makeManager({
+        gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+        gitHub: {
+          pullRequests: [
+            {
+              number: 42,
+              title: "Fast tests",
+              url: "https://github.com/t3tools/f5/pull/42",
+              baseRefName: "main",
+              headRefName: "feature/test",
+              headRefOid: "abc123",
+              state: "open",
+            },
+          ],
+        },
+      });
+
+      const status = await Effect.runPromise(manager.status({ cwd, includeRemote }));
+      expect(git.calls.statusDetails).toHaveLength(1);
+      expect(git.calls.inspectCheckoutIdentity).toHaveLength(1);
+
+      expect(status.pr).toEqual({
+        number: 42,
+        title: "Fast tests",
+        url: "https://github.com/t3tools/f5/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/test",
+        headOid: "abc123",
+        state: "open",
+      });
+      expect(status.changeRequest).toMatchObject({
+        id: "42",
+        provider: { kind: "github", remoteName: "origin" },
+      });
+    },
+  );
+  it("skips forge lookups only for an explicit interim scan", async () => {
+    const { manager, github, git } = await makeManager({
       gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+    });
+    const result = await Effect.runPromise(
+      manager.status({ cwd, includeRemote: false, includePullRequest: false }),
+    );
+    expect(result.branch).toBe(cleanStatus.branch);
+    expect(result.pr).toBeNull();
+    expect(github.calls).toEqual([]);
+    expect(git.calls.statusDetails).toHaveLength(1);
+    expect(git.calls.inspectCheckoutIdentity).toHaveLength(0);
+  });
+  it("rejects remote metadata when the checked-out branch changes during the lookup", async () => {
+    let reads = 0;
+    const { manager } = await makeManager({
+      gitCore: {
+        statusDetails: () =>
+          Effect.succeed({
+            ...cleanStatus,
+            branch: reads++ === 0 ? cleanStatus.branch : "next-branch",
+          }),
+        inspectCheckoutIdentity: () =>
+          Effect.succeed({ canonicalRoot: cwd, commonDir: cwd, branch: "next-branch" }),
+      },
       gitHub: {
         pullRequests: [
           {
             number: 42,
-            title: "Fast tests",
+            title: "Old branch",
             url: "https://github.com/t3tools/f5/pull/42",
             baseRefName: "main",
-            headRefName: "feature/test",
-            headRefOid: "abc123",
+            headRefName: cleanStatus.branch!,
+            headRefOid: "abc",
             state: "open",
           },
         ],
       },
     });
-
-    const status = await Effect.runPromise(manager.status({ cwd }));
-
-    expect(status.pr).toEqual({
-      number: 42,
-      title: "Fast tests",
-      url: "https://github.com/t3tools/f5/pull/42",
-      baseBranch: "main",
-      headBranch: "feature/test",
-      headOid: "abc123",
-      state: "open",
-    });
-    expect(status.changeRequest).toMatchObject({
-      id: "42",
-      provider: { kind: "github", remoteName: "origin" },
-    });
+    const result = await Effect.runPromise(manager.status({ cwd }));
+    expect(result.branch).toBe("next-branch");
+    expect(result.pr).toBeNull();
   });
 
   it("announces a pull request once when status sees it change state", async () => {
@@ -557,6 +605,61 @@ describe("GitManager unit", () => {
     expect(result.pr).toMatchObject({ status: "created", number: 18, baseBranch: "main" });
     expect(github.calls).toContain("createPullRequest:main:feature/test");
     expect(git.calls.readRangeContext).toEqual([[cwd, "main"]]);
+  });
+
+  it("reports a created PR when its follow-up lookup fails", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        prepareCommitContext: () => Effect.succeed(null),
+      },
+    });
+    const lookup = vi
+      .spyOn(github.service, "listOpenPullRequests")
+      .mockReturnValueOnce(Effect.succeed([]))
+      .mockReturnValueOnce(
+        Effect.fail(
+          new GitHubCliError({
+            operation: "listOpenPullRequests",
+            detail: "GitHub API rate limit exceeded.",
+          }),
+        ),
+      );
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit_push_pr" }),
+    );
+
+    expect(github.calls).toContain("createPullRequest:main:feature/test");
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(result.pr).toEqual({
+      status: "created",
+      baseBranch: "main",
+      headBranch: "feature/test",
+      title: "Generated pull request",
+    });
+  });
+
+  it("fails before creating a PR when the initial lookup fails", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        prepareCommitContext: () => Effect.succeed(null),
+      },
+    });
+    vi.spyOn(github.service, "listOpenPullRequests").mockReturnValue(
+      Effect.fail(
+        new GitHubCliError({
+          operation: "listOpenPullRequests",
+          detail: "GitHub API rate limit exceeded.",
+        }),
+      ),
+    );
+
+    await expect(
+      Effect.runPromise(manager.runStackedAction({ cwd, action: "commit_push_pr" })),
+    ).rejects.toThrow("rate limit");
+    expect(github.calls.some((call) => call.startsWith("createPullRequest:"))).toBe(false);
   });
 
   it("normalizes number references when resolving a pull request", async () => {

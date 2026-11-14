@@ -13,9 +13,12 @@ export function validatePreferences(input: unknown): Partial<Preferences> {
   const value = input as Record<string, unknown>;
   if (
     Object.keys(value).length === 0 ||
-    Object.keys(value).some((key) => key !== "mode" && key !== "closedLid") ||
+    Object.keys(value).some(
+      (key) => key !== "mode" && key !== "closedLid" && key !== "keepDisplayOn",
+    ) ||
     ("mode" in value && !["off", "agents", "always"].includes(value.mode as string)) ||
-    ("closedLid" in value && typeof value.closedLid !== "boolean")
+    ("closedLid" in value && typeof value.closedLid !== "boolean") ||
+    ("keepDisplayOn" in value && typeof value.keepDisplayOn !== "boolean")
   )
     throw new Error("Invalid preferences");
   return value as Partial<Preferences>;
@@ -60,7 +63,11 @@ export async function installKeepAwake(options: {
   ipcMain.handle("desktop:keep-awake-set", (event, input: unknown, trusted: unknown) => {
     options.authorize(event);
     const prefs = validatePreferences(input);
-    if ((prefs.mode !== undefined && prefs.mode !== "off") || prefs.closedLid === true)
+    if (
+      (prefs.mode !== undefined && prefs.mode !== "off") ||
+      prefs.closedLid === true ||
+      prefs.keepDisplayOn === true
+    )
       requireGesture(trusted);
     return controller.setPreferences(prefs);
   });

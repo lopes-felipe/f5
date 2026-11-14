@@ -39,7 +39,7 @@ impl Scope {
         matches!(self, Self::Foreground)
             || matches!(other, Self::Foreground)
             || matches!((self, other), (Self::Takeover(_), Self::Takeover(_)))
-            || self.app() == other.app()
+            || (!matches!((self, other), (Self::App(_), Self::App(_))) && self.app() == other.app())
     }
     pub fn allows(&self, delivery: &str, op: &str, app: &str, action: &str) -> bool {
         if delivery == "background" {
@@ -48,6 +48,7 @@ impl Scope {
                     "status" | "listApps" | "resolveApps" | "inspect" | "screenshot" | "zoom"
                     | "type" | "openApp" => true,
                     "elementAction" => matches!(action, "press" | "setValue"),
+                    "key" | "scroll" => crate::safety::background_event_app_allowed(app),
                     _ => false,
                 };
         }
@@ -215,7 +216,7 @@ mod tests {
         arm(&mut p, 1, Scope::App("a".into()));
         arm(&mut p, 2, Scope::App("a".into()));
         arm(&mut p, 3, Scope::Foreground);
-        assert!(!p.valid(2, "r") && !p.valid(3, "r"));
+        assert!(p.valid(1, "r") && p.valid(2, "r") && !p.valid(3, "r"));
         p.renew(1, Duration::from_secs(1), Some(Scope::Foreground));
         p.resume(1, Some(&Scope::Foreground));
         assert!(!p.valid(1, "r"));

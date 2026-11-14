@@ -23,6 +23,7 @@
   },
   "include": [
     "src",
+    "vite",
     "vite.config.ts",
     "../../scripts/lib/ci-test-reports.ts",
     "../../scripts/lib/test-home.ts"

@@ -9,6 +9,8 @@ import {
   UPSTREAM_LIST_DEFAULT_LIMIT,
   UPSTREAM_LIST_IDS_MAX,
   UPSTREAM_MAX_FILES_PER_COMMIT,
+  UPSTREAM_SHORTLIST_MIN_SCORE,
+  type UpstreamLane,
   type UpstreamChangedFile,
   type ThreadId,
   type UpstreamCommitFiles,
@@ -37,6 +39,13 @@ import {
   type TopicMembership,
   type UpstreamLedger,
 } from "@t3tools/shared/upstreamPorts";
+import {
+  featureAreaPolicy,
+  scoreUpstreamTopic,
+  topicKindFromCommits,
+  type AreaPolicy,
+  type ScoreResult,
+} from "@t3tools/shared/upstreamPortsScore";
 
 import type { CommitNumstat, TrailerCommit } from "./git.ts";
 import type { OpRecord, OpState, PortLinkRecord } from "./store.ts";
@@ -104,6 +113,29 @@ export interface DerivedRow {
   readonly state: UpstreamTopicState;
   readonly commitCount: number;
   readonly doneBy: string | null;
+  readonly lane: UpstreamLane;
+  readonly score: number;
+}
+
+/**
+ * The topic's lane and score. The stored kind wins; topics triaged before
+ * classification derive it from their commit subjects.
+ */
+export function scoreTopic(
+  topic: UpstreamTopic,
+  members: ReadonlyArray<Pick<TopicMembership, "subject">>,
+  areaPolicy: Readonly<Record<string, AreaPolicy>>,
+): ScoreResult {
+  const suggestion = topic.suggestion;
+  const kind = suggestion?.kind ?? topicKindFromCommits(members);
+  return scoreUpstreamTopic({
+    kind,
+    severity: suggestion?.severity,
+    impact: suggestion?.userImpact,
+    coverage: suggestion?.f5Coverage,
+    suggestionStatus: suggestion?.status,
+    featurePolicy: featureAreaPolicy(suggestion?.areas ?? [], areaPolicy),
+  });
 }
 
 export function activeLinkIndex(links: ReadonlyArray<PortLinkRecord>): EpochIndex {
@@ -119,15 +151,20 @@ export function deriveRows(
   trailers: TrailerIndex,
   links: ReadonlyArray<PortLinkRecord>,
   today: string,
+  areaPolicy: Readonly<Record<string, AreaPolicy>> = {},
 ): DerivedRow[] {
   const activeLinks = activeLinkIndex(links);
   return view.ledger.topics.map((topic) => {
     const state = deriveTopicState(topic, { trailers: trailers.epochs, activeLinks, today });
+    const members = view.members.get(topic.id) ?? [];
+    const { lane, score } = scoreTopic(topic, members, areaPolicy);
     return {
       topic,
       state,
-      commitCount: view.members.get(topic.id)?.length ?? 0,
+      commitCount: members.length,
       doneBy: state === "done" ? (trailers.doneBy.get(`${topic.id}#${topic.epoch}`) ?? null) : null,
+      lane,
+      score,
     };
   });
 }
@@ -143,9 +180,12 @@ export function revisionOf(input: {
   readonly maxSeq: number;
   readonly linksVersion: number;
   readonly today: string;
+  /** Inputs that change scores or the shortlist (area policy, shortlist size). */
+  readonly scoring?: string;
 }): string {
+  const scoring = input.scoring === undefined ? "" : `${input.scoring}\n`;
   return sha256Hex(
-    `${input.baseSha ?? "none"}\n${input.maxSeq}\n${input.linksVersion}\n${input.today}\n`,
+    `${input.baseSha ?? "none"}\n${input.maxSeq}\n${input.linksVersion}\n${input.today}\n${scoring}`,
   ).slice(0, 32);
 }
 
@@ -160,15 +200,21 @@ export function resolveSort(
   list: UpstreamTopicState,
   sort: UpstreamTopicSort | undefined,
 ): UpstreamTopicSort {
-  return sort ?? (list === "inbox" ? "priority" : "newest");
+  return sort ?? (list === "inbox" ? "score" : "newest");
 }
 
 /** Ascending tuple order; descending fields are negated or inverted. */
-export function sortKey(sort: UpstreamTopicSort, topic: UpstreamTopic): SortKey {
+export function sortKey(
+  sort: UpstreamTopicSort,
+  row: Pick<DerivedRow, "topic" | "score">,
+): SortKey {
+  const topic = row.topic;
   const suggestion = topic.suggestion;
   const impact = suggestion ? IMPACT_RANK[suggestion.userImpact] : 1;
   const confidence = suggestion?.confidence ?? 0;
   switch (sort) {
+    case "score":
+      return [-row.score, impact, invert(topic.createdAt), topic.id];
     case "priority":
       return [impact, -confidence, invert(topic.createdAt), topic.id];
     case "newest":
@@ -187,7 +233,7 @@ export type SubjectsOf = (topicId: string) => ReadonlyArray<string>;
 
 const NO_SUBJECTS: SubjectsOf = () => [];
 
-type FacetDimension = "suggestion" | "impact" | "area";
+type FacetDimension = "suggestion" | "impact" | "area" | "lane";
 
 const suggestionKey = (topic: UpstreamTopic): UpstreamSuggestionFilter =>
   topic.suggestion?.status ?? "none";
@@ -223,8 +269,10 @@ function compileFilter(filter: UpstreamTopicFilter, subjectsOf: SubjectsOf): Row
     }
     return match;
   };
-  return ({ topic }, skip = null) => {
+  return ({ topic, lane }, skip = null) => {
     if (filter.decidedBy !== undefined && topic.decidedBy !== filter.decidedBy) return false;
+    if (filter.reasonKey !== undefined && topic.reasonKey !== filter.reasonKey) return false;
+    if (skip !== "lane" && filter.lane?.length && !filter.lane.includes(lane)) return false;
     if (
       filter.hasQuestion !== undefined &&
       Boolean(topic.suggestion?.question) !== filter.hasQuestion
@@ -270,6 +318,7 @@ const MAX_AREA_FACETS = 20;
 const EMPTY_FACETS: UpstreamTopicFacets = {
   suggestion: { port: 0, skip: 0, watch: 0, equivalent: 0, none: 0 },
   impact: { high: 0, medium: 0, low: 0, none: 0 },
+  lane: { security: 0, bug: 0, perf: 0, feature: 0, maintenance: 0 },
   areas: [],
 };
 
@@ -281,9 +330,11 @@ export function computeFacets(
 ): UpstreamTopicFacets {
   const suggestion = { port: 0, skip: 0, watch: 0, equivalent: 0, none: 0 };
   const impact = { high: 0, medium: 0, low: 0, none: 0 };
+  const lane = { security: 0, bug: 0, perf: 0, feature: 0, maintenance: 0 };
   const areas = new Map<string, number>();
   for (const row of listRows) {
     if (compiled(row, "suggestion")) suggestion[suggestionKey(row.topic)] += 1;
+    if (compiled(row, "lane")) lane[row.lane] += 1;
     const userImpact = row.topic.suggestion?.userImpact;
     if (userImpact && compiled(row, "impact")) impact[userImpact] += 1;
     if (compiled(row, "area"))
@@ -297,13 +348,32 @@ export function computeFacets(
   // The active area stays listed so the Filter menu can show it as selected.
   if (filter.area && !top.some((entry) => entry.area === filter.area))
     top.push({ area: filter.area, count: areas.get(filter.area) ?? 0 });
-  return { suggestion, impact, areas: top };
+  return { suggestion, impact, lane, areas: top };
 }
+
+export const DEFAULT_SHORTLIST_SIZE = 15;
 
 interface ListQuery {
   readonly list: UpstreamTopicState;
   readonly filter?: UpstreamTopicFilter | undefined;
   readonly sort?: UpstreamTopicSort | undefined;
+  /** `filter.shortlist` keeps this many topics; the user's budget setting. */
+  readonly shortlistSize?: number | undefined;
+}
+
+/**
+ * The shortlist of rows that already pass every other filter: those scoring at
+ * least the minimum, the first `size` of them by score.
+ */
+export function shortlistIds(rows: ReadonlyArray<DerivedRow>, size: number): Set<string> {
+  return new Set(
+    rows
+      .filter((row) => row.score >= UPSTREAM_SHORTLIST_MIN_SCORE)
+      .map((row) => ({ row, key: sortKey("score", row) }))
+      .toSorted((a, b) => compareKeys(a.key, b.key))
+      .slice(0, size)
+      .map((entry) => entry.row.topic.id),
+  );
 }
 
 /** Every row of the list that passes the filter, in sort order, with its sort key. */
@@ -314,9 +384,13 @@ export function selectRows<Row extends DerivedRow>(
   compiled: RowFilter = compileFilter(input.filter ?? {}, subjectsOf),
 ): Array<{ readonly row: Row; readonly key: SortKey }> {
   const sort = resolveSort(input.list, input.sort);
-  return rows
-    .filter((row) => row.state === input.list && compiled(row))
-    .map((row) => ({ row, key: sortKey(sort, row.topic) }))
+  let matched = rows.filter((row) => row.state === input.list && compiled(row));
+  if (input.filter?.shortlist) {
+    const keep = shortlistIds(matched, input.shortlistSize ?? DEFAULT_SHORTLIST_SIZE);
+    matched = matched.filter((row) => keep.has(row.topic.id));
+  }
+  return matched
+    .map((row) => ({ row, key: sortKey(sort, row) }))
     .toSorted((a, b) => compareKeys(a.key, b.key));
 }
 
@@ -356,13 +430,14 @@ interface CursorPayload {
   readonly key: SortKey;
 }
 
-const listSignature = (input: UpstreamListTopicsInput, limit: number) =>
+const listSignature = (input: UpstreamListTopicsInput, limit: number, shortlistSize: number) =>
   sha256Hex(
     canonicalJson({
       list: input.list,
       filter: input.filter ?? {},
       sort: resolveSort(input.list, input.sort),
       limit,
+      ...(input.filter?.shortlist ? { shortlistSize } : {}),
     }),
   ).slice(0, 16);
 
@@ -391,14 +466,15 @@ export function pageRows<Row extends DerivedRow>(
   input: UpstreamListTopicsInput,
   revision: string,
   subjectsOf: SubjectsOf = NO_SUBJECTS,
+  shortlistSize: number = DEFAULT_SHORTLIST_SIZE,
 ): Omit<UpstreamListTopicsResult, "topics" | "contentRevision"> & {
   readonly rows: ReadonlyArray<Row>;
 } {
   const limit = input.limit ?? UPSTREAM_LIST_DEFAULT_LIMIT;
-  const signature = listSignature(input, limit);
+  const signature = listSignature(input, limit, shortlistSize);
   const filter = input.filter ?? {};
   const compiled = compileFilter(filter, subjectsOf);
-  const selected = selectRows(rows, input, subjectsOf, compiled);
+  const selected = selectRows(rows, { ...input, shortlistSize }, subjectsOf, compiled);
   const facets =
     input.cursor === undefined
       ? computeFacets(

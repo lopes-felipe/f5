@@ -349,6 +349,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.collapse-work-logs": {
     category: "conversation",
   },
+  "conversation.prompt-cache": {
+    category: "conversation",
+  },
   "conversation.inline-diffs": {
     category: "conversation",
   },
@@ -362,6 +365,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "conversation",
   },
   "general.diagnostics": {
+    category: "general",
+  },
+  "general.server-health": {
     category: "general",
   },
   "general.sidebar-preview": {
@@ -466,6 +472,12 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "notifications",
   },
   "notifications.pr-attention": {
+    category: "notifications",
+  },
+  "notifications.do-not-disturb": {
+    category: "notifications",
+  },
+  "notifications.toast-position": {
     category: "notifications",
   },
   "project.providers": {

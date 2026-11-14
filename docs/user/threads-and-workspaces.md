@@ -8,7 +8,7 @@ afterwards.
 
 ## How to
 
-1. Click **New thread** (`mod+N`) or type in the box on Home.
+1. Click **New thread** (`mod+N`), or [start it from Home](#start-a-thread-from-home).
 2. Pick the **provider and model** from the model chip, and **traits** such as reasoning effort.
 3. Pick **Access**, the thread's [runtime mode](../runtime-modes.md).
 4. Choose **Agent** or **Plan**. Plan asks for a plan you can accept or revise before any change.
@@ -20,6 +20,26 @@ afterwards.
 The composer also takes [attachments](attachments-and-media.md), `@` file mentions and `/`
 commands, including provider and project skills. The context ring shows how full the model's
 context window is.
+
+## Start a thread from Home
+
+The box at the top of Home starts a thread without leaving Home. Pick the project, the model
+and its effort, **Agent** or **Plan**, **Access**, and **Local** or **New worktree**, type the
+task and press `Enter`. The thread starts in the background and shows up under **Running**;
+`mod+Enter` starts it and opens it. The settings begin from the project's defaults for a new
+thread, and a new worktree starts from the project's current branch. If F5 cannot read the
+project's branches, the workspace shows **Local** and the thread starts in the project folder.
+
+The box follows **Settings → Conversation → Send shortcut**. If that setting asks for
+`mod+Enter`, `Enter` adds a line, and `mod+Enter` starts the thread and stays on Home; open the
+thread from the **Open** button in the confirmation.
+
+If the send fails, your text stays in the box. If no answer came back, for example because the
+connection dropped, send the same text again: F5 resends the same message, so the thread starts
+once. Text that begins with a `/` command or a skill
+opens the full composer instead, where those are resolved. For attachments, `@` mentions or
+another base branch, click **Open full composer**: it opens a new thread with your text and
+the settings you picked, unsent.
 
 To give the agent another thread as context, drag that thread from the sidebar into the
 composer. If you selected several threads, dragging one of them adds them all, up to 10 per
@@ -132,8 +152,27 @@ commit, push and pull request actions. Linked pull requests also appear in the
 > **Thread summaries** (**Settings → Threads**) send thread messages, activities, plans, tasks and
 > checkpoints to the account you choose, including threads that ran on other providers.
 
-- **Home** groups threads into Pinned, Needs you, Working and Recent. `mod+K` searches threads,
-  workflows and commands.
+- **Home** (`mod+shift+H`) is a triage queue in four groups: **Needs a decision** (approvals,
+  questions, plans, paused queues), **Ready for review** (failed turns, then finished ones you
+  have not opened), **Running** (threads and workflows) and **Pinned**. The pane beside the queue
+  shows the selected thread's request or error and its last exchange, and acts on it without
+  opening the thread: approve or decline a request with any of its choices, answer a question,
+  implement or revise a plan, resume a paused queue, reply to finished or failed work, or queue
+  a message behind a running turn. Messages sent from Home use the thread's own model and
+  modes and go out as plain text; one that starts with a `/command` or a `$skill` opens the
+  thread with the text in its composer, which resolves it. `J`/`K` or the arrow keys move,
+  `O` opens, `E` settles (not a running thread or one waiting on an approval or a question),
+  `H` snoozes, `P` pins, `R` starts a reply and `/` jumps to the
+  [new thread box](#start-a-thread-from-home). `Enter`
+  approves the request once or implements the plan, and opens other threads; `D` declines.
+  `Enter` and the arrow keys act from the queue: after a click in the pane to read it, they
+  scroll and answer nothing. `Enter` is left unbound when the provider asks for "no" to be the
+  default, and the key hints under the queue list only the keys that act on the selected
+  thread. Forms sent by a provider or an MCP server are
+  filled in the thread. A line above the queue counts pull requests and upstream topics waiting
+  on you, and shows the next scheduled run, an account limit above 50% and low disk space; each
+  opens its page. Recent threads are in the sidebar's **Recent** view.
+- `mod+K` searches threads, workflows and commands.
 - Archive a thread from its sidebar menu; archived items are under **Settings → Archive**.
 - A usage-limit notice can be snoozed until a time you pick; snoozed threads show a moon icon.
 - **Settings → Threads → Snooze options** sets the choices in every snooze menu: up to 8, either

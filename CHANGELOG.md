@@ -7,6 +7,211 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Fixed
 
 - Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.
+- Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
+
+### Changed
+
+- Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. From that pane you can approve or decline a request, answer a question, implement or revise a plan, resume a paused queue, reply to finished or failed work and queue a message behind a running turn; messages use the thread's own model and modes. `J`/`K` move, `O` opens, `E` settles, `H` snoozes, `P` pins and `R` starts a reply; `Enter` approves once or implements the plan (and opens other threads), `D` declines; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
+- The box at the top of Home starts the thread itself. Pick the project, model, effort, **Agent** or **Plan**, access and **Local** or **New worktree**, then press `Enter`: the thread starts in the background and Home stays open, and `mod+Enter` also opens it. The box follows the **Send shortcut** setting: if it asks for `mod+Enter`, `Enter` adds a line and `mod+Enter` sends and stays. A send that fails keeps your text, and sending the same text again after a lost connection starts one thread, not two. Text that begins with a `/` command or a skill, and anything that needs attachments or mentions, goes to the full composer, which the expand button opens with your text and settings.
+
+## [0.1.9] - 2026-11-14
+
+### Added
+
+- Open a project in the running desktop app with `f5 app [path]` (or `t3 app [path]`). F5 adds or reuses the project, focuses its window, and starts a new thread.
+- Preview Word, Excel, PowerPoint, OpenDocument, EPUB, RTF and notebooks in the file viewer, along with fonts, Mermaid diagrams, archives and SQLite databases. HEIC and TIFF images are decoded locally.
+- Audio files shared by an agent play inline. Shared files open in the viewer, with a download option for formats without a preview.
+- Claude and Antigravity receive supported PDF attachments as native documents, including scanned pages, within size and page budgets that survive restarts.
+- Usage includes local Muse Code history, including child sessions and automated reviews. Unknown models remain visible as unpriced and can use custom prices.
+- Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
+- **Settings > General** has a **Server health** card. It lists the requests that took a second or longer and the database statements slower than 100 ms since the server started, with how often each happened and its total and worst time, next to the server's memory use and event loop delay.
+- Code Review workflows detect the pull request named in the review instructions (a link, or `PR #123` in the project's GitHub repo), open the merged review with a link to it, and can post the merged review to the PR as a comment. Tick **Post merged review to the PR when it finishes** when starting the workflow, or use **Post to PR** on the workflow page. Posted comments end with a footer naming F5 and the reviewer and merge models.
+- Upstream ranks every topic in a lane (Security, Bugs, Perf, Features, Maintenance) with a 0–100 score, and the Inbox opens on a shortlist of the topics worth reviewing today. **Expire backlog…** and an optional **Expire after** setting skip unreviewed topics after a while (security topics never expire), **Areas** choose which features reach the shortlist, a weekly notification counts new features, and an opt-in **Auto-port** queues confident high and critical security fixes, and optionally high-impact bug fixes, after each run. Port threads now add a changelog entry for user-visible changes when the repository keeps a changelog. Every profile that opens the ledger must run this version first: the ledger and `upstream/rules.json` use new formats that older versions cannot read.
+- Replies show when their turn missed the provider's prompt cache: an amber pill such as "Cache miss · rewrote 118K tokens · idle 3h", with the turn's read, written, uncached and output tokens on hover. The context meter's popup adds the thread's cache history (one bar per turn, click to jump to it), the overall hit rate, and a badge on the ring after a miss. Turn it off with **Show prompt cache misses** in Conversation settings.
+
+### Changed
+
+- Project settings include renaming, reviewed imports of actions from f5.json or t3.json, and a command palette shortcut. Imported actions start with automatic execution off. Settings, Usage and Pull Requests navigation live together in the sidebar footer, with a Back action on those pages.
+- Large text, CSV and TSV previews load in a worker and render only visible rows to keep the viewer responsive.
+- Thread action menus show icons and sections, with path, branch and thread ID under Copy. Nested menus work with the keyboard in the browser and desktop app.
+- Usage labels external session history and legacy unattributed costs as **Usage without a project**. Muse history refreshes incrementally, retains previous data on failure, reconciles cached calls against newly completed turns, and includes priced native calls in cost comparisons.
+- Database snapshot history is thinned when the disk runs low: 6 hourly and 3 daily copies with under 10 GB free, and only the newest 2 with under 2 GB free. Thinning starts only when two snapshots in a row find the disk that low, and the server log records what was removed. With more space the history stays at 24 hourly and 7 daily copies.
+- New events and commands get time-ordered IDs, so the database rewrites fewer index pages per hour and each snapshot holds less space.
+- F5 starts faster and uses less memory on profiles with many archived threads: their activity history now loads when a thread is used, not at startup. The first start after this update takes longer once while two database indexes are built (about 20 seconds on a 6 GB profile).
+- The Upstream port queue is now a **Queue** view next to the topic lists instead of a dialog. Jobs are split into **Active** (running first, then queued in order), **Needs you** and **History** (newest first, with cancelled and superseded jobs hidden until you ask). Each job shows its thread title, PR number, when it was queued or finished, and a plain-language result for each topic, and clicking a topic opens it in the detail pane. Waiting jobs list each blocking thread once with its PR, and jobs have actions to start without waiting, remove them from the queue, or retry a failed port. The header chip appears only while ports run or wait, the queue is paused, or something needs attention.
+- An expanded workflow in the sidebar groups its steps by phase. A phase with one step shows that step; larger phases fold, and open on their own when they hold the open thread, are running or failed, or have a step waiting on you. Phases that haven't started show faintly. Every step leads with its state (done, running, failed or pending) instead of "Plan Ready", unseen "Completed" or unread bold, and the workflow's PR sits in the implementation step's icon slot so titles line up. A finished workflow's time, its sort order and when it folds into "older" now follow its steps' activity, not background updates that showed weeks-old work as "just now".
+
+### Fixed
+
+- Upstream ports automatically start their code review after a successful continuation, even when an earlier implementation turn was interrupted, failed, or blocked. On upgrade, eligible historical ports are recovered too: each open PR can start a dual-review workflow, so several may start if multiple ports were previously stuck.
+- Desktop project activation uses a stable socket address and async canonical path matching. File previews retain access to notebook outputs beyond the live-frame limit and display non-UTF-8 text with a decoding notice.
+- The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
+- The Usage page counts Pi's cache reads and writes in its token totals and its uncached input. Pi reports cached tokens apart from input, as Claude does, but they were treated as part of input, so totals left them out and uncached input read too low.
+- Storage settings count automatic database snapshots at the space they actually hold. Snapshots are copy-on-write clones that share unchanged data with the live database, but each one was counted at the full database size, so nine copies of a 6 GB database showed as 57 GB while holding about 2.5 GB. Recovery backups, Total used and Reclaimable now use an estimate of the data that newer copies do not share, and each snapshot lists both sizes. The amount reported after a reclaim is measured against the snapshots that remain, so removing one from the middle of the history no longer claims space an older copy still holds.
+- Reclaiming a database snapshot removes its folder, and an empty leftover folder is reported as removed instead of skipped. Empty snapshot folders left by earlier cleanups are cleared, and no longer count as snapshots for retention or as the copy to restore from.
+- Opening a just-created thread waits for its details instead of bouncing to the start page while the sidebar catches up.
+- Editor discovery scans PATH directories once per scan, speeding up discovery on slow disks. Desktop preview uses a valid User-Agent and reload shortcuts target the focused page.
+- New approvals and questions wait until typing pauses before taking over the composer. Cursor stays in Normal mode unless Fast was selected, and model switches retain saved traits.
+- Threads stay Connecting while a turn starts, and checkout PR actions only show the thread branch's PR. The model picker names models unlocked by a CLI update.
+- Claude-launched Electron apps open normally, while configured JavaScript Claude entry points still run in the desktop app. Claude gateway and OpenCode usage-limit resets survive turn completion. OpenCode commands with nonzero exits show as failed, ACP retains final messages without a newline, and Muse uses canonical workspace paths and bounded, redacted failure text.
+- Commenting on, reviewing and merging pull requests from PR Hub no longer fails with "Comment permissions could not be verified" or "no longer writable": F5 asked GitHub for a permission field that does not exist. Code Review merged reviews now open with a title that links the reviewed PR and follow a consistent layout (target, verdict, severity sections), without the model's narration or a repeated PR header.
+- Long agent turns open in bounded history pages, and thread switches and Scroll to end settle at the measured end. Grok runs leading picked skills as native commands. Claude Full access retains approvals when bypass is restricted and retries temporary policy-read failures.
+- Project actions can opt into stopping when their thread settles, preserving terminal output. Older pending approvals stay answerable, PR description checkboxes save changes, and Git divergence refreshes after turns even with polling off.
+- Silent Antigravity turns stop after 15 minutes without progress. Requests and tools pause the deadline; unobservable subagent batches receive a bounded grace period until the parent resumes. Antigravity continues to reject unsupported Auto mode. Codex reports conversations held by another client, and ACP edits show every file's patch.
+- A server started without an auth token answers only requests addressed to `localhost`, a `.localhost` name or a loopback address, so a web page whose hostname is re-pointed at this machine (DNS rebinding) can no longer reach it. A proxy or tunnel that presents another hostname needs `--auth-token`.
+- Agents, Git hooks, setup scripts and other processes F5 starts no longer inherit the backend's own auth token (`T3CODE_AUTH_TOKEN`).
+- A running turn stores its context-size estimate when it moves by 1% of the context window (at least 2,000 tokens) and when the turn settles, not after every model step. Long turns add far fewer events to the profile database.
+- The server log counts recorded worktrees kept for recovery once per start, and Upstream reports a failed pull-request evidence read once per pass, not once per thread.
+- Behind a reverse proxy listed with `--trusted-proxy` (`F5_TRUSTED_PROXIES`), the failed-login limit applies to each client the proxy reports in `X-Forwarded-For`, so one client's wrong tokens no longer lock out everyone else. A proxy on the same machine must be listed too (`--trusted-proxy 127.0.0.1`); unlisted, its clients keep sharing one limit. Wrong bearer tokens now count toward their client's limit, and a locked-out client gets `429` with `Retry-After`; requests straight from the same machine stay exempt. `X-Forwarded-Proto` is honored only from a proxy on the same machine or a listed one, so a TLS proxy on another host must now be listed.
+- Storage cleanup also removes context-size updates that a later update repeats and planning workflow updates that a newer one replaced, from threads idle for an hour. Threads compacted by an earlier version are visited once more.
+- The profile database drops two indexes on its event log that nothing read, which frees their space and makes every event cheaper to store.
+- The profile database also drops two indexes on its command receipts that nothing read, so every command the server records writes two fewer index entries.
+- The check for queued messages ready to send reads only pending deliveries, not every delivery the profile has recorded.
+- Claude's Plan mode instructions name Claude's own tools (AskUserQuestion, ExitPlanMode, the task tools) and no longer warn about an `update_plan` error that only Codex returns. They also say to load ExitPlanMode through ToolSearch when Claude Code defers it.
+
+- Claude command cards retain output when task notifications arrive before tool results and keep streaming output visible while command details load. An offline repair command can recover empty command transcripts from retained provider logs.
+- Fast Git commands with explicitly empty standard input no longer fail with a broken pipe.
+- On Windows, storage cleanup no longer mistakes a folder that replaced the one you reviewed for the original. Windows file IDs are too large to compare as ordinary numbers, so two different folders could look identical and the newer one could be deleted. F5 now compares the full ID and asks for a rescan.
+
+## [0.1.8] - 2026-11-12
+
+### Added
+
+- Notifications appear at the top right, below the runtime strip, as solid cards with a status-coloured rail and glyph. A command or path shares its line with the toast's buttons. Repeated toasts merge with a count, grouped pull-request alerts list each PR, and errors offer Copy details. Swipe a toast sideways with two fingers to dismiss it.
+- A bell in the sidebar title bar opens a notification inbox (⌘⇧L, or Ctrl+Shift+L). Approvals and input requests that still wait on you are pinned under **Needs you**, and All / Needs you / Unread views sit above the list. The header filters by source and turns on Do Not Disturb for an hour, until tomorrow, or until turned off.
+- Approval notifications for a single command or file request offer Approve and Deny in the toast and the inbox.
+- Notification settings choose in-app, system, sound and inbox delivery per source (threads, pull requests, scheduled runs, upstream, updates, errors) and the toast position. Upstream topics and scheduled runs also show in-app.
+
+### Fixed
+
+- Desktop windows can shrink to 400×360. Settings controls and snooze fields wrap in narrow windows, dialogs clear the native titlebar, and command palettes focus search before submenu navigation buttons.
+- Slow desktop backends get three minutes to start before recovery appears. macOS SnapShot skips transparent windows and helper strips, and timestamps respect macOS region/hour preferences and Linux LC_TIME.
+- Desktop bundles Electron 44.10.1 for Node and Chromium security fixes. Single-architecture macOS builds omit the other architecture's native prebuilds.
+- Cmd+O / Ctrl+O opens the visible file preview in the preferred editor, or the workspace when no file preview is visible. Handled shortcuts no longer launch another editor, and the shortcut works while the terminal is focused.
+- Provider updates can take up to 30 minutes without the browser giving up early. Codex instances respect their environment's home directory when switching accounts, including directory names containing whitespace. Agents using ACP now report a disconnected input stream instead of hanging when their process closes stdout but stays alive.
+- Git reviews keep tracked edits when untracked discovery fails and retain partial untracked listings when they are too large. Reviews include new files outside sparse-checkout folders, and commit and PR text includes changes outside nested projects. Selected-file commits during a merge now ask you to commit all files. Desktop startup stops waiting for stuck login shells, and safe Windows Git reads avoid starting a console host.
+- PR descriptions and comments preserve single newlines on GitHub, Forgejo and Azure DevOps.
+- Failed review guides keep retry controls reachable and put provider output in collapsed technical details.
+- Claude instances recognize proxy endpoints set in user or managed settings.
+- Large PR timelines mount only nearby events while preserving comment drafts and thread disclosures. Narrow panels keep every tab reachable, keyboard navigation focuses the content scroller, and oversized inline confirmations retain accessible controls.
+- Local Git status appears before slow PR lookups, without losing sidebar PR badges or accepting another branch's metadata.
+- Usage-limit pauses keep tool calls grouped and show the pause separately.
+- ID-only ACP approvals retain the original command title and execution kind without mixing tool calls from different sessions.
+- Codex sessions recover from failed app-server writes instead of leaving requests hanging, and exit errors include the stderr reason. Claude restores the selected model after a failed live update while preserving it during effort-only changes.
+- Provider updates allow the package's install scripts on npm 12, including the postinstall script that installs Grok's updated binary.
+- The certification runner's Claude in Chrome check now passes its isolated Claude config to the live run. The live run gains an optional shared-host phase that checks two F5 profiles using Claude in Chrome at once, and its checks now count only calls that actually reach Chrome. The Claude 2.1.317 record is re-certified with that phase passing; F5 doesn't use shared Claude in Chrome yet.
+- The certification runner's Claude in Chrome check now passes its isolated Claude config to the live run. The live run gains an optional shared-host phase that checks two F5 profiles using Claude in Chrome at once, and its checks now count only calls that actually reach Chrome. The Claude 2.1.317 record is re-certified with that phase passing.
+- Claude threads in different profiles can use Claude in Chrome at the same time with a certified Claude version, instead of one profile's session reporting a conflict or waiting for the other to go idle. Their Chrome calls run one at a time, each waiting up to 20 seconds for the other's; a call waiting for approval doesn't hold the other profile up. Threads in the same profile still take turns.
+- An open Claude in Chrome session no longer blocks computer control for every other thread and profile. Other agents can control the computer while it isn't running a Chrome call, and its next Chrome call waits up to 20 seconds for them. Waiting threads say which agent they're waiting for and offer **Stop that agent**. Busy errors name the profile holding control.
+- Clicking a desktop notification opens its thread, pull request, scheduled task or upstream project instead of only bringing F5 forward, including after a reload, after closing the window, and from Notification Center. Scheduled-run notices open their thread without reloading the app.
+- New worktree threads based on a branch that isn't on the remote no longer finish with a "Fetch base branch" warning. A local base branch with unpushed commits is used as is, instead of starting from the older remote copy; the setup card warns when the local branch has diverged from the remote or the remote can't be reached.
+- Preview navigations blocked by a page's leave-page prompt now report a failure, while redirects during loading continue without a navigation error.
+- Saving duplicate provider environment variable rows no longer deletes a stored secret that a sensitive row still uses.
+- The “New thread in...” palette lists the current project first and labels it “Current”, so pressing Enter starts a thread in the project being viewed.
+- Downloaded desktop updates restore the restart prompt after relaunch. Desktop windows support 600px widths, with a sidebar sheet that preserves the content pane's minimum width.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
+- Creating a PR reports success when the follow-up metadata lookup fails.
+- Userless SSH remotes resolve to their forge, and profile-authenticated Git refuses them instead of using the machine's SSH identity. GitHub Enterprise PR links can be pasted for checkout.
+- PR Hub renders edited and pure file renames, PR watches report conflicts after pushes, and large terminal selections respect attached-file and linked-thread input budgets without dropping context.
+- ACP Always allow falls back to the agent's allow-once option. Archived Codex threads can be forked, and late provider refreshes cannot replace status from changed settings.
+- PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
+- Collapsed diff files defer syntax highlighting until expanded, making large diffs cheaper to scroll.
+- Splitting and unsplitting terminals preserves the original terminal, selection, and input focus, while keeping its columns and shell dimensions fitted to the pane.
+- Userless SSH remotes resolve to their forge, and profile-authenticated Git refuses them instead of using the machine's SSH identity. GitHub Enterprise PR links can be pasted for checkout.
+- PR Hub renders edited and pure file renames, PR watches report conflicts after pushes, and large terminal selections respect attached-file and linked-thread input budgets without dropping context.
+- ACP Always allow falls back to the agent's allow-once option. Archived Codex threads can be forked, and late provider refreshes cannot replace status from changed settings.
+- PR file-load failures explain forge rate limits and offer Retry, while keeping technical details collapsed. Changed-file actions and selected commits preserve rename and non-ASCII paths in nested projects, including large untracked directories. Claude notices now show why a hook blocked a prompt.
+- New project drafts open immediately while the server is offline, using cached settings instead of waiting for reconnection.
+
+- Custom ACP agents, including Copilot, enter native Plan mode and restore their build mode when leaving Plan, including across reconnects. Steering preserves the active turn's mode. GitHub SSH aliases such as github.com-work resolve to github.com for pull requests.
+
+## [0.1.7] - 2026-11-10
+
+### Added
+
+- Claude Fable 5.2 is available in Claude model pickers with Claude Code v2.1.290 or newer. Bare `fable` and `claude-fable` aliases now select 5.2; `fable-5.1` still selects Fable 5.1.
+- The Usage page has a Pricing tab for model prices, model mappings and a monthly budget. Activity shows budget meters with a month-end forecast and warns when you're on pace to exceed it.
+- Usage tables sort by any column, Projects and threads can be filtered by name, and Activity breakdowns export as CSV.
+- Activity can compare usage with the previous period: stat tiles show the change, and the chart marks each bar's previous value.
+
+### Changed
+
+- The Usage page uses one consistent design across its Limits, Activity and Pricing tabs. Limits at a glance is the first block on Activity, and `p` opens Pricing.
+- A thread that holds Chrome while idle shows a one-line "Chrome idle" strip with Release instead of the full computer-control card, and the global computer-use pill no longer shows idle Chrome reservations. Release also appears on the full card whenever Chrome is at rest.
+
+### Fixed
+
+- Interrupted first sends preserve draft context through server synchronization and retry recovery. Stalled HEIC previews release image preparation slots after 30 seconds.
+- Thread notifications raise their desktop window; worktree branch changes no longer offer unsafe branch restoration.
+- Failed first sends retain recoverable drafts, blank provider question descriptions remain answerable, and stopped usage-limited threads stay stopped.
+- Stored HEIC images render in attachment previews, and pasted folders become workspace references without discarding question-answer mentions.
+- Resuming computer control after "Needs recovery" works for threads that also hold the Chrome lease: Resume now clears native control and Chrome together. A slow foreground press, such as a color swatch closing its popover, no longer counts as an unknown outcome, and unknown outcomes reported by the helper are logged with their AX error code.
+- Long OpenCode sessions process assistant updates without rescanning old message parts, and questions preserve their multi-select and custom-answer settings.
+- Codex's model picker shows an inherited global Fast tier without overriding project or profile settings when no tier is selected. Explicit Standard choices also apply to one-off prompts.
+- Oversized thread-read page requests are clamped to the supported maximum, and registry connections tolerate slower IPv4 handshakes when IPv6 is unreachable.
+- Uncommitted Git reviews preserve staged deletions paired into renames. Repositories with a non-origin remote offer Push and Create PR, and branches behind upstream offer Commit for local changes without pushing.
+- Web builds reject static chunk import cycles that could otherwise leave the app blank at startup.
+- GitLab merge requests show failed child pipelines in PR Hub checks and watches, retain them across discovery polls, and avoid reporting incomplete check reads as passed.
+- Large database operations avoid temporary-file I/O that can stall the server, and repeated project favicon requests load faster.
+- Reopened terminals no longer replay capability queries that print junk replies at the shell prompt.
+- Quote reply handles selections ending at the next timeline row, preserves paragraph and code formatting, and excludes hidden text and response metadata.
+- Settings → Archive actions show tooltips and name the thread in deletion confirmations. Row and bulk actions prevent overlapping operations and report failures without leaving controls disabled.
+- Server startup restricts the active profile's state directory to owner-only access (0700), including existing custom state directories; if permissions cannot be changed, it logs a warning and continues.
+- Popovers overlapping the desktop window header respond to hover and clicks.
+- A Claude thread with Claude in Chrome on can take foreground control of other apps while none of its Chrome calls is running, instead of failing with "Chrome is held by another thread". Once it does, its Chrome calls are refused until the turn ends (or, for a takeover, until a background action ends it). Foreground takeover refusals name the thread holding control, and the desktop log records Chrome lease events.
+- Codex can hand off Chrome control to native apps without asking the user to stop Chrome. The handoff waits for the browser runtime to exit. New Codex threads can return to Chrome in the same turn with the host's `browser_resume` tool; older provider threads retain next-message restart behavior.
+- Interrupted MCP calls and failed foreground handoffs no longer block later Chrome resumes. Parked browsers retain next-message recovery until the host resume tool succeeds, and restore it after a failed resume.
+- Queued upstream ports no longer wait indefinitely on files held by an equivalent topic once the port PR that included it has merged. Outcome recovery stops re-reading merged port PRs from GitHub.
+- Planning workflows no longer fail a branch or the merge while its plan-format repair turn is starting. If that repair turn cannot start, the stage shows an error with Retry instead of staying in progress with no turn.
+- Computer control no longer refuses a foreground takeover with "input-held" while nobody touches the keyboard or mouse. A key or button counts as held only when it was physically pressed and is still down; on macOS, Caps Lock's lock state never counts. A hold stuck in system state stops counting after two minutes without any input. `computer_wait_for_target` timeouts now report a timeout with the blocking reason instead of "Interrupted (turn-ended)", and a pause or policy change during the wait reports its own cause.
+- Codex turns that stream bursts of small output chunks are no longer interrupted by notification overflow. Interrupted Codex history with commands, MCP calls or empty reasoning can now be recovered automatically, and the recovery warning stays visible until it is, or until the history is accepted.
+- On macOS, computer-control screenshots of apps like Preview are no longer fully masked when one element's accessibility subrole can't be read. Only that element is masked: text fields, text areas and combo boxes are treated as possible password fields, and the elements inside them are still checked.
+- The sidebar's nav strip and Projects | Recent toggle stay pinned above the thread list instead of scrolling away with it; the search field stays with them while its results scroll.
+
+## [0.1.6] - 2026-11-08
+
+### Fixed
+
+- On macOS, a stuck synthetic key no longer blocks foreground takeovers in Full access threads while nobody is using the computer. Waiting for the foreground now reports ready only when a takeover can start, and a takeover that times out says why: recent input, held input, or an unhealthy input monitor.
+
+## [0.1.5] - 2026-11-08
+
+### Added
+
+- Computer batches run known steps in one app and stop at the first failure or unconfirmed effect; app-targeted waits can return when the accessibility tree settles.
+- Keep Awake has an opt-in "Keep display on" switch that also stops idle display sleep and the idle screen lock while keep-awake is active. It falls back to system-only keep-awake when the lid is closed on the built-in display, the battery is below 20% or unknown, or the Mac runs hot. Outside macOS, where the battery level can't be read, it falls back on battery power.
+- Fair waiting for conflicting computer leases and takeover reservations across agents and profiles. Takeover consent appears after control is reserved.
+- Shared background apps with serialized writes, fresh inspection after another agent's changes, and press-before-type focus checks.
+- App-targeted key and element-scroll interfaces, native process/window delivery, and a real-app rehearsal runner. Background-event app support remains gated: no apps are enabled until their rehearsals pass.
+- Saved native computer approvals can include optional foreground takeovers per app in Full access threads.
+
+### Changed
+
+- In Full access threads, mouse or keyboard input during foreground control makes the agent wait and shows an idle countdown. Other foreground threads keep the pause-and-Resume flow.
+- "Chrome is busy" errors name the thread holding Chrome (in the same profile) and whether it is working. Idle Chrome holders show in the banner with View and Release, a Chrome-enabled Claude session stops after 10 idle minutes, and a new Chrome-enabled thread takes Chrome from an idle one, whose next message then resumes cold.
+- Large commits no longer run a synchronous WAL checkpoint on the database writer. After large bursts the WAL can keep up to 128 MiB on disk instead of 32 MiB.
+
+- Computer performance rehearsals measure verified task effects, report invalid samples and cleanup failures, and require matched fixture and harness identities for comparisons.
+
+- Windows computer use batches accessibility reads, stops element lookup after a match, verifies focus, and defers eligible foreground settling while preserving request deadlines.
+
+- Faster computer actions and macOS inspection, with shorter cursor cues, deferred foreground settling, and smaller clean screenshot responses.
+
+### Fixed
+
+- Windows CLI installs and upgrades no longer fail with `EPERM` when antivirus or the search indexer briefly holds the new runtime folder; the move is retried for up to 10 seconds.
+- Writes to a repository's shared Git config start a single Git process per attempt while another writer holds the lock, instead of two.
+- Claude in Chrome works in isolated (non-default) F5 profiles on macOS. Their sessions were refused with "Claude in Chrome isn't certified for isolated F5 profiles yet."
+- Agent clicks in the desktop preview no longer take focus from the composer, and local sign-in pages that query loopback permissions work in the preview.
+- Deleting the open thread no longer opens a settled or snoozed thread next; F5 goes home when no other thread qualifies. Sidebar terminal indicators update per row.
+- With appearance set to System on Linux, F5 follows desktop light and dark changes without a restart, including on KDE.
+- Workspace content search keeps matches on lines longer than 512 characters and keeps working through slow index refreshes. The Files tree opens symlinked files and folders inside the workspace.
+- Terminal selections and their Add to chat menu survive output that doesn't change the selected text, and Add to chat uses the right line numbers after scrolling.
+- Composer model picks for a specific provider instance keep their exact model name, including custom names such as `gpt-5.3` that look like built-in aliases.
+- Relative file links with routing punctuation, such as `posts.$postId.tsx`, `(group)/[id]/+page.svelte` and `@scope/pkg`, open as workspace files.
+- CLIProxy usage works for hubs hosted under a path prefix, and panel URLs such as `https://hub.example/cliproxy/management.html` can be pasted directly.
+- macOS foreground computer control no longer pauses in "Needs recovery" after a shortcut that opens a window (such as ⌘N) or a press that closes its own popover. Those actions now report success with `verified: false`, a batch stops after them so the agent observes first, and a shortcut's key-up is always sent. A press that times out still counts as unknown. When control is interrupted, agents see why instead of a bare "Interrupted".
 
 ## [0.1.4] - 2026-11-05
 

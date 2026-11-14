@@ -54,7 +54,10 @@ export default function PrLinkedPanel({
   const value = query.data && query.data.accountGeneration === generation ? query.data.pr : null;
   return (
     <OpenLinkThread.Provider value={threadId}>
-      <div className="min-h-0 flex-1 overflow-auto p-4" aria-label="Pull request panel">
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-hidden p-4"
+        aria-label="Pull request panel"
+      >
         <div className="mb-4 flex items-center justify-between gap-2">
           <span className="text-sm font-medium">Pull request</span>
           <Button

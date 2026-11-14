@@ -4,6 +4,11 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  # Reruns started with GITHUB_TOKEN (ci-runner-retry.yml, the release publisher) may not raise
+  # another workflow_run event, so a periodic pass reports their final result.
+  schedule:
+    - cron: "12,27,42,57 * * * *"
+  workflow_dispatch:
 permissions:
   actions: read
   contents: read
@@ -18,25 +23,41 @@ jobs:
       queue: max
     if: >-
       github.repository == 'lopes-felipe/f5' &&
-      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.path == '.github/workflows/ci.yml' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.repository.full_name == github.repository &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
+      (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      RESULT: ${{ github.event.workflow_run.conclusion }}
-      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
-      SOURCE_RUN: ${{ github.event.workflow_run.id }}
-      SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-      RUN_URL: ${{ github.event.workflow_run.html_url }}
     steps:
       # No checkout, candidate artifacts, or source-controlled code execution.
+      - name: Find the newest main CI result
+        id: latest
+        if: github.event_name != 'workflow_run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
+          gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=$head_sha&per_page=20" \
+            --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_repository.full_name == env.GH_REPO)][0]
+              // empty | "result=\(.conclusion // "")", "sha=\(.head_sha)", "run=\(.id)", "attempt=\(.run_attempt)", "url=\(.html_url)"' \
+            >> "$GITHUB_OUTPUT"
       - name: Reconcile main status issue
+        if: >-
+          github.event_name == 'workflow_run' ||
+          steps.latest.outputs.result == 'success' || steps.latest.outputs.result == 'failure'
+        env:
+          RESULT: ${{ github.event.workflow_run.conclusion || steps.latest.outputs.result }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || steps.latest.outputs.sha }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id || steps.latest.outputs.run }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt || steps.latest.outputs.attempt }}
+          RUN_URL: ${{ github.event.workflow_run.html_url || steps.latest.outputs.url }}
         shell: bash
         run: |
           set -euo pipefail

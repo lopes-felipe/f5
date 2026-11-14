@@ -65,6 +65,37 @@ afterEach(() => {
 });
 
 describe("GitHub HTTP operations", () => {
+  it.each(["git@github.com-work:octo/repo.git", "ssh://git@github.com-work:22/octo/repo.git"])(
+    "keeps the marked alias repository when routing %s through github.com",
+    async (remote) => {
+      const f = fixture(() => ({ default_branch: "main" }));
+      processMock.mockResolvedValue({
+        stdout: [
+          "remote.upstream.url git@github.com:other/upstream.git",
+          "remote.personal.url " + remote,
+          "remote.personal.gh-resolved base",
+        ].join("\n"),
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const gh = yield* f.make;
+          yield* gh.getDefaultBranch({ cwd: "/repo" });
+        }),
+      );
+      expect(
+        f.calls.some(
+          (call) =>
+            call.url.hostname === "api.github.com" && call.url.pathname === "/repos/octo/repo",
+        ),
+      ).toBe(true);
+      expect(f.calls.some((call) => call.url.pathname.includes("other/upstream"))).toBe(false);
+    },
+  );
+
   it("reads fork pull requests without a gh or git process for explicit URLs", async () => {
     const f = fixture(() => pr);
     const result = await Effect.runPromise(

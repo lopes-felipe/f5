@@ -92,6 +92,18 @@ export function usageLimitFromWindows(
 const CLAUDE_GATEWAY_LIMIT =
   /^API Error: 503 \[[^\]\r\n]+\] \[429\]: \{"type":"error","error":\{"type":"rate_limit_error",[^\r\n]*\} \(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/;
 
+/** OpenCode's Claude agent reports plan limits as otherwise untyped errors. */
+export function openCodeClaudeUsageLimit(message: string): RuntimeUsageLimit | undefined {
+  if (!/^You've hit your [^\n·]*\blimit\b/.test(message)) return undefined;
+  const reset = /\bResets at (\d{4}-\d\d-\d\dT[\d:.]+Z)\.?\s*$/.exec(message)?.[1];
+  return {
+    windows: [],
+    resetsAt: reset && Number.isFinite(Date.parse(reset)) ? new Date(reset).toISOString() : null,
+    evidence: "message",
+    resetSource: "message",
+  };
+}
+
 /**
  * Some Claude gateways (9router) wrap an upstream 429 in a 503 and append the
  * cooldown, with no rate_limit_event. Treat that cooldown as the reset so the
@@ -111,10 +123,14 @@ export function claudeGatewayUsageLimit(
     result.subtype !== "success" ||
     !result.is_error ||
     result.terminal_reason !== "api_error" ||
-    result.api_error_status !== 503
+    (result.api_error_status !== 503 && result.api_error_status !== 429)
   )
     return undefined;
-  const match = CLAUDE_GATEWAY_LIMIT.exec(result.result ?? "");
+  const text = result.result ?? "";
+  const match =
+    result.api_error_status === 429 && text.startsWith("API Error:")
+      ? /\(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(text)
+      : CLAUDE_GATEWAY_LIMIT.exec(text);
   if (!match) return undefined;
   const seconds =
     Number(match[1] ?? 0) * 3_600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);

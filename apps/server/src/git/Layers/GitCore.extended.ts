@@ -228,7 +228,141 @@ function commitWithDate(
 // ── Tests ──
 
 it.layer(TestLayer)("git integration", (it) => {
+  it.effect("reads commit and PR context outside a nested project with diff.relative", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const base = yield* git(cwd, ["rev-parse", "HEAD"]);
+      const fs = yield* FileSystem.FileSystem;
+      const nested = path.join(cwd, "nested");
+      yield* fs.makeDirectory(nested);
+      yield* git(cwd, ["config", "diff.relative", "true"]);
+      yield* writeTextFile(path.join(cwd, "outside.txt"), "committed line\n");
+      yield* git(cwd, ["add", "."]);
+      yield* git(cwd, ["commit", "-m", "outside"]);
+      const core = yield* GitCore;
+      const range = yield* core.readRangeContext(nested, base);
+      expect(range.diffSummary).toContain("outside.txt");
+      expect(range.diffPatch).toContain("+committed line");
+      yield* writeTextFile(path.join(cwd, "outside.txt"), "updated line\n");
+      const context = yield* core.prepareCommitContext(nested, ["outside.txt"]);
+      expect(context?.stagedSummary).toContain("outside.txt");
+      expect(context?.stagedPatch).toContain("+updated line");
+    }),
+  );
+
+  it.effect.each(["root", "nested", "worktree"] as const)(
+    "rejects selected merge commits without changing the index or merge parents (%s)",
+    (location) =>
+      Effect.gen(function* () {
+        let cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const branch = yield* git(cwd, ["branch", "--show-current"]);
+        yield* git(cwd, ["checkout", "-b", "feature"]);
+        yield* writeTextFile(path.join(cwd, "feature.txt"), "feature\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "feature"]);
+        const feature = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", branch]);
+        yield* writeTextFile(path.join(cwd, "main.txt"), "main\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "main"]);
+        const main = yield* git(cwd, ["rev-parse", "HEAD"]);
+        if (location === "worktree") {
+          const linked = path.join(yield* makeTmpDir(), "linked");
+          yield* git(cwd, ["worktree", "add", "-b", "linked", linked]);
+          cwd = linked;
+        }
+        yield* git(cwd, ["merge", "--no-commit", "--no-ff", "feature"]);
+        const fs = yield* FileSystem.FileSystem;
+        const commitCwd = location === "nested" ? path.join(cwd, "nested") : cwd;
+        yield* fs.makeDirectory(commitCwd, { recursive: true });
+        const gitDir = yield* git(cwd, ["rev-parse", "--absolute-git-dir"]);
+        const index = yield* fs.readFile(path.join(gitDir, "index"));
+        const core = yield* GitCore;
+        const error = yield* core
+          .commit(commitCwd, "partial", "", ["feature.txt"])
+          .pipe(Effect.flip);
+        expect(error.detail).toContain("Cannot commit selected files during a merge");
+        expect(yield* fs.readFile(path.join(gitDir, "index"))).toEqual(index);
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(main);
+        expect(yield* fs.readFileString(path.join(gitDir, "MERGE_HEAD"))).toBe(feature + "\n");
+        yield* core.commit(commitCwd, "complete", "");
+        expect(yield* git(cwd, ["show", "-s", "--format=%P", "HEAD"])).toBe(main + " " + feature);
+      }),
+  );
+
   describe("commit generation isolation", () => {
+    it.effect(
+      "commits a large selected directory without expanding its staging arguments",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(path.join(cwd, "gen"));
+          // More than the buffered Git output cap, and macOS argv limits.
+          yield* Effect.forEach(
+            Array.from({ length: 8500 }, (_, index) => index),
+            (index) =>
+              writeTextFile(
+                path.join(cwd, "gen", String(index).padStart(5, "0") + "-".repeat(120) + ".txt"),
+                "x\n",
+              ),
+            { concurrency: 32 },
+          );
+          yield* writeTextFile(path.join(cwd, "unselected.txt"), "leave out\n");
+          const core = yield* GitCore;
+          const context = yield* core.prepareCommitContext(cwd, ["gen/"]);
+          expect(context).not.toBeNull();
+          expect((yield* core.commitPrepared(cwd, "Generated files", "", context!)).status).toBe(
+            "created",
+          );
+          expect(yield* git(cwd, ["status", "--porcelain"])).toBe("?? unselected.txt");
+          let count = 0;
+          yield* (yield* GitService).execute({
+            operation: "GitCore.test.countGeneratedFiles",
+            cwd,
+            args: ["ls-tree", "-r", "--name-only", "-z", "HEAD:gen"],
+            onStdoutChunk: (chunk) => {
+              for (const byte of chunk) if (byte === 0) count++;
+            },
+          });
+          expect(count).toBe(8500);
+        }),
+      { timeout: 60_000 },
+    );
+
+    it.effect("commits repository-relative renamed and Unicode paths from a nested project", () =>
+      Effect.gen(function* () {
+        const cwd = path.join(yield* makeTmpDir(), "repo ");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(cwd);
+        yield* initRepoWithCommit(cwd);
+        yield* fs.makeDirectory(path.join(cwd, "nested"));
+        yield* writeTextFile(path.join(cwd, "nested", "old.ts"), "one\ntwo\nthree\n");
+        yield* writeTextFile(path.join(cwd, "café notes.md"), "draft\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "Add files"]);
+        yield* git(cwd, ["mv", "nested/old.ts", "nested/new.ts"]);
+        yield* writeTextFile(path.join(cwd, "café notes.md"), "draft\nedit\n");
+        const core = yield* GitCore;
+        const nested = path.join(cwd, "nested");
+        const status = yield* core.statusDetails(nested);
+        expect(status.workingTree.rootPath).toBe(yield* fs.realPath(cwd));
+        expect(status.workingTree.files.map((file) => file.path)).toEqual([
+          "café notes.md",
+          "nested/new.ts",
+          "nested/old.ts",
+        ]);
+        const selection = status.workingTree.files.map((file) => file.path);
+        const prepared = yield* core.prepareCommitContext(nested, selection);
+        expect(prepared).not.toBeNull();
+        yield* core.commitPrepared(nested, "Selected changes", "", prepared!);
+        expect(yield* git(cwd, ["status", "--porcelain"])).toBe("");
+      }),
+    );
+
     for (const split of [false, true]) {
       it.effect(
         `preserves partial staging and materializes a temporary index (split=${split})`,
@@ -1306,6 +1440,27 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── listGitBranches ──
 
   describe("listGitBranches", () => {
+    it.effect.each(["origin", "github"])(
+      "recognizes %s after adding a remote through the driver",
+      (remoteName) =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const remote = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
+          yield* git(remote, ["init", "--bare"]);
+          const core = yield* GitCore;
+          expect((yield* core.listBranches({ cwd: tmp })).hasOriginRemote).toBe(false);
+
+          yield* core.ensureRemote({ cwd: tmp, preferredName: remoteName, url: remote });
+
+          expect((yield* core.listBranches({ cwd: tmp })).hasOriginRemote).toBe(true);
+          yield* core.pushCurrentBranch(tmp, null);
+          expect(yield* git(tmp, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toMatch(
+            new RegExp("^" + remoteName + "/"),
+          );
+        }),
+    );
+
     it.effect("returns isRepo: false for non-git directory", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
@@ -3567,36 +3722,40 @@ it.layer(TestLayer)("git integration", (it) => {
     );
 
     // Live clock: the config-lock retries wait between attempts.
-    liveIt("pushes but reports no upstream while another writer holds the config lock", () =>
-      Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        const remote = yield* makeTmpDir();
-        yield* git(tmp, ["init", "--initial-branch=trunk"]);
-        yield* git(tmp, ["config", "user.email", "test@test.com"]);
-        yield* git(tmp, ["config", "user.name", "Test"]);
-        yield* writeTextFile(path.join(tmp, "README.md"), "hello\n");
-        yield* git(tmp, ["add", "README.md"]);
-        yield* git(tmp, ["commit", "-m", "initial"]);
-        yield* git(remote, ["init", "--bare"]);
-        yield* git(tmp, ["remote", "add", "origin", remote]);
-        yield* git(tmp, ["checkout", "-b", "feature/locked-push"]);
-        const lockPath = path.join(tmp, ".git", "config.lock");
-        yield* writeTextFile(lockPath, "");
+    liveIt(
+      "pushes but reports no upstream while another writer holds the config lock",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const remote = yield* makeTmpDir();
+          yield* git(tmp, ["init", "--initial-branch=trunk"]);
+          yield* git(tmp, ["config", "user.email", "test@test.com"]);
+          yield* git(tmp, ["config", "user.name", "Test"]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "hello\n");
+          yield* git(tmp, ["add", "README.md"]);
+          yield* git(tmp, ["commit", "-m", "initial"]);
+          yield* git(remote, ["init", "--bare"]);
+          yield* git(tmp, ["remote", "add", "origin", remote]);
+          yield* git(tmp, ["checkout", "-b", "feature/locked-push"]);
+          const lockPath = path.join(tmp, ".git", "config.lock");
+          yield* writeTextFile(lockPath, "");
 
-        const core = yield* GitCore;
-        const pushed = yield* core.pushCurrentBranch(tmp, null);
-        expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
-        expect(
-          yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature/locked-push"]),
-        ).toBe(yield* git(tmp, ["rev-parse", "HEAD"]));
+          const core = yield* GitCore;
+          const pushed = yield* core.pushCurrentBranch(tmp, null);
+          expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
+          expect(
+            yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature/locked-push"]),
+          ).toBe(yield* git(tmp, ["rev-parse", "HEAD"]));
 
-        expect(
-          yield* git(tmp, ["config", "--get", "branch.feature/locked-push.merge"]).pipe(
-            Effect.orElseSucceed(() => ""),
-          ),
-        ).toBe("");
-        yield* (yield* FileSystem.FileSystem).remove(lockPath);
-      }).pipe(Effect.provide(TestLayer)),
+          expect(
+            yield* git(tmp, ["config", "--get", "branch.feature/locked-push.merge"]).pipe(
+              Effect.orElseSucceed(() => ""),
+            ),
+          ).toBe("");
+          yield* (yield* FileSystem.FileSystem).remove(lockPath);
+        }).pipe(Effect.provide(TestLayer)),
+      // Eleven real Git attempts plus a push; loaded macOS runners exceeded the default.
+      { timeout: 60_000 },
     );
 
     liveIt("keeps the prior upstream whole when only its remote cannot be rewritten", () =>
@@ -3614,22 +3773,32 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* git(tmp, ["add", "."]);
         yield* git(tmp, ["commit", "-m", "half"]);
         const gitService = yield* GitService;
+        const calls: ("locked" | "commonDir")[] = [];
         // Another writer keeps winning the lock whenever the remote is rewritten.
         const core = yield* makeIsolatedGitCore({
           ...gitService,
+          // Suspended so a retry, which reruns the same effect, counts as another attempt.
           execute: (input) =>
-            input.args[0] === "config" && input.args.includes("branch.feature/half.remote")
-              ? Effect.succeed({
+            Effect.suspend(() => {
+              if (input.args.includes("--git-common-dir")) calls.push("commonDir");
+              if (input.args[0] === "config" && input.args.includes("branch.feature/half.remote")) {
+                calls.push("locked");
+                return Effect.succeed({
                   code: 255,
                   stdout: "",
                   stderr: "error: could not lock config file .git/config: File exists",
-                })
-              : gitService.execute(input),
+                });
+              }
+              return gitService.execute(input);
+            }),
         });
 
         const pushed = yield* core.pushCurrentBranch(tmp, null);
 
         expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
+        // One write plus ten retries, without resolving the repository again between them.
+        const attempts = calls.slice(calls.indexOf("locked"), calls.lastIndexOf("locked") + 1);
+        expect(attempts).toEqual(Array.from({ length: 11 }, () => "locked"));
         expect(yield* git(tmp, ["config", "--get", "branch.feature/half.merge"])).toBe(
           `refs/heads/${initialBranch}`,
         );

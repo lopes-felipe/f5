@@ -854,6 +854,19 @@ async function searchWorkspaceEntriesWithFff(params: {
   }
 }
 
+const SYMLINK_RESOLVE_BATCH_SIZE = 64;
+
+function isSameOrInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+}
+
+function isBrowsableTarget(root: string, target: string): boolean {
+  return (
+    isSameOrInside(root, target) && !path.relative(root, target).split(path.sep).includes(".git")
+  );
+}
+
 /** Lists one directory without building or changing the workspace search index. */
 export async function listWorkspaceDirectory(
   input: ProjectListDirectoryInput,
@@ -868,11 +881,18 @@ export async function listWorkspaceDirectory(
   if (segments.some((part) => part === ".." || part === ".git"))
     throw new Error("Directory is outside the browsable workspace.");
   let directory = root;
+  const visitedFolders = [root];
   for (const segment of segments) {
     directory = path.join(directory, segment);
-    const stat = await fs.lstat(directory);
-    if (stat.isSymbolicLink() || !stat.isDirectory())
-      throw new Error("Cannot browse a symbolic link or non-directory.");
+    const resolved = await fs.realpath(directory);
+    if (
+      !isBrowsableTarget(root, resolved) ||
+      visitedFolders.some((folder) => isSameOrInside(resolved, folder))
+    )
+      throw new Error("Directory is outside the browsable workspace or forms a cycle.");
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) throw new Error("Cannot browse a non-directory.");
+    visitedFolders.push(resolved);
   }
   const resolved = await fs.realpath(directory);
   const relative = path.relative(root, resolved);
@@ -880,26 +900,52 @@ export async function listWorkspaceDirectory(
     throw new Error("Directory is outside the workspace.");
   const children = await fs.readdir(resolved, { withFileTypes: true });
   const parentPath = segments.join("/");
-  const entries: ProjectEntry[] = children
-    .filter(
-      (child) =>
-        child.name !== ".git" && (input.includeIgnored || !IGNORED_DIRECTORY_NAMES.has(child.name)),
-    )
-    .map((child) => ({
-      path: [...segments, child.name].join("/"),
-      kind: child.isDirectory() ? "directory" : "file",
-      ...(parentPath ? { parentPath } : {}),
-    }));
+  const entries: ProjectEntry[] = [];
+  for (let offset = 0; offset < children.length; offset += SYMLINK_RESOLVE_BATCH_SIZE) {
+    const batch = await Promise.all(
+      children
+        .slice(offset, offset + SYMLINK_RESOLVE_BATCH_SIZE)
+        .map(async (child): Promise<ProjectEntry | undefined> => {
+          if (
+            child.name === ".git" ||
+            (!input.includeIgnored && IGNORED_DIRECTORY_NAMES.has(child.name))
+          )
+            return;
+          let kind: ProjectEntry["kind"];
+          if (child.isDirectory()) kind = "directory";
+          else if (child.isFile()) kind = "file";
+          else if (child.isSymbolicLink()) {
+            const target = await fs
+              .realpath(path.join(resolved, child.name))
+              .catch(() => undefined);
+            if (target === undefined || !isBrowsableTarget(root, target)) return;
+            const stat = await fs.stat(target).catch(() => undefined);
+            if (stat?.isFile()) kind = "file";
+            else if (
+              stat?.isDirectory() &&
+              !visitedFolders.some((folder) => isSameOrInside(target, folder))
+            )
+              kind = "directory";
+            else return;
+          } else return;
+          return {
+            path: [...segments, child.name].join("/"),
+            kind,
+            ...(parentPath ? { parentPath } : {}),
+          };
+        }),
+    );
+    for (const entry of batch) if (entry) entries.push(entry);
+  }
+  // Git rejects paths beneath a symlink. Check children at their canonical
+  // parent, while keeping the alias paths in the listing returned to the UI.
+  const ignorePath = (entry: ProjectEntry) =>
+    path.posix.join(relative.replaceAll(path.sep, "/"), path.posix.basename(entry.path));
   const allowed = input.includeIgnored
     ? null
-    : new Set(
-        await filterGitIgnoredPaths(
-          root,
-          entries.map((entry) => entry.path),
-        ),
-      );
+    : new Set(await filterGitIgnoredPaths(root, entries.map(ignorePath)));
   const sorted = entries
-    .filter((entry) => !allowed || allowed.has(entry.path))
+    .filter((entry) => !allowed || allowed.has(ignorePath(entry)))
     .sort((a, b) =>
       a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === "directory" ? -1 : 1,
     );

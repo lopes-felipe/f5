@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { tightestQuotaWindow } from "./TightestLimitCallout";
+import { glanceQuotaWindow, tightestQuotaWindow } from "./TightestLimitCallout";
 
 const now = Date.parse("2026-11-05T10:00:00.000Z");
 const window = (windowKey: string, usedPercent: number | null, resetsAt: string | null) => ({
@@ -52,5 +52,36 @@ describe("tightestQuotaWindow", () => {
         now,
       ),
     ).toBeNull();
+  });
+});
+
+describe("glanceQuotaWindow", () => {
+  it("returns the only live window, or the tightest of several", () => {
+    expect(
+      glanceQuotaWindow([window("seven_day", 40, "2026-11-06T05:00:00.000Z")], now)?.windowKey,
+    ).toBe("seven_day");
+    expect(
+      glanceQuotaWindow(
+        [
+          window("five_hour", 100, "2026-11-05T09:00:00.000Z"),
+          window("seven_day", 40, "2026-11-06T05:00:00.000Z"),
+        ],
+        now,
+      )?.windowKey,
+    ).toBe("seven_day");
+    expect(
+      glanceQuotaWindow(
+        [
+          window("five_hour", 70, "2026-11-05T14:00:00.000Z"),
+          window("seven_day", 40, "2026-11-06T05:00:00.000Z"),
+        ],
+        now,
+      )?.windowKey,
+    ).toBe("five_hour");
+  });
+
+  it("is null when nothing is live", () => {
+    expect(glanceQuotaWindow([window("five_hour", null, null)], now)).toBeNull();
+    expect(glanceQuotaWindow([], now)).toBeNull();
   });
 });

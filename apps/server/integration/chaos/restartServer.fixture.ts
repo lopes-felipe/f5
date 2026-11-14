@@ -152,6 +152,10 @@ await Effect.runPromise(
                       orchestrationEngine: harness.engine,
                       providerService: harness.providerService,
                       providerSessionDirectory: harness.providerSessionDirectory,
+                      // The recovered history holds only text, so no command row is read.
+                      threadCommandExecutionQuery: {
+                        getThreadCommandExecution: () => Effect.succeed({ commandExecution: null }),
+                      },
                     },
                     {
                       threadIds: [threadId],

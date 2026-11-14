@@ -4776,6 +4776,7 @@ describe("ProviderCommandReactor", () => {
           createWorktree: () => Effect.die("unexpected worktree creation"),
           fetchRemoteBranchCommit: () => Effect.die("unexpected remote base fetch"),
           hasRemote: () => Effect.die("unexpected remote probe"),
+          isAncestor: () => Effect.die("unexpected ancestry check"),
           removeWorktree: () => Effect.die("unexpected worktree removal"),
         },
         projectSetupScriptRunner: {

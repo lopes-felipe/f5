@@ -141,3 +141,34 @@ it("retries failed loads and preserves an existing tour when regeneration fails"
   await expect.element(page.getByText("1  new-contract", { exact: true })).toBeVisible();
   expect(page.getByText("private token", { exact: true }).query()).toBeNull();
 });
+it.each([false, true])(
+  "keeps retry and bounded details after failure (existing guide: %s)",
+  async (hasGuide) => {
+    api.getReviewGuide.mockResolvedValue({
+      ...saved,
+      guide: hasGuide ? saved.guide : null,
+      run: {
+        _tag: "Failed",
+        headSha: "head",
+        failedAt: timestamp,
+        detail: "Provider error\n".repeat(2000).trim(),
+      },
+    });
+    await mount();
+    await expect
+      .element(page.getByRole("button", { name: "Try again", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          hasGuide ? /Could not rewrite this guide/ : /Could not write a review guide/,
+        ),
+      )
+      .toBeVisible();
+    const details = document.querySelector("details")!;
+    expect(details.open).toBe(false);
+    await page.getByText("Technical details", { exact: true }).click();
+    const output = details.querySelector("pre")!;
+    expect(output.scrollHeight).toBeGreaterThan(output.clientHeight);
+  },
+);

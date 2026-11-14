@@ -26,10 +26,33 @@ pub fn encode_packet(value: &Value, maximum: usize) -> Option<Vec<u8>> {
     .ok()?;
     (bounded.len() <= maximum).then_some(bounded)
 }
+/// Preserve background activation recovery, while treating foreground post-dispatch failures as ambiguous.
+pub fn action_response(error: Value, action_started: bool, background: bool) -> Value {
+    if action_started && !background {
+        json!({"_tag":"OutcomeUnknown"})
+    } else {
+        interrupted_response(error, action_started)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn foreground_failures_after_dispatch_are_unknown() {
+        for tag in ["Interrupted", "Execution", "StaleElement", "TargetBlocked"] {
+            assert_eq!(
+                action_response(json!({"_tag":tag}), true, false),
+                json!({"_tag":"OutcomeUnknown"})
+            );
+        }
+        let recovery = json!({"_tag":"ForegroundRequired","reason":"activation-side-effect"});
+        assert_eq!(action_response(recovery.clone(), true, true), recovery);
+        assert_eq!(
+            action_response(json!({"_tag":"Interrupted"}), false, true)["actionStarted"],
+            false
+        );
+    }
     #[test]
     fn preflight_interruption_is_retryable_but_partial_input_is_unknown() {
         for cause in ["user-input", "permit-expired"] {

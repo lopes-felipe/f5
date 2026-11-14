@@ -182,6 +182,32 @@ describe("profile backend recovery", () => {
       vi.useRealTimers();
     }
   });
+
+  it("allows a slow database to start after a minute and times out at three minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const waiting = waitForProfileBackend(
+        () => true,
+        async () => Date.now() - start >= 66_000,
+      );
+      await vi.advanceTimersByTimeAsync(66_000);
+      await waiting;
+      const settled = vi.fn();
+      const timedOut = expect(
+        waitForProfileBackend(
+          () => true,
+          async () => false,
+        ).finally(settled),
+      ).rejects.toThrow("startup timed out");
+      await vi.advanceTimersByTimeAsync(179_900);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(100);
+      await timedOut;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 it("coalesces concurrent opens and permits reopening after completion", async () => {
@@ -227,6 +253,33 @@ it("reopens a stopped profile without stranding either retained window", async (
 });
 
 describe("backend restart budget", () => {
+  it("shows recovery only after the default three-minute startup deadline", async () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const onStartupTimeout = vi.fn();
+    const onReady = vi.fn();
+    const cancel = monitorBackendHealth({
+      isCurrent: () => true,
+      checkReady: async () => ready,
+      onStartupTimeout,
+      onReady,
+      onSustainedHealth: () => {},
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(179_999);
+      expect(onStartupTimeout).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onStartupTimeout).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(onStartupTimeout).toHaveBeenCalledOnce();
+      ready = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onReady).toHaveBeenCalledOnce();
+    } finally {
+      cancel();
+      vi.useRealTimers();
+    }
+  });
   it("reports a startup timeout once and reports recovery when that generation becomes ready", async () => {
     vi.useFakeTimers();
     let ready = false;

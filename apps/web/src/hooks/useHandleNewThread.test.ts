@@ -13,10 +13,19 @@ import { useModelPreferencesStore } from "../modelPreferencesStore";
 import { useStore } from "../store";
 import { seedDraftThreadFromModelPreferences } from "./useHandleNewThread";
 import { createProjectBackedDraftThread } from "./useCreateProjectBackedDraftThread";
+import { QueryClient } from "@tanstack/react-query";
+import { resolveProjectThreadEnvMode } from "../lib/projectConfigReactQuery";
+import {
+  noteWsConnectionClosed,
+  noteWsConnectionOpened,
+  resetWsConnectionStateForTests,
+} from "../wsConnectionState";
 
 const settingsApi = vi.hoisted(() => ({ getProjectSettings: vi.fn() }));
 vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ server: settingsApi }) }));
 beforeEach(() => {
+  resetWsConnectionStateForTests();
+  noteWsConnectionOpened();
   settingsApi.getProjectSettings
     .mockReset()
     .mockResolvedValue({ settings: DEFAULT_SERVER_SETTINGS });
@@ -190,6 +199,41 @@ describe("createProjectBackedDraftThread", () => {
       lastWorkflowProviderBySlot: {},
     });
   });
+
+  it.each(["connecting", "reconnecting"] as const)(
+    "opens an offline draft without waiting for settings while %s",
+    async (phase) => {
+      if (phase === "connecting") resetWsConnectionStateForTests();
+      else noteWsConnectionClosed();
+      settingsApi.getProjectSettings.mockImplementation(() => new Promise(() => {}));
+      rememberDraftSettings({
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: {
+          [PROJECT_ID]: {
+            defaultThreadEnvMode: "worktree",
+            defaultRuntimeMode: "approval-required",
+          },
+        },
+      });
+      const navigateSpy = vi.fn(async () => undefined);
+      const envMode = await resolveProjectThreadEnvMode(new QueryClient(), PROJECT_ID);
+      const result = await createProjectBackedDraftThread({
+        navigate: navigateSpy,
+        onboardingLiteStatus: "completed",
+        projectId: PROJECT_ID,
+        routeThreadId: null,
+        options: { envMode },
+        updateSettings: vi.fn(),
+      });
+      expect(useComposerDraftStore.getState().getDraftThread(result!.threadId)).toMatchObject({
+        envMode: "worktree",
+        runtimeMode: "approval-required",
+      });
+      expect(settingsApi.getProjectSettings).not.toHaveBeenCalled();
+      expect(navigateSpy).toHaveBeenCalledOnce();
+      rememberDraftSettings(DEFAULT_SERVER_SETTINGS);
+    },
+  );
 
   it("reuses one draft for concurrent clicks after the settings request", async () => {
     let finish!: (value: unknown) => void;

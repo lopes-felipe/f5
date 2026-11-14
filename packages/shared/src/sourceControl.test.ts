@@ -7,11 +7,34 @@ import {
   hasThreadPullRequestLink,
   parseSourceControlPullRequestKey,
   parseSourceControlRemoteUrl,
+  isSshRemoteUrl,
   resolveChangeRequestWebUrl,
   sourceControlPullRequestKeysEqual,
   toThreadPullRequestLink,
   updateThreadPullRequestLinks,
 } from "./sourceControl";
+
+it.each(["github.com", "gitlab.com", "bitbucket.org", "code.example.test"])(
+  "resolves userless SSH remotes on %s",
+  (host) => {
+    const remote = host + ":team/project.git";
+    expect(isSshRemoteUrl(remote)).toBe(true);
+    expect(parseSourceControlRemoteUrl(remote)).toMatchObject({
+      host,
+      owner: "team",
+      repository: "project",
+      webUrl: "https://" + host + "/team/project",
+    });
+  },
+);
+
+it.each([
+  "C:/repos/project",
+  "C:\\repos\\project",
+  "./team:group/repo",
+  "hg::team/repo",
+  "file:///srv/git/repo",
+])("does not treat %s as SSH", (remote) => expect(isSshRemoteUrl(remote)).toBe(false));
 
 describe("source-control pull-request keys", () => {
   it("formats provider-qualified keys and parses legacy GitHub keys", () => {
@@ -47,6 +70,29 @@ describe("source-control pull-request keys", () => {
 });
 
 describe("parseSourceControlRemoteUrl", () => {
+  it.each([
+    "git@github.com-work:octo/repo.git",
+    "github.com-work:octo/repo.git",
+    "ssh://git@github.com-work:22/octo/repo.git",
+    "ssh://github.com-work/octo/repo.git",
+    "git@GitHub.com-WORK:octo/repo.git",
+  ])("routes the SSH alias %s to GitHub's API and browser host", (remote) => {
+    expect(parseSourceControlRemoteUrl(remote)).toEqual({
+      kind: "github",
+      host: "github.com",
+      owner: "octo",
+      repository: "repo",
+      webUrl: "https://github.com/octo/repo",
+    });
+  });
+  it.each([
+    "https://github.com-work/octo/repo.git",
+    "git@github.com-work.example:octo/repo.git",
+    "git@github.com-:octo/repo.git",
+  ])("preserves real DNS hosts and unsupported aliases in %s", (remote) => {
+    expect(parseSourceControlRemoteUrl(remote).host).not.toBe("github.com");
+  });
+
   it("parses GitHub SSH remotes", () => {
     expect(parseSourceControlRemoteUrl("git@github.com:pingdotgg/t3code.git")).toEqual({
       kind: "github",

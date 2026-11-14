@@ -1,10 +1,12 @@
 import {
+  type UpstreamAreaPolicy,
   type UpstreamPortQueueTarget,
   type ProjectId,
   type UpstreamDecideResult,
   type UpstreamDecision,
   type UpstreamOverview,
   type UpstreamPortLinkSummary,
+  type UpstreamPortQueueView,
   type UpstreamResolvePublicationInput,
   type UpstreamRunKind,
   type UpstreamRunTriage,
@@ -25,6 +27,7 @@ import {
   upstreamOverviewQueryOptions,
   upstreamProjectsQueryOptions,
   upstreamPortsQueryKeys,
+  upstreamTopicQueryOptions,
   upstreamTopicsQueryOptions,
   type UpstreamTopicFilter,
 } from "../../lib/upstreamPortsReactQuery";
@@ -45,6 +48,8 @@ import {
 } from "./UpstreamDialogs";
 import { UpstreamConfigEmptyState } from "./UpstreamConfigEmptyState";
 import { UpstreamHeader } from "./UpstreamHeader";
+import { portQueueLandingView } from "./UpstreamPortQueue";
+import { UpstreamQueuePanel } from "./UpstreamQueuePanel";
 import { UpstreamListEmpty } from "./UpstreamListEmpty";
 import { UpstreamTopicDetail } from "./UpstreamTopicDetail";
 import { useSaveUpstreamSettings } from "./useSaveUpstreamSettings";
@@ -63,6 +68,7 @@ import {
   canMoveFocusAfterDecision,
   decisionBatches,
   decisionToastTitle,
+  expireBacklogSummary,
   extendSelection,
   filterFromSearch,
   focusAfterRemoval,
@@ -80,10 +86,12 @@ import {
   promptLimitError,
   reconcileFocus,
   runDisabledReason,
+  runKindLabel,
   selectRange,
   toggleId,
   topicCount,
   topicStates,
+  unclassifiedNote,
   UNDO_STACK_MAX,
   UNDO_WINDOW_MS,
   undoKeptTitle,
@@ -102,11 +110,14 @@ export type { UpstreamSearch };
 
 const EMPTY_ROWS: ReadonlyArray<UpstreamTopicRow> = [];
 const EMPTY_SET: ReadonlySet<string> = new Set();
+const EMPTY_AREA_POLICY: Readonly<Record<string, UpstreamAreaPolicy>> = {};
+/** The age "Expire backlog…" uses while automatic expiry is off. */
+const DEFAULT_EXPIRE_BACKLOG_DAYS = 14;
 
 function describeRun(run: UpstreamOverview["lastRun"]): string | null {
   if (!run) return null;
   const parts = [
-    `${run.kind === "retriage" ? "Re-triage run" : run.kind === "legacy" ? "Legacy run" : "Last run"} ${run.status}`,
+    `${run.kind === "upstream" ? "Last run" : runKindLabel(run.kind)} ${run.status}`,
     formatRelativeTimeLabel(run.finishedAt ?? run.startedAt),
     `${run.commitCount} commits`,
     `${run.inboxCount} to review`,
@@ -147,9 +158,11 @@ export function UpstreamPage(props: {
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
   const { save: saveUpstreamSettings } = useSaveUpstreamSettings(projectId);
   const list = props.search.list ?? "inbox";
+  /** The port queue tab shown in place of the topic list, if any. */
+  const queueView = props.search.queue ?? null;
   const sort = props.search.sort ?? null;
   // Keyed by value: the router hands back new arrays for unchanged filters.
-  const filterKey = JSON.stringify(filterFromSearch(props.search));
+  const filterKey = JSON.stringify(filterFromSearch(props.search, list));
   const filter: UpstreamTopicFilter = useMemo(() => JSON.parse(filterKey) as UpstreamTopicFilter, [filterKey]);
   const filtered = hasActiveFilters(props.search);
 
@@ -160,7 +173,7 @@ export function UpstreamPage(props: {
   const overview = overviewQuery.data;
   const topicsQuery = useInfiniteQuery({
     ...upstreamTopicsQueryOptions(projectId ?? ("" as ProjectId), list, filter, sort),
-    enabled: projectId !== null && Boolean(overview?.config),
+    enabled: projectId !== null && Boolean(overview?.config) && queueView === null,
   });
   const firstPage = topicsQuery.data?.pages[0];
   const overviewQueuedTopicIds = overview?.portQueue.queuedTopicIds;
@@ -177,11 +190,22 @@ export function UpstreamPage(props: {
 
   /** Topics leaving the list while their decision is in flight; refetches cannot bring them back meanwhile. */
   const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY_SET);
+  /**
+   * In the Queue view the only topic on screen is the one in the detail pane, so
+   * page actions (Start port, decisions, counts, focus) read its own row. The
+   * hidden list's cached rows would give them the wrong topics and states.
+   */
+  const queueTopicQuery = useQuery({
+    ...upstreamTopicQueryOptions(projectId ?? ("" as ProjectId), props.search.topic ?? null),
+    enabled: projectId !== null && queueView !== null && props.search.topic !== undefined,
+  });
+  const queueTopicRow = queueTopicQuery.data?.row;
   const rows = useMemo(() => {
+    if (queueView !== null) return queueTopicRow ? [queueTopicRow] : EMPTY_ROWS;
     if (!topicsQuery.data) return EMPTY_ROWS;
     const loaded = topicsQuery.data.pages.flatMap((page) => page.topics);
     return hidden.size === 0 ? loaded : loaded.filter((row) => !hidden.has(row.topic.id));
-  }, [topicsQuery.data, hidden]);
+  }, [topicsQuery.data, hidden, queueView, queueTopicRow]);
   const ids = useMemo(() => rows.map((row) => row.topic.id), [rows]);
 
   useEffect(() => {
@@ -271,12 +295,13 @@ export function UpstreamPage(props: {
   };
 
   useEffect(() => {
-    if (topicsQuery.isPending) return;
+    // The Queue view opens topics that need not be in any loaded list.
+    if (queueView !== null || topicsQuery.isPending) return;
     if (focused !== null && focused === requestedRef.current) return;
     const next = reconcileFocus(ids, focused, lastIndex.current);
     if (next !== focused && (next !== null || focused !== null)) setFocused(next);
     if (next) lastIndex.current = ids.indexOf(next);
-  }, [ids, focused, setFocused, topicsQuery.isPending]);
+  }, [ids, focused, setFocused, topicsQuery.isPending, queueView]);
 
   /** Replaces the selection with loaded rows only. */
   const selectLoaded = useCallback((next: ReadonlySet<string>) => {
@@ -349,7 +374,8 @@ export function UpstreamPage(props: {
     [matching, selected, ids, focused],
   );
   const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
-  const stateOf = useMemo(() => topicStates(rows, list), [rows, list]);
+  // Rows of a list are all in that list; the Queue view knows only the focused topic's state.
+  const stateOf = useMemo(() => topicStates(rows, queueView !== null ? "unknown" : list), [rows, list, queueView]);
   const loadedIds = useMemo(() => new Set(ids), [ids]);
   const unloadedCount = (topicIds: ReadonlyArray<string>) => topicIds.filter((id) => !loadedIds.has(id)).length;
   const total = firstPage?.total ?? (overview ? overview.counts[list] : 0);
@@ -460,7 +486,13 @@ export function UpstreamPage(props: {
       setHiddenIds(leaving, true);
       adjustOverviewCounts(projectId, moves);
       setSelected((current) => new Set([...current].filter((id) => !leaving.has(id))));
-      if (canMoveFocusAfterDecision(started, viewRef.current) && started.focused && leaving.has(started.focused))
+      // The Queue view keeps the decided topic open: the next topic of a hidden list means nothing there.
+      if (
+        queueView === null &&
+        canMoveFocusAfterDecision(started, viewRef.current) &&
+        started.focused &&
+        leaving.has(started.focused)
+      )
         setFocused(focusAfterRemoval(order, leaving, started.focused));
     }
 
@@ -640,6 +672,53 @@ export function UpstreamPage(props: {
     });
   };
 
+  /** Previews the expiry with a dry run, confirms, then expires with an Undo toast. */
+  const expireBacklog = () => {
+    if (!projectId) return;
+    const olderThanDays =
+      projectSettings.data?.settings.upstreamPorts?.budget?.expireAfterDays ?? DEFAULT_EXPIRE_BACKLOG_DAYS;
+    void withBusy("Could not preview the expiry", async () => {
+      const preview = await ensureNativeApi().upstreamPorts.expireBacklog({ projectId, dryRun: true, olderThanDays });
+      if (preview.count === 0) {
+        toastManager.add({
+          type: "info",
+          title: `No Inbox topic has waited ${olderThanDays} days or more`,
+          ...(preview.unclassified > 0 ? { description: unclassifiedNote(preview.unclassified) } : {}),
+        });
+        return;
+      }
+      const summary = expireBacklogSummary(preview, olderThanDays);
+      setConfirm({
+        title: summary.title,
+        description: summary.description,
+        confirmLabel: "Expire",
+        onConfirm: () =>
+          void withBusy("Could not expire the backlog", async () => {
+            const result = await ensureNativeApi().upstreamPorts.expireBacklog({
+              projectId,
+              dryRun: false,
+              olderThanDays,
+            });
+            if (result.undoToken && result.count > 0)
+              offerUndo({
+                id: crypto.randomUUID(),
+                projectId,
+                token: result.undoToken,
+                title: `Expired ${topicCount(result.count)}`,
+                expiresAt: Date.now() + UNDO_WINDOW_MS,
+              });
+            if (result.stoppedEarly)
+              toastManager.add({
+                type: "warning",
+                title: `Expiry stopped after ${topicCount(result.count)}`,
+                description: result.stoppedEarly,
+              });
+            await invalidateUpstreamPorts(queryClient);
+          }),
+      });
+    });
+  };
+
   const resolvePublicationNow = (action: UpstreamResolvePublicationInput["action"]) => {
     if (!projectId) return;
     void withBusy("Publication action failed", async () => {
@@ -742,6 +821,25 @@ export function UpstreamPage(props: {
 
   const changeList = (next: UpstreamTopicState) => {
     if (projectId) onSearchChange({ project: projectId, list: next });
+  };
+  /** Shows the port queue in place of the list; the list stays in the URL to return to. */
+  const openQueue = (view: UpstreamPortQueueView) => {
+    if (!projectId) return;
+    const { topic, ...rest } = searchRef.current;
+    onSearchChange({
+      ...rest,
+      project: projectId,
+      list,
+      queue: view,
+      // Keep the open topic only while moving between queue tabs.
+      ...(queueView !== null && topic ? { topic } : {}),
+    });
+  };
+  /** Back to the list the queue was opened from, with its filters and sort. */
+  const closeQueue = () => {
+    if (!projectId) return;
+    const { queue: _queue, topic: _topic, ...rest } = searchRef.current;
+    onSearchChange({ ...rest, project: projectId, list });
   };
 
   /** Reopening bumps the epoch, so running port threads stop counting; ask first when any is In progress. */
@@ -997,8 +1095,10 @@ export function UpstreamPage(props: {
           busy={busy}
           refreshing={overviewQuery.isFetching}
           onRun={runNow}
+          onExpireBacklog={expireBacklog}
           onRefresh={() => void invalidateUpstreamPorts(queryClient, { files: true })}
           onResolvePublication={resolvePublication}
+          onOpenQueue={openQueue}
         />
         <UpstreamAttention
           overview={overview}
@@ -1033,12 +1133,34 @@ export function UpstreamPage(props: {
                 }
               : null
           }
+          queue={
+            overview.portQueue.hasHistory || queueView !== null
+              ? {
+                  active: queueView !== null,
+                  jobs: overview.portQueue.running + overview.portQueue.queuedThreads,
+                  needsAttention: overview.portQueue.needsAttention,
+                  onOpen: () => openQueue(portQueueLandingView(overview.portQueue)),
+                  onClose: closeQueue,
+                }
+              : null
+          }
         />
       </header>
       <div className="flex min-h-0 flex-1">
         <section className="flex min-h-0 w-1/2 min-w-80 flex-col border-r">
-          {/* Loaded rows stay through a failed background refetch. */}
-          {topicsQuery.error && !topicsQuery.data ? (
+          {queueView !== null ? (
+            <UpstreamQueuePanel
+              projectId={projectId}
+              overview={overview}
+              readOnly={readOnly}
+              view={queueView}
+              onViewChange={openQueue}
+              focusedTopic={focused}
+              onOpenTopic={(topicId) => onSearchChange({ ...searchRef.current, project: projectId, topic: topicId })}
+              onRetry={(topicIds) => setPortRequest({ ids: topicIds, note: null })}
+            />
+          ) : /* Loaded rows stay through a failed background refetch. */
+          topicsQuery.error && !topicsQuery.data ? (
             <div role="alert" className="space-y-2 p-4 text-sm">
               <p className="text-destructive-foreground">{String(topicsQuery.error)}</p>
               <Button size="sm" variant="outline" onClick={() => void topicsQuery.refetch()}>
@@ -1125,6 +1247,7 @@ export function UpstreamPage(props: {
               projectId={projectId}
               topicId={focused}
               overview={overview}
+              areaPolicy={projectSettings.data?.settings.upstreamPorts?.areaPolicy ?? EMPTY_AREA_POLICY}
               readOnly={readOnly}
               busy={busy}
               pending={pending.has(focused)}
@@ -1139,6 +1262,8 @@ export function UpstreamPage(props: {
               onUnlink={unlink}
               onOpenTopic={openTopic}
             />
+          ) : queueView !== null ? (
+            <p className="p-6 text-sm text-muted-foreground">Select a topic in a job to see its details.</p>
           ) : (
             <p className="p-6 text-sm text-muted-foreground">
               Select a topic. Use <Kbd>j</Kbd> and <Kbd>k</Kbd> to move
