@@ -23338,11 +23338,13 @@
     },
     {
       "createdAt": "2026-11-04T11:12:56.883Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-14T01:10:05.704Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29810",
-      "status": "port",
+      "reason": "F5 lacks the MCP worktree handoff tools and newWorktreesStartFromOrigin setting.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "worktrees",
