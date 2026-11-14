@@ -21,6 +21,13 @@ reconciliation. GitHub may delay scheduled runs when capacity is constrained.
 After the third attempt, or for a cancelled run, manually rerun failed jobs with
 `gh run rerun <run-id> --failed`. Shadow mode never reruns candidates.
 
+A beta's release notes list the changelog entries added since the previous
+published release, beta or stable, whose commit is an ancestor of the candidate:
+fragments added under `changes/` and any bullets added to `CHANGELOG.md`'s
+Unreleased section. Unpublished and superseded betas do not count, so their
+entries appear in the next published beta. The desktop updater shows every
+intermediate release's notes in a row, so each entry appears once there.
+
 Every failed or recovered publisher run updates one `release-blocked` issue titled
 "Release publication blocked" through `release-status.yml`. A failure opens it with
 the run link and the last error lines, and comments again only when that error
@@ -39,7 +46,9 @@ bun run release:prepare --stable 0.1.2
 ```
 
 The release App opens a version/changelog PR with `release-intent.json` containing
-the version and a UUID. Review and merge that PR. Its exact main merge commit is
+the version and a UUID. It moves the Unreleased entries and every fragment under
+`changes/` into a new `## [0.1.2]` section of `CHANGELOG.md`, grouped by category,
+and deletes the fragments; `bun run changelog:preview` shows that section beforehand. Review and merge that PR. Its exact main merge commit is
 the stable candidate, and its merge authorizes publication once all gates pass.
 That commit produces no beta. Subsequent main commits target 0.1.3-beta.N.
 

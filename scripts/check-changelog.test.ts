@@ -6,10 +6,11 @@ import {
   checkChangelog,
   exemptPath,
   readPullRequestFacts,
-  unreleasedBullets,
+  type FragmentFile,
   type PullRequestFacts,
   type PullRequestFile,
 } from "./check-changelog.ts";
+import { unreleasedBullets } from "./lib/changelog-fragments.ts";
 import type { Gh } from "./lib/github-cli.ts";
 
 const changelog = (unreleased: string[], released: string[] = ["- Shipped thing."]) =>
@@ -96,17 +97,63 @@ describe("unreleased entries", () => {
 });
 
 describe("checkChangelog", () => {
-  it("passes a code change with a new Unreleased entry", () => {
-    const verdict = facts([code, changelogFile], withChangelog(changelog(["- Fixed it."])));
-    expect(verdict).toEqual({
+  const fragment = (
+    path: string,
+    status = "added",
+    content = "- Fixed a thing users saw.\n",
+  ): { file: PullRequestFile; fragment: FragmentFile } => ({
+    file: { filename: path, status },
+    fragment: { path, status, content },
+  });
+  const withFragments = (...items: ReturnType<typeof fragment>[]) => ({
+    files: [code, ...items.map((item) => item.file)],
+    fragments: items.map((item) => item.fragment),
+  });
+  const run = (
+    { files, fragments }: ReturnType<typeof withFragments>,
+    overrides: Partial<PullRequestFacts> = {},
+  ) => facts(files, { fragments, ...overrides });
+
+  it("passes a code change that adds a fragment", () => {
+    expect(run(withFragments(fragment("changes/fixed/thing.md")))).toEqual({
       ok: true,
-      reason: "CHANGELOG.md adds an entry under ## [Unreleased].",
+      reason: "Adds changelog fragment changes/fixed/thing.md.",
     });
   });
 
-  it("fails a code change without an entry and names the label", () => {
+  it("does not count an edited or renamed fragment as a new entry", () => {
+    expect(run(withFragments(fragment("changes/fixed/thing.md", "modified"))).ok).toBe(false);
+    expect(run(withFragments(fragment("changes/fixed/thing.md", "renamed"))).ok).toBe(false);
+    expect(run(withFragments(fragment("changes/README.md"))).ok).toBe(false);
+  });
+
+  it.each([
+    ["an unknown category", fragment("changes/bugs/thing.md")],
+    ["an uppercase slug", fragment("changes/fixed/Thing.md")],
+    ["a nested folder", fragment("changes/fixed/ui/thing.md")],
+    ["a non-Markdown file", fragment("changes/fixed/thing.txt")],
+    ["a heading", fragment("changes/fixed/thing.md", "added", "### Fixed\n\n- A fix.\n")],
+    ["prose", fragment("changes/fixed/thing.md", "added", "Fixed a thing.\n")],
+    ["an empty file", fragment("changes/fixed/thing.md", "modified", "\n")],
+  ])("fails a fragment with %s, even with the label", (_label, item) => {
+    const verdict = run(withFragments(item), { labels: ["no-changelog"] });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain("changes/README.md");
+  });
+
+  it("passes a code change with a new Unreleased entry and suggests a fragment", () => {
+    const verdict = facts([code, changelogFile], withChangelog(changelog(["- Fixed it."])));
+    expect(verdict).toMatchObject({
+      ok: true,
+      reason: "CHANGELOG.md adds an entry under ## [Unreleased].",
+    });
+    expect(verdict.ok && verdict.warning).toContain("changes/<category>/<slug>.md");
+  });
+
+  it("fails a code change without an entry and names fragments and the label", () => {
     const verdict = facts([code]);
     expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain("changes/<category>/<slug>.md");
     expect(verdict.reason).toContain('"no-changelog" label');
   });
 
@@ -189,10 +236,11 @@ describe("readPullRequestFacts", () => {
         expect(args).toContain("--paginate");
         return JSON.stringify(files);
       }
-      const ref = /^repos\/o\/r\/contents\/CHANGELOG\.md\?ref=(.+)$/.exec(path)?.[1];
-      if (ref !== undefined && ref in contents) {
+      const match = /^repos\/o\/r\/contents\/(.+)\?ref=(.+)$/.exec(path);
+      const key = match?.[1] === "CHANGELOG.md" ? match[2]! : match?.[1] + "@" + match?.[2];
+      if (match && key in contents) {
         expect(args).toContain("Accept: application/vnd.github.raw");
-        const content = contents[ref];
+        const content = contents[key];
         if (content === null) throw new Error("gh api exited 1: HTTP 404: Not Found");
         return content ?? "";
       }
@@ -216,6 +264,25 @@ describe("readPullRequestFacts", () => {
     await expect(readPullRequestFacts("o/r", 9, gh)).resolves.toMatchObject({
       changelog: { before: "", after: "after" },
     });
+  });
+
+  it("reads added and modified fragments at the head commit, skipping removed ones", async () => {
+    const gh = harness(
+      [
+        [
+          { filename: "changes/fixed/a.md", status: "added" },
+          { filename: "changes/changed/b.md", status: "modified" },
+          { filename: "changes/fixed/gone.md", status: "removed" },
+        ],
+      ],
+      { "changes/fixed/a.md@head-sha": "- A.\n", "changes/changed/b.md@head-sha": "- B.\n" },
+    );
+    const result = await readPullRequestFacts("o/r", 9, gh);
+    expect(result.fragments).toEqual([
+      { path: "changes/fixed/a.md", status: "added", content: "- A.\n" },
+      { path: "changes/changed/b.md", status: "modified", content: "- B.\n" },
+    ]);
+    expect(result.changelog).toBeUndefined();
   });
 });
 
