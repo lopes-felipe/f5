@@ -139,6 +139,14 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 160, name: "DropUnreadEventIndexes" },
       { migration_id: 161, name: "UsageNativeIdentity" },
       { migration_id: 162, name: "UsageFactsThreadIndex" },
+      { migration_id: 163, name: "DropUnreadReceiptIndexes" },
+    ]);
+    // Receipts are only ever found by command id, which the primary key serves.
+    const receiptIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(orchestration_command_receipts)`;
+    expect(receiptIndexes.map((index) => index.name)).toEqual([
+      "sqlite_autoindex_orchestration_command_receipts_1",
     ]);
     // The event log keeps the indexes its readers use: stream, sequence and type.
     const eventIndexes = yield* sql<{ name: string }>`PRAGMA index_list(orchestration_events)`;
