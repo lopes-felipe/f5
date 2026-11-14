@@ -11,6 +11,8 @@ import {
   renderSection,
   splitEntries,
   validateFragment,
+  unreleasedBullets,
+  unreleasedGroups,
 } from "./changelog-fragments.ts";
 import { createGitFixture, type GitFixture } from "./git-fixture.ts";
 
@@ -132,6 +134,39 @@ describe("sections", () => {
         "- After the code.",
       ].join("\n"),
     );
+  });
+
+  it("closes a fence only on a matching marker with nothing after it", () => {
+    expect(
+      splitEntries(["- Example:", "  ~~~", "  ~~~literal", "  x", "  ~~~", "- Next."]),
+    ).toEqual(["- Example:\n  ~~~\n  ~~~literal\n  x\n  ~~~", "- Next."]);
+    // A shorter or different marker does not close a longer fence.
+    expect(splitEntries(["- A:", "````", "```", "~~~~", "````", "- B."])).toEqual([
+      "- A:\n````\n```\n~~~~\n````",
+      "- B.",
+    ]);
+  });
+
+  it("treats headings inside fenced examples as content", () => {
+    const lines = ["### Fixed", "", "- Example:", "  ```md", "  ### Added", "  ```", "- After."];
+    expect(renderSection(parseSection(lines))).toBe(lines.join("\n"));
+    const changelog = [
+      "# Changelog",
+      "## [Unreleased]",
+      "### Fixed",
+      "- Example:",
+      "  ```md",
+      "  ## [example]",
+      "  ```",
+      "- New fix.",
+      "## [0.1.0] - 2026-10-01",
+      "- Old.",
+    ].join("\n");
+    expect(unreleasedBullets(changelog)).toEqual(["- Example:", "- New fix."]);
+    expect(unreleasedGroups(changelog).known.get("fixed")).toEqual([
+      "- Example:\n  ```md\n  ## [example]\n  ```",
+      "- New fix.",
+    ]);
   });
 
   it("keeps a fenced block directly below a bullet inside that bullet", () => {

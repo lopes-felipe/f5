@@ -7,6 +7,7 @@ import { compareCliReleaseVersions, versionToken } from "@t3tools/shared/cliRele
 import {
   FRAGMENTS_DIR,
   addFragments,
+  findOutsideFences,
   parseSection,
   readFragments,
   renderSection,
@@ -38,9 +39,9 @@ export function foldIntoRelease(
 ): string {
   if (fragments.length === 0) return text;
   const lines = text.split(/\r?\n/);
-  const heading = lines.findIndex(sectionHeading(version));
+  const heading = findOutsideFences(lines, sectionHeading(version));
   if (heading === -1) throw new Error(`Missing changelog section ${version}`);
-  const next = lines.findIndex((line, index) => index > heading && line.startsWith("## "));
+  const next = findOutsideFences(lines, (line) => line.startsWith("## "), heading + 1);
   const end = next === -1 ? lines.length : next;
   const section = renderSection(
     addFragments(parseSection(lines.slice(heading + 1, end)), fragments),

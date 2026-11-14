@@ -82,6 +82,41 @@ export function parseFragmentPath(path: string): { category: Category; slug: str
   return { category, slug: match[2]!.slice(0, -3) };
 }
 
+// Fences may be indented, since they usually sit inside a list item.
+const FENCE_OPEN = /^\s*(`{3,}|~{3,})/;
+
+/**
+ * Whether `line` closes a fence opened with `opener`: the same character, at least as long, and
+ * nothing but whitespace after it (CommonMark). `~~~literal` inside a `~~~` block is content.
+ */
+function closesFence(line: string, opener: string): boolean {
+  const marker = /^\s*(`{3,}|~{3,})\s*$/.exec(line)?.[1];
+  return marker !== undefined && marker[0] === opener[0] && marker.length >= opener.length;
+}
+
+/** For each line, whether it belongs to a fenced code block, fence lines included. */
+export function fencedLines(lines: readonly string[]): boolean[] {
+  let fence: string | undefined;
+  return lines.map((line) => {
+    if (fence !== undefined) {
+      if (closesFence(line, fence)) fence = undefined;
+      return true;
+    }
+    fence = FENCE_OPEN.exec(line)?.[1];
+    return fence !== undefined;
+  });
+}
+
+/** Index of the first line at or after `from` that matches outside any fenced code block. */
+export function findOutsideFences(
+  lines: readonly string[],
+  test: (line: string) => boolean,
+  from = 0,
+): number {
+  const fenced = fencedLines(lines);
+  return lines.findIndex((line, index) => index >= from && !fenced[index] && test(line));
+}
+
 /**
  * Splits lines into entries. A top-level `- ` bullet or heading, or any top-level line after a
  * blank line, starts an entry. Indented lines (with any blank lines between them), lazy
@@ -97,7 +132,7 @@ export function splitEntries(lines: readonly string[]): string[] {
     const current = entries.at(-1);
     if (fence !== undefined && current) {
       current.push(line);
-      if (line.trimStart().startsWith(fence)) fence = undefined;
+      if (closesFence(line, fence)) fence = undefined;
       continue;
     }
     if (line === "") {
@@ -112,7 +147,7 @@ export function splitEntries(lines: readonly string[]): string[] {
       entries.push([line]);
     }
     blanks = 0;
-    fence = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    fence = FENCE_OPEN.exec(line)?.[1];
   }
   return entries.map((entry) => entry.join("\n"));
 }
@@ -309,12 +344,14 @@ export function parseSection(lines: readonly string[]): SectionGroups {
     }
     body = [];
   };
-  for (const line of lines) {
-    if (/^###\s/.test(line)) {
+  // A heading-like line inside a fenced example is content, not a category.
+  const fenced = fencedLines(lines);
+  lines.forEach((line, index) => {
+    if (!fenced[index] && /^###\s/.test(line)) {
       flush();
       heading = line.trimEnd();
     } else body.push(line);
-  }
+  });
   flush();
   return groups;
 }
@@ -369,9 +406,9 @@ export function renderSection(groups: SectionGroups): string {
 
 /** Line range of the `## [Unreleased]` body: from after its heading to the next `## ` heading. */
 export function unreleasedRange(lines: readonly string[]): { start: number; end: number } | null {
-  const heading = lines.findIndex((line) => /^## \[Unreleased\]/i.test(line));
+  const heading = findOutsideFences(lines, (line) => /^## \[Unreleased\]/i.test(line));
   if (heading === -1) return null;
-  const next = lines.findIndex((line, index) => index > heading && line.startsWith("## "));
+  const next = findOutsideFences(lines, (line) => line.startsWith("## "), heading + 1);
   return { start: heading + 1, end: next === -1 ? lines.length : next };
 }
 
