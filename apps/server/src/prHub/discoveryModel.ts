@@ -36,6 +36,7 @@ import { formatSourceControlPullRequestKey } from "@t3tools/shared/sourceControl
 import { Cause } from "effect";
 
 import { GITHUB_SOURCE_CONTROL_CAPABILITIES } from "../sourceControl/GitHubSourceControlProvider.ts";
+import { prReviewRequestSource } from "./relevance.ts";
 
 export const DEFAULT_HOST = process.env.GH_HOST?.trim() || "github.com";
 const SEARCH_SORT_QUALIFIER = "sort:updated-desc";
@@ -165,7 +166,13 @@ export interface FetchResult {
   readonly coverage?: PrHubSnapshot["coverage"];
   readonly pullRequests: ReadonlyArray<NormalizedPr>;
   readonly cappedBuckets: ReadonlyArray<string>;
+  /** The read is incomplete, so absence proves nothing; reconciliation stays conservative. */
   readonly degraded: boolean;
+  /**
+   * The only gaps are deferred work (request budget, rate-limit window, unfinished
+   * pagination) that the next poll continues. That is backlog, not a failed refresh.
+   */
+  readonly resumable?: boolean;
   readonly errorMessage?: string | undefined;
 }
 
@@ -646,8 +653,19 @@ export function buildTrackedPullRequest(
   pr: NormalizedPr,
   viewerLogin: string,
   previous: ViewerStateRow | undefined,
+  relevance: { readonly directReviewTeams?: ReadonlyArray<string> } = {},
 ): TrackedPullRequest {
+  const reviewRequestSource = prReviewRequestSource(
+    pr,
+    viewerLogin,
+    new Set(
+      (relevance.directReviewTeams ?? []).map((team) =>
+        team.trim().replace(/^@/, "").toLowerCase(),
+      ),
+    ),
+  );
   const raw = {
+    reviewRequestSource,
     actionableUnresolvedThreadCount: pr.actionableUnresolvedThreadCount,
     headRefOid: pr.headRefOid,
     viewerLastReviewedCommitOid: pr.viewerLastReviewedCommitOid,
@@ -756,6 +774,7 @@ export function buildTrackedPullRequest(
     mergeStateStatus: pr.mergeStateStatus,
     viewerHasReviewed: pr.viewerHasReviewed,
     viewerReviewRequested: pr.viewerReviewRequested,
+    reviewRequestSource,
     reviewRequestReviewers: [...pr.reviewRequestReviewers],
     reviewRequestsCount: pr.reviewRequestsCount,
     commentsCount: pr.commentsCount,
@@ -805,23 +824,24 @@ export function normalizeGraphqlPr(input: {
   const reviewRequests = reviewRequestReviewers(input.node);
   const viewerLoginLower = input.viewerLogin.toLowerCase();
   const viewerTeamLower = new Set([...input.viewerTeams].map((team) => team.toLowerCase()));
-  const directReviewRequested = reviewRequests.some(
-    (reviewer) => reviewer.toLowerCase() === viewerLoginLower,
-  );
-  const teamReviewRequested = reviewRequests.some((reviewer) =>
-    viewerTeamLower.has(reviewer.toLowerCase()),
-  );
+  // The personal-request search is proof on its own, also when the reviewer list is cut short.
+  const directReviewRequested =
+    input.aliases.has("direct_review") ||
+    reviewRequests.some((reviewer) => reviewer.toLowerCase() === viewerLoginLower);
+  // A long reviewer list may be cut short, so the searches stand in for it. The broad
+  // `review-requested:` search also matches team requests, so it can only prove a team one.
   const requestAliasesTrusted = reviewRequests.length >= 20;
+  const teamReviewRequested =
+    reviewRequests.some((reviewer) => viewerTeamLower.has(reviewer.toLowerCase())) ||
+    (requestAliasesTrusted &&
+      !directReviewRequested &&
+      (input.aliases.has("team_review") || input.aliases.has("review_requested")));
   const roleSet = new Set<PrViewerRole>();
   if (input.aliases.has("author") || authorLogin?.toLowerCase() === viewerLoginLower) {
     roleSet.add("author");
   }
-  if ((requestAliasesTrusted && input.aliases.has("review_requested")) || directReviewRequested) {
-    roleSet.add("review_requested");
-  }
-  if ((requestAliasesTrusted && input.aliases.has("team_review")) || teamReviewRequested) {
-    roleSet.add("team_review_requested");
-  }
+  if (directReviewRequested) roleSet.add("review_requested");
+  if (teamReviewRequested) roleSet.add("team_review_requested");
   if (input.aliases.has("assignee")) roleSet.add("assignee");
   if (input.aliases.has("mentioned")) roleSet.add("mentioned");
   if (input.aliases.has("involved")) roleSet.add("involved");
@@ -865,11 +885,7 @@ export function normalizeGraphqlPr(input: {
         ? "denied"
         : "unknown",
     viewerHasReviewed: viewerHasReviewed(input.node, input.viewerLogin),
-    viewerReviewRequested:
-      (requestAliasesTrusted &&
-        (input.aliases.has("review_requested") || input.aliases.has("team_review"))) ||
-      directReviewRequested ||
-      teamReviewRequested,
+    viewerReviewRequested: directReviewRequested || teamReviewRequested,
     reviewRequestReviewers: reviewRequests,
     reviewRequestsCount: reviewRequests.length,
     commentsCount: numberValue(asRecord(input.node.comments)?.totalCount),
@@ -974,6 +990,7 @@ export function normalizeFallbackPr(input: {
 }
 
 const SEARCH_VARIABLES = {
+  direct_review: "dr",
   review_requested: "rr",
   team_review_0: "tr0",
   team_review_1: "tr1",
@@ -998,7 +1015,15 @@ export function buildSearchQueries(
   teams: ReadonlyArray<string>,
   now = Date.now(),
 ): PrHubSearchBucket[] {
+  // Ordered by how much the viewer cares: the search budget can run out mid-poll, and
+  // whatever is left resumes on the next one. `review-requested:` also matches requests to
+  // the viewer's teams, so `user-review-requested:` is the only proof of a personal request.
   const buckets: PrHubSearchBucket[] = [
+    { alias: "direct_review", query: `${SEARCH_OPEN_PREFIX} user-review-requested:${login}` },
+    { alias: "author", query: `${SEARCH_OPEN_PREFIX} author:${login}` },
+    { alias: "assignee", query: `${SEARCH_OPEN_PREFIX} assignee:${login}` },
+    { alias: "mentioned", query: `${SEARCH_OPEN_PREFIX} mentions:${login}` },
+    { alias: "involved", query: `${SEARCH_OPEN_PREFIX} involves:${login}` },
     { alias: "review_requested", query: `${SEARCH_OPEN_PREFIX} review-requested:${login}` },
   ];
   const normalizedTeams = teams.map((team) => team.trim()).filter(Boolean);
@@ -1016,17 +1041,11 @@ export function buildSearchQueries(
         query: `${SEARCH_OPEN_PREFIX} (${chunk.map((team) => `team-review-requested:${team}`).join(" OR ")})`,
       });
   }
-  buckets.push(
-    { alias: "author", query: `${SEARCH_OPEN_PREFIX} author:${login}` },
-    { alias: "assignee", query: `${SEARCH_OPEN_PREFIX} assignee:${login}` },
-    { alias: "mentioned", query: `${SEARCH_OPEN_PREFIX} mentions:${login}` },
-    { alias: "involved", query: `${SEARCH_OPEN_PREFIX} involves:${login}` },
-    {
-      alias: "recently_closed",
-      query: `is:pr -is:open author:${login} archived:false ${SEARCH_SORT_QUALIFIER}`,
-      updatedSince: Math.floor(now / 86_400_000) * 86_400_000 - 7 * 86_400_000,
-    },
-  );
+  buckets.push({
+    alias: "recently_closed",
+    query: `is:pr -is:open author:${login} archived:false ${SEARCH_SORT_QUALIFIER}`,
+    updatedSince: Math.floor(now / 86_400_000) * 86_400_000 - 7 * 86_400_000,
+  });
   return buckets;
 }
 

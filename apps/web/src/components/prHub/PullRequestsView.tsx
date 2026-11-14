@@ -16,6 +16,7 @@ import { useQuery, useInfiniteQuery, useQueryClient } from "@tanstack/react-quer
 import { useNavigate } from "@tanstack/react-router";
 import type {
   PrHubListInput,
+  PrHubSyncState,
   PullRequestKey,
   ThreadId,
   TrackedPullRequest,
@@ -109,6 +110,32 @@ function statusMessage(status: string): string | null {
       return "PR Hub refresh failed.";
     default:
       return null;
+  }
+}
+
+/** One calm line for the sync details disclosure; unfinished work is not a warning. */
+export function syncSummary(sync: PrHubSyncState | undefined): string {
+  if (!sync) return "Sync details";
+  const { searches, hydrations } = sync.pending;
+  const pending = [
+    searches > 0 ? `${searches} ${searches === 1 ? "search" : "searches"}` : null,
+    hydrations > 0 ? `${hydrations} pull ${hydrations === 1 ? "request" : "requests"}` : null,
+  ].filter((part) => part !== null);
+  switch (sync.state) {
+    case "syncing":
+      return pending.length
+        ? `Syncing in the background: ${pending.join(" and ")} left to check`
+        : "Syncing";
+    case "rate_limited":
+      return "Sync paused by GitHub's rate limit; it resumes on its own";
+    case "offline":
+      return "Sync paused: GitHub is unreachable";
+    case "auth_required":
+      return "Sync needs a GitHub connection";
+    case "error":
+      return "Sync details: the last refresh failed";
+    case "idle":
+      return "Sync details: up to date";
   }
 }
 
@@ -353,37 +380,35 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
         }
       />
 
-      {banner || snapshot?.coverage.length ? (
+      {banner ? (
         <div className="shrink-0 space-y-1 border-b border-warning/30 bg-warning/8 px-5 py-2 text-xs text-warning-foreground">
-          {banner ? (
-            <p>
-              {banner}
-              {bannerDetail ? ` ${bannerDetail}` : ""}
-              {snapshot?.status === "auth_required" && (
-                <Button
-                  size="sm"
-                  variant="link"
-                  onClick={() =>
-                    void navigate({
-                      to: "/settings",
-                      search: { category: "accounts", item: "accounts.github" },
-                    })
-                  }
-                >
-                  Open GitHub settings
-                </Button>
-              )}
-            </p>
-          ) : null}
-          {snapshot?.coverage.map((scope) => (
-            <p key={scope.scope}>{scope.description}</p>
-          ))}
+          <p>
+            {banner}
+            {bannerDetail ? ` ${bannerDetail}` : ""}
+            {snapshot?.status === "auth_required" && (
+              <Button
+                size="sm"
+                variant="link"
+                onClick={() =>
+                  void navigate({
+                    to: "/settings",
+                    search: { category: "accounts", item: "accounts.github" },
+                  })
+                }
+              >
+                Open GitHub settings
+              </Button>
+            )}
+          </p>
         </div>
       ) : null}
-      {snapshot?.scheduler ? (
+      {snapshot?.scheduler || snapshot?.coverage.length ? (
         <details className="shrink-0 border-b border-border px-5 py-2 text-xs">
-          <summary>Monitoring budgets and retry status</summary>
-          {snapshot.scheduler.retryAt ? (
+          <summary>{syncSummary(snapshot.sync)}</summary>
+          {snapshot.coverage.map((scope) => (
+            <p key={scope.scope}>{scope.description}</p>
+          ))}
+          {snapshot.scheduler?.retryAt ? (
             <p>
               GitHub requests resume after {formatAbsoluteTimeLabel(snapshot.scheduler.retryAt)}.
             </p>
@@ -391,31 +416,37 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
           {snapshot.nextRefreshAt ? (
             <p>Next monitoring refresh: {formatAbsoluteTimeLabel(snapshot.nextRefreshAt)}.</p>
           ) : null}
-          <p>{snapshot.scheduler.activeOrQueuedRequests} active or queued requests</p>
-          <table className="mt-2 w-full text-left">
-            <thead>
-              <tr>
-                <th>Resource</th>
-                <th>Background window used</th>
-                <th>GitHub quota remaining</th>
-                <th>Background retry</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot.scheduler.resources.map((resource) => (
-                <tr key={resource.resource}>
-                  <td>{resource.resource.toUpperCase()}</td>
-                  <td>
-                    {resource.used} / {resource.windowLimit}
-                  </td>
-                  <td>{resource.remaining ?? "Unknown"}</td>
-                  <td>
-                    {resource.resumeAt ? formatAbsoluteTimeLabel(resource.resumeAt) : "Available"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {snapshot.scheduler ? (
+            <>
+              <p>{snapshot.scheduler.activeOrQueuedRequests} active or queued requests</p>
+              <table className="mt-2 w-full text-left">
+                <thead>
+                  <tr>
+                    <th>Resource</th>
+                    <th>Background window used</th>
+                    <th>GitHub quota remaining</th>
+                    <th>Background retry</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snapshot.scheduler.resources.map((resource) => (
+                    <tr key={resource.resource}>
+                      <td>{resource.resource.toUpperCase()}</td>
+                      <td>
+                        {resource.used} / {resource.windowLimit}
+                      </td>
+                      <td>{resource.remaining ?? "Unknown"}</td>
+                      <td>
+                        {resource.resumeAt
+                          ? formatAbsoluteTimeLabel(resource.resumeAt)
+                          : "Available"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          ) : null}
         </details>
       ) : null}
       <PrAccounts

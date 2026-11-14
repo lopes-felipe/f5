@@ -39,7 +39,7 @@ it("defers real Git and PR Hub interval writes and restores a rejected PR Hub sa
   queryClient.setQueryData(serverQueryKeys.config(), {
     settings: {
       ...DEFAULT_UNIFIED_SETTINGS,
-      prHub: { pollIntervalSeconds: 180, excludeRepos: [] },
+      prHub: { ...DEFAULT_UNIFIED_SETTINGS.prHub, pollIntervalSeconds: 180 },
     },
     providers: [],
   });
@@ -59,7 +59,7 @@ it("defers real Git and PR Hub interval writes and restores a rejected PR Hub sa
   await userEvent.tab();
   await vi.waitFor(() => expect(mocks.update).toHaveBeenCalledOnce());
   expect(mocks.update).toHaveBeenCalledWith({
-    prHub: { pollIntervalSeconds: 300, excludeRepos: [] },
+    prHub: { ...DEFAULT_UNIFIED_SETTINGS.prHub, pollIntervalSeconds: 300 },
   });
   await expect.element(prHub).toHaveValue(180);
   await prHub.fill("300");

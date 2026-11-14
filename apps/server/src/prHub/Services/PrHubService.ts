@@ -108,6 +108,9 @@ export interface PrHubServiceShape {
   readonly ignore: (
     input: PrHubIgnoreInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly unignore: (
+    input: PrHubIgnoreInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
   readonly acknowledgeAttention: (
     input: PrHubAcknowledgeAttentionInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;

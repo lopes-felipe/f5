@@ -1,4 +1,6 @@
 import { prHubRecoveryCandidates } from "./recovery.ts";
+import { applyPrHubRelevance } from "./relevance.ts";
+import { PR_HUB_BACKLOG_ERROR_KIND } from "./refreshSchedule.ts";
 import { assertPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { unknownMergeRequirements } from "./mergeRequirements.ts";
 import { createPrHubViewerActions, type PrHubViewerActionsContext } from "./viewerActions.ts";
@@ -306,12 +308,14 @@ export function createPrHubRepository(
               ...scope,
               status: "partial" as const,
               remainingTasks: unverifiedCount,
+              remainingHydrations: unverifiedCount,
               description: recoveryMessage,
             }
           : scope,
       );
-      return {
-        status: hasUnverifiedFacts ? "degraded" : (refresh?.status ?? "ok"),
+      const snapshot = {
+        // Saved rows awaiting revalidation are backlog the next poll continues, not a failure.
+        status: refresh?.status ?? "ok",
         account: viewer.context,
         viewerLogin: resolvedViewer,
         host,
@@ -327,13 +331,18 @@ export function createPrHubRepository(
         pullRequests: sortTrackedPrs(pullRequests),
         recentlyResolved: sortTrackedPrs(recentlyResolved),
         lastPolledAt: refresh?.last_polled_at ?? null,
-        ...(refresh?.error_kind ? { errorKind: refresh.error_kind } : {}),
+        ...(refresh?.error_kind
+          ? { errorKind: refresh.error_kind }
+          : hasUnverifiedFacts
+            ? { errorKind: PR_HUB_BACKLOG_ERROR_KIND }
+            : {}),
         ...(refresh?.error_message || recoveryMessage
           ? { errorMessage: [refresh?.error_message, recoveryMessage].filter(Boolean).join(" ") }
           : {}),
         coverage: effectiveCoverage,
         cappedBuckets: effectiveCoverage.flatMap((scope) => scope.limits ?? []),
       } satisfies PrHubSnapshot;
+      return applyPrHubRelevance(snapshot, recoverySettings.prHub);
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("failed to hydrate PR Hub snapshot", {

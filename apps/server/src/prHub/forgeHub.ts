@@ -36,6 +36,7 @@ import {
   login,
 } from "./forgeModel.ts";
 import { listPrHubPullRequests, prHubInvalidation, prHubOverview } from "./readModel.ts";
+import { prHubSyncState } from "./syncState.ts";
 
 const PAGE_INFO = { hasNextPage: false, endCursor: null, truncated: false } as const;
 const MAX_TRACKED = 500;
@@ -656,7 +657,13 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       refreshNow,
       streamChanges: Stream.fromPubSub(changes),
       getOverview: (input) =>
-        Effect.sync(() => prHubOverview(snapshot(), String(revision), input.stalledBefore)),
+        Effect.sync(() => {
+          const current = snapshot();
+          return {
+            ...prHubOverview(current, String(revision), input.stalledBefore),
+            sync: prHubSyncState(current, undefined, null),
+          };
+        }),
       listPullRequests: (input) =>
         Effect.sync(() => listPrHubPullRequests(snapshot(), String(revision), input)),
       track,
@@ -702,6 +709,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         editLocal(input.key, input.accountGeneration, {
           ignoredAt: new Date().toISOString(),
         }),
+      unignore: (input) => editLocal(input.key, input.accountGeneration, { ignoredAt: null }),
       acknowledgeAttention: (input) =>
         editLocal(input.key, input.accountGeneration, {
           acknowledgedAt: new Date().toISOString(),
