@@ -3,6 +3,13 @@
 The local Agent Bridge is available under Settings → Tools → Agent Bridge. It is off by default.
 The unrelated bot task-board UI remains shelved. Remote listeners are not enabled by this change.
 
+The [thread CLI](user/thread-cli.md) uses a separate owner-only loopback listener
+available while F5 runs, independently of the Agent Bridge switch. Its temporary
+credentials can reach all local projects and use project permissions. This does
+not widen external bridge grants. Owner commands intentionally remain available
+in the integrated terminal and to other processes running as the same OS user;
+the STDIO bridge's best-effort agent process guard is not an OS security boundary.
+
 The Agent Bridge is a vendor-neutral MCP server inside F5. A ChatGPT Dot, the ChatGPT desktop
 app, or any MCP client can connect to it to read the projects you share and start supervised
 coding threads.

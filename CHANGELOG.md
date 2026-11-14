@@ -8,6 +8,7 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
 
 ### Added
 
+- Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads or paused queues waiting for you. Local commands use your project defaults, fall back to a ready provider when needed, and can access all projects without enabling the external Agent Bridge. Lists load only the newest 100 threads; transcript reads fetch bounded pages while preserving full text.
 - The Claude card on the Usage page lists your plan's limit resets (such as **Full reset** and **Fable reset**) with their expiry, and each has a button that uses it after you confirm, as on claude.ai. A reset that can't be used yet says why, such as "Usable once you hit a limit". When your tightest Claude limit is used up, the reset Claude suggests next appears beside it, and threads paused on that limit resume once it is cleared. F5 reads the sign-in Claude Code already stores, so macOS may ask once to let F5 read it from the Keychain.
 - Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
 - Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.

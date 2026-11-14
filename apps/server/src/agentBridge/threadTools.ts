@@ -1,5 +1,5 @@
 import { truncateUtf8 } from "../orchestration/threadTranscript.ts";
-import { buildNewThreadSubmission } from "../turnSubmission.ts";
+import { buildExistingThreadSubmission, buildNewThreadSubmission } from "../turnSubmission.ts";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { isListedModel, pickPreferredModel } from "@t3tools/shared/model";
 /**
@@ -319,6 +319,7 @@ export const resolveBridgeProvider = (
   providers: ReadonlyArray<ServerProvider>,
   settings: ServerSettings,
   requested: { readonly instanceId?: string; readonly model?: string },
+  options: { readonly supervisedOnly?: boolean } = {},
 ): Effect.Effect<{ provider: ServerProvider; model: string }, AgentBridgeToolError> =>
   Effect.gen(function* () {
     const usable = providers.filter(isProviderUsable);
@@ -334,7 +335,7 @@ export const resolveBridgeProvider = (
           `${providerLabel(requestedProvider)} is not ready in F5 (not installed, not signed in, or failing its health check).`,
         );
       provider = requestedProvider;
-      if (!supportsSupervisedTurns(provider.driver))
+      if (options.supervisedOnly !== false && !supportsSupervisedTurns(provider.driver))
         return yield* toolError(
           `${providerLabel(provider)} cannot run supervised turns, so the Agent Bridge cannot use it.`,
         );
@@ -342,9 +343,18 @@ export const resolveBridgeProvider = (
       provider =
         usable.find(
           (entry) =>
-            entry.instanceId === textDefault.instanceId && supportsSupervisedTurns(entry.driver),
-        ) ?? usable.find((entry) => supportsSupervisedTurns(entry.driver));
-      if (!provider) return yield* toolError("No ready provider in F5 supports supervised turns.");
+            entry.instanceId === textDefault.instanceId &&
+            (options.supervisedOnly === false || supportsSupervisedTurns(entry.driver)),
+        ) ??
+        usable.find(
+          (entry) => options.supervisedOnly === false || supportsSupervisedTurns(entry.driver),
+        );
+      if (!provider)
+        return yield* toolError(
+          options.supervisedOnly === false
+            ? "No ready provider in F5."
+            : "No ready provider in F5 supports supervised turns.",
+        );
     }
     if (requested.model !== undefined) {
       if (
@@ -1157,22 +1167,17 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
                 { retryAfterSeconds: 30 },
               );
             const submissionId = `${AGENT_BRIDGE_COMMAND_PREFIX}${mintId()}`;
-            const command: ClientThreadTurnStartCommand = {
-              type: "thread.turn.start",
+            const command = buildExistingThreadSubmission({
               commandId: CommandId.makeUnsafe(submissionId),
               threadId: thread.id,
-              message: {
-                messageId: MessageId.makeUnsafe(mintId()),
-                role: "user",
-                text: input.prompt,
-                attachments: [],
-              },
+              messageId: MessageId.makeUnsafe(mintId()),
+              prompt: input.prompt,
               model: thread.model,
               ...(thread.modelSelection ? { modelSelection: thread.modelSelection } : {}),
               runtimeMode: "approval-required",
               interactionMode: thread.interactionMode,
               createdAt: now().toISOString(),
-            };
+            });
             return {
               command,
               submissionId,
