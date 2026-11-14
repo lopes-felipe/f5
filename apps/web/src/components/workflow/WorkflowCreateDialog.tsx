@@ -21,6 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type {
   ModelSlug,
   ProjectId,
@@ -595,19 +596,24 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         setProjectChangeNote(null);
         const mention = composerFileMention(relativePath);
         if (mention === null) throw new Error("The file path is invalid.");
-        setRequirementDraft((current) => {
-          const prefix =
-            current.text + (current.text.length > 0 && !/\s$/.test(current.text) ? " " : "");
-          const text = prefix + mention + " ";
-          const mentions = [
-            ...current.mentions,
-            createComposerMention(relativePath, prefix.length),
-          ];
-          return {
-            text,
-            mentions,
-            cursor: collapseExpandedComposerCursor(text, text.length, mentions),
-          };
+        // Focusing publishes the editor's snapshot back to this controlled
+        // draft. Commit the mention first so an early frame cannot overwrite
+        // the new draft with the snapshot from before the drop.
+        flushSync(() => {
+          setRequirementDraft((current) => {
+            const prefix =
+              current.text + (current.text.length > 0 && !/\s$/.test(current.text) ? " " : "");
+            const text = prefix + mention + " ";
+            const mentions = [
+              ...current.mentions,
+              createComposerMention(relativePath, prefix.length),
+            ];
+            return {
+              text,
+              mentions,
+              cursor: collapseExpandedComposerCursor(text, text.length, mentions),
+            };
+          });
         });
         window.requestAnimationFrame(focusPromptEditor);
       })

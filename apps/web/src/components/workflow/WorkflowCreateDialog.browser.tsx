@@ -1581,6 +1581,59 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("preserves a dropped mention when the focus frame precedes the queued React render", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await Promise.all(
+        page
+          .getByRole("dialog")
+          .element()
+          .getAnimations({ subtree: true })
+          .map((animation) => animation.finished),
+      );
+      const editor = page.getByTestId("composer-editor");
+      await editor.fill("@docs/AGENTS.md ");
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      let authorize!: (entry: { relativePath: string; kind: "file" }) => void;
+      nativeApiMocks.authorizeEntry.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            authorize = resolve;
+          }),
+      );
+      const transfer = new DataTransfer();
+      writeFileTreeDragMention(transfer, {
+        projectId: "project-1",
+        workspaceIdentity: workspaceIdentityForRoot("project-1", "/repo/project"),
+        relativePath: "docs/AGENTS.md",
+      });
+      getRequirementEditorSurface().dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+      await vi.waitFor(() => expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledOnce());
+      // React can defer a default-priority render beyond the next frame.
+      // Deliver that frame before React's scheduled task, after pending microtasks.
+      const frame = vi.spyOn(window, "requestAnimationFrame").mockImplementationOnce((callback) => {
+        queueMicrotask(() => callback(performance.now()));
+        return 0;
+      });
+      try {
+        authorize({ relativePath: "docs/AGENTS.md", kind: "file" });
+        await vi.waitFor(() =>
+          expect(document.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
+        );
+        expect(editor.element().textContent).toContain("@docs/AGENTS.md");
+      } finally {
+        frame.mockRestore();
+      }
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps workflow mention identity through deletion, undo and redo beside identical literal text", async () => {
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
