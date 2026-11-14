@@ -6,7 +6,6 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type ThreadEnvMode,
-  type ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import {
@@ -50,10 +49,11 @@ import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker
 import { RuntimeModePicker } from "../chat/RuntimeModePicker";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
-  applyHomeComposerSettings,
   HOME_COMPOSER_DRAFT_ID,
   homeComposerDraft,
+  type HomeComposerSettings,
   homeSelectionKey,
+  readHomeComposerSettings,
 } from "./homeComposerDraft";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 
@@ -73,10 +73,10 @@ export interface HomeComposerHandle {
    */
   readonly start: (text: string) => Promise<BackgroundThreadStartResult>;
   /**
-   * Gives a thread draft the model, effort and modes on screen, for the full composer.
-   * The modes are the ones shown, a project default included.
+   * The model, effort and modes on screen, for the full composer. The modes are the ones
+   * shown, a project default included. Null until they have loaded for this selection.
    */
-  readonly applySettings: (threadId: ThreadId) => void;
+  readonly settings: () => HomeComposerSettings | null;
 }
 
 async function ensureScratchProject(): Promise<Project | undefined> {
@@ -200,8 +200,7 @@ export default function HomeComposerControls(props: {
   useImperativeHandle(
     props.handleRef,
     () => ({
-      applySettings: (threadId) =>
-        applyHomeComposerSettings(threadId, selectionKey, { runtimeMode, interactionMode }),
+      settings: () => readHomeComposerSettings(selectionKey, { runtimeMode, interactionMode }),
       start: async (text) => {
         if (providersLoading) {
           throw new Error("Still loading the providers. Try again in a moment.");

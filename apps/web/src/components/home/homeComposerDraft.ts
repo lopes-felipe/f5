@@ -1,5 +1,8 @@
 import {
+  type ProviderInstanceId,
   type ProviderInteractionMode,
+  type ProviderKind,
+  type ProviderModelOptions,
   type RuntimeMode,
   type ThreadEnvMode,
   ThreadId,
@@ -75,26 +78,60 @@ export const homeComposerDraft = {
   },
 };
 
+/** The model, effort and modes Home shows, as they were at one moment. */
+export interface HomeComposerSettings {
+  readonly provider: ProviderKind | null;
+  readonly providerInstanceId: ProviderInstanceId | null;
+  readonly model: string | null;
+  /** Null when Home shows the model's defaults. */
+  readonly modelOptions: ProviderModelOptions | null;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}
+
 /**
- * Gives a thread draft the model, effort and modes shown on Home, so the full composer
- * opens with what was on screen. `modes` are the ones Home resolved and displayed, which
- * may be a project default the Home draft never stored: both are always written, or a
- * reused draft would keep modes Home did not show. Does nothing until Home's controls
- * have loaded the settings for this selection.
+ * The settings on Home right now, to hand to the full composer later. `modes` are the ones
+ * Home resolved and displayed, which may be a project default the Home draft never stored.
+ * Null until Home's controls have loaded the settings for this selection.
+ *
+ * Read them before anything is awaited: Home keeps one draft for every project, so picking
+ * another project while the thread draft is being created replaces what is read here.
+ */
+export function readHomeComposerSettings(
+  selection: string,
+  modes: Pick<HomeComposerSettings, "runtimeMode" | "interactionMode">,
+): HomeComposerSettings | null {
+  if (seededSelection !== selection) return null;
+  const home = useComposerDraftStore.getState().draftsByThreadId[HOME_COMPOSER_DRAFT_ID];
+  return {
+    provider: home?.provider ?? null,
+    providerInstanceId: home?.providerInstanceId ?? null,
+    model: home?.model ?? null,
+    modelOptions: home?.modelOptions ?? null,
+    ...modes,
+  };
+}
+
+/**
+ * Gives a thread draft the settings read from Home, so the full composer opens with what
+ * was on screen. The effort and both modes are always written, or a reused draft would
+ * keep ones Home did not show.
  */
 export function applyHomeComposerSettings(
   threadId: ThreadId,
-  selection: string,
-  modes: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+  settings: HomeComposerSettings,
 ): void {
-  if (seededSelection !== selection) return;
   const drafts = useComposerDraftStore.getState();
-  const home = drafts.draftsByThreadId[HOME_COMPOSER_DRAFT_ID];
-  if (home?.provider) drafts.setProvider(threadId, home.provider);
-  if (home?.providerInstanceId) drafts.setProviderInstance(threadId, home.providerInstanceId);
-  if (home?.model) drafts.setModel(threadId, home.model);
-  if (home?.modelOptions) drafts.setModelOptions(threadId, home.modelOptions);
-  drafts.setRuntimeMode(threadId, modes.runtimeMode);
-  drafts.setInteractionMode(threadId, modes.interactionMode);
-  drafts.setDraftThreadContext(threadId, modes);
+  if (settings.provider) drafts.setProvider(threadId, settings.provider);
+  if (settings.providerInstanceId) {
+    drafts.setProviderInstance(threadId, settings.providerInstanceId);
+  }
+  if (settings.model) drafts.setModel(threadId, settings.model);
+  drafts.setModelOptions(threadId, settings.modelOptions);
+  drafts.setRuntimeMode(threadId, settings.runtimeMode);
+  drafts.setInteractionMode(threadId, settings.interactionMode);
+  drafts.setDraftThreadContext(threadId, {
+    runtimeMode: settings.runtimeMode,
+    interactionMode: settings.interactionMode,
+  });
 }
