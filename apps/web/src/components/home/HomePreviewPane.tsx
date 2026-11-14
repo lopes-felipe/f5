@@ -49,6 +49,9 @@ import {
   approvalEnterDecision,
   HomeApprovalActions,
   type HomeApprovalState,
+  type HomePreviewKeys,
+  homePreviewKeys,
+  homeQueueSnapshotQueryKey,
   HomeReplyBox,
   useHomeInlineActions,
 } from "./HomeInlineActions";
@@ -96,6 +99,8 @@ export interface HomePreviewPaneProps {
   readonly peek: OrchestrationThreadPeek | undefined;
   readonly actions: HomePreviewActions;
   readonly handleRef?: Ref<HomePreviewHandle> | undefined;
+  /** What Enter and D do on the item shown, so the key hints only name keys that act. */
+  readonly onKeysChange?: ((itemId: string, keys: HomePreviewKeys) => void) | undefined;
   /** The preview stands alone (narrow layout), so it holds focus for Home's keys. */
   readonly holdsFocus?: boolean | undefined;
   /** The snooze menu is opened by its button or by Home's H key. */
@@ -408,7 +413,7 @@ function ThreadMeta(props: {
 function QueuePausedBody(props: { readonly threadId: ThreadId }) {
   const queuedCount = useNextTurnQueueCount(props.threadId);
   const snapshot = useQuery({
-    queryKey: ["home-queue-snapshot", props.threadId] as const,
+    queryKey: homeQueueSnapshotQueryKey(props.threadId),
     queryFn: () => ensureNativeApi().nextTurnQueue.list({ threadId: props.threadId }),
     staleTime: 10_000,
   });
@@ -515,6 +520,7 @@ interface ThreadPreviewProps {
   readonly peek: OrchestrationThreadPeek | undefined;
   readonly actions: HomePreviewActions;
   readonly handleRef?: Ref<HomePreviewHandle> | undefined;
+  readonly onKeysChange?: HomePreviewPaneProps["onKeysChange"];
   readonly holdsFocus?: boolean | undefined;
   readonly snoozeMenu: HomePreviewPaneProps["snoozeMenu"];
   readonly onBack?: (() => void) | undefined;
@@ -559,6 +565,7 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
     decision,
     cwd,
     focusQueue: props.actions.focusQueue,
+    openThread: props.actions.openThread,
   });
   const articleRef = useHoldFocus(props.holdsFocus);
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
@@ -570,6 +577,17 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
     openApproval !== null ||
     (item.kind === "plan" && decision.plan !== null) ||
     (item.kind === "queue-paused" && queuePaused);
+
+  // The hints below the queue name Enter and D only for what they would do here.
+  const keys = homePreviewKeys({
+    kind: item.kind,
+    openApproval,
+    hasPlan: decision.plan !== null,
+  });
+  const { onKeysChange } = props;
+  useEffect(() => {
+    onKeysChange?.(item.id, { primary: keys.primary, deny: keys.deny });
+  }, [item.id, keys.deny, keys.primary, onKeysChange]);
 
   useImperativeHandle(props.handleRef, () => ({
     primary: () => {
@@ -683,6 +701,7 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
             label={replyBox.label}
             placeholder={replyBox.placeholder}
             enabled={inline.enabled}
+            busy={inline.busy}
             inputRef={replyRef}
             onSubmit={(text) =>
               inline.reply(text, {
@@ -802,6 +821,7 @@ export default function HomePreviewPane(props: HomePreviewPaneProps) {
       peek={props.peek}
       actions={props.actions}
       handleRef={props.handleRef}
+      onKeysChange={props.onKeysChange}
       holdsFocus={props.holdsFocus}
       snoozeMenu={props.snoozeMenu}
       onBack={props.onBack}

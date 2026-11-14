@@ -35,6 +35,7 @@ import {
   homeSettleBlocker,
   type HomeWorkflowRow,
 } from "./homeItems";
+import type { HomePreviewKeys } from "./HomeInlineActions";
 import type { HomePreviewActions, HomePreviewHandle } from "./HomePreviewPane";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 import { HomeQueueList } from "./HomeQueueList";
@@ -93,28 +94,31 @@ interface KeyHint {
   readonly label: string;
 }
 
-/** The keys that apply to the selected item: Enter approves, implements or opens by its kind. */
-function keyHintsFor(item: HomeItem | null): ReadonlyArray<KeyHint> {
-  const kind = item?.type === "thread" ? item.kind : null;
+/**
+ * The keys that act on the selected item. On an approval or a plan, Enter and D belong to
+ * what the preview has on screen: `keys` says what they would do there, and is null until
+ * the preview shows the item. A key that would do nothing is not listed.
+ */
+function keyHintsFor(item: HomeItem | null, keys: HomePreviewKeys | null): ReadonlyArray<KeyHint> {
+  const thread = item?.type === "thread" ? item : null;
+  const kind = thread?.kind ?? null;
   const reply = kind ? HOME_REPLY_BOX_BY_KIND[kind] : null;
+  const settles =
+    thread !== null &&
+    homeSettleBlocker({ kind: thread.kind, pinned: thread.thread.pinnedAt != null }) === null;
   return [
     { keys: ["J", "K"], label: "move" },
-    ...(kind === "approval"
+    ...(kind === "approval" || kind === "plan"
       ? [
-          { keys: ["↵"], label: "approve" },
-          { keys: ["D"], label: "deny" },
+          ...(keys?.primary ? [{ keys: ["↵"], label: keys.primary }] : []),
+          ...(keys?.deny ? [{ keys: ["D"], label: "deny" }] : []),
           { keys: ["O"], label: "open" },
         ]
-      : kind === "plan"
-        ? [
-            { keys: ["↵"], label: "implement" },
-            { keys: ["O"], label: "open" },
-          ]
-        : [{ keys: ["↵", "O"], label: "open" }]),
+      : [{ keys: ["↵", "O"], label: "open" }]),
     ...(reply ? [{ keys: ["R"], label: reply.label.toLowerCase() }] : []),
-    ...(item?.type === "thread"
+    ...(thread
       ? [
-          { keys: ["E"], label: "settle" },
+          ...(settles ? [{ keys: ["E"], label: "settle" }] : []),
           { keys: ["H"], label: "snooze" },
           { keys: ["P"], label: "pin" },
         ]
@@ -144,6 +148,20 @@ export function HomeMissionControl() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // Set by the preview once it shows the selected item; null while it loads.
   const previewRef = useRef<HomePreviewHandle | null>(null);
+  // What Enter and D do in the preview, by the item it reported them for.
+  const [previewKeys, setPreviewKeys] = useState<{
+    readonly itemId: string;
+    readonly keys: HomePreviewKeys;
+  } | null>(null);
+  const onPreviewKeysChange = useCallback((itemId: string, keys: HomePreviewKeys) => {
+    setPreviewKeys((current) =>
+      current?.itemId === itemId &&
+      current.keys.primary === keys.primary &&
+      current.keys.deny === keys.deny
+        ? current
+        : { itemId, keys },
+    );
+  }, []);
 
   // ── Selection ──────────────────────────────────────────────────────
   // A string key, so a rebuilt queue with the same rows does not count as a change.
@@ -479,6 +497,7 @@ export function HomeMissionControl() {
                 peek={selectedThread ? peeks.get(selectedThread.id) : undefined}
                 actions={actions}
                 handleRef={previewRef}
+                onKeysChange={onPreviewKeysChange}
                 holdsFocus={narrow}
                 snoozeMenu={{ ...snoozeMenu, onOpenChange: setSnoozeMenuOpen }}
                 onBack={narrow ? closeDetail : undefined}
@@ -495,7 +514,12 @@ export function HomeMissionControl() {
           data-slot="home-key-hints"
           className="flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs text-muted-foreground"
         >
-          {keyHintsFor(selectedItem).map((hint) => (
+          {keyHintsFor(
+            selectedItem,
+            previewKeys !== null && previewKeys.itemId === selectedItem?.id
+              ? previewKeys.keys
+              : null,
+          ).map((hint) => (
             <span key={hint.label} className="inline-flex items-center gap-1">
               {hint.keys.map((key) => (
                 <Kbd key={key}>{key}</Kbd>

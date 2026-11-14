@@ -24,6 +24,7 @@ import { render } from "vitest-browser-react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useComposerFocusRequestStore } from "../../composerFocusRequestStore";
+import { resetThreadRepliesForTests } from "../../lib/sendThreadReply";
 import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { useStore } from "../../store";
 import type { Project, Thread } from "../../types";
@@ -34,6 +35,7 @@ import {
   resetWsConnectionStateForTests,
 } from "../../wsConnectionState";
 import { SidebarProvider } from "../ui/sidebar";
+import { resetHomeInlineStoreForTests } from "./homeInlineStore";
 import { HomeMissionControl } from "./HomeMissionControl";
 import { useHomeSelectionStore } from "./homeSelectionStore";
 import { toastManager } from "../ui/toast";
@@ -124,10 +126,14 @@ function queueSnapshot(threadId: string, overrides: object = {}) {
   };
 }
 const listQueue = vi.fn(async (input: { threadId: string }) => queueSnapshot(input.threadId));
-const setQueuePaused = vi.fn(
-  async (input: { threadId: string; paused: boolean; expectedRevision: number }) =>
-    queueSnapshot(input.threadId, { paused: input.paused, revision: input.expectedRevision + 1 }),
-);
+const resumedQueue = async (input: {
+  threadId: string;
+  paused: boolean;
+  expectedRevision: number;
+}) => queueSnapshot(input.threadId, { paused: input.paused, revision: input.expectedRevision + 1 });
+const setQueuePaused = vi.fn(resumedQueue);
+const noPausedQueues = async () => ({ threads: [] as ReadonlyArray<object> });
+const queueSummary = vi.fn(noPausedQueues);
 const listBranches = vi.fn(async (_input: { cwd: string }) => ({
   isRepo: true,
   branches: [{ name: "main", current: true }],
@@ -363,7 +369,7 @@ describe("HomeMissionControl", () => {
         submit: submitTurn,
         list: listQueue,
         setPaused: setQueuePaused,
-        summary: async () => ({ threads: [] }),
+        summary: () => queueSummary(),
       },
       git: { listBranches },
     } as unknown as NativeApi;
@@ -398,7 +404,14 @@ describe("HomeMissionControl", () => {
     getPrHubOverview.mockImplementation(async () => ({ counts: { needs_you: 0 } }));
     getDiskSpace.mockImplementation(async () => emptyDiskSpaceStatus);
     useHomeSelectionStore.setState({ selectedId: null, itemIds: [] });
-    useNextTurnQueueStore.setState({ summary: { threads: [] } });
+    // A resumed queue leaves its snapshot behind, which outranks the next test's summary.
+    useNextTurnQueueStore.setState({ summary: { threads: [] }, byThreadId: {} });
+    resetHomeInlineStoreForTests();
+    resetThreadRepliesForTests();
+    dispatchCommand.mockImplementation(async () => ({ sequence: 1 }));
+    setQueuePaused.mockImplementation(resumedQueue);
+    listQueue.mockImplementation(async (input) => queueSnapshot(input.threadId));
+    queueSummary.mockImplementation(noPausedQueues);
     vi.restoreAllMocks();
   });
 
@@ -1280,6 +1293,8 @@ describe("HomeMissionControl", () => {
         .filter((command) => command.type === "thread.approval.respond");
     const submittedCommand = (index = 0) => submitTurn.mock.calls[index]![0].command;
     const queue = () => page.getByRole("listbox", { name: "Queue" });
+    const keyHints = () =>
+      document.querySelector('[data-slot="home-key-hints"]')?.textContent ?? "";
 
     it("waits for the preview before Enter approves, then answers the request on screen", async () => {
       const thread = approvalThread();
@@ -1401,6 +1416,9 @@ describe("HomeMissionControl", () => {
         const approve = page.getByRole("button", { name: /Approve once/ });
         await expect.element(approve).toBeVisible();
         expect(approve.element().textContent).toBe("Approve once");
+        // The hints name D, which declines, and not an Enter that would do nothing.
+        await vi.waitFor(() => expect(keyHints()).toContain("deny"));
+        expect(keyHints()).not.toContain("approve");
         await expect.element(queue()).toHaveFocus();
         await userEvent.keyboard("{Enter}");
         // A click is still a deliberate yes.
@@ -1671,6 +1689,241 @@ describe("HomeMissionControl", () => {
         );
         // The summary read after it says no queue is paused: the row leaves.
         await expect.element(page.getByText("Nothing needs you")).toBeInTheDocument();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("does not approve or implement on Enter after a click in the preview", async () => {
+      const thread = approvalThread();
+      serverPending(...thread.activities);
+      const view = await renderHome([thread, PLAN_THREAD]);
+      try {
+        const approval = page.getByRole("article", { name: "Needs an approval" });
+        // Reading the request: a click in its text, then on the pane's own header.
+        for (const target of [
+          approval.getByText("git push --force-with-lease"),
+          approval.getByRole("heading", { name: "Needs an approval" }),
+        ]) {
+          await target.click();
+          expect(approval.element().contains(document.activeElement)).toBe(true);
+          await userEvent.keyboard("{Enter}");
+          await userEvent.keyboard("{ArrowDown}");
+          await expect.poll(selectedTitle).toBe("Needs an approval");
+        }
+        // The letter keys still work from there.
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Plan the queue");
+        const plan = page.getByRole("article", { name: "Plan the queue" });
+        await plan.getByText("Build it").click();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.keyboard("{ArrowUp}");
+        await expect.poll(selectedTitle).toBe("Plan the queue");
+        await userEvent.keyboard("k");
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+
+        // One deliberate answer from the queue is the only thing that was sent.
+        queue().element().focus();
+        await userEvent.keyboard("d");
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+        expect(approvalResponses()[0]).toMatchObject({ decision: "decline" });
+        expect(submitTurn).not.toHaveBeenCalled();
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("names Enter and D in the hints only where they act", async () => {
+      const showPreview = holdPreview();
+      const view = await renderHome([approvalThread(), PLAN_THREAD, WORKING_THREAD]);
+      try {
+        await expect.element(queue()).toHaveFocus();
+        // Nothing is on screen to approve yet.
+        expect(keyHints()).toContain("open");
+        expect(keyHints()).not.toContain("approve");
+        showPreview();
+        await vi.waitFor(() => expect(keyHints()).toContain("approve"));
+        expect(keyHints()).toContain("deny");
+
+        await userEvent.keyboard("j");
+        await vi.waitFor(() => expect(keyHints()).toContain("implement"));
+        expect(keyHints()).not.toContain("deny");
+        expect(keyHints()).toContain("settle");
+
+        // A running thread opens with Enter and cannot be settled.
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Busy refactor");
+        await vi.waitFor(() => expect(keyHints()).not.toContain("implement"));
+        expect(keyHints()).not.toContain("settle");
+        expect(keyHints()).toContain("queue message");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("sends one decision when the selection moves away and back during its round trip", async () => {
+      const thread = approvalThread();
+      serverPending(...thread.activities);
+      let answer!: () => void;
+      dispatchCommand.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            answer = () => resolve({ sequence: 1 });
+          }),
+      );
+      const view = await renderHome([thread, DONE_THREAD]);
+      try {
+        await expect.element(page.getByRole("group", { name: "Approval" })).toBeVisible();
+        await expect.element(queue()).toHaveFocus();
+        await userEvent.keyboard("d");
+        await vi.waitFor(() => expect(approvalResponses()).toHaveLength(1));
+
+        // Away and back: a new preview, and the server still lists the request as pending.
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        await userEvent.keyboard("k");
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+        const preview = page.getByRole("article", { name: "Needs an approval" });
+        await expect.element(preview.getByRole("button", { name: /Approve once/ })).toBeDisabled();
+        await userEvent.keyboard("{Enter}");
+
+        answer();
+        await expect.element(preview.getByRole("status")).toHaveTextContent("Decision sent");
+        await userEvent.keyboard("{Enter}");
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        expect(approvalResponses()).toHaveLength(1);
+        expect(approvalResponses()[0]).toMatchObject({ decision: "decline" });
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("resends the same reply, not a second one, after its response was lost", async () => {
+      // The server took the message; its answer never arrived.
+      submitTurn.mockImplementationOnce(async () => {
+        throw new Error("Request timed out: nextTurnQueue.submit");
+      });
+      const toast = vi.spyOn(toastManager, "add");
+      const view = await renderHome([DONE_THREAD]);
+      try {
+        const box = page.getByRole("textbox", { name: "Reply" });
+        await box.fill("Open a PR");
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(
+            expect.objectContaining({ title: "Could not send the message" }),
+          ),
+        );
+        await expect.element(box).toHaveValue("Open a PR");
+
+        await page.getByRole("button", { name: "Reply" }).click();
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(2));
+        const [first, second] = submitTurn.mock.calls.map(([submission]) => submission);
+        expect(second!.submissionId).toBe(first!.submissionId);
+        expect(second!.command).toEqual(first!.command);
+        await expect.element(box).toHaveValue("");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("keeps the reply as sent while it is in flight, in this preview and the next", async () => {
+      let answer!: () => void;
+      submitTurn.mockImplementationOnce(
+        (input) =>
+          new Promise((resolve) => {
+            answer = () => resolve(startedTurn(input));
+          }),
+      );
+      const view = await renderHome([FAILED_THREAD, DONE_THREAD]);
+      try {
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        const box = page.getByRole("textbox", { name: "Reply" });
+        await box.fill("Ship it");
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        // Typing now would be cleared with the sent text: the box does not take it.
+        await expect.element(box).toHaveAttribute("readonly");
+        await userEvent.keyboard(" and more");
+        await expect.element(box).toHaveValue("Ship it");
+
+        // The selection moves away and back: the new preview shows the same send in flight.
+        await page.getByRole("option", { name: "Broken build" }).click();
+        await expect.element(page.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        const again = page.getByRole("textbox", { name: "Reply" });
+        await expect.element(again).toHaveValue("Ship it");
+        await expect.element(again).toHaveAttribute("readonly");
+        await expect.element(page.getByRole("button", { name: "Reply" })).toBeDisabled();
+
+        answer();
+        await expect.element(again).toHaveValue("");
+        await expect.element(again).not.toHaveAttribute("readonly");
+        expect(submitTurn).toHaveBeenCalledTimes(1);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("hands a reply that starts with a command to the thread's composer", async () => {
+      const view = await renderHome([DONE_THREAD]);
+      try {
+        const box = page.getByRole("textbox", { name: "Reply" });
+        await box.fill("/review the diff");
+        await userEvent.keyboard("{Enter}");
+        // The composer resolves commands and skills; Home would send them as plain words.
+        await vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(
+            DONE_THREAD.id,
+          ),
+        );
+        expect(submitTurn).not.toHaveBeenCalled();
+        expect(useComposerDraftStore.getState().draftsByThreadId[DONE_THREAD.id]?.prompt).toBe(
+          "/review the diff",
+        );
+        expect(useComposerFocusRequestStore.getState().request?.threadId).toBe(DONE_THREAD.id);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("explains the pause the server reports after a resume, not the one read before", async () => {
+      const pausedSummary = {
+        threads: [
+          {
+            threadId: IDLE_THREAD.id,
+            queuedCount: 1,
+            dispatchingCount: 0,
+            failedCount: 0,
+            scheduledResumeAt: null,
+            paused: true,
+          },
+        ],
+      };
+      useNextTurnQueueStore.setState({ summary: pausedSummary });
+      // The queue pauses again right away, for another reason.
+      queueSummary.mockImplementation(async () => pausedSummary);
+      listQueue.mockImplementation(async (input) =>
+        queueSnapshot(input.threadId, {
+          reasonCode: "turn_failed",
+          reasonDetail: "The provider crashed.",
+        }),
+      );
+      setQueuePaused.mockImplementation(async (input) =>
+        queueSnapshot(input.threadId, {
+          revision: input.expectedRevision + 1,
+          reasonCode: "usage_limit_reset",
+        }),
+      );
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        const preview = page.getByRole("article", { name: "Quiet thread" });
+        await expect.element(preview).toHaveTextContent("The provider crashed.");
+        await preview.getByRole("button", { name: "Resume queue" }).click();
+        await expect.element(preview).toHaveTextContent("Waiting for the usage limit to reset.");
+        await expect.element(preview).not.toHaveTextContent("The provider crashed.");
       } finally {
         await view.cleanup();
       }
