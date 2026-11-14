@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads waiting for your answer. Local commands use your project defaults and can access all projects without enabling the external Agent Bridge.
+
 ### Fixed
 
 - Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.

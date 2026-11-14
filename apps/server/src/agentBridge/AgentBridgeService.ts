@@ -36,6 +36,7 @@ import {
 } from "./taskOperator.ts";
 import { makeTaskTools } from "./taskTools.ts";
 import { makeThreadTools, type AgentBridgeCaller } from "./threadTools.ts";
+import { startThreadCliListener } from "../threadCli/listener.ts";
 
 export const AGENT_BRIDGE_STATE_COALESCE_MS = 400;
 const TOUCH_INTERVAL_MS = 60_000;
@@ -130,6 +131,10 @@ export const makeAgentBridgeService = (input: {
 }): Effect.Effect<AgentBridgeServiceShape, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { host, store } = input;
+    yield* Effect.acquireRelease(
+      Effect.tryPromise(() => startThreadCliListener(host, input.stateDir, input.serverVersion)),
+      (listener) => Effect.promise(() => listener.close()),
+    ).pipe(Effect.catch((error) => Effect.logWarning("threadCli.listener.failed", error)));
     const credentialsPath = agentBridgeLocalCredentialsPath(input.stateDir);
     yield* store.ensureLocalClient.pipe(
       Effect.catch((error) =>
