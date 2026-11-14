@@ -161,7 +161,11 @@ import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings"
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { respondToApproval } from "~/lib/respondToApproval";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
-import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
+import {
+  buildTurnDiffSearch,
+  clearFileViewSearchParams,
+  clearTurnDiffSearchParams,
+} from "../diffRouteSearch";
 import { requestDiffFileReveal } from "../diffFileReveal";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import { TerminalCommandProvider } from "../terminalCommandContext";
@@ -316,6 +320,7 @@ import {
   useRightPanelStore,
 } from "../rightPanelStore";
 import { setSearchParamsForSurface } from "../rightPanelNavigation";
+import { useProactivePanels } from "../hooks/useProactivePanels";
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
 import { investigationWorkflowContainsThread } from "./workflow/investigationWorkflowUtils";
@@ -763,6 +768,7 @@ function selectChatViewSettings(settings: AppSettings) {
     followUpBehavior: settings.followUpBehavior,
     gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
     openFileLinksInPanel: settings.openFileLinksInPanel,
+    proactivePanelsEnabled: settings.proactivePanelsEnabled,
     providerModelPreferences: settings.providerModelPreferences,
     runtimeWarningVisibility: settings.runtimeWarningVisibility,
     sendShortcut: settings.sendShortcut,
@@ -7146,22 +7152,35 @@ export default memo(function ChatView({
     [showImageActionMenu],
   );
   const onOpenTurnDiff = useCallback(
-    (turnId: TurnId, filePath?: string) => {
+    (turnId: TurnId, filePath?: string, automatic = false) => {
+      if (!automatic) useRightPanelStore.getState().open(threadId, "diff");
       if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
-        search: (previous) => {
-          const rest = clearTurnDiffSearchParams(previous);
-          return filePath
-            ? { ...rest, diff: "1", diffTurnId: turnId, diffFilePath: filePath }
-            : { ...rest, diff: "1", diffTurnId: turnId };
-        },
+        replace: automatic,
+        search: (previous) => buildTurnDiffSearch(previous, turnId, filePath, automatic),
       });
     },
     [navigate, threadId],
   );
+  const onProactiveTurnDiff = useCallback(
+    (turnId: TurnId) => onOpenTurnDiff(turnId, undefined, true),
+    [onOpenTurnDiff],
+  );
   const fileNavigationGeneration = useRef(0);
+  useProactivePanels({
+    threadId: isServerThread ? activeThreadId : null,
+    enabled: settings.proactivePanelsEnabled,
+    ready: activeThread?.detailsLoaded === true,
+    runningTurnId: !latestTurnSettled ? (activeLatestTurn?.turnId ?? null) : null,
+    completedTurnId:
+      latestTurnSettled && activeLatestTurn?.state === "completed" ? activeLatestTurn.turnId : null,
+    checkpoints: turnDiffSummaries,
+    isRepo: branchesQuery.data?.isRepo,
+    linkedPullRequest: activeThread?.pullRequests?.[0] ?? null,
+    openTurnDiff: onProactiveTurnDiff,
+  });
   useEffect(
     () => () => {
       fileNavigationGeneration.current++;

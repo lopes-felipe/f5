@@ -10,6 +10,16 @@ import {
   resolveMacFileExclusions,
 } from "./build-desktop-artifact.ts";
 
+it("builds Debian and AppImage installers together without changing other targets", async () => {
+  const config = await Effect.runPromise(
+    createBuildConfig("linux", "AppImage", "F5", false, false),
+  );
+  expect(config.linux).toMatchObject({ target: ["AppImage", "deb"], maintainer: "Felipe Lopes" });
+  expect(config.deb).toHaveProperty("depends", expect.arrayContaining(["libnss3", "xdg-utils"]));
+  const deb = await Effect.runPromise(createBuildConfig("linux", "deb", "F5", false, false));
+  expect(deb.linux).toHaveProperty("target", ["deb"]);
+});
+
 it("excludes unused Darwin natives across all packages, preserving universal builds", async () => {
   for (const arch of ["arm64", "x64", "universal"] as const) {
     const config = await Effect.runPromise(

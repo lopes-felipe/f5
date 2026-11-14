@@ -17,14 +17,16 @@ function fixture(profile: ReleaseProfile = "all") {
 it.each(["all", "windows"] as const)("accepts a complete verified %s release", (profile) => {
   fixture(profile).verify();
 });
-it.each(["F5-0.1.0-beta.1-arm64.dmg", "f5-0.1.0-beta.1-linux-arm64.tar.gz", "f5-cli-release.json"])(
-  "rejects missing %s",
-  (name) => {
-    const f = fixture();
-    rmSync(join(f.dir, name));
-    expect(f.verify).toThrow(/Missing/);
-  },
-);
+it.each([
+  "F5-0.1.0-beta.1-amd64.deb",
+  "F5-0.1.0-beta.1-arm64.dmg",
+  "f5-0.1.0-beta.1-linux-arm64.tar.gz",
+  "f5-cli-release.json",
+])("rejects missing %s", (name) => {
+  const f = fixture();
+  rmSync(join(f.dir, name));
+  expect(f.verify).toThrow(/Missing/);
+});
 it.each([
   "F5-0.1.0-beta.1-x64.exe",
   "F5-0.1.0-beta.1-x64.exe.blockmap",

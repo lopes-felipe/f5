@@ -45,6 +45,7 @@ import { isAbsolute as isAbsolutePath, join as joinPath, resolve as resolvePath 
 
 import {
   Cache,
+  Clock,
   Data,
   Deferred,
   Fiber,
@@ -2556,28 +2557,58 @@ const makeGitCore = Effect.gen(function* () {
       }
       progress?.onSubmodulesStarted?.();
       const lines = makeProgressLineSplitter((line) => progress?.onSubmoduleLine?.(line));
+      const clock = yield* Clock.Clock;
+      const idleTimeoutMs = 5 * 60_000;
+      let lastActivity = clock.currentTimeMillisUnsafe();
+      const onOutput = (chunk: Uint8Array) => {
+        if (chunk.byteLength > 0) lastActivity = clock.currentTimeMillisUnsafe();
+      };
+      const awaitStall: Effect.Effect<never, GitCommandError> = Effect.suspend(() => {
+        const remaining = idleTimeoutMs - (clock.currentTimeMillisUnsafe() - lastActivity);
+        return remaining > 0
+          ? Effect.sleep(remaining).pipe(Effect.andThen(awaitStall))
+          : Effect.fail(
+              createGitCommandError(
+                "GitCore.createWorktree.submodules",
+                worktreePath,
+                ["submodule", "update"],
+                "Submodule initialization stalled: no output for 5 minutes.",
+              ),
+            );
+      });
       // Registering submodule URLs writes the shared config; the clones that follow do not.
       yield* writeSharedConfig("GitCore.createWorktree.initSubmodules", worktreePath, [
         "submodule",
         "init",
       ]).pipe(
         Effect.andThen(
-          executeGit(
-            "GitCore.createWorktree.submodules",
-            worktreePath,
-            [
-              ...gitConfigArgs([["protocol.file.allow", "never"]]),
-              "submodule",
-              "update",
-              "--init",
-              ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
-            ],
-            {
-              timeoutMs: 300_000,
-              fallbackErrorMessage: "Unable to initialize worktree submodules",
-              ...(progress?.onSubmoduleLine ? { onStderrChunk: lines } : {}),
-            },
-          ),
+          Effect.suspend(() => {
+            // Waiting for the shared-config lock is not clone inactivity.
+            lastActivity = clock.currentTimeMillisUnsafe();
+            return executeGit(
+              "GitCore.createWorktree.submodules",
+              worktreePath,
+              [
+                ...gitConfigArgs([["protocol.file.allow", "never"]]),
+                "submodule",
+                "update",
+                "--init",
+                // Also when no UI listens: activity keeps a healthy clone alive.
+                "--progress",
+                ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
+              ],
+              {
+                // Bound inactivity rather than the total size-dependent clone time.
+                timeoutMs: null,
+                fallbackErrorMessage: "Unable to initialize worktree submodules",
+                onStdoutChunk: onOutput,
+                onStderrChunk: (chunk) => {
+                  onOutput(chunk);
+                  lines(chunk);
+                },
+              },
+            ).pipe(Effect.raceFirst(awaitStall));
+          }),
         ),
         Effect.tap(() =>
           Effect.sync(() => progress?.onSubmodulesFinished?.({ status: "done", detail: null })),

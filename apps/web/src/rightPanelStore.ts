@@ -1,5 +1,5 @@
 import type { PrQuickActionRequest } from "./lib/prQuickActions";
-import type { PullRequestKey, ThreadId } from "@t3tools/contracts";
+import type { PullRequestKey, ThreadId, TurnId } from "@t3tools/contracts";
 import { create } from "zustand";
 import { useAgentTranscriptStore, transcriptKey } from "./lib/agentTranscriptStore";
 
@@ -48,6 +48,20 @@ export interface OpenFileSurfaceInput {
 }
 
 interface RightPanelStoreState {
+  userActionRevisionByThreadId: Record<string, number>;
+  proactiveDiffTurnIdByThreadId: Record<string, TurnId>;
+  proactivePullRequestKeyByThreadId: Record<string, string>;
+  pendingProactiveDiffNavigationByThreadId: Record<string, true>;
+  finishProactiveDiffNavigation: (threadId: ThreadId) => void;
+  proactiveTurnBaselineByThreadId: Record<string, { turnId: TurnId; revision: number }>;
+  captureProactiveTurnRevision: (threadId: ThreadId, turnId: TurnId) => number;
+  openProactive: (
+    threadId: ThreadId,
+    request:
+      | Extract<RightPanelSurface, { kind: "pull-request" }>
+      | { kind: "diff"; turnId: TurnId },
+    expectedRevision: number,
+  ) => boolean;
   openAgentTranscript: (
     threadId: ThreadId,
     input: {
@@ -230,214 +244,331 @@ function closeWithHistory(
   return { byThreadId, closedHistory };
 }
 
-export const useRightPanelStore = create<RightPanelStoreState>()((set, get) => ({
-  openAgentTranscript: (threadId, input) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        upsertSurface(current, {
-          id: `agent:${input.nativeWorkItemId}`,
-          kind: "agent-transcript",
-          title: input.title,
-          workItemIds: [...input.workItemIds],
-          ...(input.focusActivityId !== undefined
-            ? { focusActivityId: input.focusActivityId }
-            : {}),
+export const useRightPanelStore = create<RightPanelStoreState>()((automaticSet, get) => {
+  // Explicit actions count as user choices. Resource updates and proactive
+  // opens use automaticSet so they cannot override a later manual choice.
+  const set = (
+    partial:
+      | Partial<RightPanelStoreState>
+      | ((state: RightPanelStoreState) => Partial<RightPanelStoreState>),
+  ) =>
+    automaticSet((state) => {
+      const next = typeof partial === "function" ? partial(state) : partial;
+      if (!next.byThreadId || next.byThreadId === state.byThreadId) return next;
+      const revisions = next.userActionRevisionByThreadId ?? {
+        ...state.userActionRevisionByThreadId,
+      };
+      const pending = { ...state.pendingProactiveDiffNavigationByThreadId };
+      for (const key of new Set([
+        ...Object.keys(state.byThreadId),
+        ...Object.keys(next.byThreadId),
+      ])) {
+        if (state.byThreadId[key] !== next.byThreadId[key]) {
+          if (!next.userActionRevisionByThreadId) revisions[key] = (revisions[key] ?? 0) + 1;
+          delete pending[key];
+        }
+      }
+      return {
+        ...next,
+        userActionRevisionByThreadId: revisions,
+        pendingProactiveDiffNavigationByThreadId: pending,
+      };
+    });
+  return {
+    userActionRevisionByThreadId: {},
+    proactiveDiffTurnIdByThreadId: {},
+    proactivePullRequestKeyByThreadId: {},
+    pendingProactiveDiffNavigationByThreadId: {},
+    finishProactiveDiffNavigation: (threadId) =>
+      automaticSet((state) => {
+        if (!state.pendingProactiveDiffNavigationByThreadId[threadId]) return state;
+        const { [threadId]: _pending, ...rest } = state.pendingProactiveDiffNavigationByThreadId;
+        return { pendingProactiveDiffNavigationByThreadId: rest };
+      }),
+    proactiveTurnBaselineByThreadId: {},
+    captureProactiveTurnRevision: (threadId, turnId) => {
+      const state = get();
+      const previous = state.proactiveTurnBaselineByThreadId[threadId];
+      if (previous?.turnId === turnId) return previous.revision;
+      const revision = state.userActionRevisionByThreadId[threadId] ?? 0;
+      automaticSet({
+        proactiveTurnBaselineByThreadId: {
+          ...state.proactiveTurnBaselineByThreadId,
+          [threadId]: { turnId, revision },
+        },
+      });
+      return revision;
+    },
+    openProactive: (threadId, request, expectedRevision) => {
+      let opened = false;
+      automaticSet((state) => {
+        const current = selectThreadRightPanelState(state.byThreadId, threadId);
+        const revisionMatches =
+          (state.userActionRevisionByThreadId[threadId] ?? 0) === expectedRevision;
+        const active = current.isOpen
+          ? current.surfaces.find((surface) => surface.id === current.activeSurfaceId)
+          : undefined;
+        if (request.kind === "diff") {
+          if (state.proactiveDiffTurnIdByThreadId[threadId] === request.turnId) return state;
+          opened = revisionMatches && active?.kind !== "diff" && active?.kind !== "pull-request";
+          return {
+            byThreadId: opened
+              ? updateThread(state.byThreadId, threadId, (panel) =>
+                  upsertSurface(panel, singletonSurface("diff")),
+                )
+              : state.byThreadId,
+            // Remember refusals too: revisiting a thread must not retry an old offer.
+            proactiveDiffTurnIdByThreadId: {
+              ...state.proactiveDiffTurnIdByThreadId,
+              [threadId]: request.turnId,
+            },
+            pendingProactiveDiffNavigationByThreadId: opened
+              ? { ...state.pendingProactiveDiffNavigationByThreadId, [threadId]: true }
+              : state.pendingProactiveDiffNavigationByThreadId,
+          };
+        }
+        if (state.proactivePullRequestKeyByThreadId[threadId] === request.key) return state;
+        opened = revisionMatches;
+        return {
+          proactivePullRequestKeyByThreadId: {
+            ...state.proactivePullRequestKeyByThreadId,
+            [threadId]: request.key,
+          },
+          byThreadId: opened
+            ? updateThread(state.byThreadId, threadId, (panel) => upsertSurface(panel, request))
+            : state.byThreadId,
+        };
+      });
+      return opened;
+    },
+    openAgentTranscript: (threadId, input) =>
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+          upsertSurface(current, {
+            id: `agent:${input.nativeWorkItemId}`,
+            kind: "agent-transcript",
+            title: input.title,
+            workItemIds: [...input.workItemIds],
+            ...(input.focusActivityId !== undefined
+              ? { focusActivityId: input.focusActivityId }
+              : {}),
+          }),
+        ),
+      })),
+    byThreadId: {},
+    closedHistory: [],
+    tabMenuThreadId: null,
+    setTabMenuThread: (tabMenuThreadId) => set({ tabMenuThreadId }),
+    moveSurface: (threadId, from, to) =>
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) => {
+          if (
+            !Number.isInteger(from) ||
+            !Number.isInteger(to) ||
+            from < 0 ||
+            to < 0 ||
+            from >= current.surfaces.length ||
+            to >= current.surfaces.length ||
+            from === to
+          )
+            return current;
+          const surfaces = [...current.surfaces];
+          const [surface] = surfaces.splice(from, 1);
+          surfaces.splice(to, 0, surface!);
+          return { ...current, surfaces };
+        }),
+      })),
+    reopenClosed: () => {
+      const state = get(),
+        closedHistory = [...state.closedHistory];
+      let reopened: ClosedRightPanelSurface | null = null;
+      while (closedHistory.length) {
+        const candidate = closedHistory.pop()!;
+        const current = selectThreadRightPanelState(state.byThreadId, candidate.threadId);
+        if (!current.surfaces.some((entry) => entry.id === candidate.surface.id)) {
+          reopened = candidate;
+          break;
+        }
+      }
+      set({
+        closedHistory,
+        ...(reopened
+          ? {
+              byThreadId: updateThread(state.byThreadId, reopened.threadId, (panel) =>
+                upsertSurface(panel, reopened!.surface),
+              ),
+            }
+          : {}),
+      });
+      return reopened;
+    },
+    open: (threadId, kind) =>
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+          upsertSurface(current, singletonSurface(kind)),
+        ),
+      })),
+    addSurface: (threadId, kind, options) =>
+      automaticSet((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) => {
+          const surface = singletonSurface(kind);
+          if (options?.activate) return upsertSurface(current, surface);
+          if (current.surfaces.some((entry) => entry.id === surface.id)) return current;
+          return {
+            ...current,
+            surfaces: [...current.surfaces, surface],
+            activeSurfaceId: current.activeSurfaceId ?? surface.id,
+          };
+        }),
+      })),
+    openPullRequest: (threadId, input) =>
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+          upsertSurface(current, { id: `pr:${input.key}`, kind: "pull-request", ...input }),
+        ),
+      })),
+    consumePullRequestAction: (threadId, surfaceId, requestId) =>
+      automaticSet((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) => {
+          const target = current.surfaces.find((surface) => surface.id === surfaceId);
+          if (target?.kind !== "pull-request" || target.initialAction?.id !== requestId)
+            return current;
+          return {
+            ...current,
+            surfaces: current.surfaces.map((surface) => {
+              if (surface !== target) return surface;
+              const { initialAction: _consumed, ...rest } = surface;
+              return rest;
+            }),
+          };
+        }),
+      })),
+    openDirectory: (threadId, relativePath) =>
+      set((state) => ({
+        byThreadId: {
+          ...state.byThreadId,
+          [threadKey(threadId)]: upsertSurface(
+            state.byThreadId[threadKey(threadId)] ?? EMPTY_THREAD_RIGHT_PANEL_STATE,
+            { id: "files", kind: "files", revealPath: relativePath },
+          ),
+        },
+      })),
+    openFile: (threadId, input) => {
+      const surface = createFileRightPanelSurface(input);
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+          upsertSurface(current, surface),
+        ),
+      }));
+      return surface;
+    },
+    activateSurface: (threadId, surfaceId) =>
+      set((state) => ({
+        byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+          current.surfaces.some((surface) => surface.id === surfaceId)
+            ? { ...current, isOpen: true, activeSurfaceId: surfaceId }
+            : current,
+        ),
+      })),
+    closeSurface: (threadId, surfaceId) =>
+      set((state) =>
+        closeWithHistory(state, threadId, (current) => {
+          const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
+          if (index < 0) {
+            return current;
+          }
+          const surfaces = current.surfaces.filter((surface) => surface.id !== surfaceId);
+          const activeStillExists = surfaces.some(
+            (surface) => surface.id === current.activeSurfaceId,
+          );
+          const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? null;
+          return {
+            ...current,
+            isOpen: surfaces.length > 0,
+            surfaces,
+            activeSurfaceId: activeStillExists ? current.activeSurfaceId : (fallback?.id ?? null),
+          };
         }),
       ),
-    })),
-  byThreadId: {},
-  closedHistory: [],
-  tabMenuThreadId: null,
-  setTabMenuThread: (tabMenuThreadId) => set({ tabMenuThreadId }),
-  moveSurface: (threadId, from, to) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) => {
-        if (
-          !Number.isInteger(from) ||
-          !Number.isInteger(to) ||
-          from < 0 ||
-          to < 0 ||
-          from >= current.surfaces.length ||
-          to >= current.surfaces.length ||
-          from === to
-        )
-          return current;
-        const surfaces = [...current.surfaces];
-        const [surface] = surfaces.splice(from, 1);
-        surfaces.splice(to, 0, surface!);
-        return { ...current, surfaces };
-      }),
-    })),
-  reopenClosed: () => {
-    const state = get(),
-      closedHistory = [...state.closedHistory];
-    let reopened: ClosedRightPanelSurface | null = null;
-    while (closedHistory.length) {
-      const candidate = closedHistory.pop()!;
-      const current = selectThreadRightPanelState(state.byThreadId, candidate.threadId);
-      if (!current.surfaces.some((entry) => entry.id === candidate.surface.id)) {
-        reopened = candidate;
-        break;
-      }
-    }
-    set({
-      closedHistory,
-      ...(reopened
-        ? {
-            byThreadId: updateThread(state.byThreadId, reopened.threadId, (panel) =>
-              upsertSurface(panel, reopened!.surface),
-            ),
+    closeOtherSurfaces: (threadId, surfaceId) =>
+      set((state) =>
+        closeWithHistory(state, threadId, (current) => {
+          const surface = current.surfaces.find((entry) => entry.id === surfaceId);
+          if (!surface || current.surfaces.length === 1) {
+            return current;
           }
-        : {}),
-    });
-    return reopened;
-  },
-  open: (threadId, kind) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        upsertSurface(current, singletonSurface(kind)),
+          return {
+            ...current,
+            isOpen: true,
+            surfaces: [surface],
+            activeSurfaceId: surface.id,
+          };
+        }),
       ),
-    })),
-  addSurface: (threadId, kind, options) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) => {
-        const surface = singletonSurface(kind);
-        if (options?.activate) return upsertSurface(current, surface);
-        if (current.surfaces.some((entry) => entry.id === surface.id)) return current;
-        return {
-          ...current,
-          surfaces: [...current.surfaces, surface],
-          activeSurfaceId: current.activeSurfaceId ?? surface.id,
-        };
-      }),
-    })),
-  openPullRequest: (threadId, input) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        upsertSurface(current, { id: `pr:${input.key}`, kind: "pull-request", ...input }),
+    closeSurfacesToRight: (threadId, surfaceId) =>
+      set((state) =>
+        closeWithHistory(state, threadId, (current) => {
+          const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
+          if (index < 0 || index === current.surfaces.length - 1) {
+            return current;
+          }
+          const surfaces = current.surfaces.slice(0, index + 1);
+          const activeStillExists = surfaces.some(
+            (surface) => surface.id === current.activeSurfaceId,
+          );
+          return {
+            ...current,
+            surfaces,
+            activeSurfaceId: activeStillExists ? current.activeSurfaceId : surfaceId,
+          };
+        }),
       ),
-    })),
-  consumePullRequestAction: (threadId, surfaceId, requestId) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) => {
-        const target = current.surfaces.find((surface) => surface.id === surfaceId);
-        if (target?.kind !== "pull-request" || target.initialAction?.id !== requestId)
-          return current;
-        return {
-          ...current,
-          surfaces: current.surfaces.map((surface) => {
-            if (surface !== target) return surface;
-            const { initialAction: _consumed, ...rest } = surface;
-            return rest;
-          }),
-        };
-      }),
-    })),
-  openDirectory: (threadId, relativePath) =>
-    set((state) => ({
-      byThreadId: {
-        ...state.byThreadId,
-        [threadKey(threadId)]: upsertSurface(
-          state.byThreadId[threadKey(threadId)] ?? EMPTY_THREAD_RIGHT_PANEL_STATE,
-          { id: "files", kind: "files", revealPath: relativePath },
+    closeAllSurfaces: (threadId) =>
+      set((state) =>
+        closeWithHistory(state, threadId, (current) =>
+          current.surfaces.length === 0
+            ? current
+            : { ...current, isOpen: false, surfaces: [], activeSurfaceId: null },
         ),
-      },
-    })),
-  openFile: (threadId, input) => {
-    const surface = createFileRightPanelSurface(input);
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        upsertSurface(current, surface),
       ),
-    }));
-    return surface;
-  },
-  activateSurface: (threadId, surfaceId) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        current.surfaces.some((surface) => surface.id === surfaceId)
-          ? { ...current, isOpen: true, activeSurfaceId: surfaceId }
-          : current,
-      ),
-    })),
-  closeSurface: (threadId, surfaceId) =>
-    set((state) =>
-      closeWithHistory(state, threadId, (current) => {
-        const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
-        if (index < 0) {
-          return current;
-        }
-        const surfaces = current.surfaces.filter((surface) => surface.id !== surfaceId);
-        const activeStillExists = surfaces.some(
-          (surface) => surface.id === current.activeSurfaceId,
-        );
-        const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? null;
-        return {
+    close: (threadId) =>
+      set((state) => ({
+        userActionRevisionByThreadId: {
+          ...state.userActionRevisionByThreadId,
+          [threadId]: (state.userActionRevisionByThreadId[threadId] ?? 0) + 1,
+        },
+        byThreadId: updateThread(state.byThreadId, threadId, (current) => ({
           ...current,
-          isOpen: surfaces.length > 0,
-          surfaces,
-          activeSurfaceId: activeStillExists ? current.activeSurfaceId : (fallback?.id ?? null),
+          isOpen: false,
+        })),
+      })),
+    removeThread: (threadId) =>
+      automaticSet((state) => {
+        const key = threadKey(threadId);
+        const { [key]: _panel, ...byThreadId } = state.byThreadId;
+        const { [key]: _revision, ...userActionRevisionByThreadId } =
+          state.userActionRevisionByThreadId;
+        const { [key]: _offer, ...proactiveDiffTurnIdByThreadId } =
+          state.proactiveDiffTurnIdByThreadId;
+        const { [key]: _baseline, ...proactiveTurnBaselineByThreadId } =
+          state.proactiveTurnBaselineByThreadId;
+        const { [key]: _pr, ...proactivePullRequestKeyByThreadId } =
+          state.proactivePullRequestKeyByThreadId;
+        const { [key]: _navigation, ...pendingProactiveDiffNavigationByThreadId } =
+          state.pendingProactiveDiffNavigationByThreadId;
+        return {
+          byThreadId,
+          userActionRevisionByThreadId,
+          proactiveDiffTurnIdByThreadId,
+          proactiveTurnBaselineByThreadId,
+          proactivePullRequestKeyByThreadId,
+          pendingProactiveDiffNavigationByThreadId,
+          closedHistory: state.closedHistory.filter((entry) => entry.threadId !== threadId),
+          tabMenuThreadId: state.tabMenuThreadId === threadId ? null : state.tabMenuThreadId,
         };
       }),
-    ),
-  closeOtherSurfaces: (threadId, surfaceId) =>
-    set((state) =>
-      closeWithHistory(state, threadId, (current) => {
-        const surface = current.surfaces.find((entry) => entry.id === surfaceId);
-        if (!surface || current.surfaces.length === 1) {
-          return current;
-        }
-        return {
-          ...current,
-          isOpen: true,
-          surfaces: [surface],
-          activeSurfaceId: surface.id,
-        };
-      }),
-    ),
-  closeSurfacesToRight: (threadId, surfaceId) =>
-    set((state) =>
-      closeWithHistory(state, threadId, (current) => {
-        const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
-        if (index < 0 || index === current.surfaces.length - 1) {
-          return current;
-        }
-        const surfaces = current.surfaces.slice(0, index + 1);
-        const activeStillExists = surfaces.some(
-          (surface) => surface.id === current.activeSurfaceId,
-        );
-        return {
-          ...current,
-          surfaces,
-          activeSurfaceId: activeStillExists ? current.activeSurfaceId : surfaceId,
-        };
-      }),
-    ),
-  closeAllSurfaces: (threadId) =>
-    set((state) =>
-      closeWithHistory(state, threadId, (current) =>
-        current.surfaces.length === 0
-          ? current
-          : { ...current, isOpen: false, surfaces: [], activeSurfaceId: null },
-      ),
-    ),
-  close: (threadId) =>
-    set((state) => ({
-      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        current.isOpen ? { ...current, isOpen: false } : current,
-      ),
-    })),
-  removeThread: (threadId) =>
-    set((state) => {
-      const key = threadKey(threadId);
-      const { [key]: _panel, ...byThreadId } = state.byThreadId;
-      return {
-        byThreadId,
-        closedHistory: state.closedHistory.filter((entry) => entry.threadId !== threadId),
-        tabMenuThreadId: state.tabMenuThreadId === threadId ? null : state.tabMenuThreadId,
-      };
-    }),
-}));
+  };
+});
 
 // Dispose transcript caches after the panel update has committed, outside its
 // reducers. This covers individual/bulk closes and removal of an entire thread.

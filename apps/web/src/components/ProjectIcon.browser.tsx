@@ -38,4 +38,27 @@ describe("ProjectIcon", () => {
       "/api/project-favicon?projectId=alpha",
     );
   });
+  it("requests the selected image and updates it when its saved path changes", async () => {
+    const projectId = ProjectId.makeUnsafe("alpha");
+    const screen = await render(
+      <ProjectIcon
+        projectId={projectId}
+        name="Alpha"
+        icon={{ type: "image", path: "assets/logo.svg" }}
+      />,
+    );
+    expect(screen.container.querySelector("img")?.getAttribute("src")).toContain(
+      "iconPath=assets%2Flogo.svg",
+    );
+    await screen.rerender(
+      <ProjectIcon
+        projectId={projectId}
+        name="Alpha"
+        icon={{ type: "image", path: "other.svg" }}
+      />,
+    );
+    expect(screen.container.querySelector("img")?.getAttribute("src")).toContain(
+      "iconPath=other.svg",
+    );
+  });
 });

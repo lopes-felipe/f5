@@ -193,6 +193,7 @@ interface StagePackageJson {
   readonly t3codeCommitHash: string;
   readonly private: true;
   readonly description: string;
+  readonly homepage: string;
   readonly author: string;
   readonly main: string;
   readonly build: Record<string, unknown>;
@@ -548,9 +549,26 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // The static runtime also launches on distributions without libfuse2.
     buildConfig.toolsets = { appimage: "1.0.3" };
     buildConfig.linux = {
-      target: [target],
+      target: target === "AppImage" ? [target, "deb"] : [target],
       icon: "icon.png",
       category: "Development",
+      synopsis: "Desktop GUI for coding agents",
+      maintainer: "Felipe Lopes",
+    };
+    buildConfig.deb = {
+      depends: [
+        "libasound2t64 | libasound2",
+        "libatspi2.0-0t64 | libatspi2.0-0",
+        "libgbm1",
+        "libgtk-3-0t64 | libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libsecret-1-0",
+        "libuuid1",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+      ],
     };
   }
 
@@ -740,6 +758,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     t3codeCommitHash: commitHash,
     private: true,
     description: "F5 desktop app",
+    homepage: "https://github.com/lopes-felipe/f5",
     author: "Felipe Lopes",
     main: "apps/desktop/dist-electron/boot.js",
     build: yield* createBuildConfig(
@@ -821,6 +840,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       delete buildEnv[key];
     }
   }
+  if (options.platform === "linux") buildEnv.XZ_DEFAULTS = "-T0";
   if (!options.signed) {
     buildEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
     delete buildEnv.CSC_LINK;

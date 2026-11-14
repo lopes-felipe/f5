@@ -7,6 +7,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 ### Added
 
 - The Claude card on the Usage page lists your plan's limit resets (such as **Full reset** and **Fable reset**) with their expiry, and each has a button that uses it after you confirm, as on claude.ai. A reset that can't be used yet says why, such as "Usable once you hit a limit". When your tightest Claude limit is used up, the reset Claude suggests next appears beside it, and threads paused on that limit resume once it is cleared. F5 reads the sign-in Claude Code already stores, so macOS may ask once to let F5 read it from the Keychain.
+- Desktop users can enable **Keep running threads synced** in Conversation settings to keep all active threads ready to open, including threads outside the recent-thread cache.
+- Choose a project image in Project settings by entering its path inside the project. Emoji, colored symbols and automatic monograms remain available.
+- Opt into **Proactive panels** in Conversation settings to open linked pull requests and completed-turn diffs. Manual panel choices take priority and dismissed turn diffs stay dismissed.
+- Linux builds include a Debian/Ubuntu package alongside the AppImage. Installed Debian packages can download and install updates from F5.
 
 ### Fixed
 
@@ -14,6 +18,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Agent Bridge tool calls whose text contains Unicode line or paragraph separators no longer fail with a parse error.
 - Codex turns now record prompt-cache usage across all model requests, restoring cache history and cache-miss indicators while keeping context occupancy separate. Previously unreported historical usage remains unavailable.
 - Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
+- Proactive panels preserve manual choices across thread visits, keep dismissed PR panels closed, and open turn diffs without stale file previews or extra browser history entries. Rejected background message loads release their event-buffer retainers so stopped threads can leave the cache.
+- Project image choices wait for **Save image** before changing the saved icon. Linux downloads offer AppImage alongside Debian packages.
+- Background thread sync batches updates and backs off failed loads. Its desktop-only switch is disabled when using F5 in a browser.
+
+- Large worktree submodule clones can run past five minutes while reporting progress. Updates with no output for five minutes stop with a warning instead of leaving worktree preparation stuck.
 
 ### Changed
 

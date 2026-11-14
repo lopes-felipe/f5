@@ -383,6 +383,28 @@ describe("useSettingsRouteState", () => {
       await screen.unmount();
     }
   });
+  it("does not save a guessed image path when entering image mode", async () => {
+    const { screen, queryClient } = await renderHarness();
+    const dispatchCommand = vi.mocked(nativeApiRef.current!.orchestration.dispatchCommand);
+    try {
+      document.querySelector<HTMLElement>('[aria-label="Project icon source"]')?.click();
+      await page.getByRole("option", { name: "Image from project", exact: true }).click();
+      expect(dispatchCommand).not.toHaveBeenCalled();
+      await page.getByRole("textbox", { name: "Project icon image path" }).fill("assets/logo.png");
+      await page.getByRole("button", { name: "Save image", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(dispatchCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "project.meta.update",
+            icon: { type: "image", path: "assets/logo.png" },
+          }),
+        ),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
 
   it("clears project memory edit state when the scoped project changes", async () => {
     const { screen, queryClient, selectProject } = await renderHarness();

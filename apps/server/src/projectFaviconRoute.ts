@@ -367,7 +367,14 @@ export async function tryHandleProjectFaviconRequest(
 
   try {
     const config = await checkedInProjectFileService.load(ProjectId.makeUnsafe(projectId));
-    const relativePath = config.iconPath ?? (await findFaviconRelativePath(authorizer, projectId));
+    const requestedIconPath = url.searchParams.get("iconPath")?.trim();
+    if (requestedIconPath !== undefined && (!requestedIconPath || requestedIconPath.length > 512)) {
+      throw new WorkspaceAssetAuthorizationError("invalid_path", "Invalid project icon path");
+    }
+    const relativePath =
+      requestedIconPath ??
+      config.iconPath ??
+      (await findFaviconRelativePath(authorizer, projectId));
     if (!relativePath) {
       sendFallbackFavicon(res);
       return true;
@@ -376,7 +383,7 @@ export async function tryHandleProjectFaviconRequest(
     const issued = reader.issueImageHandle({
       relativePath,
       maxBytes: faviconMaxBytes(relativePath),
-      rejectSymlink: config.iconPath === relativePath,
+      rejectSymlink: requestedIconPath !== undefined || config.iconPath === relativePath,
     });
     res.writeHead(302, {
       "Cache-Control": "private, no-store",

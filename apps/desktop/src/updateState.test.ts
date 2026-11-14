@@ -64,6 +64,18 @@ describe("shouldBroadcastDownloadProgress", () => {
 });
 
 describe("getAutoUpdateDisabledReason", () => {
+  it.each([true, false])("only enables a non-AppImage Linux install marked as deb: %s", (deb) => {
+    const reason = getAutoUpdateDisabledReason({
+      isDevelopment: false,
+      isPackaged: true,
+      platform: "linux",
+      isDebPackage: deb,
+      disabledByEnv: false,
+      hasUpdateFeed: true,
+    });
+    expect(reason === null).toBe(deb);
+  });
+
   it("reports development builds as disabled", () => {
     expect(
       getAutoUpdateDisabledReason({
