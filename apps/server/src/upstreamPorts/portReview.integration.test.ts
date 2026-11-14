@@ -728,6 +728,72 @@ layer("port review persistence and queue", (it) => {
     }),
   );
 
+  for (const [text, terminal] of [
+    ["UPSTREAM-OUTCOME: equivalent x:1", true],
+    ["UPSTREAM-OUTCOME: not-applicable unsupported", true],
+    ["UPSTREAM-OUTCOME pr-1: equivalent x:1", true],
+    ["UPSTREAM-OUTCOME pr-1: not-applicable unsupported", true],
+    ["UPSTREAM-OUTCOME: blocked missing dependency", false],
+    ["UPSTREAM-OUTCOME pr-1: blocked missing dependency", false],
+    ["Implementation still needs more work.", false],
+  ] as const) {
+    it.effect("handles a settled continuation ending with " + text, () =>
+      Effect.gen(function* () {
+        const h = yield* setup;
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: { ...h.thread.latestTurn!, state: "interrupted" },
+        };
+        yield* h.reactor.advance(h.thread.id);
+        const hasOutcome = text.startsWith("UPSTREAM-OUTCOME");
+        const reactor = h.make({
+          projectedPrUrl: () => Effect.succeed(hasOutcome ? REVIEW_PR : null),
+        });
+        h.fake.threads[0] = {
+          ...h.thread,
+          latestTurn: {
+            ...h.thread.latestTurn!,
+            turnId: TurnId.makeUnsafe("non-pr-continuation"),
+            processingQuiescedAt: REVIEW_NOW,
+          },
+          messages: h.thread.messages.map((m) => ({
+            ...m,
+            turnId: TurnId.makeUnsafe("non-pr-continuation"),
+            text,
+          })),
+        };
+        yield* reactor.reconcile;
+        const row = (yield* h.store.getPortReviewByThread(h.thread.id))!;
+        assert.strictEqual(row.status, terminal ? "skipped" : "error");
+        assert.strictEqual(row.resumeAfterTurnId, terminal ? null : h.thread.latestTurn!.turnId);
+        assert.strictEqual(
+          (yield* h.store.listActivePortReviews).some((r) => r.threadId === h.thread.id),
+          !terminal,
+        );
+        assert.lengthOf(h.fake.reviews, 0);
+        yield* reactor.reconcile;
+        assert.lengthOf(h.fake.reviews, 0);
+        // Blocked or inconclusive continuations can still finish in another turn.
+        if (!terminal) {
+          h.fake.threads[0] = {
+            ...h.thread,
+            latestTurn: {
+              ...h.thread.latestTurn!,
+              turnId: TurnId.makeUnsafe("successful-continuation"),
+              processingQuiescedAt: REVIEW_NOW,
+            },
+            messages: h.thread.messages.map((m) => ({
+              ...m,
+              turnId: TurnId.makeUnsafe("successful-continuation"),
+            })),
+          };
+          yield* reactor.reconcile;
+          assert.lengthOf(h.fake.reviews, 1);
+        }
+      }),
+    );
+  }
+
   it.effect("invalid persisted reviewers disarm implementation recovery", () =>
     Effect.gen(function* () {
       const h = yield* setup;

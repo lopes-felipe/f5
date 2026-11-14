@@ -166,7 +166,23 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
       !ctx.thread.latestTurn?.processingQuiescedAt
     )
       return wait();
-    const outcome = parseUpstreamOutcome(finished.assistantText);
+    const parsed = parseUpstreamOutcomes(finished.assistantText);
+    const outcome = parsed.thread;
+    // A continuation's explicit outcome takes precedence over a PR projected by any turn.
+    if (outcome?.kind === "equivalent" || outcome?.kind === "not-applicable")
+      return skip("Port ended with " + outcome.kind);
+    if (outcome?.kind === "blocked") return wait();
+    if (
+      !outcome &&
+      ctx.group.topicIds.length > 0 &&
+      ctx.group.topicIds.every((id) => {
+        const scoped = parsed.byTopic.get(id);
+        return scoped && scoped.kind !== "pr";
+      })
+    )
+      return ctx.group.topicIds.some((id) => parsed.byTopic.get(id)?.kind === "blocked")
+        ? wait()
+        : skip("Port ended without a pull request for any topic");
     return ctx.projectedPrUrl || outcome?.kind === "pr" ? { kind: "resume" } : wait();
   }
   if (row.status === "waiting") {

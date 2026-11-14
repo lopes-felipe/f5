@@ -86,6 +86,27 @@ describe("nextPortReviewStep", () => {
   });
 
   it.each([
+    ["UPSTREAM-OUTCOME: equivalent x:1", "skip"],
+    ["UPSTREAM-OUTCOME: not-applicable unsupported", "skip"],
+    ["UPSTREAM-OUTCOME: blocked missing dependency", "wait"],
+    ["UPSTREAM-OUTCOME pr-1: equivalent x:1", "skip"],
+    ["UPSTREAM-OUTCOME pr-1: not-applicable unsupported", "skip"],
+    ["UPSTREAM-OUTCOME pr-1: blocked missing dependency", "wait"],
+  ] as const)("honors explicit continuation outcome %s even with a projected PR", (text, kind) => {
+    const thread = reviewThread();
+    const row = reviewRecord({ status: "error", resumeAfterTurnId: "stopped-turn" });
+    const ctx = reviewContext({
+      projectedPrUrl: REVIEW_PR,
+      thread: {
+        ...thread,
+        latestTurn: { ...thread.latestTurn!, processingQuiescedAt: thread.updatedAt },
+        messages: thread.messages.map((m) => ({ ...m, text })),
+      },
+    });
+    expect(nextPortReviewStep(row, ctx).kind).toBe(kind);
+  });
+
+  it.each([
     ["pending", null, "wait"],
     ["submitted", "pending", "wait"],
     ["submitted", "canceled", "skip"],

@@ -5,6 +5,7 @@ import * as SqliteClient from "../NodeSqliteClient.ts";
 import Migration137 from "./137_UpstreamPorts.ts";
 import Migration143 from "./143_UpstreamPortQueue.ts";
 import Migration145 from "./145_UpstreamPortReviews.ts";
+import Migration152 from "./152_UpstreamTopicOutcomes.ts";
 import Migration164 from "./164_UpstreamPortReviewRecovery.ts";
 
 it.layer(SqliteClient.layerMemory())("164_UpstreamPortReviewRecovery", (it) => {
@@ -17,8 +18,14 @@ it.layer(SqliteClient.layerMemory())("164_UpstreamPortReviewRecovery", (it) => {
         yield* Migration143;
         yield* Migration145;
         yield* sql`CREATE TABLE projection_turns (
-        row_id INTEGER PRIMARY KEY, thread_id TEXT, turn_id TEXT, requested_at TEXT, completed_at TEXT
+        row_id INTEGER PRIMARY KEY, thread_id TEXT, turn_id TEXT, requested_at TEXT, completed_at TEXT,
+        assistant_message_id TEXT
       )`;
+        yield* sql`CREATE TABLE projection_thread_messages (
+          thread_id TEXT, turn_id TEXT, created_at TEXT, message_id TEXT,
+          role TEXT, is_streaming INTEGER, text TEXT
+        )`;
+        yield* Migration152;
         const cases = [
           [
             "interrupted",
@@ -37,6 +44,47 @@ it.layer(SqliteClient.layerMemory())("164_UpstreamPortReviewRecovery", (it) => {
             true,
           ],
           ["blocked", "skipped", null, "Port ended with blocked", null, true],
+          [
+            "group-blocked",
+            "skipped",
+            null,
+            "Port ended without a pull request for any topic",
+            null,
+            true,
+          ],
+          [
+            "group-equivalent",
+            "skipped",
+            null,
+            "Port ended without a pull request for any topic",
+            null,
+            false,
+          ],
+          [
+            "group-not-applicable",
+            "skipped",
+            null,
+            "Port ended without a pull request for any topic",
+            null,
+            false,
+          ],
+          [
+            "group-other-turn",
+            "skipped",
+            null,
+            "Port ended without a pull request for any topic",
+            null,
+            false,
+          ],
+          [
+            "group-other-project",
+            "skipped",
+            null,
+            "Port ended without a pull request for any topic",
+            null,
+            false,
+          ],
+          ["mixed-timestamps", "skipped", null, "Port ended with blocked", null, true],
           ["equivalent", "skipped", null, "Port ended with equivalent", null, false],
           ["archived", "skipped", null, "Port thread archived", null, false],
           ["setup", "error", "review-setup", "Pull request was not found", null, false],
@@ -48,11 +96,18 @@ it.layer(SqliteClient.layerMemory())("164_UpstreamPortReviewRecovery", (it) => {
           yield* sql`INSERT INTO upstream_port_reviews
           (project_id,client_request_id,group_index,port_thread_id,reviewers_json,status,
            error_stage,detail,review_workflow_id,updated_at)
-          VALUES ('p',${id},0,${id},'{}',${status},${stage},${detail},${workflow},'2026-11-13T11:17:51.158Z')`;
+          VALUES ('p',${id},0,${id},'{}',${status},${stage},${detail},${workflow},'2026-11-13T11:17:50.500Z')`;
           if (id === "missing-turn") continue;
           yield* sql`INSERT INTO projection_turns(thread_id,turn_id,requested_at,completed_at)
-          VALUES (${id},'stopped','2026-11-13T11:15:21.534Z','2026-11-13T11:17:50.454Z'),
+          VALUES (${id},'stopped','2026-11-13T11:15:21.534Z',${id === "mixed-timestamps" ? "2026-11-13T11:17:50Z" : "2026-11-13T11:17:50.454Z"}),
                  (${id},'continuation','2026-11-13T11:17:53.071Z','2026-11-13T11:27:07.869Z')`;
+          if (id.startsWith("group-"))
+            yield* sql`INSERT INTO upstream_port_topic_outcomes
+              (project_id,topic_id,epoch,thread_id,turn_id,message_id,kind,detail,explicit,source_at)
+              VALUES (${id === "group-other-project" ? "other-project" : "p"},'pr-1',1,${id},
+                ${id === "group-other-turn" ? "older-turn" : "stopped"},'message',
+                ${id === "group-equivalent" ? "equivalent" : id === "group-not-applicable" ? "not-applicable" : "blocked"},
+                'evidence',1,'2026-11-13T11:15:21.534Z')`;
         }
         yield* Migration164;
         const rows = yield* sql<{
