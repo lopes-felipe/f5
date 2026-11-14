@@ -204,6 +204,7 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetRewindDraftsInput,
   OrchestrationGetThreadPeekInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationGetSnapshotInput,
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetThreadCommandExecutionInput,
@@ -443,6 +444,7 @@ const WebSocketRequestBody = Schema.Union([
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getRewindDrafts, OrchestrationGetRewindDraftsInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getThreadPeek, OrchestrationGetThreadPeekInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.getThreadPeeks, OrchestrationGetThreadPeeksInput),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.getThreadHistoryPage,
     OrchestrationGetThreadHistoryPageInput,

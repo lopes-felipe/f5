@@ -504,7 +504,9 @@ import type {
   OrchestrationGetRewindDraftsInput,
   OrchestrationGetRewindDraftsResult,
   OrchestrationGetThreadPeekInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationThreadPeek,
+  OrchestrationThreadPeeks,
   OrchestrationThreadHistoryPage,
   OrchestrationThreadTailDetails,
   OrchestrationGetTurnDiffInput,
@@ -1605,6 +1607,10 @@ export interface NativeApi {
       input: OrchestrationGetThreadPeekInput,
       context?: NativeRequestContext,
     ) => Promise<OrchestrationThreadPeek>;
+    getThreadPeeks: (
+      input: OrchestrationGetThreadPeeksInput,
+      context?: NativeRequestContext,
+    ) => Promise<OrchestrationThreadPeeks>;
     getThreadHistoryPage: (
       input: OrchestrationGetThreadHistoryPageInput,
     ) => Promise<OrchestrationThreadHistoryPage>;

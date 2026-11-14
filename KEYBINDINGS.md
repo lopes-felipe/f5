@@ -179,6 +179,7 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
   },
   // ...through "ctrl+9" / "model.favorite.9", same "when"
   { "key": "mod+shift+p", "command": "prHub.open", "when": "!terminalFocus" },
+  { "key": "mod+shift+h", "command": "home.open", "when": "!terminalFocus" },
   { "key": "mod+p", "command": "palette.files", "when": "!terminalFocus" },
   { "key": "mod+shift+f", "command": "projectContentSearch.toggle", "when": "!terminalFocus" },
   { "key": "mod+shift+m", "command": "modelPicker.toggle", "when": "!terminalFocus" },

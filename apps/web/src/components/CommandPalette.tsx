@@ -240,6 +240,12 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           setOpen(false);
           void navigate({ to: "/usage" });
           return;
+        case "home.open":
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          void navigate({ to: "/" });
+          return;
         default:
           return;
       }
@@ -1097,8 +1103,9 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:go-home",
-      searchTerms: ["home", "dashboard", "mission control", "start"],
+      searchTerms: ["home", "dashboard", "mission control", "start", "triage", "queue"],
       title: "Go to Home",
+      shortcutCommand: "home.open",
       icon: <HomeIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/" });
