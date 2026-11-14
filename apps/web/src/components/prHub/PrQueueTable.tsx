@@ -15,11 +15,15 @@ import { useStore } from "../../store";
 import { selectThreadById, useThread } from "../../threadSelectors";
 import { resolveThreadStatusPillForThread } from "../../threadStatus";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
 import { attentionAccentClass, isPrStalled } from "./prHubPresentation";
+import { prSelectionState, type PrSelectionState } from "./prQueueSelection";
 import {
   PR_QUEUE_SECTION_HINTS,
   PR_QUEUE_SECTION_LABELS,
+  isPrUnread,
+  prChangesText,
   prRowChecks,
   prRowPrimaryAction,
   prRowReview,
@@ -116,13 +120,24 @@ interface RowProps {
   viewerLogin: string | null;
   isCursor: boolean;
   isOpen: boolean;
+  /** Null in a list whose rows cannot be ticked (snoozed, ignored, closed). */
+  isSelected: boolean | null;
+  /** Some row is selected: every checkbox stays visible. */
+  isSelecting: boolean;
   stalledHours: number;
   now: number;
   onSelect: (key: PullRequestKey) => void;
   onOpenPage: (key: PullRequestKey) => void;
+  onToggleSelected: (key: PullRequestKey, range: boolean) => void;
   onAction: (pr: TrackedPullRequest, kind: PrQueueActionKind) => void;
   onOpenThread: (threadId: ThreadId) => void;
 }
+
+const NO_SELECTION: ReadonlySet<PullRequestKey> = new Set();
+
+/** A checkbox that keeps its place when hidden, so rows do not shift once one is ticked. */
+const SELECT_CHECKBOX =
+  "opacity-0 group-hover/prrow:opacity-100 focus-visible:opacity-100 data-checked:opacity-100 data-indeterminate:opacity-100";
 
 const PrQueueRow = memo(function PrQueueRow({
   pr,
@@ -130,10 +145,13 @@ const PrQueueRow = memo(function PrQueueRow({
   viewerLogin,
   isCursor,
   isOpen,
+  isSelected,
+  isSelecting,
   stalledHours,
   now,
   onSelect,
   onOpenPage,
+  onToggleSelected,
   onAction,
   onOpenThread,
 }: RowProps) {
@@ -141,23 +159,50 @@ const PrQueueRow = memo(function PrQueueRow({
   const action = prRowPrimaryAction(pr, { runningThreadId });
   const reference = `${pr.repository.nameWithOwner}#${pr.number}`;
   const showAuthor = pr.author && pr.author.toLowerCase() !== viewerLogin?.toLowerCase();
+  const unread = isPrUnread(pr);
   return (
     <div
       role="option"
       aria-selected={isCursor}
       data-pr-key={pr.key}
       data-open={isOpen || undefined}
-      onClick={() => onSelect(pr.key)}
+      data-unread={unread || undefined}
+      // Shift-click extends the selection; it must not select the text in between.
+      onMouseDown={(event) => {
+        if (event.shiftKey) event.preventDefault();
+      }}
+      onClick={(event) => {
+        if (event.shiftKey && isSelected !== null) onToggleSelected(pr.key, true);
+        else onSelect(pr.key);
+      }}
       onDoubleClick={() => onOpenPage(pr.key)}
       className={cn(
-        "flex w-full cursor-default items-center gap-3 border-b border-border px-4 py-2 text-left",
+        "group/prrow flex w-full cursor-default items-center gap-3 border-b border-border px-4 py-2 text-left",
         isOpen
           ? "bg-primary/8 ring-1 ring-inset ring-primary/35"
           : isCursor
             ? "bg-accent/40 ring-1 ring-inset ring-border"
-            : "hover:bg-accent/24",
+            : isSelected
+              ? "bg-accent/24"
+              : "hover:bg-accent/24",
       )}
     >
+      {isSelected === null ? null : (
+        // The checkbox clicks its hidden input, a sibling: the wrapper keeps both clicks
+        // from opening the row.
+        <span
+          className="flex shrink-0"
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <Checkbox
+            checked={isSelected}
+            aria-label={`Select ${reference}`}
+            className={isSelecting ? undefined : SELECT_CHECKBOX}
+            onClick={(event) => onToggleSelected(pr.key, event.shiftKey)}
+          />
+        </span>
+      )}
       <span
         aria-hidden="true"
         className={cn("size-2 shrink-0 rounded-full", attentionAccentClass(pr))}
@@ -166,13 +211,16 @@ const PrQueueRow = memo(function PrQueueRow({
         <span
           className={cn(
             "truncate text-sm leading-snug text-foreground",
-            pr.notificationPending && "font-semibold",
+            (unread || pr.notificationPending) && "font-semibold",
           )}
         >
           {pr.title}
         </span>
         <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
           <span className="truncate font-mono">{reference}</span>
+          {unread ? (
+            <span className="shrink-0 font-medium text-foreground">· {prChangesText(pr)}</span>
+          ) : null}
           {showAuthor ? <span className="shrink-0">· {pr.author}</span> : null}
           {pr.isDraft ? <span className="shrink-0">· Draft</span> : null}
           {isPrStalled(pr, stalledHours, now) ? (
@@ -221,12 +269,36 @@ const PrQueueRow = memo(function PrQueueRow({
 function SectionHeader({
   group,
   section,
+  selection,
+  isSelecting,
   onToggle,
+  onSelectAll,
 }: {
   group: PrQueueGroup;
   section: PrHubSection;
+  selection: PrSelectionState;
+  isSelecting: boolean;
   onToggle: (section: PrHubSection) => void;
+  onSelectAll: (keys: readonly PullRequestKey[], on: boolean) => void;
 }) {
+  const label = PR_QUEUE_SECTION_LABELS[section];
+  const checkbox =
+    group.rows.length > 0 ? (
+      <Checkbox
+        checked={selection === "all"}
+        indeterminate={selection === "some"}
+        aria-label={`Select all in ${label}`}
+        className={isSelecting ? undefined : SELECT_CHECKBOX}
+        onClick={() =>
+          onSelectAll(
+            group.rows.map((pr) => pr.key),
+            selection !== "all",
+          )
+        }
+      />
+    ) : (
+      <span aria-hidden="true" className="size-4.5 shrink-0 sm:size-4" />
+    );
   const content = (
     <>
       {group.collapsed === null ? null : (
@@ -238,34 +310,37 @@ function SectionHeader({
           )}
         />
       )}
-      <span className="text-xs font-medium text-foreground">
-        {PR_QUEUE_SECTION_LABELS[section]}
-      </span>
+      <span className="text-xs font-medium text-foreground">{label}</span>
       <span className="text-xs text-muted-foreground tabular-nums">
         {group.count}
         {group.countIsPartial ? "+" : ""}
       </span>
     </>
   );
-  const className =
-    "flex w-full items-center gap-2 border-b border-border bg-muted/40 px-4 py-1.5 text-left";
-  return group.collapsed === null ? (
-    <div className={className} title={PR_QUEUE_SECTION_HINTS[section]}>
-      {content}
-    </div>
-  ) : (
-    <button
-      type="button"
-      aria-expanded={!group.collapsed}
-      title={PR_QUEUE_SECTION_HINTS[section]}
-      className={cn(
-        className,
-        "hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:outline-none",
+  const className = "flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left";
+  return (
+    // The checkbox sits beside the toggle, not inside it: a button cannot hold a checkbox.
+    <div className="group/prrow flex w-full items-center gap-3 border-b border-border bg-muted/40 px-4 hover:bg-muted/70">
+      {checkbox}
+      {group.collapsed === null ? (
+        <div className={className} title={PR_QUEUE_SECTION_HINTS[section]}>
+          {content}
+        </div>
+      ) : (
+        <button
+          type="button"
+          aria-expanded={!group.collapsed}
+          title={PR_QUEUE_SECTION_HINTS[section]}
+          className={cn(
+            className,
+            "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:outline-none",
+          )}
+          onClick={() => onToggle(section)}
+        >
+          {content}
+        </button>
       )}
-      onClick={() => onToggle(section)}
-    >
-      {content}
-    </button>
+    </div>
   );
 }
 
@@ -318,11 +393,14 @@ export function PrQueueTable({
   viewerLogin,
   cursorKey,
   openKey,
+  selectedKeys,
   stalledHours,
   now,
   isStale,
   onSelect,
   onOpenPage,
+  onToggleSelected,
+  onSelectAll,
   onAction,
   onOpenThread,
   onToggleSection,
@@ -333,15 +411,22 @@ export function PrQueueTable({
   cursorKey: PullRequestKey | null;
   /** The pull request shown in the peek. */
   openKey: PullRequestKey | null;
+  /** Rows ticked for a bulk action; null where rows cannot be ticked. */
+  selectedKeys: ReadonlySet<PullRequestKey> | null;
   stalledHours: number;
   now: number;
   isStale: boolean;
   onSelect: (key: PullRequestKey) => void;
   onOpenPage: (key: PullRequestKey) => void;
+  /** Ticks or unticks a row; `range` extends from the last row ticked (shift-click). */
+  onToggleSelected: (key: PullRequestKey, range: boolean) => void;
+  onSelectAll: (keys: readonly PullRequestKey[], on: boolean) => void;
   onAction: (pr: TrackedPullRequest, kind: PrQueueActionKind) => void;
   onOpenThread: (threadId: ThreadId) => void;
   onToggleSection: (section: PrHubSection) => void;
 }) {
+  const selected = selectedKeys ?? NO_SELECTION;
+  const isSelecting = selected.size > 0;
   const items = itemsOf(groups);
   const virtualize = items.length > VIRTUALIZE_THRESHOLD;
   const cursorIndex = cursorKey ? items.findIndex((item) => item.id === cursorKey) : -1;
@@ -363,7 +448,13 @@ export function PrQueueTable({
           <SectionHeader
             group={item.group}
             section={item.group.section!}
+            selection={prSelectionState(
+              item.group.rows.map((pr) => pr.key),
+              selected,
+            )}
+            isSelecting={isSelecting}
             onToggle={onToggleSection}
+            onSelectAll={onSelectAll}
           />
         );
       case "row":
@@ -374,10 +465,13 @@ export function PrQueueTable({
             viewerLogin={viewerLogin}
             isCursor={item.pr.key === cursorKey}
             isOpen={item.pr.key === openKey}
+            isSelected={selectedKeys ? selectedKeys.has(item.pr.key) : null}
+            isSelecting={isSelecting}
             stalledHours={stalledHours}
             now={now}
             onSelect={onSelect}
             onOpenPage={onOpenPage}
+            onToggleSelected={onToggleSelected}
             onAction={onAction}
             onOpenThread={onOpenThread}
           />
@@ -422,6 +516,7 @@ export function PrQueueTable({
         aria-hidden="true"
         className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-1.5 text-2xs uppercase tracking-wide text-muted-foreground"
       >
+        {selectedKeys ? <span className="size-4.5 shrink-0 sm:size-4" /> : null}
         <span className="size-2 shrink-0" />
         <span className="min-w-0 flex-1">Pull request</span>
         <span className={COLUMN.review}>Review</span>
@@ -443,7 +538,7 @@ export function PrQueueTable({
           <LegendList<Item>
             ref={listRef}
             data={items}
-            extraData={`${cursorKey}:${openKey}:${isStale}:${now}`}
+            extraData={`${cursorKey}:${openKey}:${isStale}:${now}:${[...selected].join(" ")}`}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => renderItem(item)}
             estimatedItemSize={49}

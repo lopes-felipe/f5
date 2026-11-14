@@ -244,6 +244,87 @@ describe("PR Hub bounded read model", () => {
       expect(numbers("repo:acme/other")).toEqual([]);
     });
   });
+  describe("activity and saved views", () => {
+    const key = (number: number) =>
+      PullRequestKey.makeUnsafe(`github:github.com/octo/repo#${number}`);
+    const row = (number: number, overrides: Partial<TrackedPullRequest> = {}) =>
+      makePr({
+        attentionState: "review_requested",
+        reviewRequestSource: "direct",
+        number,
+        key: key(number),
+        ...overrides,
+      });
+    const base: PrHubSnapshot = {
+      ...snapshot(0),
+      pullRequests: [
+        row(1, { changesSinceSeen: [{ kind: "new" }], updatedAt: daysAgo(3) }),
+        row(2, { changesSinceSeen: [], labels: ["bug"] }),
+        row(3, { changesSinceSeen: [{ kind: "comments", count: 2 }], labels: ["bug"] }),
+        // A team request is in the queue, but does not need the viewer.
+        row(4, {
+          attentionState: "team_review_requested",
+          attentionBucket: "informational",
+          reviewRequestSource: "team",
+          labels: ["bug"],
+          changesSinceSeen: [{ kind: "commits" }],
+        }),
+        row(5, { snoozedUntil: daysAgo(-2), changesSinceSeen: [{ kind: "ci_failed" }] }),
+        row(6),
+      ],
+      recentlyResolved: [
+        row(7, {
+          state: "merged",
+          attentionState: "merged",
+          changesSinceSeen: [{ kind: "merged" }],
+        }),
+      ],
+    };
+
+    it("counts unread pull requests of the active queue", () => {
+      expect(prHubOverview(base, "1").unreadCount).toBe(3);
+      expect(prHubOverview(snapshot(0), "1").unreadCount).toBe(0);
+    });
+
+    it("lists only unread pull requests, newest first, when asked", () => {
+      const page = listPrHubPullRequests(base, "1", {
+        unread: true,
+        visibility: "active",
+        sort: "updated",
+      });
+      expect(page.pullRequests.map((pr) => pr.number)).toEqual([3, 4, 1]);
+      expect(
+        listPrHubPullRequests(base, "1", {
+          unread: true,
+          visibility: "resolved",
+        }).pullRequests.map((pr) => pr.number),
+      ).toEqual([7]);
+    });
+
+    it("counts, per saved view, the matches that need the viewer", () => {
+      const overview = prHubOverview(base, "1", undefined, undefined, [
+        { id: "bugs", query: "label:bug" },
+        { id: "repo", repository: "octo/repo" },
+        { id: "none", query: "label:missing" },
+        { id: "drafts", draft: "only" },
+      ]);
+      // #2 and #3 are labelled and need review; #4 is a team request; #5 is snoozed.
+      expect(overview.savedCounts).toEqual({ bugs: 2, repo: 4, none: 0, drafts: 0 });
+      expect(prHubOverview(base, "1").savedCounts).toBeUndefined();
+    });
+
+    it("applies a saved view's filters exactly as the list does", () => {
+      const saved = { id: "bugs", query: "label:bug", review: "review_required" as const };
+      const listed = listPrHubPullRequests(base, "1", {
+        query: saved.query,
+        review: saved.review,
+        visibility: "active",
+      }).pullRequests.filter((pr) => pr.section === "review");
+      expect(prHubOverview(base, "1", undefined, undefined, [saved]).savedCounts).toEqual({
+        bugs: listed.length,
+      });
+    });
+  });
   it("paginates 5000 PRs without duplicates and rejects changed revision/filter/account cursors", () => {
     const data = snapshot();
     const first = listPrHubPullRequests(data, "1", { limit: 100 });

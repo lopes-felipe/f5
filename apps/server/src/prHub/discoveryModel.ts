@@ -105,6 +105,7 @@ export interface PrDbRow {
   readonly snoozed_until: string | null;
   readonly ignored_at: string | null;
   readonly no_longer_relevant_at: string | null;
+  readonly seen_baseline_json?: string | null;
 }
 
 export interface RefreshStateRow {

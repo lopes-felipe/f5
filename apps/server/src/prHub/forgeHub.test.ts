@@ -132,6 +132,32 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
         const incomplete = yield* hub.getDetail({ key: pr.key, mode: "force" });
         assert.deepEqual(incomplete.detail.truncatedSections, ["checks"]);
         assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "pending");
+
+        // A bulk change skips keys it does not track and is refused for a stale account.
+        const until = new Date(Date.now() + 3_600_000).toISOString();
+        const keys = [
+          pr.key,
+          PullRequestKey.makeUnsafe("gitlab:gitlab.example.com/group/repo#999"),
+        ];
+        assert.equal(
+          (yield* Effect.exit(
+            hub.bulkUpdate({ keys, action: "snooze", until, accountGeneration: "stale" }),
+          ))._tag,
+          "Failure",
+        );
+        assert.equal(
+          (yield* Effect.exit(hub.bulkUpdate({ keys, action: "snooze" })))._tag,
+          "Failure",
+        );
+        assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "snooze", until }), {
+          updated: 1,
+        });
+        assert.equal((yield* hub.getSnapshot).pullRequests[0]?.snoozedUntil, until);
+        assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "mark_seen" }), {
+          updated: 1,
+        });
+        assert.deepStrictEqual(yield* hub.bulkUpdate({ keys, action: "ignore" }), { updated: 1 });
+        assert.isNotNull((yield* hub.getSnapshot).pullRequests[0]?.ignoredAt ?? null);
       }),
     ).pipe(Effect.provide(SqliteClient.layerMemory())),
   );

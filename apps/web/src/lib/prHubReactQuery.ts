@@ -3,6 +3,7 @@ import type {
   PrHubListInput,
   PrHubListPage,
   PrHubReviewComment,
+  PrHubSavedQuery,
   PullRequestKey,
 } from "@t3tools/contracts";
 
@@ -29,13 +30,19 @@ export function prHubPeekQueryOptions(url: string) {
   });
 }
 
-export function prHubOverviewQueryOptions(stalledBefore?: string) {
+export function prHubOverviewQueryOptions(
+  stalledBefore?: string,
+  /** Saved views to count; the queue passes its own, other readers pass none. */
+  savedQueries: readonly PrHubSavedQuery[] = [],
+) {
   return queryOptions({
     queryKey: [
       ...prHubQueryKeys.overview,
       getPrHubAccountGeneration(),
       stalledBefore,
       getPrHubSelectedAccountId(),
+      // Readers without saved views share one entry.
+      ...(savedQueries.length > 0 ? [savedQueries] : []),
     ],
     placeholderData: (previous, query) =>
       query?.queryKey[2] === getPrHubAccountGeneration() ? previous : undefined,
@@ -43,9 +50,21 @@ export function prHubOverviewQueryOptions(stalledBefore?: string) {
       ensureNativeApi().prHub.getOverview({
         stalledBefore,
         accountId: getPrHubSelectedAccountId(),
+        ...(savedQueries.length > 0 ? { savedQueries } : {}),
       }),
     staleTime: 30_000,
   });
+}
+
+/** How many unread pull requests the Activity list shows. */
+export const PR_HUB_ACTIVITY_LIMIT = 20;
+
+/** The active pull requests that changed since they were last seen, newest first. */
+export function prHubActivityQueryOptions(revision: string | undefined) {
+  return prHubListQueryOptions(
+    { unread: true, visibility: "active", sort: "updated", limit: PR_HUB_ACTIVITY_LIMIT },
+    revision,
+  );
 }
 
 export function prHubDetailQueryOptions(key: PullRequestKey) {

@@ -660,7 +660,13 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         Effect.sync(() => {
           const current = snapshot();
           return {
-            ...prHubOverview(current, String(revision), input.stalledBefore),
+            ...prHubOverview(
+              current,
+              String(revision),
+              input.stalledBefore,
+              undefined,
+              input.savedQueries,
+            ),
             sync: prHubSyncState(current, undefined, null),
           };
         }),
@@ -710,6 +716,35 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
           ignoredAt: new Date().toISOString(),
         }),
       unignore: (input) => editLocal(input.key, input.accountGeneration, { ignoredAt: null }),
+      // One publication for the whole selection. This hub keeps no seen state, so marking
+      // seen has nothing to store.
+      bulkUpdate: (input) =>
+        gate.withPermits(1)(
+          Effect.gen(function* () {
+            yield* assertGeneration(input.accountGeneration);
+            const until = input.until;
+            if (input.action === "snooze" && !(until && Date.parse(until) > Date.now()))
+              return yield* error("Choose a snooze time in the future.", "generic");
+            const patch: Partial<TrackedPullRequest> =
+              input.action === "snooze"
+                ? { snoozedUntil: until ?? null }
+                : input.action === "ignore"
+                  ? { ignoredAt: new Date().toISOString() }
+                  : {};
+            const previous = snapshot();
+            let updated = 0;
+            for (const key of new Set(input.keys)) {
+              const stored = state.get(key);
+              if (!stored) continue;
+              const next = { ...stored, pr: { ...stored.pr, ...patch } };
+              yield* persist(next);
+              state.set(key, next);
+              updated++;
+            }
+            if (updated > 0) yield* publish(previous);
+            return { updated };
+          }),
+        ),
       acknowledgeAttention: (input) =>
         editLocal(input.key, input.accountGeneration, {
           acknowledgedAt: new Date().toISOString(),

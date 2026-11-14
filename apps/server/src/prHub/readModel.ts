@@ -5,9 +5,11 @@ import {
   type PrHubListInput,
   type PrHubListPage,
   type PrHubOverview,
+  type PrHubSavedQuery,
   type PrHubSection,
   type PrHubSnapshot,
   type PrHubChanged,
+  type TrackedPullRequest,
 } from "@t3tools/contracts";
 import {
   matchesPrHubFilter,
@@ -69,13 +71,38 @@ const mostCommon = (counts: ReadonlyMap<string, number>) =>
     .slice(0, FACET_LIMIT)
     .map(([value]) => value);
 
+type QueueFilters = Pick<PrHubListInput, "query" | "repository" | "ci" | "review" | "draft">;
+
+/** The search and filters of the queue, shared by lists and saved-view counts. */
+function queueFilterPredicate(filters: QueueFilters, viewerLogin: string | null) {
+  const matchesSearch = prSearchPredicate(filters.query ?? "", viewerLogin);
+  return (pr: TrackedPullRequest) =>
+    (!filters.repository || pr.repository.nameWithOwner === filters.repository) &&
+    (!filters.ci || pr.checkRollup === filters.ci) &&
+    (!filters.draft || pr.isDraft === (filters.draft === "only")) &&
+    (!filters.review || pr.reviewDecision === filters.review) &&
+    matchesSearch(pr);
+}
+
+const isUnread = (pr: TrackedPullRequest) => (pr.changesSinceSeen?.length ?? 0) > 0;
+const NEEDS_VIEWER: ReadonlySet<PrHubSection> = new Set(["review", "action", "ready"]);
+
 export function prHubOverview(
   snapshot: PrHubSnapshot,
   revision: string,
   stalledBefore?: string,
   now = Date.now(),
+  savedQueries: readonly PrHubSavedQuery[] = [],
 ): PrHubOverview {
   const { pullRequests, recentlyResolved, cappedBuckets, ...metadata } = snapshot;
+  const saved = savedQueries.map((query) => ({
+    id: query.id,
+    matches: queueFilterPredicate(query, snapshot.viewerLogin),
+  }));
+  const savedCounts: Record<string, number> = Object.fromEntries(
+    saved.map((query) => [query.id, 0]),
+  );
+  let unreadCount = 0;
   const counts = Object.fromEntries(
     PrHubListFilter.literals.map((filter) => [filter, 0]),
   ) as Record<PrHubListFilter, number>;
@@ -91,7 +118,11 @@ export function prHubOverview(
     }
     // Sections describe the active queue: snoozed, ignored and closed rows are elsewhere.
     if (matchesPrHubFilter(pr, "all", undefined, now, "active")) {
-      sectionCounts[prHubSectionOf(pr, now)]++;
+      const section = prHubSectionOf(pr, now);
+      sectionCounts[section]++;
+      if (isUnread(pr)) unreadCount++;
+      if (NEEDS_VIEWER.has(section))
+        for (const query of saved) if (query.matches(pr)) savedCounts[query.id]!++;
       tally(repositories, pr.repository.nameWithOwner);
       if (pr.author) tally(authors, pr.author);
       for (const label of pr.labels) tally(labels, label);
@@ -102,6 +133,8 @@ export function prHubOverview(
     revision,
     counts,
     sectionCounts,
+    unreadCount,
+    ...(saved.length > 0 ? { savedCounts } : {}),
     facets: {
       repositories: mostCommon(repositories),
       authors: mostCommon(authors),
@@ -149,7 +182,7 @@ export function listPrHubPullRequests(
       return empty;
     }
   }
-  const matchesSearch = prSearchPredicate(input.query ?? "", snapshot.viewerLogin);
+  const matchesFilters = queueFilterPredicate(input, snapshot.viewerLogin);
   const now = Date.now();
   // A section is a slice of the active queue unless the caller asks for another status.
   const visibility = input.visibility ?? (input.section ? "active" : undefined);
@@ -158,13 +191,10 @@ export function listPrHubPullRequests(
     return (
       matchesPrHubFilter(pr, input.filter ?? "all", input.stalledBefore, now, visibility) &&
       (!input.section || prHubSectionOf(pr, now) === input.section) &&
-      (!input.repository || pr.repository.nameWithOwner === input.repository) &&
+      (!input.unread || isUnread(pr)) &&
       (!input.relationship || pr.roles.includes(input.relationship)) &&
-      (!input.ci || pr.checkRollup === input.ci) &&
       (!input.lifecycle || pr.state === input.lifecycle) &&
-      (!input.draft || pr.isDraft === (input.draft === "only")) &&
-      (!input.review || pr.reviewDecision === input.review) &&
-      matchesSearch(pr)
+      matchesFilters(pr)
     );
   });
   rows.sort(

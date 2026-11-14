@@ -232,6 +232,7 @@ export const RPC_METHOD_POLICY = {
   "prHub.acknowledgeNotifications": MUTATION,
   "prHub.analyzeAdvisories": long(false, null),
   "prHub.approve": MUTATION,
+  "prHub.bulkUpdate": MUTATION,
   "prHub.cancelOperation": MUTATION,
   "prHub.cancelReviewPreparation": MUTATION,
   "prHub.changeReviewers": MUTATION,

@@ -1,5 +1,6 @@
 import { prHubRecoveryCandidates } from "./recovery.ts";
 import { applyPrHubRelevance } from "./relevance.ts";
+import { parsePrSeenBaseline, prChangesSinceSeen, prSeenBaseline } from "./seenBaseline.ts";
 import { PR_HUB_BACKLOG_ERROR_KIND } from "./refreshSchedule.ts";
 import { assertPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { unknownMergeRequirements } from "./mergeRequirements.ts";
@@ -192,7 +193,8 @@ export function createPrHubRepository(
           v.last_notified_fingerprint,
           v.snoozed_until,
           v.ignored_at,
-          v.no_longer_relevant_at
+          v.no_longer_relevant_at,
+          v.seen_baseline_json
         FROM pr_hub_viewer_state v
         INNER JOIN pr_hub_prs p
           ON p.provider_kind = v.provider_kind
@@ -342,7 +344,24 @@ export function createPrHubRepository(
         coverage: effectiveCoverage,
         cappedBuckets: effectiveCoverage.flatMap((scope) => scope.limits ?? []),
       } satisfies PrHubSnapshot;
-      return applyPrHubRelevance(snapshot, recoverySettings.prHub);
+      // What changed since each row was last seen depends on its section, set just above.
+      const baselines = new Map(
+        rows.map((row) => [keyFor(row.host, row.repo, row.number), row.seen_baseline_json]),
+      );
+      const withChanges = (pr: TrackedPullRequest): TrackedPullRequest => ({
+        ...pr,
+        changesSinceSeen: prChangesSinceSeen(
+          pr,
+          parsePrSeenBaseline(baselines.get(pr.key)),
+          resolvedViewer,
+        ),
+      });
+      const relevant = applyPrHubRelevance(snapshot, recoverySettings.prHub);
+      return {
+        ...relevant,
+        pullRequests: relevant.pullRequests.map(withChanges),
+        recentlyResolved: relevant.recentlyResolved.map(withChanges),
+      };
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("failed to hydrate PR Hub snapshot", {
@@ -426,6 +445,10 @@ export function createPrHubRepository(
       const initialDiscovery = (yield* loadRefreshState(String(viewer.context.viewerId))) === null;
       for (const pr of pullRequests) {
         if (options.alreadyPersisted?.has(`${pr.repository.nameWithOwner}#${pr.number}`)) continue;
+        // A baseline taken before the first full read holds only the state. The full read
+        // completes it, so later activity has something to be compared with.
+        const completedBaseline =
+          pr.lastVerifiedAt != null ? JSON.stringify(prSeenBaseline(pr, now)) : null;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* assertPrHubDiscoveryLease.pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -535,7 +558,8 @@ export function createPrHubRepository(
             last_matched_at,
             no_longer_relevant_at,
             stale_inaccessible_count,
-            stale_inaccessible_at
+            stale_inaccessible_at,
+            seen_baseline_json
           )
           VALUES (
             ${pr.provider},
@@ -575,7 +599,11 @@ export function createPrHubRepository(
             ${now},
             ${null},
             ${0},
-            ${null}
+            ${null},
+            ${
+              // The first sync is a silent baseline: what it finds is not reported as new.
+              initialDiscovery ? JSON.stringify(prSeenBaseline(pr, now)) : null
+            }
           )
           ON CONFLICT (provider_kind, host, viewer_id, repo, number)
           DO UPDATE SET
@@ -587,6 +615,12 @@ export function createPrHubRepository(
               ) THEN excluded.attention_fingerprint
               ELSE pr_hub_viewer_state.last_seen_fingerprint END,
             attention_model_version = 2,
+            seen_baseline_json = CASE
+              WHEN ${completedBaseline} IS NOT NULL
+                AND json_valid(pr_hub_viewer_state.seen_baseline_json)
+                AND json_extract(pr_hub_viewer_state.seen_baseline_json, '$.checkRollup') IS NULL
+              THEN ${completedBaseline}
+              ELSE pr_hub_viewer_state.seen_baseline_json END,
             viewer_login = excluded.viewer_login,
             viewer_payload_json = excluded.viewer_payload_json,
             facts_verified = excluded.facts_verified,

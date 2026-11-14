@@ -8,8 +8,11 @@ import { forgeCapabilitiesFor } from "@t3tools/shared/forgeCapabilities";
 import { describe, expect, it } from "vitest";
 
 import {
+  isPrUnread,
   movePrQueueCursor,
   prCanRerunChecks,
+  prChangeLabel,
+  prChangesText,
   prPageActionAvailability,
   prQueueCollapsed,
   prQueueCommand,
@@ -405,6 +408,7 @@ describe("queue keyboard", () => {
       "e",
       "o",
       "r",
+      "x",
     ];
     expect(commands.map((name) => prQueueCommand(key(name), "queue"))).toEqual([
       "next",
@@ -421,13 +425,14 @@ describe("queue keyboard", () => {
       "ignore",
       "forge",
       "refresh",
+      "select",
     ]);
     expect(prQueueCommand(key("]"), "queue")).toBeNull();
-    expect(prQueueCommand(key("x"), "queue")).toBeNull();
+    expect(prQueueCommand(key("z"), "queue")).toBeNull();
   });
 
   it("leaves scrolling keys to the page and adds previous and next", () => {
-    for (const name of ["j", "ArrowDown", " ", "Enter", "/"])
+    for (const name of ["j", "ArrowDown", " ", "Enter", "/", "x"])
       expect(prQueueCommand(key(name), "page")).toBeNull();
     expect(prQueueCommand(key("]"), "page")).toBe("pageNext");
     expect(prQueueCommand(key("["), "page")).toBe("pagePrevious");
@@ -449,6 +454,33 @@ describe("queue keyboard", () => {
     expect(movePrQueueCursor(keys, "c", 1)).toBe("c");
     expect(movePrQueueCursor(keys, "a", -1)).toBe("a");
     expect(movePrQueueCursor([], "a", 1)).toBeNull();
+  });
+});
+
+describe("activity since last seen", () => {
+  it("names each change, counting comments", () => {
+    expect(prChangeLabel({ kind: "new" })).toBe("New");
+    expect(prChangeLabel({ kind: "ci_failed" })).toBe("Checks failed");
+    expect(prChangeLabel({ kind: "comments", count: 1 })).toBe("1 new comment");
+    expect(prChangeLabel({ kind: "comments", count: 4 })).toBe("4 new comments");
+    expect(prChangeLabel({ kind: "comments" })).toBe("New comments");
+  });
+
+  it("is unread while changes remain, and shows the first two", () => {
+    const changed = makePr({
+      changesSinceSeen: [
+        { kind: "changes_requested" },
+        { kind: "commits" },
+        { kind: "comments", count: 2 },
+      ],
+    });
+    expect(isPrUnread(changed)).toBe(true);
+    expect(prChangesText(changed)).toBe("Changes requested · New commits");
+    expect(prChangesText(changed, 3)).toBe("Changes requested · New commits · 2 new comments");
+    // Rows from a server that records no seen state are never unread.
+    expect(isPrUnread(makePr())).toBe(false);
+    expect(isPrUnread(makePr({ changesSinceSeen: [] }))).toBe(false);
+    expect(prChangesText(makePr())).toBe("");
   });
 });
 

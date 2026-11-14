@@ -51,6 +51,11 @@ import {
   normalizeSnoozePresets,
   SnoozePresetSettingSchema,
 } from "./lib/snoozePresets";
+import {
+  MAX_PR_SAVED_VIEWS,
+  normalizePrSavedViews,
+  PrSavedViewSettingSchema,
+} from "./lib/prSavedViews";
 
 export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const CURRENT_THEME_PALETTE_VERSION = 2 as const;
@@ -465,6 +470,13 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some({})),
     Schema.withDecodingDefault(() => ({})),
   ),
+  /** Searches and filters of the Pull requests queue kept as tabs. */
+  prHubSavedViews: Schema.Array(PrSavedViewSettingSchema)
+    .check(Schema.isMaxLength(MAX_PR_SAVED_VIEWS))
+    .pipe(
+      Schema.withConstructorDefault(() => Option.some([])),
+      Schema.withDecodingDefault(() => []),
+    ),
   prHubShowBotComments: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
     Schema.withDecodingDefault(() => false),
@@ -931,6 +943,7 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
         sidebarOlderThreadDays: normalizeSidebarOlderThreadDays(migrated.sidebarOlderThreadDays),
         // One bad stored option must not reset every other setting.
         snoozePresets: normalizeSnoozePresets(migrated.snoozePresets ?? DEFAULT_SNOOZE_PRESETS),
+        prHubSavedViews: normalizePrSavedViews(migrated.prHubSavedViews),
         uiFontFamily: normalizeFontFamilyPreference(
           migrateRetiredFontFamily(runtimeMetadataMigrated, migrated.uiFontFamily),
         ),

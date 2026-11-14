@@ -1,4 +1,6 @@
-import type { PrHubListInput, PrHubSection } from "@t3tools/contracts";
+import type { PrHubListInput, PrHubSavedQuery, PrHubSection } from "@t3tools/contracts";
+
+import { PR_SAVED_VIEW_FILTERS, type PrSavedViewSetting } from "../../lib/prSavedViews";
 
 /** Everything the queue keeps in the URL, so Back, Forward and shared links restore it. */
 export interface PrQueueSearch {
@@ -14,6 +16,8 @@ export interface PrQueueSearch {
   review?: PrQueueReview;
   draft?: PrQueueDraft;
   status?: Exclude<PrQueueStatus, "active">;
+  /** The saved view whose tab is selected; its search and filters are in the URL too. */
+  saved?: string;
 }
 
 export const PR_QUEUE_STATUSES = ["active", "snoozed", "ignored", "closed"] as const;
@@ -71,6 +75,7 @@ export function parsePrQueueSearch(input: Record<string, unknown>): PrQueueSearc
     review: oneOf(input.review, PR_QUEUE_REVIEW),
     draft: oneOf(input.draft, PR_QUEUE_DRAFT),
     status: status === "active" ? undefined : status,
+    saved: text(input.saved, 64),
   };
   // Absent keys stay out of the URL.
   return Object.fromEntries(
@@ -84,6 +89,65 @@ export type PrQueueFacet = (typeof PR_QUEUE_FACETS)[number];
 /** Whether a search or a filter narrows the queue. */
 export function prQueueIsFiltered(search: PrQueueSearch): boolean {
   return Boolean(search.q?.trim()) || PR_QUEUE_FACETS.some((facet) => search[facet] !== undefined);
+}
+
+/** The search and filters of the queue, without what is open or which list is shown. */
+export type PrQueueFilters = Pick<PrQueueSearch, (typeof PR_SAVED_VIEW_FILTERS)[number]>;
+
+/** The filters a view would save: what narrows the queue now, with the search trimmed. */
+export function prQueueFilters(search: PrQueueSearch): PrQueueFilters {
+  const { q, repo, author, label, ci, review, draft } = parsePrQueueSearch({
+    ...search,
+    q: search.q?.trim(),
+  });
+  return Object.fromEntries(
+    Object.entries({ q, repo, author, label, ci, review, draft }).filter(
+      ([, value]) => value !== undefined,
+    ),
+  );
+}
+
+/** A stored view's filters, read the way the URL is: unknown values are dropped. */
+export const prSavedViewFilters = (view: PrSavedViewSetting): PrQueueFilters =>
+  prQueueFilters(parsePrQueueSearch(view.query));
+
+const sameFilters = (left: PrQueueFilters, right: PrQueueFilters) =>
+  PR_SAVED_VIEW_FILTERS.every((filter) => left[filter] === right[filter]);
+
+/** The saved view the queue shows unchanged, or null: an edited view is no longer it. */
+export function prActiveSavedView(
+  search: PrQueueSearch,
+  views: readonly PrSavedViewSetting[],
+): PrSavedViewSetting | null {
+  if (!search.saved || (search.status ?? "active") !== "active") return null;
+  const view = views.find((candidate) => candidate.id === search.saved);
+  return view && sameFilters(prQueueFilters(search), prSavedViewFilters(view)) ? view : null;
+}
+
+/** The URL state that shows a saved view: its filters replace the current ones. */
+export function prSavedViewSearch(search: PrQueueSearch, view: PrSavedViewSetting): PrQueueSearch {
+  return parsePrQueueSearch({
+    pr: search.pr,
+    view: search.view,
+    tab: search.tab,
+    ...prSavedViewFilters(view),
+    saved: view.id,
+  });
+}
+
+/** The saved views as the server counts them, in the terms of a list request. */
+export function prSavedQueries(views: readonly PrSavedViewSetting[]): PrHubSavedQuery[] {
+  return views.map((view) => {
+    const { query, repository, ci, review, draft } = prQueueListInput(prSavedViewFilters(view));
+    return {
+      id: view.id,
+      ...(query ? { query } : {}),
+      ...(repository ? { repository } : {}),
+      ...(ci ? { ci } : {}),
+      ...(review ? { review } : {}),
+      ...(draft ? { draft } : {}),
+    };
+  });
 }
 
 const qualifierValue = (value: string) =>

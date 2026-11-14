@@ -1,4 +1,6 @@
 import type {
+  PrHubChange,
+  PrHubChangeKind,
   PrHubSection,
   PrHubSyncState,
   ThreadId,
@@ -396,6 +398,34 @@ export function prSyncPillDetail(sync: PrHubSyncState): string {
   }
 }
 
+const CHANGE_LABELS: Record<Exclude<PrHubChangeKind, "comments">, string> = {
+  new: "New",
+  merged: "Merged",
+  closed: "Closed",
+  ready: "Ready to merge",
+  changes_requested: "Changes requested",
+  approved: "Approved",
+  ci_failed: "Checks failed",
+  conflict: "Conflicts",
+  commits: "New commits",
+  ci_passed: "Checks passed",
+};
+
+export function prChangeLabel(change: PrHubChange): string {
+  if (change.kind !== "comments") return CHANGE_LABELS[change.kind];
+  const count = change.count ?? 0;
+  return count === 1 ? "1 new comment" : count > 1 ? `${count} new comments` : "New comments";
+}
+
+/** Something happened to the pull request since the viewer last looked at it. */
+export const isPrUnread = (pr: TrackedPullRequest): boolean =>
+  (pr.changesSinceSeen?.length ?? 0) > 0;
+
+/** The most important changes since the pull request was last seen, as one short line. */
+export function prChangesText(pr: TrackedPullRequest, max = 2): string {
+  return (pr.changesSinceSeen ?? []).slice(0, max).map(prChangeLabel).join(" · ");
+}
+
 export type PrQueueCommand =
   | "next"
   | "previous"
@@ -409,6 +439,7 @@ export type PrQueueCommand =
   | "ignore"
   | "forge"
   | "refresh"
+  | "select"
   | "pageNext"
   | "pagePrevious";
 
@@ -427,6 +458,7 @@ const KEY_COMMANDS: Readonly<Record<string, PrQueueCommand>> = {
   e: "ignore",
   o: "forge",
   r: "refresh",
+  x: "select",
   "]": "pageNext",
   "[": "pagePrevious",
 };
@@ -438,6 +470,7 @@ const QUEUE_ONLY: ReadonlySet<PrQueueCommand> = new Set([
   "peek",
   "open",
   "search",
+  "select",
 ]);
 const PAGE_ONLY: ReadonlySet<PrQueueCommand> = new Set(["pageNext", "pagePrevious"]);
 
@@ -455,6 +488,7 @@ export const PR_QUEUE_SHORTCUTS: ReadonlyArray<{ readonly keys: string; readonly
     { keys: "E", label: "Ignore" },
     { keys: "O", label: "Open on the forge" },
     { keys: "R", label: "Refresh" },
+    { keys: "X", label: "Select or deselect the pull request" },
     { keys: "[ / ]", label: "Previous / next pull request on the page" },
   ];
 
