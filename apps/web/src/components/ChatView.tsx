@@ -14,18 +14,12 @@ import {
   THREAD_REFERENCE_MAX_PER_MESSAGE,
 } from "@t3tools/shared/threadReferences";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
-import {
-  deriveProviderInstanceEntries,
-  getDefaultProviderInstanceModel,
-  NO_PROVIDER_INSTANCE_ID,
-  resolveComposerProviderInstance,
-} from "../providerInstances";
+import { deriveProviderInstanceEntries } from "../providerInstances";
 import { preserveTimelineAnchorDuringHistoryLoad } from "./chat/timelineScrollAnchors";
 import { messageAttachmentSources } from "../lib/streamingTextRevision";
 import { WorkspaceTransitionBanner } from "./chat/WorkspaceTransitionBanner";
 import { flushSync } from "react-dom";
 import { WorktreeMissingBanner } from "./chat/WorktreeMissingBanner";
-import { pickPreferredModel } from "../providerModels";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
@@ -43,7 +37,6 @@ import { latestNativeGoal, resolveNativeGoalMenuState } from "./chat/nativeGoal"
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
 import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
-import { getProviderModelCapabilities } from "../providerModels";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
@@ -86,6 +79,10 @@ import { isMacPlatform } from "../lib/utils";
 import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
+import {
+  selectModelCatalogSettings,
+  useComposerDispatchSettings,
+} from "./chat/composer/useComposerDispatchSettings";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import type {
   ComposerAttachments,
@@ -133,14 +130,7 @@ import {
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
-import {
-  createModelSelection,
-  getDefaultModel,
-  inferProviderForModel,
-  normalizeModelSlug,
-  resolveCodexDispatchModelOptions,
-  resolveSelectableModel,
-} from "@t3tools/shared/model";
+import { createModelSelection, resolveSelectableModel } from "@t3tools/shared/model";
 import {
   latestMcpStatusActivities,
   readRuntimeConfiguredPayload,
@@ -300,12 +290,6 @@ import { createTerminalCloseRepeatGuard } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
 import {
-  getCustomModelOptionsByInstance,
-  resolveFallbackModelOptions,
-  resolveComposerFallbackModel,
-  type ModelCatalogSettings,
-} from "../modelSelection";
-import {
   selectServerSettings,
   type UnifiedWebSettings,
   useSettings,
@@ -314,7 +298,6 @@ import {
 import {
   type FavoritePreset,
   type FavoritePresetSelection,
-  getCurrentEffort,
   listUsableFavoritePresets,
   resolveCurrentFavoritePresetIndex,
   type UsableFavoritePreset,
@@ -350,8 +333,7 @@ import { resolveThreadStatusPillForThread } from "../threadStatus";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { wasBootstrapThreadRolledBack } from "~/lib/bootstrapErrors";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
-import { type AppSettings, resolveThreadTitleModel, useAppSettingsSelector } from "../appSettings";
-import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -361,10 +343,6 @@ import {
   hasSendableComposerDraftContent,
   settleDraftThreadPromotion,
 } from "../composerDraftStore";
-import {
-  providerModelOptionsToSelections,
-  providerSelectionsToModelOptions,
-} from "../providerModelOptions";
 import {
   appendAttachedFilesToPrompt,
   sanitizeAttachedFileReferencePaths,
@@ -451,14 +429,7 @@ import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueu
 
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
 
-import {
-  getComposerEffortDescriptors,
-  getComposerProviderState,
-  getComposerReasoningStep,
-  renderProviderTraitsMenuContent,
-  renderProviderTraitsPicker,
-} from "./chat/composerProviderState";
-import { supportsClaudeTraitsControls } from "./chat/ClaudeTraitsPicker";
+import { getComposerReasoningStep } from "./chat/composerProviderState";
 
 import { ProviderHealthBanner, providerHealthChip } from "./chat/ProviderHealthBanner";
 import { fullestLowDiskVolume, LowDiskSpaceBanner } from "./chat/LowDiskSpaceBanner";
@@ -471,14 +442,9 @@ import { UsageLimitNotice } from "./chat/UsageLimitNotice";
 import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
-import {
-  getThreadModelOptionsSeed,
-  recordThreadModelOptionsSeed,
-} from "../threadModelOptionsSeeds";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 
 import {
-  providerKindForImportedThread,
   buildComposerSkillReplacement,
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
@@ -493,7 +459,6 @@ import {
   collectUserMessageBlobPreviewUrls,
   createCachedAbsolutePathComparisonNormalizer,
   deriveComposerSendState,
-  getCustomModelOptionsByProvider,
   identityAbsolutePathNormalizer,
   DISMISSED_PROVIDER_STATUS_KEY,
   DismissedProviderStatusSchema,
@@ -507,7 +472,6 @@ import {
   revokeBlobPreviewUrl,
   revokeComposerImagePreviewUrls,
   revokeUserMessagePreviewUrls,
-  resolveComposerModelOptionsSeed,
   resolveSubmissionIntent,
   shouldRunNativeReviewShortcut,
   shouldRunNativeAsideShortcut,
@@ -530,7 +494,6 @@ const EMPTY_TIMELINE_MESSAGES: ChatMessage[] = [];
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProvider[] = [];
-const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const COMPOSER_FOCUS_REQUEST_MAX_FRAMES = 120;
@@ -816,14 +779,6 @@ function selectChatViewSettings(settings: AppSettings) {
 
 function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<FavoritePreset> {
   return settings.favorites;
-}
-
-function selectModelCatalogSettings(settings: UnifiedWebSettings): ModelCatalogSettings {
-  return {
-    providerInstances: settings.providerInstances,
-    providers: settings.providers,
-    providerModelPreferences: settings.providerModelPreferences,
-  };
 }
 
 // Memoized: props are primitives, so streamed tokens and panel updates only re-render this
@@ -1560,430 +1515,47 @@ export default memo(function ChatView({
     [serverConfigQuery.data?.providers, projectSettings, activeThread?.projectId],
   );
   const selectedProviderByThreadId = composerDraft.provider;
-  const hasThreadStarted = Boolean(
-    activeThread &&
-    (activeThread.latestTurn !== null ||
-      activeThread.messages.length > 0 ||
-      activeThread.session !== null),
-  );
-  const importedThreadProvider = providerKindForImportedThread({
-    instanceId: activeThread?.modelSelection?.instanceId,
-    providers: serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
-    configured: serverConfigQuery.data?.settings?.providerInstances,
-  });
-  const inferredThreadProvider =
-    activeThread && activeThread.session === null && !selectedProviderByThreadId
-      ? (importedThreadProvider ?? inferProviderForModel(activeThread.model, "codex"))
-      : null;
-  // A server that hands the conversation off lets a started thread switch
-  // providers; an older server keeps the started thread's provider locked.
-  const providerContextHandoff = useServerCapability("provider-context-handoff");
-  const providerLocked = hasThreadStarted && !providerContextHandoff;
-  /** The live session's instance; a send naming another one switches providers. */
-  const sessionInstanceId: ProviderInstanceId | null = activeThread?.session
-    ? (activeThread.session.providerInstanceId ??
-      defaultInstanceIdForDriver(ProviderDriverKind.make(activeThread.session.provider)))
-    : null;
-  const lockedProvider: ProviderKind | null = providerLocked
-    ? (sessionProvider ??
-      importedThreadProvider ??
-      selectedProviderByThreadId ??
-      inferredThreadProvider)
-    : null;
-  // A started thread always requests its own instance, even when the session or
-  // an older thread never recorded one, so nothing falls back to another provider.
-  const startedThreadProvider = hasThreadStarted
-    ? (sessionProvider ??
-      selectedProviderByThreadId ??
-      importedThreadProvider ??
-      inferredThreadProvider)
-    : null;
-  const requestedInstanceId =
-    composerDraft.providerInstanceId ??
-    activeThread?.session?.providerInstanceId ??
-    activeThread?.modelSelection?.instanceId ??
-    sessionInstanceId ??
-    (startedThreadProvider
-      ? defaultInstanceIdForDriver(ProviderDriverKind.make(startedThreadProvider))
-      : undefined) ??
-    activeProject?.defaultModelSelection?.instanceId;
-  const selectedProviderEntry = useMemo(() => {
-    const entries = deriveProviderInstanceEntries(providerStatuses);
-    const lockedInstanceId =
-      activeThread?.session?.providerInstanceId ??
-      activeThread?.modelSelection?.instanceId ??
-      (lockedProvider
-        ? defaultInstanceIdForDriver(ProviderDriverKind.make(lockedProvider))
-        : undefined);
-    const preferred =
-      selectedProviderByThreadId ?? (isServerThread ? inferredThreadProvider : null);
-    return resolveComposerProviderInstance(entries, {
-      candidates: [providerLocked ? lockedInstanceId : requestedInstanceId],
-      preferredDriver: preferred ? ProviderDriverKind.make(preferred) : undefined,
-      lockedDriver: lockedProvider ? ProviderDriverKind.make(lockedProvider) : null,
-      lockedInstanceId: providerLocked ? lockedInstanceId : undefined,
-      keepRequested: hasThreadStarted,
-    });
-  }, [
-    providerStatuses,
-    requestedInstanceId,
-    lockedProvider,
-    providerLocked,
+  const {
     hasThreadStarted,
-    activeThread?.session?.providerInstanceId,
-    activeThread?.modelSelection?.instanceId,
-    selectedProviderByThreadId,
-    inferredThreadProvider,
-    isServerThread,
-  ]);
-  const noProviderAvailable = selectedProviderEntry === undefined;
-  const selectedProvider = (selectedProviderEntry?.driverKind ??
-    lockedProvider ??
-    (hasThreadStarted ? (sessionProvider ?? importedThreadProvider) : null) ??
-    selectedProviderByThreadId ??
-    "codex") as ProviderKind;
-  const selectedThreadTitleModel = resolveThreadTitleModel(settings);
-  const selectedThreadTitleModelSelection = useMemo(
-    () =>
-      createModelSelection(
-        defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
-        selectedThreadTitleModel,
-      ),
-    [selectedThreadTitleModel],
-  );
-  const providerSelectionChanged =
-    !providerLocked &&
-    selectedProviderEntry !== undefined &&
-    requestedInstanceId !== undefined &&
-    requestedInstanceId !== selectedProviderEntry.instanceId;
-  const sameDriverFallback =
-    providerSelectionChanged &&
-    providerStatuses.some(
-      (entry) => entry.instanceId === requestedInstanceId && entry.driver === selectedProvider,
-    );
-  const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
-  const selectedProviderInstanceId = selectedProviderEntry?.instanceId ?? NO_PROVIDER_INSTANCE_ID;
-  const modelOptionsByProvider = useMemo(
-    () =>
-      getCustomModelOptionsByProvider(
-        settings,
-        serverConfigQuery.data?.providers,
-        serverConfigQuery.data?.settings,
-      ),
-    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
-  );
-  const modelOptionsByInstance = useMemo(() => {
-    const providers = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
-    const next = new Map(getCustomModelOptionsByInstance(unifiedSettings, providers));
-    for (const provider of providers) {
-      if (provider.instanceId !== defaultInstanceIdForDriver(provider.driver)) continue;
-      const legacyOptions = modelOptionsByProvider[provider.driver as ProviderKind] ?? [];
-      const instanceOptions = next.get(provider.instanceId) ?? [];
-      const seen = new Set(instanceOptions.map((option) => option.slug));
-      next.set(provider.instanceId, [
-        ...instanceOptions,
-        ...legacyOptions.filter((option) => !seen.has(option.slug)),
-      ]);
-    }
-    return next;
-  }, [modelOptionsByProvider, serverConfigQuery.data?.providers, unifiedSettings]);
-  const selectedProviderPickerOptions =
-    modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];
-  const baseThreadModel = useMemo(() => {
-    const instanceDefault = getDefaultProviderInstanceModel(
-      providerStatuses,
-      selectedProviderInstanceId,
-    );
-    if (sameDriverFallback) {
-      return (
-        resolveComposerFallbackModel({
-          driver: selectedProviderDriver,
-          candidate: activeThread?.model ?? activeProject?.model,
-          instanceDefault,
-          models: selectedProviderPickerOptions,
-        }) ?? getDefaultModel(selectedProvider)
-      );
-    }
-    const rawModel =
-      (providerSelectionChanged && !sameDriverFallback
-        ? instanceDefault
-        : (activeThread?.model ?? activeProject?.model)) ??
-      instanceDefault ??
-      pickPreferredModel(selectedProviderPickerOptions, [getDefaultModel(selectedProvider)])
-        ?.slug ??
-      getDefaultModel(selectedProvider);
-    return (
-      resolveSelectableModel(selectedProviderDriver, rawModel, selectedProviderPickerOptions) ??
-      selectedProviderPickerOptions[0]?.slug ??
-      getDefaultModel(selectedProvider)
-    );
-  }, [
-    providerStatuses,
-    selectedProviderInstanceId,
-    providerSelectionChanged,
-    sameDriverFallback,
-    activeProject?.model,
-    activeThread?.model,
-    selectedProvider,
-    selectedProviderDriver,
-    selectedProviderPickerOptions,
-  ]);
-  const selectedModel = useMemo(() => {
-    const draftModel = providerSelectionChanged && !sameDriverFallback ? null : composerDraft.model;
-    if (!draftModel) {
-      return baseThreadModel;
-    }
-    return (resolveSelectableModel(
-      selectedProviderDriver,
-      draftModel,
-      selectedProviderPickerOptions,
-    ) ?? baseThreadModel) as ModelSlug;
-  }, [
-    baseThreadModel,
-    composerDraft.model,
-    providerSelectionChanged,
-    sameDriverFallback,
-    selectedProviderDriver,
-    selectedProviderPickerOptions,
-  ]);
-  const draftModelOptions = useMemo(() => {
-    if (!providerSelectionChanged) return composerDraft.modelOptions;
-    const draftOptions = providerModelOptionsToSelections(
-      selectedProvider,
-      composerDraft.modelOptions,
-    );
-    const selection = {
-      model: composerDraft.model ?? activeThread?.model ?? activeProject?.model ?? "",
-      options: draftOptions,
-    };
-    const options = resolveFallbackModelOptions({
-      settings: unifiedSettings,
-      providers: providerStatuses,
-      requestedInstanceId,
-      selectedInstanceId: selectedProviderInstanceId,
-      selectedDriver: selectedProviderDriver,
-      selectedModel,
-      selection,
-    });
-    return options ? providerSelectionsToModelOptions(selectedProvider, options) : null;
-  }, [
-    providerSelectionChanged,
-    composerDraft.modelOptions,
-    composerDraft.model,
-    activeThread?.model,
-    activeProject?.model,
-    unifiedSettings,
-    providerStatuses,
+    providerContextHandoff,
+    providerLocked,
+    lockedProvider,
+    sessionInstanceId,
     requestedInstanceId,
+    noProviderAvailable,
+    selectedProvider,
+    selectedProviderDriver,
     selectedProviderInstanceId,
-    selectedProviderDriver,
-    selectedProvider,
-    selectedModel,
-  ]);
-  const threadModelSelection = serverThread?.modelSelection;
-  useEffect(() => {
-    if (workflowThreadSlot) return;
-    const next = resolveComposerModelOptionsSeed({
-      draftModelOptions: composerDraft.modelOptions,
-      selectedModel,
-      threadSelection: threadModelSelection,
-      selectedInstanceId: selectedProviderInstanceId,
-      selectedProvider,
-      previous: getThreadModelOptionsSeed(threadId),
-      fallback: providerSelectionChanged,
-      requestedInstanceId,
-      projectSelection: activeProject?.defaultModelSelection,
-      providers: providerStatuses,
-      settings: unifiedSettings,
-    });
-    if (!next) return;
-    recordThreadModelOptionsSeed(threadId, next.record);
-    if (next.seed) setComposerDraftModelOptions(threadId, next.seed);
-  }, [
-    composerDraft.modelOptions,
-    selectedModel,
-    selectedProvider,
-    selectedProviderInstanceId,
-    setComposerDraftModelOptions,
-    threadId,
-    threadModelSelection,
-    workflowThreadSlot,
-    providerSelectionChanged,
-    requestedInstanceId,
-    activeProject?.defaultModelSelection,
-    providerStatuses,
-    unifiedSettings,
-  ]);
-  const selectedProviderModelOptions = useMemo(
-    () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
-    [draftModelOptions, selectedProvider],
-  );
-  const selectedProviderSnapshot = useMemo(
-    () =>
-      (serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES).find(
-        (provider) => provider.instanceId === selectedProviderInstanceId,
-      ) ?? null,
-    [selectedProviderInstanceId, serverConfigQuery.data?.providers],
-  );
-  const selectedProviderModels = selectedProviderSnapshot?.models ?? EMPTY_PROVIDER_MODELS;
-  const showInteractionModeToggle = selectedProviderSnapshot?.showInteractionModeToggle ?? true;
-  const genericComposerProviderState = useMemo(
-    () =>
-      getComposerProviderState({
-        provider: selectedProviderDriver,
-        model: selectedModel,
-        models: selectedProviderModels,
-        modelOptions: selectedProviderModelOptions,
-      }),
-    [selectedModel, selectedProviderDriver, selectedProviderModelOptions, selectedProviderModels],
-  );
-  const selectedProviderModelOptionsForDispatch =
-    genericComposerProviderState.modelOptionsForDispatch ?? selectedProviderModelOptions;
-  const selectedComposerEffort = useMemo(
-    () =>
-      getCurrentEffort(
-        getComposerEffortDescriptors({
-          provider: selectedProviderDriver,
-          model: selectedModel,
-          models: selectedProviderModels,
-          modelOptions: selectedProviderModelOptionsForDispatch,
-        }),
-      ),
-    [
-      selectedModel,
-      selectedProviderDriver,
-      selectedProviderModelOptionsForDispatch,
-      selectedProviderModels,
-    ],
-  );
-  const genericModelOptionsForDispatch = useMemo(
-    () =>
-      providerSelectionsToModelOptions(selectedProvider, selectedProviderModelOptionsForDispatch) ??
-      undefined,
-    [selectedProvider, selectedProviderModelOptionsForDispatch],
-  );
-  const genericProviderTraitsMenuContent = useMemo(() => {
-    if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
-      return null;
-    }
-    return renderProviderTraitsMenuContent({
-      provider: selectedProviderDriver,
-      draftId: threadId,
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: selectedProviderModelOptions,
-    });
-  }, [
-    selectedModel,
-    selectedProvider,
-    selectedProviderDriver,
-    selectedProviderModelOptions,
+    selectedProviderSnapshot,
     selectedProviderModels,
-    threadId,
-  ]);
-  const genericProviderTraitsPicker = useMemo(() => {
-    if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
-      return null;
-    }
-    return renderProviderTraitsPicker({
-      provider: selectedProviderDriver,
-      draftId: threadId,
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: selectedProviderModelOptions,
-    });
-  }, [
-    selectedModel,
-    selectedProvider,
-    selectedProviderDriver,
-    selectedProviderModelOptions,
-    selectedProviderModels,
-    threadId,
-  ]);
-  const isClaudeUltrathink =
-    selectedProvider === "claudeAgent" &&
-    genericComposerProviderState.promptEffort === "ultrathink";
-  const showClaudeTraitsControls = useMemo(
-    () =>
-      selectedProvider === "claudeAgent" &&
-      supportsClaudeTraitsControls({
-        model: selectedModel,
-        models: selectedProviderModels,
-        modelOptions: selectedProviderModelOptions,
-      }),
-    [selectedModel, selectedProvider, selectedProviderModelOptions, selectedProviderModels],
-  );
-  const selectedModelOptionsForDispatch = useMemo(() => {
-    if (selectedProvider === "codex") {
-      // Same reported capabilities the picker offered, so the sent effort matches.
-      // The effort stays explicit: the session may report a different default.
-      const codexOptions = resolveCodexDispatchModelOptions(
-        selectedModel,
-        draftModelOptions?.codex,
-        getProviderModelCapabilities(
-          selectedProviderModels,
-          selectedModel,
-          ProviderDriverKind.make("codex"),
-        ),
-      );
-      return codexOptions ? { codex: codexOptions } : undefined;
-    }
-    return genericModelOptionsForDispatch;
-  }, [
-    draftModelOptions?.codex,
-    genericModelOptionsForDispatch,
-    selectedModel,
-    selectedProvider,
-    selectedProviderModels,
-  ]);
-  const selectedModelSelectionOptionsForDispatch = useMemo(
-    () =>
-      selectedProvider === "codex"
-        ? providerModelOptionsToSelections("codex", selectedModelOptionsForDispatch)
-        : selectedProviderModelOptionsForDispatch,
-    [selectedModelOptionsForDispatch, selectedProvider, selectedProviderModelOptionsForDispatch],
-  );
-  const selectedModelSelectionForDispatch = useMemo(
-    () =>
-      createModelSelection(
-        selectedProviderInstanceId,
-        selectedModel,
-        selectedModelSelectionOptionsForDispatch,
-      ),
-    [selectedModel, selectedProviderInstanceId, selectedModelSelectionOptionsForDispatch],
-  );
-  const providerOptionsForDispatch = useMemo(
-    () =>
-      resolveProviderOptionsForDispatch({
-        settings,
-        provider: selectedProvider,
-        projectId: activeProject?.id,
-        availableModels: selectedProviderModels,
-      }),
-    [
-      activeProject?.id,
-      selectedProvider,
-      selectedProviderModels,
-      settings.claudeBinaryPath,
-      settings.claudeLaunchArgs,
-      settings.claudeProjectSettings,
-      settings.claudeSubagentDefaults,
-      settings.codexBinaryPath,
-      settings.codexHomePath,
-    ],
-  );
-  const selectedModelForPicker = selectedModel;
-  const selectedModelForPickerWithCustomFallback = useMemo(() => {
-    const currentOptions = modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];
-    return currentOptions.some((option) => option.slug === selectedModelForPicker)
-      ? selectedModelForPicker
-      : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
-  }, [
+    showInteractionModeToggle,
     modelOptionsByInstance,
-    selectedModelForPicker,
-    selectedProvider,
-    selectedProviderInstanceId,
-  ]);
+    selectedModel,
+    selectedModelForPickerWithCustomFallback,
+    selectedProviderModelOptions,
+    selectedProviderModelOptionsForDispatch,
+    selectedComposerEffort,
+    genericProviderTraitsMenuContent,
+    genericProviderTraitsPicker,
+    isClaudeUltrathink,
+    showClaudeTraitsControls,
+    selectedModelOptionsForDispatch,
+    selectedModelSelectionForDispatch,
+    providerOptionsForDispatch,
+    selectedThreadTitleModel,
+    selectedThreadTitleModelSelection,
+  } = useComposerDispatchSettings({
+    threadId,
+    composerDraft,
+    serverThread,
+    localDraftThread,
+    project: activeProject,
+    providerStatuses,
+    serverConfig: serverConfigQuery.data,
+    settings,
+    modelCatalogSettings: unifiedSettings,
+    seedsModelOptions: !workflowThreadSlot,
+  });
   const phase = derivePhase(activeThread?.session ?? null);
   const showAgentCommandTranscripts = settings.showAgentCommandTranscripts;
   const alwaysExpandAgentCommandTranscripts = settings.alwaysExpandAgentCommandTranscripts;
