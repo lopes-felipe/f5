@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 
 import { useServerKeybindings } from "../keybindings";
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
-import { buildShortcutSections } from "./shortcutsDialog.logic";
+import { buildFixedShortcutSections, buildShortcutSections } from "./shortcutsDialog.logic";
 import { SectionLabel } from "./ui/section-label";
 import {
   Dialog,
@@ -38,6 +38,7 @@ function ShortcutsDialogContent() {
     () => buildShortcutSections(keybindings, { query }),
     [keybindings, query],
   );
+  const fixedSections = useMemo(() => buildFixedShortcutSections(query), [query]);
 
   return (
     <DialogPopup className="max-w-2xl" data-testid="shortcuts-dialog">
@@ -56,7 +57,7 @@ function ShortcutsDialogContent() {
           value={query}
           onChange={(event) => setQuery(event.currentTarget.value)}
         />
-        {sections.length === 0 ? (
+        {sections.length === 0 && fixedSections.length === 0 ? (
           <p className="py-6 text-center text-muted-foreground text-sm">
             No shortcuts match “{query.trim()}”.
           </p>
@@ -82,6 +83,25 @@ function ShortcutsDialogContent() {
                       </dt>
                       <dd className="flex shrink-0 items-center">
                         <Kbd>{entry.shortcut}</Kbd>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            ))}
+            {fixedSections.map((section) => (
+              <section key={section.id} aria-label={section.title} className="min-w-0">
+                <SectionLabel className="mb-1.5">{section.title}</SectionLabel>
+                <p className="mb-1 text-muted-foreground text-xs">{section.context}</p>
+                <dl className="space-y-0.5">
+                  {section.entries.map((entry) => (
+                    <div
+                      key={entry.label}
+                      className="flex min-h-7 items-center justify-between gap-3 text-sm"
+                    >
+                      <dt className="min-w-0 truncate text-foreground">{entry.label}</dt>
+                      <dd className="flex shrink-0 items-center">
+                        <Kbd>{entry.keys}</Kbd>
                       </dd>
                     </div>
                   ))}

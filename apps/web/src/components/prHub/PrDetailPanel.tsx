@@ -12,8 +12,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
-import { ensureNativeApi } from "../../nativeApi";
+import { usePrMarkSeen } from "./usePrMarkSeen";
 import { GitPullRequestIcon, SparklesIcon } from "lucide-react";
 import type { PrHubAdvisory, ThreadId, TrackedPullRequest } from "@t3tools/contracts";
 
@@ -54,6 +53,9 @@ export interface PrDetailPanelProps {
   isAnalyzingAdvisory?: boolean;
   onAnalyzeAdvisory?: (() => void) | undefined;
   onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
+  /** The open tab when the caller keeps it (the queue keeps it in the URL). */
+  tab?: PrDetailTab | undefined;
+  onTabChange?: ((tab: PrDetailTab) => void) | undefined;
 }
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -106,26 +108,18 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
     confirmationMode = "dialog",
     initialAction,
     onInitialActionHandled,
+    tab,
+    onTabChange,
   },
   ref,
 ) {
-  const [activeTab, setActiveTab] = useState<PrDetailTab>("summary");
-  const accountGeneration = getPrHubAccountGeneration();
-  useEffect(() => {
-    if (!accountGeneration) return;
-    // A visible detail is seen; merely loading the dashboard never marks the collection.
-    const timer = window.setTimeout(() => {
-      if (!document.hasFocus() || document.visibilityState !== "visible") return;
-      void ensureNativeApi()
-        .prHub.markSeen({
-          key: pr.key,
-          attentionFingerprint: pr.attentionFingerprint,
-          accountGeneration,
-        })
-        .catch(() => {});
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [accountGeneration, pr.key, pr.attentionFingerprint]);
+  const [localTab, setLocalTab] = useState<PrDetailTab>("summary");
+  const activeTab = tab ?? localTab;
+  const setActiveTab = (next: PrDetailTab) => {
+    setLocalTab(next);
+    onTabChange?.(next);
+  };
+  usePrMarkSeen(pr);
   const { flags, handlers, dialogProps, runInF5Label } = usePrActions(pr, {
     advisory,
     onThreadCreated,
@@ -146,6 +140,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
     else if (initialAction.kind === "ready") handlers.onMarkReady();
     else dialogProps.setPendingAction(initialAction.kind);
   }, [initialAction, pr, handlers, dialogProps, onInitialActionHandled]);
+  const quickActions = prQuickActions(pr);
   const visibility = prRowActionVisibility(pr, {
     isAuthor: flags.isAuthor,
     isOpen: flags.isOpen,
@@ -234,6 +229,12 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         onOpenInF5={handlers.onOpenInF5}
         onRunInF5={handlers.onRunInF5}
         onOpenGitHub={handlers.onOpenGitHub}
+        onClose={
+          quickActions.includes("close") ? () => dialogProps.setPendingAction("close") : undefined
+        }
+        onReopen={
+          quickActions.includes("reopen") ? () => dialogProps.setPendingAction("reopen") : undefined
+        }
       />
 
       {pr.repositoryArchived ? (
