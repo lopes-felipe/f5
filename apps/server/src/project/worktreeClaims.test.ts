@@ -320,7 +320,8 @@ describe("effective workspace claims and removal gate", () => {
         const target = path.join(config.worktreesDir, "identity");
         yield* Effect.promise(() => fs.mkdir(path.dirname(target), { recursive: true }));
         git(repo.root, "worktree", "add", "-q", "-b", "identity", target, "main");
-        const stat = yield* Effect.promise(() => fs.lstat(target));
+        const exact = yield* Effect.promise(() => fs.lstat(target, { bigint: true }));
+        const stat = { dev: Number(exact.dev), ino: String(exact.ino) };
         const input = {
           projectCwd: repo.root,
           path: target,
@@ -328,8 +329,8 @@ describe("effective workspace claims and removal gate", () => {
         };
         const refused = yield* removeWorktreeSafely({
           ...input,
-          // NTFS file IDs can exceed Number.MAX_SAFE_INTEGER, where +1 rounds away.
-          expectedRootIdentity: { dev: stat.dev, ino: stat.ino === 0 ? 1 : 0 },
+          // The neighbouring inode: above 2^53 a numeric stat cannot tell the two apart.
+          expectedRootIdentity: { dev: stat.dev, ino: String(exact.ino + 1n) },
         });
         expect(refused.blockedReasons.join(" ")).toContain("replaced since inspection");
         expect((yield* Effect.promise(() => fs.lstat(target))).isDirectory()).toBe(true);

@@ -1,7 +1,13 @@
 import { storageLstat } from "./diskUsage.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
-import { allocatedBytes, fileIdentity, sameFileIdentity, type FileIdentity } from "./diskUsage.ts";
+import {
+  allocatedBytes,
+  fileIdentity,
+  sameFileIdentity,
+  type FileIdentity,
+  type StorageStats,
+} from "./diskUsage.ts";
 
 export interface StoragePathWarningInput {
   readonly path: string;
@@ -25,7 +31,7 @@ export function isPathWithinRoot(input: {
   );
 }
 
-export async function safeLstat(targetPath: string): Promise<import("node:fs").Stats | null> {
+export async function safeLstat(targetPath: string): Promise<StorageStats | null> {
   try {
     return await storageLstat(targetPath);
   } catch (error) {
@@ -83,9 +89,7 @@ function failed(path: string, error: unknown): RemovalOutcome {
 }
 export async function validateDeletablePath(
   input: PathInput,
-): Promise<
-  { readonly kind: "validated"; readonly stat: import("node:fs").Stats } | RemovalOutcome
-> {
+): Promise<{ readonly kind: "validated"; readonly stat: StorageStats } | RemovalOutcome> {
   const targetPath = Path.resolve(input.path);
   const allowedRoot = Path.resolve(input.allowedRoot);
   if (!input.allowRoot && targetPath === allowedRoot)
