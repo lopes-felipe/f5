@@ -59,6 +59,16 @@ export function defaultPrHubCoverage(
   ];
 }
 
+/** Enough for a filter's suggestions; anything rarer is still reachable by typing it. */
+const FACET_LIMIT = 200;
+const tally = (counts: Map<string, number>, value: string) =>
+  counts.set(value, (counts.get(value) ?? 0) + 1);
+const mostCommon = (counts: ReadonlyMap<string, number>) =>
+  [...counts]
+    .sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+    .slice(0, FACET_LIMIT)
+    .map(([value]) => value);
+
 export function prHubOverview(
   snapshot: PrHubSnapshot,
   revision: string,
@@ -72,19 +82,31 @@ export function prHubOverview(
   const sectionCounts = Object.fromEntries(
     PR_HUB_SECTIONS.map((section) => [section, 0]),
   ) as Record<PrHubSection, number>;
+  const repositories = new Map<string, number>();
+  const authors = new Map<string, number>();
+  const labels = new Map<string, number>();
   for (const pr of [...pullRequests, ...recentlyResolved]) {
     for (const filter of PrHubListFilter.literals) {
       if (matchesPrHubFilter(pr, filter, stalledBefore, now)) counts[filter]++;
     }
     // Sections describe the active queue: snoozed, ignored and closed rows are elsewhere.
-    if (matchesPrHubFilter(pr, "all", undefined, now, "active"))
+    if (matchesPrHubFilter(pr, "all", undefined, now, "active")) {
       sectionCounts[prHubSectionOf(pr, now)]++;
+      tally(repositories, pr.repository.nameWithOwner);
+      if (pr.author) tally(authors, pr.author);
+      for (const label of pr.labels) tally(labels, label);
+    }
   }
   return {
     ...metadata,
     revision,
     counts,
     sectionCounts,
+    facets: {
+      repositories: mostCommon(repositories),
+      authors: mostCommon(authors),
+      labels: mostCommon(labels),
+    },
     coverage: snapshot.coverage?.length
       ? snapshot.coverage
       : defaultPrHubCoverage(snapshot.lastPolledAt, cappedBuckets),

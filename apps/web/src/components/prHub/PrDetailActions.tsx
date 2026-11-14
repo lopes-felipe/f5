@@ -42,6 +42,9 @@ export interface PrDetailActionsProps {
   onOpenInF5: () => void;
   onRunInF5: () => void;
   onOpenGitHub: () => void;
+  /** Offered in the overflow menu when the forge allows it. */
+  onClose?: (() => void) | undefined;
+  onReopen?: (() => void) | undefined;
 }
 
 /**
@@ -75,6 +78,8 @@ export function PrDetailActions({
   onOpenInF5,
   onRunInF5,
   onOpenGitHub,
+  onClose,
+  onReopen,
 }: PrDetailActionsProps) {
   const { primary, canReview, canSnooze, canSuggest, canIgnore } = prRowActionVisibility(pr, {
     isAuthor,
@@ -169,7 +174,7 @@ export function PrDetailActions({
           {pr.acknowledgedAt ? "Acknowledged" : "Acknowledge"}
         </Button>
       ) : null}
-      {canIgnore ? (
+      {canIgnore || onClose || onReopen ? (
         <Menu>
           <MenuTrigger
             render={<Button aria-label="More actions" size="icon-sm" variant="outline" />}
@@ -177,9 +182,13 @@ export function PrDetailActions({
             <EllipsisIcon aria-hidden="true" />
           </MenuTrigger>
           <MenuPopup align="end" className="min-w-44">
-            <MenuItem variant="destructive" disabled={isIgnoring} onClick={onIgnore}>
-              <ArchiveIcon /> {isIgnoring ? "Ignoring…" : "Ignore"}
-            </MenuItem>
+            {onClose ? <MenuItem onClick={onClose}>Close…</MenuItem> : null}
+            {onReopen ? <MenuItem onClick={onReopen}>Reopen…</MenuItem> : null}
+            {canIgnore ? (
+              <MenuItem variant="destructive" disabled={isIgnoring} onClick={onIgnore}>
+                <ArchiveIcon /> {isIgnoring ? "Ignoring…" : "Ignore"}
+              </MenuItem>
+            ) : null}
           </MenuPopup>
         </Menu>
       ) : null}

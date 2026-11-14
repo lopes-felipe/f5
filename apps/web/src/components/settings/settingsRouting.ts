@@ -224,6 +224,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "accounts.github": {
     category: "accounts",
   },
+  "accounts.forges": {
+    category: "accounts",
+  },
   "accounts.storage": {
     category: "accounts",
   },

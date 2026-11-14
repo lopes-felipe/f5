@@ -15,6 +15,7 @@ import {
   type ForgePrepareOperationInput,
   type PrHubPeekInput,
   type PrHubStackInput,
+  type PrHubThreadLink,
   type PrHubViewedFilesInput,
   type PrHubSetViewedFileInput,
 } from "@t3tools/contracts";
@@ -293,6 +294,37 @@ export const makePrHubExtensions = Effect.gen(function* () {
         }>`SELECT t.thread_id AS "threadId", t.title FROM projection_thread_pull_requests p JOIN projection_threads t ON t.thread_id=p.thread_id WHERE p.provider=${ref.provider} AND p.host=${ref.host} AND p.repository=${ref.repository} AND p.number=${ref.number} AND t.deleted_at IS NULL ORDER BY t.created_at DESC LIMIT 50`,
       );
       return rows.map((row) => ({ ...row, threadId: ThreadId.makeUnsafe(row.threadId) }));
+    });
+  /** Linked threads for a page of pull requests in one read; keys without links are absent. */
+  const getThreadsForPrs = (keys: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const refs = keys.flatMap((key) => {
+        const ref = parseSourceControlPullRequestKey(key);
+        return ref ? [{ key, ...ref }] : [];
+      });
+      if (refs.length === 0) return {};
+      const rows = yield* db(
+        sql<{
+          key: string;
+          threadId: string;
+          title: string;
+        }>`SELECT json_extract(k.value, '$.key') AS key, t.thread_id AS "threadId", t.title
+          FROM json_each(${JSON.stringify(refs)}) k
+          JOIN projection_thread_pull_requests p
+            ON p.provider = json_extract(k.value, '$.provider') AND p.host = json_extract(k.value, '$.host')
+            AND p.repository = json_extract(k.value, '$.repository') AND p.number = json_extract(k.value, '$.number')
+          JOIN projection_threads t ON t.thread_id = p.thread_id
+          WHERE t.deleted_at IS NULL
+          ORDER BY t.created_at DESC`,
+      );
+      const links: Record<string, PrHubThreadLink[]> = {};
+      for (const row of rows) {
+        const list = (links[row.key] ??= []);
+        // A row shows a couple of chips; the pull request page lists the rest.
+        if (list.length < 5)
+          list.push({ threadId: ThreadId.makeUnsafe(row.threadId), title: row.title });
+      }
+      return links;
     });
   const validate = (runtime: PrHubAccountRuntime, input: ForgePrepareOperationInput) => {
     const p = input.payload,
@@ -1063,6 +1095,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
     setViewedFile,
     getThreadLinks,
     getThreadsForPr,
+    getThreadsForPrs,
     prepareOperation,
     submitOperation,
     getOperation,
