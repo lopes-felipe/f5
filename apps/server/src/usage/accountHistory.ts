@@ -205,14 +205,19 @@ export const makeAccountHistoryRecorder = Effect.gen(function* () {
       const stored = persisted.get(sectionKey(account.key, section.kind));
       if (!stored || stored.section.kind !== section.kind) return section;
       if (identity !== null && stored.identity !== protect(identity)) return section;
+      // Stale credits and limit resets must never drive the reset-credit control.
       const snapshot =
         stored.section.kind === "codex-limits" && stored.section.snapshot
           ? {
               ...stored.section.snapshot,
-              // Stale credits must never drive the reset-credit control.
               data: { ...stored.section.snapshot.data, resetCredits: null },
             }
-          : stored.section.snapshot;
+          : stored.section.kind === "claude-usage" && stored.section.snapshot
+            ? {
+                ...stored.section.snapshot,
+                data: { ...stored.section.snapshot.data, limitResets: null },
+              }
+            : stored.section.snapshot;
       return { ...section, snapshot } as AccountUsageSection;
     }),
   });

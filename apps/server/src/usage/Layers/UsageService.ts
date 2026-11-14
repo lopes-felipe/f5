@@ -153,7 +153,7 @@ const make = Effect.gen(function* () {
         );
       const result = yield* redeem(
         input,
-        (key) => instance.consumeResetCredit!(key),
+        (key) => instance.consumeResetCredit!(key, input.grantId),
         instance.resetCreditIdentity,
       );
       // The redemption route owns the awaited refresh and uses its freshness

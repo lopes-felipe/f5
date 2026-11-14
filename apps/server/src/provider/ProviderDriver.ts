@@ -81,6 +81,8 @@ export interface ProviderInstance {
   readonly resetCreditIdentity?: string;
   readonly consumeResetCredit?: (
     idempotencyKey: string,
+    /** Claude only: the limit-reset grant to claim. Codex ignores it. */
+    grantId?: string,
   ) => Effect.Effect<
     import("@t3tools/contracts").UsageConsumeResetCreditResult,
     ProviderDriverError

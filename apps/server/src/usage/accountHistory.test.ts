@@ -30,6 +30,27 @@ const claudeSection = (fetchedAt: string, utilization: number): AccountUsageSect
         },
       ],
       extraUsage: null,
+      limitResets: {
+        grants: [
+          {
+            id: "full",
+            label: "Full reset",
+            kind: "full",
+            resetsLeft: 1,
+            resetsTotal: 1,
+            endsAt: null,
+            usableNow: true,
+            useRequiresLimit: false,
+            givesBackWeekly: false,
+            paused: false,
+            clears: ["five_hour"],
+            blocking: [],
+            unavailableReason: null,
+          },
+        ],
+        nextGrantId: "full",
+        cooldownUntil: null,
+      },
     },
   },
 });
@@ -101,6 +122,8 @@ it.layer(SqliteClient.layerMemory())("account history recorder", (it) => {
       assert.equal(section.snapshot?.fetchedAt, "2026-10-15T10:00:00.000Z");
       assert.equal(section.lastAttemptAt, null);
       assert.equal(section.outcome, "unavailable");
+      // Stale limit resets must never drive the reset buttons.
+      assert.equal(section.kind === "claude-usage" && section.snapshot?.data.limitResets, null);
 
       // Identity switch does not hydrate; shadows accept any identity.
       assert.equal(restarted.hydrate(freshClaude, "id-other").sections[0]!.snapshot, null);
