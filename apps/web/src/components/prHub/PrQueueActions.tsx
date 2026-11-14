@@ -124,7 +124,6 @@ export function PrQueueActionHost({
   };
 
   const busy =
-    updatingBranch ||
     dialogProps.pendingAction !== null ||
     dialogProps.isRunning ||
     dialogProps.isOpeningInF5 ||
