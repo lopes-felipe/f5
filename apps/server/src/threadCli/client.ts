@@ -2,7 +2,7 @@ import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import { z } from "zod";
 import { readAgentBridgeLocalCredentials } from "../agentBridge/localCredentials.ts";
-import { ownerCredentialsPath, sessionSchema } from "./protocol.ts";
+import { ownerCredentialsPath, sessionSchema, readSchema, type messageSchema } from "./protocol.ts";
 
 const envelopeSchema = z.object({
   id: z.number(),
@@ -19,6 +19,44 @@ export type ToolCall = <S extends z.ZodType>(
   args: Record<string, unknown>,
   schema: S,
 ) => Promise<z.output<S>>;
+
+export async function readFullCliMessage(
+  call: ToolCall,
+  threadId: string,
+  message: z.output<typeof messageSchema>,
+) {
+  let text = message.text;
+  let offset = message.nextTextOffset;
+  while (offset !== null) {
+    const page = await call(
+      "f5_thread_read",
+      { threadId, itemId: message.id, textOffset: offset },
+      readSchema,
+    );
+    const chunk = page.messages[0];
+    if (!chunk || (chunk.nextTextOffset !== null && chunk.nextTextOffset <= offset))
+      throw new Error("Invalid message continuation.");
+    text += chunk.text;
+    offset = chunk.nextTextOffset;
+  }
+  return { ...message, text, nextTextOffset: null };
+}
+
+export async function readCliThread(call: ToolCall, threadId: string, messages: number) {
+  let page = await call("f5_thread_read", { threadId, messages }, readSchema);
+  const result = { ...page, messages: [] as Array<z.output<typeof messageSchema>> };
+  while (true) {
+    for (const message of page.messages)
+      result.messages.push(await readFullCliMessage(call, threadId, message));
+    if (page.nextCursor === null) break;
+    page = await call(
+      "f5_thread_read",
+      { threadId, messages, cursor: page.nextCursor, anchorId: result.anchorId },
+      readSchema,
+    );
+  }
+  return { ...result, nextCursor: null };
+}
 
 /** The bootstrap token can only mint a temporary identity; all work uses that identity. */
 export async function openThreadClient(stateDir: string) {

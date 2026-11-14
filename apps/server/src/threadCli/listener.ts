@@ -34,7 +34,7 @@ export async function startThreadCliListener(
       kind: "local",
       name: "F5 thread CLI",
       label: null,
-      scopes: ["f5.read"],
+      scopes: ["f5.read", "f5.turns"],
       projectIds: [],
       grantGeneration: 0,
       createdAt: new Date().toISOString(),

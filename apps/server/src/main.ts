@@ -786,7 +786,14 @@ const agentBridgeStdioCommand = Command.make("agent-bridge-stdio", {}).pipe(
           output: process.stdout,
         }),
       );
-    }),
+    }).pipe(
+      Effect.catchTag("StartupError", (error) =>
+        Effect.sync(() => {
+          process.stderr.write(error.message + "\n");
+          process.exitCode = 1;
+        }),
+      ),
+    ),
   ),
 );
 

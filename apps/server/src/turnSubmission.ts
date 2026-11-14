@@ -20,20 +20,23 @@ export function buildExistingThreadSubmission(input: {
   commandId: CommandId;
   messageId: MessageId;
   prompt: string;
-  modelSelection: ModelSelection;
+  modelSelection?: ModelSelection;
+  model?: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   createdAt: string;
   provider?: ProviderKind;
 }): ClientThreadTurnStartCommand {
+  const model = input.model ?? input.modelSelection?.model;
+  if (!model) throw new Error("An existing thread submission requires a model.");
   return {
     type: "thread.turn.start",
     commandId: input.commandId,
     threadId: input.threadId,
     message: { messageId: input.messageId, role: "user", text: input.prompt, attachments: [] },
     ...(input.provider ? { provider: input.provider } : {}),
-    model: input.modelSelection.model,
-    modelSelection: input.modelSelection,
+    model,
+    ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
     createdAt: input.createdAt,

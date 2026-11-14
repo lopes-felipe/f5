@@ -6,7 +6,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
-- Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads waiting for your answer. Local commands use your project defaults and can access all projects without enabling the external Agent Bridge.
+- Start, queue messages to, list and read threads from a terminal with `f5 thread` (or `t3 thread`). Use `--wait` to print the reply and distinguish failed runs from threads or paused queues waiting for you. Local commands use your project defaults, fall back to a ready provider when needed, and can access all projects without enabling the external Agent Bridge. Lists load only the newest 100 threads; transcript reads fetch bounded pages while preserving full text.
 
 ### Fixed
 
