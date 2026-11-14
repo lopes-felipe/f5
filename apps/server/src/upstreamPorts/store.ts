@@ -122,6 +122,8 @@ export interface PortReviewRecord extends PortReviewSummaryRecord {
   readonly reviewInputJson: string | null;
   readonly applyCommandJson: string | null;
   readonly applyTurnId: string | null;
+  /** Pre-review implementation stop; a later settled turn may resume automatic review. */
+  readonly resumeAfterTurnId: string | null;
   readonly submitFailures: number;
   readonly attempt: number;
   readonly updatedAt: string;
@@ -451,6 +453,7 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
     reviewed_head_sha AS "reviewedHeadSha", final_head_sha AS "finalHeadSha",
     review_workflow_id AS "reviewWorkflowId", review_input_json AS "reviewInputJson",
     apply_command_json AS "applyCommandJson", apply_turn_id AS "applyTurnId",
+    resume_after_turn_id AS "resumeAfterTurnId",
     submit_failures AS "submitFailures", attempt, updated_at AS "updatedAt"`;
   type ReviewRow = Omit<PortReviewRecord, "reviewers"> & { readonly reviewersJson: string };
   // Validate each row independently so one corrupt intent cannot stall other ports.
@@ -476,9 +479,9 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
             : "revision command") +
         "; Retry review or start a new port";
       const errorStage = invalidApply ? ("apply-feedback" as const) : ("review-setup" as const);
-      if (row.status !== "error" || row.detail !== detail)
+      if (row.status !== "error" || row.detail !== detail || row.resumeAfterTurnId !== null)
         yield* sql`UPDATE upstream_port_reviews SET status = 'error',
-        error_stage = ${errorStage}, detail = ${detail}
+        error_stage = ${errorStage}, detail = ${detail}, resume_after_turn_id = NULL
         WHERE port_thread_id = ${row.threadId}`;
       return {
         ...row,
@@ -486,12 +489,14 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
         status: "error" as const,
         errorStage,
         detail,
+        resumeAfterTurnId: null,
         reviewInputJson: invalidReview ? null : row.reviewInputJson,
         applyCommandJson: invalidApply ? null : row.applyCommandJson,
       };
     });
   const listActivePortReviews = sql<ReviewRow>`SELECT ${reviewColumns} FROM upstream_port_reviews
-    WHERE status IN ('waiting','reviewing','apply_pending','applying')`.pipe(
+    WHERE status IN ('waiting','reviewing','apply_pending','applying')
+      OR (status IN ('error','skipped') AND resume_after_turn_id IS NOT NULL)`.pipe(
     Effect.flatMap((rows) => Effect.forEach(rows, toReview)),
     Effect.mapError(fail("listActivePortReviews")),
   );
@@ -513,7 +518,8 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
       detail = ${row.detail}, pr_url = ${row.prUrl}, reviewed_head_sha = ${row.reviewedHeadSha},
       final_head_sha = ${row.finalHeadSha}, review_workflow_id = ${row.reviewWorkflowId},
       review_input_json = ${row.reviewInputJson}, apply_command_json = ${row.applyCommandJson},
-      apply_turn_id = ${row.applyTurnId}, submit_failures = ${row.submitFailures},
+      apply_turn_id = ${row.applyTurnId}, resume_after_turn_id = ${row.resumeAfterTurnId},
+      submit_failures = ${row.submitFailures},
       attempt = ${row.attempt}, updated_at = ${row.updatedAt}
       WHERE project_id = ${row.projectId} AND client_request_id = ${row.clientRequestId}
         AND group_index = ${row.groupIndex}`.pipe(

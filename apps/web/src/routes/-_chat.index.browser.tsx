@@ -450,7 +450,9 @@ describe("_chat.index onboarding lite", () => {
 
       await vi.waitFor(() => {
         expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
-        expect(document.body.textContent).toContain("Continue: Thread");
+        // Home itself: its quick-start bar and, with nothing waiting, the empty queue.
+        expect(document.querySelector('[data-slot="home-quick-start"]')).toBeTruthy();
+        expect(document.body.textContent).toContain("Nothing needs you");
       });
       expect(document.body.textContent).not.toContain("Planning workflows");
       expect(document.body.textContent).not.toContain("Add a project to get started.");

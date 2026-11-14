@@ -23,11 +23,11 @@ implementation and code review, with every step on the provider and model you pi
 
 <table>
   <tr>
-    <td width="50%"><img src="./assets/screenshots/home.png" alt="F5 Home with threads that need you, running work and recent threads" /></td>
+    <td width="50%"><img src="./assets/screenshots/home.png" alt="F5 Home with the threads that need a decision, finished work and running work" /></td>
     <td width="50%"><img src="./assets/screenshots/thread.png" alt="Chat thread with commands, file changes and the diff panel open" /></td>
   </tr>
   <tr>
-    <td align="center"><em>Home: what needs you, what is running, and recent work.</em></td>
+    <td align="center"><em>Home: what needs a decision, what is ready for review, and what is running.</em></td>
     <td align="center"><em>A thread with its file changes open in the Diff panel.</em></td>
   </tr>
 </table>
