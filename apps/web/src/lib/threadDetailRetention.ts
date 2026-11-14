@@ -5,6 +5,7 @@ import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { type AppState, useStore } from "../store";
 import type { Thread } from "../types";
 import { orchestrationQueryKeys } from "./orchestrationReactQuery";
+import { isThreadRunning } from "./threadRunning";
 
 /**
  * Bounds the thread detail bodies (messages, command executions, turn diffs)
@@ -163,7 +164,7 @@ function collectPinnedThreadIds(state: AppState): Set<ThreadId> {
   const pinned = new Set<ThreadId>(retainCountByThreadId.keys());
   for (const threadId of state.detailEventBufferByThreadId.keys()) pinned.add(threadId);
   for (const thread of state.threads) {
-    if (thread.detailsLoaded && thread.latestTurn?.state === "running") pinned.add(thread.id);
+    if (thread.detailsLoaded && isThreadRunning(thread)) pinned.add(thread.id);
   }
   const queueByThreadId = useNextTurnQueueStore.getState().byThreadId;
   for (const [threadId, queue] of Object.entries(queueByThreadId)) {

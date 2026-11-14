@@ -10,6 +10,7 @@ import Migration0160 from "./Migrations/160_DropUnreadEventIndexes.ts";
 import Migration0162 from "./Migrations/162_UsageFactsThreadIndex.ts";
 import Migration0163 from "./Migrations/163_DropUnreadReceiptIndexes.ts";
 import Migration0164 from "./Migrations/164_UpstreamPortReviewRecovery.ts";
+import Migration0165 from "./Migrations/165_UsageResetCreditGrant.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -208,6 +209,7 @@ export const MIGRATIONS = {
   "162_UsageFactsThreadIndex": Migration0162,
   "163_DropUnreadReceiptIndexes": Migration0163,
   "164_UpstreamPortReviewRecovery": Migration0164,
+  "165_UsageResetCreditGrant": Migration0165,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.

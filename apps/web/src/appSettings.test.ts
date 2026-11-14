@@ -34,6 +34,22 @@ const _displayProfileKeyTypecheck: Pick<AppSettings, DisplayProfileKey> =
   parsePersistedAppSettings(null);
 void _displayProfileKeyTypecheck;
 
+it("keeps proactive panels off for old profiles and persists an opt-in", () => {
+  expect(parsePersistedAppSettings(null).proactivePanelsEnabled).toBe(false);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ proactivePanelsEnabled: true }))
+      .proactivePanelsEnabled,
+  ).toBe(true);
+});
+
+it("keeps background running-thread sync off until opted in", () => {
+  expect(parsePersistedAppSettings(null).keepRunningThreadsSynced).toBe(false);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ keepRunningThreadsSynced: true }))
+      .keepRunningThreadsSynced,
+  ).toBe(true);
+});
+
 function toggledProfileValue(
   settings: AppSettings,
   key: DisplayProfileKey,

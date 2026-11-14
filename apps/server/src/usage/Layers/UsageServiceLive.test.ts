@@ -20,6 +20,8 @@ import Migration0071 from "../../persistence/Migrations/071_UsageEventTimeIndex.
 import Migration0073 from "../../persistence/Migrations/073_UsageFactRecordedAt.ts";
 import Migration0161 from "../../persistence/Migrations/161_UsageNativeIdentity.ts";
 import Migration0116 from "../../persistence/Migrations/116_UsageAccountHistory.ts";
+import Migration0101 from "../../persistence/Migrations/101_UsageResetCreditRequests.ts";
+import Migration0165 from "../../persistence/Migrations/165_UsageResetCreditGrant.ts";
 import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import * as SqliteClient from "../../persistence/NodeSqliteClient.ts";
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
@@ -364,6 +366,50 @@ it.layer(SqliteClient.layerMemory())("UsageService account history", (it) => {
         assert.equal(refreshed.snapshot?.sections[0]?.snapshot, null);
         assert.equal(refreshed.fresh, false);
       }).pipe(Effect.provide(serviceLayer));
+    }),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("UsageService reset credits", (it) => {
+  it.effect("passes the Claude grant id through to the instance", () =>
+    Effect.gen(function* () {
+      yield* Migration0101;
+      yield* Migration0165;
+      const calls: Array<[string, string | undefined]> = [];
+      const instance = {
+        instanceId,
+        enabled: true,
+        resetCreditIdentity: "claude:identity",
+        consumeResetCredit: (key: string, grantId?: string) =>
+          Effect.sync(() => {
+            calls.push([key, grantId]);
+            return { outcome: "reset" as const };
+          }),
+      } as unknown as ProviderInstance;
+      const registry = Layer.succeed(ProviderInstanceRegistry, {
+        getInstance: (id: ProviderInstanceId) =>
+          Effect.succeed(id === instanceId ? instance : undefined),
+        listInstances: Effect.succeed([instance]),
+        listUnavailable: Effect.succeed([]),
+        changes: Stream.empty,
+        subscribeChanges: Effect.succeed(Stream.empty),
+      } as unknown as typeof ProviderInstanceRegistry.Service);
+      const result = yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        return yield* usage.consumeResetCredit({
+          providerInstanceId: instanceId,
+          idempotencyKey: "key-1",
+          grantId: "fable_reset",
+        });
+      }).pipe(
+        Effect.provide(
+          UsageServiceLive.pipe(
+            Layer.provide(Layer.mergeAll(registry, ServerSettingsService.layerTest())),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(result, { outcome: "reset" });
+      assert.deepStrictEqual(calls, [["key-1", "fable_reset"]]);
     }),
   );
 });

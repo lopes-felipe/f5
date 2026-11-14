@@ -607,21 +607,14 @@ export async function fetchAndSyncThreadDetail(
   if (!options?.force && thread.detailsLoaded) {
     return null;
   }
-  if (captureLiveEvents && !thread.detailsLoaded) {
+  const acquiredLiveRetainer = captureLiveEvents && !thread.detailsLoaded;
+  if (acquiredLiveRetainer) {
     stateBeforeFetch.beginThreadDetailLoad(threadId);
   }
 
   try {
     const details = await fetchThreadDetailInternal(queryClient, threadId, options);
     if (options?.signal?.aborted) {
-      if (
-        captureLiveEvents &&
-        useStore.getState().backendGeneration === stateBeforeFetch.backendGeneration &&
-        useStore.getState().threads.find((entry) => entry.id === threadId)?.history?.generation ===
-          thread.history?.generation
-      ) {
-        useStore.getState().clearThreadDetailBuffer(threadId);
-      }
       return null;
     }
     const nextStore = useStore.getState();
@@ -634,18 +627,22 @@ export async function fetchAndSyncThreadDetail(
     }
     return details;
   } catch (error) {
-    if (
-      captureLiveEvents &&
-      useStore.getState().backendGeneration === stateBeforeFetch.backendGeneration &&
-      useStore.getState().threads.find((entry) => entry.id === threadId)?.history?.generation ===
-        thread.history?.generation
-    ) {
-      useStore.getState().clearThreadDetailBuffer(threadId);
-    }
     if (isAbortError(error)) {
       return null;
     }
     throw error;
+  } finally {
+    const state = useStore.getState();
+    if (
+      acquiredLiveRetainer &&
+      state.backendGeneration === stateBeforeFetch.backendGeneration &&
+      state.threads.find((entry) => entry.id === threadId)?.history?.generation ===
+        thread.history?.generation
+    ) {
+      // Accepted hydration already dropped the buffer; rejected hydration must
+      // release this fetch's retainer without releasing another consumer's.
+      state.clearThreadDetailBuffer(threadId);
+    }
   }
 }
 

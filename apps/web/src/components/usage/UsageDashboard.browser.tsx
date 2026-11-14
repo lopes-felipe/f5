@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  type ClaudeLimitResetGrant,
   type CodexAccountRateLimit,
   ProjectId,
   ProviderInstanceId,
@@ -35,6 +36,7 @@ import {
   usageQueryKeys,
 } from "../../lib/usageReactQuery";
 import { ResetCreditButton } from "./ResetCreditButton";
+import { ClaudeGrantButton } from "./ClaudeLimitResets";
 import { UsageDashboard, UsageDashboardView } from "./UsageDashboard";
 
 const api = vi.hoisted(() => ({
@@ -2003,6 +2005,201 @@ describe("limits", () => {
       await page.getByRole("button", { name: "Confirm redemption" }).click();
       await expect.poll(() => api.consumeResetCredit.mock.calls.length).toBe(2);
       expect(api.consumeResetCredit.mock.calls[0]).toEqual(api.consumeResetCredit.mock.calls[1]);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  const claudeGrant = (overrides: Partial<ClaudeLimitResetGrant> = {}): ClaudeLimitResetGrant => ({
+    id: "full_reset",
+    label: "Full reset",
+    kind: "full",
+    resetsLeft: 1,
+    resetsTotal: 1,
+    endsAt: "2026-12-10T22:00:00.000Z",
+    usableNow: true,
+    useRequiresLimit: false,
+    givesBackWeekly: false,
+    paused: false,
+    clears: ["five_hour", "seven_day"],
+    blocking: [],
+    unavailableReason: null,
+    ...overrides,
+  });
+
+  const claudeAccountWithResets = (fiveHourUsed: number): UsageAccounts[number] => {
+    const { account } = claudeAccount();
+    const section = account.sections[0] as Extract<
+      UsageAccounts[number]["sections"][number],
+      { kind: "claude-usage" }
+    >;
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    return {
+      ...account,
+      providerInstanceId: ProviderInstanceId.make("claude-test"),
+      sections: [
+        {
+          ...section,
+          snapshot: {
+            ...section.snapshot!,
+            data: {
+              ...section.snapshot!.data,
+              windows: [
+                {
+                  key: "five_hour",
+                  label: "5-hour limit",
+                  utilization: fiveHourUsed,
+                  resetsAt: future,
+                },
+                { key: "seven_day", label: "Weekly limit", utilization: 40, resetsAt: future },
+              ],
+              limitResets: {
+                grants: [
+                  claudeGrant(),
+                  claudeGrant({
+                    id: "fable_reset",
+                    label: "Fable reset",
+                    kind: "weekly",
+                    resetsLeft: 2,
+                    resetsTotal: 2,
+                    usableNow: false,
+                    useRequiresLimit: true,
+                    givesBackWeekly: true,
+                    clears: ["seven_day_overage_included"],
+                    unavailableReason: "needs_limit",
+                  }),
+                  claudeGrant({ id: "spent", label: "Session reset", resetsLeft: 0 }),
+                ],
+                nextGrantId: "full_reset",
+                cooldownUntil: null,
+              },
+            },
+          },
+        },
+      ],
+    };
+  };
+
+  it("offers one Claude limit-reset button per grant and moves the next one into the callout", async () => {
+    const renderView = (account: UsageAccounts[number]) =>
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <UsageDashboardView
+            summary={summary()}
+            accounts={[account]}
+            range="7d"
+            onRangeChange={() => {}}
+            fetching={false}
+          />
+        </QueryClientProvider>,
+      );
+    let screen = await renderView(claudeAccountWithResets(100));
+    try {
+      const callout = page.getByTestId("tightest-limit");
+      await expect.element(callout).toHaveTextContent(/0% left · 5-hour limit/);
+      await expect
+        .element(callout.getByRole("button", { name: "Use Full reset (1)" }))
+        .toBeVisible();
+      expect(page.getByRole("button", { name: /Full reset/ }).all()).toHaveLength(1);
+      const group = page.getByRole("group", { name: "Limit resets" });
+      await expect.element(group.getByText("Fable reset · 2")).toBeVisible();
+      await expect.element(group.getByText(/Usable once you hit a limit/)).toBeVisible();
+      await expect
+        .element(group.getByRole("button", { name: "Use Fable reset (2)" }))
+        .toBeDisabled();
+      // A grant with no resets left is not offered.
+      expect(page.getByText(/Session reset/).all()).toHaveLength(0);
+    } finally {
+      await screen.unmount();
+    }
+
+    // Below the limit, the next grant keeps its own row.
+    screen = await renderView(claudeAccountWithResets(40));
+    try {
+      await expect
+        .element(page.getByTestId("tightest-limit").getByRole("button"))
+        .not.toBeInTheDocument();
+      const group = page.getByRole("group", { name: "Limit resets" });
+      await expect.element(group.getByRole("button", { name: "Use Full reset (1)" })).toBeEnabled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("claims the chosen Claude grant and reuses the key after an ambiguous failure", async () => {
+    api.consumeResetCredit.mockReset();
+    api.consumeResetCredit
+      .mockRejectedValueOnce(new Error("lost connection"))
+      .mockResolvedValue({ outcome: "reset" });
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <ClaudeGrantButton
+          instanceId={ProviderInstanceId.make("claude-test")}
+          accountName="Claude"
+          grant={claudeGrant({ givesBackWeekly: true })}
+          cooldownUntil={null}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      await page.getByRole("button", { name: "Use Full reset (1)" }).click();
+      await expect.element(page.getByText("Use a Full reset?")).toBeVisible();
+      await expect
+        .element(
+          page.getByText(
+            /This uses one Full reset for Claude\. It clears the 5-hour limit and weekly limit\. It also gives back weekly usage\./,
+          ),
+        )
+        .toBeVisible();
+      await page.getByRole("button", { name: "Confirm redemption" }).click();
+      await expect.element(page.getByRole("alert")).toHaveTextContent("lost connection");
+      await page.getByRole("button", { name: "Confirm redemption" }).click();
+      await expect.poll(() => api.consumeResetCredit.mock.calls.length).toBe(2);
+      const [first, second] = api.consumeResetCredit.mock.calls;
+      expect(first).toEqual(second);
+      expect(first![0]).toMatchObject({
+        providerInstanceId: "claude-test",
+        grantId: "full_reset",
+      });
+      expect(localStorage.getItem("f5:reset-credit:claude-test:full_reset")).toBeNull();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("formats a Claude cooldown's retry time in the viewer's locale", async () => {
+    api.consumeResetCredit.mockReset();
+    const retryAt = "2026-11-15T10:00:00.000Z";
+    api.consumeResetCredit.mockResolvedValue({
+      outcome: "unavailable",
+      message: "Limit resets are cooling down.",
+      retryAt,
+    });
+    const queryClient = new QueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <ClaudeGrantButton
+          instanceId={ProviderInstanceId.make("claude-test")}
+          accountName="Claude"
+          grant={claudeGrant()}
+          cooldownUntil={null}
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      await page.getByRole("button", { name: "Use Full reset (1)" }).click();
+      await page.getByRole("button", { name: "Confirm redemption" }).click();
+      await expect
+        .element(page.getByRole("alert"))
+        .toHaveTextContent(
+          `Limit resets are cooling down. Try again after ${new Date(retryAt).toLocaleString(
+            undefined,
+            { dateStyle: "medium", timeStyle: "short" },
+          )}.`,
+        );
     } finally {
       await screen.unmount();
       queryClient.clear();

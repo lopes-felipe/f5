@@ -8,6 +8,7 @@ import {
   parsePersistedAppSettings,
 } from "../../../appSettings";
 import { useServerCapability } from "../../../protocolState";
+import { isElectron } from "../../../env";
 import { DisplayProfileSelector } from "../DisplayProfileSelector";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
@@ -418,6 +419,33 @@ export function ConversationSettings() {
                     updateSettings({ showPromptCacheIndicator: Boolean(checked) })
                   }
                   aria-label="Show prompt cache misses"
+                />
+              }
+            />
+            <SettingsRow
+              title="Proactive panels"
+              description="Open linked pull requests and completed turn diffs in the side panel. Your manual panel choices take priority."
+              control={
+                <Switch
+                  checked={settings.proactivePanelsEnabled}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ proactivePanelsEnabled: Boolean(checked) })
+                  }
+                  aria-label="Proactive panels"
+                />
+              }
+            />
+            <SettingsRow
+              title="Keep running threads synced"
+              description="On desktop, keep active conversations ready to open without a message-sync flash. Uses additional memory for running threads."
+              control={
+                <Switch
+                  checked={settings.keepRunningThreadsSynced}
+                  disabled={!isElectron}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ keepRunningThreadsSynced: Boolean(checked) })
+                  }
+                  aria-label="Keep running threads synced"
                 />
               }
             />

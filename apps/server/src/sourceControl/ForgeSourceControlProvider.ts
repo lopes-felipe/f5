@@ -13,6 +13,7 @@ import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl"
 import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
 import { gitLabHeadPipelineChecks, gitLabTriggerJobChecks } from "./gitLabPipelineChecks.ts";
+import { markRequiredForgejoChecks } from "./forgejoRequiredChecks.ts";
 import {
   SourceControlProviderError,
   type SourceControlProvider,
@@ -480,6 +481,104 @@ export function makeForgeSourceControlProvider(options: {
               ...detail,
               headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
             };
+          }
+          if (kind === "forgejo" && options?.checks) {
+            return yield* Effect.gen(function* () {
+              if (!detail.headRefOid || !detail.baseRefName)
+                return { ...detail, checks: [], checksComplete: false };
+              const headSha = detail.headRefOid;
+              const branchRead = request(
+                ref,
+                undefined,
+                "/branches/" + pathParts(detail.baseRefName),
+              ).pipe(
+                Effect.catch((cause) =>
+                  cause.kind === "forbidden" || cause.kind === "not_found"
+                    ? Effect.succeed({})
+                    : Effect.fail(cause),
+                ),
+                Effect.map(object),
+              );
+              const readStatuses = (page: number) =>
+                request(
+                  ref,
+                  undefined,
+                  "/statuses/" + enc(headSha) + "?sort=recentupdate&limit=50&page=" + page,
+                );
+              const [branch, firstPage] = yield* Effect.all([branchRead, readStatuses(1)], {
+                concurrency: 2,
+              });
+              const checks = new Map<
+                string,
+                { check: PrHubCheck; updatedAt: number; id: number }
+              >();
+              // Servers can cap pages below our requested size. Only an empty page proves completion.
+              for (let page = 1; page <= 20; page++) {
+                const statuses = page === 1 ? firstPage : yield* readStatuses(page);
+                if (!Array.isArray(statuses))
+                  return yield* error("checks", "Invalid Forgejo status page.", "invalid_response");
+                if (statuses.length === 0)
+                  return {
+                    ...detail,
+                    checks: markRequiredForgejoChecks(
+                      [...checks.values()].map((value) => value.check),
+                      branch,
+                    ),
+                    checksComplete: true,
+                  };
+                for (const value of statuses) {
+                  const status = object(value);
+                  const name = text(status.context) || "check";
+                  const parsedAt = Date.parse(text(status.updated_at));
+                  const updatedAt = Number.isFinite(parsedAt) ? parsedAt : 0;
+                  const id = Number(status.id ?? status.index) || 0;
+                  const previous = checks.get(name);
+                  // Forgejo's update ordering has second precision. Higher IDs break ties.
+                  if (
+                    previous &&
+                    (previous.updatedAt > updatedAt ||
+                      (previous.updatedAt === updatedAt && previous.id >= id))
+                  )
+                    continue;
+                  checks.set(name, {
+                    updatedAt,
+                    id,
+                    check: {
+                      name,
+                      status:
+                        status.status === "success"
+                          ? "success"
+                          : status.status === "failure" || status.status === "error"
+                            ? "failure"
+                            : status.status === "skipped"
+                              ? "skipped"
+                              : status.status === "warning"
+                                ? "neutral"
+                                : "pending",
+                      description: text(status.description) || null,
+                      url: text(status.target_url)
+                        ? (URL.parse(text(status.target_url), detail.url)?.href ?? null)
+                        : null,
+                    },
+                  });
+                }
+              }
+              yield* Effect.logWarning("Forgejo status history exceeded the 20-page read limit", {
+                repository: ref.repository,
+                number: ref.number,
+              });
+              return { ...detail, checks: [], checksComplete: false };
+            }).pipe(
+              Effect.catch((cause) =>
+                cause.kind === "unauthenticated" || cause.kind === "rate_limited"
+                  ? Effect.fail(cause)
+                  : Effect.logWarning("Forgejo checks could not be read completely", {
+                      repository: ref.repository,
+                      number: ref.number,
+                      error: cause,
+                    }).pipe(Effect.as({ ...detail, checks: [], checksComplete: false })),
+              ),
+            );
           }
           if (kind !== "gitlab" || !options?.checks) return detail;
           detail = {

@@ -21,7 +21,7 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetch = async (url: unknown, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
-    const value = responses.shift() ?? {};
+    const value = responses.shift() ?? (String(url).includes("/statuses/") ? [] : {});
     return value instanceof Response
       ? value
       : new Response(typeof value === "string" ? value : JSON.stringify(value), { status: 200 });
@@ -36,6 +36,222 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("starts the branch policy and first status page together", async () => {
+    const bothStarted = Promise.withResolvers<void>();
+    let starts = 0;
+    let firstPageReads = 0;
+    const provider = makeForgeSourceControlProvider({
+      kind: "forgejo",
+      resolveAccount: () =>
+        Effect.succeed({
+          kind: "forgejo",
+          host: "codeberg.org",
+          repository: "team/repo",
+          login: "parallel-checks",
+          token: "isolated-token",
+        }),
+      fetch: (async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/pulls/7"))
+          return Response.json({ number: 7, base: { ref: "main" }, head: { sha: "head" } });
+        const branch = url.pathname.includes("/branches/");
+        const firstPage = url.searchParams.get("page") === "1";
+        if (branch || firstPage) {
+          if (firstPage) firstPageReads++;
+          if (++starts === 2) bothStarted.resolve();
+          // Neither request can finish until both have started.
+          await bothStarted.promise;
+        }
+        return Response.json(
+          branch
+            ? { enable_status_check: true, status_check_contexts: ["ci"] }
+            : firstPage
+              ? [{ context: "ci", status: "success" }]
+              : [],
+        );
+      }) as typeof fetch,
+    });
+    const detail = await Effect.runPromise(
+      provider.getDetail(
+        {
+          provider: "forgejo",
+          host: "codeberg.org",
+          repository: "team/repo",
+          number: 7,
+        },
+        { checks: true },
+      ),
+    );
+    expect(detail.checksComplete).toBe(true);
+    expect(detail.checks?.[0]).toMatchObject({ name: "ci", status: "success", required: true });
+    expect(firstPageReads).toBe(1);
+  });
+
+  it("marks Forgejo required checks and preserves optional failures", async () => {
+    const { provider, ref, calls } = fixture("forgejo", [
+      { number: 7, base: { ref: "release/1.x" }, head: { sha: "head" } },
+      { enable_status_check: true, status_check_contexts: ["ci/*", "deploy", "deploy"] },
+      [
+        { context: "ci/build", status: "success", target_url: "/team/repo/actions/1" },
+        { context: "ci/build", status: "failure" },
+        { context: "optional", status: "failure" },
+      ],
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.checksComplete).toBe(true);
+    expect(detail.checks?.map(({ name, status, required }) => [name, status, required])).toEqual([
+      ["ci/build", "success", true],
+      ["optional", "failure", undefined],
+      ["deploy", "pending", true],
+    ]);
+    expect(detail.checks?.[0]?.url).toBe("https://codeberg.org/team/repo/actions/1");
+    expect(calls[1]?.url).toContain("/branches/release/1.x");
+  });
+
+  it.each([403, 404])(
+    "keeps all Forgejo checks gating without branch access (%s)",
+    async (status) => {
+      const { provider, ref } = fixture("forgejo", [
+        { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+        new Response(null, { status }),
+        [{ context: "optional", status: "failure" }],
+      ]);
+      const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+      expect(detail.checks?.[0]).toMatchObject({ status: "failure" });
+      expect(detail.checks?.[0]?.required).toBeUndefined();
+    },
+  );
+
+  it.each([401, 429])("propagates Forgejo branch failures (%s)", async (status) => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      new Response(null, { status }),
+    ]);
+    const result = await Effect.runPromise(
+      provider.getDetail(ref, { checks: true }).pipe(Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
+
+  it("does not accept a partial Forgejo status listing", async () => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      {},
+      ...Array.from({ length: 20 }, () =>
+        Array.from({ length: 50 }, () => ({ context: "ci", status: "success" })),
+      ),
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.checksComplete).toBe(false);
+    expect(detail.checks).toEqual([]);
+  });
+
+  it("reads server-capped pages until an empty page, including later wildcard failures", async () => {
+    const { provider, ref, calls } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      { enable_status_check: true, status_check_contexts: ["ci/*"] },
+      [{ context: "ci/build", status: "success" }],
+      [{ context: "ci/test", status: "failure" }],
+      [],
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.checksComplete).toBe(true);
+    expect(detail.checks?.map(({ name, status, required }) => [name, status, required])).toEqual([
+      ["ci/build", "success", true],
+      ["ci/test", "failure", true],
+    ]);
+    expect(calls.at(-1)?.url).toContain("page=3");
+  });
+
+  it.each([
+    ["warning", "neutral"],
+    ["error", "failure"],
+    ["skipped", "skipped"],
+    ["pending", "pending"],
+    ["future-state", "pending"],
+  ])("maps Forgejo %s to %s", async (status, expected) => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      { enable_status_check: true, status_check_contexts: ["ci"] },
+      [{ context: "ci", status }],
+      [],
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.checks?.[0]).toMatchObject({ status: expected, required: true });
+  });
+
+  it.each(["id", "index"])(
+    "breaks timestamp ties by %s across pages in either arrival order",
+    async (idField) => {
+      for (const reverse of [false, true]) {
+        const statuses = [
+          { context: "ci", status: "success", [idField]: 1, updated_at: "2026-11-14T00:00:00Z" },
+          { context: "ci", status: "failure", [idField]: 2, updated_at: "2026-11-14T00:00:00Z" },
+          { context: "ci", status: "pending", [idField]: 3, updated_at: "2026-11-13T00:00:00Z" },
+        ];
+        const { provider, ref } = fixture("forgejo", [
+          { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+          {},
+          ...(reverse ? statuses.toReversed() : statuses).map((status) => [status]),
+          [],
+        ]);
+        expect(
+          (await Effect.runPromise(provider.getDetail(ref, { checks: true }))).checks?.[0]?.status,
+        ).toBe("failure");
+      }
+    },
+  );
+
+  it.each(["branch", "statuses", "later-page"])(
+    "preserves closed PR metadata on a failed %s read",
+    async (stage) => {
+      const responses: unknown[] = [
+        {
+          number: 7,
+          title: "Closed",
+          state: "closed",
+          base: { ref: "main" },
+          head: { sha: "head" },
+        },
+      ];
+      if (stage !== "branch") responses.push({});
+      if (stage === "later-page") responses.push([{ context: "ci", status: "success" }]);
+      responses.push(new Response(null, { status: 503 }));
+      const { provider, ref } = fixture("forgejo", responses);
+      expect(await Effect.runPromise(provider.getDetail(ref, { checks: true }))).toMatchObject({
+        title: "Closed",
+        state: "closed",
+        headRefOid: "head",
+        checks: [],
+        checksComplete: false,
+      });
+    },
+  );
+
+  it("marks a malformed status page incomplete", async () => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      {},
+      { invalid: true },
+    ]);
+    expect(await Effect.runPromise(provider.getDetail(ref, { checks: true }))).toMatchObject({
+      checks: [],
+      checksComplete: false,
+    });
+  });
+
+  it.each([401, 429])("propagates status page HTTP %s", async (status) => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      {},
+      new Response(null, { status }),
+    ]);
+    const result = await Effect.runPromise(
+      provider.getDetail(ref, { checks: true }).pipe(Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
+
   it("reads fork child pipelines on the selected GitLab host", async () => {
     const { provider, ref, calls } = fixture("gitlab", [
       {

@@ -485,8 +485,16 @@ function ChatThreadRouteView() {
       currentState.surfaces.find((surface) => surface.id === currentState.activeSurfaceId) ?? null;
 
     if (search.diff === "1") {
-      rightPanelStore.open(threadId, "diff");
-    } else if (currentState.surfaces.some((surface) => surface.kind === "diff")) {
+      // The initiating action already opened the surface. Reconciliation must
+      // not turn an automatic offer into a new manual panel choice.
+      if (!currentState.isOpen || activeSurface?.kind !== "diff") {
+        rightPanelStore.open(threadId, "diff");
+      }
+      rightPanelStore.finishProactiveDiffNavigation(threadId);
+    } else if (
+      !rightPanelStore.pendingProactiveDiffNavigationByThreadId[threadId] &&
+      currentState.surfaces.some((surface) => surface.kind === "diff")
+    ) {
       rightPanelStore.closeSurface(threadId, "diff");
     }
     if (search.fileViewPath) {

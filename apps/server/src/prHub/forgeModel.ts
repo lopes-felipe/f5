@@ -29,15 +29,18 @@ export function forgeTracked(
   const draft = raw.draft === true || raw.work_in_progress === true || raw.isDraft === true;
   const state = detail.state ?? "open";
   const checks = detail.checks ?? [];
+  const requiredChecks = checks.filter((check) => check.required === true);
+  const gate = requiredChecks.length ? requiredChecks : checks;
   const headStatus = text(record(raw.head_pipeline).status)?.toLowerCase();
   const checksIncomplete =
-    ref.provider === "gitlab" &&
-    (detail.checksComplete !== true || headStatus === "manual" || headStatus === "skipped");
-  const checkRollup: TrackedPullRequest["checkRollup"] = checks.some(
+    (ref.provider === "gitlab" &&
+      (detail.checksComplete !== true || headStatus === "manual" || headStatus === "skipped")) ||
+    (ref.provider === "forgejo" && detail.checksComplete === false);
+  const checkRollup: TrackedPullRequest["checkRollup"] = gate.some(
     (check) => check.status === "failure" || check.status === "cancelled",
   )
     ? "failure"
-    : checks.some((check) => check.status === "pending")
+    : gate.some((check) => check.status === "pending")
       ? "pending"
       : checksIncomplete
         ? "pending"
@@ -177,7 +180,8 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
       labels: pr.labels.map((name) => ({ name, color: null, description: null })),
       reviewers: [],
       checks: detail.checks ?? [],
-      ...(pr.provider === "gitlab" && detail.checksComplete !== true
+      ...((pr.provider === "gitlab" && detail.checksComplete !== true) ||
+      (pr.provider === "forgejo" && detail.checksComplete === false)
         ? { truncatedSections: ["checks" as const] }
         : {}),
       reactions: [],

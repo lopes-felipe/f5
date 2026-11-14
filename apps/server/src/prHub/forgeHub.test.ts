@@ -14,6 +14,7 @@ import { ServerSettingsService, type ServerSettingsShape } from "../serverSettin
 import { makeForgePrHubService } from "./forgeHub.ts";
 import { ForgeAccounts, type ForgeAccountsShape } from "../sourceControl/accountRouting.ts";
 import { Schema } from "effect";
+import { evaluatePullRequestWatch } from "../orchestration/pullRequestWatch.ts";
 
 const settings: ServerSettingsShape = {
   start: Effect.void,
@@ -31,6 +32,28 @@ const account: ForgeAccount = {
   login: "alice",
   viewerId: "uuid",
   generation: "generation-1",
+};
+const routedAccounts = (account: ForgeAccount, repository: string): ForgeAccountsShape => {
+  const unused = () => Effect.die("unused account operation");
+  return {
+    listAccounts: () => Effect.succeed([account]),
+    listRouting: () =>
+      Effect.succeed([
+        {
+          provider: account.provider,
+          host: account.host,
+          repository,
+          accountId: account.id,
+        },
+      ]),
+    route: () => Effect.succeed(account),
+    removeAccount: unused,
+    saveAccount: unused,
+    getToken: unused,
+    removeRouting: unused,
+    setRouting: unused,
+    resolveAccount: unused,
+  };
 };
 const detail = {
   iid: 7,
@@ -50,6 +73,110 @@ const detail = {
 };
 
 it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
+  it.effect(
+    "refreshes discovered Forgejo checks on every poll and passes required checks through to watches",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Migration102;
+          const forgejo: ForgeAccount = {
+            ...account,
+            id: "forgejo-discovery",
+            provider: "forgejo",
+            host: "forgejo.example.com",
+          };
+          let status = "pending";
+          let head = "first";
+          let checkReads = 0;
+          let failChecks = false;
+          const pull = () => ({
+            number: 7,
+            title: "Forgejo checks",
+            state: "open",
+            head: { sha: head, ref: "topic" },
+            base: { ref: "main" },
+            html_url: "https://forgejo.example.com/group/repo/pulls/7",
+          });
+          const provider = makeForgeSourceControlProvider({
+            kind: "forgejo",
+            resolveAccount: () =>
+              Effect.succeed({
+                kind: "forgejo",
+                host: forgejo.host,
+                login: forgejo.login,
+                repository: "group/repo",
+                token: "secret",
+              }),
+            fetch: (async (input) => {
+              const url = new URL(String(input));
+              if (url.pathname.endsWith("/pulls")) return Response.json([pull()]);
+              if (url.pathname.includes("/branches/"))
+                return Response.json({
+                  enable_status_check: true,
+                  status_check_contexts: ["ci/*"],
+                });
+              if (url.pathname.includes("/statuses/")) {
+                checkReads++;
+                if (failChecks) return new Response(null, { status: 503 });
+                return Response.json(
+                  url.searchParams.get("page") === "1"
+                    ? [
+                        { context: "ci/build", status },
+                        { context: "optional", status: "failure" },
+                      ]
+                    : [],
+                );
+              }
+              return Response.json(pull());
+            }) as typeof fetch,
+          });
+          const hub = yield* makeForgePrHubService(forgejo, provider).pipe(
+            Effect.provideService(ServerSettingsService, settings),
+            Effect.provideService(ForgeAccounts, routedAccounts(forgejo, "group/repo")),
+          );
+          const first = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(first.checkRollup, "pending");
+          status = "success";
+          const second = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(second.checkRollup, "success");
+          assert.equal(checkReads, 4);
+          const detail = (yield* hub.getDetail({ key: second.key })).detail;
+          const watch = evaluatePullRequestWatch(
+            {
+              startedAt: "2026-11-14T00:00:00Z",
+              headSha: head,
+              failedChecks: ["optional"],
+              passed: false,
+              passedChecks: [],
+              remarkIds: [],
+              remarksThrough: "2026-11-14T00:00:00Z",
+              conflicting: false,
+              wakes: 0,
+            },
+            {
+              checks: detail.checks,
+              headSha: detail.providerDetails.headRefOid,
+              mergeability: detail.mergeable,
+              viewer: "alice",
+              author: null,
+            },
+            [],
+          );
+          assert.deepEqual(watch.changes, [{ kind: "checks-passed", count: 1, required: true }]);
+          head = "second";
+          status = "failure";
+          const moved = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(moved.headRefOid, head);
+          assert.equal(moved.checkRollup, "failure");
+          failChecks = true;
+          const incomplete = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
+          assert.equal(incomplete.checkRollup, "pending");
+          const partial = yield* hub.getDetail({ key: incomplete.key });
+          assert.deepEqual(partial.detail.checks, []);
+          assert.deepEqual(partial.detail.truncatedSections, ["checks"]);
+        }),
+      ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
   it.effect("refreshes discovered pipeline checks on every poll and marks partial reads", () =>
     Effect.scoped(
       Effect.gen(function* () {

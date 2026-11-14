@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
+import { TurnId } from "@t3tools/contracts";
 
 import {
   clearDiffSearchParams,
   clearFileViewSearchParams,
   clearTurnDiffSearchParams,
   parseDiffRouteSearch,
+  buildTurnDiffSearch,
 } from "./diffRouteSearch";
+
+it("automatic turn navigation removes competing file-preview state while preserving the timeline anchor", () => {
+  const previous = {
+    fileViewPath: "old.ts",
+    fileLine: 12,
+    fileEndLine: 14,
+    fileColumn: 2,
+    diffScope: "working-tree",
+    timelineEntryId: "anchor",
+  };
+  const automatic = buildTurnDiffSearch(previous, TurnId.makeUnsafe("finished"), undefined, true);
+  expect(automatic).toMatchObject({ diff: "1", diffTurnId: "finished", timelineEntryId: "anchor" });
+  expect(automatic.fileViewPath).toBeUndefined();
+  expect(automatic.fileLine).toBeUndefined();
+  expect(automatic.fileEndLine).toBeUndefined();
+  expect(automatic.fileColumn).toBeUndefined();
+  expect(automatic.diffScope).toBeUndefined();
+  expect(buildTurnDiffSearch(previous, TurnId.makeUnsafe("manual")).fileViewPath).toBe("old.ts");
+});
 
 describe("parseDiffRouteSearch", () => {
   it("parses valid diff search values", () => {

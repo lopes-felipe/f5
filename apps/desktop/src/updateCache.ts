@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import * as Path from "node:path";
+import { isDebPackage } from "./linuxPackage";
 
 interface ReleaseFile {
   url: string;
@@ -40,16 +41,13 @@ export async function hasCachedUpdate(
   resourcesPath: string,
 ): Promise<boolean> {
   try {
-    const isDebPackage =
-      platform === "linux" &&
-      (await readFile(Path.join(resourcesPath, "package-type"), "utf8").catch(() => "")).trim() ===
-        "deb";
+    const debPackage = await isDebPackage(platform, resourcesPath);
     const selected = selectCachedUpdateFile(
       files,
       platform,
       runtime.hostArch,
       runtime.appArch,
-      isDebPackage,
+      debPackage,
     );
     if (!selected) return false;
     // Use the configured updater cache, including custom updaterCacheDirName.

@@ -26,6 +26,27 @@ import {
 import { createEmptyThreadHistoryState } from "./threadHistory";
 
 const PROJECT_ID = ProjectId.makeUnsafe("project-1");
+
+it("retains a hydrated starting session before its first running turn arrives", () => {
+  const thread = makeThread(0);
+  useStore.setState({
+    threads: [
+      {
+        ...thread,
+        detailsLoaded: true,
+        session: {
+          provider: "codex",
+          status: "connecting",
+          orchestrationStatus: "starting",
+          createdAt: "2026-03-01T00:00:00Z",
+          updatedAt: "2026-03-01T00:00:00Z",
+        },
+      },
+    ],
+  });
+  enforceThreadDetailRetention(new QueryClient(), { maxThreads: 0, maxBytes: 0 });
+  expect(useStore.getState().threads[0]?.detailsLoaded).toBe(true);
+});
 const threadIdAt = (index: number) =>
   ThreadId.makeUnsafe(`thread-${String(index).padStart(2, "0")}`);
 

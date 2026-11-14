@@ -18,6 +18,13 @@ const decodeProjectSearchContentsResult = Schema.decodeUnknownSync(ProjectSearch
 const decodeProjectIcon = Schema.decodeUnknownSync(ProjectIcon);
 
 describe("ProjectIcon", () => {
+  it("accepts a bounded project image path", () => {
+    expect(decodeProjectIcon({ type: "image", path: " assets/logo.png " })).toEqual({
+      type: "image",
+      path: "assets/logo.png",
+    });
+    expect(() => decodeProjectIcon({ type: "image", path: "x".repeat(513) })).toThrow();
+  });
   it("accepts the bounded manual icon variants", () => {
     expect(decodeProjectIcon({ type: "lucide", glyph: "rocket", color: "violet" })).toEqual({
       type: "lucide",

@@ -291,7 +291,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               if (!Number.isInteger(detail.number) || detail.number < 1) continue;
               const discoveredRef = { ...ref, number: detail.number };
               const saved = yield* (
-                account.provider === "gitlab"
+                account.provider === "gitlab" || account.provider === "forgejo"
                   ? refreshOne(discoveredRef)
                   : saveDetail(discoveredRef, detail)
               ).pipe(Effect.result);

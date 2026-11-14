@@ -341,6 +341,35 @@ export const ClaudeAccountUsageWindow = Schema.Struct({
   utilization: Schema.NullOr(NonNegativeNumber),
   resetsAt: Schema.NullOr(IsoDateTime),
 });
+/** Claude limit-reset grant ids, as the claim endpoint accepts them. */
+export const ClaudeLimitResetGrantId = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^[a-z0-9_-]{1,40}$/),
+);
+/** One limit-reset grant on a Claude plan ("Full reset", "Fable reset", ...). */
+export const ClaudeLimitResetGrant = Schema.Struct({
+  id: ClaudeLimitResetGrantId,
+  label: TrimmedNonEmptyString,
+  kind: Schema.NullOr(Schema.Literals(["session", "weekly", "full"])),
+  resetsLeft: NonNegativeInt,
+  resetsTotal: NonNegativeInt,
+  endsAt: Schema.NullOr(IsoDateTime),
+  usableNow: Schema.Boolean,
+  useRequiresLimit: Schema.Boolean,
+  givesBackWeekly: Schema.Boolean,
+  paused: Schema.Boolean,
+  /** Claude limit keys this grant clears (`five_hour`, `seven_day`, ...). */
+  clears: Schema.Array(TrimmedNonEmptyString),
+  /** Limit keys that currently keep this grant from being used. */
+  blocking: Schema.Array(TrimmedNonEmptyString),
+  unavailableReason: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ClaudeLimitResetGrant = typeof ClaudeLimitResetGrant.Type;
+export const ClaudeLimitResets = Schema.Struct({
+  grants: Schema.Array(ClaudeLimitResetGrant),
+  nextGrantId: Schema.NullOr(ClaudeLimitResetGrantId),
+  cooldownUntil: Schema.NullOr(IsoDateTime),
+});
+export type ClaudeLimitResets = typeof ClaudeLimitResets.Type;
 export const ClaudeAccountUsage = Schema.Struct({
   subscriptionLabel: Schema.NullOr(TrimmedNonEmptyString),
   limitsAvailable: Schema.Boolean,
@@ -348,6 +377,8 @@ export const ClaudeAccountUsage = Schema.Struct({
   extraUsage: Schema.NullOr(
     Schema.Struct({ enabled: Schema.Boolean, utilization: Schema.NullOr(NonNegativeNumber) }),
   ),
+  /** Absent in snapshots stored before limit resets were read. */
+  limitResets: Schema.optional(Schema.NullOr(ClaudeLimitResets)),
 });
 export type ClaudeAccountUsage = typeof ClaudeAccountUsage.Type;
 const sectionState = {
@@ -369,10 +400,22 @@ export const UsageResetCredits = Schema.Struct({
 export const UsageConsumeResetCreditInput = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   idempotencyKey: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  /** Claude only: the limit-reset grant to claim. Defaults to the server's next grant. */
+  grantId: Schema.optional(ClaudeLimitResetGrantId),
 });
 export type UsageConsumeResetCreditInput = typeof UsageConsumeResetCreditInput.Type;
 export const UsageConsumeResetCreditResult = Schema.Struct({
-  outcome: Schema.Literals(["reset", "nothingToReset", "noCredit", "alreadyRedeemed"]),
+  outcome: Schema.Literals([
+    "reset",
+    "nothingToReset",
+    "noCredit",
+    "alreadyRedeemed",
+    "unavailable",
+  ]),
+  /** Why the reset could not be used, for the `unavailable` outcome. */
+  message: Schema.optional(TrimmedNonEmptyString),
+  /** When the reset can be tried again, formatted by the client. */
+  retryAt: Schema.optional(IsoDateTime),
 });
 export type UsageConsumeResetCreditResult = typeof UsageConsumeResetCreditResult.Type;
 export const UsagePriceOverride = Schema.Struct({

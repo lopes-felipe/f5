@@ -114,10 +114,14 @@ export function ProjectSettings() {
   } = useSettingsRouteContext();
   const [emojiDraft, setEmojiDraft] = useState("");
   const [monogramDraft, setMonogramDraft] = useState("");
+  const [imagePathDraft, setImagePathDraft] = useState("");
+  const [imageMode, setImageMode] = useState(false);
 
   useEffect(() => {
     setMonogramDraft(selectedProject?.icon?.type === "monogram" ? selectedProject.icon.text : "");
     setEmojiDraft(selectedProject?.icon?.type === "emoji" ? selectedProject.icon.emoji : "");
+    setImagePathDraft(selectedProject?.icon?.type === "image" ? selectedProject.icon.path : "");
+    setImageMode(selectedProject?.icon?.type === "image");
   }, [selectedProject?.icon, selectedProject?.id]);
 
   return (
@@ -168,8 +172,10 @@ export function ProjectSettings() {
                 <label className="min-w-0 flex-1 space-y-1">
                   <span className="text-xs font-medium text-foreground">Project icon</span>
                   <Select
-                    value={selectedProject.icon?.type ?? "automatic"}
+                    value={imageMode ? "image" : (selectedProject.icon?.type ?? "automatic")}
                     onValueChange={(value) => {
+                      setImageMode(value === "image");
+                      if (value === "image") return;
                       if (value === "automatic") {
                         void updateSelectedProjectMetadata({ icon: null });
                       } else if (value === "emoji") {
@@ -199,13 +205,17 @@ export function ProjectSettings() {
                   >
                     <SelectTrigger aria-label="Project icon source">
                       <SelectValue>
-                        {selectedProject.icon?.type === "emoji"
-                          ? "Emoji"
-                          : selectedProject.icon?.type === "lucide"
-                            ? "Symbol"
-                            : selectedProject.icon?.type === "monogram"
-                              ? "Monogram"
-                              : "Automatic"}
+                        {imageMode
+                          ? "Image from project"
+                          : selectedProject.icon?.type === "emoji"
+                            ? "Emoji"
+                            : selectedProject.icon?.type === "lucide"
+                              ? "Symbol"
+                              : selectedProject.icon?.type === "monogram"
+                                ? "Monogram"
+                                : selectedProject.icon?.type === "image"
+                                  ? "Image from project"
+                                  : "Automatic"}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectPopup>
@@ -213,12 +223,13 @@ export function ProjectSettings() {
                       <SelectItem value="monogram">Monogram</SelectItem>
                       <SelectItem value="emoji">Emoji</SelectItem>
                       <SelectItem value="lucide">Symbol</SelectItem>
+                      <SelectItem value="image">Image from project</SelectItem>
                     </SelectPopup>
                   </Select>
                 </label>
               </div>
 
-              {selectedProject.icon?.type === "monogram" && (
+              {!imageMode && selectedProject.icon?.type === "monogram" && (
                 <div className="flex gap-2">
                   <Input
                     aria-label="Project monogram"
@@ -266,7 +277,30 @@ export function ProjectSettings() {
                 </div>
               )}
 
-              {selectedProject.icon?.type === "emoji" ? (
+              {imageMode ? (
+                <div className="flex gap-2">
+                  <Input
+                    aria-label="Project icon image path"
+                    value={imagePathDraft}
+                    onChange={(event) => setImagePathDraft(event.target.value)}
+                    maxLength={512}
+                    placeholder="assets/logo.png"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={projectMetadataPending || !imagePathDraft.trim()}
+                    onClick={() =>
+                      void updateSelectedProjectMetadata({
+                        icon: { type: "image", path: imagePathDraft.trim() },
+                      })
+                    }
+                  >
+                    Save image
+                  </Button>
+                </div>
+              ) : null}
+              {!imageMode && selectedProject.icon?.type === "emoji" ? (
                 <div className="flex gap-2">
                   <Input
                     aria-label="Project icon emoji"
@@ -290,7 +324,7 @@ export function ProjectSettings() {
                 </div>
               ) : null}
 
-              {selectedProject.icon?.type === "lucide" ? (
+              {!imageMode && selectedProject.icon?.type === "lucide" ? (
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Select
                     value={selectedProject.icon.glyph}

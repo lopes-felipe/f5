@@ -16,6 +16,78 @@ const provider = (resolve = true) =>
     },
   }) as ForgeProvider;
 
+it.each([undefined, false, true])(
+  "distinguishes unread Forgejo checks from incomplete reads (%s)",
+  (complete) => {
+    const detail = {
+      number: 7,
+      title: "Checks",
+      body: "",
+      url: "",
+      baseRefName: "main",
+      headRefName: "topic",
+      raw: {},
+      ...(complete === undefined ? {} : { checks: [], checksComplete: complete }),
+    };
+    const pr = forgeTracked(
+      {
+        id: "forgejo-list",
+        provider: "forgejo",
+        host: "codeberg.org",
+        login: "alice",
+        viewerId: "1",
+        generation: "1",
+      },
+      { provider: "forgejo", host: "codeberg.org", repository: "team/repo", number: 7 },
+      detail,
+      provider(),
+    );
+    expect(pr.checkRollup).toBe(complete === false ? "pending" : "none");
+    expect(forgeDetail(pr, detail).detail.truncatedSections).toEqual(
+      complete === false ? ["checks"] : undefined,
+    );
+  },
+);
+
+it.each([
+  [true, true, "success"],
+  [false, true, "failure"],
+  [true, false, "pending"],
+] as const)("rolls up Forgejo required=%s complete=%s as %s", (required, complete, expected) => {
+  const detail = {
+    number: 7,
+    title: "Checks",
+    body: "",
+    url: "",
+    baseRefName: "main",
+    headRefName: "topic",
+    raw: {},
+    checksComplete: complete,
+    checks: [
+      { name: "ci", status: "success" as const, description: null, url: null, required },
+      { name: "optional", status: "failure" as const, description: null, url: null },
+    ],
+  };
+  const pr = forgeTracked(
+    {
+      id: "forgejo",
+      provider: "forgejo",
+      host: "codeberg.org",
+      login: "alice",
+      viewerId: "1",
+      generation: "1",
+    },
+    { provider: "forgejo", host: "codeberg.org", repository: "team/repo", number: 7 },
+    // Incomplete provider reads expose no checks.
+    { ...detail, checks: complete ? detail.checks : [] },
+    provider(),
+  );
+  expect(pr.checkRollup).toBe(expected);
+  expect(
+    forgeDetail(pr, { ...detail, checks: complete ? detail.checks : [] }).detail.truncatedSections,
+  ).toEqual(complete ? undefined : ["checks"]);
+});
+
 it.each([
   ["canceled", false, "failure"],
   ["cancelling", false, "failure"],
