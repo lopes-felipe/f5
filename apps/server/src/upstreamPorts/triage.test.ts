@@ -5,10 +5,15 @@ import { describe, expect, it } from "vitest";
 import { TextGenerationError } from "../git/Errors.ts";
 import { chunkCommit, SEED_RULES, sha } from "./testFixtures.ts";
 import {
+  applyAreaPolicy,
   autoDecision,
   batchCommits,
+  classifyCommitOf,
+  classifySuggestion,
+  SECURITY_HINT_QUESTION,
   buildTopics,
   legacyEquivalenceGroups,
+  mergeSuggestions,
   planReverts,
   ProviderUnavailableError,
   triageChunk,
@@ -410,6 +415,54 @@ describe("triageChunk", () => {
     expect(result.groups[0]).toMatchObject({ attachTo: null, related: ["pr-77"] });
     expect(result.groups[0]!.suggestion?.question).toBe("Is the old flow still used?");
   });
+
+  it("keeps a security follow-up out of an existing topic as its own related topic", async () => {
+    const call: TriageCall = () =>
+      Effect.succeed({
+        groups: [
+          group({ commits: [sha(1)], attachTo: "pr-77" }),
+          group({ commits: [sha(2)], attachTo: "pr-77", kind: "security", severity: "high" }),
+        ],
+      });
+    const hinted = [
+      chunkCommit({ sha: sha(1), body: "Fixes CVE-2026-1234 in the parser" }),
+      commits[1]!,
+    ];
+    const result = await run(
+      triageChunk({ ...baseInput(hinted, call), attachable: new Set(["pr-77"]) }),
+    );
+    expect(result.groups.map((entry) => [entry.attachTo, entry.related])).toEqual([
+      [null, ["pr-77"]],
+      [null, ["pr-77"]],
+    ]);
+    expect(result.groups.map((entry) => entry.suggestion?.kind)).toEqual(["security", "security"]);
+  });
+
+  it("never offers F5's own reason keys to the model and rejects them in its output", async () => {
+    const prompts: string[] = [];
+    const call: TriageCall = (prompt) => {
+      prompts.push(prompt);
+      return Effect.succeed({
+        groups: [
+          group({ commits: [sha(1)], suggestion: "skip", reasonKey: "aged-out", confidence: 0.99 }),
+          group({
+            commits: [sha(2)],
+            suggestion: "skip",
+            reasonKey: "area-ignored",
+            confidence: 0.99,
+          }),
+        ],
+      });
+    };
+    const result = await run(triageChunk(baseInput(commits.slice(0, 2), call)));
+    expect(prompts[0]).not.toContain("aged-out");
+    expect(prompts[0]).not.toContain("area-ignored");
+    expect(result.groups.map((entry) => entry.suggestion?.reasonKey)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(result.groups.map((entry) => entry.decision)).toEqual([null, null]);
+  });
 });
 
 describe("buildTopics", () => {
@@ -489,5 +542,152 @@ describe("buildTopics", () => {
       confidence: 0.7,
       f5Refs: [sha(100, "b")],
     });
+  });
+});
+
+describe("classification", () => {
+  const suggestion = {
+    status: "port" as const,
+    reason: "r",
+    userImpact: "medium" as const,
+    confidence: 0.9,
+    areas: ["PR Hub", "Claude", "Model Picker", "Widget Gallery"],
+    model: "m",
+  };
+  const commit = (
+    subject: string,
+    files: ReadonlyArray<[string, boolean]> | null = null,
+    body: string | null = null,
+  ) => ({
+    subject,
+    body,
+    files: files?.map(([path, existsInFork]) => ({ path, existsInFork })) ?? null,
+  });
+
+  it("derives the kind from prefixes, coverage from source files, and normalizes areas", () => {
+    const result = classifySuggestion(
+      suggestion,
+      [
+        commit("feat: a", [
+          ["apps/web/a.ts", true],
+          ["apps/web/a.test.ts", false],
+        ]),
+        commit("fix: b", [["b.ts", false]]),
+      ],
+      SEED_RULES,
+    );
+    expect(result).toMatchObject({
+      kind: "fix",
+      f5Coverage: "partial",
+      areas: ["pr-hub", "providers", "widget-gallery"],
+    });
+    expect(result.severity).toBeUndefined();
+  });
+
+  it("keeps the model's kind and drops a severity outside security", () => {
+    const result = classifySuggestion(
+      { ...suggestion, kind: "perf", severity: "high" },
+      [commit("fix: a")],
+      SEED_RULES,
+    );
+    expect(result.kind).toBe("perf");
+    expect(result.severity).toBeUndefined();
+    expect(result.f5Coverage).toBeUndefined();
+    expect(
+      classifySuggestion({ ...suggestion, kind: "security" }, [commit("fix: a")], SEED_RULES)
+        .severity,
+    ).toBe("low");
+  });
+
+  it("keeps a security hint in the security lane with a question when the model disagrees", () => {
+    const hinted = [commit("fix: bump ws", null, "Fixes CVE-2026-1234")];
+    expect(classifySuggestion({ ...suggestion, kind: "fix" }, hinted, SEED_RULES)).toMatchObject({
+      kind: "security",
+      severity: "low",
+      question: SECURITY_HINT_QUESTION,
+    });
+    expect(
+      classifySuggestion({ ...suggestion, kind: "security", severity: "high" }, hinted, SEED_RULES),
+    ).toMatchObject({ kind: "security", severity: "high" });
+    expect(
+      classifySuggestion({ ...suggestion, kind: "security", severity: "high" }, hinted, SEED_RULES)
+        .question,
+    ).toBe(undefined);
+  });
+
+  it("keeps a security classification when merging with a normal group", () => {
+    const fix = { ...suggestion, kind: "fix" as const, f5Coverage: "all" as const };
+    const security = {
+      ...suggestion,
+      kind: "security" as const,
+      severity: "critical" as const,
+      f5Coverage: "none" as const,
+    };
+    for (const merged of [mergeSuggestions(fix, security), mergeSuggestions(security, fix)])
+      expect(merged).toMatchObject({
+        kind: "security",
+        severity: "critical",
+        f5Coverage: "partial",
+      });
+    expect(
+      mergeSuggestions({ ...security, severity: "low" }, { ...security, severity: "high" })
+        .severity,
+    ).toBe("high");
+    const unknownCoverage = mergeSuggestions(fix, { ...suggestion, kind: "fix" });
+    expect(unknownCoverage.f5Coverage).toBeUndefined();
+    expect(unknownCoverage.severity).toBeUndefined();
+  });
+
+  it("computes coverage from every changed file, not the 15 the digest lists", () => {
+    const paths = Array.from({ length: 16 }, (_, index) => `apps/web/f${index}.ts`);
+    const base = chunkCommit({ sha: sha(1), subject: "fix: wide change", paths });
+    const wide = {
+      ...base,
+      digest: { ...base.digest, files: base.digest.files.slice(0, 15) },
+      coverageFiles: paths.map((path, index) => ({ path, existsInFork: index < 15 })),
+    };
+    expect(classifySuggestion(suggestion, [classifyCommitOf(wide)], SEED_RULES).f5Coverage).toBe(
+      "partial",
+    );
+    // No fork evidence (the fork's paths could not be read) is unknown, not "none".
+    expect(classifyCommitOf(base).files).toBeNull();
+  });
+
+  it("keeps stored coverage when the commits carry no file evidence", () => {
+    const result = classifySuggestion(
+      { ...suggestion, kind: "fix", f5Coverage: "none" },
+      [commit("fix: a")],
+      SEED_RULES,
+    );
+    expect(result.f5Coverage).toBe("none");
+  });
+
+  it("attributes an area-ignored skip to the rule", () => {
+    const skip = applyAreaPolicy(
+      { ...suggestion, kind: "feat", areas: ["git"], confidence: 0.99 },
+      SEED_RULES,
+      { git: "ignore" },
+    );
+    expect(autoDecision({ suggestion: skip, revertChain: false }, SEED_RULES)).toMatchObject({
+      reasonKey: "area-ignored",
+      decidedBy: "rule",
+    });
+  });
+
+  it("skips features whose areas are all ignored", () => {
+    const feature = { ...suggestion, kind: "feat" as const, areas: ["git", "terminal"] };
+    expect(
+      applyAreaPolicy(feature, SEED_RULES, { git: "ignore", terminal: "ignore" }),
+    ).toMatchObject({
+      status: "skip",
+      reasonKey: "area-ignored",
+    });
+    expect(applyAreaPolicy(feature, SEED_RULES, { git: "ignore" })).toBe(feature);
+    expect(
+      applyAreaPolicy({ ...feature, kind: "fix" }, SEED_RULES, {
+        git: "ignore",
+        terminal: "ignore",
+      }).status,
+    ).toBe("port");
   });
 });

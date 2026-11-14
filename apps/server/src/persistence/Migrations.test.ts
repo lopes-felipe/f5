@@ -132,7 +132,39 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 153, name: "ProjectionThreadCommandExecutionsDescription" },
       { migration_id: 154, name: "DesktopActivityPendingIndex" },
       { migration_id: 155, name: "BackgroundWorkNativeParentSession" },
+      { migration_id: 156, name: "UpstreamReclassifyRuns" },
+      { migration_id: 157, name: "ProjectionThreadActivitiesWorktreeSetupIndex" },
+      { migration_id: 158, name: "ProviderTurnDeliveryPendingIndex" },
+      { migration_id: 159, name: "EventCompactionKeepLast" },
+      { migration_id: 160, name: "DropUnreadEventIndexes" },
+      { migration_id: 161, name: "UsageNativeIdentity" },
+      { migration_id: 162, name: "UsageFactsThreadIndex" },
+      { migration_id: 163, name: "DropUnreadReceiptIndexes" },
+      { migration_id: 164, name: "UpstreamPortReviewRecovery" },
     ]);
+    // Receipts are only ever found by command id, which the primary key serves.
+    const receiptIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(orchestration_command_receipts)`;
+    expect(receiptIndexes.map((index) => index.name)).toEqual([
+      "sqlite_autoindex_orchestration_command_receipts_1",
+    ]);
+    // The event log keeps the indexes its readers use: stream, sequence and type.
+    const eventIndexes = yield* sql<{ name: string }>`PRAGMA index_list(orchestration_events)`;
+    expect(eventIndexes.map((index) => index.name).toSorted()).toEqual([
+      "idx_orch_events_stream_sequence",
+      "idx_orch_events_stream_version",
+      "idx_orch_events_type_occurred_at",
+      "sqlite_autoindex_orchestration_events_1",
+    ]);
+    const usageFactIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(projection_turn_usage_facts)`;
+    expect(
+      usageFactIndexes.some(
+        (index) => index.name === "projection_turn_usage_facts_thread_completed_idx",
+      ),
+    ).toBe(true);
     const activityIndexes = yield* sql<{
       name: string;
     }>`PRAGMA index_list(projection_thread_activities)`;

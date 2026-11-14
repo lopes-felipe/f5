@@ -266,6 +266,9 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
+    env:
+      # Match the locked Playwright version; browsers and OS libraries are bundled.
+      PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d
     timeout-minutes: 15
     defaults:
       run:
@@ -288,10 +291,6 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node scripts/ci-test-summary.ts --prepare
-      - name: Install Chromium
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          bun run --cwd apps/web test:browser:install
       - name: Browser tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
@@ -299,7 +298,23 @@ jobs:
         run: |
           # Leave headroom for the growing suite on shared runners; individual
           # tests still have Vitest's 30-second timeout.
-          timeout --signal=TERM --kill-after=20s 10m bun run --cwd apps/web test:browser
+          # Keep setup on the runner (the browser image does not include Bun's
+          # bootstrap tools). Only tests run in Docker, with the pinned Node
+          # executable and host UID so reports remain readable by upload steps.
+          docker run --rm --init --shm-size=1gb \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=$GITHUB_WORKSPACE" \
+            --mount "type=bind,source=$RUNNER_TEMP,target=$RUNNER_TEMP" \
+            --mount "type=bind,source=$(command -v node),target=/usr/local/bin/node,readonly" \
+            --workdir "$GITHUB_WORKSPACE/apps/web" \
+            --env VITEST_MAX_WORKERS \
+            --env F5_CI_SUITE_ID \
+            --env F5_CI_REPORT_DIR \
+            --env F5_CI_ARTIFACT_DIR \
+            --env CI=true \
+            "$PLAYWRIGHT_IMAGE" \
+            timeout --signal=TERM --kill-after=20s 10m \
+            node node_modules/vitest/vitest.mjs run --config vitest.browser.config.ts
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts browser

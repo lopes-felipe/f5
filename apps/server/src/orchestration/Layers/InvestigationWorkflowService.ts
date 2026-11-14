@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
 import {
   CommandId,
@@ -731,7 +732,7 @@ function upsertWorkflow(
 ) {
   return orchestrationEngine.dispatch({
     type: "project.investigation-workflow.upsert",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     projectId: workflow.projectId,
     workflow,
     updatedAt,
@@ -746,7 +747,7 @@ function dispatchWorkflowDeleteCompensation(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "project.investigation-workflow.delete",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     workflowId: input.workflowId,
     projectId: input.projectId,
     createdAt: input.createdAt,
@@ -763,7 +764,7 @@ function createInvestigationThread(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: input.title,
@@ -849,7 +850,7 @@ function createCrossReviewThread(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: input.title,
@@ -917,7 +918,7 @@ function createSelfReviewThread(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: input.title,
@@ -984,7 +985,7 @@ function createSynthesisThread(input: {
 }) {
   return input.orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: "RCA Synthesis",
@@ -1234,7 +1235,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             }
           }
         }
-        const dispatchCommandId = CommandId.makeUnsafe(crypto.randomUUID());
+        const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
         const outcome = yield* Effect.exit(
           startInvestigationTurn({
             orchestrationEngine,
@@ -1468,7 +1469,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           }
         }
 
-        const dispatchCommandId = CommandId.makeUnsafe(crypto.randomUUID());
+        const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
         const runningWorkflow = withCrossReviewRunning(
           pendingWorkflow,
           investigatorKey,
@@ -1595,7 +1596,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           }
         }
 
-        const dispatchCommandId = CommandId.makeUnsafe(crypto.randomUUID());
+        const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
         const runningWorkflow = withSelfReviewRunning(
           pendingWorkflow,
           investigatorKey,
@@ -1717,7 +1718,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         }
       }
 
-      const dispatchCommandId = CommandId.makeUnsafe(crypto.randomUUID());
+      const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
       const runningWorkflow = withSynthesisRunning(
         pendingWorkflow,
         synthesisThreadId,
@@ -2573,7 +2574,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "project.investigation-workflow.create",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         workflowId,
         projectId: input.projectId,
         title: initialTitle,
@@ -2650,7 +2651,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       }
       yield* orchestrationEngine.dispatch({
         type: "project.investigation-workflow.delete",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.makeUnsafe(timeOrderedUuid()),
         workflowId,
         projectId: workflow.projectId,
         createdAt: new Date().toISOString(),

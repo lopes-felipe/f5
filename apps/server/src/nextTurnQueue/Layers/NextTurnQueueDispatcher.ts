@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isBoundScheduledSubmission, scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
 import { registerShutdown } from "../../shutdown.ts";
 import { makeQueueRetryScheduler } from "../retryScheduler.ts";
@@ -1274,7 +1275,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       yield* engine
         .dispatch({
           type: "thread.session.set",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
           threadId,
           session: { ...latest, usageLimit: { ...session.usageLimit, ...limit } },
           createdAt: new Date().toISOString(),
@@ -1635,7 +1636,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             : {}),
         });
         const interruptCommandId = input.interruptActive
-          ? CommandId.makeUnsafe(crypto.randomUUID())
+          ? CommandId.makeUnsafe(timeOrderedUuid())
           : null;
         if (interruptCommandId !== null) {
           yield* store.setInterruptSuppression({

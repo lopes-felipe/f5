@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import {
+  PROVIDER_UPDATE_TIMEOUT_MS,
+  PROVIDER_UPDATE_TIMEOUT_MESSAGE,
+} from "@t3tools/shared/providerUpdate";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
@@ -630,7 +634,7 @@ export const makeProviderUpdateAdvisor = (
               env: installerEnvironment(command.executable, environment, command.channel, platform),
               cwd: workDir,
               stdin: "",
-              timeoutMs: 600_000,
+              timeoutMs: PROVIDER_UPDATE_TIMEOUT_MS,
               allowNonZeroExit: true,
               outputMode: "tail",
               maxStdoutBytes: 256 * 1024,
@@ -696,7 +700,13 @@ export const makeProviderUpdateAdvisor = (
           exitCode: processResult?.code ?? null,
           timedOut: processResult?.timedOut ?? false,
           output: processResult
-            ? `${processResult.stdout}\n${processResult.stderr}`
+            ? [
+                processResult.timedOut ? PROVIDER_UPDATE_TIMEOUT_MESSAGE : "",
+                processResult.stdout,
+                processResult.stderr,
+              ]
+                .filter(Boolean)
+                .join("\n")
             : "The provider update could not start. Check that the installer is available and idle sessions can stop.",
           outputTruncated: !!(processResult?.stdoutTruncated || processResult?.stderrTruncated),
         };

@@ -321,6 +321,10 @@ export function formatKeybindingCommandLabel(
       return "Save current model and effort as favorite";
     case "prHub.open":
       return "Open Pull Requests";
+    case "home.open":
+      return "Open Home";
+    case "notifications.toggle":
+      return "Show notifications";
     case "palette.files":
       return "Search project files";
     case "projectContentSearch.toggle":

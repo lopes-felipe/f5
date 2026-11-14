@@ -1,4 +1,5 @@
 import { readMcpAppView, type McpAppView } from "@t3tools/shared/mcpApp";
+import { isApprovalClosingActivity } from "@t3tools/shared/pendingActivityWindow";
 import { HtmlRenderReference } from "@t3tools/contracts";
 import { recordBrowserWork } from "./lib/performanceCounters";
 import { messageListStructure } from "./lib/streamingTextRevision";
@@ -100,6 +101,8 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  /** A provider pause, rather than a failed tool call. */
+  usageLimited?: boolean;
   htmlRender?: HtmlRenderReference;
   mcpApp?: McpAppView;
   imagePath?: string;
@@ -447,16 +450,7 @@ export function derivePendingApprovals(
       continue;
     }
 
-    if (activity.kind === "approval.resolved" && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.approval.respond.failed" &&
-      requestId &&
-      detail?.includes("Unknown pending permission request")
-    ) {
+    if (isApprovalClosingActivity(activity) && requestId) {
       openByRequestId.delete(requestId);
       continue;
     }
@@ -2183,6 +2177,7 @@ export function deriveWorkLogEntries(
         }
       }
       entry.isIssue = usageLimit !== null || isWorkLogIssue(entry);
+      if (usageLimit) entry.usageLimited = true;
       workLogEntryByActivity.set(activity, { cacheKey, entry });
       return entry;
     });

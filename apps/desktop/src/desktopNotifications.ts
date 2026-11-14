@@ -96,7 +96,9 @@ export function parseDesktopNotificationTarget(raw: unknown): DesktopNotificatio
     }
     case "upstream": {
       const projectId = exactId(value.projectId);
-      return projectId ? { kind: "upstream", projectId } : null;
+      if (!projectId) return null;
+      if (value.view === undefined) return { kind: "upstream", projectId };
+      return value.view === "features" ? { kind: "upstream", projectId, view: "features" } : null;
     }
     case "update":
       return { kind: "update" };

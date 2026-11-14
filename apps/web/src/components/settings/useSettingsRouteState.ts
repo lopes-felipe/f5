@@ -239,6 +239,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
 
   const updateSelectedProjectMetadata = useCallback(
     async (patch: {
+      readonly title?: string;
       readonly defaultEnvMode?: "local" | "worktree" | null;
       readonly icon?: ProjectIcon | null;
     }) => {

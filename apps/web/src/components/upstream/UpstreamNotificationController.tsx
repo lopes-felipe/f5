@@ -1,41 +1,61 @@
-import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 
 import { useUpstreamPortsInvalidation } from "../../lib/upstreamPortsReactQuery";
 import { readNativeApi } from "../../nativeApi";
-import { isAppWindowFocused, useNotificationPermissionState } from "../../notifications";
-import { showUpstreamInboxNotification } from "../../upstreamNotifications";
+import { notify } from "../../notificationCenter/notify";
+import {
+  formatUpstreamAutoQueuedTitle,
+  formatUpstreamDigestTitle,
+  formatUpstreamInboxTitle,
+} from "../../upstreamNotifications";
 
 /**
- * Keeps upstream queries fresh app-wide and, after a run adds inbox topics
- * while F5 is unfocused, shows "Upstream: N new topics to review".
+ * Keeps upstream queries fresh app-wide and tells the user (toast, OS notification and inbox
+ * via `notify`) when a run adds Inbox topics or auto-queues ports, and about the weekly
+ * feature digest.
  */
 export default function UpstreamNotificationController() {
   useUpstreamPortsInvalidation();
-  const navigate = useNavigate();
-  const permission = useNotificationPermissionState();
-  const delivery = useRef({ permission, navigate });
-  useEffect(() => {
-    delivery.current = { permission, navigate };
-  }, [permission, navigate]);
   useEffect(() => {
     const api = readNativeApi();
     if (!api?.upstreamPorts) return;
     return api.upstreamPorts.onChanged((event) => {
-      if (event.reason !== "run-finished" || !event.newInboxCount) return;
-      if (
-        delivery.current.permission !== "granted" ||
-        isAppWindowFocused() ||
-        typeof window.Notification === "undefined"
-      )
+      const base = {
+        source: "upstream",
+        severity: "info",
+        sourceLabel: "Upstream",
+      } as const;
+      if (event.reason === "feature-digest" && event.digest) {
+        notify({
+          ...base,
+          title: formatUpstreamDigestTitle(event.digest),
+          dedupeKey: `upstream-digest:${event.projectId}`,
+          target: { kind: "upstream", projectId: event.projectId, view: "features" },
+          openLabel: "Browse",
+          os: { tag: `upstream-digest:${event.projectId}` },
+        });
         return;
-      showUpstreamInboxNotification({
-        NotificationConstructor: window.Notification,
-        projectId: event.projectId,
-        count: event.newInboxCount,
-        focusWindow: () => window.focus(),
-        navigateToUpstream: (projectId) => delivery.current.navigate({ to: "/upstream", search: { project: projectId } }),
-      });
+      }
+      if (event.reason === "auto-port" && event.autoQueuedCount) {
+        notify({
+          ...base,
+          title: formatUpstreamAutoQueuedTitle(event.autoQueuedCount),
+          dedupeKey: `upstream-auto:${event.projectId}`,
+          target: { kind: "upstream", projectId: event.projectId },
+          openLabel: "Open",
+          os: { tag: `upstream-auto:${event.projectId}` },
+        });
+        return;
+      }
+      if (event.reason === "run-finished" && event.newInboxCount)
+        notify({
+          ...base,
+          title: formatUpstreamInboxTitle(event.newInboxCount),
+          dedupeKey: `upstream:${event.projectId}`,
+          target: { kind: "upstream", projectId: event.projectId },
+          openLabel: "Review",
+          os: { tag: `upstream:${event.projectId}` },
+        });
     });
   }, []);
   return null;

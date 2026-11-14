@@ -6,11 +6,12 @@ import { installPreviewPermissionPolicy } from "./previewPermissions";
 it("requires reassessing the loopback permission check when upgrading Electron", () => {
   // A granted check can itself authorize some APIs without a later permission request.
   // This compatibility grant is safe only while Electron disables LNA enforcement.
+  // Verified in v44.10.1 shell/browser/feature_list.cc (disabled features list).
   const electron = createRequire(import.meta.url)("electron/package.json") as { version: string };
   expect(
     electron.version,
     "Reassess LocalNetworkAccessChecks and the loopback grant on Electron upgrade",
-  ).toBe("44.9.3");
+  ).toBe("44.10.1");
 });
 
 it("allows clipboard writes and fullscreen, but only reports loopback access without granting requests", () => {

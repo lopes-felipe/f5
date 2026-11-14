@@ -41,6 +41,8 @@ const METRIC_HEADER = [
   "cache_write_tokens",
   "cost_usd",
   "unpriced_turns",
+  "native_model_calls",
+  "unpriced_native_model_calls",
 ] as const;
 
 /** Raw numbers; an unknown cost stays empty rather than zero. */
@@ -54,6 +56,8 @@ function metricCells(metrics: UsageMetrics): Array<Cell> {
     metrics.cacheWriteTokens,
     isCostUnknown(metrics) ? null : Number(totalCost(metrics).toFixed(6)),
     metrics.unpricedTurnCount,
+    metrics.nativeInferenceCount ?? 0,
+    metrics.unpricedNativeInferenceCount ?? 0,
   ];
 }
 
@@ -87,7 +91,7 @@ export function usageCsv(
         (summary.projectScope?.byProject ?? []).map((project) => [
           project.projectId,
           project.projectId === null
-            ? "Unattributed historical cost"
+            ? "Usage without a project"
             : projectName(project.projectId, project.title),
           project.deleted,
           ...metricCells(project.metrics),

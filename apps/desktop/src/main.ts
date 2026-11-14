@@ -1,4 +1,5 @@
 import "./stdioErrors";
+import { systemLocale } from "./systemLocale";
 import { installKeepAwake } from "./keepAwake/install";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import {
@@ -7,7 +8,13 @@ import {
   zoomAppContents,
   type AppZoomDirection,
 } from "./appZoom";
-import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
+import {
+  desktopCloseWindowItem,
+  desktopRuntimeName,
+  desktopWindowMenu,
+  selectAppMenuWindow,
+  selectReloadContents,
+} from "./windowMenu";
 import {
   BackendOutputTail,
   STARTUP_FAILURE_RESTART_ATTEMPTS,
@@ -232,6 +239,14 @@ import {
   parseDesktopNotificationInput,
 } from "./desktopNotifications";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
+import { buildContextMenuTemplate } from "./contextMenuTemplate";
+import { createWindowWithOptionalControl } from "./optionalAppControl";
+import {
+  takeAppActivations,
+  completeAppActivation,
+  type AppActivationEntry,
+} from "./appActivationQueue";
+import { startDesktopAppControl, type DesktopAppRequest } from "@t3tools/shared/desktopAppControl";
 
 const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
@@ -664,7 +679,7 @@ function initializeComputerSystem(): void {
         controller.stop("kill-switch");
         // Invalidate synchronously and stop every registered integration group here;
         // the server is told afterwards, but nothing depends on it answering.
-        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? null;
+        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? [];
         // Idle integrations (Codex holds the lease only per call) are stopped too; their
         // generations stay invalidated in main until the user resumes the thread.
         const stopped = supervisor.stop(() => true, "emergency");
@@ -673,15 +688,11 @@ function initializeComputerSystem(): void {
           { profileId: string; threadId: string; generation: string }
         >();
         for (const entry of [
-          ...(chrome
-            ? [
-                {
-                  profileId: chrome.profileId,
-                  threadId: chrome.threadId,
-                  generation: chrome.sessionGeneration,
-                },
-              ]
-            : []),
+          ...chrome.map((holder) => ({
+            profileId: holder.profileId,
+            threadId: holder.threadId,
+            generation: holder.sessionGeneration,
+          })),
           ...stopped.map((registration) => ({
             profileId: registration.profileId,
             threadId: registration.threadId,
@@ -2503,6 +2514,18 @@ function zoomMainWindow(direction: AppZoomDirection): void {
   }
 }
 
+function reloadFocusedContents(ignoreCache: boolean): void {
+  const focused = electronWebContents.getFocusedWebContents();
+  const target = selectReloadContents(
+    focused,
+    BrowserWindow.getFocusedWindow()?.webContents,
+    isPreviewGuestWebContents,
+  );
+  if (!target || target.isDestroyed()) return;
+  if (ignoreCache) target.reloadIgnoringCache();
+  else target.reload();
+}
+
 function dispatchMenuAction(action: string): void {
   const existingWindow = selectAppMenuWindow(
     BrowserWindow.getFocusedWindow(),
@@ -2621,9 +2644,9 @@ function configureApplicationMenu(): void {
 
   if (process.platform === "darwin") {
     template.push({
-      label: app.name,
+      label: APP_DISPLAY_NAME,
       submenu: [
-        { role: "about" },
+        { role: "about", label: `About ${APP_DISPLAY_NAME}` },
         {
           label: "Check for Updates...",
           click: () => handleCheckForUpdatesMenuClick(),
@@ -2637,7 +2660,7 @@ function configureApplicationMenu(): void {
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
-        { role: "hide" },
+        { role: "hide", label: `Hide ${APP_DISPLAY_NAME}` },
         { role: "hideOthers" },
         { role: "unhide" },
         { type: "separator" },
@@ -2682,8 +2705,12 @@ function configureApplicationMenu(): void {
     {
       label: "View",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
+        { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedContents(false) },
+        {
+          label: "Force Reload",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => reloadFocusedContents(true),
+        },
         { role: "toggleDevTools" },
         { type: "separator" },
         ...appZoomMenu(zoomMainWindow),
@@ -2753,7 +2780,7 @@ function resolveUserDataPath(): string {
 }
 
 function configureAppIdentity(): void {
-  app.setName(APP_DISPLAY_NAME);
+  app.setName(desktopRuntimeName(isDevelopment));
   const commitHash = resolveAboutCommitHash();
   app.setAboutPanelOptions({
     applicationName: APP_DISPLAY_NAME,
@@ -3565,6 +3592,58 @@ async function openProfileOnce(
 const PROMPT_LINK_SCHEME_FOR_BUILD = promptLinkSchemeFor(isDevelopment);
 const PROMPT_LINKS_AVAILABLE_CHANNEL = "desktop:prompt-links-available";
 const promptLinks = new PromptLinkInbox(PROMPT_LINK_SCHEME_FOR_BUILD);
+const appActivations = new Map<string, AppActivationEntry>();
+
+function activateProject(request: DesktopAppRequest): Promise<void> {
+  if (appActivations.has(request.id))
+    return Promise.reject(new Error("Duplicate desktop request."));
+  if (appActivations.size >= 32)
+    return Promise.reject(new Error("Too many pending desktop requests."));
+  const profileId = reopenTargetProfileId();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        complete(
+          "Desktop activation is taking longer than expected and may still complete. Retry to reuse the project.",
+        ),
+      15_000,
+    );
+    const complete = (error?: string) => {
+      clearTimeout(timer);
+      appActivations.delete(request.id);
+      if (error) reject(new Error(error));
+      else resolve();
+    };
+    appActivations.set(request.id, { request, profileId, senderId: -1, complete });
+    void openProfile(profileId)
+      .then((opened) => {
+        const entry = appActivations.get(request.id);
+        if (!entry) return;
+        if (!opened) {
+          complete("The desktop app is quitting.");
+          return;
+        }
+        const focused = BrowserWindow.getFocusedWindow();
+        const window =
+          focused && profileByWebContentsId.get(focused.webContents.id) === profileId
+            ? focused
+            : BrowserWindow.getAllWindows().find(
+                (candidate) => profileByWebContentsId.get(candidate.webContents.id) === profileId,
+              );
+        if (!window || window.isDestroyed()) {
+          complete("No desktop window is available.");
+          return;
+        }
+        entry.senderId = window.webContents.id;
+        if (process.platform === "darwin") app.focus({ steal: true });
+        window.focus();
+        window.webContents.send("desktop:app-activations-available");
+      })
+      .catch((error: unknown) =>
+        complete(error instanceof Error ? error.message : "Could not open the desktop window."),
+      );
+  });
+}
 
 function registerPromptLinkProtocol(): void {
   const entryScript = entryScriptInArgv(process.argv);
@@ -3623,6 +3702,22 @@ function reopenApplication(): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle("desktop:is-app-activation-pending", (event, id: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    const entry = appActivations.get(id);
+    return entry?.profileId === runtime.profile.id && entry.senderId === event.sender.id;
+  });
+  ipcMain.handle("desktop:resolve-activation-paths", async (event, values: unknown) => {
+    authorizeAppMainFrame(event, "Resolve activation paths");
+    if (!Array.isArray(values) || values.length > 10_000) throw new Error("Invalid paths");
+    const fs = await import("node:fs/promises");
+    const result: (string | null)[] = [];
+    for (const value of values) {
+      result.push(typeof value === "string" ? await fs.realpath(value).catch(() => null) : null);
+    }
+    return result;
+  });
   ipcMain.handle("desktop:reveal-window", (event) => {
     revealSenderWindow(
       () => {
@@ -3732,6 +3827,16 @@ function registerIpcHandlers(): void {
     // With several profiles, the user is told which one the link opened in.
     return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
   });
+  ipcMain.handle("desktop:take-app-activations", (event) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    return takeAppActivations(appActivations, runtime.profile.id, event.sender.id);
+  });
+  ipcMain.handle("desktop:complete-app-activation", (event, id: string, error?: string) => {
+    authorizeAppMainFrame(event, "Desktop activation");
+    const runtime = runtimeForRenderer(event.sender.id);
+    completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
+  });
   ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
     const profileId = authorizeAppMainFrame(event, "Notification");
     if (!Notification.isSupported()) return false;
@@ -3803,16 +3908,7 @@ function registerIpcHandlers(): void {
       fileAction?: { editorTarget: string },
     ) => {
       if (fileAction) assertFileCaller(event);
-      const normalizedItems = items
-        .filter((item) => typeof item.id === "string" && typeof item.label === "string")
-        .map((item) => ({
-          id: item.id,
-          label: item.label,
-          destructive: item.destructive === true,
-          disabled: item.disabled === true,
-          separatorBefore: item.separatorBefore === true,
-        }));
-      if (normalizedItems.length === 0) {
+      if (!Array.isArray(items) || items.length === 0) {
         return null;
       }
 
@@ -3824,32 +3920,18 @@ function registerIpcHandlers(): void {
       );
 
       return new Promise<string | null>((resolve) => {
-        const template: MenuItemConstructorOptions[] = [];
-        let hasInsertedDestructiveSeparator = false;
-        for (const item of normalizedItems) {
-          if (
-            template.length > 0 &&
-            (item.separatorBefore || (item.destructive && !hasInsertedDestructiveSeparator))
-          ) {
-            template.push({ type: "separator" });
-          }
-          if (item.destructive) hasInsertedDestructiveSeparator = true;
-          const itemOption: MenuItemConstructorOptions = {
-            label: item.label,
-            enabled: !item.disabled,
-            click: () => {
-              if (item.id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
-                fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
-              resolve(item.id);
-            },
-          };
-          if (item.destructive) {
-            const destructiveIcon = getDestructiveMenuIcon();
-            if (destructiveIcon) {
-              itemOption.icon = destructiveIcon;
-            }
-          }
-          template.push(itemOption);
+        const template = buildContextMenuTemplate(
+          items,
+          (id) => {
+            if (id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
+              fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
+            resolve(id);
+          },
+          getDestructiveMenuIcon() ?? undefined,
+        );
+        if (template.length === 0) {
+          resolve(null);
+          return;
         }
 
         const menu = Menu.buildFromTemplate(template);
@@ -4316,8 +4398,8 @@ function createWindow(
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
-    minWidth: 600,
-    minHeight: 620,
+    minWidth: 400,
+    minHeight: 360,
     show: false,
     autoHideMenuBar: true,
     ...getIconOption(),
@@ -4328,7 +4410,7 @@ function createWindow(
       ...(partition ? { partition } : {}),
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
-        `--f5-system-locale=${app.getSystemLocale()}`,
+        `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
       ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -4597,18 +4679,32 @@ async function bootstrap(): Promise<void> {
     registryWatcher.close();
     if (profileWatchTimer) clearTimeout(profileWatchTimer);
   });
+  const shellEnvironmentMs = await shellEnvironmentReady;
+  writeDesktopLogHeader(
+    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
+  );
   await previewRuntime.initialize();
   initializeComputerSystem();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   configureBackendRequestAuthentication();
   writeDesktopLogHeader("bootstrap backend request authentication configured");
-  mainWindow = createWindow();
+  mainWindow = createWindowWithOptionalControl({
+    createWindow: () => createWindow(),
+    startControl: () =>
+      startDesktopAppControl(STATE_DIR, activateProject, (error) =>
+        writeDesktopLogHeader("desktop CLI connection error: " + formatErrorMessage(error)),
+      ),
+    onError: (error) =>
+      writeDesktopLogHeader("desktop CLI control unavailable: " + formatErrorMessage(error)),
+    onReady: (stop) => {
+      app.once("quit", () => {
+        for (const entry of appActivations.values()) entry.complete("The desktop app is quitting.");
+        void stop();
+      });
+    },
+  });
   writeDesktopLogHeader("bootstrap main window created");
-  const shellEnvironmentMs = await shellEnvironmentReady;
-  writeDesktopLogHeader(
-    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
-  );
   if (!isQuitting) {
     try {
       await ensureBackendRunning(defaultBackend);

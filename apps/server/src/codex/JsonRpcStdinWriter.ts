@@ -44,6 +44,8 @@ interface Entry {
 export function createJsonRpcStdinWriter(input: {
   readonly stdin: Writable;
   readonly closedMessage: string;
+  /** Transport failure, excluding explicit close, admission rejection and cancellation. */
+  readonly onFailure?: (cause: unknown) => void;
   readonly maxEntries?: number;
   readonly maxBytes?: number;
   readonly controlEntries?: number;
@@ -98,8 +100,17 @@ export function createJsonRpcStdinWriter(input: {
       release(entry);
     }
   };
-  const onError = (cause: unknown) => close(cause);
-  const onClose = () => close(new Error(input.closedMessage));
+  const fail = (cause: unknown = new Error(input.closedMessage)) => {
+    if (closed !== null) return;
+    close(cause);
+    // Node calls write's callback before emitting its error event.
+    // Keep consuming errors until the broken stream closes.
+    input.stdin.on("error", onError);
+    input.stdin.once("close", () => input.stdin.off("error", onError));
+    input.onFailure?.(cause);
+  };
+  const onError = (cause: unknown) => fail(cause);
+  const onClose = () => fail(new Error(input.closedMessage));
   input.stdin.on("error", onError);
   input.stdin.on("close", onClose);
 
@@ -148,7 +159,7 @@ export function createJsonRpcStdinWriter(input: {
     }
     if (input.stdin.destroyed || !input.stdin.writable) {
       active = entry;
-      close();
+      fail();
       return;
     }
     active = entry;
@@ -176,7 +187,7 @@ export function createJsonRpcStdinWriter(input: {
       entry.options.onWrite?.();
       needsDrain = !input.stdin.write(entry.chunk, (error) => {
         if (error) {
-          close(error);
+          fail(error);
           return;
         }
         callbackDone = true;
@@ -185,7 +196,7 @@ export function createJsonRpcStdinWriter(input: {
       returned = true;
       finish();
     } catch (cause) {
-      close(cause);
+      fail(cause);
     }
   };
 

@@ -22,18 +22,18 @@ import {
   pageRows,
   resolveSort,
   revisionOf,
+  scoreTopic,
   type DerivedRow,
 } from "./view.ts";
 
 const row = (
   overrides: Parameters<typeof topic>[0],
   state: DerivedRow["state"] = "inbox",
-): DerivedRow => ({
-  topic: topic(overrides),
-  state,
-  commitCount: 1,
-  doneBy: null,
-});
+): DerivedRow => {
+  const value = topic(overrides);
+  const { lane, score } = scoreTopic(value, [], {});
+  return { topic: value, state, commitCount: 1, doneBy: null, lane, score };
+};
 
 const projectId = ProjectId.makeUnsafe("project-1");
 
@@ -236,7 +236,7 @@ describe("listing", () => {
       expect(ids(list({}, "newest"))).toEqual(["pr-13", "pr-12", "pr-11", "pr-10"]);
       expect(ids(list({}, "oldest"))).toEqual(["pr-10", "pr-11", "pr-12", "pr-13"]);
       expect(ids(list({}, "confidence"))).toEqual(["pr-11", "pr-12", "pr-10", "pr-13"]);
-      expect(resolveSort("inbox", undefined)).toBe("priority");
+      expect(resolveSort("inbox", undefined)).toBe("score");
       expect(resolveSort("done", undefined)).toBe("newest");
     });
 
@@ -661,5 +661,89 @@ describe("topic history", () => {
     expect(
       buildTopicHistory({ topic: base, baseTopic: undefined, ops: [], links: [] }),
     ).toMatchObject([{ kind: "created", publication: "pending" }]);
+  });
+});
+
+describe("score, lanes and shortlist", () => {
+  const suggestion = (overrides: object) => ({
+    status: "port" as const,
+    reason: "",
+    userImpact: "medium" as const,
+    confidence: 0.9,
+    areas: [],
+    model: "m",
+    ...overrides,
+  });
+  const rows = [
+    row({ id: "pr-1", suggestion: suggestion({ kind: "security", severity: "critical" }) }),
+    row({
+      id: "pr-2",
+      suggestion: suggestion({ kind: "fix", userImpact: "high", f5Coverage: "all" }),
+    }),
+    row({
+      id: "pr-3",
+      suggestion: suggestion({ kind: "fix", userImpact: "low", f5Coverage: "none" }),
+    }),
+    row({ id: "pr-4", suggestion: suggestion({ kind: "feat", areas: ["git"] }) }),
+    row({ id: "pr-5", suggestion: suggestion({ kind: "perf", f5Coverage: "all" }) }),
+  ];
+
+  it("derives lanes, and kinds from subjects for unclassified topics", () => {
+    expect(rows.map((r) => [r.lane, r.score])).toEqual([
+      ["security", 100],
+      ["bug", 85],
+      ["bug", 20],
+      ["feature", 30],
+      ["perf", 65],
+    ]);
+    const legacy = topic({ id: "pr-9" });
+    expect(scoreTopic(legacy, [{ subject: "feat: x" }], { git: "follow" }).lane).toBe("feature");
+    const followed = topic({
+      id: "pr-4",
+      suggestion: suggestion({ kind: "feat", areas: ["git"] }),
+    });
+    expect(scoreTopic(followed, [], { git: "follow" }).score).toBe(55);
+    expect(scoreTopic(followed, [], { git: "ignore" }).score).toBe(15);
+  });
+
+  it("sorts the inbox by score and caps the shortlist at the size and threshold", () => {
+    expect(resolveSort("inbox", undefined)).toBe("score");
+    const all = pageRows(rows, { projectId, list: "inbox", sort: "score" }, "rev");
+    expect(all.rows.map((r) => r.topic.id)).toEqual(["pr-1", "pr-2", "pr-5", "pr-4", "pr-3"]);
+    const shortlist = pageRows(
+      rows,
+      { projectId, list: "inbox", filter: { shortlist: true } },
+      "rev",
+      undefined,
+      2,
+    );
+    expect(shortlist.rows.map((r) => r.topic.id)).toEqual(["pr-1", "pr-2"]);
+    expect(shortlist.total).toBe(2);
+    const wide = pageRows(
+      rows,
+      { projectId, list: "inbox", filter: { shortlist: true } },
+      "rev",
+      undefined,
+      50,
+    );
+    expect(wide.rows.map((r) => r.topic.id)).toEqual(["pr-1", "pr-2", "pr-5"]);
+  });
+
+  it("filters by lane and counts lane facets under the other filters", () => {
+    const page = pageRows(rows, { projectId, list: "inbox", filter: { lane: ["bug"] } }, "rev");
+    expect(page.rows.map((r) => r.topic.id)).toEqual(["pr-2", "pr-3"]);
+    expect(page.facets.lane).toEqual({ security: 1, bug: 2, perf: 1, feature: 1, maintenance: 0 });
+    const highOnly = pageRows(
+      rows,
+      { projectId, list: "inbox", filter: { impact: ["high"] } },
+      "rev",
+    );
+    expect(highOnly.facets.lane).toEqual({
+      security: 0,
+      bug: 1,
+      perf: 0,
+      feature: 0,
+      maintenance: 0,
+    });
   });
 });

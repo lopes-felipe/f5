@@ -317,6 +317,12 @@ that a manual "Re-run failed jobs" turned green, suites that failed on an unhand
 error, and suites that never reported. It runs the default branch's scripts only,
 reads artifacts as data, and never fails the CI verdict.
 
+For a failure read from an earlier attempt, the text comes from Vitest's JSON
+report, which stores a timeout as a placeholder stack (`Error: STACK_TRACE_ERROR`
+and runner frames). The ledger writes those as "Test or hook timed out" with the
+test's duration. Comments filed before that change still show the placeholder:
+read it as a timeout.
+
 Rules:
 
 - Do not merge on a manual rerun. If you rerun anyway, the ledger still files the

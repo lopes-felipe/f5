@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
@@ -45,6 +46,8 @@ import {
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
+import { appendStderrTail, stderrExcerpt } from "./codex/stderrDiagnostics.ts";
 import * as OS from "node:os";
 
 import {
@@ -302,6 +305,7 @@ export class CodexJsonRpcError extends Error {
     readonly code: number | undefined,
     message: string,
     readonly data?: unknown,
+    readonly rawMessage: string = message,
   ) {
     super(`${method} failed: ${message}`);
   }
@@ -1218,7 +1222,14 @@ export function classifyCodexStderrLine(rawLine: string): { message: string } | 
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const message = (
+    error instanceof CodexJsonRpcError
+      ? error.rawMessage + " " + error.message
+      : error instanceof Error
+        ? error.message
+        : String(error)
+  ).toLowerCase();
+  if (message.includes("already has an active writer")) return false;
   if (!message.includes("thread/resume")) {
     return false;
   }
@@ -1358,6 +1369,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const writer = createJsonRpcStdinWriter({
         stdin: child.stdin,
         closedMessage: "Cannot write to codex app-server stdin.",
+        onFailure: (cause) => {
+          if (!context || context.phase === "closed" || context.phase === "draining") return;
+          const error = cause instanceof Error ? cause : new Error(String(cause));
+          context.beginDrain?.(error, "session/exited", error.message);
+          if (!child.killed) killChildTree(child);
+        },
       });
 
       context = {
@@ -1513,6 +1530,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
               requestedRuntimeMode: input.runtimeMode,
               resumeThreadId,
               recoverable: false,
+              providerMessage: error instanceof CodexJsonRpcError ? error.rawMessage : undefined,
               cause: error instanceof Error ? error.message : String(error),
             }).pipe(this.runPromise);
             throw error;
@@ -1629,7 +1647,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         this.stopSession(threadId);
       } else if (!context) {
         this.emitEvent({
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "error",
           provider: "codex",
           threadId,
@@ -2280,7 +2298,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         };
         this.emitEvent({
           ...context.mcpEventIdentity,
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "notification",
           provider: "codex",
           threadId: input.threadId,
@@ -3063,7 +3081,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3126,7 +3144,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3220,7 +3238,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "request",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3250,7 +3268,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -3593,6 +3611,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private attachProcessListeners(context: CodexSessionContext): void {
     const drained = Promise.withResolvers<void>();
     const stderr = new Utf8Lines(1024 * 1024, "truncate");
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrTail = "";
+    let exitMessage: string | undefined;
+    let processExitTerminal = false;
+    const withStderr = (message: string) => {
+      const excerpt = stderrExcerpt(stderrTail);
+      return excerpt ? `${message} ${excerpt}` : message;
+    };
     let stdoutClosed = false;
     let stderrClosed = false;
     let finishing = false;
@@ -3608,6 +3634,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (classified) this.emitErrorEvent(context, "process/stderr", classified.message);
     };
     const onStderr = (chunk: Buffer) => {
+      stderrTail = appendStderrTail(stderrTail, stderrDecoder.write(chunk));
       for (const line of stderr.push(chunk)) emitStderr(line);
     };
     const onLine = (line: string) => {
@@ -3622,6 +3649,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       // bytes already received while the context still accepts notifications.
       context.output.finish();
       for (const line of stderr.finish()) emitStderr(line);
+      stderrTail = appendStderrTail(stderrTail, stderrDecoder.end());
+      if (exitMessage && processExitTerminal) {
+        const previousMessage = terminal.message;
+        terminal.message = withStderr(exitMessage);
+        if (context.session.lastError === previousMessage && isCurrent())
+          this.updateSession(context, { lastError: terminal.message });
+      }
       context.phase = "closed";
       this.sourceDrains.delete(drained.promise);
       drained.resolve();
@@ -3698,7 +3732,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       beginDrain(error, "session/exited", error.message);
     };
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      const message = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      exitMessage = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      const message = withStderr(exitMessage);
+      if (!terminal || (endedByStdoutClose && !finishing && signal === null))
+        processExitTerminal = true;
       // An exit code that arrives after the stdout grace period still describes
       // how the process ended. A signal is usually the kill that followed.
       if (endedByStdoutClose && !finishing && signal === null) {
@@ -3920,7 +3957,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
         this.emitEvent({
           ...context.mcpEventIdentity,
-          id: EventId.makeUnsafe(randomUUID()),
+          id: EventId.makeUnsafe(timeOrderedUuid()),
           kind: "notification",
           provider: "codex",
           threadId: context.session.threadId,
@@ -4101,7 +4138,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4361,7 +4398,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.emitEvent({
         ...context.mcpEventIdentity,
-        id: EventId.makeUnsafe(randomUUID()),
+        id: EventId.makeUnsafe(timeOrderedUuid()),
         kind: "request",
         provider: "codex",
         threadId: context.session.threadId,
@@ -4495,7 +4532,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "notification",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4520,7 +4557,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     if (response.error) {
       const providerMessage = formatCodexUnsupportedModelError(
-        response.error.message ?? "Unknown JSON-RPC error",
+        response.error.code === -32600 &&
+          response.error.message?.includes("already has an active writer")
+          ? "This conversation is open in another Codex client. Codex lets one client write to a conversation at a time. Quit the other Codex app, CLI, or IDE extension, then send your message again."
+          : (response.error.message ?? "Unknown JSON-RPC error"),
         asObject(response.error.data)?.codexErrorInfo,
       );
       if (
@@ -4539,6 +4579,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           response.error.code,
           providerMessage,
           response.error.data,
+          response.error.message ?? "Unknown JSON-RPC error",
         ),
       );
       return;
@@ -4646,7 +4687,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "session",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4669,7 +4710,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "session",
       provider: "codex",
       threadId: context.session.threadId,
@@ -4700,7 +4741,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): void {
     this.emitEvent({
       ...context.mcpEventIdentity,
-      id: EventId.makeUnsafe(randomUUID()),
+      id: EventId.makeUnsafe(timeOrderedUuid()),
       kind: "error",
       provider: "codex",
       threadId: context.session.threadId,

@@ -14,7 +14,7 @@ import {
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
-import { Clock, Effect, Option, Path, Result } from "effect";
+import { Clock, Effect, FileSystem, Option, Path, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   formatModelDisplayName,
@@ -47,9 +47,10 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { compareCliVersions } from "../cliVersion.ts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { makeClaudeEnvironment, readClaudeSettingsBaseUrl } from "../Drivers/ClaudeHome.ts";
 import {
   resolveClaudeCliInvocation,
+  claudeCliSpawnEnvironment,
   resolveClaudeSdkExecutableOptions,
 } from "../claudeSdkExecutable.ts";
 import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
@@ -688,7 +689,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
         : new CommandNotFoundError(claudeSettings.binaryPath, String(cause)),
   });
   const command = ChildProcess.make(invocation.file, [...invocation.args], {
-    env: claudeEnvironment,
+    env: claudeCliSpawnEnvironment(invocation, claudeEnvironment),
     ...(cwd ? { cwd } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
@@ -705,7 +706,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Path.Path
+  ChildProcessSpawner.ChildProcessSpawner | Path.Path | FileSystem.FileSystem
 > {
   const checkedAt = new Date().toISOString();
   const unknownVersionModels = getProviderClaudeModelsForVersion(null, claudeSettings.customModels);
@@ -823,7 +824,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     })),
   );
   // First-party account state cannot verify credentials for a custom endpoint.
-  const customApiEndpoint = isCustomClaudeApiEndpoint(environment.ANTHROPIC_BASE_URL);
+  const customApiEndpoint = isCustomClaudeApiEndpoint(
+    yield* readClaudeSettingsBaseUrl(claudeSettings, environment, cwd),
+  );
   if (
     authProbe.authStatus !== "authenticated" &&
     !(customApiEndpoint && authProbe.authStatus === "unauthenticated")
@@ -848,11 +851,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   }
 
   const authMetadata =
+    (customApiEndpoint ? { type: "customEndpoint", label: "Custom API endpoint" } : undefined) ??
     claudeAuthMetadata({
       subscriptionType: capabilities?.subscriptionType,
       authMethod: capabilities?.tokenSource,
-    }) ??
-    (customApiEndpoint ? { type: "customEndpoint", label: "Custom API endpoint" } : undefined);
+    });
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,

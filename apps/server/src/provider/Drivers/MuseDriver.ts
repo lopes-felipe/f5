@@ -31,6 +31,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { makeMuseUsageHistory } from "./MuseUsageHistory.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("muse");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -68,6 +69,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         continuation: { groupKey: continuationIdentity.continuationKey },
       });
       const effectiveConfig = { ...config, enabled } satisfies MuseSettings;
+      const usageHistory = yield* makeMuseUsageHistory(config, processEnv, enabled);
 
       const adapter = yield* makeMuseAdapter(effectiveConfig, {
         instanceId,
@@ -111,6 +113,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        usageHistory,
       } satisfies ProviderInstance;
     }),
 };

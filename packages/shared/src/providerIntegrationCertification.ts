@@ -117,7 +117,7 @@ interface RecordBase<I extends ProviderIntegration, Identity> {
 }
 
 /** Extra setups a Claude in Chrome run certified beyond the base assertions. */
-export type ClaudeChromeCapability = "isolated-profiles";
+export type ClaudeChromeCapability = "isolated-profiles" | "shared-native-host";
 
 export type ClaudeChromeRecord = RecordBase<"claude-chrome", ClaudeChromeIdentity> & {
   /** Each needs every assertion in `INTEGRATION_CAPABILITY_ASSERTIONS` to have passed. */
@@ -303,6 +303,15 @@ export function claudeChromeSupportsIsolatedProfiles(record: ClaudeChromeRecord)
   return record.capabilities?.includes("isolated-profiles") === true;
 }
 
+/**
+ * Whether sessions from several F5 profiles may hold Claude in Chrome at once: one native
+ * host served two CLIs with their own wrappers, across a manifest flip between them, which
+ * only a run with the shared-host phase has exercised.
+ */
+export function claudeChromeSupportsSharedNativeHost(record: ClaudeChromeRecord): boolean {
+  return record.capabilities?.includes("shared-native-host") === true;
+}
+
 /** Whether the integration is open for this build. Claude goes through its versioned gate. */
 export function isIntegrationCertified(
   integration: ProviderIntegration,
@@ -424,6 +433,12 @@ export const INTEGRATION_CAPABILITY_ASSERTIONS: Readonly<
   Record<ClaudeChromeCapability, ReadonlyArray<string>>
 > = Object.freeze({
   "isolated-profiles": ["isolated-projection", "isolated-read-only-call", "isolated-restore"],
+  "shared-native-host": [
+    "shared-host-survives-flip",
+    "shared-calls-routed",
+    "shared-peer-exit",
+    "shared-restore",
+  ],
 });
 
 /** The capabilities whose every assertion passed in this report. */

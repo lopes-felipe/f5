@@ -179,6 +179,7 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
   },
   // ...through "ctrl+9" / "model.favorite.9", same "when"
   { "key": "mod+shift+p", "command": "prHub.open", "when": "!terminalFocus" },
+  { "key": "mod+shift+h", "command": "home.open", "when": "!terminalFocus" },
   { "key": "mod+p", "command": "palette.files", "when": "!terminalFocus" },
   { "key": "mod+shift+f", "command": "projectContentSearch.toggle", "when": "!terminalFocus" },
   { "key": "mod+shift+m", "command": "modelPicker.toggle", "when": "!terminalFocus" },
@@ -335,7 +336,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `chat.queueTurn`: queue the composer contents at the end (`Mod+Shift+Enter` by default)
 - `chat.queueTurnNext`: queue the composer contents next (`Alt+Enter` by default)
 - `composer.stash`: save and clear the current composer draft (`Mod+S` while the composer is focused by default)
-- `editor.openFavorite`: open current project/worktree in the last-used editor
+- `editor.openFavorite`: open the visible file preview in the last-used editor, or the current project/worktree when no file preview is visible
 - `thread.switchRecentNext`: cycle to the next recent tab/page (`Ctrl+Tab` by default). This now includes thread tabs, workflow pages, and settings.
 - `thread.switchRecentPrevious`: cycle to the previous recent tab/page (`Ctrl+Shift+Tab` by default)
 - `model.switchRecent`: cycle to the next recent model (`Alt+Tab` by default)

@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import {
   getComposerProviderState,
+  withImplicitFastModeDefault,
   getComposerReasoningStep,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
@@ -18,6 +19,21 @@ import {
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
+
+it("defaults Fast to Normal only when the model supports it and no choice was saved", () => {
+  const caps = {
+    optionDescriptors: [
+      { id: "fastMode", label: "Fast", type: "boolean" as const, currentValue: true },
+    ],
+  };
+  expect(withImplicitFastModeDefault(caps, undefined)).toEqual([{ id: "fastMode", value: false }]);
+  for (const value of [true, false]) {
+    expect(withImplicitFastModeDefault(caps, [{ id: "fastMode", value }])).toEqual([
+      { id: "fastMode", value },
+    ]);
+  }
+  expect(withImplicitFastModeDefault({ optionDescriptors: [] }, undefined)).toBeUndefined();
+});
 
 function selectDescriptor(
   id: string,

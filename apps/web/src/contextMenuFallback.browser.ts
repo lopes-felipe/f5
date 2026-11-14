@@ -36,6 +36,31 @@ async function setup() {
 
 const label = () => document.activeElement?.textContent;
 
+it("opens nested actions with Right or Enter, returns with Left, and restores focus", async () => {
+  const { origin } = await setup();
+  const selected = showContextMenuFallback([
+    {
+      id: "copy",
+      label: "Copy",
+      icon: "copy",
+      children: [
+        { id: "disabled", label: "Unavailable", disabled: true },
+        { id: "path", label: "Path", icon: "folder" },
+      ],
+    },
+  ]);
+  expect(label()).toBe("Copy");
+  await userEvent.keyboard("{ArrowRight}");
+  expect(label()).toBe("Path");
+  expect(document.querySelectorAll('[role="menu"]')).toHaveLength(2);
+  await userEvent.keyboard("{ArrowLeft}");
+  expect(label()).toBe("Copy");
+  expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+  await userEvent.keyboard("{Enter}{Enter}");
+  await expect(selected).resolves.toBe("path");
+  expect(document.activeElement).toBe(origin);
+});
+
 it("starts a keyboard-opened menu on its first action and wraps through enabled actions", async () => {
   await setup();
   void showContextMenuFallback(items);

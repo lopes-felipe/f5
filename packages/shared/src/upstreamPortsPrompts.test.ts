@@ -107,9 +107,9 @@ describe("buildPortPrompt", () => {
       topics: [],
       topicPaths: [],
     });
-    // Baseline rendered from the implementation before portCommitSteps was extracted.
+    // Baseline rendered from the implementation; updated when the changelog step was added.
     expect(createHash("sha256").update(unchanged).digest("hex")).toBe(
-      "0f776fbb161acfdb4b4fbe9a431f409885355a8b516674930425d2fb4ffeed1d",
+      "13148025fd25edaca63e980cf11a6acd9c5ba4a9be334359729d1ea682488947",
     );
   });
   const prompt = buildPortPrompt({
@@ -158,6 +158,9 @@ describe("buildPortPrompt", () => {
     expect(prompt).toContain("Related: pr-3 (done): Composer");
     expect(prompt).toContain("Keep f5 defaults.");
     expect(prompt).toContain("Never edit files under upstream/.");
+    expect(prompt).toContain(
+      "If the repository keeps a changelog (for example CHANGELOG.md with an Unreleased section), add an entry for every user-visible change",
+    );
   });
 
   const portInput = (overrides: Partial<Parameters<typeof buildPortPrompt>[0]>) =>

@@ -10,6 +10,7 @@ import {
   GitPullRequestIcon,
   LoaderIcon,
 } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
@@ -22,6 +23,8 @@ import type { ThreadStatusPill } from "../../threadStatus";
 import type { ThreadSummary } from "../../threadSelectors";
 import type { ThreadListItem } from "../../types";
 import { ModelChip } from "../chat/ModelChip";
+import { ThreadRelativeActivityTime } from "../thread/ThreadActivityTime";
+import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
 import {
   resolveThreadRowClassName,
   resolveWorkflowThreadListExpanded,
@@ -51,6 +54,13 @@ import { useSidebarPeekTrigger } from "./SidebarPeekCard";
 import { SIDEBAR_ROW_REVEAL_CLASS_NAME, SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
+import {
+  type WorkflowSidebarGroup,
+  type WorkflowSidebarRow,
+  groupWorkflowThreadsByPhase,
+  newestActivityThread,
+} from "./sidebarWorkflowGroups";
+import { WorkflowStepGlyph } from "./WorkflowStepGlyph";
 
 export interface SidebarThreadRowIndicators {
   threadStatus: ThreadStatusPill | null;
@@ -259,6 +269,135 @@ function WorkflowCurrentStepLine(props: {
   );
 }
 
+type WorkflowSidebarPhaseGroup = Extract<WorkflowSidebarGroup<ThreadSummary>, { kind: "phase" }>;
+
+/** The expansion key of a workflow's phase group, beside the workflow ids in the same map. */
+export function workflowPhaseExpansionKey(workflowId: string, phaseId: string): string {
+  return `${workflowId}#${phaseId}`;
+}
+
+/** The model chip on workflow step rows: present for the A/B split, quieter until hovered. */
+const WORKFLOW_MODEL_CHIP_CLASS_NAME =
+  "opacity-60 group-hover/thread-row:opacity-100 group-focus-within/thread-row:opacity-100";
+
+function isNeedsYouStatus(status: ThreadStatusPill | null): boolean {
+  return status?.label === "Pending Approval" || status?.label === "Awaiting Input";
+}
+
+/**
+ * A phase of two or more step threads: its state, label, thread count and newest activity.
+ * Clicking (or Enter, Right and Left in the tree) opens and closes its steps. A step that
+ * waits on the user shows its status here too, so folding the phase can't hide it.
+ */
+function SidebarWorkflowPhaseRow(props: {
+  rowId: string;
+  group: WorkflowSidebarPhaseGroup;
+  needsYouStatus: ThreadStatusPill | null;
+  expanded: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const { group, expanded, needsYouStatus } = props;
+  const treeRowProps = useSidebarTreeRowProps(props.rowId);
+  const isTreeRow = "data-sidebar-row" in treeRowProps;
+  const newestThread = newestActivityThread(group.rows.map((row) => row.thread));
+  const emphasized = needsYouStatus !== null || group.state === "active" || group.state === "error";
+  return (
+    <SidebarMenuSubItem className="w-full">
+      <SidebarMenuSubButton
+        render={<div role="button" tabIndex={0} {...treeRowProps} aria-expanded={expanded} />}
+        size="md"
+        data-testid={`workflow-phase-row-${group.id}`}
+        className={cn(
+          resolveThreadRowClassName({ isActive: false, isSelected: false }),
+          SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+          emphasized && "text-foreground",
+        )}
+        onClick={props.onToggle}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          props.onToggle();
+        }}
+      >
+        {needsYouStatus ? (
+          <ThreadStatusPillBadge pill={needsYouStatus} variant="icon" live={false} />
+        ) : (
+          <WorkflowStepGlyph state={group.state} />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {group.label}
+          <span className="ms-1.5 text-2xs text-faint-foreground tabular-nums">
+            {group.rows.length}
+            <span className="sr-only"> steps</span>
+          </span>
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs font-normal text-muted-foreground tabular-nums">
+          {newestThread ? (
+            <ThreadRelativeActivityTime
+              threadId={newestThread.id}
+              fallback={newestThread.lastInteractionAt}
+            />
+          ) : null}
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn(
+              "size-3.5 shrink-0 transition-transform duration-(--duration-fast)",
+              expanded && "rotate-90",
+            )}
+          />
+        </span>
+      </SidebarMenuSubButton>
+      {expanded ? (
+        // Third tree level: the steps sit under the phase's state glyph.
+        <SidebarTreeParentContext.Provider value={isTreeRow ? props.rowId : null}>
+          <SidebarMenuSub className={cn(SIDEBAR_TREE_LEVEL_CLASS_NAME, "mt-px")}>
+            {props.children}
+          </SidebarMenuSub>
+        </SidebarTreeParentContext.Provider>
+      ) : null}
+    </SidebarMenuSubItem>
+  );
+}
+
+/**
+ * A phase with no thread yet (upcoming Implementation, Code Review): shown faint so the rest
+ * of the pipeline is visible, but not a tree row, since there is nothing to open. The
+ * workflow row's phase strip already names it to screen readers.
+ */
+function SidebarWorkflowPendingRow({
+  group,
+}: {
+  group: Extract<WorkflowSidebarGroup<ThreadSummary>, { kind: "pending" }>;
+}) {
+  return (
+    <SidebarMenuSubItem className="w-full" aria-hidden="true">
+      <div
+        data-testid={`workflow-pending-phase-${group.id}`}
+        className={cn(
+          "flex w-full items-center gap-2 px-2 text-ui text-muted-foreground select-none",
+          SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+          group.state === "pending" && "opacity-60",
+        )}
+      >
+        <WorkflowStepGlyph state={group.state} />
+        <span className="min-w-0 flex-1 truncate">
+          {group.label}
+          {group.stepCount > 1 ? (
+            <span className="ms-1.5 text-2xs text-faint-foreground tabular-nums">
+              {group.stepCount}
+            </span>
+          ) : null}
+        </span>
+        {group.modelSlot ? (
+          <ModelChip model={group.modelSlot.model} provider={group.modelSlot.provider} iconOnly />
+        ) : null}
+      </div>
+    </SidebarMenuSubItem>
+  );
+}
+
 function WorkflowTypeGlyph({
   type,
   workflow,
@@ -290,6 +429,11 @@ export function SidebarWorkflowItem(props: {
   routeThreadId: ThreadId | null;
   expandByDefault: boolean;
   overrideExpanded: boolean | undefined;
+  /**
+   * The sidebar's expansion overrides, for the workflow's phase groups (keyed by
+   * `workflowPhaseExpansionKey`); `onToggleCollapsed` toggles those keys too.
+   */
+  expansionOverrides?: Readonly<Record<string, boolean>> | undefined;
   onToggleCollapsed: (workflowId: string, fallbackExpanded: boolean) => void;
   onArchive: (workflowId: SidebarWorkflowId, title: string, type: SidebarWorkflowType) => void;
   indicatorsForThread: SidebarIndicatorsForThread;
@@ -337,6 +481,83 @@ export function SidebarWorkflowItem(props: {
   const finished = currentStep?.state === "completed";
   const targetIndicators =
     finished && targetThreadId !== null ? props.indicatorsForThread({ id: targetThreadId }) : null;
+  const groups = groupWorkflowThreadsByPhase(
+    props.phases ?? [],
+    workflowThreads,
+    (thread) =>
+      props.threadLabels.get(thread.id) ??
+      (entry.type === "planning"
+        ? workflowThreadDisplayTitle(entry.workflow, thread.title)
+        : thread.title),
+  );
+  // The workflow's outcome: a finished workflow's last thread, or the implementation thread
+  // once it has opened a PR while code review still runs.
+  const implementationThreadId =
+    props.phases
+      ?.find((phase) => phase.id === "implementation")
+      ?.steps.find((step) => step.threadId !== null)?.threadId ?? null;
+  const deliverableThreadId = finished
+    ? targetThreadId
+    : implementationThreadId !== null &&
+        props.indicatorsForThread({ id: implementationThreadId }).prStatus !== null
+      ? implementationThreadId
+      : null;
+  // A finished workflow's time is its newest thread's live activity, not `updatedAt`, which
+  // bookkeeping writes move long after the work.
+  const newestWorkflowThread = newestActivityThread(workflowThreads);
+  /** The first step status in the group that waits on the user, if any. */
+  const needsYouStatusOf = (group: WorkflowSidebarPhaseGroup): ThreadStatusPill | null => {
+    for (const row of group.rows) {
+      const status = props.indicatorsForThread(row.thread).threadStatus;
+      if (isNeedsYouStatus(status)) return status;
+    }
+    return null;
+  };
+  const defaultPhaseExpanded = (group: WorkflowSidebarPhaseGroup) =>
+    group.state === "active" ||
+    group.state === "error" ||
+    needsYouStatusOf(group) !== null ||
+    group.rows.some((row) => row.thread.id === routeThreadId);
+  const isPhaseExpanded = (group: WorkflowSidebarPhaseGroup) =>
+    props.expansionOverrides?.[workflowPhaseExpansionKey(workflow.id, group.id)] ??
+    defaultPhaseExpanded(group);
+  // Shift-click ranges follow the rows on screen: grouped, collapsed phases left out.
+  const visibleThreadIds = groups.flatMap((group) =>
+    group.kind === "pending" || (group.rows.length > 1 && !isPhaseExpanded(group))
+      ? []
+      : group.rows.map((row) => row.thread.id),
+  );
+  const renderThreadRow = (row: WorkflowSidebarRow<ThreadSummary>, label: string) => {
+    const { thread } = row;
+    return (
+      <SidebarThreadRow
+        key={thread.id}
+        thread={thread}
+        section="workflow"
+        isActive={routeThreadId === thread.id}
+        orderedIds={visibleThreadIds}
+        displayTitle={label}
+        workflowRoleLabel={row.fullLabel}
+        workflowTitle={workflow.title}
+        workflowStep={
+          row.stepState
+            ? { state: row.stepState, isDeliverable: thread.id === deliverableThreadId }
+            : undefined
+        }
+        trailingMeta={
+          <ModelChip
+            model={thread.modelSelection?.model ?? thread.model}
+            sessionProviderName={thread.sessionProvider}
+            iconOnly
+            className={WORKFLOW_MODEL_CHIP_CLASS_NAME}
+          />
+        }
+        isRenaming={false}
+        actions={actions}
+        {...props.indicatorsForThread(thread)}
+      />
+    );
+  };
   const peekTrigger = useSidebarPeekTrigger(
     {
       kind: "workflow",
@@ -436,7 +657,14 @@ export function SidebarWorkflowItem(props: {
           {finished ? (
             // The time gives way to the archive button on hover, as on thread rows.
             <span className="text-2xs font-normal text-muted-foreground tabular-nums group-hover/workflow-row:invisible group-focus-within/workflow-row:invisible pointer-coarse:invisible">
-              {formatRelativeTimeLabel(workflow.updatedAt)}
+              {newestWorkflowThread ? (
+                <ThreadRelativeActivityTime
+                  threadId={newestWorkflowThread.id}
+                  fallback={newestWorkflowThread.lastInteractionAt}
+                />
+              ) : (
+                formatRelativeTimeLabel(workflow.updatedAt)
+              )}
             </span>
           ) : null}
           <Tooltip>
@@ -480,32 +708,30 @@ export function SidebarWorkflowItem(props: {
         // Second tree level: the guide line sits under the workflow's type icon.
         <SidebarTreeParentContext.Provider value={isTreeRow ? workflowRowId : null}>
           <SidebarMenuSub className={cn(SIDEBAR_TREE_LEVEL_CLASS_NAME, "mt-px")}>
-            {workflowThreads.map((thread) => (
-              <SidebarThreadRow
-                key={thread.id}
-                thread={thread}
-                section="workflow"
-                isActive={routeThreadId === thread.id}
-                orderedIds={orderedWorkflowThreadIds}
-                displayTitle={
-                  props.threadLabels.get(thread.id) ??
-                  (entry.type === "planning"
-                    ? workflowThreadDisplayTitle(entry.workflow, thread.title)
-                    : thread.title)
-                }
-                workflowTitle={workflow.title}
-                trailingMeta={
-                  <ModelChip
-                    model={thread.modelSelection?.model ?? thread.model}
-                    sessionProviderName={thread.sessionProvider}
-                    iconOnly
-                  />
-                }
-                isRenaming={false}
-                actions={actions}
-                {...props.indicatorsForThread(thread)}
-              />
-            ))}
+            {groups.map((group) => {
+              if (group.kind === "pending") {
+                return <SidebarWorkflowPendingRow key={group.id} group={group} />;
+              }
+              // A phase of one step is that step's row, under its full label.
+              if (group.rows.length === 1) {
+                const row = group.rows[0]!;
+                return renderThreadRow(row, row.fullLabel);
+              }
+              const phaseKey = workflowPhaseExpansionKey(workflow.id, group.id);
+              const expanded = isPhaseExpanded(group);
+              return (
+                <SidebarWorkflowPhaseRow
+                  key={group.id}
+                  rowId={`workflow-phase:${workflow.id}:${group.id}`}
+                  group={group}
+                  needsYouStatus={needsYouStatusOf(group)}
+                  expanded={expanded}
+                  onToggle={() => props.onToggleCollapsed(phaseKey, defaultPhaseExpanded(group))}
+                >
+                  {group.rows.map((row) => renderThreadRow(row, row.label))}
+                </SidebarWorkflowPhaseRow>
+              );
+            })}
           </SidebarMenuSub>
         </SidebarTreeParentContext.Provider>
       ) : null}

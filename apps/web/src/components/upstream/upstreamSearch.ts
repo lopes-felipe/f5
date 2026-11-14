@@ -5,6 +5,8 @@
 import {
   ProjectId,
   type UpstreamDecidedBy,
+  type UpstreamLane,
+  type UpstreamPortQueueView,
   type UpstreamSuggestionFilter,
   type UpstreamTopicList,
   type UpstreamTopicSort,
@@ -19,7 +21,12 @@ export interface UpstreamSearch {
   readonly q?: string;
   readonly suggestion?: ReadonlyArray<UpstreamSuggestionFilter>;
   readonly impact?: ReadonlyArray<UpstreamUserImpact>;
+  readonly lane?: ReadonlyArray<UpstreamLane>;
   readonly area?: string;
+  /** Skips with this reason key, e.g. `aged-out` for "Expired". */
+  readonly reason?: string;
+  /** The whole Inbox instead of its shortlist. */
+  readonly all?: true;
   /** Only topics with an open question. */
   readonly question?: true;
   /** Only topics whose triage passes disagreed. */
@@ -27,6 +34,8 @@ export interface UpstreamSearch {
   /** Who made the decision; `llm` is "Automatic only". */
   readonly by?: UpstreamDecidedBy;
   readonly sort?: UpstreamTopicSort;
+  /** The port queue tab shown instead of a topic list. */
+  readonly queue?: UpstreamPortQueueView;
 }
 
 const UPSTREAM_LIST_IDS: ReadonlyArray<UpstreamTopicList> = [
@@ -40,7 +49,10 @@ const UPSTREAM_LIST_IDS: ReadonlyArray<UpstreamTopicList> = [
 const SUGGESTIONS: ReadonlyArray<UpstreamSuggestionFilter> = ["port", "skip", "watch", "equivalent", "none"];
 const IMPACTS: ReadonlyArray<UpstreamUserImpact> = ["high", "medium", "low", "none"];
 const DECIDED_BY: ReadonlyArray<UpstreamDecidedBy> = ["user", "llm", "rule"];
-const SORTS: ReadonlyArray<UpstreamTopicSort> = ["priority", "newest", "oldest", "confidence"];
+const SORTS: ReadonlyArray<UpstreamTopicSort> = ["score", "priority", "newest", "oldest", "confidence"];
+export const UPSTREAM_QUEUE_VIEWS: ReadonlyArray<UpstreamPortQueueView> = ["active", "needs-you", "history"];
+export const UPSTREAM_LANES: ReadonlyArray<UpstreamLane> = ["security", "bug", "perf", "feature", "maintenance"];
+const REASON_KEY_PATTERN = /^[a-z0-9:-]{1,100}$/u;
 
 const TOPIC_ID_PATTERN = /^(pr-[1-9][0-9]*(-[0-9a-f]{7})?|c-[0-9a-f]{12})$/u;
 
@@ -62,6 +74,7 @@ function listOf<T extends string>(values: ReadonlyArray<T>, value: unknown): T[]
 export function validateUpstreamSearch(search: Record<string, unknown>): UpstreamSearch {
   const suggestion = listOf(SUGGESTIONS, search.suggestion);
   const impact = listOf(IMPACTS, search.impact);
+  const lane = listOf(UPSTREAM_LANES, search.lane);
   const by = oneOf(DECIDED_BY, search.by) ? search.by : isFlag(search.auto) ? "llm" : undefined;
   return {
     ...(typeof search.project === "string" && search.project
@@ -74,11 +87,15 @@ export function validateUpstreamSearch(search: Record<string, unknown>): Upstrea
     ...(typeof search.q === "string" && search.q.trim() ? { q: search.q.slice(0, 200) } : {}),
     ...(suggestion.length ? { suggestion } : {}),
     ...(impact.length ? { impact } : {}),
+    ...(lane.length ? { lane } : {}),
     ...(typeof search.area === "string" && search.area ? { area: search.area.slice(0, 100) } : {}),
+    ...(typeof search.reason === "string" && REASON_KEY_PATTERN.test(search.reason) ? { reason: search.reason } : {}),
+    ...(isFlag(search.all) ? { all: true as const } : {}),
     ...(isFlag(search.question) ? { question: true as const } : {}),
     ...(isFlag(search.conflict) ? { conflict: true as const } : {}),
     ...(by ? { by } : {}),
     ...(oneOf(SORTS, search.sort) ? { sort: search.sort } : {}),
+    ...(oneOf(UPSTREAM_QUEUE_VIEWS, search.queue) ? { queue: search.queue } : {}),
   };
 }
 
@@ -91,10 +108,14 @@ export function compactUpstreamSearch(search: UpstreamSearch): UpstreamSearch {
     ...(search.q?.trim() ? { q: search.q } : {}),
     ...(search.suggestion?.length ? { suggestion: search.suggestion } : {}),
     ...(search.impact?.length ? { impact: search.impact } : {}),
+    ...(search.lane?.length ? { lane: search.lane } : {}),
     ...(search.area ? { area: search.area } : {}),
+    ...(search.reason ? { reason: search.reason } : {}),
+    ...(search.all ? { all: true as const } : {}),
     ...(search.question ? { question: true as const } : {}),
     ...(search.conflict ? { conflict: true as const } : {}),
     ...(search.by ? { by: search.by } : {}),
     ...(search.sort ? { sort: search.sort } : {}),
+    ...(search.queue ? { queue: search.queue } : {}),
   };
 }

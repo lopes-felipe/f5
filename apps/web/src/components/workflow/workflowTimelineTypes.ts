@@ -64,6 +64,8 @@ export interface WorkflowPhaseStepSummary {
 }
 
 export interface WorkflowPhaseSummary {
+  /** The phase's stable id ("authoring", "reviews"...), unique within a workflow. */
+  id: string;
   label: string;
   state: Exclude<WorkflowTimelinePhaseState, "skipped">;
   /** The phase's steps that were not skipped, for the workflow hover card. */
@@ -79,6 +81,7 @@ export function phaseSummariesFromPhases(
       ? []
       : [
           {
+            id: phase.id,
             label: phase.label,
             state: phase.state,
             steps: phase.steps.flatMap((step) =>

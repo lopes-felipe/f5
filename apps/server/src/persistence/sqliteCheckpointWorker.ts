@@ -10,9 +10,19 @@ export const sqliteCheckpointBlocked = Metric.gauge("f5_sqlite_checkpoint_blocke
     "Whether the latest passive checkpoint was incomplete (reader or writer contention).",
 });
 
+export const sqliteCheckpointDuration = Metric.gauge("f5_sqlite_checkpoint_duration_ms", {
+  description: "Duration of the checkpoint worker's latest passive checkpoint.",
+});
+
 const CHECKPOINT_FRAMES = 1_000;
 const WRITER_BACKSTOP_FRAMES = 32_768;
 const CHECKPOINT_IDLE_MS = 100;
+/**
+ * Checkpoints this slow are logged. The checkpoint runs off the server's thread, but it
+ * writes and syncs the same file the server reads, so the log line lets a statement that
+ * stalled on the writer be matched (or not) to a checkpoint running at that moment.
+ */
+export const SLOW_CHECKPOINT_LOG_MS = 1_000;
 
 // A source string works in both the bundled standalone server and source tests.
 // NOOP was added in SQLite 3.51; older versions interpret it as PASSIVE.
@@ -34,6 +44,8 @@ let blocked = false;
 const inspect = (finishing) => {
   let state = frames.get();
   let retry = false;
+  // Set when this inspection ran a checkpoint: how long it took and how many frames it faced.
+  let checkpointed = null;
   const knownFrames = state.log >= 0 && state.checkpointed >= 0;
   if (state.busy !== 0 || !knownFrames) {
     // SQLite can return -1/-1 while its checkpoint lock is held. This is
@@ -42,7 +54,10 @@ const inspect = (finishing) => {
   }
   else if (finishing ? state.log >= workerData.frames && state.checkpointed < state.log
                      : state.log - state.checkpointed >= workerData.frames) {
+    const startedAt = Date.now();
+    const pending = state.log - state.checkpointed;
     state = checkpoint.get();
+    checkpointed = { durationMs: Date.now() - startedAt, frames: pending };
     blocked = state.busy !== 0 || state.checkpointed < state.log;
     retry = blocked;
   }
@@ -58,7 +73,7 @@ const inspect = (finishing) => {
   try { wal = openSync(workerData.filename + "-wal", "r"); walBytes = fstatSync(wal).size; }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   finally { if (wal !== undefined) closeSync(wal); }
-  parentPort.postMessage({ ack: !finishing, walBytes, blocked });
+  parentPort.postMessage({ ack: !finishing, walBytes, blocked, checkpointed });
 };
 parentPort.on("message", () => {
   inspect(false);
@@ -123,12 +138,30 @@ export const startCheckpointWorker = Effect.fnUntraced(function* (
       handBack(String(cause));
     }
   };
-  worker.on("message", (message: { ack: boolean; walBytes: number; blocked: boolean }) => {
+  type WorkerReport = {
+    ack: boolean;
+    walBytes: number;
+    blocked: boolean;
+    checkpointed?: { durationMs: number; frames: number } | null;
+  };
+  worker.on("message", (message: WorkerReport) => {
     if (stopped) return;
+    const checkpointed = message.checkpointed ?? null;
     runFork(
       Effect.all([
         Metric.update(sqliteWalBytes, message.walBytes),
         Metric.update(sqliteCheckpointBlocked, message.blocked ? 1 : 0),
+        checkpointed === null
+          ? Effect.void
+          : Metric.update(sqliteCheckpointDuration, checkpointed.durationMs),
+        checkpointed !== null && checkpointed.durationMs >= SLOW_CHECKPOINT_LOG_MS
+          ? Effect.logWarning("slow sqlite checkpoint", {
+              durationMs: checkpointed.durationMs,
+              frames: checkpointed.frames,
+              walBytes: message.walBytes,
+              blocked: message.blocked,
+            })
+          : Effect.void,
       ]),
     );
     // The idle callback reports diagnostics without acknowledging a request.

@@ -52,6 +52,23 @@ beforeEach(() => {
     mergedAt: null,
   });
 });
+it.each([
+  ["github", true],
+  ["forgejo", true],
+  ["azure-devops", true],
+  ["gitlab", false],
+  ["bitbucket", false],
+] as const)(
+  "%s follows the forge's single-newline rendering rule",
+  async (provider, hardLineBreaks) => {
+    const screen = await render(
+      <PrMarkdown host="forge.example" provider={provider} body={"first\nsecond"} />,
+    );
+    await expect.element(page.getByText(/first/)).toBeVisible();
+    expect(document.querySelectorAll("p br").length).toBe(hardLineBreaks ? 1 : 0);
+    await screen.unmount();
+  },
+);
 it("places a diff request in the existing composer once and preserves the draft without sending a turn", async () => {
   useComposerDraftStore.getState().setPrompt(thread, "Existing draft");
   render(<PrSendToAgent pr={pr} body="Handle the null case" path="src/file.ts" line={12} />);

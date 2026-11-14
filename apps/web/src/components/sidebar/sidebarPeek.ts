@@ -48,7 +48,7 @@ export function stripMarkdownToPlainText(markdown: string): string {
 
 /** The first question of the oldest pending request, shown in place of the reply. */
 export function firstPendingQuestion(
-  pendingUserInputs: ReadonlyArray<PendingUserInput> | undefined,
+  pendingUserInputs: ReadonlyArray<Pick<PendingUserInput, "questions">> | undefined,
 ): string | null {
   for (const input of pendingUserInputs ?? []) {
     const question = input.questions[0]?.question.trim();

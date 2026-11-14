@@ -1,4 +1,5 @@
 import type { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 
 export function withEventBase(
   input: Pick<OrchestrationCommand, "commandId"> & {
@@ -9,7 +10,9 @@ export function withEventBase(
   },
 ): Omit<OrchestrationEvent, "sequence" | "type" | "payload"> {
   return {
-    eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
+    // Time-ordered: event_id is uniquely indexed, and a random key would
+    // rewrite a random index page with every event.
+    eventId: timeOrderedUuid() as OrchestrationEvent["eventId"],
     aggregateKind: input.aggregateKind,
     aggregateId: input.aggregateId,
     occurredAt: input.occurredAt,

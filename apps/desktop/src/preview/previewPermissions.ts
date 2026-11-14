@@ -11,7 +11,7 @@ import { isLoopbackPreviewHost } from "@t3tools/shared/preview";
  * fills the preview's own webview, since guests attach with HTML fullscreen window resizing
  * disabled. `loopback-network` is allowed only by the check handler, so sign-in widgets can
  * query permission before contacting
- * local authenticators. Electron 44.9.3 disables LocalNetworkAccessChecks in its
+ * local authenticators. Electron 44.10.1 disables LocalNetworkAccessChecks in its
  * shell/browser/feature_list.cc, so this reflects existing network access rather than
  * expanding it. Reassess this grant if that Electron default changes on upgrade.
  */

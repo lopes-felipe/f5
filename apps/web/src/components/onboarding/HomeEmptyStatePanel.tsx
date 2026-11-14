@@ -182,35 +182,41 @@ function DisplayProfileCard({
 function HomeStartupSkeleton() {
   return (
     <section
-      className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-6 py-10"
+      className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-6 py-6"
       role="status"
       aria-live="polite"
       aria-label="Loading workspace"
       data-testid="home-startup-skeleton"
     >
       <span className="sr-only">Loading workspace</span>
-      {/* Mirrors the dashboard: greeting, quick-start card, then rows. */}
-      <div aria-hidden="true" className="flex flex-col gap-4">
-        <Skeleton className="h-9 w-[min(18rem,70vw)] rounded-md" />
-        <div className="rounded-xl border border-border bg-card p-4">
-          <Skeleton className="h-4 w-[min(16rem,60vw)] rounded-full" />
-          <div className="mt-12 flex items-center gap-2">
-            <Skeleton className="h-7 w-28 rounded-md" />
-            <Skeleton className="h-7 w-24 rounded-md" />
-            <Skeleton className="ms-auto h-7 w-16 rounded-md" />
-          </div>
-        </div>
+      {/* Mirrors Home: the quick-start bar, then the queue beside its preview. */}
+      <div
+        aria-hidden="true"
+        className="flex items-center gap-2 rounded-xl border border-border bg-card p-1.5"
+      >
+        <Skeleton className="h-7 w-28 rounded-md" />
+        <Skeleton className="h-4 w-[min(16rem,40vw)] rounded-full" />
+        <Skeleton className="ms-auto h-7 w-16 rounded-md" />
       </div>
-      <div aria-hidden="true" className="flex flex-col gap-1.5">
-        <Skeleton className="h-3 w-20 rounded-full" />
-        {[0, 1, 2, 3].map((index) => (
-          <div key={index} className="flex h-10 items-center gap-3 px-2.5">
-            <Skeleton className="size-4 rounded-sm" />
-            <Skeleton className="h-3 w-20 rounded-full" />
-            <Skeleton className="h-3.5 w-[min(20rem,45vw)] rounded-full" />
-            <Skeleton className="ms-auto h-3 w-10 rounded-full" />
-          </div>
-        ))}
+      <div aria-hidden="true" className="flex gap-3">
+        <div className="flex w-full flex-col gap-1.5 sm:w-80 sm:shrink-0">
+          <Skeleton className="h-3 w-24 rounded-full" />
+          {[0, 1, 2, 3].map((index) => (
+            <div key={index} className="flex h-12 items-center gap-2.5 px-2.5">
+              <Skeleton className="size-4 rounded-sm" />
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <Skeleton className="h-3.5 w-3/4 rounded-full" />
+                <Skeleton className="h-3 w-1/2 rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="hidden min-w-0 flex-1 flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex">
+          <Skeleton className="h-3 w-32 rounded-full" />
+          <Skeleton className="h-5 w-2/3 rounded-full" />
+          <Skeleton className="mt-3 h-3 w-full rounded-full" />
+          <Skeleton className="h-3 w-5/6 rounded-full" />
+        </div>
       </div>
     </section>
   );

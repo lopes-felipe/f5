@@ -11,6 +11,15 @@ export {
   setupProjectScript,
 } from "@t3tools/shared/projectScripts";
 
+/** Settlement-managed actions own their terminal rather than reusing a shell. */
+export function projectScriptTerminalOptions<T extends { preferNewTerminal?: boolean }>(
+  script: Pick<ProjectScript, "stopOnSettle">,
+  options?: T,
+) {
+  const stopOnSettle = script.stopOnSettle ?? false;
+  return { ...options, stopOnSettle, ...(stopOnSettle ? { preferNewTerminal: true } : {}) };
+}
+
 function normalizeScriptId(value: string): string {
   const cleaned = value
     .trim()

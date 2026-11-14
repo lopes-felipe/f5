@@ -29,22 +29,30 @@ export const observeReadModelRetention = (
         readonly text: string;
         readonly reasoningText?: string | undefined;
       }>;
+      readonly activities?: ReadonlyArray<unknown>;
     }>;
   },
   /** `heapUsed` sampled before hydrate; the log reports the change across it. */
   heapUsedBeforeBytes?: number,
+  /** Threads whose activity history was left in SQLite (see coldThreadActivities.ts). */
+  coldThreads?: number,
 ) => {
   let messages = 0;
   let characters = 0;
-  for (const thread of model.threads)
+  let activities = 0;
+  for (const thread of model.threads) {
+    activities += thread.activities?.length ?? 0;
     for (const message of thread.messages) {
       messages++;
       characters += message.text.length + (message.reasoningText?.length ?? 0);
     }
+  }
   const fields = {
     threads: model.threads.length,
     messages,
     characters,
+    activities,
+    ...(coldThreads === undefined ? {} : { coldThreads }),
     ...(heapUsedBeforeBytes === undefined
       ? {}
       : { heapUsedDeltaBytes: process.memoryUsage().heapUsed - heapUsedBeforeBytes }),

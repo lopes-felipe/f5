@@ -7,6 +7,7 @@ import {
   fileIdentity,
   sameFileIdentity,
   normalizeStorageStat,
+  readStorageStat,
   enumerateFiles,
   measureTree,
   recursiveSize,
@@ -38,13 +39,35 @@ test("preserves fractional timestamp identity across Node and Bun maintenance ch
   );
   expect(precise.mtimeMs).toBe(1_793_302_815_000.7002);
   expect(precise.isFile()).toBe(true);
-  expect(fileIdentity(normalizeStorageStat(stat))).toEqual(fileIdentity(await FS.lstat(path)));
+  const numeric = await FS.lstat(path);
+  expect(fileIdentity(normalizeStorageStat(stat))).toEqual({
+    dev: numeric.dev,
+    ino: String(stat.ino),
+    size: numeric.size,
+    mtimeMs: numeric.mtimeMs,
+    mode: numeric.mode,
+  });
   expect(
     sameFileIdentity(fileIdentity(precise), {
       ...fileIdentity(precise),
       mtimeMs: 1_793_302_815_000.7004,
     }),
   ).toBe(false);
+});
+test("tells apart two inodes that round to the same number", async () => {
+  const root = await fixture();
+  // NTFS file ids look like this: a reuse count in the top 16 bits puts them
+  // above 2^53, where neighbouring records share one double.
+  const first = (64n << 48n) | 1_000n;
+  const second = first + 1n;
+  expect(Number(first)).toBe(Number(second));
+  const withInode = async (ino: bigint) =>
+    normalizeStorageStat(Object.assign(await FS.lstat(root, { bigint: true }), { ino }));
+  const [a, b] = await Promise.all([withInode(first), withInode(second)]);
+  expect(a.ino).toBe(b.ino);
+  expect(fileIdentity(a).ino).toBe(String(first));
+  expect(sameFileIdentity(fileIdentity(a), fileIdentity(b))).toBe(false);
+  expect(sameFileIdentity(fileIdentity(a), fileIdentity(await withInode(first)))).toBe(true);
 });
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => FS.rm(path, { recursive: true, force: true })));
@@ -69,7 +92,7 @@ test("concurrent wide walks share at most 16 filesystem calls", async () => {
     }
   };
   const fs: DiskUsageFs = {
-    lstat: (path) => tracked(() => FS.lstat(path)),
+    lstat: (path) => tracked(() => readStorageStat(path)),
     readdir: (path, options) => tracked(() => FS.readdir(path, options)),
   };
   const [first, second] = await Promise.all([
@@ -84,7 +107,10 @@ test("inspects a cache fixture with more than 100,000 files using bounded traver
   const root = await fixture();
   const sample = Path.join(root, "sample");
   await FS.writeFile(sample, "cached data");
-  const [directoryStat, fileStat] = await Promise.all([FS.lstat(root), FS.lstat(sample)]);
+  const [directoryStat, fileStat] = await Promise.all([
+    readStorageStat(root),
+    readStorageStat(sample),
+  ]);
   const count = 100_001;
   const fs: DiskUsageFs = {
     lstat: async (path) => (path === root ? directoryStat : fileStat),
@@ -155,7 +181,7 @@ test("abort returns promptly while a syscall is blocked and schedules no more ca
       calls++;
       entered();
       await blocked;
-      return FS.lstat(path);
+      return readStorageStat(path);
     },
     readdir: FS.readdir,
   };
@@ -173,5 +199,5 @@ test("enumeration retains review identities and never follows symlinks", async (
   await FS.symlink(root, Path.join(root, "link"));
   const listing = await enumerateFiles(root);
   expect(listing.files).toHaveLength(1);
-  expect(listing.files[0]?.identity?.ino).toBeGreaterThan(0);
+  expect(listing.files[0]?.identity?.ino).toMatch(/^[1-9]\d*$/);
 });

@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Option from "effect/Option";
@@ -97,7 +98,12 @@ const decoder = new TextDecoder();
 export function makeAcpLineFramer() {
   const utf8 = new TextDecoder();
   let buffer = "";
-  return (bytes: string | Uint8Array): string => {
+  return (bytes?: string | Uint8Array): string => {
+    if (bytes === undefined) {
+      const tail = buffer + utf8.decode();
+      buffer = "";
+      return tail.trim() ? tail + "\n" : "";
+    }
     const chunk = typeof bytes === "string" ? bytes : utf8.decode(bytes, { stream: true });
     const end = chunk.lastIndexOf("\n");
     if (end === -1) {
@@ -530,6 +536,25 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         ),
       ),
     ),
+    Effect.andThen(
+      Effect.suspend(() => {
+        const tail = frameLines();
+        let messages: ReadonlyArray<RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded>;
+        try {
+          messages = preserveZeroValuedRequestIds(tail, parser.decode(tail) as typeof messages);
+        } catch (cause) {
+          // A truncated final frame is better explained by the child's exit status.
+          return logProtocol({
+            direction: "incoming",
+            stage: "decode_failed",
+            payload: { detail: "Failed to decode final ACP wire message", cause },
+          });
+        }
+        return logProtocol({ direction: "incoming", stage: "decoded", payload: messages }).pipe(
+          Effect.andThen(Effect.forEach(messages, routeDecodedMessage, { discard: true })),
+        );
+      }),
+    ),
     Effect.matchCauseEffect({
       onFailure: (cause) => {
         if (Cause.hasInterrupts(cause)) return Effect.interrupt;
@@ -544,16 +569,20 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         return handleTermination(() => Effect.succeed(normalized));
       },
       onSuccess: () =>
-        handleTermination(
-          () =>
-            options.terminationError ??
-            Effect.succeed(
-              new AcpError.AcpTransportError({
-                detail: "ACP input stream ended",
-                cause: new Error("ACP input stream ended"),
-              }),
-            ),
-        ),
+        handleTermination(() => {
+          const ended = new AcpError.AcpTransportError({
+            detail: "ACP input stream ended",
+            cause: new Error("ACP input stream ended"),
+          });
+          if (!options.terminationError) return Effect.succeed(ended);
+          // Stdout may close while the process stays alive. Retain exit diagnostics
+          // when available, but never leave requests waiting for that process.
+          return options.terminationError.pipe(
+            Effect.timeoutOption("250 millis"),
+            Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+            Effect.map(Option.getOrElse(() => ended)),
+          );
+        }),
     }),
     Effect.forkScoped,
   );

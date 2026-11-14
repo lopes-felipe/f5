@@ -28,7 +28,9 @@ const allRecords = Object.values(
   PROVIDER_INTEGRATION_RECORDS,
 ).flat() as ProviderIntegrationRecord[];
 // The record for the pinned runtime; superseded records stay listed as withdrawn.
-const claude = PROVIDER_INTEGRATION_RECORDS["claude-chrome"].find((record) => !record.withdrawn)!;
+const pinned = PROVIDER_INTEGRATION_RECORDS["claude-chrome"].find((record) => !record.withdrawn)!;
+// Capabilities need their own assertions; these fixtures exercise the base ones only.
+const { capabilities: _capabilities, ...claude } = pinned;
 const certified: ClaudeChromeRecord = {
   ...claude,
   evidenceId: "evidence-1",

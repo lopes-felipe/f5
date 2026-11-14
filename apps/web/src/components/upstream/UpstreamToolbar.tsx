@@ -7,7 +7,17 @@ import type {
   UpstreamTopicSort,
   UpstreamUserImpact,
 } from "@t3tools/contracts";
-import { ArrowUpDownIcon, BotIcon, HelpCircleIcon, ListFilterIcon, PlayIcon, SearchIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpDownIcon,
+  BotIcon,
+  HelpCircleIcon,
+  HourglassIcon,
+  ListFilterIcon,
+  ListOrderedIcon,
+  PlayIcon,
+  SearchIcon,
+  XIcon,
+} from "lucide-react";
 import { forwardRef, useEffect, useRef, useState } from "react";
 
 import { Badge } from "../ui/badge";
@@ -32,19 +42,20 @@ import {
   activeFilterChips,
   DECIDED_BY_LABELS,
   IMPACT_LABELS,
+  LANE_LABELS,
   SORT_LABELS,
   SUGGESTION_FILTER_LABELS,
   toggleValue,
   UPSTREAM_LISTS,
   withoutFilters,
 } from "./upstreamPage.logic";
-import type { UpstreamSearch } from "./upstreamSearch";
+import { UPSTREAM_LANES, type UpstreamSearch } from "./upstreamSearch";
 
 const SEARCH_DEBOUNCE_MS = 200;
 const SUGGESTIONS: ReadonlyArray<UpstreamSuggestionFilter> = ["port", "skip", "watch", "equivalent", "none"];
 const IMPACTS: ReadonlyArray<UpstreamUserImpact> = ["high", "medium", "low", "none"];
 const DECIDED_BY: ReadonlyArray<UpstreamDecidedBy> = ["user", "llm", "rule"];
-const SORTS: ReadonlyArray<UpstreamTopicSort> = ["priority", "newest", "oldest", "confidence"];
+const SORTS: ReadonlyArray<UpstreamTopicSort> = ["score", "priority", "newest", "oldest", "confidence"];
 
 const count = (value: number | undefined) =>
   value === undefined ? null : <span className="ms-auto ps-3 text-muted-foreground tabular-nums">{value}</span>;
@@ -126,11 +137,22 @@ export const UpstreamToolbar = forwardRef<
       readonly disabled: boolean;
       readonly onStart: () => void;
     } | null;
+    /** The Queue view toggle; null hides it (no queue history). */
+    readonly queue: {
+      /** The Queue view is showing instead of a list. */
+      readonly active: boolean;
+      /** Running plus queued jobs. */
+      readonly jobs: number;
+      readonly needsAttention: number;
+      readonly onOpen: () => void;
+      /** Returns to the list the queue was opened from, keeping its filters and sort. */
+      readonly onClose: () => void;
+    } | null;
   }
 >(function UpstreamToolbar(props, searchRef) {
   const { search, facets, onSearchChange } = props;
   const chips = activeFilterChips(search);
-  const sort = search.sort ?? (props.list === "inbox" ? "priority" : "newest");
+  const sort = search.sort ?? (props.list === "inbox" ? "score" : "newest");
   /** Merges `patch` into the search params; `undefined` or an empty list removes a key. */
   const set = (patch: {
     readonly [Key in keyof UpstreamSearch]?: UpstreamSearch[Key] | undefined;
@@ -141,32 +163,95 @@ export const UpstreamToolbar = forwardRef<
     onSearchChange(next as UpstreamSearch);
   };
   const strip = props.list === "inbox" && facets ? SUGGESTIONS.filter((value) => facets.suggestion[value] > 0) : [];
+  const laneStrip =
+    props.list === "inbox" && facets
+      ? UPSTREAM_LANES.filter((value) => facets.lane[value] > 0 || search.lane?.includes(value))
+      : [];
+  const queueActive = props.queue?.active === true;
+  const lists = (
+    <ToggleGroup
+      aria-label="Topic lists"
+      size="sm"
+      value={queueActive ? [] : [props.list]}
+      onValueChange={(values) => {
+        const next = values[0] as UpstreamTopicList | undefined;
+        // From the Queue view, pressing the list it came from returns to it as it was.
+        if (queueActive && (next === undefined || next === props.list)) props.queue?.onClose();
+        else if (next) props.onListChange(next);
+      }}
+    >
+      {UPSTREAM_LISTS.map((entry) => (
+        <ToggleGroupItem
+          key={entry.id}
+          value={entry.id}
+          aria-current={!queueActive && entry.id === props.list ? "page" : undefined}
+          className="gap-1.5"
+        >
+          {entry.label}
+          <Badge variant="outline" size="sm" className="tabular-nums">
+            {props.counts[entry.id]}
+          </Badge>
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  );
+  const queueToggle = props.queue && (
+    <Toggle
+      size="sm"
+      pressed={queueActive}
+      aria-current={queueActive ? "page" : undefined}
+      onPressedChange={(pressed) => {
+        if (pressed) props.queue?.onOpen();
+        else props.queue?.onClose();
+      }}
+      className="gap-1.5"
+    >
+      <ListOrderedIcon />
+      Queue
+      <Badge variant="outline" size="sm" className="tabular-nums">
+        {props.queue.jobs.toLocaleString()}
+      </Badge>
+      {props.queue.needsAttention > 0 && (
+        <Badge
+          variant="warning"
+          size="sm"
+          className="tabular-nums"
+          aria-label={`${props.queue.needsAttention} need attention`}
+        >
+          {props.queue.needsAttention.toLocaleString()}
+        </Badge>
+      )}
+    </Toggle>
+  );
+  if (queueActive)
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {lists}
+        {queueToggle}
+      </div>
+    );
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <ToggleGroup
-          aria-label="Topic lists"
-          size="sm"
-          value={[props.list]}
-          onValueChange={(values) => {
-            const next = values[0] as UpstreamTopicList | undefined;
-            if (next) props.onListChange(next);
-          }}
-        >
-          {UPSTREAM_LISTS.map((entry) => (
-            <ToggleGroupItem
-              key={entry.id}
-              value={entry.id}
-              aria-current={entry.id === props.list ? "page" : undefined}
-              className="gap-1.5"
-            >
-              {entry.label}
-              <Badge variant="outline" size="sm" className="tabular-nums">
-                {props.counts[entry.id]}
-              </Badge>
+        {lists}
+        {queueToggle}
+        {props.list === "inbox" && (
+          <ToggleGroup
+            aria-label="Inbox view"
+            size="sm"
+            variant="outline"
+            value={[search.all ? "all" : "shortlist"]}
+            onValueChange={(values) => {
+              const next = values[0];
+              if (next) set({ all: next === "all" ? true : undefined });
+            }}
+          >
+            <ToggleGroupItem value="shortlist" title="The highest-scoring topics, up to the shortlist size">
+              Shortlist
             </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+            <ToggleGroupItem value="all">All</ToggleGroupItem>
+          </ToggleGroup>
+        )}
         {props.list === "inbox" && (
           <Toggle
             size="sm"
@@ -187,6 +272,17 @@ export const UpstreamToolbar = forwardRef<
           >
             <BotIcon />
             Automatic only
+          </Toggle>
+        )}
+        {props.list === "skipped" && (
+          <Toggle
+            size="sm"
+            variant="outline"
+            pressed={search.reason === "aged-out"}
+            onPressedChange={(pressed) => set({ reason: pressed ? "aged-out" : undefined })}
+          >
+            <HourglassIcon />
+            Expired
           </Toggle>
         )}
         {props.startAll && props.startAll.count > 0 && (
@@ -213,6 +309,22 @@ export const UpstreamToolbar = forwardRef<
               )}
             </MenuTrigger>
             <MenuPopup align="end" className="w-60">
+              <MenuGroup>
+                <MenuGroupLabel>Lane</MenuGroupLabel>
+                {UPSTREAM_LANES.map((value) => (
+                  <MenuCheckboxItem
+                    key={value}
+                    checked={search.lane?.includes(value) ?? false}
+                    onCheckedChange={() => set({ lane: toggleValue(search.lane, value) })}
+                  >
+                    <span className="flex w-full">
+                      {LANE_LABELS[value]}
+                      {count(facets?.lane[value])}
+                    </span>
+                  </MenuCheckboxItem>
+                ))}
+              </MenuGroup>
+              <MenuSeparator />
               <MenuGroup>
                 <MenuGroupLabel>Suggestion</MenuGroupLabel>
                 {SUGGESTIONS.map((value) => (
@@ -313,6 +425,25 @@ export const UpstreamToolbar = forwardRef<
           </Menu>
         </div>
       </div>
+      {laneStrip.length > 0 && facets && (
+        <div role="group" aria-label="Lanes" className="flex flex-wrap items-center gap-1 text-xs">
+          {laneStrip.map((value) => {
+            const active = search.lane?.length === 1 && search.lane[0] === value;
+            return (
+              <Button
+                key={value}
+                size="xs"
+                variant={active ? "secondary" : "ghost"}
+                aria-pressed={active}
+                onClick={() => set({ lane: active ? undefined : [value] })}
+              >
+                {LANE_LABELS[value]}
+                <span className="text-muted-foreground tabular-nums">{facets.lane[value].toLocaleString()}</span>
+              </Button>
+            );
+          })}
+        </div>
+      )}
       {(chips.length > 0 || strip.length > 0) && (
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
           {strip.length > 0 && facets && (

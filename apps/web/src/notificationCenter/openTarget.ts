@@ -36,7 +36,16 @@ export async function openNotificationTarget(
     case "upstream":
       await navigate({
         to: "/upstream",
-        search: { project: ProjectId.makeUnsafe(target.projectId) },
+        search:
+          target.view === "features"
+            ? {
+                project: ProjectId.makeUnsafe(target.projectId),
+                list: "inbox",
+                lane: ["feature"],
+                sort: "newest",
+                all: true,
+              }
+            : { project: ProjectId.makeUnsafe(target.projectId) },
       });
       return;
     case "update":

@@ -16,6 +16,20 @@ export interface ProviderLaunch {
   readonly model?: string;
 }
 export type Launches = Partial<Record<"claude" | "codex", ProviderLaunch>>;
+/** Operator-set variables the Claude in Chrome live run reads, passed through when set. */
+export const CLAUDE_CHROME_OPTIONAL_ENV = [
+  "F5_CLAUDE_CHROME_EVIDENCE_ID",
+  "F5_CLAUDE_CHROME_ISOLATED_STATE_DIR",
+  "F5_CLAUDE_CHROME_SHARED_CONFIG_DIR",
+] as const;
+function passThrough(keys: ReadonlyArray<string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return env;
+}
 export function commandsFor(
   s: ScenarioInstance,
   target: Target,
@@ -163,11 +177,16 @@ export function commandsFor(
           "integration/claudeChromeNative.live.test.ts",
         ],
         check: "claude-chrome-live",
-        timeoutMs: 300000,
+        // Up to the harness's own limit, which covers the optional phases.
+        timeoutMs: 900000,
         env: {
+          // The operator's optional phases and evidence id; the runner's clean environment
+          // would drop them otherwise.
+          ...passThrough(CLAUDE_CHROME_OPTIONAL_ENV),
           F5_CLAUDE_CHROME_LIVE: "1",
           F5_CLAUDE_CHROME_REPORT: join(output, "claude-chrome-report.json"),
-          CLAUDE_CONFIG_DIR: launch.home,
+          // Vitest drops an inherited CLAUDE_CONFIG_DIR; the harness reads its own variable.
+          F5_CLAUDE_CHROME_CONFIG_DIR: launch.home,
         },
       },
     ];

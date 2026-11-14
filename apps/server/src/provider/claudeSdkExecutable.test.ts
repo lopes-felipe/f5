@@ -7,11 +7,25 @@ import { describe, expect, it, vi } from "vitest";
 import { CommandNotFoundError } from "../spawn/resolveCommand.ts";
 import {
   resolveBundledClaudeExecutable,
+  claudeCliSpawnEnvironment,
   resolveClaudeCliInvocation,
   resolveClaudeSdkExecutableOptions,
 } from "./claudeSdkExecutable.ts";
 
 describe("Claude SDK executable resolution", () => {
+  it("enables Electron Node mode only for the script runtime spawn", () => {
+    const env = { PATH: "/bin" };
+    const host = { execPath: "/F5/Electron", electron: true };
+    const invocation = { file: host.execPath, args: ["cli.js"], kind: "nodeScript" as const };
+    expect(claudeCliSpawnEnvironment(invocation, env, host)).toEqual({
+      ...env,
+      ELECTRON_RUN_AS_NODE: "1",
+    });
+    expect(env).toEqual({ PATH: "/bin" });
+    expect(claudeCliSpawnEnvironment({ ...invocation, kind: "native" }, env, host)).toBe(env);
+    expect(claudeCliSpawnEnvironment({ ...invocation, file: "/bin/node" }, env, host)).toBe(env);
+    expect(claudeCliSpawnEnvironment(invocation, env, { ...host, electron: false })).toBe(env);
+  });
   it.each([undefined, null, "", " ", "claude", " claude "])(
     "uses the bundled executable for the default SDK setting %s",
     (setting) => {

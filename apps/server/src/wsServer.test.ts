@@ -8,6 +8,7 @@ import {
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  ServerHealth,
   ThreadId,
   WS_CHANNELS,
   WS_METHODS,
@@ -15,7 +16,8 @@ import {
   type OrchestrationThread,
   type WebSocketResponse,
 } from "@t3tools/contracts";
-import { Deferred, Effect, Layer, Option, Scope, Stream } from "effect";
+import { Deferred, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
+import { recordSlowRpcRoute, resetServerHealthForTest } from "./observability/serverHealth.ts";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import * as Http from "node:http";
@@ -246,6 +248,18 @@ describe("WebSocket Server", () => {
       projectName: "project",
       profile: { isDefault: true, slug: "default", isActive: true },
     });
+  });
+
+  it("answers a method that lives in a route table rather than the switch", async () => {
+    h.server = await createTestServer({ cwd: "/test/project" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.githubLoginStatus, {});
+    expect(response.error).toBeUndefined();
+    expect(response.result).toMatchObject({ state: "idle" });
   });
 
   it("writes rpc and websocket observability records when enabled", async () => {
@@ -621,6 +635,33 @@ describe("WebSocket Server", () => {
     );
   });
 
+  it("answers a batch of thread peeks in the order asked, without unknown threads", async () => {
+    vi.spyOn(console, "log");
+    const cwd = path.join(makeTempDir("t3code-peeks-"), "peeks-workspace");
+    fs.mkdirSync(cwd);
+    h.server = await createTestServer({ cwd, autoBootstrapProjectFromCwd: true });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const threadId = (welcome.data as { bootstrapThreadId?: string }).bootstrapThreadId;
+    expect(threadId).toBeDefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadPeeks, {
+      threadIds: ["missing-peek-thread", threadId, threadId],
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({
+      peeks: [{ threadId, lastUserText: null, lastAssistantText: null, latestTurnDiff: null }],
+    });
+
+    const tooMany = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadPeeks, {
+      threadIds: Array.from({ length: 51 }, (_, index) => `peek-thread-${index}`),
+    });
+    expect(tooMany.result).toBeUndefined();
+    expect(tooMany.error).toBeDefined();
+  });
+
   it("includes bootstrap ids in welcome when cwd project and thread already exist", async () => {
     vi.spyOn(console, "log");
     const stateDir = makeTempDir("t3code-state-bootstrap-existing-");
@@ -845,6 +886,7 @@ describe("WebSocket Server", () => {
             getAccounts: () => Effect.succeed([]),
             getQuotaHistory: Effect.die("unused quota history"),
             analyzeClaudeUsage: () => Effect.die("unused usage analysis"),
+            getThreadTurns: () => Effect.die("unused thread turns"),
           }),
           Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
           Layer.succeed(skillSyncModule.ProjectSkillSyncService, {
@@ -1263,6 +1305,7 @@ describe("WebSocket Server", () => {
           getAccounts: () => Effect.succeed([]),
           getQuotaHistory: Effect.die("unused quota history"),
           analyzeClaudeUsage: () => Effect.die("unused usage analysis"),
+          getThreadTurns: () => Effect.die("unused thread turns"),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>
@@ -1367,6 +1410,17 @@ describe("WebSocket Server", () => {
     expect(tailResponse.result).toEqual(
       expect.objectContaining({
         threadId,
+        thread: expect.objectContaining({
+          id: threadId,
+          projectId,
+          title: "Tail Reconcile Thread",
+          deletedAt: null,
+          archivedAt: null,
+          messages: [],
+          activities: [],
+          checkpoints: [],
+          proposedPlans: [],
+        }),
         messages: [],
         checkpoints: [],
         hasOlderMessages: false,
@@ -1375,6 +1429,12 @@ describe("WebSocket Server", () => {
     );
 
     await vi.waitFor(() => expect(readThreadStarted).toBe(true), { timeout: 1_000 });
+
+    const missingResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadTailDetails, {
+      threadId: asThreadId("missing-route-thread"),
+    });
+    expect(missingResponse.error).toBeUndefined();
+    expect(missingResponse.result).toMatchObject({ thread: null });
   });
 
   it("logs outbound websocket push events in dev mode", async () => {
@@ -1419,6 +1479,33 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       runtime: expect.objectContaining({ state: expect.stringMatching(/^(starting|ready)$/) }),
     });
+  });
+
+  it("answers server.getHealth with slow operations recorded since start", async () => {
+    h.server = await createTestServer();
+    const address = h.server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+    // The tallies are process-wide, so this test leaves none behind for the next.
+    resetServerHealthForTest();
+    try {
+      recordSlowRpcRoute("test.slowRoute", 4_321);
+      recordSlowRpcRoute("test.signIn", 120_000, "long");
+
+      const response = await sendRequest(ws, WS_METHODS.serverGetHealth);
+      expect(response.error).toBeUndefined();
+      const health = Schema.decodeUnknownSync(ServerHealth)(response.result);
+      expect(health.slowRoutes).toContainEqual(
+        expect.objectContaining({ name: "test.slowRoute", count: 1, totalMs: 4_321 }),
+      );
+      // Requests that are long by design stay out of the ranking.
+      expect(health.slowRoutes.map((route) => route.name)).not.toContain("test.signIn");
+      // The server samples event loop delay for as long as it runs.
+      expect(health.eventLoopDelay).not.toBeNull();
+    } finally {
+      resetServerHealthForTest();
+    }
   });
 
   it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {
@@ -1986,6 +2073,40 @@ describe("WebSocket Server", () => {
     });
     expect(renewed.result).toEqual([null]);
     expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it("refuses a rebound hostname when no auth token is set", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    // What a browser sends after attacker.example's DNS answer is switched to 127.0.0.1:
+    // Origin and Host agree, so the same-origin check alone would accept it.
+    const rebound = {
+      Host: `attacker.example:${port}`,
+      Origin: `http://attacker.example:${port}`,
+    };
+
+    await expect(connectWs(port, undefined, 1, rebound)).rejects.toThrow(
+      "WebSocket connection failed",
+    );
+    const status = (path: string, headers: Record<string, string>) =>
+      new Promise<number>((resolve, reject) => {
+        const request = Http.request({ hostname: "127.0.0.1", port, path, headers }, (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+        request.once("error", reject);
+        request.end();
+      });
+    expect(await status("/", rebound)).toBe(403);
+    expect(await status("/api/bootstrap", rebound)).toBe(403);
+    expect(await status("/api/bootstrap", { Host: `localhost:${port}` })).toBe(200);
+
+    const [localWs] = await connectAndAwaitWelcome(port, undefined, {
+      Host: `localhost:${port}`,
+      Origin: `http://localhost:${port}`,
+    });
+    connections.push(localWs);
   });
 
   it("rejects websocket connections without a valid auth token", async () => {

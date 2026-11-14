@@ -1944,7 +1944,7 @@ const makeGitCore = Effect.gen(function* () {
           const stagedSummary = (yield* executeGit(
             "GitCore.prepareCommitContext.stagedSummary",
             cwd,
-            ["diff", "--cached", "--name-status", ...paths],
+            ["-c", "diff.relative=false", "diff", "--cached", "--name-status", ...paths],
             { env, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
           )).stdout.trim();
           if (!stagedSummary) return null;
@@ -1957,6 +1957,8 @@ const makeGitCore = Effect.gen(function* () {
             "GitCore.prepareCommitContext.stagedPatch",
             cwd,
             [
+              "-c",
+              "diff.relative=false",
               "diff",
               "--cached",
               "--patch",
@@ -2030,6 +2032,7 @@ const makeGitCore = Effect.gen(function* () {
           current.snapshot.includedTree !== expected.includedTree
         )
           return { status: "context_changed" as const };
+        yield* rejectSelectedMerge(cwd, expected.filePaths);
         if (options?.newBranch) {
           yield* createBranch({ cwd, branch: options.newBranch });
           yield* Effect.scoped(checkoutBranch({ cwd, branch: options.newBranch }));
@@ -2038,13 +2041,50 @@ const makeGitCore = Effect.gen(function* () {
           (args, options) => executeGit("GitCore.commitPrepared.stage", cwd, args, options),
           expected.filePaths,
         );
-        const result = yield* commit(cwd, subject, body, expected.filePaths);
+        const result = yield* commitChecked(cwd, subject, body, expected.filePaths);
         preparedContexts.delete(context);
         return { status: "created" as const, commitSha: result.commitSha };
       }),
     );
 
+  const rejectSelectedMerge = (cwd: string, filePaths?: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      if (!filePaths?.length) return;
+      const mergeHeadPath = yield* runGitStdout("GitCore.commit.mergeHeadPath", cwd, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "MERGE_HEAD",
+      ]).pipe(Effect.map((stdout) => stdout.trim()));
+      const merging = yield* fileSystem
+        .exists(resolvePath(cwd, mergeHeadPath))
+        .pipe(
+          Effect.mapError((cause) =>
+            createGitCommandError(
+              "GitCore.commit",
+              cwd,
+              ["commit"],
+              "Could not check whether a merge is in progress: " + cause.message,
+            ),
+          ),
+        );
+      if (merging)
+        return yield* createGitCommandError(
+          "GitCore.commit",
+          cwd,
+          ["commit"],
+          "Cannot commit selected files during a merge. Commit all files to finish the merge.",
+        );
+    });
+
   const commit: GitCoreShape["commit"] = (cwd, subject, body, filePaths) =>
+    Effect.gen(function* () {
+      yield* rejectSelectedMerge(cwd, filePaths);
+      return yield* commitChecked(cwd, subject, body, filePaths);
+    });
+
+  // commitPrepared already checked before staging; direct callers check above.
+  const commitChecked: GitCoreShape["commit"] = (cwd, subject, body, filePaths) =>
     Effect.gen(function* () {
       const args = ["commit", "-m", subject];
       const trimmedBody = body.trim();
@@ -2052,18 +2092,7 @@ const makeGitCore = Effect.gen(function* () {
         args.push("-m", trimmedBody);
       }
       if (filePaths && filePaths.length > 0) {
-        const mergeHeadPath = yield* runGitStdout("GitCore.commit.mergeHeadPath", cwd, [
-          "rev-parse",
-          "--path-format=absolute",
-          "--git-path",
-          "MERGE_HEAD",
-        ]).pipe(Effect.map((stdout) => stdout.trim()));
-        const mergeInProgress = yield* fileSystem
-          .exists(isAbsolutePath(mergeHeadPath) ? mergeHeadPath : resolvePath(cwd, mergeHeadPath))
-          .pipe(Effect.catch(() => Effect.succeed(false)));
-        if (!mergeInProgress) {
-          args.push("--only", "--", ...filePaths.map(topLiteralGitPathspec));
-        }
+        args.push("--only", "--", ...filePaths.map(topLiteralGitPathspec));
       }
       // The summary lists every created or deleted path.
       yield* executeGit("GitCore.commit.commit", cwd, args, {
@@ -2350,6 +2379,8 @@ const makeGitCore = Effect.gen(function* () {
             "--",
           ]),
           runGitStdout("GitCore.readRangeContext.diffStat", cwd, [
+            "-c",
+            "diff.relative=false",
             "diff",
             "--stat",
             "--end-of-options",
@@ -2357,6 +2388,8 @@ const makeGitCore = Effect.gen(function* () {
             "--",
           ]),
           runGitStdout("GitCore.readRangeContext.diffPatch", cwd, [
+            "-c",
+            "diff.relative=false",
             "diff",
             "--patch",
             "--find-renames",

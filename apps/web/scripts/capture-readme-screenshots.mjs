@@ -97,7 +97,9 @@ try {
 
   // Home + marketing hero.
   await page.goto(`${baseUrl}/`);
-  await waitFor("home", page.getByText("Needs you").first(), '"Needs you"');
+  await waitFor("home", page.getByRole("listbox", { name: "Queue" }), "the Home queue");
+  // The preview pane loads after the queue.
+  await waitFor("home", page.locator('[data-slot="home-preview"]'), "the Home preview");
   await prepare("home");
   if ((await page.getByText("Planning workflows").count()) > 0) {
     throw new Error("[home] onboarding panel is visible");

@@ -14,6 +14,7 @@ import type {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
+  ThreadId,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect, Scope, Stream } from "effect";
@@ -45,9 +46,22 @@ export interface OrchestrationEngineShape {
   /**
    * Read the current in-memory orchestration read model.
    *
+   * A thread that was archived before the server started is flagged
+   * `activitiesOmitted` and has only its worktree-setup activity here until an
+   * event reaches it. Call `ensureThreadActivities` before reading the
+   * `activities` of a thread that carries the flag.
+   *
    * @returns Effect containing the latest read model.
    */
   readonly getReadModel: () => Effect.Effect<OrchestrationReadModel, never, never>;
+
+  /**
+   * Load the retained activities of these threads into the read model, if
+   * they are not there yet. A failed load is logged and leaves the thread
+   * flagged `activitiesOmitted`; check the flag where incomplete activities
+   * would lead to a wrong write.
+   */
+  readonly ensureThreadActivities?: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<void>;
 
   /**
    * Read a bounded page of persisted events after an exclusive sequence cursor.

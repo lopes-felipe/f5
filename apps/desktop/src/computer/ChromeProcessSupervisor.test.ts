@@ -467,7 +467,7 @@ describe("ChromeLeaseAuthority with a supervisor", () => {
     expect(() => lease.acquire({ ...holder, profileId: "q" }, null)).toThrow();
     await h.advance(3_500);
     expect(lease.current()).toBeNull();
-    expect(changed).toHaveBeenLastCalledWith(null);
+    expect(changed).toHaveBeenLastCalledWith([]);
   });
 
   it("interrupt invalidates the generation immediately", async () => {
@@ -476,7 +476,7 @@ describe("ChromeLeaseAuthority with a supervisor", () => {
     const lease = new ChromeLeaseAuthority(() => {}, supervisor);
     lease.acquire(holder, null);
     await supervisor.register(registration(), BACKEND);
-    expect(lease.interrupt("emergency")).toEqual(holder);
+    expect(lease.interrupt("emergency")).toEqual([holder]);
     expect(() => lease.validate(holder)).toThrow();
     await h.advance(0);
     expect(h.signals[0]).toEqual([100, "SIGTERM"]);

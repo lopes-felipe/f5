@@ -109,6 +109,8 @@ import type {
   UpstreamTopicDetail,
   UpstreamTopicFiles,
   UpstreamUndoDecisionsInput,
+  UpstreamExpireBacklogInput,
+  UpstreamExpireBacklogResult,
   UpstreamUnlinkPortInput,
   UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
@@ -206,6 +208,7 @@ import type {
 } from "./providerInventory";
 import type {
   ServerConfig,
+  ServerHealth,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
   ServerKeybindingMutationResult,
@@ -235,8 +238,10 @@ import type {
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
+  UsageGetThreadTurnsInput,
   UsageSummary,
   UsageQuotaHistory,
+  UsageThreadTurns,
 } from "./usage";
 import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitation";
 import type {
@@ -495,7 +500,9 @@ import type {
   OrchestrationGetRewindDraftsInput,
   OrchestrationGetRewindDraftsResult,
   OrchestrationGetThreadPeekInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationThreadPeek,
+  OrchestrationThreadPeeks,
   OrchestrationThreadHistoryPage,
   OrchestrationThreadTailDetails,
   OrchestrationGetTurnDiffInput,
@@ -503,6 +510,8 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowInput,
+  OrchestrationPostCodeReviewWorkflowResult,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationRetryWorkflowResult,
@@ -530,6 +539,8 @@ export interface ContextMenuItem<T extends string = string> {
   destructive?: boolean;
   disabled?: boolean;
   separatorBefore?: boolean;
+  icon?: string;
+  children?: readonly ContextMenuItem<T>[];
 }
 
 export type DesktopUpdateChannel = "stable" | "beta";
@@ -769,7 +780,8 @@ export type DesktopNotificationTarget =
   | { readonly kind: "thread"; readonly threadId: string }
   | { readonly kind: "prHub"; readonly prKey?: string }
   | { readonly kind: "scheduled"; readonly taskId: string }
-  | { readonly kind: "upstream"; readonly projectId: string }
+  /** `view: "features"` opens the newest Inbox features (the weekly digest). */
+  | { readonly kind: "upstream"; readonly projectId: string; readonly view?: "features" }
   | { readonly kind: "update" }
   | { readonly kind: "none" };
 
@@ -806,6 +818,11 @@ export interface DesktopNotificationsBridge {
 }
 
 export interface DesktopBridge {
+  takeAppActivations?: () => Promise<
+    readonly import("./desktopAppActivation").DesktopAppActivationRequest[]
+  >;
+  onAppActivationsAvailable?: (listener: () => void) => () => void;
+  completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
   readonly notifications?: DesktopNotificationsBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
@@ -838,6 +855,8 @@ export interface DesktopBridge {
   revealWindow?: () => Promise<void>;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
+  resolveActivationPaths?: (paths: readonly string[]) => Promise<(string | null)[]>;
+  isAppActivationPending?: (id: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
@@ -1211,6 +1230,8 @@ export interface NativeApi {
     }>;
     undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;
     getConfig: () => Promise<ServerConfig>;
+    /** Slow routes, slow SQL statements and event-loop delay since the server started. */
+    getHealth: () => Promise<ServerHealth>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
@@ -1410,6 +1431,11 @@ export interface NativeApi {
     getQuotaHistory: () => Promise<UsageQuotaHistory>;
     /** Scan local Claude transcripts for usage recommendations (up to a minute). */
     analyzeClaudeUsage: (input: UsageAnalyzeClaudeUsageInput) => Promise<ClaudeUsageAnalysis>;
+    /** One thread's recorded per-turn token counts, oldest first. */
+    getThreadTurns: (
+      input: UsageGetThreadTurnsInput,
+      context?: NativeRequestContext,
+    ) => Promise<UsageThreadTurns>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {
@@ -1453,6 +1479,7 @@ export interface NativeApi {
     decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
     acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
     undoDecisions: (input: UpstreamUndoDecisionsInput) => Promise<UpstreamDecideResult>;
+    expireBacklog: (input: UpstreamExpireBacklogInput) => Promise<UpstreamExpireBacklogResult>;
     run: (input: UpstreamRunInput) => Promise<UpstreamRunResult>;
     startPort: (input: UpstreamStartPortInput) => Promise<UpstreamStartPortResult>;
     previewPortGroups: (
@@ -1573,6 +1600,10 @@ export interface NativeApi {
       input: OrchestrationGetThreadPeekInput,
       context?: NativeRequestContext,
     ) => Promise<OrchestrationThreadPeek>;
+    getThreadPeeks: (
+      input: OrchestrationGetThreadPeeksInput,
+      context?: NativeRequestContext,
+    ) => Promise<OrchestrationThreadPeeks>;
     getThreadHistoryPage: (
       input: OrchestrationGetThreadHistoryPageInput,
     ) => Promise<OrchestrationThreadHistoryPage>;
@@ -1633,6 +1664,9 @@ export interface NativeApi {
     retryCodeReviewWorkflow: (
       input: OrchestrationRetryCodeReviewWorkflowInput,
     ) => Promise<OrchestrationRetryWorkflowResult>;
+    postCodeReviewWorkflow: (
+      input: OrchestrationPostCodeReviewWorkflowInput,
+    ) => Promise<OrchestrationPostCodeReviewWorkflowResult>;
     retryInvestigationWorkflow: (
       input: OrchestrationRetryInvestigationWorkflowInput,
     ) => Promise<void>;

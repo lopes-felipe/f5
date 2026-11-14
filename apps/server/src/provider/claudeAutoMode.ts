@@ -1,5 +1,6 @@
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { RuntimeMode } from "@t3tools/contracts";
+import type { ClaudeBypassAvailability } from "./claudeBypassAvailability.ts";
 
 /**
  * Claude `auto` permission mode fails closed: it is used only when the model
@@ -12,6 +13,7 @@ export const CLAUDE_AUTO_UNAVAILABLE_WARNING =
 export function claudeRuntimePermissionMode(
   runtimeMode: RuntimeMode,
   supportsAutoMode: boolean | undefined,
+  availability?: ClaudeBypassAvailability,
 ): { readonly mode: PermissionMode; readonly autoUnavailable: boolean } {
   switch (runtimeMode) {
     case "approval-required":
@@ -23,6 +25,11 @@ export function claudeRuntimePermissionMode(
         ? { mode: "auto", autoUnavailable: false }
         : { mode: "default", autoUnavailable: true };
     case "full-access":
+      if (availability?.bypassDisabled)
+        return {
+          mode: !availability.autoDisabled && supportsAutoMode === true ? "auto" : "default",
+          autoUnavailable: false,
+        };
       return { mode: "bypassPermissions", autoUnavailable: false };
   }
 }

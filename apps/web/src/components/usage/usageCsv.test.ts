@@ -82,20 +82,22 @@ describe("usageCsv", () => {
   it("writes bucket rows with ISO bounds and raw numbers", () => {
     const [header, row] = usageCsv(summary, "over-time", projectName).split("\r\n");
     expect(header).toBe(
-      "interval_start,interval_end,recorded_turns,total_tokens,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,unpriced_turns",
+      "interval_start,interval_end,recorded_turns,total_tokens,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,unpriced_turns,native_model_calls,unpriced_native_model_calls",
     );
-    expect(row).toBe("2026-11-07T00:00:00.000Z,2026-11-08T00:00:00.000Z,2,120,100,20,5,1,0.5,0");
+    expect(row).toBe(
+      "2026-11-07T00:00:00.000Z,2026-11-08T00:00:00.000Z,2,120,100,20,5,1,0.5,0,0,0",
+    );
   });
 
   it("leaves an unknown cost empty and quotes model names", () => {
     const row = usageCsv(summary, "models", projectName).split("\r\n")[1];
-    expect(row).toBe('Codex,"gpt ""five"", six",2,120,100,20,5,1,,2');
+    expect(row).toBe('Codex,"gpt ""five"", six",2,120,100,20,5,1,,2,0,0');
   });
 
   it("names projects and threads", () => {
     const projects = usageCsv(summary, "projects", projectName).split("\r\n");
     expect(projects[1]).toMatch(/^p1,Alpha,false,/);
-    expect(projects[2]).toMatch(/^,Unattributed historical cost,false,/);
+    expect(projects[2]).toMatch(/^,Usage without a project,false,/);
     const threads = usageCsv(summary, "threads", projectName).split("\r\n");
     expect(threads[1]).toMatch(/^t1,Untitled thread,p1,true,/);
   });

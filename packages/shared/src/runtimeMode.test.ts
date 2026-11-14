@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { runtimeModeCapabilities } from "./runtimeMode";
+import { runtimeModeCapabilities, runtimeModeUnsupportedReason } from "./runtimeMode";
 
 describe("runtimeModeCapabilities", () => {
+  it("rejects unsupported Antigravity Auto consistently with scheduled tasks", () => {
+    expect(runtimeModeCapabilities("antigravity").has("auto")).toBe(false);
+    expect(runtimeModeUnsupportedReason("antigravity", "auto")).toBeDefined();
+  });
   it("exposes the fail-closed provider capability matrix", () => {
     expect([...runtimeModeCapabilities("codex")]).toEqual([
       "approval-required",

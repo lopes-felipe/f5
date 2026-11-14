@@ -16,6 +16,8 @@ import {
   impactClassName,
   impactLabel,
   isUpstreamTopicQueued,
+  laneBadgeVariant,
+  laneChipLabel,
   suggestionBadgeVariant,
   suggestionChipLabel,
   suggestionVerb,
@@ -130,6 +132,14 @@ const UpstreamTopicRowView = (props: {
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium">{topic.title}</span>
+          <Badge variant={laneBadgeVariant(props.row)} size="sm" className="shrink-0">
+            {laneChipLabel(props.row)}
+          </Badge>
+          {topic.decidedBy === "llm" && (props.row.state === "ready" || props.row.state === "in-progress") && (
+            <Badge variant="info" size="sm" className="shrink-0" title="Queued automatically after triage">
+              Auto
+            </Badge>
+          )}
           {props.queued && (
             <Badge variant="outline" size="sm">
               Queued
@@ -155,6 +165,9 @@ const UpstreamTopicRowView = (props: {
           )}
         </div>
         <div className="flex items-center gap-2 truncate text-xs text-muted-foreground">
+          <span className="shrink-0 tabular-nums" title="Score (0-100)">
+            Score {props.row.score}
+          </span>
           {topic.upstreamPrs.slice(0, 3).map((pr) => (
             <a
               key={pr}

@@ -9,11 +9,69 @@ import {
   decideToolCallUpdateEmission,
   mergeToolCallState,
   parsePermissionRequest,
+  withTrackedPermissionToolCall,
   parseSessionModeState,
   parseSessionUpdateEvent,
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("recovers a title-only command from an actually parsed tracked call", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "title-only",
+        kind: "execute",
+        title: "git status",
+        status: "pending",
+        rawInput: {},
+      },
+    });
+    const event = parsed.events[0];
+    expect(event?._tag).toBe("ToolCallUpdated");
+    if (event?._tag !== "ToolCallUpdated") throw new Error("Expected tracked tool call");
+    expect(
+      parsePermissionRequest(
+        withTrackedPermissionToolCall(
+          {
+            sessionId: "s",
+            toolCall: { toolCallId: "title-only" },
+            options: [],
+          },
+          event.toolCall,
+        ),
+      ),
+    ).toMatchObject({ kind: "execute", detail: "git status" });
+  });
+  it("fills ID-only approvals but preserves explicit clears and non-execution kinds", () => {
+    const tracked = {
+      toolCallId: "tool",
+      kind: "execute",
+      data: { title: "git status", rawInput: { command: "git status" } },
+    };
+    const request = { sessionId: "session", toolCall: { toolCallId: "tool" }, options: [] };
+    expect(parsePermissionRequest(withTrackedPermissionToolCall(request, tracked))).toMatchObject({
+      kind: "execute",
+      detail: "git status",
+    });
+    expect(
+      withTrackedPermissionToolCall(
+        {
+          ...request,
+          toolCall: {
+            toolCallId: "tool",
+            kind: null,
+            title: null,
+            rawInput: null,
+          },
+        },
+        tracked,
+      ).toolCall,
+    ).toMatchObject({ kind: null, title: null, rawInput: null });
+    expect(
+      withTrackedPermissionToolCall(request, { ...tracked, kind: "read" }).toolCall.kind,
+    ).toBeUndefined();
+  });
   it("keeps thinking chunks separate from assistant output", () => {
     expect(
       parseSessionUpdateEvent({
@@ -157,6 +215,7 @@ describe("AcpRuntimeModel", () => {
           detail: "bun run typecheck",
           data: {
             toolCallId: "tool-1",
+            title: "Terminal",
             kind: "execute",
             command: "bun run typecheck",
             rawInput: {

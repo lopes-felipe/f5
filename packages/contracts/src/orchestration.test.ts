@@ -13,6 +13,7 @@ import {
   OrchestrationCreateWorkflowInput,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetThreadHistoryPageInput,
+  OrchestrationGetThreadPeeksInput,
   OrchestrationThread,
   OrchestrationGetTurnDiffInput,
   OrchestrationProposedPlan,
@@ -24,6 +25,7 @@ import {
   OrchestrationThreadActivityCursor,
   RuntimeMode,
   TaskItem,
+  THREAD_PEEKS_MAX_THREADS,
   ProjectCreateCommand,
   ThreadArchivedPayload,
   ThreadMessageSentPayload,
@@ -969,6 +971,16 @@ it("validates nullable activity cursor sequence identity", () => {
       activityId: "activity-1",
     }),
   );
+});
+
+it("caps a thread peeks request", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationGetThreadPeeksInput);
+  const ids = (count: number) => Array.from({ length: count }, (_, index) => `thread-${index}`);
+  assert.strictEqual(
+    decode({ threadIds: ids(THREAD_PEEKS_MAX_THREADS) }).threadIds.length,
+    THREAD_PEEKS_MAX_THREADS,
+  );
+  assert.throws(() => decode({ threadIds: ids(THREAD_PEEKS_MAX_THREADS + 1) }));
 });
 
 it("rejects ambiguous message history window selectors", () => {

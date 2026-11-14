@@ -1,3 +1,4 @@
+import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isBusySession } from "../orchestration/sessionBusy.ts";
 import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
 import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
@@ -2400,9 +2401,22 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ],
           providerHomesDir,
           settings: discoverySettings,
+          snapshotUsageCachePath: Path.join(config.stateDir, "snapshot-usage-cache.json"),
           ...(signal ? { signal } : {}),
         }),
       );
+      // Database snapshots are clones: the walk above counted the blocks they
+      // share with newer copies once per snapshot. Count them once.
+      for (const [backupsDir, sharedBytes] of providerScan.sharedSnapshotBytes) {
+        if (!isPathWithinRoot({ root: config.stateDir, target: backupsDir })) continue;
+        measured.totalBytes = Math.max(0, measured.totalBytes - sharedBytes);
+        for (const [checkpoint, usage] of measured.byCheckpoint)
+          if (isPathWithinRoot({ root: checkpoint, target: backupsDir }))
+            measured.byCheckpoint.set(checkpoint, {
+              ...usage,
+              bytes: Math.max(0, usage.bytes - sharedBytes),
+            });
+      }
       const categories: StorageCleanupCategoryUsage[] = [
         ...providerScan.categories,
         categoryUsage({
@@ -3575,7 +3589,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 yield* engine.dispatch({
                   type: "thread.delete",
                   commandId: CommandId.makeUnsafe(
-                    `server:storage-archived-delete:${Crypto.randomUUID()}`,
+                    `server:storage-archived-delete:${timeOrderedUuid()}`,
                   ),
                   threadId: thread.threadId,
                   expectedArchivedAt: thread.archivedAt!,
@@ -4044,7 +4058,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 return "Workspace activity changed before archiving. Rescan.";
               yield* engine.dispatch({
                 type: "thread.archive",
-                commandId: CommandId.makeUnsafe("storage:archive:" + Crypto.randomUUID()),
+                commandId: CommandId.makeUnsafe("storage:archive:" + timeOrderedUuid()),
                 threadId: thread.threadId,
                 createdAt: nowIso(),
                 cleanupExpectation: {
@@ -5132,12 +5146,20 @@ const makeStorageMaintenance = Effect.gen(function* () {
           continue;
         }
         warnings.push(...(outcome.success.warnings ?? []));
-        if (outcome.success.removedBytes) {
+        const removedBytes = outcome.success.removedBytes ?? 0;
+        // An emptied snapshot directory has no bytes to remove, but it is gone.
+        if (removedBytes > 0 || outcome.success.removedDirectory) {
           markStorageMutation(request.operationId);
           perTargetReclaimed.push({
             id,
             path: review.path,
-            reclaimedBytes: outcome.success.removedBytes,
+            // A database snapshot frees only what the copies next to it do not
+            // share. The worker measures that when an older snapshot is kept;
+            // otherwise the scan's figure is what removal freed.
+            reclaimedBytes: Math.min(
+              removedBytes,
+              outcome.success.reclaimedBytes ?? review.reclaimBytes ?? removedBytes,
+            ),
             status: "Removed",
           });
         }

@@ -39,6 +39,8 @@ export async function ensureProfileBackend(
 export const MAX_BACKEND_RESTART_ATTEMPTS = 6;
 /** Confirmed health for this long forgives earlier crashes. */
 export const BACKEND_HEALTHY_RESET_MS = 60_000;
+// Large state databases can take several minutes to open.
+export const BACKEND_READINESS_TIMEOUT_MS = 180_000;
 const BACKEND_HEALTH_POLL_MS = 1_000;
 
 /**
@@ -102,7 +104,10 @@ export function monitorBackendHealth(input: {
       input.onReady?.();
       schedule(healthyForMs, confirmSustainedHealth);
     } else {
-      if (!timeoutReported && Date.now() - startedAt >= (input.startupTimeoutMs ?? 30_000)) {
+      if (
+        !timeoutReported &&
+        Date.now() - startedAt >= (input.startupTimeoutMs ?? BACKEND_READINESS_TIMEOUT_MS)
+      ) {
         timeoutReported = true;
         input.onStartupTimeout?.();
       }
@@ -125,7 +130,7 @@ export function monitorBackendHealth(input: {
 export async function waitForProfileBackend(
   isRunning: () => boolean,
   checkReady: () => Promise<boolean>,
-  timeoutMs = 30_000,
+  timeoutMs = BACKEND_READINESS_TIMEOUT_MS,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (isRunning()) {

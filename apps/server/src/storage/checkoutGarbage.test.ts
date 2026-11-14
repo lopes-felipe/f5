@@ -1,7 +1,8 @@
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as storageActivity from "./storageActivity.ts";
 import {
   DEPENDENCY_QUARANTINE_PREFIX,
   findDependencyFolders,
@@ -9,7 +10,7 @@ import {
   removeDependencyFolder,
   scanCheckoutGarbage,
 } from "./checkoutGarbage.ts";
-import { fileIdentity } from "./diskUsage.ts";
+import { fileIdentity, storageLstat } from "./diskUsage.ts";
 import { runStorageTask } from "./storageWorker.ts";
 
 let root: string;
@@ -81,7 +82,7 @@ describe("dependency folders", () => {
     expect(relative((await findDependencyFolders(root)).folders)).toEqual([]);
 
     await FS.rm(Path.join(path, "pkg", ".git"), { recursive: true });
-    const identity = fileIdentity(await FS.lstat(path));
+    const identity = fileIdentity(await storageLstat(path));
     await write(Path.join(path, "pkg", ".git", "HEAD"));
     expect(
       await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
@@ -90,6 +91,33 @@ describe("dependency folders", () => {
       reason: expect.stringMatching(/contains a Git checkout/),
     });
     expect(await FS.readFile(Path.join(path, "pkg", ".git", "HEAD"), "utf8")).toBe("x");
+  });
+
+  it("rechecks Git protection after the Windows file-use probe", async () => {
+    const path = Path.join(root, "node_modules");
+    await write(Path.join(path, "pkg", "index.js"));
+    const identity = fileIdentity(await storageLstat(path));
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const probe = vi
+      .spyOn(storageActivity, "inspectWindowsFileUse")
+      .mockImplementation(async () => {
+        await write(Path.join(path, "pkg", ".git", "HEAD"));
+        return { state: "idle" };
+      });
+    try {
+      Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+      expect(
+        await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
+      ).toMatchObject({
+        outcome: "refused",
+        reason: expect.stringMatching(/contains a Git checkout/),
+      });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(await FS.readFile(Path.join(path, "pkg", ".git", "HEAD"), "utf8")).toBe("x");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      probe.mockRestore();
+    }
   });
 
   it("offers a quarantine an interrupted cleanup left behind", async () => {
@@ -120,7 +148,7 @@ describe("dependency folders", () => {
   it("reuses an unchanged folder's size and Git check, and re-walks a changed one", async () => {
     const path = Path.join(root, "node_modules");
     await write(Path.join(path, "pkg", "index.js"), "x".repeat(10_000));
-    const identity = fileIdentity(await FS.lstat(path));
+    const identity = fileIdentity(await storageLstat(path));
     const scan = (
       known: ReadonlyArray<{ path: string; identity: typeof identity; bytes: number }>,
     ) =>
@@ -159,7 +187,7 @@ describe("dependency folders", () => {
   it("quarantines and deletes a reviewed folder", async () => {
     await write(Path.join(root, "node_modules", "pkg", "index.js"), "x".repeat(5_000));
     const path = Path.join(root, "node_modules");
-    const identity = fileIdentity(await FS.lstat(path));
+    const identity = fileIdentity(await storageLstat(path));
     const result = await removeDependencyFolder(
       { path, checkoutRoot: root, identity },
       noProcesses,
@@ -176,7 +204,7 @@ describe("dependency folders", () => {
   it("refuses a folder that changed or was replaced since review", async () => {
     await write(Path.join(root, "node_modules", "pkg", "index.js"));
     const path = Path.join(root, "node_modules");
-    const identity = fileIdentity(await FS.lstat(path));
+    const identity = fileIdentity(await storageLstat(path));
     // A reinstall adds packages: the folder's mtime moves.
     await write(Path.join(path, "added", "index.js"));
     await age(path, -5_000);
@@ -199,7 +227,7 @@ describe("dependency folders", () => {
     await write(Path.join(root, "node_modules", "pkg", "index.js"));
     const path = Path.join(root, "node_modules");
     const result = await removeDependencyFolder(
-      { path, checkoutRoot: root, identity: fileIdentity(await FS.lstat(path)) },
+      { path, checkoutRoot: root, identity: fileIdentity(await storageLstat(path)) },
       async () => [{ pid: 42, name: "node", cwd: root, paths: [] }],
     );
     expect(result).toMatchObject({ outcome: "busy", activity: { state: "busy" } });

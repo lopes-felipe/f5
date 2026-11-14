@@ -46,6 +46,25 @@ export default defineConfig({
       "@pierre/diffs/react",
       "@pierre/diffs/worker/worker.js",
       "react-dom/client",
+      "react",
+      "react-dom",
+      "dompurify",
+      "entities",
+      "fast-xml-parser",
+      "jszip",
+      "saxes",
+      "fflate",
+      "sql.js",
+      "tiff",
+      "heic-to/next",
+      "@betteroffice/fonts",
+      "@betteroffice/docx/editor",
+      "@betteroffice/docx/layout",
+      "@betteroffice/docx/layout/render",
+      "@betteroffice/docx/yrs",
+      "@betteroffice/pptx",
+      "@betteroffice/xlsx",
+      "@betteroffice/xlsx/headless",
       "effect/Encoding",
       "effect/Result",
       // Imported only by the code highlight worker, so the dev server would
@@ -61,6 +80,13 @@ export default defineConfig({
     "import.meta.env.APP_VERSION": JSON.stringify(pkg.version),
   },
   resolve: {
+    dedupe: ["react", "react-dom"],
+    alias: {
+      "@betteroffice/fonts/cjk": new URL(
+        "./src/components/files/office/fonts-cjk.ts",
+        import.meta.url,
+      ).pathname,
+    },
     tsconfigPaths: true,
   },
   server: {
@@ -79,4 +105,5 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: buildSourcemap,
   },
+  worker: { format: "es" },
 });

@@ -418,6 +418,7 @@ export function filterProviderUpdateEnvironment(
     const upper = key.toUpperCase();
     if (
       allowed.has(upper) ||
+      (channel === "self-update" && upper === "NPM_CONFIG_ALLOW_SCRIPTS") ||
       upper.startsWith("LC_") ||
       ((channel === undefined || channel === "npm") && upper.startsWith("NPM_CONFIG_")) ||
       ((channel === undefined || channel === "homebrew") && upper.startsWith("HOMEBREW_")) ||
@@ -464,7 +465,14 @@ export function buildProviderUpdateCommand(
   if (target.channel === "npm" && target.npm && latestVersion)
     return {
       executable: target.npm.npmPath,
-      args: ["install", "-g", `${target.npm.pkg}@${latestVersion}`, "--no-audit", "--no-fund"],
+      args: [
+        "install",
+        "-g",
+        `--allow-scripts=${target.npm.pkg}`,
+        `${target.npm.pkg}@${latestVersion}`,
+        "--no-audit",
+        "--no-fund",
+      ],
       env: { NPM_CONFIG_PREFIX: target.npm.prefix },
       pathPrepend: (platform === "win32" ? Path.win32 : Path.posix).dirname(target.npm.npmPath),
       channel: "npm",
@@ -484,6 +492,8 @@ export function buildProviderUpdateCommand(
         return value ? [[name, value]] : [];
       }),
     );
+    if (target.latestSource?.kind === "npm" && target.latestSource.pkg === NPM_UPDATE_SOURCES.grok)
+      env.NPM_CONFIG_ALLOW_SCRIPTS = NPM_UPDATE_SOURCES.grok!;
     return {
       executable: target.executablePath,
       args: target.selfUpdateArgs,

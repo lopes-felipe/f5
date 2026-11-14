@@ -70,6 +70,29 @@ describe("source-control pull-request keys", () => {
 });
 
 describe("parseSourceControlRemoteUrl", () => {
+  it.each([
+    "git@github.com-work:octo/repo.git",
+    "github.com-work:octo/repo.git",
+    "ssh://git@github.com-work:22/octo/repo.git",
+    "ssh://github.com-work/octo/repo.git",
+    "git@GitHub.com-WORK:octo/repo.git",
+  ])("routes the SSH alias %s to GitHub's API and browser host", (remote) => {
+    expect(parseSourceControlRemoteUrl(remote)).toEqual({
+      kind: "github",
+      host: "github.com",
+      owner: "octo",
+      repository: "repo",
+      webUrl: "https://github.com/octo/repo",
+    });
+  });
+  it.each([
+    "https://github.com-work/octo/repo.git",
+    "git@github.com-work.example:octo/repo.git",
+    "git@github.com-:octo/repo.git",
+  ])("preserves real DNS hosts and unsupported aliases in %s", (remote) => {
+    expect(parseSourceControlRemoteUrl(remote).host).not.toBe("github.com");
+  });
+
   it("parses GitHub SSH remotes", () => {
     expect(parseSourceControlRemoteUrl("git@github.com:pingdotgg/t3code.git")).toEqual({
       kind: "github",

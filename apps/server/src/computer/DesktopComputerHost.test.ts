@@ -48,6 +48,7 @@ describe("private desktop host", () => {
         "chrome-call-activity-v1",
         "chrome-call-admission-v1",
         "chrome-release-v1",
+        "chrome-shared-v1",
       ],
     });
     expect(host.backgroundCapable()).toBe(false);

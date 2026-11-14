@@ -13,7 +13,11 @@ import { PendingUserInput } from "./userInput";
 import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
 import { SourceControlPullRequestRef } from "./sourceControl";
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
-import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
+import {
+  CodeReviewPullRequest,
+  CodeReviewWorkflow,
+  CodeReviewWorkflowId,
+} from "./codeReviewWorkflow";
 import { InvestigationWorkflow, InvestigationWorkflowId } from "./investigationWorkflow";
 import { ProviderModelOptions, ProviderOptionSelections } from "./model";
 import {
@@ -71,6 +75,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getThreadTailDetails: "orchestration.getThreadTailDetails",
   getRewindDrafts: "orchestration.getRewindDrafts",
   getThreadPeek: "orchestration.getThreadPeek",
+  getThreadPeeks: "orchestration.getThreadPeeks",
   getThreadHistoryPage: "orchestration.getThreadHistoryPage",
   getThreadDetails: "orchestration.getThreadDetails",
   dispatchCommand: "orchestration.dispatchCommand",
@@ -91,6 +96,7 @@ export const ORCHESTRATION_WS_METHODS = {
   unarchiveCodeReviewWorkflow: "orchestration.unarchiveCodeReviewWorkflow",
   deleteCodeReviewWorkflow: "orchestration.deleteCodeReviewWorkflow",
   retryCodeReviewWorkflow: "orchestration.retryCodeReviewWorkflow",
+  postCodeReviewWorkflow: "orchestration.postCodeReviewWorkflow",
   createInvestigationWorkflow: "orchestration.createInvestigationWorkflow",
   archiveInvestigationWorkflow: "orchestration.archiveInvestigationWorkflow",
   unarchiveInvestigationWorkflow: "orchestration.unarchiveInvestigationWorkflow",
@@ -305,6 +311,7 @@ export const ProjectScript = Schema.Struct({
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
   runOnWorktreeSettle: Schema.optional(Schema.Boolean),
+  stopOnSettle: Schema.optional(Schema.Boolean),
   /**
    * Whether the agent may start while this setup script still runs. Absent
    * means true, so scripts saved before the option existed keep running in
@@ -1076,6 +1083,12 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(() => []),
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
+  /**
+   * Set by the server's in-memory read model for a thread that was archived
+   * before startup: `activities` holds its worktree-setup activity only, and
+   * the rest is still in SQLite. Cleared once the server loads them.
+   */
+  activitiesOmitted: Schema.optional(Schema.Boolean),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -1221,6 +1234,8 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   reviewerB: WorkflowModelSlot,
   consolidation: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
+  pullRequest: Schema.optional(Schema.NullOr(CodeReviewPullRequest)),
+  autoPost: Schema.optional(Schema.Boolean),
   reviewerThreadIdA: ThreadId,
   reviewerThreadIdB: ThreadId,
   createdAt: IsoDateTime,
@@ -3086,6 +3101,10 @@ export const THREAD_PEEK_USER_TEXT_MAX_CHARS = 200;
 /** Max length of `OrchestrationThreadPeek.lastAssistantText`. */
 export const THREAD_PEEK_ASSISTANT_TEXT_MAX_CHARS = 600;
 
+/**
+ * One thread's peek. The thread is not looked up: an unknown or deleted id is answered with
+ * a peek whose fields are all null, where `getThreadPeeks` leaves that id out.
+ */
 export const OrchestrationGetThreadPeekInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -3109,6 +3128,20 @@ export const OrchestrationThreadPeek = Schema.Struct({
 });
 export type OrchestrationThreadPeek = typeof OrchestrationThreadPeek.Type;
 
+/** Most threads one `getThreadPeeks` request may ask for. */
+export const THREAD_PEEKS_MAX_THREADS = 50;
+
+export const OrchestrationGetThreadPeeksInput = Schema.Struct({
+  threadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(THREAD_PEEKS_MAX_THREADS)),
+});
+export type OrchestrationGetThreadPeeksInput = typeof OrchestrationGetThreadPeeksInput.Type;
+
+/** Peeks in the order asked, each thread once; ids of threads that do not exist are left out. */
+export const OrchestrationThreadPeeks = Schema.Struct({
+  peeks: Schema.Array(OrchestrationThreadPeek),
+});
+export type OrchestrationThreadPeeks = typeof OrchestrationThreadPeeks.Type;
+
 export const OrchestrationGetThreadTailDetailsInput = Schema.Struct({
   threadId: ThreadId,
   messageLimit: Schema.optional(NonNegativeInt),
@@ -3120,6 +3153,8 @@ export type OrchestrationGetThreadTailDetailsInput =
 
 export const OrchestrationThreadTailDetails = Schema.Struct({
   threadId: ThreadId,
+  /** Route fallback when the shell has not listed this thread yet. Null confirms absence. */
+  thread: Schema.optional(Schema.NullOr(OrchestrationThread)),
   messages: Schema.Array(OrchestrationMessage),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   activities: Schema.Array(OrchestrationThreadActivity).pipe(Schema.withDecodingDefault(() => [])),
@@ -3383,6 +3418,8 @@ export const OrchestrationCreateCodeReviewWorkflowInput = Schema.Struct({
   reviewerB: WorkflowModelSlot,
   consolidation: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+  /** Post the merged review to the detected GitHub pull request when it finishes. */
+  autoPost: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationCreateCodeReviewWorkflowInput =
   typeof OrchestrationCreateCodeReviewWorkflowInput.Type;
@@ -3490,6 +3527,25 @@ export const OrchestrationRetryCodeReviewWorkflowInput = Schema.Struct({
 export type OrchestrationRetryCodeReviewWorkflowInput =
   typeof OrchestrationRetryCodeReviewWorkflowInput.Type;
 
+export const OrchestrationPostCodeReviewWorkflowInput = Schema.Struct({
+  workflowId: CodeReviewWorkflowId,
+  /**
+   * When an earlier post's outcome is unknown, abandon it and post again
+   * instead of re-verifying it. The earlier comment may already be on GitHub.
+   */
+  allowPossibleDuplicate: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
+});
+export type OrchestrationPostCodeReviewWorkflowInput =
+  typeof OrchestrationPostCodeReviewWorkflowInput.Type;
+
+export const OrchestrationPostCodeReviewWorkflowResult = Schema.Struct({
+  status: Schema.Literal("started"),
+});
+export type OrchestrationPostCodeReviewWorkflowResult =
+  typeof OrchestrationPostCodeReviewWorkflowResult.Type;
+
 export const OrchestrationRetryInvestigationWorkflowInput = Schema.Struct({
   workflowId: InvestigationWorkflowId,
   scope: Schema.optional(
@@ -3543,6 +3599,10 @@ export const OrchestrationRpcSchemas = {
   getThreadPeek: {
     input: OrchestrationGetThreadPeekInput,
     output: OrchestrationThreadPeek,
+  },
+  getThreadPeeks: {
+    input: OrchestrationGetThreadPeeksInput,
+    output: OrchestrationThreadPeeks,
   },
   getThreadHistoryPage: {
     input: OrchestrationGetThreadHistoryPageInput,
@@ -3639,6 +3699,10 @@ export const OrchestrationRpcSchemas = {
   retryCodeReviewWorkflow: {
     input: OrchestrationRetryCodeReviewWorkflowInput,
     output: OrchestrationRetryWorkflowResult,
+  },
+  postCodeReviewWorkflow: {
+    input: OrchestrationPostCodeReviewWorkflowInput,
+    output: OrchestrationPostCodeReviewWorkflowResult,
   },
   retryInvestigationWorkflow: {
     input: OrchestrationRetryInvestigationWorkflowInput,

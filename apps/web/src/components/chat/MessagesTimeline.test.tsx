@@ -283,6 +283,65 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("keeps paused usage-limit tools grouped with the pause outside the group", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const turnId = TurnId.makeUnsafe("limited");
+    const work = (id: string, usageLimited = false): TimelineEntry => ({
+      kind: "work",
+      id,
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        turnId,
+        tone: usageLimited ? "info" : "tool",
+        label: id,
+        usageLimited,
+      },
+    });
+    const rows = buildTimelineRows({
+      timelineEntries: [work("tool-1"), work("tool-2"), work("limit", true)],
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows
+        .filter((row) => row.kind === "work")
+        .map((row) => ({
+          ids: row.groupedEntries.map((entry) => entry.id),
+          collapseEligible: row.isPriorTurn,
+        })),
+    ).toEqual([
+      { ids: ["tool-1", "tool-2"], collapseEligible: false },
+      { ids: ["limit"], collapseEligible: false },
+    ]);
+    setPersistedAppSettings({ collapseCompletedWorkLogs: true });
+    const markup = await renderMcpTimelineMarkup([
+      work("tool-1"),
+      work("tool-2"),
+      work("Usage resets tomorrow", true),
+      {
+        kind: "message",
+        id: "next",
+        createdAt,
+        message: {
+          id: MessageId.makeUnsafe("next"),
+          role: "user",
+          text: "Next",
+          createdAt,
+          streaming: false,
+        },
+      },
+    ]);
+    expect(markup).toContain("Usage resets tomorrow");
+    expect(markup.match(/data-slot="work-group-summary"/g)).toHaveLength(1);
+  });
   it("groups computer and preview runs into session rows even when MCP calls expand", async () => {
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
     const createdAt = "2026-03-17T19:12:28.000Z";

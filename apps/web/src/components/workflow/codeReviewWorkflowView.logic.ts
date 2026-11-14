@@ -2,9 +2,10 @@ import {
   deriveCodeReviewWorkflowStatus,
   type CodeReviewWorkflowSummary as CodeReviewWorkflow,
 } from "@t3tools/contracts";
+import { isGitHubCodeReviewPullRequest } from "@t3tools/shared/codeReviewPullRequest";
 
 export interface CodeReviewWorkflowError {
-  readonly key: "reviewerA" | "reviewerB" | "consolidation";
+  readonly key: "reviewerA" | "reviewerB" | "consolidation" | "post";
   readonly step: string;
   readonly message: string;
 }
@@ -34,7 +35,51 @@ export function collectCodeReviewWorkflowErrors(
       message: workflow.consolidation.error ?? "Review merge failed.",
     });
   }
+  const post = workflow.post;
+  if (post && (post.status === "failed" || post.status === "needs_recovery")) {
+    errors.push({
+      key: "post",
+      step: post.status === "failed" ? "Post to PR" : "Post to PR (outcome unknown)",
+      message: post.error ?? "Posting the merged review failed.",
+    });
+  }
   return errors;
+}
+
+export type CodeReviewPostAction =
+  | { readonly kind: "post"; readonly label: "Post to PR" }
+  | { readonly kind: "posting"; readonly label: "Posting…" }
+  | { readonly kind: "posted"; readonly label: "Posted"; readonly commentUrl: string | null }
+  | {
+      readonly kind: "post-again";
+      readonly label: "Post again";
+      readonly commentUrl: string | null;
+    }
+  | { readonly kind: "retry"; readonly label: "Retry post" }
+  | { readonly kind: "check"; readonly label: "Check again" };
+
+/** The Post to PR action for a finished merged review on a GitHub PR, or null. */
+export function codeReviewPostAction(workflow: CodeReviewWorkflow): CodeReviewPostAction | null {
+  if (
+    workflow.consolidation.status !== "completed" ||
+    !isGitHubCodeReviewPullRequest(workflow.pullRequest)
+  ) {
+    return null;
+  }
+  const post = workflow.post;
+  if (!post) return { kind: "post", label: "Post to PR" };
+  switch (post.status) {
+    case "posting":
+      return { kind: "posting", label: "Posting…" };
+    case "posted":
+      return post.consolidationTurnId === workflow.consolidation.pinnedTurnId
+        ? { kind: "posted", label: "Posted", commentUrl: post.commentUrl }
+        : { kind: "post-again", label: "Post again", commentUrl: post.commentUrl };
+    case "failed":
+      return { kind: "retry", label: "Retry post" };
+    case "needs_recovery":
+      return { kind: "check", label: "Check again" };
+  }
 }
 
 export function statusLabel(workflow: CodeReviewWorkflow): string {
@@ -48,7 +93,11 @@ export function statusLabel(workflow: CodeReviewWorkflow): string {
     case "consolidating":
       return "Merging reviews";
     case "completed":
-      return "Completed";
+      return workflow.post?.status === "failed"
+        ? "Completed · post failed"
+        : workflow.post?.status === "needs_recovery"
+          ? "Completed · post unconfirmed"
+          : "Completed";
     case "error":
       return "Error";
     default:

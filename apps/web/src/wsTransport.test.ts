@@ -9,6 +9,7 @@ import {
 } from "./protocolState";
 import { ORCHESTRATION_WS_METHODS, WS_CHANNELS, WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROVIDER_UPDATE_TIMEOUT_MS } from "@t3tools/shared/providerUpdate";
 
 import {
   getSlowRpcRequests,
@@ -1069,6 +1070,40 @@ describe("admission-aware scheduling", () => {
     await rejected;
     expect(socket.sent).toHaveLength(1);
     transport.dispose();
+  });
+
+  it("receives the server update timeout after queue and preparation delays", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 4 }, () =>
+      transport.request("git.runStackedAction", {}).catch(() => undefined),
+    );
+    const update = transport.request("server.runProviderUpdate", { instanceId: "codex" });
+    expect(socket.sent).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(55_000);
+    respond(socket, sentEnvelopes(socket)[0]!.id);
+    const sent = sentEnvelopes(socket).find(
+      (entry) => entry.body._tag === "server.runProviderUpdate",
+    )!;
+    // Server preparation and the installer can together exceed any fixed response margin.
+    await vi.advanceTimersByTimeAsync(PROVIDER_UPDATE_TIMEOUT_MS + 120_000);
+    respond(socket, sent.id, { result: { timedOut: true } });
+    await expect(update).resolves.toEqual({ timedOut: true });
+    transport.dispose();
+    await Promise.all(blockers);
+  });
+
+  it("expires an unsent provider update without dispatching it", async () => {
+    const { transport, socket } = connectSynchronized();
+    const blockers = Array.from({ length: 4 }, () =>
+      transport.request("git.runStackedAction", {}).catch(() => undefined),
+    );
+    const update = transport.request("server.runProviderUpdate", { instanceId: "codex" });
+    const rejected = expect(update).rejects.toMatchObject({ code: "QueueExpired" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await rejected;
+    expect(socket.sent).toHaveLength(4);
+    transport.dispose();
+    await Promise.all(blockers);
   });
 
   it("keeps a policy's unlimited execution deadline instead of the 60 s default", async () => {

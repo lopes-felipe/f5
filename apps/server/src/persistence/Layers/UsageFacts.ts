@@ -1,10 +1,17 @@
-import { isKnownProviderKind, UsageTurnFact } from "@t3tools/contracts";
-import { Effect, Layer } from "effect";
+import {
+  isKnownProviderKind,
+  TurnId,
+  USAGE_ASIDE_TURN_ID_PREFIX,
+  UsageThreadTurn,
+  UsageTurnFact,
+} from "@t3tools/contracts";
+import { Effect, Layer, Option, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
 
 import { toPersistenceSqlError } from "../Errors.ts";
+import { museRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
 import {
   UsageFactRepository,
   type BucketUsageSummaryRow,
@@ -13,6 +20,10 @@ import {
   type UsageFactRepositoryShape,
   type UsageScopeTitle,
 } from "../Services/UsageFacts.ts";
+
+// A row that fails the contract (a stray model string, say) is skipped rather
+// than failing the whole thread's history.
+const decodeThreadTurn = Schema.decodeUnknownOption(UsageThreadTurn);
 
 interface TitleDbRow {
   readonly id: string;
@@ -195,6 +206,7 @@ const make = Effect.gen(function* () {
         completed_at,
         recorded_at,
         source_event_id
+        , native_session_id, started_at
       ) VALUES (
         ${fact.turnId},
         ${fact.threadId},
@@ -213,6 +225,7 @@ const make = Effect.gen(function* () {
         ${fact.completedAt},
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
         ${fact.sourceEventId}
+        , ${fact.nativeSessionId ?? null}, ${fact.startedAt ?? null}
       )
       ON CONFLICT (turn_id) DO UPDATE SET
         thread_id = excluded.thread_id,
@@ -229,13 +242,25 @@ const make = Effect.gen(function* () {
         token_provenance = excluded.token_provenance,
         cost_provenance = excluded.cost_provenance,
         completed_at = excluded.completed_at,
-        source_event_id = excluded.source_event_id
+        source_event_id = excluded.source_event_id,
+        native_session_id = COALESCE(excluded.native_session_id, projection_turn_usage_facts.native_session_id),
+        started_at = COALESCE(excluded.started_at, projection_turn_usage_facts.started_at)
       WHERE excluded.completed_at >= projection_turn_usage_facts.completed_at
     `,
   });
 
   const record: UsageFactRepositoryShape["record"] = (fact) =>
-    recordQuery(fact).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
+    Effect.gen(function* () {
+      if (fact.nativeSessionId && !fact.startedAt) {
+        const turns = yield* sql<{ startedAt: string }>`
+          SELECT COALESCE(started_at, requested_at) AS "startedAt" FROM projection_turns
+          WHERE thread_id = ${fact.threadId} AND turn_id = ${fact.turnId} LIMIT 1
+        `;
+        const startedAt = turns[0]?.startedAt;
+        if (startedAt) return yield* recordQuery({ ...fact, startedAt });
+      }
+      return yield* recordQuery(fact);
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
 
   const readUsageMetadata: UsageFactRepositoryShape["readUsageMetadata"] = sql<{
     readonly coverageStartedAt: string;
@@ -362,13 +387,67 @@ const make = Effect.gen(function* () {
       };
     }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.readScopeTitles")));
 
+  const listByThread: UsageFactRepositoryShape["listByThread"] = (input) =>
+    Effect.gen(function* () {
+      // Asides are recorded on the thread but are not conversation turns.
+      const conversationTurn = sql`thread_id = ${input.threadId}
+        AND turn_id NOT LIKE ${`${USAGE_ASIDE_TURN_ID_PREFIX}%`}`;
+      const rows = yield* sql<{ readonly provider: string }>`
+        SELECT * FROM (
+          SELECT
+            turn_id AS "turnId",
+            provider_name AS "provider",
+            model,
+            input_tokens AS "inputTokens",
+            output_tokens AS "outputTokens",
+            cache_read_tokens AS "cacheReadTokens",
+            cache_write_tokens AS "cacheWriteTokens",
+            completed_at AS "completedAt"
+          FROM projection_turn_usage_facts
+          WHERE ${conversationTurn}
+          ORDER BY completed_at DESC, turn_id DESC
+          LIMIT ${input.limit}
+        )
+        ORDER BY "completedAt" ASC, "turnId" ASC
+      `;
+      const [thread] = yield* sql<{
+        readonly firstTurnId: string | null;
+        readonly turnCount: number;
+      }>`
+        SELECT
+          (
+            SELECT turn_id FROM projection_turn_usage_facts
+            WHERE ${conversationTurn}
+            ORDER BY completed_at ASC, turn_id ASC
+            LIMIT 1
+          ) AS "firstTurnId",
+          (SELECT COUNT(*) FROM projection_turn_usage_facts WHERE ${conversationTurn})
+            AS "turnCount"
+      `;
+      const turns = rows.flatMap((row): Array<UsageThreadTurn> => {
+        if (!isKnownProviderKind(row.provider)) return [];
+        const turn = decodeThreadTurn(row);
+        return Option.isSome(turn) ? [turn.value] : [];
+      });
+      return {
+        turns,
+        firstTurnId: thread?.firstTurnId ? TurnId.makeUnsafe(thread.firstTurnId) : null,
+        // Counted before undecodable rows are dropped, so labels keep their place.
+        earlierTurnCount: Math.max(0, (thread?.turnCount ?? 0) - rows.length),
+      };
+    }).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.listByThread")));
+
   return {
     record,
+    readMuseRecordedIntervals: museRecordedIntervals(sql).pipe(
+      Effect.mapError(toPersistenceSqlError("UsageFactRepository.readMuseRecordedIntervals")),
+    ),
     readCoverageStartedAt,
     readUsageMetadata,
     summarizeBuckets,
     summarizeByScope,
     readScopeTitles,
+    listByThread,
   } satisfies UsageFactRepositoryShape;
 });
 

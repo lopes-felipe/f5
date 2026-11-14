@@ -5,6 +5,23 @@ import { ensureNativeApi } from "../nativeApi";
 import { rpcQueryContext, rpcQueryMeta, type RpcQueryPriority } from "./rpcQueryContext";
 
 const GIT_STATUS_STALE_TIME_MS = 5_000;
+/** Completion reads local refs even when background polling is disabled. */
+export function applyTurnGitStatus(
+  queryClient: QueryClient,
+  cwd: string,
+  status: GitStatusResult,
+): void {
+  queryClient.setQueriesData<GitStatusResult>({ queryKey: ["git", "status", cwd] }, (previous) =>
+    previous
+      ? {
+          ...status,
+          ...(previous.branch === status.branch
+            ? { pr: previous.pr, changeRequest: previous.changeRequest }
+            : {}),
+        }
+      : previous,
+  );
+}
 const GIT_STATUS_REFETCH_INTERVAL_MS = 60_000;
 const GIT_BRANCHES_STALE_TIME_MS = 15_000;
 
@@ -108,6 +125,19 @@ export function gitStatusQueryOptions({
     queryFn: async (context) => {
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git status is unavailable.");
+      if (includeRemote) {
+        const local = await api.git.status(
+          { cwd, includeRemote: false, includePullRequest: false },
+          rpcQueryContext(context),
+        );
+        if (context.signal.aborted) throw context.signal.reason;
+        // Publish the fast local scan while the forge lookup is still in flight.
+        context.client.setQueryData(context.queryKey, (previous: typeof local | undefined) =>
+          previous?.branch === local.branch
+            ? { ...local, pr: previous.pr, changeRequest: previous.changeRequest }
+            : local,
+        );
+      }
       return api.git.status(
         includeRemote ? { cwd } : { cwd, includeRemote: false },
         rpcQueryContext(context),
