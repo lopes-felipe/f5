@@ -4,6 +4,9 @@ files:
     sha512: FGl0QHAcOIX3yNX6pZ8za0ccqGMyA07/DT/dwC3JsYuDVuhA21SCPI/S8svQkGlpzxMs+Lucc9x2m0/9gXvSPQ==
     size: 8
     blockMapSize: 3
+  - url: F5-0.1.0-beta.1-amd64.deb
+    sha512: FGl0QHAcOIX3yNX6pZ8za0ccqGMyA07/DT/dwC3JsYuDVuhA21SCPI/S8svQkGlpzxMs+Lucc9x2m0/9gXvSPQ==
+    size: 8
 path: F5-0.1.0-beta.1-x86_64.AppImage
 sha512: FGl0QHAcOIX3yNX6pZ8za0ccqGMyA07/DT/dwC3JsYuDVuhA21SCPI/S8svQkGlpzxMs+Lucc9x2m0/9gXvSPQ==
 releaseDate: "2026-10-16T00:00:00.000Z"

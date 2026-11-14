@@ -1133,6 +1133,30 @@ describe("preloadRecentThreadDetails", () => {
     expect(new Set(fetchedIds)).toEqual(new Set(["thread-00", "thread-01", "thread-02"]));
   });
 
+  it("warms every running session beyond the recent limit, including hidden threads", async () => {
+    const threads = createThreadList(16).map((thread, index) => ({
+      ...thread,
+      archivedAt: index === 0 ? "2026-03-01T00:00:00Z" : null,
+      session:
+        index < 15
+          ? {
+              provider: "codex" as const,
+              status: index === 0 ? ("connecting" as const) : ("running" as const),
+              orchestrationStatus: index === 0 ? ("starting" as const) : ("running" as const),
+              createdAt: "2026-03-01T00:00:00Z",
+              updatedAt: "2026-03-01T00:00:00Z",
+            }
+          : null,
+    }));
+    seedStore({ threads });
+    const getThreadDetails = mockGetThreadDetails(async ({ threadId }) => makeDetails(threadId));
+    await preloadRecentThreadDetails(new QueryClient(), { runningOnly: true });
+    expect(getThreadDetails).toHaveBeenCalledTimes(15);
+    const ids = getThreadDetails.mock.calls.map(([input]) => input.threadId);
+    expect(ids).toContain(threads[0]!.id);
+    expect(ids).not.toContain(threads[15]!.id);
+  });
+
   it("filters out archived threads", async () => {
     const threads = createThreadList(4);
     threads[3] = { ...threads[3]!, archivedAt: "2026-03-01T01:00:00.000Z" };

@@ -333,6 +333,7 @@ import {
   useRightPanelStore,
 } from "../rightPanelStore";
 import { setSearchParamsForSurface } from "../rightPanelNavigation";
+import { useProactivePanels } from "../hooks/useProactivePanels";
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
 import { investigationWorkflowContainsThread } from "./workflow/investigationWorkflowUtils";
@@ -800,6 +801,7 @@ function selectChatViewSettings(settings: AppSettings) {
     followUpBehavior: settings.followUpBehavior,
     gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
     openFileLinksInPanel: settings.openFileLinksInPanel,
+    proactivePanelsEnabled: settings.proactivePanelsEnabled,
     providerModelPreferences: settings.providerModelPreferences,
     runtimeWarningVisibility: settings.runtimeWarningVisibility,
     sendShortcut: settings.sendShortcut,
@@ -7574,7 +7576,8 @@ export default memo(function ChatView({
     [showImageActionMenu],
   );
   const onOpenTurnDiff = useCallback(
-    (turnId: TurnId, filePath?: string) => {
+    (turnId: TurnId, filePath?: string, automatic = false) => {
+      if (!automatic) useRightPanelStore.getState().open(threadId, "diff");
       if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
@@ -7589,7 +7592,23 @@ export default memo(function ChatView({
     },
     [navigate, threadId],
   );
+  const onProactiveTurnDiff = useCallback(
+    (turnId: TurnId) => onOpenTurnDiff(turnId, undefined, true),
+    [onOpenTurnDiff],
+  );
   const fileNavigationGeneration = useRef(0);
+  useProactivePanels({
+    threadId: isServerThread ? activeThreadId : null,
+    enabled: settings.proactivePanelsEnabled,
+    ready: activeThread?.detailsLoaded === true,
+    runningTurnId: !latestTurnSettled ? (activeLatestTurn?.turnId ?? null) : null,
+    completedTurnId:
+      latestTurnSettled && activeLatestTurn?.state === "completed" ? activeLatestTurn.turnId : null,
+    checkpoints: turnDiffSummaries,
+    isRepo: branchesQuery.data?.isRepo,
+    linkedPullRequest: activeThread?.pullRequests?.[0] ?? null,
+    openTurnDiff: onProactiveTurnDiff,
+  });
   useEffect(
     () => () => {
       fileNavigationGeneration.current++;

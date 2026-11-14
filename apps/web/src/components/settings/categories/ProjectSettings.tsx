@@ -114,10 +114,12 @@ export function ProjectSettings() {
   } = useSettingsRouteContext();
   const [emojiDraft, setEmojiDraft] = useState("");
   const [monogramDraft, setMonogramDraft] = useState("");
+  const [imagePathDraft, setImagePathDraft] = useState("");
 
   useEffect(() => {
     setMonogramDraft(selectedProject?.icon?.type === "monogram" ? selectedProject.icon.text : "");
     setEmojiDraft(selectedProject?.icon?.type === "emoji" ? selectedProject.icon.emoji : "");
+    setImagePathDraft(selectedProject?.icon?.type === "image" ? selectedProject.icon.path : "");
   }, [selectedProject?.icon, selectedProject?.id]);
 
   return (
@@ -176,6 +178,10 @@ export function ProjectSettings() {
                         void updateSelectedProjectMetadata({
                           icon: { type: "emoji", emoji: emojiDraft.trim() || "📁" },
                         });
+                      } else if (value === "image") {
+                        void updateSelectedProjectMetadata({
+                          icon: { type: "image", path: imagePathDraft.trim() || "favicon.png" },
+                        });
                       } else if (value === "monogram") {
                         void updateSelectedProjectMetadata({
                           icon: {
@@ -205,7 +211,9 @@ export function ProjectSettings() {
                             ? "Symbol"
                             : selectedProject.icon?.type === "monogram"
                               ? "Monogram"
-                              : "Automatic"}
+                              : selectedProject.icon?.type === "image"
+                                ? "Image from project"
+                                : "Automatic"}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectPopup>
@@ -213,6 +221,7 @@ export function ProjectSettings() {
                       <SelectItem value="monogram">Monogram</SelectItem>
                       <SelectItem value="emoji">Emoji</SelectItem>
                       <SelectItem value="lucide">Symbol</SelectItem>
+                      <SelectItem value="image">Image from project</SelectItem>
                     </SelectPopup>
                   </Select>
                 </label>
@@ -266,6 +275,29 @@ export function ProjectSettings() {
                 </div>
               )}
 
+              {selectedProject.icon?.type === "image" ? (
+                <div className="flex gap-2">
+                  <Input
+                    aria-label="Project icon image path"
+                    value={imagePathDraft}
+                    onChange={(event) => setImagePathDraft(event.target.value)}
+                    maxLength={512}
+                    placeholder="assets/logo.png"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={projectMetadataPending || !imagePathDraft.trim()}
+                    onClick={() =>
+                      void updateSelectedProjectMetadata({
+                        icon: { type: "image", path: imagePathDraft.trim() },
+                      })
+                    }
+                  >
+                    Save image
+                  </Button>
+                </div>
+              ) : null}
               {selectedProject.icon?.type === "emoji" ? (
                 <div className="flex gap-2">
                   <Input

@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   transcriptKey,
@@ -47,7 +47,62 @@ describe("rightPanelStore", () => {
     expect(useAgentTranscriptStore.getState().entries[key]).toBeUndefined();
   });
   beforeEach(() => {
-    useRightPanelStore.setState({ byThreadId: {}, closedHistory: [], tabMenuThreadId: null });
+    useRightPanelStore.setState({
+      byThreadId: {},
+      closedHistory: [],
+      tabMenuThreadId: null,
+      userActionRevisionByThreadId: {},
+      proactiveDiffTurnIdByThreadId: {},
+    });
+  });
+
+  it("keeps a manual choice ahead of an automatic offer, including closing an empty panel", () => {
+    const panels = useRightPanelStore.getState();
+    panels.close(THREAD_A);
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") }, 0),
+    ).toBe(false);
+    expect(useRightPanelStore.getState().byThreadId[THREAD_A]).toBeUndefined();
+    panels.open(THREAD_A, "files");
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-b") }, 1),
+    ).toBe(false);
+    expect(useRightPanelStore.getState().byThreadId[THREAD_A]?.activeSurfaceId).toBe("files");
+  });
+
+  it("does not reopen an offered diff after dismissal and allows a new turn", () => {
+    const panels = useRightPanelStore.getState();
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") }, 0),
+    ).toBe(true);
+    expect(useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]).toBeUndefined();
+    panels.closeAllSurfaces(THREAD_A);
+    const revision = useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]!;
+    expect(
+      panels.openProactive(
+        THREAD_A,
+        { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") },
+        revision,
+      ),
+    ).toBe(false);
+    expect(
+      panels.openProactive(
+        THREAD_A,
+        { kind: "diff", turnId: TurnId.makeUnsafe("turn-b") },
+        revision,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not count automatic resource updates as manual choices", () => {
+    const panels = useRightPanelStore.getState();
+    panels.addSurface(THREAD_A, "preview");
+    expect(useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]).toBeUndefined();
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") }, 0),
+    ).toBe(true);
+    panels.removeThread(THREAD_A);
+    expect(useRightPanelStore.getState().proactiveDiffTurnIdByThreadId[THREAD_A]).toBeUndefined();
   });
 
   it("adds agent surfaces without opening the panel or stealing the active tab", () => {

@@ -40,6 +40,7 @@ import { assertUpdateCaller } from "./updateIpc";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
 import { hasCachedUpdate } from "./updateCache";
+import { isDebPackage } from "./linuxPackage";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
@@ -2966,7 +2967,7 @@ function updateInstallMarkerPath(): string {
   return Path.join(app.getPath("userData"), "update-pending.json");
 }
 
-function configureAutoUpdater(): void {
+async function configureAutoUpdater(): Promise<void> {
   const preferencesPath = Path.join(app.getPath("userData"), "update-preferences.json");
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
   const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
@@ -2975,6 +2976,7 @@ function configureAutoUpdater(): void {
     isPackaged: app.isPackaged,
     platform: process.platform,
     appImage: process.env.APPIMAGE,
+    isDebPackage: app.isPackaged && (await isDebPackage(process.platform, process.resourcesPath)),
     disabledByEnv: process.env.T3CODE_DISABLE_AUTO_UPDATE === "1",
     hasUpdateFeed: FS.existsSync(Path.join(process.resourcesPath, "app-update.yml")),
     runningFromReadOnlyLocation:
@@ -4877,7 +4879,7 @@ app
     configureApplicationMenu();
     registerDesktopProtocol();
     registerPromptLinkProtocol();
-    configureAutoUpdater();
+    await configureAutoUpdater();
     await initializeKeepAwake();
     const bootstrapReady = bootstrapGate.start(bootstrap);
     void bootstrapReady.catch((error) => {

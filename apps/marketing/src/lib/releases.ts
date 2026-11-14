@@ -145,7 +145,7 @@ export function findAssetBySuffix(
   return assets.find((asset) => asset.name.endsWith(`-${suffix}`));
 }
 
-export type DownloadTarget = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64";
+export type DownloadTarget = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64" | "linux-deb-x64";
 
 export type DownloadAvailability =
   /** Served from the latest stable release by asset suffix. */
@@ -175,6 +175,7 @@ export const DOWNLOAD_AVAILABILITY: Readonly<Record<DownloadTarget, DownloadAvai
   },
   "mac-x64": { kind: "unavailable", note: "Not yet available" },
   "linux-x64": { kind: "unavailable", note: "Not yet available" },
+  "linux-deb-x64": { kind: "stable", suffix: "amd64.deb" },
 };
 
 export interface ResolvedDownload {
