@@ -856,7 +856,7 @@ it.effect("stores a concise degraded message when GraphQL falls back to gh searc
     assert.equal(snapshot.status, "degraded");
     assert.equal(
       snapshot.errorMessage,
-      "GitHub API returned HTTP 502. Fallback search completed 5 of 5 scopes.",
+      "GitHub API returned HTTP 502. Fallback search completed 6 of 6 scopes.",
     );
     assert.equal(snapshot.errorMessage?.includes("query PrHub"), false);
   }).pipe(
@@ -1022,7 +1022,7 @@ it.effect("stores a concise degraded message when GraphQL details cannot be hydr
     assert.equal(snapshot.status, "degraded");
     assert.equal(
       snapshot.errorMessage,
-      "GitHub API returned HTTP 502. Fallback search completed 5 of 5 scopes.",
+      "GitHub API returned HTTP 502. Fallback search completed 6 of 6 scopes.",
     );
     assert.equal(snapshot.errorMessage?.includes("query PrHub"), false);
   }).pipe(
@@ -1511,18 +1511,92 @@ it.effect("keeps team-only review requests out of the queue until their team is 
     const promoted = yield* service.getOverview({});
     assert.equal(promoted.counts.needs_you, 2);
     assert.include(promoted.sectionCounts, { review: 2, team: 0 });
+
+    // The request was already there, so promoting its team is not activity to notify.
+    const polled = yield* service.refreshNow({ mode: "force" });
+    assert.include(
+      polled.pullRequests.find((pr) => pr.number === 32),
+      { attentionState: "review_requested", section: "review", notificationPending: false },
+    );
+    const reclaimed = yield* service.claimNotifications({
+      accountGeneration: overview.account!.generation,
+      clientId: "other-client",
+      maxItems: 20,
+    });
+    assert.notInclude(
+      reclaimed.pullRequests.map((pr) => pr.number),
+      32,
+    );
   }).pipe(
     Effect.provide(
       makeLayer({
         calls,
         teams: ["octo/platform"],
-        searchResponses: [
+        searchResponses: Array.from({ length: 2 }, () =>
           multiSearchResponse({
             direct_review: [direct],
             review_requested: [direct, team],
             team_review_0: [team],
           }),
-        ],
+        ),
+      }),
+    ),
+  );
+});
+
+it.effect("does not let a lagging search mark a reviewed pull request as requested again", () => {
+  const calls = makeCalls();
+  // The viewer reviewed and GitHub dropped the request, but the search index still returns
+  // the pull request for `user-review-requested:`.
+  const reviewed = makePrNode({ id: "PR_reviewed", number: 33, reviewRequests: [] });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find(
+      (candidate) => candidate.number === 33,
+    );
+    assert.equal(pr?.viewerReviewRequested ?? false, false);
+    assert.notEqual(pr?.attentionState, "review_requested");
+    assert.notEqual(pr?.attentionState, "re_review_requested");
+    assert.equal(pr?.notificationPending ?? false, false);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [multiSearchResponse({ direct_review: [reviewed] })],
+      }),
+    ),
+  );
+});
+
+it.effect("reports a review-thread page that fails to load as degraded, not as backlog", () => {
+  const calls = makeCalls();
+  const paged = {
+    ...makePrNode({ id: "PR_paged", number: 34 }),
+    reviewThreads: {
+      totalCount: 150,
+      nodes: [],
+      pageInfo: { hasNextPage: true, endCursor: "page-2" },
+    },
+  };
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    assert.ok(calls.graphql.some((call) => call.query.includes("PrHubAttentionPage")));
+    assert.equal(snapshot.status, "degraded");
+    assert.notEqual(snapshot.errorKind, "backlog");
+    assert.equal((yield* service.getOverview({})).sync?.state, "error");
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [multiSearchResponse({ direct_review: [paged] })],
+        graphqlRequest: (request) =>
+          request.query.includes("PrHubAttentionPage")
+            ? Effect.fail(ghError("HTTP 500 from GitHub"))
+            : undefined,
       }),
     ),
   );

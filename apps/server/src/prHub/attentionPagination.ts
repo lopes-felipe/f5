@@ -39,6 +39,10 @@ function continueConnections<E, R>(
     const identity = identityOf(initial);
     const node = { ...initial };
     let complete = true;
+    // What went wrong with a page read, for the caller to tell a deferred read from a failed
+    // one: the request's own errors, and whether GitHub answered a page with errors.
+    const errors: E[] = [];
+    let rejected = false;
     for (const name of Object.keys(fields)) {
       const connection = record(initial[name]);
       const page = record(connection?.pageInfo);
@@ -103,9 +107,11 @@ function continueConnections<E, R>(
           rateLimit { cost remaining limit resetAt }
         }`,
           { id: String(initial.id), cursor: checkpoint.cursor },
-        ).pipe(Effect.option);
-        if (response._tag === "Some") {
-          const root = record(response.value);
+        ).pipe(Effect.result);
+        if (response._tag === "Failure") errors.push(response.failure);
+        else {
+          const root = record(response.success);
+          if (Array.isArray(root?.errors) && root.errors.length > 0) rejected = true;
           const current = record(record(root?.data)?.node);
           const next = record(current?.[name]);
           const info = record(next?.pageInfo);
@@ -156,7 +162,7 @@ function continueConnections<E, R>(
       node[name] = { ...connection, ...facts };
       complete &&= checkpoint.complete;
     }
-    return { node, complete };
+    return { node, complete, errors, rejected };
   });
 }
 
@@ -174,7 +180,9 @@ export function continuePrConnectionPagination<E, R>(
     continueConnections(account, initial, query, fields, taskKind),
   ).pipe(
     Effect.map((result) =>
-      result._tag === "Some" ? result.value : { node: initial, complete: false },
+      result._tag === "Some"
+        ? result.value
+        : { node: initial, complete: false, errors: [] as E[], rejected: false },
     ),
   );
 }

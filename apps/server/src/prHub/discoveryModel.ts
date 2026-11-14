@@ -824,13 +824,16 @@ export function normalizeGraphqlPr(input: {
   const reviewRequests = reviewRequestReviewers(input.node);
   const viewerLoginLower = input.viewerLogin.toLowerCase();
   const viewerTeamLower = new Set([...input.viewerTeams].map((team) => team.toLowerCase()));
-  // The personal-request search is proof on its own, also when the reviewer list is cut short.
+  // The reviewer list is the fact. The searches stand in for it only when it may be cut short
+  // (20 are read) or was not returned at all: GitHub's search index lags, so the
+  // personal-request search still returns a pull request the viewer has just reviewed.
+  const requestAliasesTrusted =
+    reviewRequests.length >= 20 || asRecord(input.node.reviewRequests) === null;
   const directReviewRequested =
-    input.aliases.has("direct_review") ||
-    reviewRequests.some((reviewer) => reviewer.toLowerCase() === viewerLoginLower);
-  // A long reviewer list may be cut short, so the searches stand in for it. The broad
-  // `review-requested:` search also matches team requests, so it can only prove a team one.
-  const requestAliasesTrusted = reviewRequests.length >= 20;
+    reviewRequests.some((reviewer) => reviewer.toLowerCase() === viewerLoginLower) ||
+    (requestAliasesTrusted && input.aliases.has("direct_review"));
+  // The broad `review-requested:` search also matches team requests, so it can only prove a
+  // team one.
   const teamReviewRequested =
     reviewRequests.some((reviewer) => viewerTeamLower.has(reviewer.toLowerCase())) ||
     (requestAliasesTrusted &&
@@ -942,7 +945,14 @@ export function normalizeFallbackPr(input: {
   ) {
     roleSet.add("author");
   }
-  if (input.aliases.has("review_requested")) roleSet.add("review_requested");
+  // The broad `review-requested:` search also matches requests to the viewer's teams, and a
+  // fallback row has no reviewer list to tell them apart. Only the personal search proves a
+  // personal request; the broad one alone is a team request.
+  const directReviewRequested = input.aliases.has("direct_review");
+  const teamReviewRequested = !directReviewRequested && input.aliases.has("review_requested");
+  const reviewRequested = directReviewRequested || teamReviewRequested;
+  if (directReviewRequested) roleSet.add("review_requested");
+  if (teamReviewRequested) roleSet.add("team_review_requested");
   if (input.aliases.has("assignee")) roleSet.add("assignee");
   if (input.aliases.has("mentioned")) roleSet.add("mentioned");
   if (input.aliases.has("involved")) roleSet.add("involved");
@@ -965,9 +975,9 @@ export function normalizeFallbackPr(input: {
     mergeStateStatus: "UNKNOWN",
     mergePermission: "unknown",
     viewerHasReviewed: false,
-    viewerReviewRequested: input.aliases.has("review_requested"),
+    viewerReviewRequested: reviewRequested,
     reviewRequestReviewers: [],
-    reviewRequestsCount: input.aliases.has("review_requested") ? 1 : 0,
+    reviewRequestsCount: reviewRequested ? 1 : 0,
     commentsCount: numberValue(input.node.commentsCount),
     unresolvedThreadCount: 0,
     reviewFactsComplete: false,

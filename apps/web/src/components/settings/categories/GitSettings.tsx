@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type PrHubSettings,
   type ServerSettings,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -423,6 +424,26 @@ function WritingSettings() {
   );
 }
 
+type PrHubSettingsPatch = NonNullable<ServerSettingsPatch["prHub"]>;
+
+/**
+ * The text of a list field saved on blur. It follows the saved value until the user edits
+ * it. When a save lands, the draft is replaced only if it still holds what was saved before
+ * or what was submitted: text typed while the save was in flight is kept.
+ */
+function useSavedListDraft(saved: string) {
+  const [state, setState] = useState({ saved, draft: saved, submitted: null as string | null });
+  if (state.saved !== saved) {
+    const untouched = state.draft === state.saved || state.draft === state.submitted;
+    setState({ saved, draft: untouched ? saved : state.draft, submitted: null });
+  }
+  return {
+    draft: state.draft,
+    setDraft: (draft: string) => setState((current) => ({ ...current, draft })),
+    markSubmitted: () => setState((current) => ({ ...current, submitted: current.draft })),
+  };
+}
+
 function PullRequestSettings() {
   const { settings, updateSettings } = useSettingsRouteContext();
   const defaultMergeMethod = useSettings((unified) => unified.prHubDefaultMergeMethod);
@@ -435,18 +456,9 @@ function PullRequestSettings() {
   const prHubRefreshEnabled = prHubSettings.pollIntervalSeconds !== 0;
   // Compared as text: every settings save returns new arrays, and resetting on identity
   // would wipe a draft in one field when another field saves.
-  const savedExcludeRepos = prHubSettings.excludeRepos.join("\n");
-  const savedDirectTeams = prHubSettings.directReviewTeams.join("\n");
-  const [excludeReposDraft, setExcludeReposDraft] = useState(savedExcludeRepos);
-  const [directTeamsDraft, setDirectTeamsDraft] = useState(savedDirectTeams);
+  const excludeRepos = useSavedListDraft(prHubSettings.excludeRepos.join("\n"));
+  const directTeams = useSavedListDraft(prHubSettings.directReviewTeams.join("\n"));
   const mergeMethodValue = defaultMergeMethod ?? "last-used";
-
-  useEffect(() => {
-    setExcludeReposDraft(savedExcludeRepos);
-  }, [savedExcludeRepos]);
-  useEffect(() => {
-    setDirectTeamsDraft(savedDirectTeams);
-  }, [savedDirectTeams]);
 
   const setDefaultMergeMethod = (value: "merge" | "squash" | "rebase" | null) => {
     void updateServerSettings({ prHubDefaultMergeMethod: value }).catch((error: unknown) =>
@@ -458,30 +470,43 @@ function PullRequestSettings() {
     );
   };
 
-  const updatePrHubSettings = async (patch: Partial<typeof prHubSettings>) => {
-    const { discoverNotifications, ...next } = { ...prHubSettings, ...patch };
-    const nextSettings = await ensureNativeApi().server.updateSettings({
-      prHub: { ...next, ...(discoverNotifications === undefined ? {} : { discoverNotifications }) },
-    });
+  // A save sends only the fields it changes and the server merges them into its current
+  // settings. Sending the whole object would let two saves in flight write each other's old
+  // values back.
+  const updatePrHubSettings = async (patch: PrHubSettingsPatch) => {
+    const nextSettings = await ensureNativeApi().server.updateSettings({ prHub: patch });
     queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
       existing ? { ...existing, settings: nextSettings } : existing,
     );
   };
+  /** For controls that do not report a failed save themselves. The draft stays to retry. */
+  const savePrHubSettings = (patch: PrHubSettingsPatch) =>
+    void updatePrHubSettings(patch).catch((error: unknown) =>
+      toastManager.add({
+        type: "error",
+        title: "Could not save pull request settings",
+        description: errorMessage(error),
+      }),
+    );
 
   const saveExcludeRepos = () => {
-    const excludeRepos = excludeReposDraft
-      .split(/[\n,]/)
-      .map((repo) => repo.trim())
-      .filter(Boolean);
-    void updatePrHubSettings({ excludeRepos });
+    excludeRepos.markSubmitted();
+    savePrHubSettings({
+      excludeRepos: excludeRepos.draft
+        .split(/[\n,]/)
+        .map((repo) => repo.trim())
+        .filter(Boolean),
+    });
   };
 
   const saveDirectTeams = () => {
-    const directReviewTeams = directTeamsDraft
-      .split(/[\n,]/)
-      .map((team) => team.trim().replace(/^@/, ""))
-      .filter(Boolean);
-    void updatePrHubSettings({ directReviewTeams });
+    directTeams.markSubmitted();
+    savePrHubSettings({
+      directReviewTeams: directTeams.draft
+        .split(/[\n,]/)
+        .map((team) => team.trim().replace(/^@/, ""))
+        .filter(Boolean),
+    });
   };
 
   return (
@@ -558,7 +583,7 @@ function PullRequestSettings() {
             <Switch
               checked={prHubRefreshEnabled}
               onCheckedChange={(checked) =>
-                void updatePrHubSettings({
+                savePrHubSettings({
                   pollIntervalSeconds: checked ? PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT : 0,
                 })
               }
@@ -574,9 +599,7 @@ function PullRequestSettings() {
           <Switch
             aria-label="Discover PRs from GitHub notifications"
             checked={prHubSettings.discoverNotifications ?? false}
-            onCheckedChange={(checked) =>
-              void updatePrHubSettings({ discoverNotifications: checked })
-            }
+            onCheckedChange={(checked) => savePrHubSettings({ discoverNotifications: checked })}
           />
         }
       />
@@ -632,8 +655,8 @@ function PullRequestSettings() {
         <Textarea
           aria-label="Teams whose review requests are mine"
           className="min-h-16 font-mono text-xs"
-          value={directTeamsDraft}
-          onChange={(event) => setDirectTeamsDraft(event.currentTarget.value)}
+          value={directTeams.draft}
+          onChange={(event) => directTeams.setDraft(event.currentTarget.value)}
           onBlur={saveDirectTeams}
           placeholder="org/team"
         />
@@ -648,8 +671,8 @@ function PullRequestSettings() {
         <Textarea
           aria-label="Excluded repositories"
           className="min-h-24 font-mono text-xs"
-          value={excludeReposDraft}
-          onChange={(event) => setExcludeReposDraft(event.currentTarget.value)}
+          value={excludeRepos.draft}
+          onChange={(event) => excludeRepos.setDraft(event.currentTarget.value)}
           onBlur={saveExcludeRepos}
           placeholder="owner/repo"
         />

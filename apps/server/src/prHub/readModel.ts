@@ -110,6 +110,7 @@ export function listPrHubPullRequests(
   if (accountGeneration !== undefined && accountGeneration !== snapshot.account?.generation)
     return empty;
   let offset = 0;
+  let expectedPrefix: unknown;
   if (cursor) {
     // Cursors are navigation hints, not capabilities: all reads are independently
     // scoped to the verified account and validated filter/revision below.
@@ -123,6 +124,7 @@ export function listPrHubPullRequests(
       )
         return empty;
       offset = parsed.offset;
+      expectedPrefix = parsed.prefix;
     } catch {
       return empty;
     }
@@ -151,6 +153,19 @@ export function listPrHubPullRequests(
         ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
         : comparePrPriority(a, b, now)) || a.key.localeCompare(b.key),
   );
+  // Sections, and with them the order, follow the clock and the viewer's settings, and
+  // neither changes the revision. So a cursor also names the rows that came before it: if a
+  // row has moved across the page boundary since, resuming by offset would skip or repeat one.
+  const prefixOf = (count: number) =>
+    createHash("sha256")
+      .update(
+        rows
+          .slice(0, count)
+          .map((pr) => pr.key)
+          .join("\n"),
+      )
+      .digest("hex");
+  if (cursor && expectedPrefix !== prefixOf(offset)) return empty;
   if (!cursor && input.anchorKey) {
     const anchor = rows.findIndex((pr) => pr.key === input.anchorKey);
     if (anchor >= 0) offset = Math.max(0, anchor - 10);
@@ -166,8 +181,34 @@ export function listPrHubPullRequests(
       .map((pr) => (pr.section ? pr : { ...pr, section: prHubSectionOf(pr, now) })),
     nextCursor:
       next < rows.length
-        ? Buffer.from(JSON.stringify({ revision, signature, offset: next })).toString("base64url")
+        ? Buffer.from(
+            JSON.stringify({ revision, signature, offset: next, prefix: prefixOf(next) }),
+          ).toString("base64url")
         : null,
+  };
+}
+
+/**
+ * Passes change events from several hubs on as one numbered stream. Each event's changed
+ * keys are a difference from the hub's previous event, and a hub's buffer drops events it
+ * could not deliver, so a jump in a hub's own numbering means keys were lost: that event
+ * asks for a resync. The relayed stream is numbered again for the next reader.
+ */
+export function makePrHubChangeRelay() {
+  let relayed = 0;
+  /** One source hub. */
+  return () => {
+    let last: number | undefined;
+    return (event: PrHubChanged): PrHubChanged => {
+      const missed =
+        event.sequence !== undefined && last !== undefined && event.sequence !== last + 1;
+      if (event.sequence !== undefined) last = event.sequence;
+      return {
+        ...event,
+        sequence: ++relayed,
+        resyncRequired: event.resyncRequired || missed,
+      };
+    };
   };
 }
 

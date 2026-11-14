@@ -5,7 +5,12 @@ import {
   type TrackedPullRequest,
   type PrHubSnapshot,
 } from "@t3tools/contracts";
-import { listPrHubPullRequests, prHubInvalidation, prHubOverview } from "./readModel.ts";
+import {
+  listPrHubPullRequests,
+  makePrHubChangeRelay,
+  prHubInvalidation,
+  prHubOverview,
+} from "./readModel.ts";
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
@@ -245,6 +250,31 @@ describe("PR Hub bounded read model", () => {
     );
     expect(listPrHubPullRequests(data, "1", {}).pullRequests).toHaveLength(50);
   });
+  it("rejects a cursor when a row has moved across the page boundary at the same revision", () => {
+    // Sections follow the clock and the settings, which do not change the revision.
+    const data = snapshot();
+    const first = listPrHubPullRequests(data, "1", { limit: 2, sort: "updated" });
+    expect(first.nextCursor).not.toBeNull();
+    const moved = first.pullRequests[0]!.key;
+    const reordered = {
+      ...data,
+      pullRequests: data.pullRequests.map((pr) =>
+        pr.key === moved ? { ...pr, updatedAt: "2000-01-01T00:00:00.000Z" } : pr,
+      ),
+    };
+    expect(
+      listPrHubPullRequests(reordered, "1", {
+        limit: 2,
+        sort: "updated",
+        cursor: first.nextCursor!,
+      }).status,
+    ).toBe("cursor_stale");
+    // Unchanged rows keep the cursor valid.
+    expect(
+      listPrHubPullRequests(data, "1", { limit: 2, sort: "updated", cursor: first.nextCursor! })
+        .status,
+    ).toBe("ok");
+  });
   it("publishes one changed key and bounds large invalidations", () => {
     const before = snapshot();
     const after = {
@@ -261,6 +291,36 @@ describe("PR Hub bounded read model", () => {
     expect(initial.resyncRequired).toBe(true);
     expect(initial.changedKeys).toEqual([]);
     expect(initial.counts.needs_you).toBe(5000);
+  });
+  it("renumbers relayed change events and asks for a resync after a dropped one", () => {
+    const relay = makePrHubChangeRelay();
+    const github = relay();
+    const forge = relay();
+    const event = (sequence?: number, resyncRequired = false) => ({
+      ...prHubInvalidation(null, snapshot(), "1"),
+      changedKeys: [],
+      resyncRequired,
+      ...(sequence === undefined ? {} : { sequence }),
+    });
+    const relayed = [
+      github(event(1)),
+      github(event(2)),
+      // An unnumbered hub keeps its own request and is not counted as a gap.
+      forge(event(undefined, true)),
+      forge(event()),
+      // Events 3 and 4 never arrived: their changed keys are lost.
+      github(event(5)),
+      github(event(6)),
+    ];
+    expect(relayed.map((item) => item.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(relayed.map((item) => item.resyncRequired)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+    ]);
   });
   it("never presents an unscanned empty inbox as complete monitoring", () => {
     const overview = prHubOverview(snapshot(0), "1");

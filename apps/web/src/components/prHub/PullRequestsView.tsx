@@ -289,9 +289,16 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
     window.localStorage.setItem(PR_HUB_VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
 
+  // Backlog is reported as a healthy refresh, but while searches or detail reads are still
+  // queued an empty list is not "caught up" yet. This feeds the empty state only, not the
+  // warning banner.
+  const backlogPending =
+    snapshot?.sync?.state === "syncing" &&
+    snapshot.sync.pending.searches + snapshot.sync.pending.hydrations > 0;
   const refreshIncomplete =
     snapshot?.status === "degraded" ||
     snapshot?.status === "error" ||
+    backlogPending ||
     snapshotQuery.isError ||
     listQuery.isError;
   const banner = snapshot ? statusMessage(snapshot.status) : null;

@@ -2,6 +2,7 @@ import { PullRequestKey, type PrHubChanged } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  createPrHubChangeSequence,
   EMPTY_PR_HUB_CHANGE_BATCH,
   isPrHubQueryStale,
   mergePrHubChange,
@@ -39,6 +40,30 @@ describe("PR Hub change batches", () => {
   });
 });
 
+describe("PR Hub change sequence", () => {
+  it("asks for a resync when an event between two others never arrived", () => {
+    const sequence = createPrHubChangeSequence();
+    const seen = [1, 2, 4, 5].map((number) =>
+      sequence.track(event({ sequence: number, changedKeys: [key(number)] })),
+    );
+    expect(seen.map((item) => item.resyncRequired)).toEqual([false, false, true, false]);
+    // The lost event's keys are unknown, so the batch re-reads everything.
+    expect(batchOf(...seen).resync).toBe(true);
+  });
+
+  it("starts over after a reconnect and leaves unnumbered events alone", () => {
+    const sequence = createPrHubChangeSequence();
+    expect(sequence.track(event({ sequence: 40 })).resyncRequired).toBe(false);
+    sequence.reset();
+    // A restarted server counts from one again.
+    expect(sequence.track(event({ sequence: 1 })).resyncRequired).toBe(false);
+    expect(sequence.track(event()).resyncRequired).toBe(false);
+    expect(sequence.track(event({ sequence: 2 })).resyncRequired).toBe(false);
+    // Without the reset, a restart reads as a gap, which errs towards re-reading.
+    expect(sequence.track(event({ sequence: 1 })).resyncRequired).toBe(true);
+  });
+});
+
 describe("PR Hub query staleness", () => {
   const changed = batchOf(event({ changedKeys: [key(1)], removedKeys: [key(2)] }));
   const quiet = batchOf(event());
@@ -51,7 +76,7 @@ describe("PR Hub query staleness", () => {
   });
 
   it("re-reads one pull request's data only when that pull request changed", () => {
-    for (const kind of ["detail", "timeline", "files", "reviewThreads", "stack"]) {
+    for (const kind of ["detail", "timeline", "files", "reviewThreads"]) {
       expect(isPrHubQueryStale(["prHub", kind, "account", key(1)], changed)).toBe(true);
       expect(isPrHubQueryStale(["prHub", kind, "account", key(2)], changed)).toBe(true);
       expect(isPrHubQueryStale(["prHub", kind, "account", key(9)], changed)).toBe(false);
@@ -70,6 +95,11 @@ describe("PR Hub query staleness", () => {
     expect(isPrHubQueryStale(["prHub", "peek", "account", url], changed)).toBe(true);
     expect(isPrHubQueryStale(["prHub", "linkedPanel", "account", url], changed)).toBe(true);
     expect(isPrHubQueryStale(["prHub", "peek", "account", url], quiet)).toBe(false);
+  });
+
+  it("re-reads a stack when another pull request changed, since a stack spans several", () => {
+    expect(isPrHubQueryStale(["prHub", "stack", "account", key(9)], changed)).toBe(true);
+    expect(isPrHubQueryStale(["prHub", "stack", "account", key(9)], quiet)).toBe(false);
   });
 
   it("re-reads everything on a resync and never touches other queries", () => {

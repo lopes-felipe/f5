@@ -358,7 +358,10 @@ export function usePrActions(
     setIsIgnoring(true);
     try {
       const key = pr.key;
-      await ensureNativeApi().prHub.ignore({ key });
+      // Undo belongs to the account that ignored. If the account changes while the toast is
+      // up, the request is refused instead of restoring the row for the new account.
+      const accountGeneration = getPrHubAccountGeneration();
+      await ensureNativeApi().prHub.ignore({ key, accountGeneration });
       const toastId = toastManager.add({
         type: "success",
         title: "Pull request ignored",
@@ -370,7 +373,7 @@ export function usePrActions(
             event.preventDefault();
             toastManager.close(toastId);
             void ensureNativeApi()
-              .prHub.unignore({ key })
+              .prHub.unignore({ key, accountGeneration })
               .catch((error: unknown) =>
                 toastManager.add({
                   type: "error",

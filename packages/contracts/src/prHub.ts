@@ -368,6 +368,13 @@ export const PrHubChanged = Schema.Struct({
   removedKeys: Schema.Array(PullRequestKey).check(Schema.isMaxLength(500)),
   counts: Schema.Record(PrHubListFilter, NonNegativeInt),
   resyncRequired: Schema.Boolean,
+  /**
+   * Position of this event in its sender's stream, one higher than the event before it.
+   * `changedKeys` is a difference from the previous event, and the buffers between the hub
+   * and the client drop events under load, so a receiver that sees a jump has missed keys
+   * and must re-read everything.
+   */
+  sequence: Schema.optional(NonNegativeInt),
 });
 export type PrHubChanged = typeof PrHubChanged.Type;
 

@@ -56,6 +56,21 @@ import type { PrHubDiscoveryMethods } from "./Services/PrHubDiscovery.ts";
  * queued and the next poll continues it. Anything else is a read that failed.
  */
 const isDeferredRead = (cause: Cause.Cause<unknown>) => causeErrorKind(cause) === "rate_limited";
+const isDeferredError = (error: unknown) => asRecord(error)?.kind === "rate_limited";
+
+/**
+ * Whether a hydration pass failed outright. A failed read does, and so do details that are
+ * missing with no deferred read to explain them. Deferred reads leave only backlog. The
+ * recovery pass and the main pass are classified by this one rule.
+ */
+const hydrationFailed = (result: {
+  readonly details: { readonly failed: boolean; readonly degraded: boolean };
+  readonly attentionFailed: boolean;
+  readonly missingDetailCount: number;
+}) =>
+  result.details.failed ||
+  result.attentionFailed ||
+  (result.missingDetailCount > 0 && !result.details.degraded);
 
 export interface PrHubDiscoveryContext {
   readonly host: string;
@@ -342,6 +357,7 @@ export function createPrHubDiscovery(
       );
       const details = yield* fetchGraphqlDetails([...aliasesByNodeId.keys()], hydration);
       let attentionIncomplete = false;
+      let attentionFailed = false;
       const detailedNodes = new Map(details.nodesById);
       // Continue only hydrated, relevant PRs, using the same captured account and host budgets.
       for (const [id, node] of details.nodesById) {
@@ -362,6 +378,11 @@ export function createPrHubDiscovery(
         detailedNodes.set(id, { ...continued.node, reviewFactsComplete: continued.complete });
         if (!continued.complete) {
           attentionIncomplete = true;
+        }
+        // An unfinished connection is backlog. A page that could not be read is not: only a
+        // read put off by the request budget or the rate limit resumes by itself.
+        if (continued.rejected || continued.errors.some((error) => !isDeferredError(error))) {
+          attentionFailed = true;
         }
       }
 
@@ -412,6 +433,7 @@ export function createPrHubDiscovery(
         pullRequests,
         details,
         attentionIncomplete,
+        attentionFailed,
         missingDetailCount: hydration.size - pullRequests.length,
       };
     });
@@ -489,12 +511,15 @@ export function createPrHubDiscovery(
         if (recovery.size > 0) {
           const recovered = yield* hydrateAndPersist(recovery);
           recoveredPullRequests = recovered.pullRequests;
-          hardFailure ||= recovered.details.failed;
+          const recoveryFailed = hydrationFailed(recovered);
+          hardFailure ||= recoveryFailed;
           recoveryError =
             recovered.details.errorMessage ??
-            (recovered.attentionIncomplete || recovered.missingDetailCount > 0
-              ? "Saved PR revalidation is incomplete; remaining work will resume."
-              : undefined);
+            (recoveryFailed
+              ? "Saved PR revalidation failed for some pull requests."
+              : recovered.attentionIncomplete || recovered.missingDetailCount > 0
+                ? "Saved PR revalidation is incomplete; remaining work will resume."
+                : undefined);
         }
       }
       const teamListCapped = viewer.teams.length > TEAM_QUERY_CHUNK_SIZE * TEAM_QUERY_CHUNK_COUNT;
@@ -623,7 +648,7 @@ export function createPrHubDiscovery(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.orDie,
           );
-      const { pullRequests, details, attentionIncomplete, missingDetailCount } =
+      const { pullRequests, details, attentionIncomplete, attentionFailed, missingDetailCount } =
         yield* hydrateAndPersist(hydration);
 
       const pending = yield* sql<{
@@ -637,14 +662,15 @@ export function createPrHubDiscovery(
         missingDetailCount > 0
           ? `GitHub GraphQL returned incomplete PR detail data for ${missingDetailCount} PR(s).`
           : undefined;
-      const detailErrorMessage = attentionIncomplete
-        ? "Review-thread and review-history pagination is incomplete; monitoring will resume on the next poll."
-        : details.degraded
-          ? (details.errorMessage ?? "GitHub GraphQL returned partial PR detail data.")
-          : missingDetailMessage;
+      const detailErrorMessage = attentionFailed
+        ? "Review threads and review history could not be read in full; review state may be out of date."
+        : attentionIncomplete
+          ? "Review-thread and review-history pagination is incomplete; monitoring will resume on the next poll."
+          : details.degraded
+            ? (details.errorMessage ?? "GitHub GraphQL returned partial PR detail data.")
+            : missingDetailMessage;
       const detailDegraded = attentionIncomplete || details.degraded || missingDetailCount > 0;
-      // Details missing without any deferred read are a real gap, not backlog.
-      hardFailure ||= details.failed || (missingDetailCount > 0 && !details.degraded);
+      hardFailure ||= hydrationFailed({ details, attentionFailed, missingDetailCount });
       hardFailure ||= graphQlErrors.length > 0 || viewer.teamLookupError !== null;
 
       const work = yield* sql<{
@@ -790,6 +816,12 @@ export function createPrHubDiscovery(
   ): Effect.Effect<FetchResult, never> {
     return Effect.gen(function* () {
       const buckets = [
+        // The broad search below also matches requests to the viewer's teams, so the
+        // personal one is searched on its own.
+        {
+          alias: "direct_review",
+          args: ["--user-review-requested", "@me", "--state", "open"],
+        },
         { alias: "review_requested", args: ["--review-requested", "@me", "--state", "open"] },
         { alias: "author", args: ["--author", "@me", "--state", "open"] },
         { alias: "assignee", args: ["--assignee", "@me", "--state", "open"] },

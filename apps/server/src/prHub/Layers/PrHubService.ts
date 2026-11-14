@@ -101,7 +101,9 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
     const providerKind = "github" as const;
     const cwd = accountCwd(serverConfig.cwd);
     const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
-    const changePubSub = yield* PubSub.sliding<PrHubChanged>(1);
+    // Room for a burst. Events that still do not fit are dropped oldest first, which the
+    // reader sees as a jump in their sequence numbers.
+    const changePubSub = yield* PubSub.sliding<PrHubChanged>(16);
     const actionRefreshPubSub = yield* PubSub.sliding<void>(1);
     const jobCoordinator = yield* PrHubJobCoordinator;
     const viewerRef = yield* Ref.make<ViewerIdentity | null>(null);

@@ -8,6 +8,7 @@ import { buildPrAttentionNotification } from "../../prHubNotifications";
 import { ensureNativeApi } from "../../nativeApi";
 import { notify } from "../../notificationCenter/notify";
 import {
+  createPrHubChangeSequence,
   EMPTY_PR_HUB_CHANGE_BATCH,
   isPrHubQueryStale,
   mergePrHubChange,
@@ -46,14 +47,18 @@ export function PrAttentionNotificationControllerContent({
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let batch = EMPTY_PR_HUB_CHANGE_BATCH;
+    const sequence = createPrHubChangeSequence();
     const unsubscribeSettings = onServerConfigUpdated(() => {
       void queryClient.invalidateQueries({ queryKey: ["prHub"] });
     });
     // Events sent while disconnected are gone; a new connection re-reads everything.
     const unsubscribeWelcome = onServerWelcome(() => {
+      sequence.reset();
       void queryClient.invalidateQueries({ queryKey: ["prHub"] });
     });
-    const unsubscribe = onPrHubChanged((event) => {
+    const unsubscribe = onPrHubChanged((received) => {
+      // An event dropped on the way took its changed keys with it; re-read everything then.
+      const event = sequence.track(received);
       queryClient.removeQueries({
         predicate: (query) =>
           query.queryKey[0] === "prHub" && query.queryKey[2] !== event.accountGeneration,
