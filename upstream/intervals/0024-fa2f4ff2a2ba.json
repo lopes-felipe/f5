@@ -1,0 +1,483 @@
+{
+  "baseSha": "12f3244e059321f32b9865d7f6c4ad15e2cbc3ab",
+  "commits": [
+    {
+      "pr": 33066,
+      "sha": "fa2f4ff2a2bac5ac92e07749f6b83b0003d642a0",
+      "subject": "fix(web): panel resize handles follow touch drags (#33066)",
+      "topic": "pr-33066"
+    },
+    {
+      "pr": 33008,
+      "sha": "bcee0f5d2872ba193c66ed9ba979bbe424f89ff9",
+      "subject": "fix(server): Claude turns whose CLI exits before its first frame fail instead of running forever (#33008)",
+      "topic": "pr-33008"
+    },
+    {
+      "pr": 33721,
+      "sha": "0ca73a19f06bc82d729f6d1c1c8903aa22d78868",
+      "subject": "fix(server): usage prices Claude Mythos 5.2 from its Bedrock rate (#33721)",
+      "topic": "pr-33721"
+    },
+    {
+      "pr": 33706,
+      "sha": "b48b8ea2a0019b3d38de09406fe8be820dd8df15",
+      "subject": "fix(web): prompt suggestions show after a steered turn (#33706)",
+      "topic": "pr-28047"
+    },
+    {
+      "pr": 33223,
+      "sha": "ca796d52119592de771d8ccfa955d70dba84d11e",
+      "subject": "fix(mobile): Android Files sheet scrolls its tree instead of dragging the sheet (#33223)",
+      "topic": "pr-33223"
+    },
+    {
+      "pr": 33752,
+      "sha": "f8fbc199ae14cd6c034407baca476e3a419257f6",
+      "subject": "fix(server): one finished turn looks up its branch's pull request once (#33752)",
+      "topic": "pr-33752"
+    },
+    {
+      "pr": 33768,
+      "sha": "7171fdd7716b05dc1b4be40c26ac78e8bb35f80c",
+      "subject": "fix(acp-registry): commands past the 128th are no longer dropped (#33768)",
+      "topic": "pr-33768"
+    },
+    {
+      "pr": 33262,
+      "sha": "2922e8fb5952277793e0915b6adbceb58ebef1b0",
+      "subject": "fix(desktop): right-clicking a mailto link offers Copy Email Address (#33262)",
+      "topic": "pr-33262"
+    },
+    {
+      "pr": 33759,
+      "sha": "580503ed302bf81dd8bf074b4084a0ae000c410a",
+      "subject": "fix(web): custom snooze footer stays inside the dialog (#33759)",
+      "topic": "pr-33759"
+    },
+    {
+      "pr": 33181,
+      "sha": "e4d86abca9c0d0ddd8107ea557f2e0c879632cf3",
+      "subject": "fix(web): remote Lineage rows keep their title when the environment name is long (#33181)",
+      "topic": "pr-33181"
+    },
+    {
+      "pr": 33239,
+      "sha": "633438d54f17b99f73f1a09466ecbe4a6aa0d545",
+      "subject": "fix(server): failed updates report download diagnostics (#33239)",
+      "topic": "pr-33239"
+    },
+    {
+      "pr": 33263,
+      "sha": "a22068f3711e684b99acfff9f2a0974365046815",
+      "subject": "fix(server): opening the branch menu no longer wipes PR status (#33263)",
+      "topic": "pr-33263"
+    },
+    {
+      "pr": 33325,
+      "sha": "56064fc4f6f376af29d4cd5831714fe06b26fe42",
+      "subject": "fix(ssh): Intel Mac hosts no longer try to download a missing t3 archive (#33325)",
+      "topic": "pr-33325"
+    },
+    {
+      "pr": 33677,
+      "sha": "d47591f613a28818d583bd3003f950ccd5060951",
+      "subject": "fix(acp): OMP threads show html_render pages (#33677)",
+      "topic": "pr-33677"
+    },
+    {
+      "pr": 33695,
+      "sha": "ad91636f0b48fe41119c888ebe937acb5167f0ee",
+      "subject": "fix(server): Commit, push & PR no longer pushes the default branch into itself (#33695)",
+      "topic": "pr-33695"
+    },
+    {
+      "pr": 33666,
+      "sha": "cec8d73a1f0fd3bd9a48df88640436e73a04afa3",
+      "subject": "fix(server): a background agent tab survives a desktop window reload (#33666)",
+      "topic": "pr-33666"
+    },
+    {
+      "pr": 33438,
+      "sha": "65ffcbf647e706dcb4c7d9834724c74ff4b8dabb",
+      "subject": "perf(shared): speed up escaped Markdown in long PR descriptions (#33438)",
+      "topic": "pr-33438"
+    },
+    {
+      "pr": 33675,
+      "sha": "b37c7f6fa41e36f259ce3b8ae7821e0a3a22793c",
+      "subject": "fix(forgejo): find merged pull requests whose head branch was deleted (#33675)",
+      "topic": "pr-33675"
+    },
+    {
+      "pr": 33448,
+      "sha": "5dcf69ebfa955669b8d34d0fa73d2d05d6b466d0",
+      "subject": "fix(server): provider status checks no longer make mise download missing CLIs (#33448)",
+      "topic": "pr-33448"
+    },
+    {
+      "pr": 33469,
+      "sha": "8d54c8b1a7ab58528ec7fcddb30fdc68a6e68ea0",
+      "subject": "fix(server): a steer that restarts a completion wake no longer strands later subagent results (#33469)",
+      "topic": "pr-33469"
+    },
+    {
+      "pr": 33643,
+      "sha": "9e12eca12526c842f97cfcbc6f3cd2149259c776",
+      "subject": "fix(shared): relative Windows file links open the file (#33643)",
+      "topic": "pr-33643"
+    },
+    {
+      "pr": 33628,
+      "sha": "5636b5666d3fb9b2b280dbe8a0c5cb42874f1bcd",
+      "subject": "fix(server): quitting no longer restarts the relay client mid-shutdown (#33628)",
+      "topic": "pr-33628"
+    },
+    {
+      "pr": 31925,
+      "sha": "4f570443c68e0250ac66b123f44c5405ef963a4d",
+      "subject": "fix(server): preview_evaluate accepts top-level await (#31925)",
+      "topic": "pr-31925"
+    },
+    {
+      "pr": 33554,
+      "sha": "4d9caf14eeadcbbf7247177077e87feed0ad6f26",
+      "subject": "fix(ssh): tunnel readiness no longer counts ssh's connection time (#33554)",
+      "topic": "pr-33554"
+    },
+    {
+      "pr": 33591,
+      "sha": "4168c14c7db15702bc3745a36b9cd3b9c366630a",
+      "subject": "fix(server): a queued message that names no model keeps the model picked ahead of it (#33591)",
+      "topic": "pr-33591"
+    },
+    {
+      "pr": 27677,
+      "sha": "eff45664fae739f0efadaee13acc145ddf0d0b66",
+      "subject": "fix(opencode): long command turns no longer fail when the command request times out (#27677)",
+      "topic": "pr-27677"
+    },
+    {
+      "pr": 33535,
+      "sha": "577c524089368176e00b331a8217b642fd6d06a5",
+      "subject": "fix(server): detaching a session no longer strands its pending approval (#33535)",
+      "topic": "pr-33535"
+    },
+    {
+      "pr": 33730,
+      "sha": "25da7ebca692d576517c330332cfd921e71a33ae",
+      "subject": "fix(web): reclaim notice says the machine will be offline (#33730)",
+      "topic": "pr-33730"
+    },
+    {
+      "pr": 33707,
+      "sha": "4c361199f47f6ea32a2c14835df392640d0f7c63",
+      "subject": "fix(server): Claude threads can allow an MCP app for the session (#33707)",
+      "topic": "pr-33707"
+    },
+    {
+      "pr": 33724,
+      "sha": "934c7f8d8e7a012aa55be9c0b17498979040fe02",
+      "subject": "fix(web): center short PR titles in thread details (#33724)",
+      "topic": "pr-33724"
+    },
+    {
+      "pr": 33682,
+      "sha": "6c9adfb2739205244b84e607736f6fd8b4611e69",
+      "subject": "fix(mobile): fit usage view selector beside the date range at large text (#33682)",
+      "topic": "pr-33682"
+    },
+    {
+      "pr": 28221,
+      "sha": "e89abadaee70e0d73fb19a5ce40a686b1a92310e",
+      "subject": "fix(server): show idle paragraphs before the assistant turn ends (#28221)",
+      "topic": "pr-28221"
+    },
+    {
+      "pr": 24599,
+      "sha": "f6a32dbc7f9047cce5e6a83062aa1b8031a03081",
+      "subject": "fix(server): stop PR watch flapping while workflows await approval (#24599)",
+      "topic": "pr-24599"
+    },
+    {
+      "pr": 33689,
+      "sha": "20bb685e68fda77f60f9324f0db96d4ef06902d2",
+      "subject": "ci(mobile): version bump commits no longer credit Codex (#33689)",
+      "topic": "pr-33689"
+    },
+    {
+      "sha": "d1909d68f8a8864d13fcb214c116777a651e6684",
+      "subject": "chore(mobile): bump app version to 2.3.0",
+      "topic": "c-d1909d68f8a8"
+    },
+    {
+      "pr": 33678,
+      "sha": "331889a13560e6d8885629e2a6e89b2203ebf2cf",
+      "subject": "fix(mobile): hide compose in the detail rail while starting a task (#33678)",
+      "topic": "pr-33678"
+    },
+    {
+      "pr": 33674,
+      "sha": "73fb49d0b3a61bff74aebc362fc6c17d6c0d39be",
+      "subject": "ci(mobile): keep the Android store AAB as a workflow artifact (#33674)",
+      "topic": "pr-33674"
+    },
+    {
+      "pr": 33663,
+      "sha": "822671581383a357c5dc8d3ea9984b408c3e03c6",
+      "subject": "fix(web): \"Use T3 Code in another app\" opens the Grok Bot app (#33663)",
+      "topic": "pr-33663"
+    },
+    {
+      "pr": 33664,
+      "sha": "f7281124ba923aef7e917bc8cf6d02878a49edd3",
+      "subject": "fix(ci): store-build checkouts drop credentials without submodule cleanup (#33664)",
+      "topic": "pr-33664"
+    },
+    {
+      "pr": 33647,
+      "sha": "16a6c1c41fc608015d8ea129d7d270c488b7893d",
+      "subject": "fix(web): show details for background commands (#33647)",
+      "topic": "pr-33647"
+    },
+    {
+      "pr": 33661,
+      "sha": "e2aa223229e42dd742b6dd05a9fad61775231d88",
+      "subject": "fix(antigravity): resolve model names from usage metadata (#33661)",
+      "topic": "pr-13809"
+    },
+    {
+      "pr": 26570,
+      "sha": "0c832589a0369bd7d4ac9b074c0ea6ce93d7f4a5",
+      "subject": "fix(server): allow requested WebMCP writes (#26570)",
+      "topic": "pr-26570"
+    },
+    {
+      "pr": 23589,
+      "sha": "5ae957848a3bac1324213f68dc3e091b23f8a69b",
+      "subject": "fix(desktop): agents see visible:true while the desktop shows their tab (#23589)",
+      "topic": "pr-23589"
+    },
+    {
+      "pr": 26630,
+      "sha": "046efd791efb5f81f9f6d5e03f4336d3436e4293",
+      "subject": "fix(web): scrolling pans expanded images and Mermaid diagrams (#26630)",
+      "topic": "pr-26630"
+    },
+    {
+      "pr": 33618,
+      "sha": "b78c04d3e1588f6579bd72a709d8168f3e8ab58f",
+      "subject": "ci(mobile): Android PR preview clients build on Blacksmith (#33618)",
+      "topic": "pr-33618"
+    },
+    {
+      "pr": 26374,
+      "sha": "12085f0b0c1229198bbcbf47c63135f4931936f6",
+      "subject": "fix(server): Antigravity install no longer fails on a stale Windows Crashpad pipe (#26374)",
+      "topic": "pr-26374"
+    },
+    {
+      "pr": 33611,
+      "sha": "5e59ece7206958a04f4849d3453e4793b83fcf26",
+      "subject": "fix(mobile): Android feed stays at its end after the keyboard or sidebar changes (#33611)",
+      "topic": "pr-33611"
+    },
+    {
+      "pr": 13809,
+      "sha": "9a3f8db9b39704cd1adb522babda23c21de8e1e4",
+      "subject": "fix(server): price Antigravity Gemini Flash effort variants (#13809)",
+      "topic": "pr-13809"
+    },
+    {
+      "pr": 33599,
+      "sha": "9318fdbe303e59263b842b88e2b997b5791527bd",
+      "subject": "fix(mobile): Android sidebar and composer transitions no longer reflow at rest (#33599)",
+      "topic": "pr-33599"
+    },
+    {
+      "pr": 33617,
+      "sha": "83862afe7419f1d5812b8de98350c0c63cbd96b7",
+      "subject": "ci(mobile): dev clients build on Blacksmith, and mobile:install starts that build (#33617)",
+      "topic": "pr-33617"
+    },
+    {
+      "pr": 32467,
+      "sha": "f6a8a635df60e62e46ca7abf28b6dfcabf3081d5",
+      "subject": "fix(mobile): distinguish local ACP instances by name (#32467)",
+      "topic": "pr-32467"
+    },
+    {
+      "sha": "6f8c7433d018351caea8e3858105ff2096a37fad",
+      "subject": "fix(web): new threads use the last used project",
+      "topic": "c-6f8c7433d018"
+    },
+    {
+      "pr": 33645,
+      "sha": "eb381a7d4f4475d60fbb1f59efe9f204de59bba8",
+      "subject": "fix: hosted agent approval no longer fails with \"Your session cannot approve\" (#33645)",
+      "topic": "pr-33632"
+    },
+    {
+      "pr": 32643,
+      "sha": "ad989057ba3b9298d40969689229f4feef1c9872",
+      "subject": "fix(web): dropdown items over the desktop title bar respond to clicks (#32643)",
+      "topic": "pr-32643"
+    },
+    {
+      "pr": 33636,
+      "sha": "53bcb9af7a37dd0b4df11a7d6fa0106e9e5b7356",
+      "subject": "perf(cursor): improve account usage scanning (#33636)",
+      "topic": "pr-33636"
+    },
+    {
+      "pr": 33632,
+      "sha": "9a0d02723c182cd9da01973b30c2b38b299bdbc6",
+      "subject": "feat: approve agent sign-ins on app.t3.codes with T3 Connect (#33632)",
+      "topic": "pr-33632"
+    },
+    {
+      "pr": 33629,
+      "sha": "e6fa2e35c34c6b1af2cef4eaf444f1b88804933e",
+      "subject": "fix(web): expanding hidden diff context works after a diff refresh (#33629)",
+      "topic": "pr-33629"
+    },
+    {
+      "pr": 33627,
+      "sha": "d655e2cca6ce918356f5914f7facff76db311b5c",
+      "subject": "chore(web): upgrade @pierre/diffs to 1.7 and use its built-in find (#33627)",
+      "topic": "pr-33627"
+    },
+    {
+      "pr": 33612,
+      "sha": "bbdc7dca320ee4fbc7131498aaffef2fa1eb3d41",
+      "subject": "perf(opencode): bound usage reads to in-window messages (#33612)",
+      "topic": "pr-33612"
+    },
+    {
+      "pr": 32929,
+      "sha": "b10cdded50851ead0be729a5cedfff125dde7ca8",
+      "subject": "fix(web): a new side chat focuses its message input (#32929)",
+      "topic": "pr-32929"
+    },
+    {
+      "pr": 33598,
+      "sha": "45e0143cf1a529e782077ecead4a921fa9430078",
+      "subject": "fix(web): thread title menu opens without a half-second wait on desktop (#33598)",
+      "topic": "pr-33598"
+    },
+    {
+      "pr": 33565,
+      "sha": "9110dc2c932cb3bc57dc2845b9f1ea362f248796",
+      "subject": "ci(mobile): build Android store releases on Blacksmith (#33565)",
+      "topic": "pr-33565"
+    },
+    {
+      "pr": 33543,
+      "sha": "ee59ab22a819acb0544d85cd6cca0e4aa8c7c444",
+      "subject": "fix(mobile): the composer and search bars move with their iOS columns (#33543)",
+      "topic": "pr-33543"
+    },
+    {
+      "pr": 33600,
+      "sha": "dd0737d3e2029da533f1c430a10869a060396b63",
+      "subject": "feat: approve agent sign-ins with T3 Connect instead of a code (#33600)",
+      "topic": "pr-33600"
+    },
+    {
+      "sha": "3e4d44930893422bba0f402aeefe9eb0b44692a6",
+      "subject": "chore(release): prepare v0.1.8",
+      "topic": "pr-33565"
+    },
+    {
+      "pr": 33570,
+      "sha": "ff7aa5ace311c70587631dcedb43f1d92068c342",
+      "subject": "fix(mobile): Android PDF preview double-tap zoom and easier link taps (#33570)",
+      "topic": "pr-33504"
+    },
+    {
+      "pr": 33092,
+      "sha": "ad9e87111fd9b2f10ec320b4de0a6ad3a092278a",
+      "subject": "feat(web): send messages while attachments upload (#33092)",
+      "topic": "pr-33092"
+    },
+    {
+      "pr": 33113,
+      "sha": "8ab427c6077f1e8b75ea608a363006ccb697f5f6",
+      "subject": "fix(web): settings say custom instructions cover pull request descriptions (#33113)",
+      "topic": "pr-33113"
+    },
+    {
+      "pr": 33538,
+      "sha": "e85e0094dd4617a1eada1ad7961f2132a79e67b2",
+      "subject": "fix(web): checking for updates finds provider updates on every machine (#33538)",
+      "topic": "pr-33538"
+    },
+    {
+      "pr": 33530,
+      "sha": "bf469bb19669671d0df2efda74ed73867a7137c0",
+      "subject": "chore(server): update Claude Agent SDK to 0.3.321 (#33530)",
+      "topic": "pr-33530"
+    },
+    {
+      "pr": 33525,
+      "sha": "6e4711d37690e8cc7225fc1a66011f4b1840d095",
+      "subject": "fix(web): clicked workspace areas no longer show the focus ring after a stray key (#33525)",
+      "topic": "pr-33525"
+    },
+    {
+      "pr": 33515,
+      "sha": "eb6e7fa2f6a47522fa44bbf1b942ba7157860b43",
+      "subject": "fix(models): new models also surface the CLI update that supports them (#33515)",
+      "topic": "pr-33511"
+    },
+    {
+      "pr": 33510,
+      "sha": "2da1b7431d07abeefe69c3cda4ae38d7f7c3df30",
+      "subject": "fix(mobile): the unfolded Duo sidebar no longer pops back in while resizing Files (#33510)",
+      "topic": "pr-33510"
+    },
+    {
+      "pr": 33504,
+      "sha": "167631328add85fc7ed58a2405899fc83892d173",
+      "subject": "chore(mobile): update react-native-pdf-jsi to 6.1.0 and link it on Android only (#33504)",
+      "topic": "pr-33504"
+    },
+    {
+      "pr": 33518,
+      "sha": "206a8e69371d3d79cbeadeafb944815c294ae6e5",
+      "subject": "fix(desktop): close focused DevTools with Cmd+W (#33518)",
+      "topic": "pr-33518"
+    },
+    {
+      "pr": 33511,
+      "sha": "d0f7a509cc9143bf7511800d2f28b7d87e6ef1ec",
+      "subject": "feat(models): the model picker checks for new models when it opens (#33511)",
+      "topic": "pr-33511"
+    },
+    {
+      "pr": 33503,
+      "sha": "077fd62222a94b2264ad4525aa4e25bdb29d5029",
+      "subject": "fix(client): finishing a long background thread no longer freezes the app (#33503)",
+      "topic": "pr-33503"
+    },
+    {
+      "pr": 33492,
+      "sha": "7078dcbfbef09b5c970aba2b4771b2f1e8bcfbb9",
+      "subject": "fix(mobile): a full swipe on a thread row finishes even if the pan is cancelled (#33492)",
+      "topic": "pr-33492"
+    },
+    {
+      "pr": 33501,
+      "sha": "f6203ffbc69e8126433084cf958dcce1becd647c",
+      "subject": "fix(mobile): the chat inset resets after the keyboard closes while frozen (#33501)",
+      "topic": "pr-33501"
+    }
+  ],
+  "count": 79,
+  "createdAt": "2026-11-10T11:08:25.209Z",
+  "digest": "63821afb7c492494715f05d814baa093d19546f49637875cf06500dcd298e0b1",
+  "interval": 24,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "fa2f4ff2a2bac5ac92e07749f6b83b0003d642a0"
+}

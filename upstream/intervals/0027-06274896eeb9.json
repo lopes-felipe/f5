@@ -1,0 +1,3011 @@
+{
+  "baseSha": "52d621a6f10f5a80ec433e3f3515eafbeabac74b",
+  "commits": [
+    {
+      "pr": 35120,
+      "sha": "06274896eeb9a8c1646afffd4e45e77ce17596e9",
+      "subject": "fix(server): selected-file commits during a cherry-pick or revert are refused (#35120)",
+      "topic": "pr-35120"
+    },
+    {
+      "pr": 35114,
+      "sha": "e89c8ce014e544806059e5fec37a0099ae9e9af6",
+      "subject": "fix(server): a file ticked Viewed before loading a push shows Changed (#35114)",
+      "topic": "pr-35114"
+    },
+    {
+      "pr": 35121,
+      "sha": "e6a8b483890da0a42b46da626647456819b5267d",
+      "subject": "fix(server): a new worktree no longer fails when its generated folder is left over from an earlier one (#35121)",
+      "topic": "pr-35121"
+    },
+    {
+      "pr": 35076,
+      "sha": "ced85c64ff357c69e7d0bd7b672959254ebba9da",
+      "subject": "fix(client): a message the host never answers fails after 60 seconds instead of spinning forever (#35076)",
+      "topic": "pr-35076"
+    },
+    {
+      "pr": 35036,
+      "sha": "3d6ece2b29f2c5b71a0b226af31d28d39440eaad",
+      "subject": "fix(web): file links the agent cited from another project open that project's file (#35036)",
+      "topic": "pr-35036"
+    },
+    {
+      "pr": 35119,
+      "sha": "80cccdcef3f22f00e25de5889bed2af9c80a3990",
+      "subject": "fix(server): projects read their own Git repository when the server inherited GIT_DIR (#35119)",
+      "topic": "pr-35119"
+    },
+    {
+      "pr": 35110,
+      "sha": "cb931fcbe2fcc6d539e0ede7d71f212f3552524e",
+      "subject": "fix(web): a save in one tab no longer erases what another tab saved (#35110)",
+      "topic": "pr-35110"
+    },
+    {
+      "pr": 35102,
+      "sha": "efd683ccc3508719b13f977b3ad3898cfbd76635",
+      "subject": "fix(web): a failed send leaves the timeline when a new draft was typed (#35102)",
+      "topic": "pr-35102"
+    },
+    {
+      "pr": 35116,
+      "sha": "32f3d8b160a1a28fd9cb7add78064e3ed9042dce",
+      "subject": "fix(client-runtime): Diagnostics Resource History keeps updating while open (#35116)",
+      "topic": "pr-35116"
+    },
+    {
+      "pr": 35092,
+      "sha": "9c5b6f3d7732d2e312bebb8acff00a6acd8eff5a",
+      "subject": "fix(mobile): Android composer keeps its cursor after a drag-scroll (#35092)",
+      "topic": "pr-35092"
+    },
+    {
+      "pr": 35111,
+      "sha": "abbd967c4bdc69003687313b10278f392fa8155e",
+      "subject": "fix(web): PR comment hover excerpts no longer end in a replacement character (#35111)",
+      "topic": "pr-35111"
+    },
+    {
+      "pr": 35100,
+      "sha": "b2e86d79020358d51bae4c30eb415c1a5da7c132",
+      "subject": "fix(web): an invalid provider setting is refused at its field instead of taking the provider offline (#35100)",
+      "topic": "pr-35100"
+    },
+    {
+      "pr": 35101,
+      "sha": "12d4c62214ced1f7cc71096f83c81cad1cf39923",
+      "subject": "fix(web): every settings nav group has a name for screen readers (#35101)",
+      "topic": "pr-35101"
+    },
+    {
+      "pr": 35062,
+      "sha": "01200aaf8e4745416e0808f6bb63313d3332edee",
+      "subject": "fix(mobile): long thread titles in the @ picker keep their Thread marker (#35062)",
+      "topic": "pr-35062"
+    },
+    {
+      "pr": 35008,
+      "sha": "2b7e975a974f9184b4a212675dd45d3070a789a7",
+      "subject": "fix(clients): say \"Starting Claude\" until the provider actually starts (#35008)",
+      "topic": "pr-35008"
+    },
+    {
+      "pr": 35097,
+      "sha": "8f54d4b1a9a565eff6cf40464fb2dc6801c598df",
+      "subject": "fix(desktop): exits that skip quit are recorded in the trace and logs (#35097)",
+      "topic": "pr-35097"
+    },
+    {
+      "pr": 35070,
+      "sha": "40526f96f6ae3dfe74ae60ca279e748d7838a691",
+      "subject": "fix(server): a finished turn refreshes only its own project's PR listings (#35070)",
+      "topic": "pr-35070"
+    },
+    {
+      "pr": 35084,
+      "sha": "bf13d60e830afcebe6f5ae7285f2e927e001a8b3",
+      "subject": "fix(opencode): OpenCode 2 threads see T3 Code's MCP tools on their first turn (#35084)",
+      "topic": "pr-35084"
+    },
+    {
+      "pr": 35107,
+      "sha": "5fae2b5124d8c491f242c004a6c6ef8602517719",
+      "subject": "test(web): command palette tests clear a leaked last-used project (#35107)",
+      "topic": "pr-35107"
+    },
+    {
+      "pr": 35090,
+      "sha": "f39c4405fabad4fa15b17b150d0e260db71577aa",
+      "subject": "fix(web): diff tab keeps its scroll position across thread switches (#35090)",
+      "topic": "pr-35090"
+    },
+    {
+      "pr": 35086,
+      "sha": "beaf28459b3d9283791e09b077ae9a0973837198",
+      "subject": "fix(provider-core): Vite+ system_first shims update the install they actually run (#35086)",
+      "topic": "pr-35086"
+    },
+    {
+      "pr": 35089,
+      "sha": "12b29eb71dab3a0d61e903f36db956d86a11b3b1",
+      "subject": "fix(server): Codex turns use the configured reasoning summary instead of forcing detailed (#35089)",
+      "topic": "pr-35089"
+    },
+    {
+      "pr": 35014,
+      "sha": "6da3ff23d2f14c9cbaee868903a5740eef30af2f",
+      "subject": "fix(server): automatic pulls and pull request refresh let slow checkouts finish (#35014)",
+      "topic": "pr-35014"
+    },
+    {
+      "pr": 35075,
+      "sha": "002dc9b644518dbe58cd3694ed375048df84a730",
+      "subject": "fix(web): file names with a backslash no longer split into folders in the Changes card (#35075)",
+      "topic": "pr-35075"
+    },
+    {
+      "pr": 35055,
+      "sha": "4ff329d1089436ba7083fefe91fe13dd819d7e9b",
+      "subject": "fix(server): fork PRs into gh's upstream base use an owner-qualified head (#35055)",
+      "topic": "pr-35055"
+    },
+    {
+      "pr": 35063,
+      "sha": "22910ffdd2f2fd594127afb61a8f21595db1ba47",
+      "subject": "fix(ssh): an ssh config alias keeps following its Port after it changes (#35063)",
+      "topic": "pr-35063"
+    },
+    {
+      "pr": 35067,
+      "sha": "f10a5029f5b14b3949ca807bdd9576a7cdaa1152",
+      "subject": "fix(web): Files tree keeps expanded folders across remounts (#35067)",
+      "topic": "pr-35067"
+    },
+    {
+      "pr": 35018,
+      "sha": "dd9c2f8e21071e3ab4290fc456d23f6e53f1efe6",
+      "subject": "fix(desktop): installing an update closes SSH port forwards before relaunch (#35018)",
+      "topic": "pr-35018"
+    },
+    {
+      "pr": 35080,
+      "sha": "d6ac53ead242f49cc7da6e1d34c4c92d5a6fdbba",
+      "subject": "fix(server): a project whose origin URL contains a space gets a repository identity (#35080)",
+      "topic": "pr-35080"
+    },
+    {
+      "pr": 35038,
+      "sha": "5bb44523a61a73ad799ba87f41aa44fff39dec0c",
+      "subject": "fix(server): desktop browser tabs on System appearance follow the system color scheme (#35038)",
+      "topic": "pr-35038"
+    },
+    {
+      "pr": 35048,
+      "sha": "68f1bc58d584f9d44cd3c3c0a378f416e5284b6a",
+      "subject": "fix(desktop): SnapShot shortcut rebinds after the desktop portal restarts (#35048)",
+      "topic": "pr-35048"
+    },
+    {
+      "pr": 35027,
+      "sha": "cbc38a1b0f9a23f823a0e7e0189fcb0d88f38872",
+      "subject": "fix(server): one unresponsive provider no longer stalls every thread's effects (#35027)",
+      "topic": "pr-35027"
+    },
+    {
+      "pr": 35049,
+      "sha": "3ec8347a695f2d752fe2391a62e36555b57d5406",
+      "subject": "fix(opencode): a slow OpenCode 2 server start no longer leaves the model list empty (#35049)",
+      "topic": "pr-35049"
+    },
+    {
+      "pr": 35033,
+      "sha": "e1fad19018bbc6aae612f2b2226133f10912cb62",
+      "subject": "fix(desktop): a login shell slower than 5s at launch still yields its PATH (#35033)",
+      "topic": "pr-35033"
+    },
+    {
+      "pr": 35057,
+      "sha": "7a3906007294c3591b3ebc6afa29bad40037452e",
+      "subject": "fix(server): a damaged state database fails startup with its path and how to recover (#35057)",
+      "topic": "pr-35057"
+    },
+    {
+      "pr": 35032,
+      "sha": "ac781dcb770e80ee66fe74f5ff2058d90d4ee190",
+      "subject": "fix(server): delegate_task wait returns its task handle before Node fetch's 300 s timeout (#35032)",
+      "topic": "pr-35032"
+    },
+    {
+      "pr": 35042,
+      "sha": "becc7d3510ce82c4b58a8002a2b358a45f579d1f",
+      "subject": "fix(server): Tailscale Serve no longer takes a live server's route and repairs one left on a dead port (#35042)",
+      "topic": "pr-34743"
+    },
+    {
+      "pr": 35029,
+      "sha": "805251b67059e89678d576c581f6e2dae19c4dde",
+      "subject": "fix(server): thread setting changes no longer end a Claude session's background work (#35029)",
+      "topic": "pr-35029"
+    },
+    {
+      "pr": 34788,
+      "sha": "84e69da3959bcc59f3f620a6caa987a18756b5d0",
+      "subject": "fix(web): No project threads offer no Initialize Git, and their linked PRs show and act in the thread (#34788)",
+      "topic": "pr-34788"
+    },
+    {
+      "pr": 35013,
+      "sha": "37e0fd378abcd044924ef095d912139e3606a6ab",
+      "subject": "fix(server): a run whose recovery state can't be read fails instead of staying starting (#35013)",
+      "topic": "pr-35013"
+    },
+    {
+      "pr": 35037,
+      "sha": "1a5d3737b7ed60f5372752f0e2607f24c66122ef",
+      "subject": "fix(server): Claude replies stream paragraph by paragraph again (#35037)",
+      "topic": "pr-35037"
+    },
+    {
+      "pr": 35020,
+      "sha": "c17ec829d04566a3ff02f9084889a996f18f6770",
+      "subject": "fix(web): overlong content search queries explain the 256-character limit (#35020)",
+      "topic": "pr-35020"
+    },
+    {
+      "pr": 35022,
+      "sha": "25123c28d46c49a990b7d0119db683dd9a3fd719",
+      "subject": "fix(shared): html_render pages from OpenCode 2 Code Mode show and are cleaned up (#35022)",
+      "topic": "pr-35022"
+    },
+    {
+      "pr": 35005,
+      "sha": "3126806749f82b60a2e5dfab7ed6ccbf390e324d",
+      "subject": "fix(server): project identity follows gh repo set-default (#35005)",
+      "topic": "pr-35005"
+    },
+    {
+      "pr": 35004,
+      "sha": "09e1751a16421268874278920c6f403ade4e1a42",
+      "subject": "fix(server): Codex sign-in hint names the instance's CODEX_HOME (#35004)",
+      "topic": "pr-35004"
+    },
+    {
+      "pr": 34991,
+      "sha": "9f4b42e7509841d711eb893b30e77e78e9b9397f",
+      "subject": "fix(server): thread find skips empty replies hidden beside an HTML render (#34991)",
+      "topic": "pr-34182"
+    },
+    {
+      "pr": 34999,
+      "sha": "56c4e20fffd143b6be1a77a4ed6a76b8fa87843c",
+      "subject": "fix(cursor): user-invoked skills hidden from the model reach the Cursor prompt (#34999)",
+      "topic": "pr-34999"
+    },
+    {
+      "pr": 35130,
+      "sha": "a4d0a06e7f1a062b2fcbc93e5052db017483297e",
+      "subject": "perf(server): sending to a very long thread reads about 5x less of its history (#35130)",
+      "topic": "pr-35130"
+    },
+    {
+      "pr": 24425,
+      "sha": "52273b7a04dbf482ea83f761479fe9c1573149c0",
+      "subject": "fix(desktop): browser panel can approve local HTTPS certificates (#24425)",
+      "topic": "pr-24425"
+    },
+    {
+      "pr": 34992,
+      "sha": "ee90bdc9405d8d4b8ff78ce2133ccb04844298ab",
+      "subject": "fix(web): CSV/TSV and large-text previews say \"1 row\", \"1 column\" and \"1 line\" (#34992)",
+      "topic": "pr-34992"
+    },
+    {
+      "pr": 34606,
+      "sha": "b68aedfdb71534bfdfbe55771ef2e686742faa8e",
+      "subject": "fix(opencode): updating restarts the background service on the new version (#34606)",
+      "topic": "pr-22839"
+    },
+    {
+      "pr": 34978,
+      "sha": "dc032d7c8f889612ccb7ebe081117bb0c15639ec",
+      "subject": "feat(web,mobile): Add project lists only GitHub until you turn other hosts on (#34978)",
+      "topic": "pr-34978"
+    },
+    {
+      "pr": 34912,
+      "sha": "2de337003dd8dec7d33d117175bca654fa2a006f",
+      "subject": "fix(server): Stop interrupts a provider turn that starts while it lands (#34912)",
+      "topic": "pr-34912"
+    },
+    {
+      "pr": 34815,
+      "sha": "5c0eb5124e2eba13f240b18c4060342eb9fbc588",
+      "subject": "fix(server): a missed fixed-time slot shows as failed on its scheduled task (#34815)",
+      "topic": "pr-34815"
+    },
+    {
+      "pr": 34886,
+      "sha": "26433ac0701dd286438e24ca5b5b341c6f5313d7",
+      "subject": "fix(server): boot service log is emptied in place once it passes 10 MiB (#34886)",
+      "topic": "pr-34886"
+    },
+    {
+      "pr": 34887,
+      "sha": "b85a21e2403bc604c73e406d7ee930e871f71e4f",
+      "subject": "fix(mobile): Android review sheet scrolls to Submit review (#34887)",
+      "topic": "pr-34887"
+    },
+    {
+      "pr": 34893,
+      "sha": "59ff9866345e38397e75e7da5b2728144ab4842b",
+      "subject": "fix(mobile): iPhone Settings search keeps its query after switching tabs (#34893)",
+      "topic": "pr-34893"
+    },
+    {
+      "pr": 34934,
+      "sha": "d7454f7e39beddfe9f63c5949b6772bf90dfa202",
+      "subject": "fix(server): finished Claude delegates release their process (#34934)",
+      "topic": "pr-34934"
+    },
+    {
+      "pr": 34938,
+      "sha": "5922408c3b069a68c68c5b16db437404815a95fe",
+      "subject": "fix(server): custom Claude models named like a Claude Code alias reach the API unchanged (#34938)",
+      "topic": "pr-34938"
+    },
+    {
+      "pr": 34917,
+      "sha": "f423a4dba04e74ca3c3083cfe3c88bcfadd4cf5e",
+      "subject": "fix(desktop): a failed update-track save keeps offering the current track's updates (#34917)",
+      "topic": "pr-34917"
+    },
+    {
+      "pr": 34926,
+      "sha": "b53cd67681d62d54e3969642bf780ff63e0edca7",
+      "subject": "fix(server): handoff budget estimates stored history in tokens, not bytes (#34926)",
+      "topic": "pr-34926"
+    },
+    {
+      "pr": 34915,
+      "sha": "e2f1a2126293cb0348def61ad5582d5f1d60e251",
+      "subject": "fix(server): a failed delegated task keeps its child's final report (#34915)",
+      "topic": "pr-34915"
+    },
+    {
+      "pr": 34784,
+      "sha": "d8b0a05a74dfb8d19c12b532f8e5d1b8831311d2",
+      "subject": "fix(clients): Claude question option previews are shown under their option (#34784)",
+      "topic": "pr-34784"
+    },
+    {
+      "pr": 34928,
+      "sha": "7aaf5ce21d11ce352a6a2caa46d69060a997c68a",
+      "subject": "fix(ssh): a failed remote t3 download says what failed and how to install it (#34928)",
+      "topic": "pr-34928"
+    },
+    {
+      "pr": 34927,
+      "sha": "fb2580a57189aed26f2d812d2d1a7e77f6323b1e",
+      "subject": "fix(provider-muse): an unfinished Muse install says how to finish setup (#34927)",
+      "topic": "pr-34927"
+    },
+    {
+      "pr": 34910,
+      "sha": "5fb9ee5c424f230f554139f4a80de378062d2ac3",
+      "subject": "fix(server): standalone Codex is checked against the native release channel (#34910)",
+      "topic": "pr-34910"
+    },
+    {
+      "pr": 34932,
+      "sha": "0b1b9d471aed8cd1576824653148c38057f593dc",
+      "subject": "fix(desktop): app opens after an update while the old server shuts down (#34932)",
+      "topic": "pr-34512"
+    },
+    {
+      "pr": 34936,
+      "sha": "b63b559c053a7ba237987b501061ae4b93ae79f1",
+      "subject": "fix(server): browser setup command names the running t3 executable, not another t3 on PATH (#34936)",
+      "topic": "pr-34936"
+    },
+    {
+      "pr": 34899,
+      "sha": "34de974868b5c9bf3cd991e806d826cf1cddd53d",
+      "subject": "fix(web): clicking the timeline's empty padding keeps following a streaming reply (#34899)",
+      "topic": "pr-34899"
+    },
+    {
+      "pr": 28352,
+      "sha": "2b07556d719a071390984eeb19347af72f71a565",
+      "subject": "fix(web): a stashed prompt ending in a skill or file chip restores as a chip (#28352)",
+      "topic": "pr-28352"
+    },
+    {
+      "pr": 34929,
+      "sha": "1e848876eebde3614e0cf1676e24e97108bd212a",
+      "subject": "fix(web): a sidebar click no longer gets lost when the release reports no buttons (#34929)",
+      "topic": "pr-34929"
+    },
+    {
+      "pr": 34916,
+      "sha": "4be96e05144fa5f64c666d975c442a267b6a9957",
+      "subject": "fix(server): status of a new repository no longer waits on huge untracked files (#34916)",
+      "topic": "pr-34916"
+    },
+    {
+      "pr": 34889,
+      "sha": "080b10c408d68825eb648e9aaf53719590052051",
+      "subject": "fix(server): new worktrees survive git printing over 1 MB (#34889)",
+      "topic": "pr-34889"
+    },
+    {
+      "pr": 34914,
+      "sha": "96905b9cf45e58aec98a1ed03357c38398744c2d",
+      "subject": "fix(deps): resolve path-to-regexp 6.3.0 under @vercel/routing-utils (#34914)",
+      "topic": "pr-34914"
+    },
+    {
+      "pr": 34848,
+      "sha": "e77384bf0095310b5d6ee8c131f380ad3424f1ca",
+      "subject": "fix(server): Claude forked skills record the model they run on (#34848)",
+      "topic": "pr-34848"
+    },
+    {
+      "pr": 34871,
+      "sha": "74ffe35c731620d2f4bc06f9f01500a91a7662b9",
+      "subject": "fix(provider-core): Codex turns refused by a managed access policy say so instead of 'retry' (#34871)",
+      "topic": "pr-34871"
+    },
+    {
+      "pr": 34905,
+      "sha": "c9211b6abba9dbf00543f505a1a57c6912dc1d2e",
+      "subject": "fix(server): favicon lookups for a missing project folder are cached (#34905)",
+      "topic": "pr-34905"
+    },
+    {
+      "pr": 34859,
+      "sha": "2e18418abf6fdb394173bf5671fd341d9e43f92f",
+      "subject": "fix(web): Incognito browser visits stay out of project history (#34859)",
+      "topic": "pr-34859"
+    },
+    {
+      "pr": 34898,
+      "sha": "1e438c8f806c361943f6f20ed5b1a5cc7ec70e4e",
+      "subject": "fix(server): Codex goals wait for a delegated task instead of re-prompting (#34898)",
+      "topic": "pr-34898"
+    },
+    {
+      "pr": 34885,
+      "sha": "9bcca0443c1ebe4bfa73ba5e1e4eed58412e7859",
+      "subject": "fix(provider-core): one failed status check no longer marks a ready provider unavailable (#34885)",
+      "topic": "pr-34885"
+    },
+    {
+      "pr": 34883,
+      "sha": "415e1cabe6e43a6b44dcdb1973e834fea0431b2d",
+      "subject": "fix(web): html render images open with the rest of their page in the viewer (#34883)",
+      "topic": "pr-34883"
+    },
+    {
+      "pr": 34879,
+      "sha": "eeccecff7409b8f0684b0103dd0445a1af1b3f39",
+      "subject": "fix(server): deleting a source thread keeps the pages its live fork still shows (#34879)",
+      "topic": "pr-34879"
+    },
+    {
+      "pr": 34867,
+      "sha": "07efa5bdac56be7846270eb9fafdb75a3c19cdcd",
+      "subject": "fix(acp): ask forms with a free-text companion field show one step per question (#34867)",
+      "topic": "pr-34867"
+    },
+    {
+      "pr": 34829,
+      "sha": "eeae0b278319a9b176ce8418bc6504125b60c40a",
+      "subject": "fix(server): finished delegated Codex children no longer pile up in Codex Recents (#34829)",
+      "topic": "pr-34829"
+    },
+    {
+      "pr": 34895,
+      "sha": "1df9c91230c3c9e3ada0a91659b1333e0014f4f0",
+      "subject": "fix(server): thread reads list only open linked PRs and show their watch state (#34895)",
+      "topic": "pr-34895"
+    },
+    {
+      "pr": 34884,
+      "sha": "9359081c2471045ca4af90dfac1b01d1d43aa860",
+      "subject": "fix(server): a pull request watch started after a pending self-settle survives the turn end (#34884)",
+      "topic": "pr-34884"
+    },
+    {
+      "pr": 34823,
+      "sha": "8024e50c6fef20525f5360448cede149fbda460f",
+      "subject": "fix(server): a fork made after Edit from here no longer shows the rewound turns (#34823)",
+      "topic": "pr-34823"
+    },
+    {
+      "pr": 34878,
+      "sha": "0ac41eecadd4c8e358506471219aa83391a4f2db",
+      "subject": "fix(web): sidebar rows drop a branch and worktree that were deleted (#34878)",
+      "topic": "pr-34878"
+    },
+    {
+      "pr": 34846,
+      "sha": "204b140073f34452463bb1c59daf179e6033c47f",
+      "subject": "fix(web): context row under the composer hides chat text scrolling behind it (#34846)",
+      "topic": "pr-34846"
+    },
+    {
+      "pr": 34877,
+      "sha": "db04d3abe924f73f3c2c15991b4f8591669fa373",
+      "subject": "fix(server): subagent threads get short ids agents can quote back (#34877)",
+      "topic": "pr-34877"
+    },
+    {
+      "pr": 34863,
+      "sha": "555bb2f97340b41e454928138754e627fa5456d1",
+      "subject": "fix(desktop): Linux desktop builds run the packaged-server self-check (#34863)",
+      "topic": "pr-34863"
+    },
+    {
+      "pr": 34858,
+      "sha": "dcad1942a956cc9b2390a00bdda11a2030c0ef04",
+      "subject": "fix(client-runtime): provider toggles no longer wait for another provider's update (#34858)",
+      "topic": "pr-34858"
+    },
+    {
+      "pr": 34857,
+      "sha": "6b2591b252b46d1128e8ed4dd0538d15975fb285",
+      "subject": "fix(source-control): a query or fragment after .git keeps the repository identity (#34857)",
+      "topic": "pr-34857"
+    },
+    {
+      "pr": 34866,
+      "sha": "0b6f482dc5d5ee64d7e90d1bac342756db9bfe68",
+      "subject": "fix(server): T3 Connect says whether an unresolved address exists in public DNS (#34866)",
+      "topic": "pr-34866"
+    },
+    {
+      "pr": 34855,
+      "sha": "101e5f99a28052f79261d48589b8976e3c483450",
+      "subject": "fix(web): review comments in question answers reach the agent with their text (#34855)",
+      "topic": "pr-34855"
+    },
+    {
+      "pr": 34862,
+      "sha": "3b732f4d37e1fd37155afe8fca91fb19c3ea5d15",
+      "subject": "fix(server): Codex subagent rows show the child's current command (#34862)",
+      "topic": "pr-34862"
+    },
+    {
+      "pr": 34849,
+      "sha": "c085a0aa5d26ce3a1eff7ab10b5dd7ad0421c937",
+      "subject": "fix(server): a slow baseline checkpoint no longer holds every prompt for 30 seconds (#34849)",
+      "topic": "pr-34849"
+    },
+    {
+      "pr": 34847,
+      "sha": "9f1e97de60e4757a091898dd112fa282f1ed7611",
+      "subject": "fix(server): context handoff names omitted items instead of a read from the thread's start (#34847)",
+      "topic": "pr-34845"
+    },
+    {
+      "pr": 34821,
+      "sha": "ff599f0bef9c09398e6a08f03073426825c33e64",
+      "subject": "fix(server): Claude subagent results drop Claude Code's tools-used note (#34821)",
+      "topic": "pr-34821"
+    },
+    {
+      "pr": 34796,
+      "sha": "3bd7b0454452c883fd42a1bb900e64eb617b1edb",
+      "subject": "fix(web): Escape and tool keys work as soon as preview annotation starts (#34796)",
+      "topic": "pr-34796"
+    },
+    {
+      "pr": 34843,
+      "sha": "4e0b52806be83e66f80839e1e372398307346425",
+      "subject": "fix(cursor): agent shell commands stream their output while they run (#34843)",
+      "topic": "pr-34843"
+    },
+    {
+      "pr": 34845,
+      "sha": "6be26850fc2e47e90c7602ff593104cc579cd046",
+      "subject": "fix(server): side chat fork context recovers history from the parent thread (#34845)",
+      "topic": "pr-34845"
+    },
+    {
+      "pr": 34840,
+      "sha": "28b4ceeeffe9069fc7c2496b0e568778050a499a",
+      "subject": "fix(opencode): a Stop OpenCode 2 never answers offers Force stop (#34840)",
+      "topic": "pr-34840"
+    },
+    {
+      "pr": 34833,
+      "sha": "bfec2754b8bc4a6451cfd21cb128545ab138b795",
+      "subject": "fix(server): restart recovery wakes delegated children waiting on background work (#34833)",
+      "topic": "pr-34833"
+    },
+    {
+      "pr": 34831,
+      "sha": "3c6864235487147fd5667786152f400a75251fca",
+      "subject": "fix(server): file links relative to a gitignored git worktree open the file (#34831)",
+      "topic": "pr-34831"
+    },
+    {
+      "pr": 34809,
+      "sha": "7466707a83ee4f8c2e392c6b63e79a412299c4d1",
+      "subject": "fix(server): re-import no longer marks a continued transcript imported without its new messages (#34809)",
+      "topic": "pr-34809"
+    },
+    {
+      "pr": 34822,
+      "sha": "9e716b694ae38c0598251baee553704bdb38e9c0",
+      "subject": "fix(server): resumed Claude sessions wait for their MCP servers (#34822)",
+      "topic": "pr-34822"
+    },
+    {
+      "pr": 34818,
+      "sha": "a86ffacc378b240863b5608a9c8e6f06fb4d5833",
+      "subject": "fix(server): Claude sets a /goal that also mentions a skill (#34818)",
+      "topic": "pr-34818"
+    },
+    {
+      "pr": 34825,
+      "sha": "9786b82b0952c663fccaa0069377edce335c4963",
+      "subject": "fix(provider-acp): wait_for_exit answers when a background child holds the output pipes (#34825)",
+      "topic": "pr-34825"
+    },
+    {
+      "pr": 34816,
+      "sha": "7fc9aa6ed9417e4eff606cf6d1320a8ea2e25b60",
+      "subject": "fix(shared): typing after a skill chip no longer reparses the prompt as math (#34816)",
+      "topic": "pr-34816"
+    },
+    {
+      "pr": 34810,
+      "sha": "1a1f9ac18ed7cfa246207884aea93e3ce06851ce",
+      "subject": "fix(web): Ctrl/Cmd+Enter sends new threads when the send shortcut needs it (#34810)",
+      "topic": "pr-34810"
+    },
+    {
+      "pr": 34811,
+      "sha": "2ed6f109f4bba917d12b052988dc581af337c7b0",
+      "subject": "fix(server): fresh-session schedules start while an old session has background work (#34811)",
+      "topic": "pr-34811"
+    },
+    {
+      "pr": 34813,
+      "sha": "c833a60de23fa45859bd026510d2c33397f39610",
+      "subject": "fix(server): tell the thread when its worktree branch keeps the temporary name (#34813)",
+      "topic": "pr-34813"
+    },
+    {
+      "pr": 34812,
+      "sha": "71e1f2ac512180f8976ceff8a28de84278d414c2",
+      "subject": "fix(server): threads launched in the project folder record its branch (#34812)",
+      "topic": "pr-34812"
+    },
+    {
+      "pr": 34806,
+      "sha": "dbfbe3993fca5235af11c243cb1f53c9cc718077",
+      "subject": "fix(web): questions without options no longer mention a selected option (#34806)",
+      "topic": "pr-34806"
+    },
+    {
+      "pr": 34799,
+      "sha": "31a108c195f6f720c1d3232e3fb0ae9ef1e66554",
+      "subject": "fix(contracts): Space shortcuts reach clients instead of reverting to defaults (#34799)",
+      "topic": "pr-34799"
+    },
+    {
+      "pr": 34802,
+      "sha": "661a3e2a47aac9c8ea7d6a368a92936557749893",
+      "subject": "fix(web): Backspace right after a list shortcut keeps the typed marker (#34802)",
+      "topic": "pr-34802"
+    },
+    {
+      "pr": 34801,
+      "sha": "18866e52e43e055746059efd1eae0633cfb42a09",
+      "subject": "fix(server): schedule_task updates apply freshSession (#34801)",
+      "topic": "pr-34801"
+    },
+    {
+      "pr": 34790,
+      "sha": "6ba3de70aff98460e573ffc57773e45e148026ba",
+      "subject": "fix(server): remote delegate_task runs on the driver it names (#34790)",
+      "topic": "pr-34790"
+    },
+    {
+      "pr": 34797,
+      "sha": "ed54f30644c2e51bc03d5786dc1f0707b66dea88",
+      "subject": "docs: CONTRIBUTING.md is shorter and says we only take bug fixes (#34797)",
+      "topic": "pr-34797"
+    },
+    {
+      "pr": 34794,
+      "sha": "a18a458f2552ac5cd9dd561a834049b98b202ae9",
+      "subject": "fix(cursor): resume moved threads from their original session store (#34794)",
+      "topic": "pr-34794"
+    },
+    {
+      "pr": 34789,
+      "sha": "62dc589d6dff48c73002842e4603c5ab89a6880f",
+      "subject": "chore: denounce wSedlacek (#34789)",
+      "topic": "pr-34789"
+    },
+    {
+      "pr": 34782,
+      "sha": "6de770c1e61b17f139634af7dd3dee77c2a0c039",
+      "subject": "fix(server): ACP retries a config option whose write failed for a reason other than refusal (#34782)",
+      "topic": "pr-34782"
+    },
+    {
+      "pr": 34781,
+      "sha": "8212aaaf4dc280cb2dce3a79d70d75081bce10c9",
+      "subject": "fix(server): a new worktree thread's agent starts on its renamed branch (#34781)",
+      "topic": "pr-34781"
+    },
+    {
+      "pr": 34777,
+      "sha": "4bf5d53d93eedc45ca67d4042a33ca974a8ef567",
+      "subject": "fix(forgejo): HTTP-only fj logins are no longer reported unauthenticated (#34777)",
+      "topic": "pr-34777"
+    },
+    {
+      "pr": 34780,
+      "sha": "6419422f947cbb6796675ee7dd4df8fe369c98e7",
+      "subject": "fix(server): a reset credit's limits refresh when the first read after it fails (#34780)",
+      "topic": "pr-34780"
+    },
+    {
+      "pr": 34773,
+      "sha": "a25654c39663d6d84ee78a1c16950e36872f111a",
+      "subject": "fix(server): block incompatible migration history in preflight (#34773)",
+      "topic": "pr-34773"
+    },
+    {
+      "pr": 34771,
+      "sha": "5c6f2f1229514881a18af286b8a63e15ab4bef70",
+      "subject": "fix(server): Codex MCP servers that fail to start show a notice in the thread (#34771)",
+      "topic": "pr-34771"
+    },
+    {
+      "pr": 34762,
+      "sha": "ddc4f576023b3bf7ead6c831510c1d72316bb1c2",
+      "subject": "fix(server): a Claude resume rejected before the prompt keeps the native session (#34762)",
+      "topic": "pr-34762"
+    },
+    {
+      "pr": 34759,
+      "sha": "bb646d2caded23e0942e67b75fd85e1e5e798cea",
+      "subject": "fix(shared): links to bracketed filenames keep their folder labels (#34759)",
+      "topic": "pr-34759"
+    },
+    {
+      "pr": 34721,
+      "sha": "f991781872748d16e9d4a173e8b045616c717d57",
+      "subject": "fix(server,web,mobile): messages from a linked environment name the thread that sent them (#34721)",
+      "topic": "pr-34721"
+    },
+    {
+      "pr": 34744,
+      "sha": "82465ed26a6c765e538a500d284ed54c30d3e725",
+      "subject": "fix(tailscale): Tailscale HTTPS is advertised only when it reaches this T3 server (#34744)",
+      "topic": "pr-34743"
+    },
+    {
+      "pr": 34750,
+      "sha": "ea22b5ffc7cfcb27a0170ebb20d80e0f7f26b122",
+      "subject": "fix(web): preview address bar waits for the IME to finish before navigating (#34750)",
+      "topic": "pr-34750"
+    },
+    {
+      "pr": 34745,
+      "sha": "a41b8820607c2c7bf1efac4912532d0699fa2413",
+      "subject": "fix(server): advertise the tailnet name when sshd listens only on the tailnet address (#34745)",
+      "topic": "pr-34745"
+    },
+    {
+      "pr": 23610,
+      "sha": "b75f117aa161e233623905185403121f59a411bb",
+      "subject": "fix(server): Rescan finds tools installed after T3 Code started (#23610)",
+      "topic": "pr-23610"
+    },
+    {
+      "pr": 34743,
+      "sha": "9c19aa91600dfa786efab32e68c20a7dcd88e988",
+      "subject": "fix(tailscale): serve setup no longer times out on a long success summary (#34743)",
+      "topic": "pr-34743"
+    },
+    {
+      "pr": 34741,
+      "sha": "8ea4a8809796abde76093a4edcea2ec39f3a578a",
+      "subject": "fix(server): Tailscale Serve forwards to the address a specific --host binds (#34741)",
+      "topic": "pr-34741"
+    },
+    {
+      "pr": 26244,
+      "sha": "d353fba97eb48cebc63258e4271416a3667346a8",
+      "subject": "fix(desktop): stalled update downloads time out and say why (#26244)",
+      "topic": "pr-26244"
+    },
+    {
+      "pr": 24540,
+      "sha": "8c15be97ddb594183d8972db73e4c643a1eaf9e0",
+      "subject": "fix(cursor): recover restarted threads with older runs (#24540)",
+      "topic": "pr-24540"
+    },
+    {
+      "pr": 34734,
+      "sha": "3a30b011c3867884d7e5180be77886de65e12ac9",
+      "subject": "fix(web): cancelled PR checks show a gray stop sign instead of the failed X (#34734)",
+      "topic": "pr-34734"
+    },
+    {
+      "pr": 34723,
+      "sha": "bc647ed53595888efacdd8ca435967d48888a952",
+      "subject": "fix(server): title requests about referenced threads accurately (#34723)",
+      "topic": "pr-34723"
+    },
+    {
+      "pr": 33124,
+      "sha": "c0f85e7f7940d0243dc47f5ed8d48266302aeace",
+      "subject": "feat(web): reply to an assistant response from its hover actions (#33124)",
+      "topic": "pr-33124"
+    },
+    {
+      "pr": 33140,
+      "sha": "55a94e20293ff447ecf3b21e0d93a87abb0a2344",
+      "subject": "fix(web): voice settings and dictation match the rest of the app (#33140)",
+      "topic": "pr-33140"
+    },
+    {
+      "pr": 34722,
+      "sha": "fd033dfec350500c72a6719473a35eded3aa57a9",
+      "subject": "fix(web): improve Word document previews (#34722)",
+      "topic": "pr-34722"
+    },
+    {
+      "pr": 29187,
+      "sha": "c0c7405b04148f7fa3de5352d0e0aa149806c040",
+      "subject": "fix(server): t3_thread_list says when its project does not exist (#29187)",
+      "topic": "pr-29187"
+    },
+    {
+      "pr": 34726,
+      "sha": "2ab87e16ade5bf6452f55046b76c453ad8c31469",
+      "subject": "fix(server): Pi usage and session import read the instance's home (#34726)",
+      "topic": "pr-34726"
+    },
+    {
+      "pr": 34724,
+      "sha": "d9a54ec645ef8cb6e3bfd3a4295e023c99445fba",
+      "subject": "fix(web): file breadcrumbs keep backslashes in POSIX folder names (#34724)",
+      "topic": "pr-34724"
+    },
+    {
+      "pr": 28980,
+      "sha": "2248ca8db91f85aca3bc494086947327d472aa9e",
+      "subject": "fix(cursor): steer the live run without reconnecting (#28980)",
+      "topic": "pr-28980"
+    },
+    {
+      "pr": 34727,
+      "sha": "afe0528039b4d217db24a56d7252eb25529e0b08",
+      "subject": "fix(web): keep git action loading rows at idle height (#34727)",
+      "topic": "pr-34727"
+    },
+    {
+      "pr": 34421,
+      "sha": "489fa8c052d984e7b840b891c9c83d6f2375d860",
+      "subject": "fix(cursor): hide duplicate pooled usage limits (#34421)",
+      "topic": "pr-34506"
+    },
+    {
+      "pr": 34696,
+      "sha": "671f85417c6633f6cbb2965a196c266463392e7f",
+      "subject": "fix(cli): thread --wait returns once background work the agent waits on has ended (#34696)",
+      "topic": "pr-34696"
+    },
+    {
+      "pr": 34568,
+      "sha": "7462f234e89027943cf0d1a73d3ae1f36571d4e3",
+      "subject": "fix(server): preserve delegated results across wake turns (#34568)",
+      "topic": "pr-34568"
+    },
+    {
+      "pr": 34700,
+      "sha": "e304dab94b4672fcc41a402532a600cf107305eb",
+      "subject": "fix(server): t3 theme updates a dev server running in the default home (#34700)",
+      "topic": "pr-34700"
+    },
+    {
+      "pr": 24585,
+      "sha": "4ae66e2e86deb303cc1728cece1b5a68f1073721",
+      "subject": "fix(opencode): project-defined models appear in that project's picker (#24585)",
+      "topic": "pr-24585"
+    },
+    {
+      "pr": 34685,
+      "sha": "32882540fb1296bd1870253f3fe32bc8369f8a17",
+      "subject": "fix(web): interruption footer label sits on the reason's baseline (#34685)",
+      "topic": "pr-34649"
+    },
+    {
+      "pr": 34686,
+      "sha": "d63db064363e3ba9c12310ed5efb5c86c35d1caf",
+      "subject": "fix(contracts): side chats open after an abandoned worktree setup (#34686)",
+      "topic": "pr-34686"
+    },
+    {
+      "pr": 26800,
+      "sha": "a21b43fc70fe1c835dc817cb0281befbea95a58c",
+      "subject": "fix(mobile): choosing a project for a draft whose project is gone keeps the draft (#26800)",
+      "topic": "pr-26800"
+    },
+    {
+      "pr": 34678,
+      "sha": "d47f2e03ff4b394b5fe48aa67cacd732a6c5ba02",
+      "subject": "fix(server): providers keep their saved status until the first check finishes (#34678)",
+      "topic": "pr-34678"
+    },
+    {
+      "pr": 34431,
+      "sha": "7d71f852a8edd298ffde67c295760c286a71a27c",
+      "subject": "fix(mobile): screen readers hear when the open thread needs you or finishes (#34431)",
+      "topic": "pr-34431"
+    },
+    {
+      "pr": 34674,
+      "sha": "34e7b6601ba735b979d5484347a185b8f2cde0d6",
+      "subject": "fix(server): t3_thread_list counts threads waiting on background work as live (#34674)",
+      "topic": "pr-34674"
+    },
+    {
+      "pr": 32283,
+      "sha": "82143423858d31b861fd7f225805e3af05e318f8",
+      "subject": "fix(web): collapsed PR comments no longer show raw HTML (#32283)",
+      "topic": "pr-32283"
+    },
+    {
+      "pr": 34671,
+      "sha": "af2421f23a81c4bc7e197bfe3ecf6e34036b58a0",
+      "subject": "fix(github): the PR limits sweep retries a failed read (#34671)",
+      "topic": "pr-34671"
+    },
+    {
+      "pr": 30882,
+      "sha": "7c76c9ddc2710c13f55421a92600ea7123c833bf",
+      "subject": "fix(web): mouse back/forward over the right panel no longer moves the main chat (#30882)",
+      "topic": "pr-30882"
+    },
+    {
+      "pr": 34644,
+      "sha": "cf906e1fcfb8a0a91262382acaec44f4e7f9f800",
+      "subject": "feat(web): resolved review conversations fold into avatars on their diff line (#34644)",
+      "topic": "pr-34644"
+    },
+    {
+      "pr": 34659,
+      "sha": "6b1d9d5c30573e16272ff4ee8714ad5eb468fdf9",
+      "subject": "fix(mobile): the Link a machine sheet scrolls on Android (#34659)",
+      "topic": "pr-34659"
+    },
+    {
+      "pr": 24336,
+      "sha": "a6d676fd9a9cee8485029450ded3eb7cdb77d5ee",
+      "subject": "fix(web): keep background tasks visible during follow-up turns (#24336)",
+      "topic": "pr-24336"
+    },
+    {
+      "pr": 23568,
+      "sha": "338e73859abdaa0d88a39cdb06a56fe512c6a1d4",
+      "subject": "fix(web): thread shortcuts work with the narrow sidebar closed (#23568)",
+      "topic": "pr-23568"
+    },
+    {
+      "pr": 34493,
+      "sha": "6a03ef6568da3f962714b1ea8f0de91a947c9014",
+      "subject": "fix(web): app keybindings on Mod+B, Mod+I and Mod+E win over composer formatting (#34493)",
+      "topic": "pr-29445"
+    },
+    {
+      "pr": 30114,
+      "sha": "ccc9aaf10b5f40382d0ca68b8523aa2f434c841f",
+      "subject": "fix(server): a cancelled queued Claude continuation no longer drops later wakes (#30114)",
+      "topic": "pr-28173"
+    },
+    {
+      "pr": 27280,
+      "sha": "4e6924753cac26b904b76f59a44cff026914a132",
+      "subject": "fix(web): pasted CRLF text keeps its blank lines and caret in the composer (#27280)",
+      "topic": "pr-27280"
+    },
+    {
+      "pr": 34555,
+      "sha": "1e25ef9e5747c321af91b81ab3492b22c65a91da",
+      "subject": "feat(github): unvouched PRs get an open PR limit, a conflict window, and a 72 hour close notice (#34555)",
+      "topic": "pr-34555"
+    },
+    {
+      "pr": 27671,
+      "sha": "fd64128014f2513a5d3d7ccbdf71febb74423e86",
+      "subject": "fix(mobile): iOS web previews keep their flick momentum (#27671)",
+      "topic": "pr-27671"
+    },
+    {
+      "pr": 29109,
+      "sha": "9c96180aa3e0d216abf7b4eaa5e6e03f4cc18541",
+      "subject": "fix(server): t3_thread_launch says when its project does not exist (#29109)",
+      "topic": "pr-29109"
+    },
+    {
+      "pr": 14875,
+      "sha": "f6b260df159143f4d9856230bcbe6dd78e9e3719",
+      "subject": "fix(server): self-update moves the t3 command to the new runtime (#14875)",
+      "topic": "pr-14875"
+    },
+    {
+      "pr": 34657,
+      "sha": "1c3d5f7e82644ce847033a0c82d9b9c8253ebc07",
+      "subject": "fix(web): a link to a thread on a linked machine no longer opens a blank pane (#34657)",
+      "topic": "pr-32830"
+    },
+    {
+      "pr": 27557,
+      "sha": "cd8fc91a579e5ec232be88830cfafeb593b8cea0",
+      "subject": "fix(web): don't offer VS Code on iPad, iPhone and Android browsers (#27557)",
+      "topic": "pr-27557"
+    },
+    {
+      "pr": 30738,
+      "sha": "1c65ad032ebc826b71f4d43e733df01de1419d2f",
+      "subject": "fix(web): Cmd+A in the rendered Markdown preview selects only the file (#30738)",
+      "topic": "pr-30738"
+    },
+    {
+      "pr": 34482,
+      "sha": "3e90486b75c44fa06a1442efa175f2996a2f56da",
+      "subject": "fix(mobile): show and let users skip compaction before sending to stale Claude threads (#34482)",
+      "topic": "pr-34482"
+    },
+    {
+      "pr": 34533,
+      "sha": "2bcbdae06a495cd9faa9d216b765deb075ae7913",
+      "subject": "fix(server): ChatGPT sign-in keeps listening after a stray callback request (#34533)",
+      "topic": "pr-34533"
+    },
+    {
+      "pr": 34532,
+      "sha": "76b3e3390e2fdb824a3afbc7e6b5300cfec7a6b3",
+      "subject": "fix(server): MCP tokens still expire after the clock steps back (#34532)",
+      "topic": "pr-34532"
+    },
+    {
+      "pr": 34531,
+      "sha": "8df455c09bf153433f65e45eb548a478c39655f8",
+      "subject": "fix(acp-registry): ACP Registry installs only change the mode of a contained command (#34531)",
+      "topic": "pr-34531"
+    },
+    {
+      "pr": 34530,
+      "sha": "9c7f6ebf315883fdd7f76fad45ca623c15caaefc",
+      "subject": "fix(server): file metadata lookups skip the server's own state files (#34530)",
+      "topic": "pr-34530"
+    },
+    {
+      "pr": 34529,
+      "sha": "35557e648f8db1dbd27f4dfc504c4ea45003a586",
+      "subject": "fix(cli): thread, project, and connect commands skip a server that is gone (#34529)",
+      "topic": "pr-34529"
+    },
+    {
+      "pr": 34528,
+      "sha": "b9d9aab2349eff1a974294c4a259c8312721af78",
+      "subject": "fix(pi): long tool calls no longer share a session approval with different calls (#34528)",
+      "topic": "pr-34528"
+    },
+    {
+      "pr": 34526,
+      "sha": "26f0a62f73418d8a31ba1115dd3fb69c77ddf917",
+      "subject": "fix(acp): only approved execute requests let the agent open client terminals (#34526)",
+      "topic": "pr-34526"
+    },
+    {
+      "pr": 34527,
+      "sha": "a24f7a115000012c7f867a53eda4b21f945b5d72",
+      "subject": "fix(web): code blocks always show their own highlighted source (#34527)",
+      "topic": "pr-34527"
+    },
+    {
+      "pr": 25986,
+      "sha": "b18fefde725c1fec715f2771586a0df94d75d749",
+      "subject": "fix(web): switching a cold Claude thread to Codex no longer compacts first (#25986)",
+      "topic": "pr-25986"
+    },
+    {
+      "pr": 32924,
+      "sha": "42d645ae9e03a0d9035d5b89eda60d4ab13c497e",
+      "subject": "fix(web): update Retry stops re-sending servers already on the target version (#32924)",
+      "topic": "pr-32924"
+    },
+    {
+      "pr": 29445,
+      "sha": "2904fea7d593c687393b7ad2434de03d590871cd",
+      "subject": "fix(web): Mod+B toggles bold at a collapsed cursor when the sidebar toggle is remapped (#29445)",
+      "topic": "pr-29445"
+    },
+    {
+      "pr": 27781,
+      "sha": "cc624432ac9b137f27f1d718a4cefb0a46d6a0c0",
+      "subject": "fix(web): formatted link labels wrap inside table cells (#27781)",
+      "topic": "pr-27781"
+    },
+    {
+      "pr": 28192,
+      "sha": "6d35d09060a901d15e31ab7ccdeedfe6696c23c5",
+      "subject": "fix(cli): t3 triage points at the prompt when the agent fails to start (#28192)",
+      "topic": "pr-28192"
+    },
+    {
+      "pr": 29672,
+      "sha": "98fd5f2fe2967fb54286ad402fdb3182394dfb20",
+      "subject": "fix(desktop): AppImage updates no longer leave old runtimes and mounts running (#29672)",
+      "topic": "pr-29672"
+    },
+    {
+      "pr": 25058,
+      "sha": "8af1fc110e909a13a26a7c31b6f91e2a1f421a46",
+      "subject": "fix(dev): import seed snapshots with peer preview migrations (#25058)",
+      "topic": "pr-25058"
+    },
+    {
+      "pr": 30802,
+      "sha": "d21daa78e043c14cf70b6a8e93e21104b1a2470c",
+      "subject": "fix(cli): t3 thread finds the project from inside its git worktrees (#30802)",
+      "topic": "pr-30802"
+    },
+    {
+      "pr": 30641,
+      "sha": "67d7de8aa232135bfedd6adee789598bdd76cf59",
+      "subject": "fix(provider-core): bun-global updates only offer versions bun will install (#30641)",
+      "topic": "pr-30641"
+    },
+    {
+      "pr": 25833,
+      "sha": "cacdbb216316ab7cc91cb81c7ce1198f3a52e3d2",
+      "subject": "fix(desktop): a maximized window reopens on the display it was last used on (#25833)",
+      "topic": "pr-25833"
+    },
+    {
+      "pr": 25159,
+      "sha": "d749cfd8192e9b98dd9e764e00709d20049b40b5",
+      "subject": "fix(server): skip Claude interrupts after session teardown (#25159)",
+      "topic": "pr-25159"
+    },
+    {
+      "pr": 24829,
+      "sha": "2ed69de64e25e1599cf1653096cc15719c8c3645",
+      "subject": "fix(desktop): browser snapshots work after relay reconnects (#24829)",
+      "topic": "pr-24829"
+    },
+    {
+      "pr": 30889,
+      "sha": "7271ea06a26af0c2ee64bba4f18c7fb3b7f22d5a",
+      "subject": "fix(web): editing a queued message keeps its thread mention chips (#30889)",
+      "topic": "pr-30889"
+    },
+    {
+      "pr": 34506,
+      "sha": "f28dc8ee9486853733462a5589c61591ecb87279",
+      "subject": "fix(cursor): unified usage plans show one meter (#34506)",
+      "topic": "pr-34506"
+    },
+    {
+      "pr": 34509,
+      "sha": "9411a71ec0fab7fdedb4799b78402ec8a46e0d0e",
+      "subject": "fix(web): dismissing the pull request checkout toast stops the handoff (#34509)",
+      "topic": "pr-34509"
+    },
+    {
+      "pr": 33169,
+      "sha": "6eef4accedea3fdc104b62b3050be13cea6fb04e",
+      "subject": "feat(mobile): switch the settings language (#33169)",
+      "topic": "pr-33169"
+    },
+    {
+      "pr": 33166,
+      "sha": "13eb5c95a69279d5e566ec3cf09b4081b373a11a",
+      "subject": "feat(web): add Russian translation (#33166)",
+      "topic": "pr-33165"
+    },
+    {
+      "pr": 33165,
+      "sha": "fdefab4df34cd6e245b277289297809ba24065f9",
+      "subject": "feat(web): add Korean translation (#33165)",
+      "topic": "pr-33165"
+    },
+    {
+      "pr": 33164,
+      "sha": "2718951b9ff74c24bb5cc36d1549a19a272558d9",
+      "subject": "feat(web): add Japanese translation (#33164)",
+      "topic": "pr-31313"
+    },
+    {
+      "pr": 33163,
+      "sha": "d8631c8711b2a4f5559d1b44127fa26dcad9b3bf",
+      "subject": "feat(web): add German translation (#33163)",
+      "topic": "pr-31313"
+    },
+    {
+      "pr": 33162,
+      "sha": "93d502f237ce92a63538040ec2643e49642f5030",
+      "subject": "feat(web): add French translation (#33162)",
+      "topic": "pr-31313"
+    },
+    {
+      "pr": 33161,
+      "sha": "afade9b5623e5be54b464933ae3bf227326992c4",
+      "subject": "feat(web): add Brazilian Portuguese translation (#33161)",
+      "topic": "pr-31313"
+    },
+    {
+      "pr": 31313,
+      "sha": "2a6b2c8298856fdbcb46713542b41d65d88758ab",
+      "subject": "feat(web): switch the UI language from Settings, with Spanish and Chinese (#31313)",
+      "topic": "pr-31313"
+    },
+    {
+      "pr": 34649,
+      "sha": "c0b67b7631c26fe9c6d50e907d3fd3f9ac2e6bf1",
+      "subject": "fix(web): wrap interruption footers as one sentence (#34649)",
+      "topic": "pr-34649"
+    },
+    {
+      "pr": 34480,
+      "sha": "3af501840b841a6247fae9c20ea409b597f5b64a",
+      "subject": "fix(server): open projects in a new VS Code window (#34480)",
+      "topic": "pr-34480"
+    },
+    {
+      "pr": 34512,
+      "sha": "60ec7fc7f4f9fd3799f33f10dea58780e6473b8e",
+      "subject": "fix(desktop): check T3 home ownership before starting the local backend (#34512)",
+      "topic": "pr-34512"
+    },
+    {
+      "pr": 23617,
+      "sha": "94f7984d2c06617903dfbcaac00d423cec14e8de",
+      "subject": "fix(web): preserve typed question answers when Stop cancels a turn (#23617)",
+      "topic": "pr-23617"
+    },
+    {
+      "pr": 34486,
+      "sha": "cf65084c979a0376f8a62ec95e17fd400e8d9b24",
+      "subject": "fix(server): Antigravity install names network failures and 16 KiB-page kernels (#34486)",
+      "topic": "pr-34486"
+    },
+    {
+      "pr": 34505,
+      "sha": "fdd54b942d1f15495d1ee0337b7a873c0fd246e1",
+      "subject": "fix(server): stop jobs a Claude CLI moved out of its process group when the session closes (#34505)",
+      "topic": "pr-34505"
+    },
+    {
+      "pr": 30683,
+      "sha": "1de5fee69c1e7cd2841a4321454e346f2a3d5fe9",
+      "subject": "fix(server): price OpenCode Go usage from opencode_go rates (#30683)",
+      "topic": "pr-30683"
+    },
+    {
+      "pr": 31069,
+      "sha": "fe565c895822a76684b7c6b307b7518641131cca",
+      "subject": "fix(server): storage cleanup keeps edits hidden from git status (#31069)",
+      "topic": "pr-31069"
+    },
+    {
+      "pr": 23537,
+      "sha": "d9805b2ca667be7caec8c9035950564ab96704c3",
+      "subject": "fix(server): closing preview tabs runs beforeunload handlers (#23537)",
+      "topic": "pr-23537"
+    },
+    {
+      "pr": 30804,
+      "sha": "35f539844563ca33eb650a5aa8efd06cb4f45b61",
+      "subject": "fix(server): only offer desktop app updates the desktop can install (#30804)",
+      "topic": "pr-30804"
+    },
+    {
+      "pr": 23609,
+      "sha": "1d61dd3fd6150e70a5e4c3ae0d3891df643761e1",
+      "subject": "fix(server): recurring tasks keep one queued occurrence while their thread is busy (#23609)",
+      "topic": "pr-23609"
+    },
+    {
+      "pr": 23410,
+      "sha": "aeaf19cc61cd739ac186986863d66362c3ab48e2",
+      "subject": "fix(server): a slow or broken hosting CLI is no longer told to install itself (#23410)",
+      "topic": "pr-23410"
+    },
+    {
+      "pr": 24422,
+      "sha": "52da4e50987714059e197d400e0c17f0913ae230",
+      "subject": "fix(server): reuse timeline indexes while paging long threads (#24422)",
+      "topic": "pr-24422"
+    },
+    {
+      "pr": 30166,
+      "sha": "86e2cb21c909b1f5000d4d947a3dad5df88a4477",
+      "subject": "fix(server): Claude turns on busy hosts no longer time out registering MCP tools (#30166)",
+      "topic": "pr-30166"
+    },
+    {
+      "pr": 25919,
+      "sha": "de21fbcff3f0bd50058030d973c31c4255141c9e",
+      "subject": "fix(client): a thread whose subscription dies on a defect resubscribes instead of staying blank (#25919)",
+      "topic": "pr-25919"
+    },
+    {
+      "pr": 34488,
+      "sha": "0ad9c9adaead9a21b5f34a7e426e54d5801a7f63",
+      "subject": "fix(server): a full disk no longer crashes the server through a failed log write (#34488)",
+      "topic": "pr-34488"
+    },
+    {
+      "pr": 33767,
+      "sha": "c642c4b57d3eb831c3d20552ec591d6155d36f0c",
+      "subject": "fix(server): settling a Codex thread stops its MCP servers right away (#33767)",
+      "topic": "pr-33767"
+    },
+    {
+      "pr": 34489,
+      "sha": "04be2b365fbddac76f48f81490660018b947d322",
+      "subject": "fix(server): Codex and Pi runs report the model the provider ran (#34489)",
+      "topic": "pr-27753"
+    },
+    {
+      "pr": 34487,
+      "sha": "50952becccb0226dbd91f913f81f416cb6472f60",
+      "subject": "fix(server): No project behind a symlinked scratch folder stays No project (#34487)",
+      "topic": "pr-34487"
+    },
+    {
+      "pr": 24432,
+      "sha": "52ba3289825852ddbc26fd4b8362003c10233821",
+      "subject": "fix(server): avoid reparsing streamed replies from the beginning (#24432)",
+      "topic": "pr-24432"
+    },
+    {
+      "pr": 34485,
+      "sha": "d27d03b6d3ee29fd7f4da49a95179803396450fa",
+      "subject": "fix(provider-core): recheck a failed sign-in when settings are applied (#34485)",
+      "topic": "pr-34485"
+    },
+    {
+      "pr": 33772,
+      "sha": "4d52d321cbcc0909a3b2307c6474cceac5f56241",
+      "subject": "fix(client-runtime): MCP App requests with undefined values reach the server (#33772)",
+      "topic": "pr-33772"
+    },
+    {
+      "pr": 34479,
+      "sha": "ea6af468a7fabf5fd2bf88e6ff5e91abcb8fd0f7",
+      "subject": "fix(server): @ file search matches paths containing square brackets (#34479)",
+      "topic": "pr-34479"
+    },
+    {
+      "pr": 24552,
+      "sha": "6e6b6a7365494016650a11457d913e574db1243b",
+      "subject": "fix(opencode): stopped sessions can fork after a lost end event (#24552)",
+      "topic": "pr-24552"
+    },
+    {
+      "pr": 34624,
+      "sha": "c501ccad573c567a85495b35598f8ec843bf8383",
+      "subject": "fix(server): PR watch waits for queued GitHub workflow runs (#34624)",
+      "topic": "pr-34624"
+    },
+    {
+      "pr": 26172,
+      "sha": "c8ddb2203eb9bce109ae7b8f68da9b2644d02ec4",
+      "subject": "fix(desktop): middle-click paste follows gtk-enable-primary-paste on Linux (#26172)",
+      "topic": "pr-26172"
+    },
+    {
+      "pr": 28261,
+      "sha": "4ea32cb62e4241891c6e1096f0d868e5548da6de",
+      "subject": "fix(server): load balancing reads container cgroup limits instead of the host's (#28261)",
+      "topic": "pr-28261"
+    },
+    {
+      "pr": 27706,
+      "sha": "25c599839a591df095c1a82048590e79a5c745b1",
+      "subject": "fix(provider-core): Nix store provider installs no longer offer an update that can't run (#27706)",
+      "topic": "pr-27706"
+    },
+    {
+      "pr": 24761,
+      "sha": "962eeefa0392922d32eb54e0bedbbceedd094bef",
+      "subject": "fix(client-runtime): retry messages after socket loss with the same command ID (#24761)",
+      "topic": "pr-24761"
+    },
+    {
+      "pr": 31074,
+      "sha": "289078a535c913478779d6be3714c5dbe6b715de",
+      "subject": "fix(opencode): wait for a cold directory's scan before caching its skills (#31074)",
+      "topic": "pr-31074"
+    },
+    {
+      "pr": 27894,
+      "sha": "52f0988cd6939d674fe108b0a4cb829892d6cc30",
+      "subject": "fix(mobile): iPad sidebar shows new threads after switching tabs (#27894)",
+      "topic": "pr-27894"
+    },
+    {
+      "pr": 25938,
+      "sha": "bd5ed4dac8a7fcec1f9670284637788aad3c9439",
+      "subject": "fix(provider-cursor): Cursor sign-in shows why it failed (#25938)",
+      "topic": "pr-25938"
+    },
+    {
+      "pr": 28633,
+      "sha": "2cd799642bd6e5d0e1cfe094e5c0dee428b59eb0",
+      "subject": "fix(server): list skills from plugins synced from claude.ai (#28633)",
+      "topic": "pr-28633"
+    },
+    {
+      "pr": 24538,
+      "sha": "6e3ada1a27163d7d455365f331d6b4fde0427ae0",
+      "subject": "fix(server): wake Codex callers when restart cancels commands (#24538)",
+      "topic": "pr-24538"
+    },
+    {
+      "pr": 24309,
+      "sha": "8851e307d84bbcbe77ee9cf4390a294e3c18a41d",
+      "subject": "fix(client-runtime): slow foreground probes keep live sessions connected (#24309)",
+      "topic": "pr-24309"
+    },
+    {
+      "pr": 23496,
+      "sha": "a2a3388c5ec82d1f33e5e69ed34303529d882e17",
+      "subject": "fix(server): keep writes moving while readers pin the WAL (#23496)",
+      "topic": "pr-23496"
+    },
+    {
+      "pr": 29947,
+      "sha": "3ffd240fc75e1392734bc396dfa3643c50cb3f9e",
+      "subject": "fix(server): a turn that adds a Git remote shows \"Add to another machine\" right away (#29947)",
+      "topic": "pr-29947"
+    },
+    {
+      "pr": 27287,
+      "sha": "ea3e20a0e283ba3bf7c3d6004142d8f13b603319",
+      "subject": "fix(web): double-clicking another thread in the sidebar renames it instead of focusing its composer (#27287)",
+      "topic": "pr-27287"
+    },
+    {
+      "pr": 26776,
+      "sha": "ed57b9b5ec7e7bbe9a25da1d8883f218eaee1b75",
+      "subject": "fix(server): a follow-up to a finished remote task is a new task that wakes the parent (#26776)",
+      "topic": "pr-26776"
+    },
+    {
+      "pr": 27550,
+      "sha": "e5b5da3a7cd629c931ae71306595ae121dc2360b",
+      "subject": "fix(web): reopening a guide with many cached diff pages no longer crashes (#27550)",
+      "topic": "pr-27550"
+    },
+    {
+      "pr": 28173,
+      "sha": "7315c60b956c1cb5a2d59bd96ff91d362618c8bb",
+      "subject": "fix(server): a failed Claude wake dispatch no longer drops every later wake (#28173)",
+      "topic": "pr-28173"
+    },
+    {
+      "pr": 25775,
+      "sha": "658367016c110446685837416101956884e92097",
+      "subject": "fix(desktop): Linux launches no longer leave an icon copy in /tmp (#25775)",
+      "topic": "pr-25775"
+    },
+    {
+      "pr": 25901,
+      "sha": "25d2239f9bbc55774b3b6750b733cb2204a138e6",
+      "subject": "fix(web): screen readers hear when a thread is pinned or an action is undone (#25901)",
+      "topic": "pr-25901"
+    },
+    {
+      "pr": 23615,
+      "sha": "9b98bd07ba461a32920f28a8929810fd097b28a7",
+      "subject": "fix(shared): new chats use the global default when the project default model is hidden (#23615)",
+      "topic": "pr-23615"
+    },
+    {
+      "pr": 34524,
+      "sha": "93c10239b415e35a887d69f519b83754b128767e",
+      "subject": "feat(cli): t3 service runs on Windows, so Windows hosts update remotely (#34524)",
+      "topic": "pr-34524"
+    },
+    {
+      "pr": 23573,
+      "sha": "2a8ec9c8e1bb5aa7205166ed0008cf720e7f9449",
+      "subject": "fix(web): single-digit numbered lists no longer clip in wide fonts (#23573)",
+      "topic": "pr-23573"
+    },
+    {
+      "pr": 27839,
+      "sha": "4d1808dc4cf32b331e3042a897ba4a2d8865a79d",
+      "subject": "fix(opencode): show prompts other OpenCode 2 clients send into a T3 session (#27839)",
+      "topic": "pr-27839"
+    },
+    {
+      "pr": 24773,
+      "sha": "3445b0b400d2a5928bd2c20271856830800dd13a",
+      "subject": "fix(web): terminal output no longer edits a hidden question draft (#24773)",
+      "topic": "pr-24773"
+    },
+    {
+      "pr": 25755,
+      "sha": "509969567349cd2975aa477e8806a95925ebd1f6",
+      "subject": "fix(web): price dialog no longer flags a model before a price is entered (#25755)",
+      "topic": "pr-25755"
+    },
+    {
+      "pr": 29761,
+      "sha": "b3ce149be54fe445298c26dadac974ef581662ec",
+      "subject": "fix(mobile): Fast can be turned on for an existing thread (#29761)",
+      "topic": "pr-29761"
+    },
+    {
+      "pr": 29057,
+      "sha": "6e8851cc43f7876cf556969195abcad435418531",
+      "subject": "fix(server): Antigravity sign-in no longer blames the network when the runtime never starts (#29057)",
+      "topic": "pr-29057"
+    },
+    {
+      "pr": 23571,
+      "sha": "85f0419d5e3c9ab8fb2a61c1a888ce223a8aa9ba",
+      "subject": "fix(desktop): dev supervisor stops when its parent process dies (#23571)",
+      "topic": "pr-23571"
+    },
+    {
+      "pr": 27909,
+      "sha": "a6c26d3e775e08ad5f455dc65e07b05fe1627718",
+      "subject": "fix(web): the composer shows arrow ligatures like sent messages (#27909)",
+      "topic": "pr-27909"
+    },
+    {
+      "pr": 24313,
+      "sha": "bba1c13d87a73df9725f9d37be9381a627eb9b03",
+      "subject": "fix(web): opening a thread dismisses its notification toasts (#24313)",
+      "topic": "pr-24313"
+    },
+    {
+      "pr": 24417,
+      "sha": "5f8294246c5f16efc211673c65b12633eb0eb9bd",
+      "subject": "fix(client): reveal earlier agent turns in one load (#24417)",
+      "topic": "pr-24417"
+    },
+    {
+      "pr": 30823,
+      "sha": "d9c09204491070d3ece9f993d5539f3b6336d0d9",
+      "subject": "fix(server): malformed legacy timestamps no longer block startup (#30823)",
+      "topic": "pr-30823"
+    },
+    {
+      "pr": 29264,
+      "sha": "6c7d23dcfca7cde03c7f5843e432d98122f40a55",
+      "subject": "fix(client-runtime): slow SSH runtime downloads report their own error, not a setup timeout (#29264)",
+      "topic": "pr-29264"
+    },
+    {
+      "pr": 27729,
+      "sha": "c3e5bfc027176c17c7d16e0d758eed120656e7b9",
+      "subject": "fix(server): forks whose source session is gone start fresh instead of failing every send (#27729)",
+      "topic": "pr-27729"
+    },
+    {
+      "pr": 31186,
+      "sha": "9ce9b1fd419538fa32cd251e9e490a360877259a",
+      "subject": "fix(server): provider launches and text generation wait for provider updates (#31186)",
+      "topic": "pr-31186"
+    },
+    {
+      "pr": 34344,
+      "sha": "860fa7c7b637bab209c38a14189cf42d0bb5f193",
+      "subject": "fix(shared): keep HTML bootstrap outside quoted attributes (#34344)",
+      "topic": "pr-34344"
+    },
+    {
+      "pr": 34340,
+      "sha": "3d12c90ea826f55ef4d975d1b8bed9d640287d10",
+      "subject": "perf(shared): avoid quadratic file link labels (#34340)",
+      "topic": "pr-34340"
+    },
+    {
+      "pr": 34403,
+      "sha": "eb964beccceae25113e0f954613bbcd2e43f7131",
+      "subject": "fix(server): prevent HTML preview navigation timeouts (#34403)",
+      "topic": "pr-34403"
+    },
+    {
+      "pr": 34307,
+      "sha": "3de3c9ffff678a0c54d324e9d0ef7b5767a95e54",
+      "subject": "fix(web): keep a leading blank line selected when indenting code (#34307)",
+      "topic": "pr-34307"
+    },
+    {
+      "pr": 24442,
+      "sha": "7a64505a21e755498e6b85794124f3754265db38",
+      "subject": "fix(server): preserve message order across lineage reads (#24442)",
+      "topic": "pr-24442"
+    },
+    {
+      "pr": 34597,
+      "sha": "c7618f6c10120bc7e684df6a0d7275679d8c260e",
+      "subject": "fix(server): a steer that cuts off a streaming Claude reply marks it interrupted (#34597)",
+      "topic": "pr-34597"
+    },
+    {
+      "pr": 34311,
+      "sha": "c2ff84a4bbafe5b86422e27d985165cd7220baff",
+      "subject": "fix(client): trim model-reference delimiters in linear time (#34311)",
+      "topic": "pr-34311"
+    },
+    {
+      "pr": 29141,
+      "sha": "a308715773b66f1de9403039b6f359bab1961388",
+      "subject": "fix(provider-acp): Hermes html_render pages show in the thread (#29141)",
+      "topic": "pr-29141"
+    },
+    {
+      "pr": 34309,
+      "sha": "62e68f3166880362e54b4d277e66da901f629a34",
+      "subject": "fix(provider-core): isolate npm version caches by lookup environment (#34309)",
+      "topic": "pr-34309"
+    },
+    {
+      "pr": 28018,
+      "sha": "e9df5914d4e882ef30af9ba95ac508781184d2e2",
+      "subject": "fix(cursor): a completed catalog refresh drops models it no longer lists (#28018)",
+      "topic": "pr-28018"
+    },
+    {
+      "pr": 34315,
+      "sha": "f89af364ec11eabba65295492db0b10ad20a3b37",
+      "subject": "fix(web): avoid false errors when cancelling preview popouts (#34315)",
+      "topic": "pr-34315"
+    },
+    {
+      "pr": 34313,
+      "sha": "214f1baf71079c13018737536fac674f17b8ab76",
+      "subject": "fix(server): capture device screenshots through their selected host (#34313)",
+      "topic": "pr-34313"
+    },
+    {
+      "pr": 30859,
+      "sha": "8e89fe191808d3595c3d047f63fe63c9598a2e22",
+      "subject": "fix(server): usage no longer waits on Muse home discovery (#30859)",
+      "topic": "pr-30859"
+    },
+    {
+      "pr": 34324,
+      "sha": "1b42b169a332046fdcb50a573ef269f9b73b2358",
+      "subject": "fix(server): preserve spaces in Git remote URLs (#34324)",
+      "topic": "pr-34324"
+    },
+    {
+      "pr": 34343,
+      "sha": "b9381c257d506f1f76f72a391bc96c6fd95a840d",
+      "subject": "fix(server): Claude Plan mode runs t3_background_wait without asking (#34343)",
+      "topic": "pr-34343"
+    },
+    {
+      "pr": 24421,
+      "sha": "4a075c966798a8a5cd584be681080ad4dabb048e",
+      "subject": "fix(desktop): keep AppImage mounted while t3 shuts down (#24421)",
+      "topic": "pr-24421"
+    },
+    {
+      "pr": 34310,
+      "sha": "a4ab7dd7079cb9c2507fd9943211a80077f3258b",
+      "subject": "fix(server): close scratch browser contexts when page creation fails (#34310)",
+      "topic": "pr-34310"
+    },
+    {
+      "pr": 34320,
+      "sha": "2597756eecd5c672007625ffe7245015c4cbf740",
+      "subject": "fix(server): re-probe Codex when its auth.json changes (#34320)",
+      "topic": "pr-34320"
+    },
+    {
+      "pr": 27426,
+      "sha": "96a2f0a7763f800e11905f421ad172524ec3b515",
+      "subject": "fix(shared): relay client install survives antivirus-slowed first launch (#27426)",
+      "topic": "pr-27426"
+    },
+    {
+      "pr": 34277,
+      "sha": "905311d37e9d9242545cf6f213404dc3c68ea61b",
+      "subject": "test(server): keep the OpenZFS zed launch test off host system bins (#34277)",
+      "topic": "pr-34277"
+    },
+    {
+      "pr": 25866,
+      "sha": "b859968cabd38023d30cd3a7b1a5b3603355b725",
+      "subject": "fix(web): a pending approval is announced once, not once per queued message (#25866)",
+      "topic": "pr-32719"
+    },
+    {
+      "pr": 34175,
+      "sha": "5c9a01b747421f019487da13bc3b55f5b8746f52",
+      "subject": "fix(server): archiving or deleting a thread releases its devices (#34175)",
+      "topic": "pr-34175"
+    },
+    {
+      "pr": 27215,
+      "sha": "10128e592567a14e0ce21a3d461a95ef72d1d91d",
+      "subject": "fix(server): repeated session imports reach transcripts behind the scan budget (#27215)",
+      "topic": "pr-27215"
+    },
+    {
+      "pr": 34246,
+      "sha": "05e835378faa1ff425d4e284f668ff386d5d90c9",
+      "subject": "fix(acp-registry): model refresh picks up models an agent adds upstream (#34246)",
+      "topic": "pr-34246"
+    },
+    {
+      "pr": 34183,
+      "sha": "b43a1b4b93b023586e4519c5f67e16b8b141f845",
+      "subject": "fix(server): a Claude tool call interrupted by a new message shows as stopped, not failed (#34183)",
+      "topic": "pr-34183"
+    },
+    {
+      "pr": 34169,
+      "sha": "9b6c77fb0de9d8943aaf14c8a4aa1f84634e0c69",
+      "subject": "fix(opencode): pass --method curl to the native updater (#34169)",
+      "topic": "pr-34169"
+    },
+    {
+      "pr": 34199,
+      "sha": "5a3e368c1b3d2729e51b16e17c92e73a043cb015",
+      "subject": "fix(server): detach errored provider sessions when deleting threads (#34199)",
+      "topic": "pr-34199"
+    },
+    {
+      "pr": 34167,
+      "sha": "3dfc1a0d42f1da5985f947baadc20f239bc00f30",
+      "subject": "fix(server): T3 Connect remembers when the relay client falls back to HTTP/2 on its own (#34167)",
+      "topic": "pr-34167"
+    },
+    {
+      "pr": 25680,
+      "sha": "86c379d07ad8d94ec2e1742e29e3d3201315e272",
+      "subject": "fix(server): drop a finished child's queued question wake (#25680)",
+      "topic": "pr-25680"
+    },
+    {
+      "pr": 34101,
+      "sha": "ddbc525f1c8667ecb42500b3be2254df5b5bed4a",
+      "subject": "fix(speech): removing filler words no longer joins paragraphs (#34101)",
+      "topic": "pr-34101"
+    },
+    {
+      "pr": 33975,
+      "sha": "fe5b51e206997c765167f3e8f3f3c25cfd8897ea",
+      "subject": "fix(server): an interrupted provider update ends failed instead of running forever (#33975)",
+      "topic": "pr-33975"
+    },
+    {
+      "pr": 33931,
+      "sha": "0c6b5afef236b851c1b9d5f7b23573a68a021f2b",
+      "subject": "fix(server): keep the last page state in agent recordings (#33931)",
+      "topic": "pr-33931"
+    },
+    {
+      "pr": 33974,
+      "sha": "fb4bf0722a56e748b3a5158f6d6579deca2c403d",
+      "subject": "fix(server): provider update commands get no stdin, so one that reads it fails fast (#33974)",
+      "topic": "pr-33974"
+    },
+    {
+      "pr": 34607,
+      "sha": "3a0bcba00a290be95621244819f031a619d84d7d",
+      "subject": "fix(shared): GitLab merge request file and line links open that file (#34607)",
+      "topic": "pr-33989"
+    },
+    {
+      "pr": 33937,
+      "sha": "e9eb473d52b5fa814819969cdc5b66b2915e028d",
+      "subject": "perf(server): Storage Cleanup sizes leftover worktrees about 4.8x faster (median 13,343 ms -> 2,759 ms) (#33937)",
+      "topic": "pr-33937"
+    },
+    {
+      "pr": 33935,
+      "sha": "34600bd24b79692b313bef7ec4d42b3e3d035dd4",
+      "subject": "perf(server): thread opens stay fast during concurrent transcript exports (median 4.0× faster with eight running) (#33935)",
+      "topic": "pr-33935"
+    },
+    {
+      "pr": 33474,
+      "sha": "168bcd630cae9b6b08166ea3b5a3e42ee12070a5",
+      "subject": "fix(github): `gh pr new` links the new pull request to the thread (#33474)",
+      "topic": "pr-33474"
+    },
+    {
+      "pr": 33832,
+      "sha": "84265950ea0f0410465da9ff81b7cdab4c6d36e7",
+      "subject": "fix(server): large tool summaries no longer split an emoji at the cap (#33832)",
+      "topic": "pr-33832"
+    },
+    {
+      "pr": 33829,
+      "sha": "4eb20e4d38a69c32a6e4bf9e9bfdfc2636a256a7",
+      "subject": "fix(shared): clicked HTML images keep whole emoji in capped names (#33829)",
+      "topic": "pr-33829"
+    },
+    {
+      "pr": 33863,
+      "sha": "e8afdb0624d4e2efb47402921525d3c53a26d8cb",
+      "subject": "fix(server): idle compaction no longer runs in the middle of delegated work (#33863)",
+      "topic": "pr-33863"
+    },
+    {
+      "pr": 33420,
+      "sha": "009c9e6bd70737aea4d9baf1e30db2d54577e7f1",
+      "subject": "fix(server): an agent's Stop no longer reads as the user's (#33420)",
+      "topic": "pr-33420"
+    },
+    {
+      "pr": 33426,
+      "sha": "f04a9e14c7eba918c424375e2ee36637631a9dd8",
+      "subject": "fix(server): refresh stale model catalogs before refusing delegation (#33426)",
+      "topic": "pr-33426"
+    },
+    {
+      "pr": 33604,
+      "sha": "c6969f8f73ff56932da847beec13767763605acb",
+      "subject": "fix(acp): a resumed message keeps the text streamed before it (#33604)",
+      "topic": "pr-33604"
+    },
+    {
+      "pr": 33581,
+      "sha": "517c9fcd096d1f0fdb4e2480b73dd592253d381e",
+      "subject": "fix(git): push publishes a branch that tracks a local branch (#33581)",
+      "topic": "pr-33581"
+    },
+    {
+      "pr": 33269,
+      "sha": "3f402e3ae410c89192c7f59751a65ba452de3ad8",
+      "subject": "fix(server): explain why /compact fails on providers without compaction (#33269)",
+      "topic": "pr-33269"
+    },
+    {
+      "pr": 33290,
+      "sha": "7e796802aa849a89b4dcc70d19e12cf5d7ec38f8",
+      "subject": "fix(codex): keep the launcher error that precedes an exit summary (#33290)",
+      "topic": "pr-33290"
+    },
+    {
+      "pr": 33418,
+      "sha": "c092c6eb1e91772e93f0956a5fa6c855d62aa51e",
+      "subject": "fix(server): generated thread titles leave out the project name (#33418)",
+      "topic": "pr-33418"
+    },
+    {
+      "pr": 33431,
+      "sha": "5ba59520b636dacb0e36078700bdcf97de366b6a",
+      "subject": "fix(marketing): the noindex 404 page no longer declares hreflang (#33431)",
+      "topic": "pr-33431"
+    },
+    {
+      "pr": 33430,
+      "sha": "561d62825bf17fbd0064e080674b57eca574cef3",
+      "subject": "fix(marketing): translated pages describe T3 Code in their own language (#33430)",
+      "topic": "pr-33430"
+    },
+    {
+      "pr": 34603,
+      "sha": "e805ce371253688a01ca6013bd83d61cd9332c5c",
+      "subject": "fix(server): Update server works again on services installed before the launcher protocol bump (#34603)",
+      "topic": "pr-19652"
+    },
+    {
+      "pr": 33423,
+      "sha": "301999c325cebee9f4330ee14ef8c3b083e67a64",
+      "subject": "fix(server): git 2.56 broken-gitfile worktrees count as non-repositories again (#33423)",
+      "topic": "pr-33423"
+    },
+    {
+      "pr": 33621,
+      "sha": "2b6eb63a4dd15b0974646bf9fb52ffdd725a5f6d",
+      "subject": "perf(opencode): stopping an OpenCode server no longer always waits a full second (#33621)",
+      "topic": "pr-33621"
+    },
+    {
+      "pr": 32871,
+      "sha": "98837f1a5e96283c89f1f16ea05af0716ce23b65",
+      "subject": "docs(claude): explain enabling Claude in Chrome with --chrome (#32871)",
+      "topic": "pr-32871"
+    },
+    {
+      "pr": 33068,
+      "sha": "3430a77b1cc071c27a890adec07fe9e435e7be51",
+      "subject": "fix(server): Linux startup no longer waits up to a minute on hostnamectl (#33068)",
+      "topic": "pr-33068"
+    },
+    {
+      "pr": 32860,
+      "sha": "5216576aedad1be38ad9e150ac7b7d6a9714da2c",
+      "subject": "test(server): keep the Claude probe fixture executable in CommonJS homes (#32860)",
+      "topic": "pr-32860"
+    },
+    {
+      "pr": 33246,
+      "sha": "d7fedc57431b30a75e18b544d3b306cd5abf83dd",
+      "subject": "fix(server): Claude live command output no longer starts with � after skipping ahead (#33246)",
+      "topic": "pr-33246"
+    },
+    {
+      "pr": 32932,
+      "sha": "46002808e2d9873906bcdce0e6d80641b8763f61",
+      "subject": "fix(github): find pull requests for SSH aliases (#32932)",
+      "topic": "pr-32932"
+    },
+    {
+      "pr": 32702,
+      "sha": "de26b6db3c1044af1fb622baa32748bd2701d63d",
+      "subject": "fix(server): providers read cited assistant text again (#32702)",
+      "topic": "pr-32702"
+    },
+    {
+      "pr": 32713,
+      "sha": "7a7b8d7ad2083e887128d2e1370fc00a4d00f9af",
+      "subject": "fix(forgejo): tea's `pull` and `co` aliases count as checkout commands (#32713)",
+      "topic": "pr-32713"
+    },
+    {
+      "pr": 32959,
+      "sha": "6a5d6085ba3db7565993e72d642f4122edc86675",
+      "subject": "fix(web): prompt links work for encoded thread IDs (#32959)",
+      "topic": "pr-32959"
+    },
+    {
+      "pr": 32915,
+      "sha": "669aa32e0d98fc2919d540690c2fac05c36ced68",
+      "subject": "fix(server): keep Codex loaded when reasoning effort changes (#32915)",
+      "topic": "pr-32915"
+    },
+    {
+      "pr": 32808,
+      "sha": "fdaf883293622244e234882d7009155fbdeaf988",
+      "subject": "fix(packaging): AUR launchers export APPDIR so terminals drop the AppImage env (#32808)",
+      "topic": "pr-32808"
+    },
+    {
+      "pr": 32846,
+      "sha": "43ba03c82a8460d972f34d99a6021bbc1165cc20",
+      "subject": "fix(server): preview_wait_for stops at its timeout when the page stops answering (#32846)",
+      "topic": "pr-32846"
+    },
+    {
+      "pr": 32923,
+      "sha": "f1d402009a0ce7a236a163e341c84b7b2d25ef36",
+      "subject": "perf(server): trace database reclamation once per pass (#32923)",
+      "topic": "pr-32923"
+    },
+    {
+      "pr": 31536,
+      "sha": "acbe050e77311d48548df4af6675a5eb72bb2b78",
+      "subject": "test(evals): browser routing cases for requested QA vs project browser CLIs (#31536)",
+      "topic": "pr-31536"
+    },
+    {
+      "pr": 33273,
+      "sha": "289065a6b1c033ce0976eb1d2410ce1e8f92329f",
+      "subject": "fix(ssh): preserve Unicode whitespace in Include filenames (#33273)",
+      "topic": "pr-33273"
+    },
+    {
+      "pr": 33095,
+      "sha": "eeb31c11b78fb1a1ba43a6441353223b74aa8275",
+      "subject": "fix(server): settling a thread refreshes its pull request status once (#33095)",
+      "topic": "pr-33095"
+    },
+    {
+      "pr": 32597,
+      "sha": "20b934c8307f9809895db05ddebbf5c165ccdf8c",
+      "subject": "fix(server): codex text generation keeps local provider launch args (#32597)",
+      "topic": "pr-32597"
+    },
+    {
+      "pr": 32560,
+      "sha": "a5f1c51e38f74734a300f8afdae2682b8c707f69",
+      "subject": "fix(provider): expand a leading ~ in GROK_HOME for provider and terminal spawns (#32560)",
+      "topic": "pr-32560"
+    },
+    {
+      "pr": 32390,
+      "sha": "1f6d9e789a4bbb7bf69674174f77d2b61ad0b604",
+      "subject": "fix(acp): preserve outgoing error data (#32390)",
+      "topic": "pr-32390"
+    },
+    {
+      "pr": 25947,
+      "sha": "23132f833888b70536f938a988da3599252f5f0b",
+      "subject": "fix(github): pull requests missing refs/pull/N/head no longer show as not found (#25947)",
+      "topic": "pr-25947"
+    },
+    {
+      "pr": 25218,
+      "sha": "358bb710485ef4f6eaca045c8d2a82864f16c595",
+      "subject": "fix(server): date Connect link proofs with the relay clock (#25218)",
+      "topic": "pr-25218"
+    },
+    {
+      "pr": 29651,
+      "sha": "b703fdbfdb20607ebe6b3380975b51288306b8e6",
+      "subject": "fix(server): a git action that fails partway refreshes the Git panel (#29651)",
+      "topic": "pr-29651"
+    },
+    {
+      "pr": 29224,
+      "sha": "586c790eebb51ac4eaf050b2247d019aee97d2f7",
+      "subject": "fix(server): Codex network waits no longer show a stale retry limit (#29224)",
+      "topic": "pr-29224"
+    },
+    {
+      "pr": 26055,
+      "sha": "08930cafe3d074ac26c65a000de4e801a8c2c317",
+      "subject": "fix(server): preview_open reports a tab it shows as visible (#26055)",
+      "topic": "pr-23589"
+    },
+    {
+      "pr": 34559,
+      "sha": "3fd7b75e25eaf031feeb30062195109704bf2455",
+      "subject": "ci: flag pull requests that grow the test suite, and browser tests that need no browser (#34559)",
+      "topic": "pr-34559"
+    },
+    {
+      "pr": 34595,
+      "sha": "5d28843461d5d3437436df4f3b81dc44300cd6cd",
+      "subject": "fix(server): commit-message preparation no longer writes objects into the repository (#34595)",
+      "topic": "pr-34595"
+    },
+    {
+      "pr": 34575,
+      "sha": "6a8f82ca7cc763be2d0814789ee171281cfd92d9",
+      "subject": "test(server): the app-server kill test waits for its stand-in's ready line (#34575)",
+      "topic": "pr-34575"
+    },
+    {
+      "pr": 34443,
+      "sha": "a98466b3f89bcb87edb67b99d83a4cee54fa4fda",
+      "subject": "docs: remove the broken composer banner reference (#34443)",
+      "topic": "pr-34443"
+    },
+    {
+      "pr": 34564,
+      "sha": "5984bbb36ebc16c49c5a7b1f534827879eaeba8e",
+      "subject": "fix(server): a model change sent with a Claude steer now applies to the running turn (#34564)",
+      "topic": "pr-34564"
+    },
+    {
+      "pr": 34581,
+      "sha": "b20bbc595d5968d5754f07dcc103f324e0fe0d36",
+      "subject": "fix: deliver steering after worktree setup (#34581)",
+      "topic": "pr-34581"
+    },
+    {
+      "pr": 34580,
+      "sha": "c58f472a356ed4148fb70a9e8b82e0c6f51d3660",
+      "subject": "fix(server): report failed preview navigation URLs (#34580)",
+      "topic": "pr-18588"
+    },
+    {
+      "pr": 34252,
+      "sha": "02f89d85ab5eda82abe19fd0a0490e6aff9f7022",
+      "subject": "fix(server): a desktop tab detached during setup no longer blocks later browser tabs (#34252)",
+      "topic": "pr-34252"
+    },
+    {
+      "pr": 34578,
+      "sha": "3a2564319236bf0a315edb8ca1e94bf52389ab0b",
+      "subject": "fix(contracts): Open in VS Code keeps a plus in the SSH username (#34578)",
+      "topic": "pr-34578"
+    },
+    {
+      "pr": 34346,
+      "sha": "eceeab4d5c5bb02b58906978ff9e50bbd595ec19",
+      "subject": "fix(web): Cmd+F in the Files panel focuses its search (#34346)",
+      "topic": "pr-34346"
+    },
+    {
+      "pr": 29328,
+      "sha": "1264c206aee0dce805d6279809118bc091f29d2f",
+      "subject": "fix(server): worktree launches refuse branch names an existing branch blocks (#29328)",
+      "topic": "pr-29328"
+    },
+    {
+      "pr": 34453,
+      "sha": "6464729c564337aca536e2957c8df0ce3a0a275b",
+      "subject": "fix(web): improve PowerPoint slide font rendering (#34453)",
+      "topic": "pr-34453"
+    },
+    {
+      "pr": 34586,
+      "sha": "e63d80a06526ad624c92cb784152d034ed5ed6de",
+      "subject": "test(web): check custom worksheet targets at the preparation layer (#34586)",
+      "topic": "pr-34586"
+    },
+    {
+      "pr": 27948,
+      "sha": "323c0a8d0dd7619ecdb8de87690116e2be3589e7",
+      "subject": "fix(web): keep wide terminal glyphs on the cell grid (#27948)",
+      "topic": "pr-27948"
+    },
+    {
+      "pr": 34563,
+      "sha": "d6e5f2e06faf45eb46ee5999ab1363daaea4e1c2",
+      "subject": "fix(server): Claude effort changes apply to the running turn (#34563)",
+      "topic": "pr-34563"
+    },
+    {
+      "pr": 34572,
+      "sha": "a02bc75737c8db9900315ee1f985d4d5a147ad13",
+      "subject": "fix(web): keep background toast Open button inline (#34572)",
+      "topic": "pr-34572"
+    },
+    {
+      "pr": 34554,
+      "sha": "fcc25c8bb283ae89a2c852b6760fce15d78b1dac",
+      "subject": "ci: split web tests over two runners so every run finishes sooner (#34554)",
+      "topic": "pr-34554"
+    },
+    {
+      "pr": 23807,
+      "sha": "694076dcf34aac70f5d55feb6c15e7b895a5424a",
+      "subject": "fix(server): show when Stop leaves a Claude steer unconfirmed (#23807)",
+      "topic": "pr-24785"
+    },
+    {
+      "pr": 34306,
+      "sha": "a9f2d7d5f4bd9191daa114b0a55d7b6bdda3484a",
+      "subject": "fix(web): \"Show full message\" only appears when it at least doubles the message (#34306)",
+      "topic": "pr-34306"
+    },
+    {
+      "pr": 34552,
+      "sha": "01b815ffc29b634a7ede198e67c60460319fc1cb",
+      "subject": "fix(web): draw rounded powerline caps to fill the terminal cell (#34552)",
+      "topic": "pr-34552"
+    },
+    {
+      "pr": 34333,
+      "sha": "330b9f484032e7a7f9df01c5d73accd97ec356b8",
+      "subject": "fix(web): arrow keys and buttons step through the images an agent viewed (#34333)",
+      "topic": "pr-30473"
+    },
+    {
+      "pr": 14870,
+      "sha": "21a9aa1d79684b22adb3cd9331deacd547762eff",
+      "subject": "fix(web): wrapping a selection in backticks formats it as code (#14870)",
+      "topic": "pr-14870"
+    },
+    {
+      "pr": 34553,
+      "sha": "80d8623fc3435e3ec5f62d5f40d8aed8ca00b7c9",
+      "subject": "fix(cursor): retry a timed-out catalog read before reporting an error (#34553)",
+      "topic": "pr-34553"
+    },
+    {
+      "pr": 34263,
+      "sha": "462eeac63bb3573d9efca2311d8b9d9b740c2fd3",
+      "subject": "fix(mobile): stale Claude threads show a compact-before-send notice (#34263)",
+      "topic": "pr-34263"
+    },
+    {
+      "pr": 34360,
+      "sha": "1ab3afe892baf7ee7f64076d63f1c2358f8068c1",
+      "subject": "fix(web): opening a file focuses its editor so Cmd+F searches it (#34360)",
+      "topic": "pr-34360"
+    },
+    {
+      "pr": 34279,
+      "sha": "c2300780e008e021a8c771a2a79f9705204fcfc0",
+      "subject": "fix(server): reject worktree launches in non-Git projects (#34279)",
+      "topic": "pr-34279"
+    },
+    {
+      "pr": 34522,
+      "sha": "06bd84623b86bb9d1b1cae2a20b514e9058648c9",
+      "subject": "test(server): wire budget covers stale todo lists in long threads (#34522)",
+      "topic": "pr-34522"
+    },
+    {
+      "pr": 34460,
+      "sha": "9994396504378dfc30a287f47d998cc891dc9f8e",
+      "subject": "fix(server): branch totals stop relisting untracked files after a failed listing (#34460)",
+      "topic": "pr-34460"
+    },
+    {
+      "pr": 34461,
+      "sha": "a8ccf14d06333d5c99b3f90934106a0ea6f76a62",
+      "subject": "fix(server): stop a Codex app-server that ignores SIGTERM (#34461)",
+      "topic": "pr-34461"
+    },
+    {
+      "pr": 34517,
+      "sha": "fdcf27211e5d8d42568b92a55024e7111b6620fe",
+      "subject": "docs(orchestration-v2): task_cancel describes queued-only tasks and when it rejects (#34517)",
+      "topic": "pr-34517"
+    },
+    {
+      "pr": 19449,
+      "sha": "074b452d29e7939bf54dcd7a39e31ae6b3d40c60",
+      "subject": "fix(server): migrate compatible legacy service install state (#19449)",
+      "topic": "pr-19449"
+    },
+    {
+      "pr": 33152,
+      "sha": "00766e2c027ac095e604da81b958113287f2f6b1",
+      "subject": "fix(server): fail any provider turn stuck in a retry (#33152)",
+      "topic": "pr-33152"
+    },
+    {
+      "pr": 34501,
+      "sha": "836b86a5d6b7738193656b9c638318afe6caef35",
+      "subject": "fix(chat): keep final replies visible after steering (#34501)",
+      "topic": "pr-34501"
+    },
+    {
+      "pr": 34513,
+      "sha": "11f61a53276c0b954229700d7b9edbbd3a7a3215",
+      "subject": "refactor(mobile): lists use LegendList, FlatList is a restricted import (#34513)",
+      "topic": "pr-34513"
+    },
+    {
+      "pr": 34525,
+      "sha": "34b50df5349a58345b4da0abe36aa0a73a5a20b8",
+      "subject": "ci: stop uploading per-shard test cache reports (#34525)",
+      "topic": "pr-34525"
+    },
+    {
+      "pr": 33188,
+      "sha": "9ef259e5173646c30f4f862c6fccce7bcb9217c2",
+      "subject": "fix(mobile): sidebar empty states and repeated usage notices (#33188)",
+      "topic": "pr-33188"
+    },
+    {
+      "pr": 34518,
+      "sha": "f31ce3eeb5f4adbfe7f961403822cf90db05808f",
+      "subject": "fix(server): pass the process runner to the systemd unit directory read in bootServiceUnitPath (#34518)",
+      "topic": "pr-34518"
+    },
+    {
+      "pr": 34429,
+      "sha": "c8e8b58ee6f570a1a3f538e615aa800c406d73f4",
+      "subject": "fix(web): improve Excel spreadsheet previews (#34429)",
+      "topic": "pr-34429"
+    },
+    {
+      "pr": 34490,
+      "sha": "b015ffd7c2d360aed7debb52a3b64483ab4466ab",
+      "subject": "perf(server): very long threads open about 10x faster (#34490)",
+      "topic": "pr-34490"
+    },
+    {
+      "pr": 34181,
+      "sha": "1a8ecc64b7126d312bb0873f1500e525be12fa2f",
+      "subject": "feat(web): a quote in a sent message shows as an inset card (#34181)",
+      "topic": "pr-34181"
+    },
+    {
+      "pr": 27588,
+      "sha": "0318eadc3202c64f3da9aad08ea5aa868a2f0d7c",
+      "subject": "fix(server): agent clones are no longer cut off after 2 minutes (#27588)",
+      "topic": "pr-27588"
+    },
+    {
+      "pr": 28219,
+      "sha": "28bbc91c7c2b349d701fe10751e2ed4245171a69",
+      "subject": "fix(server): say Git isn't installed when a new project can't run git (#28219)",
+      "topic": "pr-28219"
+    },
+    {
+      "pr": 23356,
+      "sha": "686121d470d9ebf10cab115dcecc91ea697e7803",
+      "subject": "fix(server): recover service PATH after a slow login shell probe (#23356)",
+      "topic": "pr-23356"
+    },
+    {
+      "pr": 29956,
+      "sha": "b264e118cf047560eb7aa6ac12f6baa7acce6497",
+      "subject": "fix(server): t3 doctor warns how long reclaiming takes and shows each step (#29956)",
+      "topic": "pr-29956"
+    },
+    {
+      "pr": 25325,
+      "sha": "3cfbc3607b81035fa0873ec3c8ea5c3c8d659c48",
+      "subject": "fix(server): keep queued Claude workflow members pending (#25325)",
+      "topic": "pr-25325"
+    },
+    {
+      "pr": 25911,
+      "sha": "8b21cbdf1e2dc29b01e952fd1b700f091ce1b884",
+      "subject": "fix(server): Codex turns that auto-compact end instead of looping on restored context (#25911)",
+      "topic": "pr-25911"
+    },
+    {
+      "pr": 27595,
+      "sha": "173374c4a7cd4f3020785df316ca1238cef4e8d6",
+      "subject": "fix(server): opening a pull request loads while its host is rate-limited (#27595)",
+      "topic": "pr-27595"
+    },
+    {
+      "pr": 27335,
+      "sha": "81e9368c4a7a3c4aa9a05d3460736775d89da511",
+      "subject": "fix(mobile): swipe action labels stay whole at larger Android text sizes (#27335)",
+      "topic": "pr-27335"
+    },
+    {
+      "pr": 24545,
+      "sha": "52c1491c8a301e79a25568bbbfdeb59317222fa0",
+      "subject": "fix(server): successful worktree handoffs complete normally (#24545)",
+      "topic": "pr-24545"
+    },
+    {
+      "pr": 25978,
+      "sha": "731c87334c75705ee85cd657957ee93c5b946ba8",
+      "subject": "fix(desktop): a hidden preview tab no longer keeps the display awake after a screenshot (#25978)",
+      "topic": "pr-25978"
+    },
+    {
+      "pr": 27953,
+      "sha": "675d2bd3b23f315cbfa03d687df788b68b11a157",
+      "subject": "fix(server): closed PR watches end even when the activity read fails (#27953)",
+      "topic": "pr-27953"
+    },
+    {
+      "pr": 29183,
+      "sha": "c4cf58511b1cc957ba3efa92563d0d187d0ff768",
+      "subject": "fix(server): long Claude sessions import instead of being skipped (#29183)",
+      "topic": "pr-29183"
+    },
+    {
+      "pr": 18442,
+      "sha": "3aea6553d3eda941442eaa36057e9f655b54cfd6",
+      "subject": "fix(clients): show the right app name and thread context (#18442)",
+      "topic": "pr-18442"
+    },
+    {
+      "pr": 27564,
+      "sha": "f495217e928cafb7dc0563fc8c8a28dba718f64b",
+      "subject": "fix(server): Simlock open failures show what agent-device reported (#27564)",
+      "topic": "pr-27564"
+    },
+    {
+      "pr": 25430,
+      "sha": "faed05d817eab08549831ad76baaff75ade0427e",
+      "subject": "fix(server): usage prices long-context requests at above-tier rates (#25430)",
+      "topic": "pr-25430"
+    },
+    {
+      "pr": 23648,
+      "sha": "458a79208752696b8ccbb7031a2e8e5d10ffbcd1",
+      "subject": "fix(server): a Claude thread waiting on a ScheduleWakeup stays in Working (#23648)",
+      "topic": "pr-23648"
+    },
+    {
+      "pr": 26649,
+      "sha": "335d8b56015f09def0cc350f91c5fc7fc3ac69c6",
+      "subject": "fix(server): Claude --settings and prompt-file launch args expand ~ (#26649)",
+      "topic": "pr-26649"
+    },
+    {
+      "pr": 28195,
+      "sha": "7d8f6c9481c369301a8e26b080014e789cc9d98c",
+      "subject": "fix(server): show a context handoff when a provider conversation can't be resumed (#28195)",
+      "topic": "pr-28195"
+    },
+    {
+      "pr": 18588,
+      "sha": "f796df8fd2f04d7d5971055139166abc3887206e",
+      "subject": "fix(server,desktop): browser tools report why a page failed to load (#18588)",
+      "topic": "pr-18588"
+    },
+    {
+      "pr": 33130,
+      "sha": "362ac8d6d5ced16089b98b30f4638e7577ca6581",
+      "subject": "fix(server): fail Codex turns stuck in a provider retry (#33130)",
+      "topic": "pr-33130"
+    },
+    {
+      "pr": 23539,
+      "sha": "f15fbdef2e388f60ffc03b0b389c2de415455e9d",
+      "subject": "fix(server): branch switch no longer kills a slow git checkout (#23539)",
+      "topic": "pr-23539"
+    },
+    {
+      "pr": 25870,
+      "sha": "cc6c0d295783ed7a476efe42cb0b767acad1571b",
+      "subject": "fix(server): runtime prune no longer keeps a version whose directory is on the service PATH (#25870)",
+      "topic": "pr-25870"
+    },
+    {
+      "pr": 34245,
+      "sha": "cdd1c6a2af4e48811f8549caea17e73dedda30bf",
+      "subject": "fix(server): Copilot threads load optional T3 tools on demand (#34245)",
+      "topic": "pr-34245"
+    },
+    {
+      "pr": 29923,
+      "sha": "546036ec0ceee44c57a554770dbe4a7057060366",
+      "subject": "fix(server): t3 service install works on Linux hosts without a login session (#29923)",
+      "topic": "pr-29923"
+    },
+    {
+      "pr": 26086,
+      "sha": "cdbfae86cd936160f803f659c01aa583c0981dce",
+      "subject": "fix(claude): a killed Claude process names its signal on the failed turn (#26086)",
+      "topic": "pr-26086"
+    },
+    {
+      "pr": 26126,
+      "sha": "621f0e7e71c742c3df1929ee5ff6ae69632b1d52",
+      "subject": "fix(server): workspace search no longer indexes the home directory (#26126)",
+      "topic": "pr-26126"
+    },
+    {
+      "pr": 23479,
+      "sha": "cff8bfcef0ca6c73080a673508d7c91a8913c8d3",
+      "subject": "fix(web): keep model favorites usable after disabling a provider (#23479)",
+      "topic": "pr-23479"
+    },
+    {
+      "pr": 24537,
+      "sha": "b125e897682dc380f362925be5f9c4efaa02b0d2",
+      "subject": "fix(server): Codex forks no longer request full turn history (#24537)",
+      "topic": "pr-24537"
+    },
+    {
+      "pr": 30841,
+      "sha": "940b7a416039b0831360b4dc6984be7600fb61ae",
+      "subject": "fix(web): screen readers can browse and Tab through the settings sections again (#30841)",
+      "topic": "pr-30841"
+    },
+    {
+      "pr": 34243,
+      "sha": "ee21337d84d9db280fd74899e8ba82cd29a0a89c",
+      "subject": "fix(shared): a zero-credit cap no longer marks seat-based Codex out of usage (#34243)",
+      "topic": "pr-34243"
+    },
+    {
+      "pr": 27484,
+      "sha": "477845733dbb223f68dcf822ea0fe9fe2310a2a3",
+      "subject": "fix(web): track switch dialog no longer offers a switch that moves nothing (#27484)",
+      "topic": "pr-27484"
+    },
+    {
+      "pr": 23422,
+      "sha": "0ceaa9a48ca6448caf5fb5b2e3d00bb1a92a1c60",
+      "subject": "fix(server): update branch labels after terminal checkouts (#23422)",
+      "topic": "pr-23422"
+    },
+    {
+      "pr": 14493,
+      "sha": "0e1f01ec85f13d75b54c26c11f7acc45bb8176f2",
+      "subject": "fix(web): keep grouped project icons consistent in settings (#14493)",
+      "topic": "pr-14493"
+    },
+    {
+      "pr": 24785,
+      "sha": "a50ebef78bf65843b3dd8c52e23b313fdb7b0efd",
+      "subject": "fix(server): show when a Claude steer is waiting for acceptance (#24785)",
+      "topic": "pr-24785"
+    },
+    {
+      "pr": 23785,
+      "sha": "a48d7c6cd0d1ba62f7cc9b3160f9d3c8b8eea575",
+      "subject": "fix(ssh): explain how to recover from failed host key checks (#23785)",
+      "topic": "pr-23785"
+    },
+    {
+      "pr": 26834,
+      "sha": "c75a58e57cd8ebe213161bb752187cdafeb39d5c",
+      "subject": "fix(server): peer link migrations 71 and 72 rerun safely (#26834)",
+      "topic": "pr-26834"
+    },
+    {
+      "pr": 28918,
+      "sha": "9cb45ec0b7c95ae77a77deb1a72419e8164cdb74",
+      "subject": "fix(server): text generation falls back to an enabled custom instance instead of a disabled default (#28918)",
+      "topic": "pr-28918"
+    },
+    {
+      "pr": 30768,
+      "sha": "1843c93e3911a3453dfce00034b750a8b36b0418",
+      "subject": "fix(chat): keep scratch file links usable (#30768)",
+      "topic": "pr-30768"
+    },
+    {
+      "pr": 23289,
+      "sha": "9d7384d09694a6f24a274e3965b25ec2d742777c",
+      "subject": "fix(client-runtime): reopening a folder picker refreshes its listing (#23289)",
+      "topic": "pr-23289"
+    },
+    {
+      "pr": 19665,
+      "sha": "20081ef95f78b17c1f0e8d9be8bacf28b191bdc9",
+      "subject": "fix(server): subagent threads settle with their parent instead of sweeping on their own (#19665)",
+      "topic": "pr-19665"
+    },
+    {
+      "pr": 27387,
+      "sha": "303903acd9b571033b99b1c71616505ae386883d",
+      "subject": "fix(server): a steer during a delegate_task wait no longer drops the child's result (#27387)",
+      "topic": "pr-27387"
+    },
+    {
+      "pr": 28056,
+      "sha": "bd02e64b5f1a22318bd17729f969ae584f896693",
+      "subject": "fix(web): expanding a diff whose files changed no longer crashes (#28056)",
+      "topic": "pr-28056"
+    },
+    {
+      "pr": 22226,
+      "sha": "1a1a57376c4a0930fdcdd8562e786b949303b8cf",
+      "subject": "fix(web): start clone when destination is picked in file manager (#22226)",
+      "topic": "pr-22226"
+    },
+    {
+      "pr": 23629,
+      "sha": "a91d6c8821a85f51edfc04b5afe81b3e2bb7ad38",
+      "subject": "fix(server): Claude effort picker marks levels capped by maxEffortLevel (#23629)",
+      "topic": "pr-23629"
+    },
+    {
+      "pr": 24433,
+      "sha": "6f2ce8195898c6207a86104c6919fb3efe26f0c0",
+      "subject": "fix(web): copying commands with prose no longer adds code fences (#24433)",
+      "topic": "pr-24433"
+    },
+    {
+      "pr": 26765,
+      "sha": "4599e55bdddd4f61eb91b4b42c3b31187e803e6a",
+      "subject": "fix(server): agents settle this thread when asked (#26765)",
+      "topic": "pr-26765"
+    },
+    {
+      "pr": 22148,
+      "sha": "e6afd2a24be039a029f85875a8e80fe8034428c6",
+      "subject": "fix(web): render citation chips in the collapsed composer (#22148)",
+      "topic": "pr-22148"
+    },
+    {
+      "pr": 28258,
+      "sha": "1278628870baa7dc88d61f491b7d5a2de20081c5",
+      "subject": "fix(server): device setup names a missing npm instead of a generic failure (#28258)",
+      "topic": "pr-28258"
+    },
+    {
+      "pr": 26963,
+      "sha": "d5dc11159987066ea0d7886d60bbef82ab277c87",
+      "subject": "fix(ssh): reconnect and disconnect ignore a remote pid file that no longer names the server (#26963)",
+      "topic": "pr-26963"
+    },
+    {
+      "pr": 26578,
+      "sha": "1fa250eb1f62614c540ee0ffee68330d28ffb931",
+      "subject": "fix(mobile): un-settle while a settle is pending is no longer ignored (#26578)",
+      "topic": "pr-26578"
+    },
+    {
+      "pr": 34177,
+      "sha": "ddc3cefbc450a737b83672209db0e777bd54e09a",
+      "subject": "fix(clients): collapsed turns show one context-compacted divider (#34177)",
+      "topic": "pr-34177"
+    },
+    {
+      "pr": 34204,
+      "sha": "3c7424ee39659205912b5c6b6499242bb19702c4",
+      "subject": "fix(server): a busy embedded frame no longer holds copy keys back (#34204)",
+      "topic": "pr-34204"
+    },
+    {
+      "pr": 26298,
+      "sha": "26ccb935ab1f9e879cbf1de27422a71376f9de4d",
+      "subject": "fix(server): failed provider updates show the updater's error, not its closing hint (#26298)",
+      "topic": "pr-26298"
+    },
+    {
+      "pr": 17800,
+      "sha": "7f65c9c3930df64d6ac1f607c98ee9acf0d65e82",
+      "subject": "fix(server): PR sync stops reading missing pull requests every minute (#17800)",
+      "topic": "pr-17800"
+    },
+    {
+      "pr": 26211,
+      "sha": "4bf4ae74ac7288947261b1cd5ead2f427c3eee1c",
+      "subject": "fix(desktop): annotation tool keys work after clicking a toolbar button (#26211)",
+      "topic": "pr-26211"
+    },
+    {
+      "pr": 26543,
+      "sha": "77d17b157e4583d88531402e7b9232e14dec8088",
+      "subject": "fix(provider-acp-registry): prepared binary agents stay ready when the registry advances (#26543)",
+      "topic": "pr-26543"
+    },
+    {
+      "pr": 28957,
+      "sha": "bff276e786708e2be58c4c6184d4211c08ed80c9",
+      "subject": "fix(server): Git failures no longer record checkpoints as missing (#28957)",
+      "topic": "pr-28957"
+    },
+    {
+      "pr": 28543,
+      "sha": "7c12233d028d99705aec6178b1be01bfce4935dd",
+      "subject": "fix(server): listing linked environments no longer waits out an asleep peer (#28543)",
+      "topic": "pr-28543"
+    },
+    {
+      "pr": 26908,
+      "sha": "1a3fbee6c2c36e95b3ccaa842fd9a087e3381d3b",
+      "subject": "fix(cursor): Cursor no longer adds attribution when cli-config turns it off (#26908)",
+      "topic": "pr-26908"
+    },
+    {
+      "pr": 26272,
+      "sha": "20584babc2aa8bf01d8d3b8ba748c00117fdb637",
+      "subject": "fix(server): slow title generations no longer hold every effect worker (#26272)",
+      "topic": "pr-26272"
+    },
+    {
+      "pr": 26721,
+      "sha": "184bb3950f62f4b918897dc2d7f206f8af04cf5c",
+      "subject": "fix(server): MCP tools reject top-level arguments they do not declare (#26721)",
+      "topic": "pr-26721"
+    },
+    {
+      "pr": 32040,
+      "sha": "787c59c802ff58274b06a2cdfb1a369bf7c04571",
+      "subject": "fix(web): Word previews no longer cut ordinary documents short (#32040)",
+      "topic": "pr-32040"
+    },
+    {
+      "pr": 26322,
+      "sha": "d0c7147a8e1a382fc3bdf7cab291614623b31edb",
+      "subject": "fix(pi): rewinding works after the Pi session was released (#26322)",
+      "topic": "pr-26322"
+    },
+    {
+      "pr": 34331,
+      "sha": "84478e09c1548e32cd2fee2960da36ced15193e9",
+      "subject": "fix(web): long merged spreadsheet selections no longer crash (#34331)",
+      "topic": "pr-34331"
+    },
+    {
+      "pr": 19000,
+      "sha": "15695ee78f5515bdd36beb928a3c51554fcff3a5",
+      "subject": "fix(opencode): omit unsupported reasoning options from catalog models (#19000)",
+      "topic": "pr-19000"
+    },
+    {
+      "pr": 26625,
+      "sha": "60efd7c8697d409a629672966f523f33f51aac4f",
+      "subject": "fix(server): t3_thread_launch refuses models the provider does not advertise (#26625)",
+      "topic": "pr-26625"
+    },
+    {
+      "pr": 26130,
+      "sha": "bc9c84e4f64133a703ec118e0f650b358248c23b",
+      "subject": "docs(mcp): t3_thread_update lists only its rename and title actions (#26130)",
+      "topic": "pr-26130"
+    },
+    {
+      "pr": 29051,
+      "sha": "bc3eb6d2b2019ad4a77ae8c8efcdde8c41269e07",
+      "subject": "fix(web): fix japanese text in file viewer not rendering (#29051)",
+      "topic": "pr-29051"
+    },
+    {
+      "pr": 23249,
+      "sha": "5ee7f6fee8d1c52c17eb4abb6eec58985a1ae0fd",
+      "subject": "fix(chat): show late async answers in their own runs (#23249)",
+      "topic": "pr-23249"
+    },
+    {
+      "pr": 31868,
+      "sha": "f5fe0790e78127372eb746d6513e46f68302ddb7",
+      "subject": "fix(web): Office previews say \"1 page\", \"1 sheet\", \"1 slide\" and \"1 row\" (#31868)",
+      "topic": "pr-31868"
+    },
+    {
+      "pr": 18379,
+      "sha": "31eea883c7f7849ada6eb49265cb11fc64d2ecbd",
+      "subject": "fix(rewind): allow conversation-only rewind in non-git workspaces (#18379)",
+      "topic": "pr-18379"
+    },
+    {
+      "pr": 34227,
+      "sha": "2dfbad7381bf3521c03e1757602273c9be5efe04",
+      "subject": "fix(server): t3 serve no longer offers --auto-bootstrap-project-from-cwd (#34227)",
+      "topic": "pr-34227"
+    },
+    {
+      "pr": 34218,
+      "sha": "7e565c510d6dfaef2e1fd97bf9d89a97ce9cece7",
+      "subject": "fix(git): stop new threads inheriting historical branch PRs (#34218)",
+      "topic": "pr-34218"
+    },
+    {
+      "pr": 9954,
+      "sha": "a625e0b531e30ca1f9bd78c7123c2f2054f24982",
+      "subject": "fix(terminal): identify T3 Code terminal sessions (#9954)",
+      "topic": "pr-9954"
+    },
+    {
+      "pr": 26311,
+      "sha": "3ed5fb29bd2ffdb31cf146f016300e26ca237f99",
+      "subject": "fix(shared): Claude plugin skills no longer show their name twice (#26311)",
+      "topic": "pr-26311"
+    },
+    {
+      "pr": 21641,
+      "sha": "4c68fdcaa9983595b4fe1556842a371b54a6a57b",
+      "subject": "fix(web): the terminal cursor no longer leaves faint lines when it blinks off (#21641)",
+      "topic": "pr-21641"
+    },
+    {
+      "pr": 27490,
+      "sha": "0629735d37ca8ce876f4e7b0fcbc5afa8ecfc230",
+      "subject": "fix(web): thread controls hide while the mobile sidebar is open (#27490)",
+      "topic": "pr-27490"
+    },
+    {
+      "pr": 34258,
+      "sha": "5534467f2bd9bd0c946931d3dc43cad0e47c08ac",
+      "subject": "fix(mobile): browser address bar and Take control no longer hide under the header (#34258)",
+      "topic": "pr-34258"
+    },
+    {
+      "pr": 15848,
+      "sha": "479ee74135a9dce9e59ac0c01a9306604450fe28",
+      "subject": "fix(web): a thread started from a pull request links it (#15848)",
+      "topic": "pr-15848"
+    },
+    {
+      "pr": 10895,
+      "sha": "1d152c3df4c54419c0e85070d8f89bc302f36658",
+      "subject": "fix(desktop): Group Linux windows under the installed launcher (#10895)",
+      "topic": "pr-10895"
+    },
+    {
+      "pr": 26601,
+      "sha": "429c0ac2d369fe27e21d697813950756ba260371",
+      "subject": "fix(server): timed-out git commands that ignore SIGTERM no longer stall other git work (#26601)",
+      "topic": "pr-26601"
+    },
+    {
+      "pr": 19573,
+      "sha": "a68bd772a04ddac6c9aff26c2cd722fbb11d09bc",
+      "subject": "fix(grok): apply the selected reasoning effort to ACP sessions (#19573)",
+      "topic": "pr-19573"
+    },
+    {
+      "pr": 15255,
+      "sha": "afa617b4655361ccdee49a6bfe21696188f0d5ce",
+      "subject": "fix(web): branch picker no longer interrupts a running turn (#15255)",
+      "topic": "pr-15255"
+    },
+    {
+      "pr": 34417,
+      "sha": "fb7e558943215ba2649c88a7ba62b19e0aa90acd",
+      "subject": "test(web): theme search test no longer flakes on slow runners (#34417)",
+      "topic": "pr-34417"
+    },
+    {
+      "pr": 26525,
+      "sha": "d2c25950b4d9183ea342d5d5fc14c326b9e0172a",
+      "subject": "fix(server): tell outside agents which MCP tools need a thread and that t3_thread_list takes allProjects (#26525)",
+      "topic": "pr-26525"
+    },
+    {
+      "pr": 14170,
+      "sha": "896e64f82da835533f797468150be0624d129458",
+      "subject": "fix(server): only offer claude update for native Claude installs (#14170)",
+      "topic": "pr-14170"
+    },
+    {
+      "pr": 10495,
+      "sha": "d50a6fdc30a3e789bd62c39471c29510768429be",
+      "subject": "fix(web): preview recordings stay decodable after a viewport resize (#10495)",
+      "topic": "pr-10495"
+    },
+    {
+      "pr": 21239,
+      "sha": "0af2d21647416e3092347d4be82af6cfa6fa6b2d",
+      "subject": "fix(server): drop stale queued pull-request watch wakes (#21239)",
+      "topic": "pr-21239"
+    },
+    {
+      "pr": 34170,
+      "sha": "49013438a9b316d68874ed22cb4fea08d492bf29",
+      "subject": "test: remove tests that repeat another case or restate the source (#34170)",
+      "topic": "pr-34170"
+    },
+    {
+      "pr": 22997,
+      "sha": "8f4166b28c530fea77685d82423033c7309e391b",
+      "subject": "fix(web): convert composer list markers completed later (#22997)",
+      "topic": "pr-22997"
+    },
+    {
+      "pr": 27425,
+      "sha": "ad0b2a9d2f0e4ab6384c9ce601e7f2e755ab5117",
+      "subject": "perf(client): streamed text no longer republishes thread queue and checkpoints (#27425)",
+      "topic": "pr-27425"
+    },
+    {
+      "pr": 25397,
+      "sha": "a577e9404ebcaa92011c9053ba4a7ebed2a944a0",
+      "subject": "fix(server): delete temporary ACP health probe sessions (#25397)",
+      "topic": "pr-25397"
+    },
+    {
+      "pr": 26593,
+      "sha": "bc8583bc6409e608557c33d42e02b2d1f1e2072f",
+      "subject": "fix(server): storage cleanup keeps worktrees whose file listing exceeds the inspection limit (#26593)",
+      "topic": "pr-26593"
+    },
+    {
+      "pr": 8766,
+      "sha": "dab06c0be19b9d6e109f5538c6ddc92f7f15fb6b",
+      "subject": "fix(terminal): use a byte budget for Ghostty scrollback (#8766)",
+      "topic": "pr-8766"
+    },
+    {
+      "pr": 26594,
+      "sha": "52e878829cdd5c3a2c548466c597ad91b1a86b2e",
+      "subject": "fix(server): storage cleanup skips stale worktree paths under a regular file (#26594)",
+      "topic": "pr-26594"
+    },
+    {
+      "pr": 23001,
+      "sha": "e0379fbf5c48737210a98fd5e542eaf1c5246089",
+      "subject": "fix(web): collapsed reasoning previews no longer process the whole block (#23001)",
+      "topic": "pr-23001"
+    },
+    {
+      "pr": 20809,
+      "sha": "cbc68c9dc1de5d13fadc204188a431a61e157da4",
+      "subject": "fix(web): Stop shows a pending state and repeat clicks no longer resume (#20809)",
+      "topic": "pr-20809"
+    },
+    {
+      "pr": 27275,
+      "sha": "a74ee4cc7c0ee9729f58dfff6cc2a118692cf8ea",
+      "subject": "fix(client-runtime): server updates stop waiting 32 minutes when the host returns without this update's outcome (#27275)",
+      "topic": "pr-27275"
+    },
+    {
+      "pr": 27192,
+      "sha": "d806251188fed764490359bd22bd2d0111a8681f",
+      "subject": "fix(server): runs cancelled by a server restart say why in the thread (#27192)",
+      "topic": "pr-27192"
+    },
+    {
+      "pr": 17042,
+      "sha": "835e72683ba6d7eb5bac3fef7db0990438ae1f37",
+      "subject": "fix(server): Claude subagents no longer show the parent's effort (#17042)",
+      "topic": "pr-17042"
+    },
+    {
+      "pr": 26992,
+      "sha": "27188274e7513babfa5ee1112a5d3032ff299584",
+      "subject": "fix(web): pull request search keeps partial-word matches after GitHub answers (#26992)",
+      "topic": "pr-26992"
+    },
+    {
+      "pr": 30575,
+      "sha": "f3da8ff63b734917b6a9875b24ef1197707de6ec",
+      "subject": "feat(gitlab): resolve overview threads from Summary and Timeline (#30575)",
+      "topic": "pr-30575"
+    },
+    {
+      "pr": 24138,
+      "sha": "b3f5d52701430c8458ee4893c6d523bc9d59e85b",
+      "subject": "fix(composer): steer instead of queueing during automatic compaction (#24138)",
+      "topic": "pr-24138"
+    },
+    {
+      "pr": 21968,
+      "sha": "6700cf6f894b34cc76bf93ea3bdd33f0573c6855",
+      "subject": "fix(web): reveal expanded work rows hidden behind the composer (#21968)",
+      "topic": "pr-21968"
+    },
+    {
+      "pr": 22193,
+      "sha": "d56b82c7084cc4b5e5015c2f9ff1a5279bda74b7",
+      "subject": "fix(web): keep saved default model when changing effort (#22193)",
+      "topic": "pr-22193"
+    },
+    {
+      "pr": 26763,
+      "sha": "5da53f87d9feba9717bca516215aa3dedd0a694a",
+      "subject": "fix(server): CLI commands no longer migrate the database of a running server (#26763)",
+      "topic": "pr-26763"
+    },
+    {
+      "pr": 34326,
+      "sha": "ea5f85e7cc74aa7d5467afa2e7b05706db9d2332",
+      "subject": "fix(ci): release version bump push retries when main moves (#34326)",
+      "topic": "pr-34326"
+    },
+    {
+      "pr": 26408,
+      "sha": "691b9709b0d73dedd714d38fca8c2ea803595298",
+      "subject": "fix(web): Ctrl + \"+\" zooms on keyboard layouts with a dedicated plus key (#26408)",
+      "topic": "pr-26408"
+    },
+    {
+      "pr": 26743,
+      "sha": "1530bec29af48c73b7ab1a5bb19d68945ddd5ef5",
+      "subject": "fix(opencode): a context overflow that OpenCode compacts no longer fails the turn (#26743)",
+      "topic": "pr-26743"
+    },
+    {
+      "pr": 34205,
+      "sha": "36f4e07e037083cff4eb6e497fbae37e542f29a8",
+      "subject": "fix(server): preview automation reports ambiguous selectors instead of calling them invalid (#34205)",
+      "topic": "pr-34205"
+    },
+    {
+      "sha": "ab9df1d6ff7023412c276e1988a46296067804c5",
+      "subject": "chore(release): prepare v0.1.9",
+      "topic": "c-ab9df1d6ff70"
+    },
+    {
+      "pr": 34208,
+      "sha": "faa8ad681861430740c5adfc225540eaf3e46272",
+      "subject": "fix(server): one dropped probe no longer lists a live linked peer as unreachable (#34208)",
+      "topic": "pr-34208"
+    },
+    {
+      "pr": 22208,
+      "sha": "fcddd737e2923f695d6b37b7577c7e653bcb49c0",
+      "subject": "fix(web): don't save retention age until committed (#22208)",
+      "topic": "pr-22208"
+    },
+    {
+      "pr": 16546,
+      "sha": "2828f28145e1611e7f50274e8049e04e8fa0b7f5",
+      "subject": "fix(web): composer follows an optionless thread instead of the settings default (#16546)",
+      "topic": "pr-16546"
+    },
+    {
+      "pr": 21530,
+      "sha": "54a5c51a58a9b3f7cd123eab967ec87922198113",
+      "subject": "fix(web): fall back to a readable server for shared repositories (#21530)",
+      "topic": "pr-21530"
+    },
+    {
+      "pr": 21676,
+      "sha": "fd9b2c3eaabd72e852e068c9d41c467e07c11ee1",
+      "subject": "fix(server): cancelling a background-only delegated task reports it interrupted (#21676)",
+      "topic": "pr-21676"
+    },
+    {
+      "pr": 22874,
+      "sha": "d835e430dbc2863fb5bd9f2c76456e4773b0e0ef",
+      "subject": "fix(web): question answers submit while normal sends are blocked (#22874)",
+      "topic": "pr-22874"
+    }
+  ],
+  "count": 500,
+  "createdAt": "2026-11-12T11:14:04.510Z",
+  "digest": "9416a4a80de77613feda62fb033f39cd1b662ff42c4097c42bea86defd5dae8d",
+  "interval": 27,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "06274896eeb9a8c1646afffd4e45e77ce17596e9"
+}
