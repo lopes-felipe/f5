@@ -62,6 +62,7 @@ export function PrQueueActionHost({
   runningThreadId,
   request,
   onRequestHandled,
+  onBusyChange,
   onReview,
   onOpenThread,
   children,
@@ -71,6 +72,8 @@ export function PrQueueActionHost({
   runningThreadId: ThreadId | null;
   request: PrQueueActionRequest | null;
   onRequestHandled: () => void;
+  /** Whether a dialog is open or an action is running; the owner keeps the host mounted. */
+  onBusyChange?: ((busy: boolean) => void) | undefined;
   /** Opens the pull request's files to review. */
   onReview: (key: PullRequestKey) => void;
   onOpenThread: (threadId: ThreadId) => void;
@@ -132,6 +135,17 @@ export function PrQueueActionHost({
         break;
     }
   };
+
+  const busy =
+    updatingBranch ||
+    dialogProps.pendingAction !== null ||
+    dialogProps.isRunning ||
+    dialogProps.isOpeningInF5 ||
+    Boolean(dialogProps.candidatePicker);
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
   const handled = useRef<number | null>(null);
   const runRef = useRef(run);

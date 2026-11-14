@@ -30,20 +30,19 @@ export function prHubPeekQueryOptions(url: string) {
 }
 
 export function prHubOverviewQueryOptions(stalledBefore?: string) {
+  const accountId = getPrHubSelectedAccountId();
   return queryOptions({
-    queryKey: [
-      ...prHubQueryKeys.overview,
-      getPrHubAccountGeneration(),
-      stalledBefore,
-      getPrHubSelectedAccountId(),
-    ],
+    queryKey: [...prHubQueryKeys.overview, getPrHubAccountGeneration(), stalledBefore, accountId],
     placeholderData: (previous, query) =>
       query?.queryKey[2] === getPrHubAccountGeneration() ? previous : undefined,
-    queryFn: async () =>
-      ensureNativeApi().prHub.getOverview({
-        stalledBefore,
-        accountId: getPrHubSelectedAccountId(),
-      }),
+    queryFn: async () => {
+      // The request goes to whichever account is selected when it is sent. A query still
+      // mounted under another account's key must not send one: the answer would be stored
+      // as that other account's overview.
+      if (accountId !== getPrHubSelectedAccountId())
+        throw new Error("Discarded a PR Hub read for a previous account.");
+      return ensureNativeApi().prHub.getOverview({ stalledBefore, accountId });
+    },
     staleTime: 30_000,
   });
 }

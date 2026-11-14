@@ -1,6 +1,8 @@
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   PullRequestKey,
+  ThreadId,
   type PrAttentionState,
   type TrackedPullRequest,
   type PrHubSnapshot,
@@ -10,6 +12,7 @@ import {
   makePrHubChangeRelay,
   prHubInvalidation,
   prHubOverview,
+  withPrHubThreadLinks,
 } from "./readModel.ts";
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
@@ -313,6 +316,33 @@ describe("PR Hub bounded read model", () => {
     expect(initial.resyncRequired).toBe(true);
     expect(initial.changedKeys).toEqual([]);
     expect(initial.counts.needs_you).toBe(5000);
+  });
+  it("sends a list page without thread links when they cannot be read", async () => {
+    const page = listPrHubPullRequests(snapshot(), "1", { limit: 2 });
+    const keys = page.pullRequests.map((pr) => pr.key);
+    const link = { threadId: ThreadId.makeUnsafe("thread-1"), title: "Fix CI" };
+    const asked: string[][] = [];
+    const linked = await Effect.runPromise(
+      withPrHubThreadLinks(page, (requested) => {
+        asked.push([...requested]);
+        return Effect.succeed({ [keys[0]!]: [link] });
+      }),
+    );
+    expect(asked).toEqual([keys]);
+    expect(linked.threadLinks).toEqual({ [keys[0]!]: [link] });
+    expect(linked.pullRequests).toBe(page.pullRequests);
+
+    const failed = await Effect.runPromise(
+      withPrHubThreadLinks(page, () => Effect.fail(new Error("database is locked"))),
+    );
+    expect(failed).toBe(page);
+    expect(failed.threadLinks).toBeUndefined();
+
+    // An empty page has nothing to look up.
+    const empty = { ...page, pullRequests: [] };
+    expect(
+      await Effect.runPromise(withPrHubThreadLinks(empty, () => Effect.die("not called"))),
+    ).toBe(empty);
   });
   it("renumbers relayed change events and asks for a resync after a dropped one", () => {
     const relay = makePrHubChangeRelay();

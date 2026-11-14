@@ -330,6 +330,8 @@ const QUEUE_ONLY: ReadonlySet<PrQueueCommand> = new Set([
   "search",
 ]);
 const PAGE_ONLY: ReadonlySet<PrQueueCommand> = new Set(["pageNext", "pagePrevious"]);
+/** Keys matched by the character they produce, whatever modifiers the layout needs for it. */
+const LAYOUT_KEYS: ReadonlySet<string> = new Set(["/", "[", "]"]);
 
 /** The fixed single-key shortcuts, with their keys as shown in the shortcuts dialog. */
 export const PR_QUEUE_SHORTCUTS: ReadonlyArray<{ readonly keys: string; readonly label: string }> =
@@ -353,9 +355,14 @@ export function prQueueCommand(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
   view: "queue" | "page",
 ): PrQueueCommand | null {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
   const command = KEY_COMMANDS[event.key];
   if (!command) return null;
+  // "/", "[" and "]" are typed with Shift, Option or AltGr on several layouts (Shift+7 and
+  // Option+5 on German, AltGr+5 on AZERTY; AltGr reports Ctrl and Alt). Every other key is
+  // a plain press.
+  const typed = LAYOUT_KEYS.has(event.key);
+  if (event.metaKey || (event.ctrlKey && !(typed && event.altKey))) return null;
+  if ((event.altKey || event.shiftKey) && !typed) return null;
   if (view === "page" ? QUEUE_ONLY.has(command) : PAGE_ONLY.has(command)) return null;
   return command;
 }

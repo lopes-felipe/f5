@@ -20,7 +20,11 @@ import type {
 import { PR_HUB_SECTIONS } from "@t3tools/shared/prHub";
 
 import { useAppSettings } from "../../appSettings";
-import { getPrHubAccountGeneration, getPrHubSelectedAccountId } from "../../lib/prHubAccount";
+import {
+  getPrHubAccountGeneration,
+  getPrHubSelectedAccountId,
+  setPrHubSelectedAccountId,
+} from "../../lib/prHubAccount";
 import { ensureNativeApi } from "../../nativeApi";
 import { AppTitlebar } from "../AppTitlebar";
 import { Button } from "../ui/button";
@@ -261,7 +265,7 @@ function PrQueuePage({
 export function PrQueueView({
   search,
   onSearchChange,
-  onOpenThread,
+  onOpenThread: openThreadRoute,
   onOpenSettings,
 }: {
   search: PrQueueSearch;
@@ -271,6 +275,16 @@ export function PrQueueView({
 }) {
   const { settings, updateSettings } = useAppSettings();
   const queryClient = useQueryClient();
+  // List pages carry each row's linked threads, and a row offers "Open thread" instead of
+  // starting another agent only once it has them. A thread created from here is a new
+  // link that no PR Hub event announces, so the lists are re-read on the way out.
+  const onOpenThread = useCallback(
+    (threadId: ThreadId) => {
+      void queryClient.invalidateQueries({ queryKey: ["prHub", "list"] });
+      openThreadRoute(threadId);
+    },
+    [openThreadRoute, queryClient],
+  );
   const now = useNow(60_000);
   const [rootRef, canPeek] = useWideEnough(PEEK_MIN_WIDTH);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -294,6 +308,18 @@ export function PrQueueView({
       ? localCursor
       : null;
   const activePr = openKey ? queue.openPr : (rows.find((pr) => pr.key === cursorKey) ?? null);
+  // A confirmation or an operation in progress outlives its row. A refresh can move the pull
+  // request to another section, or out of the loaded rows, while its dialog is open; the
+  // dialogs then keep the copy they were opened with instead of closing.
+  const [hostBusy, setHostBusy] = useState(false);
+  const heldPr = useRef<TrackedPullRequest | null>(null);
+  if (activePr) heldPr.current = activePr;
+  const hostPr = activePr ?? (hostBusy ? heldPr.current : null);
+  // A request is for the pull request on screen. One that found no host because that pull
+  // request was still loading is dropped, not left to open a dialog when it arrives.
+  useEffect(() => {
+    if (request && request.key === cursorKey && !hostPr) setRequest(null);
+  }, [request, cursorKey, hostPr]);
   const { advisory, isAnalyzing, analyze } = usePrAdvisory(
     openKey ? (queue.openPr?.key ?? null) : null,
   );
@@ -385,6 +411,9 @@ export function PrQueueView({
     const command = prQueueCommand(event, showPage ? "page" : "queue");
     if (!command) return;
     const target = event.target instanceof Element ? event.target : null;
+    // Single keys act on the queue from the queue only. With focus in the sidebar, or in a
+    // dialog, menu or popover (all rendered outside this view), they belong to that.
+    if (target && target !== document.body && !rootRef.current?.contains(target)) return;
     // An open select or combobox list owns every key, Escape and type-ahead included.
     const list = target?.closest("[role=listbox]");
     if (list && list.getAttribute("aria-label") !== "Pull requests") return;
@@ -399,10 +428,11 @@ export function PrQueueView({
         moveCursor(-1);
         break;
       case "pageNext":
-        moveCursor(1);
-        break;
       case "pagePrevious":
-        moveCursor(-1);
+        // A pull request opened from a link may not be among the loaded rows. It has no
+        // neighbours then, and the first row of the queue is not one.
+        if (!cursorKey || !rowKeys.includes(cursorKey)) return;
+        moveCursor(command === "pageNext" ? 1 : -1);
         break;
       case "peek":
         if (peekOpen) closePeek();
@@ -448,11 +478,18 @@ export function PrQueueView({
   const clearFilters = () =>
     onSearchChange(parsePrQueueSearch({ pr: search.pr, status: search.status }));
 
+  // Backlog is a healthy refresh, but while searches or detail reads are still queued the
+  // queue is not known to be empty.
+  const stillReading =
+    overview?.sync?.state === "syncing" &&
+    (!overview.sync.lastSyncedAt ||
+      overview.sync.pending.searches + overview.sync.pending.hydrations > 0);
+
   let body: ReactNode;
   if (queue.groups.length > 0) {
     body = (
       <>
-        {status === "active" && !filtered && needsYou === 0 ? (
+        {status === "active" && !filtered && needsYou === 0 && !stillReading ? (
           <p className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground">
             <CheckCircle2Icon aria-hidden="true" className="size-3.5 text-success-foreground" />
             All caught up. Nothing needs you right now.
@@ -531,13 +568,14 @@ export function PrQueueView({
         description={STATUS_EMPTY[status][1]}
       />
     );
-  } else if (overview?.sync?.state === "syncing" && !overview.sync.lastSyncedAt) {
-    // The first sync has not finished: an empty queue would read as "nothing to do".
+  } else if (stillReading) {
+    // The sync has not finished: an empty queue would read as "nothing to do".
+    const reading = overview?.sync?.lastSyncedAt
+      ? "Still reading your pull requests"
+      : "Reading your pull requests for the first time";
     body = (
-      <div role="status" aria-label="Reading your pull requests for the first time">
-        <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
-          Reading your pull requests for the first time…
-        </p>
+      <div role="status" aria-label={reading}>
+        <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground">{reading}…</p>
         <PrQueueSkeletonRows count={8} />
       </div>
     );
@@ -552,14 +590,15 @@ export function PrQueueView({
   }
 
   const host = (children?: Parameters<typeof PrQueueActionHost>[0]["children"]) =>
-    activePr ? (
+    hostPr ? (
       <PrQueueActionHost
-        key={activePr.key}
-        pr={activePr}
+        key={hostPr.key}
+        pr={hostPr}
         advisory={advisory}
         runningThreadId={runningThreadId}
         request={request}
         onRequestHandled={clearRequest}
+        onBusyChange={setHostBusy}
         onReview={(key) => openPage(key, "files")}
         onOpenThread={onOpenThread}
       >
@@ -600,7 +639,12 @@ export function PrQueueView({
                 onSelect={(accountId) => {
                   setLocalCursor(null);
                   onSearchChange(parsePrQueueSearch({ ...search, pr: undefined }));
+                  // The account changes now, before the setting is saved: the queries of the
+                  // next render are keyed by it. Following the saved setting alone would
+                  // leave one render, and the re-reads started in it, on the old account.
+                  setPrHubSelectedAccountId(accountId);
                   updateSettings({ prHubAccountId: accountId ?? null });
+                  void queryClient.invalidateQueries({ queryKey: ["prHub"] });
                 }}
               />
               <PrQueueMenu onTracked={showTracked} onOpenSettings={onOpenSettings} />

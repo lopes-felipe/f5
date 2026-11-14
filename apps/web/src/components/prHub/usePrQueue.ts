@@ -121,6 +121,9 @@ export function usePrQueue(
 
   // Until the first search result arrives, the unfiltered sections stay on screen.
   const showFlat = mode !== "sections" && flatQuery.data !== undefined;
+  // A search that failed has no rows to show. The section rows do not match it, so they
+  // give way to the error and its Retry instead of standing in for good.
+  const flatFailed = mode !== "sections" && flatQuery.isError && flatQuery.data === undefined;
   const flatRows = useMemo(() => rowsOf(flatQuery), [flatQuery.data]);
 
   const groupOf = (
@@ -166,35 +169,58 @@ export function usePrQueue(
         hasMore: last && flatQuery.hasNextPage,
       });
     });
-  } else if (mode === "status") {
+  } else if (mode === "status" || flatFailed) {
     groups = [];
   } else {
+    // Each section is refreshed by its own request, so a pull request that moved to another
+    // section can be in both for one cycle. It is listed once, in the first.
+    const listed = new Set<string>();
     groups = PR_HUB_SECTIONS.filter((section) => (counts?.[section] ?? 0) > 0).map((section) => {
       const query = sectionQueries[section];
       const collapsed = prQueueCollapsed(storedCollapse, section);
-      return groupOf(section, query, collapsed ? [] : rowsOf(query), {
+      const sectionRows = collapsed
+        ? []
+        : rowsOf(query).filter((pr) => {
+            if (listed.has(pr.key)) return false;
+            listed.add(pr.key);
+            return true;
+          });
+      return groupOf(section, query, sectionRows, {
         count: counts?.[section] ?? 0,
         countIsPartial: false,
         collapsed,
         hasMore: !collapsed && query.hasNextPage,
       });
     });
+    // A search opened from a link has no section rows to keep on screen while it loads:
+    // headers with unfiltered counts and nothing under them would be all there is.
+    if (mode === "filtered" && listed.size === 0) groups = [];
   }
 
   const rows = groups.flatMap((group) => group.rows);
+  // Only these are refreshed. Section pages kept from before a search was applied, and the
+  // search result kept after it was cleared, are whatever they were when last read.
+  const current: readonly ListQuery[] =
+    mode === "sections"
+      ? PR_HUB_SECTIONS.filter(wants).map((section) => sectionQueries[section])
+      : showFlat
+        ? [flatQuery]
+        : [];
   const threadLinks = new Map<string, readonly PrHubThreadLink[]>();
-  for (const query of queries)
+  // Current pages last, so that their links replace older ones for the same pull request.
+  for (const query of [...queries.filter((query) => !current.includes(query)), ...current])
     for (const page of query.data?.pages ?? [])
       for (const [key, links] of Object.entries(page.threadLinks ?? {}))
         threadLinks.set(key, links);
 
   const openKey = search.pr;
-  const loaded = openKey
-    ? (queries
-        .flatMap(rowsOf)
-        .find((pr) => pr.key === openKey || sourceControlPullRequestKeysEqual(pr.key, openKey)) ??
-      null)
-    : null;
+  const isOpen = (pr: TrackedPullRequest) =>
+    openKey !== undefined &&
+    (pr.key === openKey || sourceControlPullRequestKeysEqual(pr.key, openKey));
+  const loaded = openKey ? (current.flatMap(rowsOf).find(isOpen) ?? null) : null;
+  // An older copy may only stand in until the pull request's own read arrives: the peek and
+  // the actions work from its checks, state and head commit.
+  const standIn = openKey && !loaded ? (queries.flatMap(rowsOf).find(isOpen) ?? null) : null;
   const openQuery = useInfiniteQuery(
     prHubListQueryOptions(
       { ...(openKey ? { key: openKey as PullRequestKey } : {}), limit: 1 },
@@ -203,18 +229,20 @@ export function usePrQueue(
   );
   const fetched = openKey ? (openQuery.data?.pages[0]?.pullRequests[0] ?? null) : null;
   for (const [key, links] of Object.entries(openQuery.data?.pages[0]?.threadLinks ?? {}))
-    if (!threadLinks.has(key)) threadLinks.set(key, links);
+    if (!loaded || !threadLinks.has(key)) threadLinks.set(key, links);
 
   return {
     overview,
     groups,
     rows,
     threadLinks,
-    isLoading: overviewQuery.isPending || (mode === "status" && !showFlat && !flatQuery.isError),
-    isStale: mode !== "sections" && (!showFlat || flatQuery.isPlaceholderData),
-    isError: overviewQuery.isError || (mode !== "sections" && flatQuery.isError && !showFlat),
-    openPr: loaded ?? fetched,
-    isOpenPrLoading: Boolean(openKey) && !loaded && !fetched && !openQuery.isError,
+    isLoading:
+      overviewQuery.isPending ||
+      (mode !== "sections" && !showFlat && !flatFailed && groups.length === 0),
+    isStale: mode !== "sections" && !flatFailed && (!showFlat || flatQuery.isPlaceholderData),
+    isError: overviewQuery.isError || flatFailed,
+    openPr: loaded ?? fetched ?? standIn,
+    isOpenPrLoading: Boolean(openKey) && !loaded && !fetched && !standIn && !openQuery.isError,
     refetch: () => {
       void queryClient.invalidateQueries({ queryKey: ["prHub", "overview"] });
       void queryClient.invalidateQueries({ queryKey: ["prHub", "list"] });

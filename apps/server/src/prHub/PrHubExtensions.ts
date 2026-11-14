@@ -295,6 +295,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
       );
       return rows.map((row) => ({ ...row, threadId: ThreadId.makeUnsafe(row.threadId) }));
     });
+  const PR_THREAD_LINKS_PER_ROW = 25;
   /** Linked threads for a page of pull requests in one read; keys without links are absent. */
   const getThreadsForPrs = (keys: ReadonlyArray<string>) =>
     Effect.gen(function* () {
@@ -320,8 +321,10 @@ export const makePrHubExtensions = Effect.gen(function* () {
       const links: Record<string, PrHubThreadLink[]> = {};
       for (const row of rows) {
         const list = (links[row.key] ??= []);
-        // A row shows a couple of chips; the pull request page lists the rest.
-        if (list.length < 5)
+        // A row shows a couple of chips, but it also looks through these for a thread that is
+        // still running before it offers to start another agent. A short list would hide a
+        // running thread behind newer finished ones, so the cap only bounds the payload.
+        if (list.length < PR_THREAD_LINKS_PER_ROW)
           list.push({ threadId: ThreadId.makeUnsafe(row.threadId), title: row.title });
       }
       return links;

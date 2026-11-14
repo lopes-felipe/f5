@@ -124,6 +124,8 @@ interface RowProps {
   onOpenThread: (threadId: ThreadId) => void;
 }
 
+const prQueueRowId = (key: PullRequestKey) => `pr-queue-row-${key}`;
+
 const PrQueueRow = memo(function PrQueueRow({
   pr,
   links,
@@ -144,6 +146,7 @@ const PrQueueRow = memo(function PrQueueRow({
   return (
     <div
       role="option"
+      id={prQueueRowId(pr.key)}
       aria-selected={isCursor}
       data-pr-key={pr.key}
       data-open={isOpen || undefined}
@@ -433,8 +436,12 @@ export function PrQueueTable({
       <div
         role="listbox"
         aria-label="Pull requests"
+        // The keys move a cursor, not the focus. Focusable with the cursor row as its active
+        // descendant, the list announces that row to a screen reader as it moves.
+        tabIndex={0}
+        aria-activedescendant={cursorKey ? prQueueRowId(cursorKey) : undefined}
         className={cn(
-          "min-h-0 flex-1 transition-opacity",
+          "min-h-0 flex-1 outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
           !virtualize && "overflow-y-auto",
           isStale && "opacity-60",
         )}

@@ -71,6 +71,26 @@ export function parsePrQueueSearch(input: Record<string, unknown>): PrQueueSearc
   ) as PrQueueSearch;
 }
 
+/** Where the app is now, as far as opening a pull request from elsewhere needs to know. */
+export interface PrQueueLocation {
+  readonly pathname: string;
+  readonly search: Record<string, unknown>;
+}
+
+/**
+ * The queue state for opening one pull request from a notification. With the queue already
+ * on screen its search, filters and status stay as they are: the peek loads a pull request
+ * by key when the filtered rows do not hold it.
+ */
+export function prQueueSearchOpening(
+  prKey: string | undefined,
+  current?: PrQueueLocation | undefined,
+): PrQueueSearch {
+  if (!prKey) return {};
+  if (current?.pathname !== "/pull-requests") return { pr: prKey };
+  return parsePrQueueSearch({ ...current.search, pr: prKey, view: undefined, tab: undefined });
+}
+
 export const PR_QUEUE_FACETS = ["repo", "author", "label", "ci", "review", "draft"] as const;
 export type PrQueueFacet = (typeof PR_QUEUE_FACETS)[number];
 

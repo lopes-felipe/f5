@@ -15,7 +15,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import { setPrHubAccount } from "../../lib/prHubAccount";
+import {
+  getPrHubSelectedAccountId,
+  setPrHubAccount,
+  setPrHubSelectedAccountId,
+} from "../../lib/prHubAccount";
 import { PR_QUEUE_COLLAPSE_STORAGE_KEY } from "./prQueueModel";
 import type { PrQueueSearch } from "./prQueueSearch";
 import { PrQueueView } from "./PrQueueView";
@@ -140,15 +144,25 @@ const server = {
   /** Holds search requests open until released, to observe the in-between state. */
   gate: null as Promise<void> | null,
   failSection: null as PrHubSection | null,
+  /** Search requests fail. */
+  failSearch: false,
   /** The account has never finished a sync. */
   firstSync: false,
+  /** A sync has finished, but searches are still queued behind the request budget. */
+  backlog: false,
+  /** What the second forge account tracks. */
+  otherAccount: [] as TrackedPullRequest[],
 };
+
+const OTHER_ACCOUNT = "acc-2";
+const tracked = () =>
+  getPrHubSelectedAccountId() === OTHER_ACCOUNT ? server.otherAccount : server.prs;
 
 const isActive = (pr: TrackedPullRequest) =>
   pr.state === "open" && pr.ignoredAt === null && pr.snoozedUntil === null;
 
-function overview(): PrHubOverview {
-  const active = server.prs.filter(isActive);
+function overview(accountId?: string): PrHubOverview {
+  const active = (accountId === OTHER_ACCOUNT ? server.otherAccount : server.prs).filter(isActive);
   const count = (section: PrHubSection) => active.filter((pr) => pr.section === section).length;
   return {
     status: server.status,
@@ -169,11 +183,11 @@ function overview(): PrHubOverview {
       stale: count("stale"),
     },
     sync: {
-      state: server.firstSync ? "syncing" : "idle",
+      state: server.firstSync || server.backlog ? "syncing" : "idle",
       lastSyncedAt: server.firstSync ? null : new Date(Date.now() - 120_000).toISOString(),
       nextSyncAt: null,
       resumeAt: null,
-      pending: { searches: 0, hydrations: 0 },
+      pending: { searches: server.backlog ? 2 : 0, hydrations: 0 },
       message: null,
     },
     facets: { repositories: ["octo/repo"], authors: ["me", "alice"], labels: [] },
@@ -184,7 +198,8 @@ function overview(): PrHubOverview {
 async function list(input: PrHubListInput & { cursor?: string }) {
   if (input.query && server.gate) await server.gate;
   if (input.section && input.section === server.failSection) throw new Error("boom");
-  const rows = server.prs.filter((pr) => {
+  if (input.query && server.failSearch) throw new Error("boom");
+  const rows = tracked().filter((pr) => {
     if (input.key) return pr.key === input.key;
     const visible =
       input.visibility === "ignored"
@@ -222,6 +237,7 @@ const history: PrQueueSearch[] = [];
 const openThread = vi.fn();
 const openSettings = vi.fn();
 let active: Awaited<ReturnType<typeof render>> | undefined;
+let queryClient: QueryClient;
 
 function Harness({ initial }: { initial: PrQueueSearch }) {
   const [search, setSearch] = useState(initial);
@@ -240,7 +256,7 @@ function Harness({ initial }: { initial: PrQueueSearch }) {
 
 async function renderQueue(initial: PrQueueSearch = {}, width = 1400) {
   await page.viewport(width, 900);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   active = await render(
     <QueryClientProvider client={queryClient}>
       <div style={{ height: "100vh" }}>
@@ -259,15 +275,21 @@ beforeEach(() => {
   vi.clearAllMocks();
   history.length = 0;
   window.localStorage.removeItem(PR_QUEUE_COLLAPSE_STORAGE_KEY);
+  setPrHubSelectedAccountId(undefined);
   setPrHubAccount({ host: "github.com", viewerId: 1, generation: "gen-1" });
   Object.assign(server, {
     prs: QUEUE,
     status: "ok",
     gate: null,
     failSection: null,
+    failSearch: false,
     firstSync: false,
+    backlog: false,
+    otherAccount: [],
   });
-  api.getOverview.mockImplementation(async () => overview());
+  api.getOverview.mockImplementation(async (input?: { accountId?: string }) =>
+    overview(input?.accountId),
+  );
   api.listPullRequests.mockImplementation(list);
   api.getDetail.mockImplementation(async () => ({
     stale: false,
@@ -496,7 +518,17 @@ it("says so when nothing needs attention or no account is connected", async () =
   await expect.element(page.getByText("All caught up")).not.toBeInTheDocument();
   await active?.unmount();
 
+  // Nor is one whose searches are still waiting for the request budget.
   server.firstSync = false;
+  server.backlog = true;
+  await renderQueue();
+  await expect
+    .element(page.getByRole("status", { name: "Still reading your pull requests" }))
+    .toBeVisible();
+  await expect.element(page.getByText("All caught up")).not.toBeInTheDocument();
+  await active?.unmount();
+
+  server.backlog = false;
   server.status = "auth_required";
   await renderQueue();
   await expect.element(page.getByText("Connect GitHub")).toBeVisible();
@@ -518,4 +550,87 @@ it("switches between status lists without section headers", async () => {
     .element(page.getByRole("button", { name: /Review requested/ }))
     .not.toBeInTheDocument();
   expect(lastSearch()).toEqual({ status: "ignored" });
+});
+
+it("shows the error and Retry when a search fails, not rows that do not match it", async () => {
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  server.failSearch = true;
+  await page.getByRole("combobox", { name: "Search pull requests" }).fill("bravo");
+  await expect.element(page.getByText("Could not load pull requests")).toBeVisible();
+  await expect.element(row("Alpha review")).not.toBeInTheDocument();
+  await expect.element(row("Charlie fix")).not.toBeInTheDocument();
+
+  server.failSearch = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect.element(row("Bravo review")).toBeVisible();
+  await expect.element(row("Alpha review")).not.toBeInTheDocument();
+});
+
+it("opens the current copy of a pull request that changed while a filter is on", async () => {
+  await renderQueue();
+  // The section requests now hold their own copy of every row.
+  await expect.element(row("Alpha review")).toBeVisible();
+  await page.getByRole("combobox", { name: "Search pull requests" }).fill("alpha");
+  await expect.element(row("Bravo review")).not.toBeInTheDocument();
+
+  server.prs = QUEUE.map((pr) =>
+    pr.number === 1 ? { ...pr, title: "Alpha rework", headRefOid: "head-2" } : pr,
+  );
+  await queryClient.invalidateQueries({ queryKey: ["prHub"] });
+  await row("Alpha rework").click();
+  await expect.element(peek(1)).toBeVisible();
+  await expect.element(peek(1)).toHaveTextContent("Alpha rework");
+});
+
+it("leaves single keys alone while focus is outside the queue", async () => {
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  const elsewhere = document.createElement("button");
+  elsewhere.textContent = "Elsewhere";
+  document.body.append(elsewhere);
+  try {
+    elsewhere.focus();
+    await userEvent.keyboard("j");
+    await userEvent.keyboard("e");
+    await expect.element(row("Alpha review")).toHaveAttribute("aria-selected", "false");
+  } finally {
+    elsewhere.remove();
+  }
+
+  // With focus back on the page the same key moves the cursor, and the list names that
+  // row as its active descendant.
+  await userEvent.keyboard("j");
+  await expect.element(row("Alpha review")).toHaveAttribute("aria-selected", "true");
+  const listbox = page.getByRole("listbox", { name: "Pull requests" });
+  await expect
+    .element(listbox)
+    .toHaveAttribute("aria-activedescendant", row("Alpha review").element().id);
+  expect(row("Alpha review").element().id).not.toBe("");
+});
+
+it("reads the other account as soon as it is chosen", async () => {
+  api.listAccounts.mockResolvedValue([
+    { id: OTHER_ACCOUNT, provider: "github", host: "ghe.example", login: "work" },
+  ]);
+  server.otherAccount = [makePr(21, "Zulu work review", "review")];
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+
+  const before = api.getOverview.mock.calls.length;
+  await page.getByRole("combobox", { name: "Forge account" }).click();
+  await page.getByRole("option", { name: /work/ }).click();
+  await expect.element(row("Zulu work review")).toBeVisible();
+  await expect.element(row("Alpha review")).not.toBeInTheDocument();
+  // No read after the switch went out for the account that was left.
+  const after = api.getOverview.mock.calls.slice(before);
+  expect(after.length).toBeGreaterThan(0);
+  expect(after.every(([input]) => input?.accountId === OTHER_ACCOUNT)).toBe(true);
+
+  // Back on the first account its own queue returns, not the other one's cached under it.
+  await page.getByRole("combobox", { name: "Forge account" }).click();
+  await page.getByRole("option", { name: "Profile GitHub account" }).click();
+  await expect.element(row("Alpha review")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: /Review requested\s*2/ })).toBeVisible();
+  await expect.element(row("Zulu work review")).not.toBeInTheDocument();
 });

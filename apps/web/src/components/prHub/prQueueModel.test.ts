@@ -264,6 +264,18 @@ describe("queue keyboard", () => {
     expect(prQueueCommand(key("r", { metaKey: true }), "queue")).toBeNull();
     expect(prQueueCommand(key("a", { ctrlKey: true }), "queue")).toBeNull();
     expect(prQueueCommand(key("j", { shiftKey: true }), "queue")).toBeNull();
+    expect(prQueueCommand(key("m", { altKey: true }), "queue")).toBeNull();
+    expect(prQueueCommand(key("/", { metaKey: true }), "queue")).toBeNull();
+    expect(prQueueCommand(key("/", { ctrlKey: true }), "queue")).toBeNull();
+  });
+
+  it("accepts the keys that some layouts only reach with a modifier", () => {
+    // German: "/" is Shift+7, "[" and "]" are Option+5 and Option+6.
+    expect(prQueueCommand(key("/", { shiftKey: true }), "queue")).toBe("search");
+    expect(prQueueCommand(key("[", { altKey: true }), "page")).toBe("pagePrevious");
+    expect(prQueueCommand(key("]", { altKey: true }), "page")).toBe("pageNext");
+    // AltGr on Windows reports Ctrl and Alt together.
+    expect(prQueueCommand(key("]", { ctrlKey: true, altKey: true }), "page")).toBe("pageNext");
   });
 
   it("moves the cursor within the visible rows", () => {

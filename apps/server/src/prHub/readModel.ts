@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Effect } from "effect";
 import { prSearchPredicate } from "./prSearch.ts";
 import {
   PrHubListFilter,
@@ -15,6 +16,28 @@ import {
   PR_HUB_SECTIONS,
   prHubSectionOf,
 } from "@t3tools/shared/prHub";
+
+/**
+ * Adds the linked F5 threads to a list page. Links decorate rows: when they cannot be read
+ * the page goes out without them and the failure is logged, because a row without its
+ * links offers to start an agent although one may already be running.
+ */
+export function withPrHubThreadLinks<E, R>(
+  page: PrHubListPage,
+  read: (
+    keys: ReadonlyArray<string>,
+  ) => Effect.Effect<NonNullable<PrHubListPage["threadLinks"]>, E, R>,
+): Effect.Effect<PrHubListPage, never, R> {
+  if (page.pullRequests.length === 0) return Effect.succeed(page);
+  return read(page.pullRequests.map((pr) => pr.key)).pipe(
+    Effect.map((threadLinks) => ({ ...page, threadLinks })),
+    Effect.catch((error) =>
+      Effect.logWarning("PR Hub linked threads could not be read; the list is sent without them", {
+        error: error instanceof Error ? error.message : String(error),
+      }).pipe(Effect.as(page)),
+    ),
+  );
+}
 
 export function excludePrHubRepositories(
   snapshot: PrHubSnapshot,

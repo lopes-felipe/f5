@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
@@ -14,6 +14,7 @@ import {
   mergePrHubChange,
 } from "../../lib/prHubInvalidation";
 import { onPrHubChanged, onServerConfigUpdated, onServerWelcome } from "../../wsNativeApi";
+import { prQueueSearchOpening } from "./prQueueSearch";
 
 export function PrAttentionNotificationControllerContent({
   navigateToPrHub,
@@ -121,12 +122,13 @@ export function PrAttentionNotificationControllerContent({
 
 export default function PrAttentionNotificationController() {
   const navigate = useNavigate();
+  const router = useRouter();
   return (
     <PrAttentionNotificationControllerContent
       navigateToPrHub={(focusedPrKey) => {
         void navigate({
           to: "/pull-requests",
-          search: focusedPrKey ? { pr: focusedPrKey } : {},
+          search: prQueueSearchOpening(focusedPrKey, router.state.location),
         });
       }}
     />

@@ -141,7 +141,16 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 162, name: "UsageFactsThreadIndex" },
       { migration_id: 163, name: "DropUnreadReceiptIndexes" },
       { migration_id: 164, name: "UpstreamPortReviewRecovery" },
+      { migration_id: 165, name: "ThreadPullRequestLookupIndex" },
     ]);
+    // The queue reads linked threads by pull request; the lookup uses its own index.
+    const linkLookup = yield* sql<{
+      detail: string;
+    }>`EXPLAIN QUERY PLAN SELECT thread_id FROM projection_thread_pull_requests
+      WHERE provider = 'github' AND host = 'github.com' AND repository = 'octo/repo' AND number = 1`;
+    expect(linkLookup.map((step) => step.detail).join(" ")).toContain(
+      "projection_thread_pull_requests_pull_request_idx",
+    );
     // Receipts are only ever found by command id, which the primary key serves.
     const receiptIndexes = yield* sql<{
       name: string;
