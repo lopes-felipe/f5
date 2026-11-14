@@ -58,7 +58,16 @@ const ProjectMonogramIcon = Schema.Struct({
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(6)),
   color: ProjectIconColor,
 });
-export const ProjectIcon = Schema.Union([ProjectLucideIcon, ProjectEmojiIcon, ProjectMonogramIcon]);
+const ProjectImageIcon = Schema.Struct({
+  type: Schema.Literal("image"),
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+});
+export const ProjectIcon = Schema.Union([
+  ProjectLucideIcon,
+  ProjectEmojiIcon,
+  ProjectMonogramIcon,
+  ProjectImageIcon,
+]);
 export type ProjectIcon = typeof ProjectIcon.Type;
 
 export const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;

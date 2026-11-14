@@ -46,6 +46,7 @@ describe("desktop release profiles", () => {
     });
   });
   it("keeps the complete four-job matrix and three feeds for all", () => {
+    expect(desktopReleaseAssets("all", "1.0.0", "beta").installers).toContain("F5-1.0.0-amd64.deb");
     expect(
       desktopBuildMatrix("all").include.map((entry) => `${entry.platform}-${entry.arch}`),
     ).toEqual(["mac-arm64", "mac-x64", "win-x64", "linux-x64"]);

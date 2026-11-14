@@ -17,12 +17,12 @@ F5 still opens if Git or a provider is missing, and shows what needs fixing.
 
 ## Availability
 
-| Platform                     | Status                                    |
-| ---------------------------- | ----------------------------------------- |
-| macOS (Apple Silicon, Intel) | Signed and notarized, with in-app updates |
-| Windows x64                  | Unsigned installer, with in-app updates   |
-| Linux x64                    | AppImage, with in-app updates             |
-| `f5` CLI                     | All five targets in every release         |
+| Platform                     | Status                                           |
+| ---------------------------- | ------------------------------------------------ |
+| macOS (Apple Silicon, Intel) | Signed and notarized, with in-app updates        |
+| Windows x64                  | Unsigned installer, with in-app updates          |
+| Linux x64                    | AppImage and Debian package, with in-app updates |
+| `f5` CLI                     | All five targets in every release                |
 
 Desktop builds start with the `v0.1.1` betas, published as prereleases; `v0.1.1` is the first
 stable release. Until it is published, download a `v0.1.1-beta.N` release from the
@@ -50,6 +50,17 @@ the usual first-launch confirmation. The older `v0.0.11-computer-use-preview.1` 
 "Upgrade from F5 (Alpha)" below.
 
 ## Linux
+
+Linux release builds produce both an AppImage and a Debian/Ubuntu package. To install the
+Debian package from a release that includes it, run:
+
+```sh
+sudo apt install ./F5-*-amd64.deb
+```
+
+The installed package supports in-app updates through electron-updater and dpkg. Your desktop
+must provide a privilege prompt to install each update. If that prompt is unavailable, download
+the next package and install it with apt again.
 
 Download `F5-<version>-x86_64.AppImage`, make it executable (`chmod +x`) and run it from a folder
 you can write to, so updates can replace it. Some distributions need FUSE.

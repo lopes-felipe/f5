@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   transcriptKey,
@@ -47,7 +47,100 @@ describe("rightPanelStore", () => {
     expect(useAgentTranscriptStore.getState().entries[key]).toBeUndefined();
   });
   beforeEach(() => {
-    useRightPanelStore.setState({ byThreadId: {}, closedHistory: [], tabMenuThreadId: null });
+    useRightPanelStore.setState({
+      byThreadId: {},
+      closedHistory: [],
+      tabMenuThreadId: null,
+      userActionRevisionByThreadId: {},
+      proactiveDiffTurnIdByThreadId: {},
+      proactiveTurnBaselineByThreadId: {},
+      proactivePullRequestKeyByThreadId: {},
+      pendingProactiveDiffNavigationByThreadId: {},
+    });
+  });
+
+  it("keeps a manual choice ahead of an automatic offer, including closing an empty panel", () => {
+    const panels = useRightPanelStore.getState();
+    panels.close(THREAD_A);
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") }, 0),
+    ).toBe(false);
+    expect(useRightPanelStore.getState().byThreadId[THREAD_A]).toBeUndefined();
+    panels.open(THREAD_A, "files");
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-b") }, 1),
+    ).toBe(false);
+    expect(useRightPanelStore.getState().byThreadId[THREAD_A]?.activeSurfaceId).toBe("files");
+  });
+
+  it("does not reopen an offered diff after dismissal and allows a new turn", () => {
+    const panels = useRightPanelStore.getState();
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") }, 0),
+    ).toBe(true);
+    expect(useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]).toBeUndefined();
+    panels.closeAllSurfaces(THREAD_A);
+    const revision = useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]!;
+    expect(
+      panels.openProactive(
+        THREAD_A,
+        { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") },
+        revision,
+      ),
+    ).toBe(false);
+    expect(
+      panels.openProactive(
+        THREAD_A,
+        { kind: "diff", turnId: TurnId.makeUnsafe("turn-b") },
+        revision,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not count automatic resource updates as manual choices", () => {
+    const panels = useRightPanelStore.getState();
+    panels.addSurface(THREAD_A, "preview");
+    expect(useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]).toBeUndefined();
+    expect(
+      panels.openProactive(THREAD_A, { kind: "diff", turnId: TurnId.makeUnsafe("turn-a") }, 0),
+    ).toBe(true);
+    panels.removeThread(THREAD_A);
+    expect(useRightPanelStore.getState().proactiveDiffTurnIdByThreadId[THREAD_A]).toBeUndefined();
+  });
+
+  it("retains each active turn's original revision until another turn starts", () => {
+    const panels = useRightPanelStore.getState();
+    const firstTurn = TurnId.makeUnsafe("first");
+    expect(panels.captureProactiveTurnRevision(THREAD_A, firstTurn)).toBe(0);
+    panels.open(THREAD_A, "files");
+    expect(panels.captureProactiveTurnRevision(THREAD_A, firstTurn)).toBe(0);
+    expect(panels.captureProactiveTurnRevision(THREAD_A, TurnId.makeUnsafe("next"))).toBe(1);
+    panels.removeThread(THREAD_A);
+    expect(useRightPanelStore.getState().proactiveTurnBaselineByThreadId[THREAD_A]).toBeUndefined();
+  });
+  it("remembers dismissed PR offers and isolates automatic navigation", () => {
+    const panels = useRightPanelStore.getState();
+    const pr = {
+      id: "pr:test" as const,
+      kind: "pull-request" as const,
+      key: "github:github.com/a/b#1" as import("@t3tools/contracts").PullRequestKey,
+      url: "https://github.com/a/b/pull/1",
+    };
+    expect(panels.openProactive(THREAD_A, pr, 0)).toBe(true);
+    panels.close(THREAD_A);
+    const revision = useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_A]!;
+    expect(panels.openProactive(THREAD_A, pr, revision)).toBe(false);
+    expect(
+      panels.openProactive(THREAD_B, { kind: "diff", turnId: TurnId.makeUnsafe("navigation") }, 0),
+    ).toBe(true);
+    expect(useRightPanelStore.getState().pendingProactiveDiffNavigationByThreadId[THREAD_B]).toBe(
+      true,
+    );
+    panels.finishProactiveDiffNavigation(THREAD_B);
+    expect(
+      useRightPanelStore.getState().pendingProactiveDiffNavigationByThreadId[THREAD_B],
+    ).toBeUndefined();
+    expect(useRightPanelStore.getState().userActionRevisionByThreadId[THREAD_B]).toBeUndefined();
   });
 
   it("adds agent surfaces without opening the panel or stealing the active tab", () => {

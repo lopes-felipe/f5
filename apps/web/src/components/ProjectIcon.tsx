@@ -66,7 +66,7 @@ export function ProjectIcon({ projectId, kind, name, icon, className }: ProjectI
   const src =
     projectId === undefined
       ? undefined
-      : `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
+      : `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}${icon?.type === "image" ? `&iconPath=${encodeURIComponent(icon.path)}` : ""}`;
 
   useEffect(() => setImageFailed(false), [src]);
 

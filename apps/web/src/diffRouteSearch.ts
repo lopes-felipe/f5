@@ -1,5 +1,19 @@
 import { OrchestrationFileChangeId, TurnId } from "@t3tools/contracts";
 
+export function buildTurnDiffSearch<T extends Record<string, unknown>>(
+  previous: T,
+  turnId: TurnId,
+  filePath?: string,
+  automatic = false,
+) {
+  const rest = clearTurnDiffSearchParams(
+    automatic ? clearFileViewSearchParams(previous) : previous,
+  );
+  return filePath
+    ? { ...rest, diff: "1" as const, diffTurnId: turnId, diffFilePath: filePath }
+    : { ...rest, diff: "1" as const, diffTurnId: turnId };
+}
+
 export interface DiffRouteSearch {
   timelineEntryId?: string | undefined;
   timelineEntryKind?: "message" | "activity" | undefined;

@@ -153,7 +153,17 @@ const make = Effect.gen(function* () {
         );
       const result = yield* redeem(
         input,
-        (key) => instance.consumeResetCredit!(key),
+        // The coordinator passes the grant the pending key was first sent for.
+        (key, grantId) =>
+          instance.consumeResetCredit!(key, grantId).pipe(
+            // The request stays pending; say why it failed instead of a generic error.
+            Effect.mapError(
+              (error) =>
+                new UsageQueryError({
+                  message: `${error.detail} The claim stays pending; retry to check it.`,
+                }),
+            ),
+          ),
         instance.resetCreditIdentity,
       );
       // The redemption route owns the awaited refresh and uses its freshness

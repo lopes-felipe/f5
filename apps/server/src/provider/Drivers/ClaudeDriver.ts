@@ -27,8 +27,15 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
-import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Option, Path, Ref, Schema, Stream } from "effect";
 import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
+import {
+  makeClaudeConsumeResetCredit,
+  makeClaudeLimitResetAccess,
+} from "./ClaudeLimitResetAccess.ts";
+
+/** How long a usage refresh waits for limit resets before using the last read. */
+const LIMIT_RESET_STATUS_WAIT = Duration.seconds(4);
 import {
   emptyAccountSection,
   makeAccountUsageCapability,
@@ -238,6 +245,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const probes = yield* makeClaudeInstanceProbes(effectiveConfig, processEnv, {
         cwd: serverConfig.stateDir,
       });
+      // Running a usage probe makes the CLI refresh its stored OAuth token, which
+      // the limit-reset client only ever reads.
+      const limitResets = yield* makeClaudeLimitResetAccess(effectiveConfig, processEnv, {
+        cwd: serverConfig.stateDir,
+        refreshToken: () => Effect.runPromise(probes.usage.pipe(Effect.ignore)),
+      });
       const accountUsage = yield* makeAccountUsageCapability(
         {
           key: `claude:${instanceId}`,
@@ -249,6 +262,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           sections: [emptyAccountSection("claude-usage")],
         },
         probes.usage.pipe(
+          // Best effort: a failed limit-reset read only hides the block. A slow one
+          // keeps running for the next refresh while this one uses the last read.
+          Effect.flatMap((usage) =>
+            usage.limitsAvailable && usage.subscriptionLabel !== null
+              ? Effect.promise(() => limitResets.fetchStatus()).pipe(
+                  Effect.timeoutOption(LIMIT_RESET_STATUS_WAIT),
+                  Effect.map((resets) => ({
+                    ...usage,
+                    limitResets: Option.isSome(resets)
+                      ? resets.value
+                      : limitResets.lastKnownStatus(),
+                  })),
+                )
+              : Effect.succeed({ ...usage, limitResets: null }),
+          ),
           Effect.map((data) => {
             const fetchedAt = new Date().toISOString();
             return [
@@ -281,8 +309,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // Signing out drops cached account probes, so limits return as soon as the user signs back in.
       const withSignOutInvalidation = yield* makeClaudeSignOutInvalidation({
         invalidateProbes: probes.invalidate,
-        invalidateUsage: accountUsage.invalidate,
+        invalidateUsage: accountUsage.invalidate.pipe(
+          Effect.andThen(Effect.sync(() => limitResets.invalidate())),
+        ),
       });
+      const resetCreditIdentity = claudeAccountUsageIdentity(
+        effectiveConfig.binaryPath,
+        claudeProcessEnvironment,
+      );
+      const consumeResetCredit = makeClaudeConsumeResetCredit(limitResets, DRIVER_KIND, instanceId);
       const checkProvider = withSignOutInvalidation(
         checkClaudeProviderStatus(
           effectiveConfig,
@@ -353,6 +388,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
         accountUsage: usageAnalyzer.withAnalysis(accountUsage),
+        resetCreditIdentity,
+        consumeResetCredit,
         analyzeClaudeUsage: usageAnalyzer.analyze,
         invalidateAccountStatus: probes.invalidate,
         updateModelCatalog: (models) => Ref.set(probedModels, models),

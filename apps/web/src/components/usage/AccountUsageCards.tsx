@@ -15,6 +15,7 @@ import {
   type QuotaWindow,
   quotaWindowsFromSection,
 } from "@t3tools/shared/usageLimit";
+import type { ReactNode } from "react";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -25,6 +26,7 @@ import { TightestLimitCallout, tightestQuotaWindow } from "./charts/TightestLimi
 import { codexAccountRangeTokens, codexDailyTokenSeries } from "./codexDailyTokens";
 import { providerLabel } from "./format";
 import { ResetCreditButton } from "./ResetCreditButton";
+import { ClaudeGrantButton, ClaudeLimitResets, claudeCalloutGrant } from "./ClaudeLimitResets";
 import { ClaudeUsageAnalysisPanel } from "./ClaudeUsageAnalysisPanel";
 import { StatTile, UsageSection, UsageSubsection } from "./kit";
 
@@ -267,19 +269,76 @@ function CodexLimits(props: {
   );
 }
 
+/** The monthly spend meter never competes in the callout. */
+function claudeCalloutWindows(windows: ReadonlyArray<QuotaWindow>): Array<QuotaWindow> {
+  return windows.filter((window) => window.windowKey !== CLAUDE_MONTHLY_SPEND_WINDOW_KEY);
+}
+
+type ClaudeUsageSection = Extract<AccountUsageSection, { kind: "claude-usage" }>;
+
+/** Claude plan windows, with limit-reset buttons in the callout or their own block. */
+function ClaudeUsageLimits(props: {
+  readonly account: UsageAccount;
+  readonly section: ClaudeUsageSection;
+  readonly history: QuotaHistoryIndex | undefined;
+}) {
+  const snapshot = props.section.snapshot;
+  if (!snapshot) return null;
+  const windows = quotaWindowsFromSection(props.section);
+  const instanceId = props.account.providerInstanceId;
+  const resets = snapshot.data.limitResets ?? null;
+  const calloutGrant =
+    instanceId && resets
+      ? claudeCalloutGrant(resets, claudeCalloutWindows(windows), Date.now())
+      : null;
+  return (
+    <>
+      {windows.length > 0 ? (
+        <QuotaWindowRows
+          account={props.account}
+          windows={windows}
+          observedAt={snapshot.fetchedAt}
+          history={props.history}
+          {...(instanceId && calloutGrant && resets
+            ? {
+                calloutAction: () => (
+                  <ClaudeGrantButton
+                    instanceId={instanceId}
+                    accountName={props.account.displayName}
+                    grant={calloutGrant}
+                    cooldownUntil={resets.cooldownUntil}
+                  />
+                ),
+              }
+            : {})}
+        />
+      ) : null}
+      {instanceId && resets ? (
+        <ClaudeLimitResets
+          instanceId={instanceId}
+          accountName={props.account.displayName}
+          resets={resets}
+          excludeGrantId={windows.length > 0 ? (calloutGrant?.id ?? null) : null}
+        />
+      ) : null}
+    </>
+  );
+}
+
 /** Claude and generic provider windows: callout, legend, then one row per window. */
 function QuotaWindowRows(props: {
   readonly account: UsageAccount;
   readonly windows: ReadonlyArray<QuotaWindow>;
   readonly observedAt: string;
   readonly history: QuotaHistoryIndex | undefined;
+  /** Rendered inside the callout, e.g. a limit-reset button. */
+  readonly calloutAction?: () => ReactNode;
 }) {
   return (
     <div className="space-y-3">
       <TightestLimitCallout
-        windows={props.windows.filter(
-          (window) => window.windowKey !== CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
-        )}
+        windows={claudeCalloutWindows(props.windows)}
+        {...(props.calloutAction ? { action: props.calloutAction } : {})}
       />
       {hasPaceWindow(props.windows) ? <QuotaMeterLegend /> : null}
       {props.windows.map((window) => (
@@ -472,17 +531,15 @@ function AccountSectionBody(props: {
             <p className="text-xs text-muted-foreground">
               Plan limits aren't reported for this Claude session.
             </p>
-          ) : section.snapshot.data.windows.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              Account usage is temporarily unavailable.
-            </p>
           ) : (
-            <QuotaWindowRows
-              account={account}
-              windows={quotaWindowsFromSection(section)}
-              observedAt={section.snapshot.fetchedAt}
-              history={history}
-            />
+            <>
+              {section.snapshot.data.windows.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Account usage is temporarily unavailable.
+                </p>
+              ) : null}
+              <ClaudeUsageLimits account={account} section={section} history={history} />
+            </>
           )}
           {section.snapshot.data.extraUsage && (
             <div className="space-y-2">

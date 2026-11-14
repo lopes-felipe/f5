@@ -1,8 +1,9 @@
-import { useState, useRef } from "react";
+import { useState, useRef, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ProviderInstanceId } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { invalidateUsageAccounts } from "../../lib/usageReactQuery";
+import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { Button } from "../ui/button";
 import {
   AlertDialog,
@@ -13,38 +14,76 @@ import {
   AlertDialogHeader,
 } from "../ui/alert-dialog";
 
+export function resetCreditStorageKey(instanceId: ProviderInstanceId, grantId?: string): string {
+  return `f5:reset-credit:${instanceId}${grantId ? `:${grantId}` : ""}`;
+}
+
+function readStoredKey(storageKey: string): string | null {
+  try {
+    return localStorage.getItem(storageKey);
+  } catch {
+    return null;
+  }
+}
+
 export function ResetCreditButton(props: {
   instanceId: ProviderInstanceId;
   accountName: string;
-  windowName: string;
   count: number;
+  /** Codex: the windows the credit resets, for the default dialog text. */
+  windowName?: string;
+  /** Claude: the limit-reset grant this button claims. */
+  grantId?: string;
+  /** What one use is called on the button ("Full reset"); defaults to "reset credit". */
+  label?: string;
+  title?: string;
+  description?: ReactNode;
+  /** Why the reset can't be used now. Disables the button unless a claim is pending. */
+  disabledReason?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const storageKey = `f5:reset-credit:${props.instanceId}`;
-  const key = useRef<string | null>(localStorage.getItem(storageKey));
+  const storageKey = resetCreditStorageKey(props.instanceId, props.grantId);
+  const key = useRef<string | null>(readStoredKey(storageKey));
   const client = useQueryClient();
   const redeem = async () => {
     if (pending) return;
     key.current ??= crypto.randomUUID();
-    localStorage.setItem(storageKey, key.current);
+    try {
+      localStorage.setItem(storageKey, key.current);
+    } catch {
+      // The server still deduplicates the in-flight key.
+    }
     setPending(true);
     setError(null);
     try {
       const result = await ensureNativeApi().usage.consumeResetCredit({
         providerInstanceId: props.instanceId,
         idempotencyKey: key.current,
+        ...(props.grantId ? { grantId: props.grantId } : {}),
       });
-      localStorage.removeItem(storageKey);
+      try {
+        localStorage.removeItem(storageKey);
+      } catch {
+        // Nothing to clear.
+      }
       key.current = null;
-      if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed")
-        setError(
-          result.outcome === "noCredit"
+      if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed") {
+        const message =
+          result.message ??
+          (result.outcome === "noCredit"
             ? "No reset credits remain."
-            : "This account has no exhausted window to reset.",
+            : result.outcome === "unavailable"
+              ? "This reset can't be used right now."
+              : "This account has no exhausted window to reset.");
+        // The server sends the time; format it in the viewer's locale and zone.
+        setError(
+          result.retryAt
+            ? `${message} Try again after ${formatAbsoluteTimeLabel(result.retryAt)}.`
+            : message,
         );
-      else setOpen(false);
+      } else setOpen(false);
       await invalidateUsageAccounts(client);
     } catch (error) {
       setError(
@@ -56,11 +95,18 @@ export function ResetCreditButton(props: {
       setPending(false);
     }
   };
+  const checking = props.count <= 0 || key.current !== null;
+  const disabledReason = checking ? null : (props.disabledReason ?? null);
   return (
     <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-        {props.count <= 0 || key.current ? "Check reset credit" : "Use reset credit"} ({props.count}
-        )
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={disabledReason !== null}
+        {...(disabledReason ? { title: disabledReason } : {})}
+        onClick={() => setOpen(true)}
+      >
+        {checking ? "Check" : "Use"} {props.label ?? "reset credit"} ({props.count})
       </Button>
       <AlertDialog
         open={open}
@@ -70,9 +116,10 @@ export function ResetCreditButton(props: {
       >
         <AlertDialogPopup>
           <AlertDialogHeader>
-            <AlertDialogTitle>Use a reset credit?</AlertDialogTitle>
+            <AlertDialogTitle>{props.title ?? "Use a reset credit?"}</AlertDialogTitle>
             <AlertDialogDescription>
-              This redeems one credit for {props.accountName} to reset {props.windowName}.
+              {props.description ??
+                `This redeems one credit for ${props.accountName} to reset ${props.windowName ?? "its limits"}.`}
             </AlertDialogDescription>
             {error && (
               <p role="alert" className="text-sm text-destructive-foreground">
