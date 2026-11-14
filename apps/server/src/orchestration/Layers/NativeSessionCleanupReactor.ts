@@ -25,6 +25,8 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import { Cause, Effect, Layer, Option, Scope, Stream } from "effect";
 
 import { readClaudeResumeState } from "../../provider/claudeResumeState.ts";
+import { deletePdfDocumentBudgets } from "../../provider/pdfDocuments.ts";
+import { ServerConfig } from "../../config";
 import {
   ProviderHandoffStateRepository,
   type ProviderHandoffState,
@@ -189,12 +191,26 @@ export const makeNativeSessionCleanupReactor = Effect.gen(function* () {
       ),
     );
 
+  const config = yield* Effect.serviceOption(ServerConfig);
   const start: NativeSessionCleanupReactorShape["start"] = Effect.gen(function* () {
     if (sources.stopped) return;
     yield* Effect.addFinalizer(() => sources.stop);
     yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
       event.type === "thread.deleted"
         ? captureJobs(event.payload.threadId).pipe(
+            Effect.tap(() =>
+              Option.isSome(config)
+                ? Effect.tryPromise(() =>
+                    deletePdfDocumentBudgets(config.value.stateDir, event.payload.threadId),
+                  ).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("document budget cleanup failed", {
+                        cause: Cause.pretty(cause),
+                      }),
+                    ),
+                  )
+                : Effect.void,
+            ),
             Effect.flatMap((jobs) => Effect.forEach(jobs, worker.enqueue, { discard: true })),
           )
         : Effect.void,

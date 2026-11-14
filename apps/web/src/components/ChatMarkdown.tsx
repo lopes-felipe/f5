@@ -3,6 +3,8 @@ import { useOpenLink } from "../hooks/useOpenLink";
 import { useExternalLinkContextMenu } from "../hooks/useExternalLinkContextMenu";
 import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
+import { ChatAssetAudio } from "./ChatAssetAudio";
+import { isWorkspaceAudioPreviewPath } from "@t3tools/shared/mediaPreview";
 import { createContext, useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
@@ -869,12 +871,19 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           />
         );
         // `[validates the input](src/a.ts:12)` keeps its prose next to the chip.
-        return isMarkdownFileLinkLabel(nodeToPlainText(children), meta) ? (
+        const labeledChip = isMarkdownFileLinkLabel(nodeToPlainText(children), meta) ? (
           chip
         ) : (
           <span>
             {children} {chip}
           </span>
+        );
+        return isWorkspaceAudioPreviewPath(href) ? (
+          <ChatAssetAudio src={href} cwd={cwd}>
+            {labeledChip}
+          </ChatAssetAudio>
+        ) : (
+          labeledChip
         );
       },
       pre({ node, children, ...props }) {

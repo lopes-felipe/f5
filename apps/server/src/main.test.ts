@@ -19,6 +19,7 @@ afterEach(() => {
 });
 import { NetService } from "@t3tools/shared/Net";
 import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
+import { startDesktopAppControl } from "@t3tools/shared/desktopAppControl";
 
 import { CliConfig, recordStartupHeartbeat, t3Cli, type CliConfigShape } from "./main";
 import { ServerConfig, type ServerConfigShape } from "./config";
@@ -105,6 +106,26 @@ beforeEach(() => {
 });
 
 it.layer(testLayer)("server CLI command", (it) => {
+  it.effect("opens a project through app without starting the server", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-cli-app-"));
+      const opened: string[] = [];
+      const close = yield* Effect.promise(() =>
+        startDesktopAppControl(root, async (request) => {
+          opened.push(request.path);
+        }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await close();
+          FS.rmSync(root, { recursive: true, force: true });
+        }),
+      );
+      yield* runCli(["--state-dir", root, "app", root]);
+      assert.deepEqual(opened, [FS.realpathSync.native(root)]);
+      assert.equal(start.mock.calls.length, 0);
+    }),
+  );
   it.effect("parses all CLI flags and wires scoped start/stop", () =>
     Effect.gen(function* () {
       yield* runCli([

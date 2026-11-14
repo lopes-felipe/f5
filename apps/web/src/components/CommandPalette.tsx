@@ -1131,6 +1131,22 @@ function OpenCommandPaletteDialog(props: {
       });
     },
   });
+  actionItems.push({
+    kind: "action",
+    value: "action:project-settings",
+    searchTerms: ["project", "settings", "scripts", "model", "rename", "checkout"],
+    title: "Project settings",
+    icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({
+        to: "/settings",
+        search: {
+          category: "projects",
+          ...(currentProjectId ? { project: currentProjectId } : {}),
+        },
+      });
+    },
+  });
 
   for (const [value, title] of [
     ["switch-profile", "Switch profile..."],

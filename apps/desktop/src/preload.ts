@@ -185,6 +185,17 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
   },
   takePromptLinks: () => ipcRenderer.invoke("desktop:take-prompt-links"),
+  resolveActivationPaths: (values) =>
+    ipcRenderer.invoke("desktop:resolve-activation-paths", values),
+  takeAppActivations: () => ipcRenderer.invoke("desktop:take-app-activations"),
+  isAppActivationPending: (id) => ipcRenderer.invoke("desktop:is-app-activation-pending", id),
+  completeAppActivation: (id, error) =>
+    ipcRenderer.invoke("desktop:complete-app-activation", id, error),
+  onAppActivationsAvailable: (listener) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("desktop:app-activations-available", wrapped);
+    return () => ipcRenderer.removeListener("desktop:app-activations-available", wrapped);
+  },
   onPromptLinksAvailable: (listener) => {
     const wrapped = () => listener();
     ipcRenderer.on("desktop:prompt-links-available", wrapped);

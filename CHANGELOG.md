@@ -6,6 +6,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Open a project in the running desktop app with `f5 app [path]` (or `t3 app [path]`). F5 adds or reuses the project, focuses its window, and starts a new thread.
+- Preview Word, Excel, PowerPoint, OpenDocument, EPUB, RTF and notebooks in the file viewer, along with fonts, Mermaid diagrams, archives and SQLite databases. HEIC and TIFF images are decoded locally.
+- Audio files shared by an agent play inline. Shared files open in the viewer, with a download option for formats without a preview.
+- Claude and Antigravity receive supported PDF attachments as native documents, including scanned pages, within size and page budgets that survive restarts.
 - Usage includes local Muse Code history, including child sessions and automated reviews. Unknown models remain visible as unpriced and can use custom prices.
 - Provider warning and error banners in a thread now have a Refresh button that rechecks the provider and its models.
 - **Settings > General** has a **Server health** card. It lists the requests that took a second or longer and the database statements slower than 100 ms since the server started, with how often each happened and its total and worst time, next to the server's memory use and event loop delay.
@@ -15,6 +19,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Project settings include renaming, reviewed imports of actions from f5.json or t3.json, and a command palette shortcut. Imported actions start with automatic execution off. Settings, Usage and Pull Requests navigation live together in the sidebar footer, with a Back action on those pages.
+- Large text, CSV and TSV previews load in a worker and render only visible rows to keep the viewer responsive.
+- Thread action menus show icons and sections, with path, branch and thread ID under Copy. Nested menus work with the keyboard in the browser and desktop app.
 - Usage labels external session history and legacy unattributed costs as **Usage without a project**. Muse history refreshes incrementally, retains previous data on failure, reconciles cached calls against newly completed turns, and includes priced native calls in cost comparisons.
 - Database snapshot history is thinned when the disk runs low: 6 hourly and 3 daily copies with under 10 GB free, and only the newest 2 with under 2 GB free. Thinning starts only when two snapshots in a row find the disk that low, and the server log records what was removed. With more space the history stays at 24 hourly and 7 daily copies.
 - New events and commands get time-ordered IDs, so the database rewrites fewer index pages per hour and each snapshot holds less space.
@@ -24,6 +31,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
+- Desktop project activation uses a stable socket address and async canonical path matching. File previews retain access to notebook outputs beyond the live-frame limit and display non-UTF-8 text with a decoding notice.
 - The Upstream port queue no longer counts a topic as needing attention after a later attempt ported it, or after you decided it yourself. Running and queued jobs always load first, so they are no longer hidden behind hundreds of finished entries.
 - The Usage page counts Pi's cache reads and writes in its token totals and its uncached input. Pi reports cached tokens apart from input, as Claude does, but they were treated as part of input, so totals left them out and uncached input read too low.
 - Storage settings count automatic database snapshots at the space they actually hold. Snapshots are copy-on-write clones that share unchanged data with the live database, but each one was counted at the full database size, so nine copies of a 6 GB database showed as 57 GB while holding about 2.5 GB. Recovery backups, Total used and Reclaimable now use an estimate of the data that newer copies do not share, and each snapshot lists both sizes. The amount reported after a reclaim is measured against the snapshots that remain, so removing one from the middle of the history no longer claims space an older copy still holds.

@@ -68,3 +68,4 @@ export * from "./upstreamPorts";
 export * from "./threadSettlement";
 
 export * from "./mcpApps";
+export * from "./desktopAppActivation";

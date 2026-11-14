@@ -537,6 +537,8 @@ export interface ContextMenuItem<T extends string = string> {
   destructive?: boolean;
   disabled?: boolean;
   separatorBefore?: boolean;
+  icon?: string;
+  children?: readonly ContextMenuItem<T>[];
 }
 
 export type DesktopUpdateChannel = "stable" | "beta";
@@ -814,6 +816,11 @@ export interface DesktopNotificationsBridge {
 }
 
 export interface DesktopBridge {
+  takeAppActivations?: () => Promise<
+    readonly import("./desktopAppActivation").DesktopAppActivationRequest[]
+  >;
+  onAppActivationsAvailable?: (listener: () => void) => () => void;
+  completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
   readonly notifications?: DesktopNotificationsBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
@@ -846,6 +853,8 @@ export interface DesktopBridge {
   revealWindow?: () => Promise<void>;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
+  resolveActivationPaths?: (paths: readonly string[]) => Promise<(string | null)[]>;
+  isAppActivationPending?: (id: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

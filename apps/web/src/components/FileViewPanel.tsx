@@ -629,7 +629,9 @@ export default function FileViewPanel({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        {(mediaKind === "html" || /\.(?:md|mdown|markdown)$/iu.test(filePath ?? "")) && (
+        {(mediaKind === "html" ||
+          mediaKind === "table" ||
+          /\.(?:md|mdown|markdown)$/iu.test(filePath ?? "")) && (
           <Button
             size="xs"
             variant="outline"
@@ -735,6 +737,7 @@ export default function FileViewPanel({
         </div>
       ) : !readOnly &&
         (mediaKind ||
+          fileQuery.data?.truncated ||
           (fileQuery.isError &&
             /Binary file cannot be displayed/iu.test(String(fileQuery.error)))) &&
         !showSource &&

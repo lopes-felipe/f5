@@ -59,6 +59,8 @@ export type ThreadActionId =
   | "unarchive"
   | "mark-unread"
   | "copy-path"
+  | "copy"
+  | "copy-branch"
   | "copy-thread-id"
   | "delete";
 
@@ -116,6 +118,8 @@ export interface ThreadActionMenuItem {
   readonly destructive?: boolean;
   readonly disabled?: boolean;
   readonly separatorBefore?: boolean;
+  readonly icon?: string;
+  readonly children?: readonly ThreadActionMenuItem[];
 }
 
 /** Only a server conversation that has already sent a message has settings a task can reuse. */
@@ -129,7 +133,7 @@ export function buildThreadActionMenuItems(input: {
   readonly thread: Pick<
     Thread,
     "archivedAt" | "titleRegeneration" | "scheduledOrigin" | "settledAt"
-  >;
+  > & { readonly branch?: string | null };
   readonly pinned: boolean;
   readonly snoozed: boolean;
   /** Resolved snooze options, soonest first; defaults to the built-in options. */
@@ -143,7 +147,7 @@ export function buildThreadActionMenuItems(input: {
     input.canScheduleInConversation === true &&
     thread.archivedAt === null &&
     !thread.scheduledOrigin;
-  return [
+  const items: ThreadActionMenuItem[] = [
     ...(thread.scheduledOrigin
       ? [
           {
@@ -176,7 +180,11 @@ export function buildThreadActionMenuItems(input: {
       : []),
     ...(thread.archivedAt === null
       ? [
-          { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" } as const,
+          {
+            id: pinned ? "unpin" : "pin",
+            label: pinned ? "Unpin" : "Pin",
+            separatorBefore: true,
+          } as const,
           ...(snoozed
             ? ([{ id: "wake", label: "Wake" }] as const)
             : (input.snoozePresets ?? resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS)).map(
@@ -196,26 +204,59 @@ export function buildThreadActionMenuItems(input: {
           },
         ]
       : []),
+    { id: "mark-unread", label: "Mark unread" },
+    {
+      id: "copy",
+      label: "Copy",
+      separatorBefore: true,
+      children: [
+        { id: "copy-path", label: "Path", icon: "folder" },
+        ...(thread.branch
+          ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
+          : []),
+        { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
+      ],
+    },
     {
       id: thread.archivedAt === null ? "archive" : "unarchive",
       label: thread.archivedAt === null ? "Archive" : "Unarchive",
+      separatorBefore: true,
     },
-    { id: "mark-unread", label: "Mark unread" },
-    { id: "copy-path", label: "Copy path" },
-    { id: "copy-thread-id", label: "Copy thread ID" },
     { id: "delete", label: "Delete", destructive: true },
   ];
+  return items.map((item) => {
+    const icon = item.id.startsWith("snooze:") ? "clock" : THREAD_ACTION_ICONS[item.id];
+    return icon ? { ...item, icon } : item;
+  });
 }
+
+const THREAD_ACTION_ICONS: Readonly<Record<string, string>> = {
+  rename: "pencil",
+  "regenerate-title": "refresh-cw",
+  "title-regeneration-pending": "refresh-cw",
+  pin: "pin",
+  unpin: "pin-off",
+  wake: "clock",
+  settle: "circle-check",
+  unsettle: "circle-check",
+  archive: "archive",
+  unarchive: "archive",
+  "mark-unread": "mail-open",
+  copy: "copy",
+  delete: "trash",
+};
 
 export function nativeThreadActionMenuItems(
   items: ReadonlyArray<ThreadActionMenuItem>,
 ): ReadonlyArray<import("@t3tools/contracts").ContextMenuItem<ThreadActionId>> {
-  return items.map(({ id, label, destructive, disabled, separatorBefore }) => ({
+  return items.map(({ id, label, destructive, disabled, separatorBefore, icon, children }) => ({
     id,
     label,
     ...(destructive === true ? { destructive: true } : {}),
     ...(disabled === true ? { disabled: true } : {}),
     ...(separatorBefore === true ? { separatorBefore: true } : {}),
+    ...(icon ? { icon } : {}),
+    ...(children ? { children: nativeThreadActionMenuItems(children) } : {}),
   }));
 }
 
@@ -267,18 +308,21 @@ export function useThreadActionController(input: {
       });
     },
   });
-  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
+  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{
+    path: string;
+    kind?: "Branch";
+  }>({
     onCopy: (context) => {
       toastManager.add({
         type: "success",
-        title: "Path copied",
+        title: `${context.kind ?? "Path"} copied`,
         description: context.path,
       });
     },
     onError: (error) => {
       toastManager.add({
         type: "error",
-        title: "Failed to copy path",
+        title: "Failed to copy workspace value",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     },
@@ -555,6 +599,11 @@ export function useThreadActionController(input: {
       }
       if (actionId === "copy-thread-id") {
         copyThreadIdToClipboard(threadId, { threadId });
+        return;
+      }
+      if (actionId === "copy-branch") {
+        if (thread.branch)
+          copyPathToClipboard(thread.branch, { path: thread.branch, kind: "Branch" });
         return;
       }
       if (actionId !== "delete") return;

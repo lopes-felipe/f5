@@ -129,7 +129,7 @@ describe("buildDesktopBackendEnv", () => {
         },
         "/Users/test-user",
       ),
-    ).toEqual({ stateDir: "/tmp/f5-state", source: "explicit-state" });
+    ).toEqual({ stateDir: Path.resolve("/tmp/f5-state"), source: "explicit-state" });
   });
 
   it("resolves F5_HOME to its userdata state directory", () => {
@@ -148,7 +148,7 @@ describe("buildDesktopBackendEnv", () => {
         },
         "/Users/test-user",
       ),
-    ).toBe("/tmp/t3-state");
+    ).toBe(Path.resolve("/tmp/t3-state"));
   });
 
   it("resolves legacy T3CODE_HOME when no F5 state or home is configured", () => {

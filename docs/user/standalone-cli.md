@@ -36,6 +36,14 @@ below remains available for servers without the desktop app.
 Git and provider sign-in are still needed for agents. See
 [Provider prerequisites](../provider-prerequisites.md).
 
+## Open a project in the desktop app
+
+With the desktop app running on the same machine, run `f5 app [path]` or
+`t3 app [path]`. Omitting the path uses your current directory. F5 focuses
+the app, adds or reuses the project in the active profile, and opens a new thread.
+Use the same `--state-dir` as the desktop app when using a custom state directory.
+This command does not start a server or desktop app and does not work over SSH.
+
 ## Run as a service
 
 ```sh
