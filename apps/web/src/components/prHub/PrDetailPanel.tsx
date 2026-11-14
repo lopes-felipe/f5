@@ -237,7 +237,9 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
       />
 
       {pr.repositoryArchived ? (
-        <p className="px-4 text-sm">Archived repository ? this pull request is read-only.</p>
+        <p className="px-4 text-sm">
+          This repository is archived, so the pull request is read-only.
+        </p>
       ) : null}
       <PrDetailsTabs
         pr={pr}
@@ -364,7 +366,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
               {pr.reviewFactsComplete !== true ? (
                 <Fact label="Review coverage">
                   {pr.reviewFactsComplete === false
-                    ? "Partial ? more review history remains to scan"
+                    ? "Partial: more review history remains to scan"
                     : "Not verified yet"}
                 </Fact>
               ) : null}

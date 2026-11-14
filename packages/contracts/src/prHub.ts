@@ -49,6 +49,7 @@ export const PrAttentionState = Schema.Literals([
   "changes_pushed",
   "review_requested",
   "re_review_requested",
+  "team_review_requested",
   "ready_to_merge",
   "awaiting_review",
   "reviewed_waiting",
@@ -77,6 +78,23 @@ export const PrAttentionReason = Schema.Struct({
   verification: Schema.Literals(["verified", "unverified"]),
 });
 export type PrAttentionReason = typeof PrAttentionReason.Type;
+
+/** How the viewer's review was requested. A team request is not a personal one. */
+export const PrReviewRequestSource = Schema.Literals(["direct", "team"]);
+export type PrReviewRequestSource = typeof PrReviewRequestSource.Type;
+
+/** Queue sections, in display order. Only review, action and ready count as "needs you". */
+export const PrHubSection = Schema.Literals([
+  "review",
+  "action",
+  "ready",
+  "waiting",
+  "drafts",
+  "team",
+  "other",
+  "stale",
+]);
+export type PrHubSection = typeof PrHubSection.Type;
 
 export const PrCheckRollup = Schema.Literals(["success", "failure", "pending", "error", "none"]);
 export type PrCheckRollup = typeof PrCheckRollup.Type;
@@ -168,6 +186,10 @@ export const TrackedPullRequest = Schema.Struct({
   mergePermission: Schema.optional(Schema.Literals(["allowed", "denied", "unknown"])),
   viewerHasReviewed: Schema.Boolean,
   viewerReviewRequested: Schema.Boolean,
+  /** Absent on forges that cannot tell a team request from a personal one. */
+  reviewRequestSource: Schema.optional(Schema.NullOr(PrReviewRequestSource)),
+  /** Derived when the snapshot is read; absent on rows from older servers. */
+  section: Schema.optional(PrHubSection),
   reviewRequestReviewers: Schema.Array(Schema.String),
   reviewRequestsCount: NonNegativeInt,
   commentsCount: NonNegativeInt,
@@ -223,6 +245,8 @@ export const PrHubCoverage = Schema.Struct({
   status: Schema.Literals(["not_scanned", "partial", "complete"]),
   description: Schema.String,
   remainingTasks: Schema.optional(NonNegativeInt),
+  remainingSearches: Schema.optional(NonNegativeInt),
+  remainingHydrations: Schema.optional(NonNegativeInt),
   checkedAt: Schema.optional(IsoDateTime),
   limits: Schema.optional(Schema.Array(Schema.String)),
 });
@@ -242,6 +266,16 @@ export const PrHubSchedulerState = Schema.Struct({
   ),
 });
 export type PrHubSchedulerState = typeof PrHubSchedulerState.Type;
+/** What monitoring is doing now. Backlog that resumes on its own is "syncing", not a failure. */
+export const PrHubSyncState = Schema.Struct({
+  state: Schema.Literals(["idle", "syncing", "rate_limited", "offline", "auth_required", "error"]),
+  lastSyncedAt: Schema.NullOr(IsoDateTime),
+  nextSyncAt: Schema.NullOr(IsoDateTime),
+  resumeAt: Schema.NullOr(IsoDateTime),
+  pending: Schema.Struct({ searches: NonNegativeInt, hydrations: NonNegativeInt }),
+  message: Schema.NullOr(Schema.String),
+});
+export type PrHubSyncState = typeof PrHubSyncState.Type;
 export const PrHubSnapshot = Schema.Struct({
   actionWarning: Schema.optional(Schema.String),
   nextRefreshAt: Schema.optional(Schema.NullOr(IsoDateTime)),
@@ -291,6 +325,7 @@ export type PrHubOverviewInput = typeof PrHubOverviewInput.Type;
 export const PrHubListInput = Schema.Struct({
   ...PrHubOverviewInput.fields,
   filter: Schema.optional(PrHubListFilter),
+  section: Schema.optional(PrHubSection),
   query: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   draft: Schema.optional(Schema.Literals(["only", "hide"])),
   review: Schema.optional(PrReviewDecision),
@@ -312,6 +347,9 @@ export const PrHubOverview = Schema.Struct({
   ...Struct.omit(PrHubSnapshot.fields, ["pullRequests", "recentlyResolved", "cappedBuckets"]),
   revision: Schema.String,
   counts: Schema.Record(PrHubListFilter, NonNegativeInt),
+  /** Active pull requests per queue section. */
+  sectionCounts: Schema.optional(Schema.Record(PrHubSection, NonNegativeInt)),
+  sync: Schema.optional(PrHubSyncState),
   coverage: Schema.Array(PrHubCoverage),
 });
 export type PrHubOverview = typeof PrHubOverview.Type;
@@ -433,6 +471,9 @@ export const PrHubIgnoreInput = Schema.Struct({
   key: PullRequestKey,
 });
 export type PrHubIgnoreInput = typeof PrHubIgnoreInput.Type;
+
+export const PrHubUnignoreInput = PrHubIgnoreInput;
+export type PrHubUnignoreInput = typeof PrHubUnignoreInput.Type;
 
 export const PrHubAcknowledgeAttentionInput = Schema.Struct({
   accountGeneration: Schema.String,
@@ -1123,6 +1164,7 @@ export const PR_HUB_WS_METHODS = {
   snooze: "prHub.snooze",
   unsnooze: "prHub.unsnooze",
   ignore: "prHub.ignore",
+  unignore: "prHub.unignore",
   markSeen: "prHub.markSeen",
   acknowledgeAttention: "prHub.acknowledgeAttention",
   markNotified: "prHub.markNotified",

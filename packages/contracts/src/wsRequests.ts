@@ -802,6 +802,7 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.snooze, PrHubSnoozeInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.unignore, PrHubIgnoreInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.acknowledgeAttention, PrHubAcknowledgeAttentionInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),

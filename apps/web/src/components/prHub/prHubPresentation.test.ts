@@ -5,7 +5,6 @@ import { PullRequestKey } from "@t3tools/contracts";
 import {
   isPrStalled,
   waitingLabel,
-  comparePrPriority,
   prRowActionVisibility,
   primaryActionFor,
 } from "./prHubPresentation";
@@ -152,54 +151,6 @@ describe("prRowActionVisibility", () => {
   });
 });
 
-describe("comparePrPriority", () => {
-  const order = (prs: TrackedPullRequest[]) =>
-    [...prs].sort(comparePrPriority).map((pr) => pr.number);
-
-  it("orders needs_you before waiting_on_others before informational", () => {
-    const fyi = makePr({
-      number: 1,
-      attentionState: "mentioned",
-      attentionBucket: "informational",
-    });
-    const waiting = makePr({
-      number: 2,
-      attentionState: "reviewed_waiting",
-      attentionBucket: "waiting_on_others",
-    });
-    const needsYou = makePr({
-      number: 3,
-      attentionState: "ci_failing",
-      attentionBucket: "needs_you",
-    });
-
-    expect(order([fyi, waiting, needsYou])).toEqual([3, 2, 1]);
-  });
-
-  it("orders by attention-state severity within a bucket", () => {
-    const draft = makePr({ number: 1, attentionState: "draft" });
-    const ci = makePr({ number: 2, attentionState: "ci_failing" });
-    const conflict = makePr({ number: 3, attentionState: "merge_conflict" });
-
-    expect(order([draft, ci, conflict])).toEqual([3, 2, 1]);
-  });
-
-  it("breaks ties by most-recently-updated first", () => {
-    const older = makePr({
-      number: 1,
-      attentionState: "ci_failing",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    });
-    const newer = makePr({
-      number: 2,
-      attentionState: "ci_failing",
-      updatedAt: "2026-02-01T00:00:00.000Z",
-    });
-
-    expect(order([older, newer])).toEqual([2, 1]);
-  });
-});
-
 it("offers review actions after new commits without a repeated review request", () => {
   expect(
     prRowActionVisibility(
@@ -207,19 +158,6 @@ it("offers review actions after new commits without a repeated review request", 
       reviewer,
     ).canReview,
   ).toBe(true);
-});
-it("sorts the longest wait first even when the oldest PR was updated most recently", () => {
-  const a = makePr({
-    attentionState: "awaiting_review",
-    waitingSince: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-03-01T00:00:00Z",
-  });
-  const b = makePr({
-    attentionState: "awaiting_review",
-    waitingSince: "2026-02-01T00:00:00Z",
-    updatedAt: "2026-04-01T00:00:00Z",
-  });
-  expect(comparePrPriority(a, b)).toBeLessThan(0);
 });
 it("derives staleness locally and supports disabling it", () => {
   const pr = makePr({

@@ -17,6 +17,7 @@ import {
   resumePrHubSearch,
   selectPrHubHydration,
   recordPrHubMembership,
+  prHubHydrationPriority,
 } from "./discovery.ts";
 
 const account = { host: "github.com", viewerId: "1" };
@@ -114,7 +115,7 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
         });
       const request = buildPrHubSearchRequest(scopes);
       assert.equal(request.document.includes("team_review_"), false);
-      assert.equal(Object.keys(request.variables).length, 6);
+      assert.equal(Object.keys(request.variables).length, 7);
       for (const query of Object.values(request.variables))
         assert.equal(query.match(/\bupdated:/g)?.length, 1);
       assert.include(
@@ -243,14 +244,14 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
       }),
   );
   it.effect(
-    "reserves twenty oldest records and puts active review requests ahead of newer cold records",
+    "reserves twenty oldest records and puts personal review requests ahead of newer cold records",
     () =>
       Effect.gen(function* () {
         yield* reset;
         for (const [prefix, alias, count, at, updated] of [
           ["old", "involved", 80, 1000, "2026-01-01T00:00:00Z"],
           ["new", "involved", 80, 2000, "2026-03-01T00:00:00Z"],
-          ["review", "review_requested", 60, 3000, "2026-02-01T00:00:00Z"],
+          ["review", "direct_review", 60, 3000, "2026-02-01T00:00:00Z"],
         ] as const)
           yield* ingestPrHubSearch(
             account,
@@ -270,6 +271,48 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
         assert.equal(selected.filter((id) => id.startsWith("old-")).length, 20);
         assert.equal(selected.filter((id) => id.startsWith("review-")).length, 60);
       }),
+  );
+  it.effect("hydrates the viewer's own work before mentions, and team requests last", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      // Team requests arrive last and are the newest, which used to put them first.
+      for (const [prefix, alias, at] of [
+        ["mine", "author", 1000],
+        ["direct", "direct_review", 1100],
+        ["assigned", "assignee", 1200],
+        ["mention", "mentioned", 2000],
+        ["team", "review_requested", 3000],
+        ["chunk", "team_review_0", 3100],
+        ["closed", "recently_closed", 3200],
+      ] as const)
+        yield* ingestPrHubSearch(
+          account,
+          { ...task, alias },
+          {
+            nodes: Array.from({ length: 30 }, (_, i) => node(`${prefix}-${i}`)),
+            issueCount: 30,
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+          new Set(),
+          at,
+        );
+      const selected = [...(yield* selectPrHubHydration(account, new Set(), 4000)).keys()];
+      const count = (prefix: string) => selected.filter((id) => id.startsWith(`${prefix}-`)).length;
+      assert.equal(selected.length, 80);
+      // Twenty oldest (all the viewer's own), then priority order fills the rest.
+      assert.equal(count("mine") + count("direct") + count("assigned"), 80);
+      assert.equal(count("team") + count("chunk") + count("closed") + count("mention"), 0);
+      assert.deepStrictEqual(
+        ["author", "direct_review", "assignee", "mentioned", "involved"].map(
+          prHubHydrationPriority,
+        ),
+        [3, 3, 3, 2, 2],
+      );
+      assert.deepStrictEqual(
+        ["review_requested", "team_review_3", "recently_closed"].map(prHubHydrationPriority),
+        [1, 1, 1],
+      );
+    }),
   );
   it.effect(
     "changes discovery generation only for verified membership changes and invalidates old pages",

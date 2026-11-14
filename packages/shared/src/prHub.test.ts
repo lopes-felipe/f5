@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { PullRequestKey, type PrHubSection, type TrackedPullRequest } from "@t3tools/contracts";
 
 import {
   canViewerReview,
+  comparePrPriority,
   derivePrWaitingSince,
   derivePrAttention,
   derivePrAttentionReasons,
+  matchesPrHubFilter,
   prAttentionText,
+  prHubSection,
+  prHubSectionOf,
+  PR_HUB_NEEDS_YOU_SECTIONS,
   PR_HUB_NEEDS_YOU_STATES,
+  PR_HUB_SECTIONS,
   type RawPrFields,
 } from "./prHub";
 
@@ -332,4 +339,303 @@ it("retains stable observation times for provider evidence independent of respon
     { id: "a", url: "comment-a" },
     { id: "b", url: "comment-b" },
   ]);
+});
+
+describe("team review requests", () => {
+  const requested = { viewerReviewRequested: true };
+
+  it("is informational until the viewer is asked personally", () => {
+    expect(derive({ ...requested, reviewRequestSource: "team" })).toMatchObject({
+      attentionState: "team_review_requested",
+      attentionBucket: "informational",
+      primaryReason: "Review requested from your team",
+    });
+    expect(derive({ ...requested, reviewRequestSource: "direct" }).attentionState).toBe(
+      "review_requested",
+    );
+    // Rows from before the distinction existed stay the viewer's.
+    expect(derive(requested).attentionState).toBe("review_requested");
+  });
+
+  it("never asks for a re-review on behalf of a team, but still reports new commits", () => {
+    const reviewed = {
+      ...requested,
+      reviewRequestSource: "team" as const,
+      viewerHasReviewed: true,
+    };
+    expect(derive(reviewed).attentionState).toBe("team_review_requested");
+    expect(
+      derive({ ...reviewed, headRefOid: "new", viewerLastReviewedCommitOid: "old" }),
+    ).toMatchObject({ attentionState: "changes_pushed", attentionBucket: "needs_you" });
+    expect(
+      derive({ ...requested, reviewRequestSource: "direct", viewerHasReviewed: true })
+        .attentionState,
+    ).toBe("re_review_requested");
+  });
+
+  it("names the team's reviewers as the next actor", () => {
+    expect(
+      derivePrAttentionReasons(
+        { ...basePr, ...requested, reviewRequestSource: "team" },
+        { at: "2026-01-01T00:00:00.000Z", url: "url", verified: true },
+      )[0],
+    ).toMatchObject({ code: "team_review_requested", actor: "reviewer", action: "review" });
+  });
+});
+
+const NOW = Date.parse("2026-11-14T12:00:00.000Z");
+const daysAgo = (days: number) => new Date(NOW - days * 86_400_000).toISOString();
+
+function tracked(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest {
+  return {
+    key: PullRequestKey.makeUnsafe(`github:github.com/octo/repo#${overrides.number ?? 1}`),
+    provider: "github",
+    nodeId: "PR_1",
+    number: 1,
+    title: "Test",
+    url: "https://github.com/octo/repo/pull/1",
+    repository: { owner: "octo", repo: "repo", nameWithOwner: "octo/repo" },
+    host: "github.com",
+    author: "someone",
+    isDraft: false,
+    state: "open",
+    roles: [],
+    attentionState: "mentioned",
+    attentionBucket: "informational",
+    primaryReason: "",
+    nextAction: "",
+    checkRollup: "success",
+    reviewDecision: "review_required",
+    mergeable: "mergeable",
+    mergeStateStatus: "CLEAN",
+    viewerHasReviewed: false,
+    viewerReviewRequested: false,
+    reviewRequestReviewers: [],
+    reviewRequestsCount: 0,
+    commentsCount: 0,
+    unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
+    additions: 0,
+    deletions: 0,
+    changedFiles: 0,
+    headRefOid: null,
+    baseRefName: "main",
+    headRefName: "feature",
+    labels: [],
+    assignees: [],
+    createdAt: daysAgo(10),
+    updatedAt: daysAgo(1),
+    snoozedUntil: null,
+    ignoredAt: null,
+    notificationPending: false,
+    attentionFingerprint: "fp",
+    ...overrides,
+  };
+}
+
+const mine = { roles: ["author" as const], author: "me" };
+const needsYou = { attentionBucket: "needs_you" as const };
+const waiting = { attentionBucket: "waiting_on_others" as const };
+
+describe("prHubSection", () => {
+  const section = (overrides: Partial<TrackedPullRequest>, staleAfterDays = 30) =>
+    prHubSection(tracked(overrides), { now: NOW, staleAfterDays });
+
+  it.each<[string, Partial<TrackedPullRequest>, PrHubSection]>([
+    [
+      "a personal review request",
+      { ...needsYou, attentionState: "review_requested", viewerReviewRequested: true },
+      "review",
+    ],
+    [
+      "a request with a promoted team",
+      {
+        ...needsYou,
+        attentionState: "review_requested",
+        viewerReviewRequested: true,
+        reviewRequestSource: "direct",
+      },
+      "review",
+    ],
+    ["new commits since my review", { ...needsYou, attentionState: "changes_pushed" }, "review"],
+    [
+      "a re-review request",
+      { ...needsYou, attentionState: "re_review_requested", viewerReviewRequested: true },
+      "review",
+    ],
+    ["my PR that is ready", { ...mine, ...needsYou, attentionState: "ready_to_merge" }, "ready"],
+    ["my PR with failing CI", { ...mine, ...needsYou, attentionState: "ci_failing" }, "action"],
+    ["my PR with conflicts", { ...mine, ...needsYou, attentionState: "merge_conflict" }, "action"],
+    ["my draft", { ...mine, attentionState: "draft", isDraft: true }, "drafts"],
+    [
+      "my PR awaiting review",
+      { ...mine, ...waiting, attentionState: "awaiting_review" },
+      "waiting",
+    ],
+    ["a PR I reviewed", { ...waiting, attentionState: "reviewed_waiting" }, "waiting"],
+    [
+      "a team-only request",
+      {
+        attentionState: "team_review_requested",
+        viewerReviewRequested: true,
+        reviewRequestSource: "team",
+      },
+      "team",
+    ],
+    ["a mention", { attentionState: "mentioned" }, "other"],
+    ["a merged PR", { ...mine, state: "merged", attentionState: "merged" }, "other"],
+    [
+      "an archived repository",
+      { ...mine, ...needsYou, attentionState: "ci_failing", repositoryArchived: true },
+      "other",
+    ],
+  ])("puts %s in its section", (_name, overrides, expected) => {
+    expect(section(overrides)).toBe(expected);
+  });
+
+  it("gives a failing draft to Your action before Drafts", () => {
+    expect(section({ ...mine, ...needsYou, attentionState: "ci_failing", isDraft: true })).toBe(
+      "action",
+    );
+  });
+
+  it("files anything quiet for longer than the setting under Stale, unless disabled", () => {
+    const quiet = {
+      ...needsYou,
+      attentionState: "review_requested" as const,
+      viewerReviewRequested: true,
+      updatedAt: daysAgo(31),
+    };
+    expect(section(quiet)).toBe("stale");
+    expect(section({ ...quiet, updatedAt: daysAgo(29) })).toBe("review");
+    expect(section(quiet, 60)).toBe("review");
+    expect(section(quiet, 0)).toBe("review");
+    // Closed work is history, not stale work.
+    expect(section({ ...quiet, state: "closed", attentionState: "closed" })).toBe("other");
+  });
+
+  it("prefers the section stamped by the server over a local guess", () => {
+    const quiet = tracked({
+      ...mine,
+      ...needsYou,
+      attentionState: "ci_failing",
+      updatedAt: daysAgo(40),
+    });
+    expect(prHubSectionOf(quiet, NOW)).toBe("stale");
+    expect(prHubSectionOf({ ...quiet, section: "action" }, NOW)).toBe("action");
+  });
+
+  it("lists the sections in display order, with three that need the viewer", () => {
+    expect(PR_HUB_SECTIONS).toEqual([
+      "review",
+      "action",
+      "ready",
+      "waiting",
+      "drafts",
+      "team",
+      "other",
+      "stale",
+    ]);
+    expect([...PR_HUB_NEEDS_YOU_SECTIONS]).toEqual(["review", "action", "ready"]);
+  });
+});
+
+describe("needs-you filters", () => {
+  const review = tracked({
+    ...needsYou,
+    attentionState: "review_requested",
+    viewerReviewRequested: true,
+  });
+  const team = tracked({
+    attentionState: "team_review_requested",
+    viewerReviewRequested: true,
+    reviewRequestSource: "team",
+  });
+  const failing = tracked({ ...mine, ...needsYou, attentionState: "ci_failing" });
+  const fossil = { ...failing, updatedAt: daysAgo(90) };
+  const matches = (pr: TrackedPullRequest, filter: Parameters<typeof matchesPrHubFilter>[1]) =>
+    matchesPrHubFilter(pr, filter, undefined, NOW);
+
+  it("counts personal reviews and the viewer's own blocked work", () => {
+    expect(matches(review, "needs_you")).toBe(true);
+    expect(matches(review, "needs_my_review")).toBe(true);
+    expect(matches(failing, "needs_you")).toBe(true);
+    expect(matches(failing, "my_prs_need_action")).toBe(true);
+    expect(matches(failing, "needs_my_review")).toBe(false);
+  });
+
+  it("leaves team requests and stale work out, but keeps them reachable", () => {
+    expect(matches(team, "needs_you")).toBe(false);
+    expect(matches(team, "needs_my_review")).toBe(false);
+    expect(matches(team, "reviews")).toBe(true);
+    expect(matches(fossil, "needs_you")).toBe(false);
+    expect(matches(fossil, "my_prs_need_action")).toBe(false);
+    expect(matches(fossil, "authored")).toBe(true);
+  });
+});
+
+describe("comparePrPriority", () => {
+  const order = (prs: TrackedPullRequest[]) =>
+    prs.toSorted((a, b) => comparePrPriority(a, b, NOW)).map((pr) => pr.number);
+
+  it("follows section order before anything else", () => {
+    const rows = [
+      tracked({
+        number: 1,
+        ...mine,
+        ...needsYou,
+        attentionState: "merge_conflict",
+        updatedAt: daysAgo(60),
+      }),
+      tracked({ number: 2, attentionState: "mentioned" }),
+      tracked({
+        number: 3,
+        attentionState: "team_review_requested",
+        viewerReviewRequested: true,
+        reviewRequestSource: "team",
+      }),
+      tracked({ number: 4, ...mine, attentionState: "draft", isDraft: true }),
+      tracked({ number: 5, ...mine, ...waiting, attentionState: "awaiting_review" }),
+      tracked({ number: 6, ...mine, ...needsYou, attentionState: "ready_to_merge" }),
+      tracked({ number: 7, ...mine, ...needsYou, attentionState: "branch_behind" }),
+      tracked({
+        number: 8,
+        ...needsYou,
+        attentionState: "review_requested",
+        viewerReviewRequested: true,
+      }),
+    ];
+    expect(order(rows)).toEqual([8, 7, 6, 5, 4, 3, 2, 1]);
+  });
+
+  it("orders by urgency inside a section", () => {
+    expect(
+      order([
+        tracked({ number: 1, ...mine, ...needsYou, attentionState: "unresolved_comments" }),
+        tracked({ number: 2, ...mine, ...needsYou, attentionState: "ci_failing" }),
+        tracked({ number: 3, ...mine, ...needsYou, attentionState: "merge_conflict" }),
+      ]),
+    ).toEqual([3, 2, 1]);
+  });
+
+  it("puts the most recently updated first, not the longest wait", () => {
+    const fossil = tracked({
+      number: 1,
+      ...mine,
+      ...waiting,
+      attentionState: "awaiting_review",
+      waitingSince: daysAgo(25),
+      updatedAt: daysAgo(20),
+    });
+    const fresh = tracked({
+      number: 2,
+      ...mine,
+      ...waiting,
+      attentionState: "awaiting_review",
+      waitingSince: daysAgo(2),
+      updatedAt: daysAgo(1),
+    });
+    expect(order([fossil, fresh])).toEqual([2, 1]);
+  });
 });

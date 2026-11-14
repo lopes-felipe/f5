@@ -3,13 +3,16 @@ import type {
   PrAttentionReason,
   PrHubListFilter,
   PrHubListInput,
+  PrHubSection,
   PrAttentionState,
   PrCheckRollup,
   PrMergeable,
   PrReviewDecision,
+  PrReviewRequestSource,
   PrViewerRole,
   TrackedPullRequest,
 } from "@t3tools/contracts";
+import { PR_HUB_STALE_AFTER_DAYS_DEFAULT } from "@t3tools/contracts";
 
 export interface RawPrFields {
   readonly mergeRequirements?: TrackedPullRequest["mergeRequirements"] | undefined;
@@ -28,6 +31,8 @@ export interface RawPrFields {
   readonly reviewDecision: PrReviewDecision;
   readonly viewerHasReviewed: boolean;
   readonly viewerReviewRequested: boolean;
+  /** Absent means the forge cannot tell, which counts as a request to the viewer. */
+  readonly reviewRequestSource?: PrReviewRequestSource | null | undefined;
   readonly roles: ReadonlyArray<PrViewerRole>;
 }
 
@@ -101,6 +106,7 @@ export function prAttentionText(
     awaiting_review: ["Awaiting review", "Waiting on reviewers"],
     review_requested: ["Review requested", "Review requested"],
     re_review_requested: ["Re-review requested", "Re-review requested"],
+    team_review_requested: ["Review requested from your team", "Review requested from your team"],
     changes_pushed: ["Changes pushed since your review", "Review new changes"],
     reviewed_waiting: ["You reviewed", "You reviewed - waiting on author"],
     mentioned: ["You're involved", "You're involved"],
@@ -135,7 +141,9 @@ function attentionCodes(input: RawPrFields): PrAttentionState[] {
     if (input.actionableUnresolvedThreadCount > 0) codes.push("unresolved_comments");
     return codes.length ? codes : ["awaiting_review"];
   }
-  if (input.viewerReviewRequested)
+  // A request to one of the viewer's teams is somebody's job, not necessarily the viewer's.
+  const teamOnly = input.viewerReviewRequested && input.reviewRequestSource === "team";
+  if (input.viewerReviewRequested && !teamOnly)
     codes.push(input.viewerHasReviewed ? "re_review_requested" : "review_requested");
   if (
     input.viewerHasReviewed &&
@@ -144,7 +152,9 @@ function attentionCodes(input: RawPrFields): PrAttentionState[] {
     input.headRefOid !== input.viewerLastReviewedCommitOid
   )
     codes.push("changes_pushed");
-  return codes.length ? codes : [input.viewerHasReviewed ? "reviewed_waiting" : "mentioned"];
+  if (codes.length) return codes;
+  if (teamOnly) return ["team_review_requested"];
+  return [input.viewerHasReviewed ? "reviewed_waiting" : "mentioned"];
 }
 
 export function derivePrAttention(input: RawPrFields): PrAttentionDerivation {
@@ -214,7 +224,7 @@ export function derivePrAttentionReasons(
           ? "policy"
           : code === "merge_permission"
             ? "reviewer"
-            : code === "awaiting_review"
+            : code === "awaiting_review" || code === "team_review_requested"
               ? "reviewer"
               : code === "reviewed_waiting"
                 ? "author"
@@ -226,7 +236,10 @@ export function derivePrAttentionReasons(
     const action: PrAttentionReason["action"] =
       code === "ready_to_merge"
         ? "merge"
-        : code === "review_requested" || code === "re_review_requested" || code === "changes_pushed"
+        : code === "review_requested" ||
+            code === "re_review_requested" ||
+            code === "team_review_requested" ||
+            code === "changes_pushed"
           ? "review"
           : code === "awaiting_review" ||
               code === "reviewed_waiting" ||
@@ -303,19 +316,74 @@ export function canViewerReview(
   );
 }
 
+/** Queue sections in display order; this is also the first key of the priority sort. */
+export const PR_HUB_SECTIONS: readonly PrHubSection[] = [
+  "review",
+  "action",
+  "ready",
+  "waiting",
+  "drafts",
+  "team",
+  "other",
+  "stale",
+];
+
+/** The sections that make up "needs you": the sidebar badge and notifications. */
+export const PR_HUB_NEEDS_YOU_SECTIONS: ReadonlySet<PrHubSection> = new Set([
+  "review",
+  "action",
+  "ready",
+]);
+
 /**
- * Attention buckets, ordered by how much they demand the viewer's attention.
- * Lower rank sorts first (more urgent).
+ * Where an open pull request belongs in the queue; first match wins. Snooze and ignore
+ * are visibility, not classification, so callers filter those separately.
  */
-function bucketRank(pr: TrackedPullRequest): number {
-  switch (pr.attentionBucket) {
-    case "needs_you":
-      return 0;
-    case "waiting_on_others":
-      return 1;
-    default:
-      return 2;
+export function prHubSection(
+  pr: Pick<
+    TrackedPullRequest,
+    | "state"
+    | "roles"
+    | "isDraft"
+    | "updatedAt"
+    | "attentionState"
+    | "attentionBucket"
+    | "viewerReviewRequested"
+    | "reviewRequestSource"
+    | "repositoryArchived"
+  >,
+  options: { readonly now: number; readonly staleAfterDays: number },
+): PrHubSection {
+  if (pr.state !== "open" || pr.repositoryArchived) return "other";
+  const updatedAt = Date.parse(pr.updatedAt);
+  if (
+    options.staleAfterDays > 0 &&
+    Number.isFinite(updatedAt) &&
+    options.now - updatedAt > options.staleAfterDays * 86_400_000
+  )
+    return "stale";
+  const isAuthor = pr.roles.includes("author");
+  if (!isAuthor) {
+    if (
+      (pr.viewerReviewRequested && pr.reviewRequestSource !== "team") ||
+      pr.attentionState === "changes_pushed" ||
+      pr.attentionState === "re_review_requested" ||
+      pr.attentionBucket === "needs_you"
+    )
+      return "review";
+  } else {
+    if (pr.attentionState === "ready_to_merge") return "ready";
+    if (pr.attentionBucket === "needs_you") return "action";
+    if (pr.isDraft) return "drafts";
   }
+  if (pr.attentionBucket === "waiting_on_others") return "waiting";
+  if (pr.attentionState === "team_review_requested") return "team";
+  return "other";
+}
+
+/** The section stamped when the snapshot was read, or a fresh one for rows without it. */
+export function prHubSectionOf(pr: TrackedPullRequest, now = Date.now()): PrHubSection {
+  return pr.section ?? prHubSection(pr, { now, staleAfterDays: PR_HUB_STALE_AFTER_DAYS_DEFAULT });
 }
 
 /**
@@ -348,29 +416,32 @@ function stateSeverityRank(pr: TrackedPullRequest): number {
       return 10;
     case "draft":
       return 11;
-    case "mentioned":
+    case "team_review_requested":
       return 12;
-    case "merged":
+    case "mentioned":
       return 13;
-    case "closed":
+    case "merged":
       return 14;
+    case "closed":
+      return 15;
   }
 }
 
 /**
- * Total ordering for the Focus queue and the Inbox spine: most-pressing first.
- * Bucket (needs_you → waiting_on_others → informational), then state severity,
- * then longest waiting first, falling back to most-recently-updated when unknown.
+ * Total ordering for the queue: section order, then how pressing the state is, then most
+ * recently updated. Recency replaced longest-waiting-first, which put fossils on top.
  */
-export function comparePrPriority(a: TrackedPullRequest, b: TrackedPullRequest): number {
-  const byBucket = bucketRank(a) - bucketRank(b);
-  if (byBucket !== 0) return byBucket;
+export function comparePrPriority(
+  a: TrackedPullRequest,
+  b: TrackedPullRequest,
+  now: number = Date.now(),
+): number {
+  const bySection =
+    PR_HUB_SECTIONS.indexOf(prHubSectionOf(a, now)) -
+    PR_HUB_SECTIONS.indexOf(prHubSectionOf(b, now));
+  if (bySection !== 0) return bySection;
   const bySeverity = stateSeverityRank(a) - stateSeverityRank(b);
   if (bySeverity !== 0) return bySeverity;
-  if (a.waitingSince && b.waitingSince) {
-    const waiting = Date.parse(a.waitingSince) - Date.parse(b.waitingSince);
-    if (Number.isFinite(waiting) && waiting !== 0) return waiting;
-  }
   const aTime = new Date(a.updatedAt).getTime();
   const bTime = new Date(b.updatedAt).getTime();
   const aValid = Number.isFinite(aTime);
@@ -413,15 +484,15 @@ export function matchesPrHubFilter(
     case "all":
       return true;
     case "needs_you":
-      return pr.attentionBucket === "needs_you";
+      return PR_HUB_NEEDS_YOU_SECTIONS.has(prHubSectionOf(pr, now));
     case "authored":
       return pr.roles.includes("author");
     case "reviews":
       return !pr.roles.includes("author") && (pr.viewerHasReviewed || pr.viewerReviewRequested);
     case "needs_my_review":
-      return canViewerReview(pr);
+      return prHubSectionOf(pr, now) === "review";
     case "my_prs_need_action":
-      return pr.roles.includes("author") && pr.attentionBucket === "needs_you";
+      return pr.roles.includes("author") && PR_HUB_NEEDS_YOU_SECTIONS.has(prHubSectionOf(pr, now));
     case "waiting":
       return pr.attentionBucket === "waiting_on_others";
     case "notification_pending":

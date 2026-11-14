@@ -6195,6 +6195,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       }
 
+      case PR_HUB_WS_METHODS.unignore: {
+        const body = stripRequestTag(request.body);
+        yield* prHub.unignore(body);
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
+      }
+
       case PR_HUB_WS_METHODS.acknowledgeAttention:
         yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
         return yield* prHub.getOverview({

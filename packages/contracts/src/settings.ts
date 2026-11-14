@@ -271,10 +271,19 @@ const PrHubPollIntervalSeconds = Schema.Union([
   Schema.Int.check(Schema.isGreaterThanOrEqualTo(60)).check(Schema.isLessThanOrEqualTo(3600)),
 ]);
 
+/** Days without activity before a pull request moves to the Stale section; 0 turns it off. */
+export const PR_HUB_STALE_AFTER_DAYS_DEFAULT = 30;
+const PrHubStaleAfterDays = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3650 }));
+
 export const PrHubSettings = Schema.Struct({
   discoverNotifications: Schema.optional(Schema.Boolean),
   pollIntervalSeconds: PrHubPollIntervalSeconds.pipe(Schema.withDecodingDefault(() => 180)),
   excludeRepos: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  staleAfterDays: PrHubStaleAfterDays.pipe(
+    Schema.withDecodingDefault(() => PR_HUB_STALE_AFTER_DAYS_DEFAULT),
+  ),
+  /** Teams (`org/team`) whose review requests count as requests to the viewer. */
+  directReviewTeams: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type PrHubSettings = typeof PrHubSettings.Type;
 
@@ -723,8 +732,11 @@ const MuseSettingsPatch = Schema.Struct({
 });
 
 const PrHubSettingsPatch = Schema.Struct({
+  discoverNotifications: Schema.optionalKey(Schema.Boolean),
   pollIntervalSeconds: Schema.optionalKey(PrHubPollIntervalSeconds),
   excludeRepos: Schema.optionalKey(Schema.Array(Schema.String)),
+  staleAfterDays: Schema.optionalKey(PrHubStaleAfterDays),
+  directReviewTeams: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export const ServerSettingsPatch = Schema.Struct({

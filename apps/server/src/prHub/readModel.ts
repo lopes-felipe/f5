@@ -5,10 +5,16 @@ import {
   type PrHubListInput,
   type PrHubListPage,
   type PrHubOverview,
+  type PrHubSection,
   type PrHubSnapshot,
   type PrHubChanged,
 } from "@t3tools/contracts";
-import { matchesPrHubFilter, comparePrPriority } from "@t3tools/shared/prHub";
+import {
+  matchesPrHubFilter,
+  comparePrPriority,
+  PR_HUB_SECTIONS,
+  prHubSectionOf,
+} from "@t3tools/shared/prHub";
 
 export function excludePrHubRepositories(
   snapshot: PrHubSnapshot,
@@ -63,15 +69,22 @@ export function prHubOverview(
   const counts = Object.fromEntries(
     PrHubListFilter.literals.map((filter) => [filter, 0]),
   ) as Record<PrHubListFilter, number>;
+  const sectionCounts = Object.fromEntries(
+    PR_HUB_SECTIONS.map((section) => [section, 0]),
+  ) as Record<PrHubSection, number>;
   for (const pr of [...pullRequests, ...recentlyResolved]) {
     for (const filter of PrHubListFilter.literals) {
       if (matchesPrHubFilter(pr, filter, stalledBefore, now)) counts[filter]++;
     }
+    // Sections describe the active queue: snoozed, ignored and closed rows are elsewhere.
+    if (matchesPrHubFilter(pr, "all", undefined, now, "active"))
+      sectionCounts[prHubSectionOf(pr, now)]++;
   }
   return {
     ...metadata,
     revision,
     counts,
+    sectionCounts,
     coverage: snapshot.coverage?.length
       ? snapshot.coverage
       : defaultPrHubCoverage(snapshot.lastPolledAt, cappedBuckets),
@@ -115,16 +128,14 @@ export function listPrHubPullRequests(
     }
   }
   const matchesSearch = prSearchPredicate(input.query ?? "", snapshot.viewerLogin);
+  const now = Date.now();
+  // A section is a slice of the active queue unless the caller asks for another status.
+  const visibility = input.visibility ?? (input.section ? "active" : undefined);
   const rows = [...snapshot.pullRequests, ...snapshot.recentlyResolved].filter((pr) => {
     if (input.key) return pr.key === input.key;
     return (
-      matchesPrHubFilter(
-        pr,
-        input.filter ?? "all",
-        input.stalledBefore,
-        Date.now(),
-        input.visibility,
-      ) &&
+      matchesPrHubFilter(pr, input.filter ?? "all", input.stalledBefore, now, visibility) &&
+      (!input.section || prHubSectionOf(pr, now) === input.section) &&
       (!input.repository || pr.repository.nameWithOwner === input.repository) &&
       (!input.relationship || pr.roles.includes(input.relationship)) &&
       (!input.ci || pr.checkRollup === input.ci) &&
@@ -138,7 +149,7 @@ export function listPrHubPullRequests(
     (a, b) =>
       (input.sort === "updated"
         ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-        : comparePrPriority(a, b)) || a.key.localeCompare(b.key),
+        : comparePrPriority(a, b, now)) || a.key.localeCompare(b.key),
   );
   if (!cursor && input.anchorKey) {
     const anchor = rows.findIndex((pr) => pr.key === input.anchorKey);
@@ -150,7 +161,9 @@ export function listPrHubPullRequests(
     accountGeneration: snapshot.account?.generation,
     revision,
     status: "ok",
-    pullRequests: rows.slice(offset, next),
+    pullRequests: rows
+      .slice(offset, next)
+      .map((pr) => (pr.section ? pr : { ...pr, section: prHubSectionOf(pr, now) })),
     nextCursor:
       next < rows.length
         ? Buffer.from(JSON.stringify({ revision, signature, offset: next })).toString("base64url")
