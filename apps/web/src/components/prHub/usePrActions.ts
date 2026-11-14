@@ -23,9 +23,12 @@ export type PrPendingAction =
   | "comment"
   | "requestChanges"
   | "merge"
+  | "autoMerge"
   | "close"
   | "reopen"
   | "markReady"
+  | "convertToDraft"
+  | "updateBranch"
   | "reRequestReview"
   | "snooze"
   | null;
@@ -41,18 +44,26 @@ export interface PrActionFlags {
   isIgnoring: boolean;
 }
 
-/** Callbacks wired to {@link PrDetailActions} (and any other action surface). */
+/** Callbacks wired to the action bar of the page, the peek and the queue rows. */
 export interface PrActionHandlers {
   onAcknowledge: () => void;
   onApprove: () => void;
   onComment: () => void;
   onRequestChanges: () => void;
   onMerge: () => void;
+  /** Queues the merge for when the forge's requirements are met (auto-merge). */
+  onMergeWhenReady: () => void;
   onMarkReady: () => void;
+  onConvertToDraft: () => void;
+  onUpdateBranch: () => void;
+  onClose: () => void;
+  onReopen: () => void;
   onReRequest: () => void;
   onSnooze: () => void;
   onUnsnooze: () => void;
   onIgnore: () => void;
+  /** Puts an ignored pull request back in the queue. */
+  onRestore: () => void;
   onOpenInF5: () => void;
   onRunInF5: () => void;
   onOpenGitHub: () => void;
@@ -70,8 +81,9 @@ export interface PrActionDialogProps {
   pendingAction: PrPendingAction;
   setPendingAction: (action: PrPendingAction) => void;
   dialogTitle: string;
-  reviewers: string;
-  setReviewers: (value: string) => void;
+  /** Reviewers as the forge identifies them: logins on GitHub, the forge's ids elsewhere. */
+  reviewers: readonly string[];
+  setReviewers: (value: readonly string[]) => void;
   deleteBranch?: boolean;
   setDeleteBranch?: ((value: boolean) => void) | undefined;
   mergeMethod: PrMergeMethod | null;
@@ -125,7 +137,7 @@ export function usePrActions(
     projectMergeMethod?.key === pr.key ? projectMergeMethod.method : globalMergeMethod;
   const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
-  const [reviewers, setReviewers] = useState("");
+  const [reviewers, setReviewers] = useState<readonly string[]>([]);
   const [deleteBranch, setDeleteBranch] = useState(false);
   useEffect(() => setDeleteBranch(false), [pr.key, pendingAction]);
   const [mergeChoice, setMergeChoice] = useState<{ key: string; method: PrMergeMethod } | null>(
@@ -190,12 +202,18 @@ export function usePrActions(
         return "Request changes";
       case "merge":
         return "Merge pull request";
+      case "autoMerge":
+        return "Merge when ready";
       case "close":
         return "Close pull request";
       case "reopen":
         return "Reopen pull request";
       case "markReady":
         return "Mark ready for review";
+      case "convertToDraft":
+        return "Convert to draft";
+      case "updateBranch":
+        return "Update branch";
       case "reRequestReview":
         return "Re-request review";
       case "snooze":
@@ -237,13 +255,7 @@ export function usePrActions(
       } else if (pendingAction === "markReady") {
         await api.markReady({ url: pr.url });
       } else if (pendingAction === "reRequestReview") {
-        await api.reRequestReview({
-          url: pr.url,
-          reviewers: reviewers
-            .split(",")
-            .map((reviewer) => reviewer.trim())
-            .filter(Boolean),
-        });
+        await api.reRequestReview({ url: pr.url, reviewers: [...reviewers] });
       } else if (pendingAction === "snooze") {
         await api.snooze({ key: pr.key, until: new Date(snoozeUntil).toISOString() });
       }
@@ -257,7 +269,7 @@ export function usePrActions(
           : { type: "success", title: "Pull request updated" },
       );
       setPendingAction(null);
-      setReviewers("");
+      setReviewers([]);
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -392,6 +404,25 @@ export function usePrActions(
     }
   };
 
+  const handleRestore = () => {
+    void ensureNativeApi()
+      .prHub.unignore({ key: pr.key })
+      .then(
+        () =>
+          toastManager.add({
+            type: "success",
+            title: "Pull request restored",
+            description: `${pr.repository.nameWithOwner}#${pr.number}`,
+          }),
+        (error: unknown) =>
+          toastManager.add({
+            type: "error",
+            title: "Could not restore pull request",
+            description: error instanceof Error ? error.message : String(error),
+          }),
+      );
+  };
+
   const accountGeneration = getPrHubAccountGeneration();
   const handleAcknowledge = async () => {
     try {
@@ -461,14 +492,20 @@ export function usePrActions(
           }
         })();
       },
+      onMergeWhenReady: () => setPendingAction("autoMerge"),
       onMarkReady: () => setPendingAction("markReady"),
+      onConvertToDraft: () => setPendingAction("convertToDraft"),
+      onUpdateBranch: () => setPendingAction("updateBranch"),
+      onClose: () => setPendingAction("close"),
+      onReopen: () => setPendingAction("reopen"),
       onReRequest: () => {
-        setReviewers(pr.reviewRequestReviewers.join(", "));
+        setReviewers(pr.reviewRequestReviewers);
         setPendingAction("reRequestReview");
       },
       onSnooze: () => setPendingAction("snooze"),
       onUnsnooze: handleUnsnooze,
       onIgnore: () => void handleIgnore(),
+      onRestore: handleRestore,
       onOpenInF5: () => void handleOpenInF5("open"),
       onRunInF5: () => {
         if (runKind) void handleOpenInF5(runKind);

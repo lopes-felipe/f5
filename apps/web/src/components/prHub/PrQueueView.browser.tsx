@@ -34,20 +34,23 @@ vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api }) as unknown as NativeApi,
 }));
 // The page content has its own tests; here it only has to show what the queue hands it.
-vi.mock("./PrDetailPanel", () => ({
-  PrDetailPanel: ({
+vi.mock("./PrPageContent", () => ({
+  PrPageContent: ({
     pr,
     tab,
     onTabChange,
+    defaultEditingReviewers,
   }: {
     pr: TrackedPullRequest;
     tab: string;
     onTabChange: (tab: string) => void;
+    defaultEditingReviewers?: boolean;
   }) => (
     <div data-testid="pr-page">
       <h2>{pr.title}</h2>
       <span data-testid="pr-page-tab">{tab}</span>
-      <button type="button" onClick={() => onTabChange("timeline")}>
+      <span data-testid="pr-page-reviewers">{defaultEditingReviewers ? "editing" : "closed"}</span>
+      <button type="button" onClick={() => onTabChange("conversation")}>
         Show conversation
       </button>
     </div>
@@ -384,6 +387,26 @@ it("moves, peeks, opens the page and returns with the keyboard", async () => {
   // Keys typed into the search box are text, not commands.
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByTestId("pr-page")).not.toBeInTheDocument();
+});
+
+it("opens the page where a step of the peek's checklist is taken", async () => {
+  await renderQueue();
+  await row("Charlie fix").click();
+  await peek(3).getByRole("button", { name: "View checks" }).click();
+  await expect.poll(lastSearch).toEqual({ pr: keyOf(3), view: "page", tab: "checks" });
+  await expect.element(page.getByTestId("pr-page-tab")).toHaveTextContent("checks");
+  await expect.element(page.getByTestId("pr-page-reviewers")).toHaveTextContent("closed");
+
+  await userEvent.keyboard("{Escape}");
+  await peek(3).getByRole("button", { name: "Request reviewers" }).click();
+  // Overview is the page's first tab, so the address does not name it.
+  await expect.poll(lastSearch).toEqual({ pr: keyOf(3), view: "page" });
+  await expect.element(page.getByTestId("pr-page-reviewers")).toHaveTextContent("editing");
+
+  // Coming back another way opens the page as usual.
+  await userEvent.keyboard("{Escape}");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByTestId("pr-page-reviewers")).toHaveTextContent("closed");
 });
 
 it("restores the page, its tab and the filters from the URL state", async () => {

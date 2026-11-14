@@ -4,10 +4,12 @@ import {
   type PrHubSyncState,
   type TrackedPullRequest,
 } from "@t3tools/contracts";
+import { forgeCapabilitiesFor } from "@t3tools/shared/forgeCapabilities";
 import { describe, expect, it } from "vitest";
 
 import {
   movePrQueueCursor,
+  prPageActionAvailability,
   prQueueCollapsed,
   prQueueCommand,
   prRowChecks,
@@ -167,6 +169,149 @@ describe("row cells and checklist", () => {
         (item) => item.id === "branch",
       ),
     ).toMatchObject({ tone: "warning", detail: "Behind main" });
+  });
+
+  it("offers the step that moves each line forward", () => {
+    const actions = (overrides: Partial<TrackedPullRequest>) =>
+      Object.fromEntries(
+        prStatusChecklist(makePr(overrides)).map((item) => [item.id, item.action?.kind ?? null]),
+      );
+    expect(
+      actions({ checkRollup: "failure", mergeStateStatus: "BEHIND", unresolvedThreadCount: 1 }),
+    ).toEqual({
+      review: "request_reviewers",
+      checks: "view_checks",
+      branch: "update_branch",
+      threads: "view_threads",
+    });
+    expect(actions({ mergeable: "conflicting" }).branch).toBe("resolve_conflicts");
+    // Nothing to do on an approved, up-to-date pull request without checks.
+    expect(actions({ reviewDecision: "approved", checkRollup: "none" })).toEqual({
+      review: null,
+      checks: null,
+      branch: null,
+    });
+  });
+
+  it("offers a reviewer no author steps, and nothing on a closed or ignored pull request", () => {
+    const kinds = (overrides: Partial<TrackedPullRequest>) =>
+      prStatusChecklist(makePr(overrides)).flatMap((item) =>
+        item.action ? [item.action.kind] : [],
+      );
+    expect(kinds({ ...theirs, mergeable: "conflicting", checkRollup: "failure" })).toEqual([
+      "view_checks",
+    ]);
+    expect(kinds({ state: "closed", checkRollup: "failure" })).toEqual([]);
+    expect(kinds({ ignoredAt: "2026-11-02T00:00:00.000Z", checkRollup: "failure" })).toEqual([]);
+    // GitLab can only rebase; Bitbucket cannot update a branch at all.
+    expect(kinds({ provider: "bitbucket", mergeStateStatus: "BEHIND" })).not.toContain(
+      "update_branch",
+    );
+  });
+});
+
+describe("prPageActionAvailability", () => {
+  const capabilities = [
+    { action: "approve", supported: true },
+    { action: "comment", supported: true },
+    { action: "request-changes", supported: false, reason: "Not allowed" },
+  ] as const satisfies TrackedPullRequest["capabilities"];
+
+  it("offers the author the merge choices and no review ones", () => {
+    const can = prPageActionAvailability(makePr({ capabilities }));
+    expect(can).toMatchObject({
+      canMerge: true,
+      canReview: false,
+      canApprove: false,
+      canRequestChanges: false,
+      canComment: true,
+      canSnooze: true,
+      canIgnore: true,
+      canClose: true,
+      canReopen: false,
+      canMarkReady: false,
+      canConvertToDraft: true,
+    });
+  });
+
+  it("offers Merge when ready only where the forge can queue the merge", () => {
+    expect(prPageActionAvailability(makePr()).canMergeWhenReady).toBe(true);
+    const caps = forgeCapabilitiesFor("github")!;
+    expect(
+      prPageActionAvailability(
+        makePr({
+          forgeCapabilities: {
+            ...caps,
+            actions: caps.actions.filter((action) => action !== "enable-auto-merge"),
+          },
+        }),
+      ).canMergeWhenReady,
+    ).toBe(false);
+    expect(prPageActionAvailability(makePr({ provider: "bitbucket" })).canMergeWhenReady).toBe(
+      false,
+    );
+    expect(prPageActionAvailability(makePr({ isDraft: true })).canMergeWhenReady).toBe(false);
+  });
+
+  it("offers a requested reviewer the verdicts the forge supports", () => {
+    const can = prPageActionAvailability(
+      makePr({ ...theirs, capabilities, viewerReviewRequested: true }),
+    );
+    expect(can).toMatchObject({
+      canReview: true,
+      canApprove: true,
+      canRequestChanges: false,
+      canComment: true,
+      canMerge: false,
+      canMergeWhenReady: false,
+    });
+    // New commits after a review count as a request to look again.
+    expect(
+      prPageActionAvailability(
+        makePr({ ...theirs, capabilities, attentionState: "changes_pushed" }),
+      ).canReview,
+    ).toBe(true);
+    expect(prPageActionAvailability(makePr({ ...theirs, capabilities })).canApprove).toBe(false);
+  });
+
+  it("offers a draft Mark ready, and a ready pull request Convert to draft", () => {
+    expect(prPageActionAvailability(makePr({ isDraft: true }))).toMatchObject({
+      canMarkReady: true,
+      canConvertToDraft: false,
+      canMerge: false,
+    });
+  });
+
+  it("re-requests review only while the author waits on named reviewers", () => {
+    expect(
+      prPageActionAvailability(makePr({ reviewRequestReviewers: ["alice"] })).canReRequest,
+    ).toBe(true);
+    expect(prPageActionAvailability(makePr()).canReRequest).toBe(false);
+    expect(
+      prPageActionAvailability(
+        makePr({ reviewRequestReviewers: ["alice"], attentionState: "ci_failing" }),
+      ).canReRequest,
+    ).toBe(false);
+  });
+
+  it("leaves a closed pull request Reopen, and a merged, ignored or archived one nothing", () => {
+    expect(prPageActionAvailability(makePr({ state: "closed", capabilities }))).toMatchObject({
+      canReopen: true,
+      canClose: false,
+      canMerge: false,
+      canSnooze: false,
+      canIgnore: false,
+      canComment: false,
+    });
+    expect(Object.values(prPageActionAvailability(makePr({ state: "merged" }))).some(Boolean)).toBe(
+      false,
+    );
+    expect(
+      prPageActionAvailability(makePr({ ignoredAt: "2026-11-02T00:00:00.000Z" })),
+    ).toMatchObject({ canMerge: false, canSnooze: false, canIgnore: false, canClose: true });
+    expect(
+      Object.values(prPageActionAvailability(makePr({ repositoryArchived: true }))).some(Boolean),
+    ).toBe(false);
   });
 });
 
