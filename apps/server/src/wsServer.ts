@@ -178,7 +178,6 @@ import {
   invalidExecutionDirectories,
 } from "./profiles/RepositorySharing";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
-import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
@@ -378,6 +377,7 @@ import {
 } from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
+import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import {
   answerFromTable,
@@ -4168,12 +4168,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   // Routes that live in their own modules. `routeRequest` answers from here
   // before its switch; see `wsServer/routes/routeTable.ts`.
   const routeTable = mergeRouteTables(
-    githubAccountRoutes({
-      login: githubLogin,
-      account: githubAccount,
-      cliImport: githubCliImport,
+    mergeRouteTables(
+      githubAccountRoutes({
+        login: githubLogin,
+        account: githubAccount,
+        cliImport: githubCliImport,
+      }),
+      providerAccountRoutes(accountService),
+    ),
+    profileRoutes({
+      store: profilesStore,
+      list: readProfiles,
+      defaultStateDir: defaultProfileStateDir,
+      activeProfileId: activeProfile.id,
     }),
-    providerAccountRoutes(accountService),
   );
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
@@ -4190,39 +4198,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return yield* answerFromTable(routeTable, request.body, ws);
     }
     switch (request.body._tag) {
-      case WS_METHODS.profilesList:
-        return yield* profileCall(readProfiles);
-      case WS_METHODS.profilesCreate: {
-        const profile = yield* profileCall(() =>
-          profilesStore.create(
-            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileCreateInput,
-          ),
-        );
-        return {
-          ...profile,
-          stateDir: profileStateDir(defaultProfileStateDir, profile),
-          isActive: false,
-          providerAccounts: [],
-        };
-      }
-      case WS_METHODS.profilesUpdate: {
-        const profile = yield* profileCall(() =>
-          profilesStore.update(
-            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileUpdateInput,
-          ),
-        );
-        return {
-          ...profile,
-          stateDir: profileStateDir(defaultProfileStateDir, profile),
-          isActive: profile.id === activeProfile.id,
-          providerAccounts: [],
-        };
-      }
-      case WS_METHODS.profilesDelete: {
-        const id = request.body.profileId;
-        return yield* profileCall(() => profilesStore.remove(id));
-      }
-
       case AGENT_BRIDGE_WS_METHODS.setSchedulingGrant:
         return yield* agentBridge
           .setSchedulingGrant(stripRequestTag(request.body))
