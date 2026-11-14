@@ -46,6 +46,7 @@ import {
   type CodexAdapterLiveOptions,
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
+import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
 
 it("reports Codex's preview as verified, so its chip can reach ready", () => {
   const [event] = withAgentBrowserPreview(
@@ -2717,6 +2718,89 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         modelContextWindowTokens: 258_400,
       });
     }),
+  );
+
+  it.effect(
+    "attaches whole-turn usage before completion persistence without changing context",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        for (const status of ["completed", "failed", "interrupted", "native"] as const) {
+          const threadId = asThreadId("cache-usage-" + status);
+          const turnId = asTurnId("cache-turn-" + status);
+          const eventsFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.threadId === threadId),
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          const emit = (method: string, payload: object) =>
+            lifecycleManager.emit("event", {
+              id: asEventId(status + method + JSON.stringify(payload)),
+              kind: "notification",
+              provider: "codex",
+              threadId,
+              turnId,
+              createdAt: new Date().toISOString(),
+              method,
+              payload: { threadId: "native-" + status, ...payload },
+            } satisfies ProviderEvent);
+          emit("turn/started", { turn: { id: turnId, status: "inProgress" } });
+          emit("thread/tokenUsage/updated", {
+            tokenUsage: {
+              total: { inputTokens: 10_000, cachedInputTokens: 8_000, outputTokens: 500 },
+              last: { inputTokens: 100, cachedInputTokens: 80, outputTokens: 10, totalTokens: 110 },
+            },
+          });
+          emit("thread/tokenUsage/updated", {
+            tokenUsage: {
+              total: { inputTokens: 10_200, cachedInputTokens: 8_100, outputTokens: 520 },
+              last: {
+                inputTokens: 200,
+                cachedInputTokens: 100,
+                outputTokens: 20,
+                totalTokens: 220,
+              },
+            },
+          });
+          const nativeUsage = {
+            inputTokens: 10,
+            cachedInputTokens: 8,
+            outputTokens: 2,
+            totalTokens: 12,
+          };
+          emit("turn/completed", {
+            turn: {
+              id: turnId,
+              status: status === "native" ? "completed" : status,
+              ...(status === "native" ? { usage: nativeUsage } : {}),
+            },
+          });
+          const events = Array.from(yield* Fiber.join(eventsFiber));
+          const completed = events.find((event) => event.type === "turn.completed");
+          assert.ok(completed?.type === "turn.completed");
+          assert.deepEqual(
+            completed.payload.usage,
+            status === "native"
+              ? nativeUsage
+              : {
+                  inputTokens: 300,
+                  cachedInputTokens: 180,
+                  outputTokens: 30,
+                },
+          );
+          assert.equal(
+            normalizeTurnUsage(completed).tokenProvenance,
+            status === "native" ? "provider-reported" : "derived-from-provider-fields",
+          );
+          assert.deepEqual(
+            events
+              .filter((event) => event.type === "thread.token-usage.updated")
+              .map((event) => event.payload.contextTokens),
+            [110, 220],
+          );
+        }
+      }),
   );
 
   it.effect("reports reasoning tokens once per increase in Codex usage totals", () =>

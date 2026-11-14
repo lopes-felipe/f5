@@ -2707,6 +2707,60 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.estimatedContextTokens).toBe(550);
   });
 
+  it("persists derived Codex turn usage for history without replacing context occupancy", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("codex-cache-turn");
+    const createdAt = new Date().toISOString();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("codex-cache-start"),
+      provider: "codex",
+      threadId,
+      turnId,
+      createdAt,
+    });
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("codex-cache-context"),
+      provider: "codex",
+      threadId,
+      turnId,
+      createdAt,
+      payload: { usage: {}, contextTokens: 50, modelContextWindowTokens: 475_000 },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("codex-cache-complete"),
+      provider: "codex",
+      threadId,
+      turnId,
+      createdAt,
+      payload: {
+        state: "completed",
+        usage: { inputTokens: 100, cachedInputTokens: 80, outputTokens: 10 },
+      },
+    });
+    await harness.drain();
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready",
+    );
+    expect(thread.estimatedContextTokens).toBe(50);
+    const loaded = await Effect.runPromise(
+      harness.usageFactRepository.listByThread({ threadId, limit: 100 }),
+    );
+    expect(loaded.turns).toHaveLength(1);
+    expect(loaded.turns[0]).toMatchObject({
+      turnId,
+      provider: "codex",
+      inputTokens: 100,
+      cacheReadTokens: 80,
+      cacheWriteTokens: null,
+      outputTokens: 10,
+    });
+  });
+
   it("does not overwrite thread token usage when turn.completed omits usage", async () => {
     const harness = await createHarness();
     const completedAt = new Date().toISOString();

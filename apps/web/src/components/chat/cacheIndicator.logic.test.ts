@@ -79,6 +79,37 @@ function message(
 const noStarts = new Map<TurnId, string>();
 
 describe("summarizeThreadCache ratios", () => {
+  it("restores Codex cache ratios and final-reply miss pills from loaded turn facts", () => {
+    const loaded = history([
+      codexTurn("cold", { inputTokens: 100, cacheReadTokens: 0, completedAt: minute(0) }),
+      codexTurn("warm", { inputTokens: 100, cacheReadTokens: 80, completedAt: minute(2) }),
+      codexTurn("miss", { inputTokens: 100, cacheReadTokens: 20, completedAt: minute(15) }),
+      codexTurn("unknown", { cacheReadTokens: null, completedAt: minute(17) }),
+    ]);
+    const messages = [
+      message("cold-reply", "assistant", minute(0), "cold"),
+      message("warm-reply", "assistant", minute(2), "warm"),
+      message("user", "user", minute(12)),
+      message("interim", "assistant", minute(13), "miss"),
+      message("final", "assistant", minute(15), "miss"),
+      message("unknown-reply", "assistant", minute(17), "unknown"),
+    ];
+    const summary = summarizeThreadCache(loaded, turnStartTimes(messages));
+    expect(summary.turns.map((turn) => turn.state)).toEqual([
+      "cold-start",
+      "warm",
+      "miss",
+      "unreported",
+    ]);
+    expect(formatCacheRatio(summary.turns[1]!.ratio!)).toBe("80%");
+    const misses = cacheMissesByAssistantMessageId(summary, lastAssistantMessageIdByTurn(messages));
+    expect([...misses.keys()]).toEqual([MessageId.makeUnsafe("final")]);
+    expect(misses.get(MessageId.makeUnsafe("final"))).toMatchObject({
+      rewrittenTokens: 80,
+      idleMs: 10 * 60_000,
+    });
+  });
+
   it("counts Claude cache reads and writes outside input", () => {
     const [turn] = summarizeThreadCache(history([claudeTurn("a")]), noStarts).turns;
     // 900 / (10 + 900 + 90)
