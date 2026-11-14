@@ -36,6 +36,65 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("marks Forgejo required checks and preserves optional failures", async () => {
+    const { provider, ref, calls } = fixture("forgejo", [
+      { number: 7, base: { ref: "release/1.x" }, head: { sha: "head" } },
+      { enable_status_check: true, status_check_contexts: ["ci/*", "deploy", "deploy"] },
+      [
+        { context: "ci/build", status: "success", target_url: "/team/repo/actions/1" },
+        { context: "ci/build", status: "failure" },
+        { context: "optional", status: "failure" },
+      ],
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.checksComplete).toBe(true);
+    expect(detail.checks?.map(({ name, status, required }) => [name, status, required])).toEqual([
+      ["ci/build", "success", true],
+      ["optional", "failure", undefined],
+      ["deploy", "pending", true],
+    ]);
+    expect(detail.checks?.[0]?.url).toBe("https://codeberg.org/team/repo/actions/1");
+    expect(calls[1]?.url).toContain("/branches/release/1.x");
+  });
+
+  it.each([403, 404])(
+    "keeps all Forgejo checks gating without branch access (%s)",
+    async (status) => {
+      const { provider, ref } = fixture("forgejo", [
+        { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+        new Response(null, { status }),
+        [{ context: "optional", status: "failure" }],
+      ]);
+      const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+      expect(detail.checks?.[0]).toMatchObject({ status: "failure" });
+      expect(detail.checks?.[0]?.required).toBeUndefined();
+    },
+  );
+
+  it.each([401, 429, 503])("propagates Forgejo branch failures (%s)", async (status) => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      new Response(null, { status }),
+    ]);
+    const result = await Effect.runPromise(
+      provider.getDetail(ref, { checks: true }).pipe(Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
+
+  it("does not accept a partial Forgejo status listing", async () => {
+    const { provider, ref } = fixture("forgejo", [
+      { number: 7, base: { ref: "main" }, head: { sha: "head" } },
+      {},
+      ...Array.from({ length: 20 }, () =>
+        Array.from({ length: 50 }, () => ({ context: "ci", status: "success" })),
+      ),
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref, { checks: true }));
+    expect(detail.checksComplete).toBe(false);
+    expect(detail.checks).toEqual([]);
+  });
+
   it("reads fork child pipelines on the selected GitLab host", async () => {
     const { provider, ref, calls } = fixture("gitlab", [
       {
