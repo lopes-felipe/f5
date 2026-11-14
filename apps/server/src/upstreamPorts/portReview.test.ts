@@ -14,6 +14,98 @@ import {
 } from "./testing/reviewFixtures.ts";
 
 describe("nextPortReviewStep", () => {
+  it("resumes a stopped implementation only after a different settled turn has PR evidence", () => {
+    const row = reviewRecord({ status: "error", resumeAfterTurnId: "stopped-turn" });
+    const thread = reviewThread();
+    const settled = {
+      ...thread,
+      latestTurn: { ...thread.latestTurn!, processingQuiescedAt: thread.updatedAt },
+    };
+    expect(nextPortReviewStep(row, reviewContext({ thread: settled })).kind).toBe("resume");
+    expect(nextPortReviewStep(row, reviewContext({ thread })).kind).toBe("wait");
+    expect(
+      nextPortReviewStep(
+        { ...row, resumeAfterTurnId: settled.latestTurn.turnId },
+        reviewContext({ thread: settled }),
+      ).kind,
+    ).toBe("wait");
+    for (const state of ["running", "interrupted", "error"] as const)
+      expect(
+        nextPortReviewStep(
+          row,
+          reviewContext({
+            thread: { ...settled, latestTurn: { ...settled.latestTurn, state } },
+            projectedPrUrl: REVIEW_PR,
+          }),
+        ).kind,
+      ).toBe("wait");
+    const noOutcome = { ...settled, messages: [] };
+    expect(nextPortReviewStep(row, reviewContext({ thread: noOutcome })).kind).toBe("wait");
+    const prose = {
+      ...settled,
+      messages: settled.messages.map((m) => ({ ...m, text: "Opened " + REVIEW_PR })),
+    };
+    expect(nextPortReviewStep(row, reviewContext({ thread: prose })).kind).toBe("wait");
+    expect(
+      nextPortReviewStep(row, reviewContext({ thread: prose, projectedPrUrl: REVIEW_PR })).kind,
+    ).toBe("resume");
+    for (const terminal of [
+      reviewRecord({ status: "error" }),
+      reviewRecord({ status: "skipped" }),
+      { ...row, reviewWorkflowId: "existing" },
+      { ...row, applyCommandJson: "{}" },
+    ])
+      expect(nextPortReviewStep(terminal, reviewContext({ thread: settled })).kind).toBe("wait");
+  });
+
+  it("arms recovery for implementation failures and blocked outcomes only", () => {
+    const thread = reviewThread();
+    for (const state of ["error", "interrupted"] as const)
+      expect(
+        nextPortReviewStep(
+          reviewRecord(),
+          reviewContext({ thread: { ...thread, latestTurn: { ...thread.latestTurn!, state } } }),
+        ),
+      ).toMatchObject({ kind: "fail", resumeAfterTurnId: thread.latestTurn!.turnId });
+    for (const kind of ["blocked", "equivalent", "not-applicable"] as const) {
+      const step = nextPortReviewStep(
+        reviewRecord(),
+        reviewContext({
+          thread: {
+            ...thread,
+            messages: thread.messages.map((m) => ({
+              ...m,
+              text: "UPSTREAM-OUTCOME: " + kind + " " + (kind === "equivalent" ? "x:1" : "reason"),
+            })),
+          },
+        }),
+      );
+      expect(step.kind).toBe("skip");
+      expect("resumeAfterTurnId" in step).toBe(kind === "blocked");
+    }
+  });
+
+  it.each([
+    ["UPSTREAM-OUTCOME: equivalent x:1", "skip"],
+    ["UPSTREAM-OUTCOME: not-applicable unsupported", "skip"],
+    ["UPSTREAM-OUTCOME: blocked missing dependency", "wait"],
+    ["UPSTREAM-OUTCOME pr-1: equivalent x:1", "skip"],
+    ["UPSTREAM-OUTCOME pr-1: not-applicable unsupported", "skip"],
+    ["UPSTREAM-OUTCOME pr-1: blocked missing dependency", "wait"],
+  ] as const)("honors explicit continuation outcome %s even with a projected PR", (text, kind) => {
+    const thread = reviewThread();
+    const row = reviewRecord({ status: "error", resumeAfterTurnId: "stopped-turn" });
+    const ctx = reviewContext({
+      projectedPrUrl: REVIEW_PR,
+      thread: {
+        ...thread,
+        latestTurn: { ...thread.latestTurn!, processingQuiescedAt: thread.updatedAt },
+        messages: thread.messages.map((m) => ({ ...m, text })),
+      },
+    });
+    expect(nextPortReviewStep(row, ctx).kind).toBe(kind);
+  });
+
   it.each([
     ["pending", null, "wait"],
     ["submitted", "pending", "wait"],

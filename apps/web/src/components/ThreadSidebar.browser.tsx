@@ -2339,7 +2339,26 @@ describe("Thread sidebar", () => {
       const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
         button.getAttribute("aria-label"),
       );
-      expect(navLabels).toEqual(["Home", "Search threads", "Scheduled", "Projects", "Recent"]);
+      expect(navLabels).toEqual([
+        "Home",
+        "Search threads",
+        "Pull requests",
+        "Scheduled",
+        "Usage",
+        "Projects",
+        "Recent",
+      ]);
+      // The flex-1/min-w-0 icon buttons only get width from the strip's layout; guard it, since
+      // DOM presence alone passed while 0.1.9 rendered Pull requests and Usage at 0px.
+      for (const button of navigation.querySelectorAll<HTMLElement>("button[aria-label]")) {
+        expect(
+          button.getBoundingClientRect().width,
+          `${button.getAttribute("aria-label")} width`,
+        ).toBeGreaterThan(0);
+      }
+      const footer = document.querySelector('[data-sidebar="footer"]')!;
+      expect(footer.querySelector('[aria-label="Usage"]')).toBeNull();
+      expect(footer.querySelector('[aria-label="Pull requests"]')).toBeNull();
       // The notifications bell lives in the title bar, beside the profile switcher.
       const bell = document.querySelector('[data-testid="sidebar-notifications"]');
       expect(bell).toBeInstanceOf(HTMLElement);
@@ -2377,16 +2396,29 @@ describe("Thread sidebar", () => {
       );
       await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
-      const usageButton = document.querySelector<HTMLButtonElement>(
-        '[data-sidebar="footer"] [aria-label="Usage"]',
-      )!;
+      const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
       expect(usageButton.hasAttribute("aria-current")).toBe(false);
       usageButton.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
+      await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
       await vi.waitFor(() =>
         expect(document.querySelector('[data-sidebar="footer"]')?.textContent).toContain("Back"),
       );
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
+      // Pull requests is marked in the strip, so its page keeps Settings in the footer.
+      const pullRequestsButton = navigation.querySelector<HTMLButtonElement>(
+        '[aria-label="Pull requests"]',
+      )!;
+      expect(pullRequestsButton.hasAttribute("aria-current")).toBe(false);
+      pullRequestsButton.click();
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/pull-requests"));
+      await vi.waitFor(() => expect(pullRequestsButton.getAttribute("aria-current")).toBe("page"));
+      expect(usageButton.hasAttribute("aria-current")).toBe(false);
+      await vi.waitFor(() => {
+        const footerText = document.querySelector('[data-sidebar="footer"]')?.textContent;
+        expect(footerText).toContain("Settings");
+        expect(footerText).not.toContain("Back");
+      });
       expect(navigation.textContent).not.toContain("Bots");
 
       // The search field stays hidden until the Search button opens it, focused.
@@ -4919,7 +4951,7 @@ describe("Thread sidebar", () => {
       );
       const badge = await waitForElement(
         () =>
-          [...document.querySelectorAll<HTMLElement>('[data-sidebar="footer"] span')].find(
+          [...navigation.querySelectorAll<HTMLElement>("span")].find(
             (span) => span.textContent === "1.2k",
           ) ?? null,
         "The Pull requests badge should render.",

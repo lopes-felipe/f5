@@ -85,6 +85,7 @@ export function reviewRecord(overrides: Partial<PortReviewRecord> = {}): PortRev
     reviewInputJson: null,
     applyCommandJson: null,
     applyTurnId: null,
+    resumeAfterTurnId: null,
     submitFailures: 0,
     attempt: 0,
     updatedAt: REVIEW_NOW,

@@ -108,12 +108,7 @@ import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
 import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
 import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
 import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
-import {
-  SIDEBAR_NAV_ROW_CLASS_NAME,
-  SIDEBAR_VIEWS,
-  SidebarNav,
-  SidebarWorkspaceNavigation,
-} from "./sidebar/SidebarNav";
+import { SIDEBAR_NAV_ROW_CLASS_NAME, SIDEBAR_VIEWS, SidebarNav } from "./sidebar/SidebarNav";
 import { useNotificationInboxPopover } from "../notificationCenter/inboxStore";
 import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
 import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
@@ -208,7 +203,6 @@ export default function Sidebar() {
   const router = useRouter();
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
-  const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
   const canGoBack = useCanGoBack();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const appSettings = useAppSettingsSelector(selectSidebarSettings);
@@ -1269,6 +1263,7 @@ export default function Sidebar() {
           onSearchQueryChange={setSidebarSearchQuery}
           onOpenCommandPalette={handleOpenCommandPalette}
           commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+          pullRequestsShortcutLabel={pullRequestsShortcutLabel}
           homeShortcutLabel={homeShortcutLabel}
           view={sidebarView}
           onViewChange={setSidebarView}
@@ -1440,7 +1435,7 @@ export default function Sidebar() {
           <SidebarFooter className="p-2">
             <SidebarMenu>
               <SidebarMenuItem className="flex items-center gap-1">
-                {isOnSettings || isOnUsage || isOnPullRequests ? (
+                {isOnSettings || isOnUsage ? (
                   <SidebarMenuButton
                     className={SIDEBAR_NAV_ROW_CLASS_NAME}
                     onClick={() => {
@@ -1452,23 +1447,18 @@ export default function Sidebar() {
                     <span>Back</span>
                   </SidebarMenuButton>
                 ) : (
-                  <>
-                    <SidebarMenuButton
-                      className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                      onClick={() =>
-                        void navigate({
-                          to: "/settings",
-                          search: resolveSettingsNavigationSearch(router.state.location),
-                        })
-                      }
-                    >
-                      <SettingsIcon className="size-4" />
-                      <span>Settings</span>
-                    </SidebarMenuButton>
-                    <SidebarWorkspaceNavigation
-                      pullRequestsShortcutLabel={pullRequestsShortcutLabel}
-                    />
-                  </>
+                  <SidebarMenuButton
+                    className={SIDEBAR_NAV_ROW_CLASS_NAME}
+                    onClick={() =>
+                      void navigate({
+                        to: "/settings",
+                        search: resolveSettingsNavigationSearch(router.state.location),
+                      })
+                    }
+                  >
+                    <SettingsIcon className="size-4" />
+                    <span>Settings</span>
+                  </SidebarMenuButton>
                 )}
                 <Tooltip>
                   <TooltipTrigger

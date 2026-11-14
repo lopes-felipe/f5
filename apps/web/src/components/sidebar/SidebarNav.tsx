@@ -173,6 +173,7 @@ export function SidebarNav(props: {
   onSearchQueryChange: (query: string) => void;
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
+  pullRequestsShortcutLabel: string | null;
   homeShortcutLabel: string | null;
   view: SidebarView;
   onViewChange: (view: SidebarView) => void;
@@ -180,7 +181,10 @@ export function SidebarNav(props: {
   const navigate = useNavigate();
   const isOnScheduled = useLocation({ select: (loc) => loc.pathname === "/scheduled" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
+  const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
+  const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const isOnUpstream = useLocation({ select: (loc) => loc.pathname === "/upstream" });
+  const prHubNeedsYouCount = usePrHubNeedsYouCount();
   const upstream = useUpstreamNav();
   const [searchOpen, setSearchOpen] = useState(false);
   const searchButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -214,6 +218,14 @@ export function SidebarNav(props: {
             setSearchOpen(true);
           }}
         />
+        <NavIconButton
+          icon={GitPullRequestIcon}
+          label="Pull requests"
+          isActive={isOnPullRequests}
+          shortcutLabel={props.pullRequestsShortcutLabel}
+          badge={{ count: prHubNeedsYouCount, label: "need you", tone: "warning" }}
+          onSelect={() => void navigate({ to: "/pull-requests" })}
+        />
         {upstream.visible ? (
           <NavIconButton
             icon={GitMergeIcon}
@@ -228,6 +240,12 @@ export function SidebarNav(props: {
           label="Scheduled"
           isActive={isOnScheduled}
           onSelect={() => void navigate({ to: "/scheduled" })}
+        />
+        <NavIconButton
+          icon={GaugeIcon}
+          label="Usage"
+          isActive={isOnUsage}
+          onSelect={() => void navigate({ to: "/usage" })}
         />
         <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border" />
         <SidebarViewToggle view={props.view} onViewChange={props.onViewChange} />
@@ -250,32 +268,5 @@ export function SidebarNav(props: {
         </div>
       ) : null}
     </nav>
-  );
-}
-/** Workspace utilities live together in the sidebar footer. */
-export function SidebarWorkspaceNavigation({
-  pullRequestsShortcutLabel,
-}: {
-  pullRequestsShortcutLabel: string | null;
-}) {
-  const navigate = useNavigate();
-  const count = usePrHubNeedsYouCount();
-  return (
-    <>
-      <NavIconButton
-        icon={GitPullRequestIcon}
-        label="Pull requests"
-        shortcutLabel={pullRequestsShortcutLabel}
-        isActive={false}
-        badge={{ count, label: "need you", tone: "warning" }}
-        onSelect={() => void navigate({ to: "/pull-requests" })}
-      />
-      <NavIconButton
-        icon={GaugeIcon}
-        label="Usage"
-        isActive={false}
-        onSelect={() => void navigate({ to: "/usage" })}
-      />
-    </>
   );
 }

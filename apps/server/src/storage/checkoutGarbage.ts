@@ -414,7 +414,7 @@ export async function removeDependencyFolder(
     quarantine = Path.join(Path.dirname(input.path), DEPENDENCY_QUARANTINE_PREFIX + randomUUID());
     await FS.rename(input.path, quarantine);
     const moved = await storageLstat(quarantine);
-    if (moved.dev !== input.identity.dev || moved.ino !== input.identity.ino)
+    if (moved.dev !== input.identity.dev || moved.exactIno !== input.identity.ino)
       throw new Error("Folder identity changed before quarantine. Files retained.");
   }
   const size = await recursiveSize(quarantine, { maxDepth: 64 });
