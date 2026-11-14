@@ -4,6 +4,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Changed
+
+- Home is now a triage queue. Threads are grouped into **Needs a decision**, **Ready for review** (failed turns and finished work you have not opened), **Running** (with one row per active workflow) and **Pinned**, and the pane beside the queue shows the selected thread's request, error or last reply without opening it. `J`/`K` move, `Enter` or `O` opens, `E` settles, `H` snoozes and `P` pins; `mod+shift+H` opens Home from anywhere. A line above the queue counts pull requests and upstream topics waiting on you and shows the next scheduled run, a usage limit above 50% and low disk space. The greeting, the resume banner, the Recent list and the `mod+1`–`9` project shortcut are gone from Home; recent threads are in the sidebar's Recent view.
+
 ## [0.1.9] - 2026-11-14
 
 ### Added

@@ -132,8 +132,15 @@ commit, push and pull request actions. Linked pull requests also appear in the
 > **Thread summaries** (**Settings → Threads**) send thread messages, activities, plans, tasks and
 > checkpoints to the account you choose, including threads that ran on other providers.
 
-- **Home** groups threads into Pinned, Needs you, Working and Recent. `mod+K` searches threads,
-  workflows and commands.
+- **Home** (`mod+shift+H`) is a triage queue in four groups: **Needs a decision** (approvals,
+  questions, plans, paused queues), **Ready for review** (failed turns, then finished ones you
+  have not opened), **Running** (threads and workflows) and **Pinned**. The pane beside the queue
+  shows the selected thread's request or error and its last exchange. `J`/`K` or the arrow keys
+  move, `Enter` or `O` opens, `E` settles, `H` snoozes, `P` pins and `/` jumps to the new thread
+  box. A line above the queue counts pull requests and upstream topics waiting on you, and shows
+  the next scheduled run, an account limit above 50% and low disk space; each opens its page.
+  Recent threads are in the sidebar's **Recent** view.
+- `mod+K` searches threads, workflows and commands.
 - Archive a thread from its sidebar menu; archived items are under **Settings → Archive**.
 - A usage-limit notice can be snoozed until a time you pick; snoozed threads show a moon icon.
 - **Settings → Threads → Snooze options** sets the choices in every snooze menu: up to 8, either

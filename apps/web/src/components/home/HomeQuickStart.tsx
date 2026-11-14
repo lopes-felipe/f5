@@ -8,6 +8,7 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type Ref,
 } from "react";
 
 import { useCommandPaletteStore } from "../../commandPaletteStore";
@@ -20,6 +21,7 @@ import type { Project } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   HomeProjectPickerPlaceholder,
   type HomeProjectSelection,
@@ -40,14 +42,15 @@ export function appendQuickStartText(existingPrompt: string, text: string): stri
 }
 
 /**
- * Home's starting point: pick a project, describe the work, and land in a new
- * thread with the text in its composer. Start only prefills and focuses; it
- * never sends.
+ * Home's starting point, as one bar above the queue: pick a project, describe the
+ * work, and land in a new thread with the text in its composer. Start only prefills
+ * and focuses; it never sends.
  */
 export function HomeQuickStart(props: {
-  readonly greeting: string;
   readonly projects: ReadonlyArray<Project>;
   readonly defaultSelection: HomeProjectSelection;
+  /** The text field, so Home's "/" key can focus it. */
+  readonly inputRef?: Ref<HTMLTextAreaElement> | undefined;
 }) {
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
   const navigate = useNavigate();
@@ -123,62 +126,67 @@ export function HomeQuickStart(props: {
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground">
-        {props.greeting}
-      </h1>
-      <form
-        onSubmit={onSubmit}
-        aria-label="Quick start"
-        data-slot="home-quick-start"
-        className="rounded-xl border border-border bg-card shadow-lg/5 transition-colors duration-(--duration-fast) focus-within:border-ring/60"
-      >
-        <textarea
-          aria-label={QUICK_START_PLACEHOLDER}
-          placeholder={QUICK_START_PLACEHOLDER}
-          value={text}
-          rows={3}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={onKeyDown}
-          className="block min-h-24 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
-        />
-        <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-          <Suspense fallback={<HomeProjectPickerPlaceholder target={target} />}>
-            <HomeProjectPicker
-              projects={props.projects}
-              selection={selection}
-              onSelect={setSelected}
+    <form
+      onSubmit={onSubmit}
+      aria-label="Quick start"
+      data-slot="home-quick-start"
+      className="flex flex-wrap items-end gap-1 rounded-xl border border-border bg-card p-1.5 shadow-lg/5 transition-colors duration-(--duration-fast) focus-within:border-ring/60"
+    >
+      <Suspense fallback={<HomeProjectPickerPlaceholder target={target} />}>
+        <HomeProjectPicker projects={props.projects} selection={selection} onSelect={setSelected} />
+      </Suspense>
+      <textarea
+        ref={props.inputRef}
+        aria-label={QUICK_START_PLACEHOLDER}
+        placeholder={QUICK_START_PLACEHOLDER}
+        value={text}
+        rows={1}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={onKeyDown}
+        // One line that grows with its text, so the queue below keeps its room.
+        className="field-sizing-content block max-h-40 min-h-7 min-w-40 flex-1 resize-none bg-transparent px-2 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+      />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="New workflow"
+              className="text-muted-foreground hover:text-foreground"
+              disabled={!projectId}
+              onClick={() => {
+                if (projectId) useWorkflowCreateDialogStore.getState().open(projectId);
+              }}
             />
-          </Suspense>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground hover:text-foreground"
-            disabled={!projectId}
-            onClick={() => {
-              if (projectId) useWorkflowCreateDialogStore.getState().open(projectId);
-            }}
-          >
-            <WorkflowIcon />
-            New workflow
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground hover:text-foreground"
-            onClick={() => useCommandPaletteStore.getState().openAddProject()}
-          >
-            <FolderPlusIcon />
-            Add project
-          </Button>
-          <Button type="submit" size="sm" className="ms-auto" disabled={starting}>
-            Start
-            <ArrowUpIcon />
-          </Button>
-        </div>
-      </form>
-    </div>
+          }
+        >
+          <WorkflowIcon />
+        </TooltipTrigger>
+        <TooltipPopup side="bottom">New workflow</TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Add project"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => useCommandPaletteStore.getState().openAddProject()}
+            />
+          }
+        >
+          <FolderPlusIcon />
+        </TooltipTrigger>
+        <TooltipPopup side="bottom">Add project</TooltipPopup>
+      </Tooltip>
+      <Button type="submit" size="sm" disabled={starting}>
+        Start
+        <ArrowUpIcon />
+      </Button>
+    </form>
   );
 }

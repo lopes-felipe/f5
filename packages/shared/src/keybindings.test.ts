@@ -94,6 +94,15 @@ describe("shared keybinding helpers", () => {
     });
   });
 
+  it("includes the Home navigation default on a key nothing else uses", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+shift+h",
+      command: "home.open",
+      when: "!terminalFocus",
+    });
+    expect(DEFAULT_KEYBINDINGS.filter((binding) => binding.key === "mod+shift+h")).toHaveLength(1);
+  });
+
   it("uses distinct defaults for project file and content search", () => {
     expect(DEFAULT_KEYBINDINGS).toContainEqual({
       key: "mod+p",

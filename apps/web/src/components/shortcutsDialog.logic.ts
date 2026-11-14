@@ -73,6 +73,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "palette.files",
       "projectContentSearch.toggle",
       "sidebar.toggle",
+      "home.open",
       "prHub.open",
       "notifications.toggle",
       "usage.open",

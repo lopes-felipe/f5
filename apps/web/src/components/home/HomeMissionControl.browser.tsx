@@ -1,7 +1,13 @@
 import "../../index.css";
 import { emptyDiskSpaceStatus } from "../../test/emptyAppRpc";
 
-import { ProjectId, ThreadId, type NativeApi } from "@t3tools/contracts";
+import {
+  type DiskSpaceStatus,
+  type NativeApi,
+  type OrchestrationThreadPeeks,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
@@ -12,17 +18,19 @@ import {
   createRouter,
   useParams,
 } from "@tanstack/react-router";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useComposerFocusRequestStore } from "../../composerFocusRequestStore";
+import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { useStore } from "../../store";
 import type { Project, Thread } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
 import { SidebarProvider } from "../ui/sidebar";
 import { HomeMissionControl } from "./HomeMissionControl";
+import { useHomeSelectionStore } from "./homeSelectionStore";
 import { toastManager } from "../ui/toast";
 
 const NOW_ISO = new Date().toISOString();
@@ -33,8 +41,36 @@ const PROJECT_CREATED_AT = "2026-01-01T00:00:00.000Z";
 const getProjectSettings = vi.fn(async () => {
   throw new Error("offline");
 });
-const dispatchCommand = vi.fn(async () => ({ sequence: 1 }));
+const dispatchCommand = vi.fn(async (_command: { type: string; threadId?: string }) => ({
+  sequence: 1,
+}));
 const ensureScratch = vi.fn<NativeApi["projects"]["ensureScratch"]>();
+const getThreadPeeks = vi.fn(
+  async (_input: { threadIds: ReadonlyArray<string> }): Promise<OrchestrationThreadPeeks> => ({
+    peeks: [],
+  }),
+);
+interface TailDetailsFixture {
+  readonly threadId: string;
+  readonly messages: ReadonlyArray<{
+    readonly id: string;
+    readonly role: "user" | "assistant";
+    readonly text: string;
+    readonly turnId: string | null;
+    readonly streaming: boolean;
+  }>;
+  readonly checkpoints: ReadonlyArray<never>;
+  readonly tasks: ReadonlyArray<never>;
+}
+const emptyTailDetails = async (input: { threadId: string }): Promise<TailDetailsFixture> => ({
+  threadId: input.threadId,
+  messages: [],
+  checkpoints: [],
+  tasks: [],
+});
+const getThreadTailDetails = vi.fn(emptyTailDetails);
+const getPrHubOverview = vi.fn(async () => ({ counts: { needs_you: 0 } }));
+const getDiskSpace = vi.fn(async (): Promise<DiskSpaceStatus> => emptyDiskSpaceStatus);
 
 function makeProject(id: string, name: string): Project {
   return {
@@ -118,12 +154,53 @@ const APPROVAL_THREAD = makeThread(PROJECT_A.id, "thread-approval", {
       tone: "approval",
       kind: "approval.requested",
       summary: "Needs approval",
-      payload: { requestId: "request-1", requestKind: "command" },
+      payload: {
+        requestId: "request-1",
+        requestKind: "command",
+        detail: "git push --force-with-lease",
+      },
       turnId: null,
       createdAt: NOW_ISO,
     },
   ],
 });
+
+function endedTurn(id: string, state: "completed" | "error"): NonNullable<Thread["latestTurn"]> {
+  return {
+    turnId: `${id}-turn` as never,
+    state,
+    assistantMessageId: null,
+    requestedAt: NOW_ISO,
+    startedAt: NOW_ISO,
+    completedAt: NOW_ISO,
+  };
+}
+
+// Neither thread was visited since its turn ended, so both are unseen.
+const FAILED_THREAD = makeThread(PROJECT_A.id, "thread-failed", {
+  title: "Broken build",
+  latestTurn: endedTurn("thread-failed", "error"),
+  error: "Usage limit reached\nTry again after 6 pm.",
+});
+
+const DONE_THREAD = makeThread(PROJECT_B.id, "thread-done", {
+  title: "Finished refactor",
+  latestTurn: endedTurn("thread-done", "completed"),
+});
+
+/** Row titles in reading order, within `root`. */
+function rowTitles(root: Element): Array<string | null> {
+  return Array.from(root.querySelectorAll('[role="option"]'), (row) =>
+    row.getAttribute("aria-label"),
+  );
+}
+
+function selectedTitle(): string | null {
+  return (
+    document.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("aria-label") ??
+    null
+  );
+}
 
 const WORKING_THREAD = makeThread(PROJECT_B.id, "thread-working", {
   title: "Busy refactor",
@@ -210,13 +287,20 @@ describe("HomeMissionControl", () => {
   beforeAll(() => {
     window.nativeApi = {
       storage: {
-        getDiskSpace: async () => emptyDiskSpaceStatus,
+        getDiskSpace: () => getDiskSpace(),
         onDiskSpaceUpdated: () => () => {},
       },
       server: { getProjectSettings },
       projects: { ensureScratch },
-      orchestration: { dispatchCommand },
+      orchestration: { dispatchCommand, getThreadPeeks, getThreadTailDetails },
+      prHub: { getOverview: () => getPrHubOverview(), onChanged: () => () => {} },
+      scheduledTasks: { list: async () => ({ revision: 0, tasks: [] }) },
     } as unknown as NativeApi;
+  });
+
+  // Wide enough for the queue and the preview side by side; one test narrows it.
+  beforeEach(async () => {
+    await page.viewport(1280, 800);
   });
 
   afterEach(() => {
@@ -226,6 +310,14 @@ describe("HomeMissionControl", () => {
     ensureScratch.mockReset();
     getProjectSettings.mockReset();
     getProjectSettings.mockRejectedValue(new Error("offline"));
+    getThreadPeeks.mockClear();
+    getThreadPeeks.mockImplementation(async () => ({ peeks: [] }));
+    getThreadTailDetails.mockClear();
+    getThreadTailDetails.mockImplementation(emptyTailDetails);
+    getPrHubOverview.mockImplementation(async () => ({ counts: { needs_you: 0 } }));
+    getDiskSpace.mockImplementation(async () => emptyDiskSpaceStatus);
+    useHomeSelectionStore.setState({ selectedId: null, itemIds: [] });
+    useNextTurnQueueStore.setState({ summary: { threads: [] } });
     vi.restoreAllMocks();
   });
 
@@ -448,15 +540,17 @@ describe("HomeMissionControl", () => {
     }
   });
 
-  it("leads with a greeting and the quick-start card, without the old stat strip", async () => {
+  it("leads with the quick-start bar and says so when nothing needs the user", async () => {
     const view = await renderHome([IDLE_THREAD]);
     try {
-      await expect.element(page.getByRole("heading", { level: 1 })).toHaveTextContent(/^Good /);
       await expect.element(page.getByRole("form", { name: "Quick start" })).toBeInTheDocument();
-      expect(document.body.textContent).not.toContain("F5 Home");
       await expect
         .element(page.getByRole("combobox", { name: "Project" }))
         .toHaveTextContent("Alpha");
+      // No greeting, and an idle thread is not queue material.
+      expect(page.getByRole("heading", { level: 1 }).all()).toHaveLength(0);
+      await expect.element(page.getByText("Nothing needs you")).toBeInTheDocument();
+      expect(page.getByRole("listbox", { name: "Queue" }).all()).toHaveLength(0);
     } finally {
       await view.cleanup();
     }
@@ -548,84 +642,434 @@ describe("HomeMissionControl", () => {
     }
   });
 
-  it("groups threads into Needs you cards, Working rows and Recent rows", async () => {
-    const view = await renderHome([APPROVAL_THREAD, WORKING_THREAD, IDLE_THREAD]);
-    try {
-      const needsYou = page.getByRole("region", { name: "Needs you" });
-      await expect.element(needsYou).toBeInTheDocument();
-      const card = document.querySelector<HTMLElement>('[data-slot="home-attention-card"]');
-      expect(card?.dataset.status).toBe("pending-approval");
-      await expect
-        .element(needsYou.getByRole("button", { name: "Review approval" }))
-        .toBeInTheDocument();
+  describe("triage queue", () => {
+    const QUEUE_THREADS = [
+      APPROVAL_THREAD,
+      FAILED_THREAD,
+      DONE_THREAD,
+      WORKING_THREAD,
+      IDLE_THREAD,
+    ];
 
-      await expect
-        .element(page.getByRole("region", { name: "Working" }).getByText("Busy refactor"))
-        .toBeInTheDocument();
-      const recent = page.getByRole("region", { name: "Recent" });
-      await expect.element(recent.getByText("Quiet thread")).toBeInTheDocument();
-      // Idle rows carry no status chip.
-      expect(recent.element().textContent).not.toContain("Idle");
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("shows the full Needs you count and expands past the first eight cards", async () => {
-    const approvals = Array.from({ length: 10 }, (_, index) =>
-      makeThread(PROJECT_A.id, `thread-approval-${index}`, {
-        title: `Approval ${index}`,
-        activities: APPROVAL_THREAD.activities,
-      }),
-    );
-    const view = await renderHome(approvals);
-    try {
-      const cards = () => document.querySelectorAll('[data-slot="home-attention-card"]').length;
-      const needsYou = page.getByRole("region", { name: "Needs you" });
-      await vi.waitFor(() => expect(cards()).toBe(8));
-      await expect.element(needsYou.getByRole("heading", { level: 2 })).toHaveTextContent("10");
-
-      await needsYou.getByRole("button", { name: /Show more/ }).click();
-      await vi.waitFor(() => expect(cards()).toBe(10));
-      await needsYou.getByRole("button", { name: /Show less/ }).click();
-      await vi.waitFor(() => expect(cards()).toBe(8));
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("moves focus through cards and rows with j and k", async () => {
-    const view = await renderHome([APPROVAL_THREAD, WORKING_THREAD, IDLE_THREAD]);
-    try {
-      const rows = () =>
-        Array.from(document.querySelectorAll<HTMLElement>("[data-home-row-index]"));
-      await vi.waitFor(() => expect(rows().length).toBe(3));
-      (document.activeElement as HTMLElement | null)?.blur();
-
-      await userEvent.keyboard("j");
-      expect(document.activeElement).toBe(rows()[0]);
-      await userEvent.keyboard("j");
-      expect(document.activeElement).toBe(rows()[1]);
-      await userEvent.keyboard("k");
-      expect(document.activeElement).toBe(rows()[0]);
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("deep-links a Needs you card into its thread and requests composer focus", async () => {
-    const view = await renderHome([APPROVAL_THREAD]);
-    try {
-      await page.getByRole("button", { name: "Review approval" }).click();
-      await vi.waitFor(() => {
-        expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(
-          APPROVAL_THREAD.id,
+    it("groups threads by what they need and describes each row", async () => {
+      getThreadPeeks.mockImplementation(async ({ threadIds }) => ({
+        peeks: threadIds.map((threadId) => ({
+          threadId: ThreadId.makeUnsafe(threadId),
+          lastUserText: `Prompt for ${threadId}`,
+          lastAssistantText: `**Reply** for ${threadId}`,
+          latestTurnDiff:
+            threadId === DONE_THREAD.id ? { files: 3, additions: 48, deletions: 12 } : null,
+        })),
+      }));
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        const queue = page.getByRole("listbox", { name: "Queue" });
+        const group = (name: string) => queue.getByRole("group", { name });
+        await expect
+          .element(group("Needs a decision").getByRole("option", { name: "Needs an approval" }))
+          .toHaveTextContent("git push --force-with-lease");
+        // The unseen failure comes before the unread completion.
+        await vi.waitFor(() =>
+          expect(rowTitles(group("Ready for review").element())).toEqual([
+            "Broken build",
+            "Finished refactor",
+          ]),
         );
+        await expect
+          .element(queue.getByRole("option", { name: "Broken build" }))
+          .toHaveTextContent("Usage limit reached");
+        await expect
+          .element(queue.getByRole("option", { name: "Finished refactor" }))
+          .toHaveTextContent(`Reply for ${DONE_THREAD.id} · 3 files +48 −12`);
+        await expect
+          .element(group("Running").getByRole("option", { name: "Busy refactor" }))
+          .toHaveTextContent(`Prompt for ${WORKING_THREAD.id}`);
+        // Idle threads stay in the sidebar.
+        expect(queue.getByRole("option", { name: "Quiet thread" }).all()).toHaveLength(0);
+        // One request covers every row.
+        expect(getThreadPeeks).toHaveBeenCalledTimes(1);
+        expect(getThreadPeeks.mock.calls[0]![0].threadIds).toHaveLength(4);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("selects the first item, shows its context and moves with the keyboard", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        const queue = page.getByRole("listbox", { name: "Queue" });
+        await expect.element(queue).toHaveFocus();
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+        const preview = page.getByRole("article", { name: "Needs an approval" });
+        await expect.element(preview).toHaveTextContent("Agent wants to run");
+        await expect.element(preview).toHaveTextContent("git push --force-with-lease");
+
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Broken build");
+        await expect
+          .element(page.getByRole("article", { name: "Broken build" }))
+          .toHaveTextContent("Usage limit reached");
+        await userEvent.keyboard("{ArrowDown}");
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        await userEvent.keyboard("k");
+        await expect.poll(selectedTitle).toBe("Broken build");
+        await userEvent.keyboard("{End}");
+        await expect.poll(selectedTitle).toBe("Busy refactor");
+        // The ends stop instead of wrapping.
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Busy refactor");
+        await userEvent.keyboard("{Home}");
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+        expect(dispatchCommand).not.toHaveBeenCalled();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("keeps the selection across a visit to a thread and when the queue reorders", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        // New activity moves another thread to the top of its group.
+        useStore.setState((state) => ({
+          threads: [
+            ...state.threads,
+            makeThread(PROJECT_A.id, "thread-approval-2", {
+              title: "Second approval",
+              activities: APPROVAL_THREAD.activities,
+              lastInteractionAt: new Date(Date.now() + 60_000).toISOString(),
+            }),
+          ],
+        }));
+        await expect
+          .element(page.getByRole("option", { name: "Second approval" }))
+          .toBeInTheDocument();
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+
+        await view.router.navigate({ to: "/$threadId", params: { threadId: IDLE_THREAD.id } });
+        await view.router.navigate({ to: "/" });
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("carries on at the next item when the opened thread has left the queue", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await page.getByRole("option", { name: "Broken build" }).click();
+        await userEvent.keyboard("o");
+        await vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(
+            FAILED_THREAD.id,
+          ),
+        );
+        // Seeing the failure clears it.
+        useStore.setState((state) => ({
+          threads: state.threads.map((thread) =>
+            thread.id === FAILED_THREAD.id
+              ? { ...thread, lastVisitedAt: new Date(Date.now() + 60_000).toISOString() }
+              : thread,
+          ),
+        }));
+        await view.router.navigate({ to: "/" });
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        expect(page.getByRole("option", { name: "Broken build" }).all()).toHaveLength(0);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("opens the selected thread with O, Enter, a double click or the button", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      const expectRoute = (threadId: string) =>
+        vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="thread-route"]')?.textContent).toBe(
+            threadId,
+          ),
+        );
+      const home = () => view.router.navigate({ to: "/" });
+      try {
+        await expect.element(page.getByRole("listbox", { name: "Queue" })).toHaveFocus();
+        await userEvent.keyboard("o");
+        await expectRoute(APPROVAL_THREAD.id);
+        // A decision is answered in the composer, so opening it hands the composer focus.
+        expect(useComposerFocusRequestStore.getState().request?.threadId).toBe(APPROVAL_THREAD.id);
+
+        await home();
+        useComposerFocusRequestStore.setState({ request: null });
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        await userEvent.keyboard("{Enter}");
+        await expectRoute(DONE_THREAD.id);
+        expect(useComposerFocusRequestStore.getState().request).toBeNull();
+
+        await home();
+        await userEvent.dblClick(page.getByRole("option", { name: "Busy refactor" }));
+        await expectRoute(WORKING_THREAD.id);
+
+        await home();
+        await page.getByRole("option", { name: "Broken build" }).click();
+        await page.getByRole("button", { name: /Open thread/ }).click();
+        await expectRoute(FAILED_THREAD.id);
+        expect(dispatchCommand).not.toHaveBeenCalled();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("settles with E and carries on at the item that followed", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await page.getByRole("option", { name: "Broken build" }).click();
+        await userEvent.keyboard("e");
+        await vi.waitFor(() =>
+          expect(dispatchCommand).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "thread.settle", threadId: FAILED_THREAD.id }),
+          ),
+        );
+        // The server's event settles the thread; it then leaves the queue.
+        useStore.setState((state) => ({
+          threads: state.threads.map((thread) =>
+            thread.id === FAILED_THREAD.id ? { ...thread, settledAt: NOW_ISO } : thread,
+          ),
+        }));
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        expect(page.getByRole("option", { name: "Broken build" }).all()).toHaveLength(0);
+        // Focus stays in Home, so the next key still works.
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Busy refactor");
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("pins with P and offers the snooze times with H", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        await userEvent.keyboard("p");
+        await vi.waitFor(() =>
+          expect(dispatchCommand).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "thread.pins.replace" }),
+          ),
+        );
+        dispatchCommand.mockClear();
+
+        await userEvent.keyboard("h");
+        const tomorrow = page.getByRole("menuitem", { name: /Tomorrow/ });
+        await expect.element(tomorrow).toBeVisible();
+        // Keys pressed in the menu are the menu's: J must not move the queue under it.
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Finished refactor");
+        await tomorrow.click();
+        await vi.waitFor(() =>
+          expect(dispatchCommand).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "thread.snooze", threadId: DONE_THREAD.id }),
+          ),
+        );
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("leaves its keys alone while typing, and focuses the quick start with /", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await expect.element(page.getByRole("listbox", { name: "Queue" })).toHaveFocus();
+        await userEvent.keyboard("/");
+        const input = page.getByRole("textbox", { name: "What should we work on?" });
+        await expect.element(input).toHaveFocus();
+        // The slash itself is not typed.
+        await expect.element(input).toHaveValue("");
+
+        await userEvent.keyboard("jeep");
+        await expect.element(input).toHaveValue("jeep");
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+        expect(dispatchCommand).not.toHaveBeenCalled();
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("ignores its keys when focus is outside Home", async () => {
+      const view = await renderHome(QUEUE_THREADS);
+      const outside = document.createElement("button");
+      outside.textContent = "Elsewhere";
+      document.body.append(outside);
+      try {
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+        outside.focus();
+        await userEvent.keyboard("jeo");
+        await expect.poll(selectedTitle).toBe("Needs an approval");
+        expect(dispatchCommand).not.toHaveBeenCalled();
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+      } finally {
+        outside.remove();
+        await view.cleanup();
+      }
+    });
+
+    it("shows the reply in full once the thread's tail is read", async () => {
+      getThreadTailDetails.mockImplementation(async ({ threadId }) => ({
+        threadId,
+        messages: [
+          { id: "m1", role: "user", text: "Refactor the queue", turnId: "t1", streaming: false },
+          {
+            id: "m2",
+            role: "assistant",
+            text: "Done.\n\n- Split the store\n- Added tests",
+            turnId: "t1",
+            streaming: false,
+          },
+        ],
+        checkpoints: [],
+        tasks: [],
+      }));
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        const preview = page.getByRole("article", { name: "Finished refactor" });
+        await expect.element(preview.getByText("Refactor the queue")).toBeVisible();
+        await expect
+          .element(preview.getByRole("listitem").first())
+          .toHaveTextContent("Split the store");
+        // Previewing a thread does not load it into the store.
+        expect(
+          useStore.getState().threads.find((t) => t.id === DONE_THREAD.id)?.detailsLoaded,
+        ).toBe(false);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("lists a thread whose queue is paused and a pinned thread once", async () => {
+      useNextTurnQueueStore.setState({
+        summary: {
+          threads: [
+            {
+              threadId: IDLE_THREAD.id,
+              queuedCount: 2,
+              dispatchingCount: 0,
+              failedCount: 0,
+              scheduledResumeAt: null,
+              paused: true,
+            },
+          ],
+        },
       });
-      expect(useComposerFocusRequestStore.getState().request?.threadId).toBe(APPROVAL_THREAD.id);
-      expect(dispatchCommand).not.toHaveBeenCalled();
-    } finally {
-      await view.cleanup();
-    }
+      const pinned = makeThread(PROJECT_B.id, "thread-pinned", {
+        title: "Release checklist",
+        pinnedAt: NOW_ISO,
+        pinOrderKey: 1,
+      });
+      const pinnedApproval = { ...APPROVAL_THREAD, pinnedAt: NOW_ISO, pinOrderKey: 2 };
+      const view = await renderHome([pinnedApproval, IDLE_THREAD, pinned]);
+      try {
+        const queue = page.getByRole("listbox", { name: "Queue" });
+        await vi.waitFor(() =>
+          expect(rowTitles(queue.element())).toEqual([
+            "Needs an approval",
+            "Quiet thread",
+            "Release checklist",
+          ]),
+        );
+        await expect
+          .element(queue.getByRole("group", { name: "Pinned" }).getByRole("option"))
+          .toHaveAccessibleName("Release checklist");
+        await page.getByRole("option", { name: "Quiet thread" }).click();
+        await expect
+          .element(page.getByRole("article", { name: "Quiet thread" }))
+          .toHaveTextContent("2 queued turns wait until the queue is resumed.");
+        // A pinned thread cannot be settled.
+        await page.getByRole("option", { name: "Release checklist" }).click();
+        await expect.element(page.getByRole("button", { name: /Settle/ })).toBeDisabled();
+        await userEvent.keyboard("e");
+        expect(dispatchCommand).not.toHaveBeenCalled();
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("takes turns between the queue and the preview in a narrow window", async () => {
+      await page.viewport(600, 800);
+      const view = await renderHome(QUEUE_THREADS);
+      try {
+        const queue = page.getByRole("listbox", { name: "Queue" });
+        await expect.element(queue).toHaveFocus();
+        expect(page.getByRole("article").all()).toHaveLength(0);
+
+        await userEvent.keyboard("j");
+        await expect.poll(selectedTitle).toBe("Broken build");
+        await userEvent.keyboard("{Enter}");
+        await expect.element(page.getByRole("article", { name: "Broken build" })).toBeVisible();
+        expect(page.getByRole("listbox", { name: "Queue" }).all()).toHaveLength(0);
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeNull();
+
+        await page.getByRole("button", { name: "Back to queue" }).click();
+        await expect.element(queue).toBeVisible();
+        await page.getByRole("option", { name: "Finished refactor" }).click();
+        await expect
+          .element(page.getByRole("article", { name: "Finished refactor" }))
+          .toBeVisible();
+        (document.activeElement as HTMLElement | null)?.blur();
+        page
+          .getByRole("button", { name: /Open thread/ })
+          .element()
+          .focus();
+        await userEvent.keyboard("{Escape}");
+        await expect.element(queue).toHaveFocus();
+      } finally {
+        await view.cleanup();
+      }
+    });
+  });
+
+  describe("status strip", () => {
+    it("counts work on the other surfaces and never calls Home caught up over it", async () => {
+      getPrHubOverview.mockImplementation(async () => ({ counts: { needs_you: 1423 } }));
+      getDiskSpace.mockImplementation(async () => ({
+        ...emptyDiskSpaceStatus,
+        level: "low",
+        volumes: [
+          {
+            path: "/data",
+            roles: ["userdata"],
+            freeBytes: 6 * 1024 ** 3,
+            totalBytes: 460 * 1024 ** 3,
+            level: "low",
+          },
+        ],
+      }));
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        const strip = page.getByRole("group", { name: "Elsewhere in F5" });
+        await expect
+          .element(strip.getByTestId("home-strip-prs"))
+          .toHaveTextContent("1.4k PRs need you");
+        await expect
+          .element(strip.getByTestId("home-strip-disk"))
+          .toHaveTextContent(/Disk 6.*free/);
+        await expect.element(page.getByText("No threads need you")).toBeInTheDocument();
+        expect(page.getByText("Nothing needs you").all()).toHaveLength(0);
+        // The old banner is gone: low disk space is one chip.
+        expect(page.getByRole("alert").all()).toHaveLength(0);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("renders nothing while every surface is quiet", async () => {
+      const view = await renderHome([IDLE_THREAD]);
+      try {
+        await expect.element(page.getByText("Nothing needs you")).toBeInTheDocument();
+        expect(document.querySelector('[data-slot="home-status-strip"]')?.childElementCount).toBe(
+          0,
+        );
+      } finally {
+        await view.cleanup();
+      }
+    });
   });
 });

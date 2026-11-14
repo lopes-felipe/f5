@@ -1088,6 +1088,10 @@ export default function Sidebar() {
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
     [keybindings],
   );
+  const homeShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "home.open"),
+    [keybindings],
+  );
   const handleOpenCommandPalette = useStableCallback(() => {
     setCommandPaletteOpen(true);
   });
@@ -1265,6 +1269,7 @@ export default function Sidebar() {
           onSearchQueryChange={setSidebarSearchQuery}
           onOpenCommandPalette={handleOpenCommandPalette}
           commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+          homeShortcutLabel={homeShortcutLabel}
           view={sidebarView}
           onViewChange={setSidebarView}
         />

@@ -18,7 +18,7 @@ This file records the visual direction chosen in the design lab (Phase D of the 
 | Density         | Comfortable      | Constant (32px rows, 14px body); no `uiDensity` setting                                   |
 | Composer        | Dock             | Floating dock over a bottom fade; timeline padding tracks the measured dock height        |
 | Workflow page   | Board            | Phases as columns at `lg` and up; List below `lg`                                         |
-| Home            | Dashboard        | Composer-styled quick start, "Needs you" cards with deep-link actions                     |
+| Home            | Triage           | Quick-start bar, status strip, a keyboard-driven queue beside the selected item's preview |
 | Motion          | Expressive       | Panel slide and staggered list entry, always `motion-reduce` safe                         |
 | Radius base     | 0.75rem (12px)   | `--radius`                                                                                |
 
@@ -63,7 +63,7 @@ Semantic tokens use the fixed hues (info 250, success 152, warning 75, destructi
 - `--radius: 0.75rem`. Tiers: `rounded-md` controls and chips, `rounded-lg` rows and cards, `rounded-xl` canvases, composer, dialogs, panels and bubbles, `rounded-full` pills, dots and send.
 - Raised surfaces: `bg-card` with a hairline border and a soft shadow (`shadow-xs`/`shadow-sm` scale); canvases: `bg-background rounded-xl` with a hairline and soft shadow on `bg-chrome`.
 - Rows: 32px (`h-8`); body text 14px; list text `text-ui` (13px); meta `text-2xs` (11px) minimum.
-- Motion: `--duration-fast: 120ms`, `--duration-base: 180ms`, `--ease-out: cubic-bezier(0.16, 1, 0.3, 1)`. Right panel slides in 16px; Home and sidebar lists stagger in 28ms steps (max 12). Everything is disabled under `prefers-reduced-motion`.
+- Motion: `--duration-fast: 120ms`, `--duration-base: 180ms`, `--ease-out: cubic-bezier(0.16, 1, 0.3, 1)`. Right panel slides in 16px; sidebar lists stagger in 28ms steps (max 12). Everything is disabled under `prefers-reduced-motion`.
 
 ## Guardrails
 
@@ -78,5 +78,6 @@ Semantic tokens use the fixed hues (info 250, success 152, warning 75, destructi
 - Preset C "Ink" (Geist, near-monochrome, compact, hairline-only): calm, but the monochrome primary weakens the "what do I do next" cue and compact density hurts long sessions.
 - Geist and DM Sans: Inter reads best at 11 to 13px and has tabular numerals by default.
 - Attached composer: wastes the column bottom; the dock keeps more of the timeline visible.
-- List-only workflow page and Inbox Home: kept as the narrow-width fallback (List) and not used (Inbox); Board and Dashboard make per-slot models and next actions visible at a glance.
+- List-only workflow page: kept as the narrow-width fallback; the Board makes per-slot models and next actions visible at a glance.
+- Dashboard Home (greeting, "Needs you" cards, Working and Recent lists): shipped first and replaced by Triage. It repeated the sidebar's lists, so there was little reason to open it. The inbox layout first set aside here is what Home uses now: a queue (needs a decision, ready for review, running, pinned) next to the selected thread's context, so a thread can be judged without opening it. Under 720px the queue and the preview take turns.
 - Minimal motion: kept implicitly through `prefers-reduced-motion`.

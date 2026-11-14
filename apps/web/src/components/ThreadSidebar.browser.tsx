@@ -2352,7 +2352,10 @@ describe("Thread sidebar", () => {
       expect(document.querySelector('[data-testid="sidebar-projects-label"]')?.textContent).toBe(
         "Projects",
       );
-      expect(queryButtonByAriaLabel("Add project")).not.toBeNull();
+      // Home's quick-start bar has an Add project button of its own.
+      const sidebarAddProject = () =>
+        document.querySelector('[data-slot="sidebar"] button[aria-label="Add project"]');
+      expect(sidebarAddProject()).not.toBeNull();
       const recentToggle = navigation.querySelector<HTMLButtonElement>(
         '[data-testid="sidebar-view-recent"]',
       )!;
@@ -2368,7 +2371,7 @@ describe("Thread sidebar", () => {
       await vi.waitFor(() =>
         expect(document.querySelector('[data-testid="sidebar-projects-label"]')).toBeNull(),
       );
-      expect(queryButtonByAriaLabel("Add project")).toBeNull();
+      expect(sidebarAddProject()).toBeNull();
       recentToggle.dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
       );
