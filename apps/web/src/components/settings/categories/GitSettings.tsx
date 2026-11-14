@@ -1,5 +1,11 @@
 import { ThreadSettlementSettings } from "../ThreadSettlementSettings";
-import { DEFAULT_GIT_TEXT_GENERATION_MODEL, type ServerSettings } from "@t3tools/contracts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  DEFAULT_SERVER_SETTINGS,
+  type PrHubSettings,
+  type ServerSettings,
+  type ServerSettingsPatch,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -418,6 +424,26 @@ function WritingSettings() {
   );
 }
 
+type PrHubSettingsPatch = NonNullable<ServerSettingsPatch["prHub"]>;
+
+/**
+ * The text of a list field saved on blur. It follows the saved value until the user edits
+ * it. When a save lands, the draft is replaced only if it still holds what was saved before
+ * or what was submitted: text typed while the save was in flight is kept.
+ */
+function useSavedListDraft(saved: string) {
+  const [state, setState] = useState({ saved, draft: saved, submitted: null as string | null });
+  if (state.saved !== saved) {
+    const untouched = state.draft === state.saved || state.draft === state.submitted;
+    setState({ saved, draft: untouched ? saved : state.draft, submitted: null });
+  }
+  return {
+    draft: state.draft,
+    setDraft: (draft: string) => setState((current) => ({ ...current, draft })),
+    markSubmitted: () => setState((current) => ({ ...current, submitted: current.draft })),
+  };
+}
+
 function PullRequestSettings() {
   const { settings, updateSettings } = useSettingsRouteContext();
   const defaultMergeMethod = useSettings((unified) => unified.prHubDefaultMergeMethod);
@@ -425,17 +451,14 @@ function PullRequestSettings() {
   const { updateSettings: updateServerSettings } = useUpdateSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const queryClient = useQueryClient();
-  const prHubSettings = serverConfigQuery.data?.settings?.prHub ?? {
-    pollIntervalSeconds: PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT,
-    excludeRepos: [],
-  };
+  const prHubSettings: PrHubSettings =
+    serverConfigQuery.data?.settings?.prHub ?? DEFAULT_SERVER_SETTINGS.prHub;
   const prHubRefreshEnabled = prHubSettings.pollIntervalSeconds !== 0;
-  const [excludeReposDraft, setExcludeReposDraft] = useState(prHubSettings.excludeRepos.join("\n"));
+  // Compared as text: every settings save returns new arrays, and resetting on identity
+  // would wipe a draft in one field when another field saves.
+  const excludeRepos = useSavedListDraft(prHubSettings.excludeRepos.join("\n"));
+  const directTeams = useSavedListDraft(prHubSettings.directReviewTeams.join("\n"));
   const mergeMethodValue = defaultMergeMethod ?? "last-used";
-
-  useEffect(() => {
-    setExcludeReposDraft(prHubSettings.excludeRepos.join("\n"));
-  }, [prHubSettings.excludeRepos]);
 
   const setDefaultMergeMethod = (value: "merge" | "squash" | "rebase" | null) => {
     void updateServerSettings({ prHubDefaultMergeMethod: value }).catch((error: unknown) =>
@@ -447,21 +470,43 @@ function PullRequestSettings() {
     );
   };
 
-  const updatePrHubSettings = async (patch: Partial<typeof prHubSettings>) => {
-    const nextSettings = await ensureNativeApi().server.updateSettings({
-      prHub: { ...prHubSettings, ...patch },
-    });
+  // A save sends only the fields it changes and the server merges them into its current
+  // settings. Sending the whole object would let two saves in flight write each other's old
+  // values back.
+  const updatePrHubSettings = async (patch: PrHubSettingsPatch) => {
+    const nextSettings = await ensureNativeApi().server.updateSettings({ prHub: patch });
     queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
       existing ? { ...existing, settings: nextSettings } : existing,
     );
   };
+  /** For controls that do not report a failed save themselves. The draft stays to retry. */
+  const savePrHubSettings = (patch: PrHubSettingsPatch) =>
+    void updatePrHubSettings(patch).catch((error: unknown) =>
+      toastManager.add({
+        type: "error",
+        title: "Could not save pull request settings",
+        description: errorMessage(error),
+      }),
+    );
 
   const saveExcludeRepos = () => {
-    const excludeRepos = excludeReposDraft
-      .split(/[\n,]/)
-      .map((repo) => repo.trim())
-      .filter(Boolean);
-    void updatePrHubSettings({ excludeRepos });
+    excludeRepos.markSubmitted();
+    savePrHubSettings({
+      excludeRepos: excludeRepos.draft
+        .split(/[\n,]/)
+        .map((repo) => repo.trim())
+        .filter(Boolean),
+    });
+  };
+
+  const saveDirectTeams = () => {
+    directTeams.markSubmitted();
+    savePrHubSettings({
+      directReviewTeams: directTeams.draft
+        .split(/[\n,]/)
+        .map((team) => team.trim().replace(/^@/, ""))
+        .filter(Boolean),
+    });
   };
 
   return (
@@ -538,7 +583,7 @@ function PullRequestSettings() {
             <Switch
               checked={prHubRefreshEnabled}
               onCheckedChange={(checked) =>
-                void updatePrHubSettings({
+                savePrHubSettings({
                   pollIntervalSeconds: checked ? PR_HUB_POLL_INTERVAL_SECONDS_DEFAULT : 0,
                 })
               }
@@ -554,9 +599,7 @@ function PullRequestSettings() {
           <Switch
             aria-label="Discover PRs from GitHub notifications"
             checked={prHubSettings.discoverNotifications ?? false}
-            onCheckedChange={(checked) =>
-              void updatePrHubSettings({ discoverNotifications: checked })
-            }
+            onCheckedChange={(checked) => savePrHubSettings({ discoverNotifications: checked })}
           />
         }
       />
@@ -583,6 +626,41 @@ function PullRequestSettings() {
           />
         }
       />
+      <SettingsRow
+        title="Move PRs to Stale after"
+        description="Days without activity; 0 disables. Stale PRs leave the queue, the sidebar count and notifications."
+        control={
+          // Saved on blur: each change re-sorts the whole queue on the server.
+          <IntervalSecondsField
+            min={0}
+            max={3650}
+            step={1}
+            value={prHubSettings.staleAfterDays}
+            disabled={false}
+            onCommit={(value) => updatePrHubSettings({ staleAfterDays: value })}
+            label="Move PRs to Stale after"
+          />
+        }
+      />
+      <div className="space-y-2 border-b border-border py-3 last:border-b-0">
+        <div>
+          <p className="text-sm font-medium text-foreground">
+            Teams whose review requests are mine
+          </p>
+          <p className="text-ui text-muted-foreground">
+            One <code>org/team</code> per line. Requests to other teams stay in the Team queue and
+            don't count as needing you.
+          </p>
+        </div>
+        <Textarea
+          aria-label="Teams whose review requests are mine"
+          className="min-h-16 font-mono text-xs"
+          value={directTeams.draft}
+          onChange={(event) => directTeams.setDraft(event.currentTarget.value)}
+          onBlur={saveDirectTeams}
+          placeholder="org/team"
+        />
+      </div>
       <div className="space-y-2 border-b border-border py-3 last:border-b-0">
         <div>
           <p className="text-sm font-medium text-foreground">Excluded repositories</p>
@@ -593,8 +671,8 @@ function PullRequestSettings() {
         <Textarea
           aria-label="Excluded repositories"
           className="min-h-24 font-mono text-xs"
-          value={excludeReposDraft}
-          onChange={(event) => setExcludeReposDraft(event.currentTarget.value)}
+          value={excludeRepos.draft}
+          onChange={(event) => excludeRepos.setDraft(event.currentTarget.value)}
           onBlur={saveExcludeRepos}
           placeholder="owner/repo"
         />

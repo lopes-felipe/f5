@@ -22,6 +22,7 @@ import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
 import { PrHubReviewOperationsLive } from "./PrHubReviewOperations.ts";
 import { makePrHubServiceForHost } from "./PrHubService.ts";
 import { makeForgePrHubService } from "../forgeHub.ts";
+import { makePrHubChangeRelay } from "../readModel.ts";
 import { makeGitHubForge } from "../githubForge.ts";
 import { makeAccountRuntimeCache } from "../accountRuntimeCache.ts";
 import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
@@ -173,10 +174,16 @@ export const PrHubFederationLive = Layer.effect(
     const legacyCli = yield* GitHubCli,
       legacy = yield* makePrHubServiceForHost();
     const changes = yield* PubSub.sliding<PrHubChanged>(16);
-    const forward = (hub: PrHubServiceShape, childScope: Scope.Scope) =>
-      Stream.runForEach(hub.streamChanges, (value) =>
-        PubSub.publish(changes, { ...value, resyncRequired: true }),
+    // Events keep their changed keys, so a client re-reads one pull request's data only
+    // when that pull request changed. A hub event that was dropped before it reached this
+    // relay turns the next one into a resync.
+    const relay = makePrHubChangeRelay();
+    const forward = (hub: PrHubServiceShape, childScope: Scope.Scope) => {
+      const pass = relay();
+      return Stream.runForEach(hub.streamChanges, (value) =>
+        PubSub.publish(changes, pass(value)),
       ).pipe(Effect.forkIn(childScope));
+    };
     yield* forward(legacy, scope);
     const runtimeCache = yield* makeAccountRuntimeCache(scope, (identity, childScope) =>
       Effect.gen(function* () {

@@ -540,6 +540,7 @@ export function makeGitHubHttpOperations(
           "--author": "author",
           "--assignee": "assignee",
           "--review-requested": "review-requested",
+          "--user-review-requested": "user-review-requested",
           "--mentions": "mentions",
           "--involves": "involves",
           "--state": "is",

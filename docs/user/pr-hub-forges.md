@@ -23,11 +23,28 @@ The **Inbox** and **Focus** views list tracked pull requests. Attention filters 
 you**, **Needs my review**, **CI failing** and **Ready** narrow the list, and you can also filter by
 repository, draft status, review decision, CI or lifecycle. The search field accepts qualifiers
 such as `author:me draft:false review:approved status:success label:"needs design" -label:bug`.
+Use `repo:owner/name`, or `repo:name` alone, to keep one repository.
 Repeat `label:` qualifiers to require all of them; comma-separated names match either label.
 Prefix a supported qualifier with `-` to exclude matches. Unknown qualifiers remain search
 text; unquoted words can match in any order, and quoted phrases stay together.
 Each pull request has **Summary**, **Timeline**, **Review threads**
 **Files**, and **Guide · Beta** tabs.
+
+### What counts as "Needs you"
+
+**Needs you**, the sidebar badge and notifications cover three things: reviews requested from
+you, your own pull requests that need a fix, and your pull requests that are ready to merge.
+The list shows them in that order, most recently updated first.
+
+- A review requested from one of your teams, and not from you, reads **Review requested from
+  your team**. It stays out of **Needs you** and never notifies. To treat a team's requests as
+  your own, add it under **Settings → Git → Teams whose review requests are mine**, one
+  `org/team` per line.
+- A pull request with no activity for 30 days is stale. It leaves **Needs you** and sorts
+  last, and it comes back as soon as something happens on it. Change the period, or enter 0
+  to turn this off, under **Settings → Git → Move PRs to Stale after**.
+- **Ignore** shows an **Undo** button for a few seconds. Ignored pull requests remain under
+  the **Ignored** filter.
 
 ## Safe actions
 
@@ -71,7 +88,9 @@ GitHub has native stacks.
 
 - Tokens stay in the profile's server secret store and never reach the browser.
 - Removing an account also removes its repository routes and stored token.
-- When a refresh fails, cached data stays visible with a stale warning.
+- When a refresh fails, cached data stays visible with a warning. Work that F5 finishes on its
+  own, such as searches waiting for GitHub's request budget, is not a failure: the sync
+  details line under the title bar says what is left.
 - PR markdown can show authenticated GitHub images and videos. Other HTML is escaped.
 
 <details>
