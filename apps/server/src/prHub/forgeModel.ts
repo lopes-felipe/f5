@@ -35,7 +35,7 @@ export function forgeTracked(
   const checksIncomplete =
     (ref.provider === "gitlab" &&
       (detail.checksComplete !== true || headStatus === "manual" || headStatus === "skipped")) ||
-    (ref.provider === "forgejo" && detail.checksComplete !== true);
+    (ref.provider === "forgejo" && detail.checksComplete === false);
   const checkRollup: TrackedPullRequest["checkRollup"] = gate.some(
     (check) => check.status === "failure" || check.status === "cancelled",
   )
@@ -180,7 +180,8 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
       labels: pr.labels.map((name) => ({ name, color: null, description: null })),
       reviewers: [],
       checks: detail.checks ?? [],
-      ...((pr.provider === "gitlab" || pr.provider === "forgejo") && detail.checksComplete !== true
+      ...((pr.provider === "gitlab" && detail.checksComplete !== true) ||
+      (pr.provider === "forgejo" && detail.checksComplete === false)
         ? { truncatedSections: ["checks" as const] }
         : {}),
       reactions: [],

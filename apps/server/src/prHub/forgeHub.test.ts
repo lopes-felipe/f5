@@ -164,7 +164,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
           );
           assert.deepEqual(watch.changes, [{ kind: "checks-passed", count: 1, required: true }]);
           head = "second";
-          status = "warning";
+          status = "failure";
           const moved = (yield* hub.refreshNow({ mode: "force" })).pullRequests[0]!;
           assert.equal(moved.headRefOid, head);
           assert.equal(moved.checkRollup, "failure");

@@ -486,29 +486,35 @@ export function makeForgeSourceControlProvider(options: {
             return yield* Effect.gen(function* () {
               if (!detail.headRefOid || !detail.baseRefName)
                 return { ...detail, checks: [], checksComplete: false };
-              const branch = object(
-                yield* request(ref, undefined, "/branches/" + pathParts(detail.baseRefName)).pipe(
-                  Effect.catch((cause) =>
-                    cause.kind === "forbidden" || cause.kind === "not_found"
-                      ? Effect.succeed({})
-                      : Effect.fail(cause),
-                  ),
+              const headSha = detail.headRefOid;
+              const branchRead = request(
+                ref,
+                undefined,
+                "/branches/" + pathParts(detail.baseRefName),
+              ).pipe(
+                Effect.catch((cause) =>
+                  cause.kind === "forbidden" || cause.kind === "not_found"
+                    ? Effect.succeed({})
+                    : Effect.fail(cause),
                 ),
+                Effect.map(object),
               );
+              const readStatuses = (page: number) =>
+                request(
+                  ref,
+                  undefined,
+                  "/statuses/" + enc(headSha) + "?sort=recentupdate&limit=50&page=" + page,
+                );
+              const [branch, firstPage] = yield* Effect.all([branchRead, readStatuses(1)], {
+                concurrency: 2,
+              });
               const checks = new Map<
                 string,
                 { check: PrHubCheck; updatedAt: number; id: number }
               >();
               // Servers can cap pages below our requested size. Only an empty page proves completion.
               for (let page = 1; page <= 20; page++) {
-                const statuses = yield* request(
-                  ref,
-                  undefined,
-                  "/statuses/" +
-                    enc(detail.headRefOid) +
-                    "?sort=recentupdate&limit=50&page=" +
-                    page,
-                );
+                const statuses = page === 1 ? firstPage : yield* readStatuses(page);
                 if (!Array.isArray(statuses))
                   return yield* error("checks", "Invalid Forgejo status page.", "invalid_response");
                 if (statuses.length === 0)
@@ -542,13 +548,13 @@ export function makeForgeSourceControlProvider(options: {
                       status:
                         status.status === "success"
                           ? "success"
-                          : status.status === "failure" ||
-                              status.status === "error" ||
-                              status.status === "warning"
+                          : status.status === "failure" || status.status === "error"
                             ? "failure"
                             : status.status === "skipped"
                               ? "skipped"
-                              : "pending",
+                              : status.status === "warning"
+                                ? "neutral"
+                                : "pending",
                       description: text(status.description) || null,
                       url: text(status.target_url)
                         ? (URL.parse(text(status.target_url), detail.url)?.href ?? null)

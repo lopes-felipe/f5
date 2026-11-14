@@ -6,7 +6,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Fixed
 
-- Forgejo PR watches pass once required checks succeed, even if optional checks fail. PR Hub refreshes Forgejo check status during polling and handles server-capped status pages and same-second check updates.
+- Forgejo PR watches pass once required checks finish without failure, even if optional checks fail. Skipped jobs and warnings no longer keep watches pending. PR Hub refreshes Forgejo check status during polling and handles server-capped status pages and same-second check updates.
 - Pull requests and Usage are back in the sidebar's top navigation, next to Home and Scheduled, with the Pull requests "needs you" badge. In 0.1.9 they moved to the sidebar footer, where they took up no space and could not be seen or clicked. The Pull requests page now shows Settings in the footer again, as it did before 0.1.9; Settings and Usage keep their Back action.
 
 ### Changed

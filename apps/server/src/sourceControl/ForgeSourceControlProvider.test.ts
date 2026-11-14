@@ -36,6 +36,57 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("starts the branch policy and first status page together", async () => {
+    const bothStarted = Promise.withResolvers<void>();
+    let starts = 0;
+    let firstPageReads = 0;
+    const provider = makeForgeSourceControlProvider({
+      kind: "forgejo",
+      resolveAccount: () =>
+        Effect.succeed({
+          kind: "forgejo",
+          host: "codeberg.org",
+          repository: "team/repo",
+          login: "parallel-checks",
+          token: "isolated-token",
+        }),
+      fetch: (async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/pulls/7"))
+          return Response.json({ number: 7, base: { ref: "main" }, head: { sha: "head" } });
+        const branch = url.pathname.includes("/branches/");
+        const firstPage = url.searchParams.get("page") === "1";
+        if (branch || firstPage) {
+          if (firstPage) firstPageReads++;
+          if (++starts === 2) bothStarted.resolve();
+          // Neither request can finish until both have started.
+          await bothStarted.promise;
+        }
+        return Response.json(
+          branch
+            ? { enable_status_check: true, status_check_contexts: ["ci"] }
+            : firstPage
+              ? [{ context: "ci", status: "success" }]
+              : [],
+        );
+      }) as typeof fetch,
+    });
+    const detail = await Effect.runPromise(
+      provider.getDetail(
+        {
+          provider: "forgejo",
+          host: "codeberg.org",
+          repository: "team/repo",
+          number: 7,
+        },
+        { checks: true },
+      ),
+    );
+    expect(detail.checksComplete).toBe(true);
+    expect(detail.checks?.[0]).toMatchObject({ name: "ci", status: "success", required: true });
+    expect(firstPageReads).toBe(1);
+  });
+
   it("marks Forgejo required checks and preserves optional failures", async () => {
     const { provider, ref, calls } = fixture("forgejo", [
       { number: 7, base: { ref: "release/1.x" }, head: { sha: "head" } },
@@ -113,7 +164,7 @@ describe("forge adapters", () => {
   });
 
   it.each([
-    ["warning", "failure"],
+    ["warning", "neutral"],
     ["error", "failure"],
     ["skipped", "skipped"],
     ["pending", "pending"],
