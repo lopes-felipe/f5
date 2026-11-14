@@ -90,9 +90,23 @@ export function useHomeThreadTail(thread: Thread | undefined): HomeThreadTail {
   if (localComplete && local) return { ...local, tasks: thread.tasks, pending: false };
   const remote = query.data ? tailFromMessages(query.data.messages, thread.latestTurn) : null;
   return {
-    lastPrompt: remote?.lastPrompt ?? null,
-    lastReply: remote?.lastReply ?? null,
+    ...mergeHomeThreadTail(local, remote),
     tasks: query.data?.tasks ?? thread.tasks,
     pending: query.isPending && query.fetchStatus !== "idle",
+  };
+}
+
+/**
+ * The server's tail fills what the loaded messages miss. Each half is chosen on its own:
+ * the read may still be loading, may have failed, or may end before the half the loaded
+ * messages do hold.
+ */
+export function mergeHomeThreadTail(
+  local: Pick<HomeThreadTail, "lastPrompt" | "lastReply"> | null,
+  remote: Pick<HomeThreadTail, "lastPrompt" | "lastReply"> | null,
+): Pick<HomeThreadTail, "lastPrompt" | "lastReply"> {
+  return {
+    lastPrompt: remote?.lastPrompt ?? local?.lastPrompt ?? null,
+    lastReply: remote?.lastReply ?? local?.lastReply ?? null,
   };
 }

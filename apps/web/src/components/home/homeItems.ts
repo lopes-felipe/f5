@@ -53,13 +53,39 @@ export interface HomeThreadDecision {
   readonly plan: LatestProposedPlanState | null;
 }
 
-/** The thread's open questions: the server's projection when the thread has one. */
-function pendingUserInputsOf(
+/**
+ * The thread's open questions: the server's projection when it lists any, else the
+ * activities. A thread is in the queue as a question because its activities hold one
+ * (`resolveThreadStatus`), so an empty projection must not leave that row without its
+ * question.
+ */
+export function pendingUserInputsOf(
   thread: Pick<Thread, "activities" | "pendingUserInputs">,
 ): ReadonlyArray<PendingUserInput> {
-  return thread.pendingUserInputs
+  return thread.pendingUserInputs && thread.pendingUserInputs.length > 0
     ? thread.pendingUserInputs.map((input) => ({ ...input }))
     : derivePendingUserInputs(thread.activities);
+}
+
+/**
+ * Why a thread cannot be settled now, or null when it can. The server refuses these
+ * (`thread.settle` in the decider), so Home does not offer them.
+ */
+export function homeSettleBlocker(input: {
+  readonly kind: HomeThreadItemKind;
+  readonly pinned: boolean;
+}): string | null {
+  if (input.pinned) return "Unpin the thread to settle it";
+  switch (input.kind) {
+    case "running":
+      return "A running thread cannot be settled";
+    case "question":
+      return "Answer the question to settle the thread";
+    case "approval":
+      return "Answer the approval to settle the thread";
+    default:
+      return null;
+  }
 }
 
 export function deriveHomeThreadDecision(

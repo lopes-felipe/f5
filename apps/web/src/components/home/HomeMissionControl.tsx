@@ -29,7 +29,7 @@ import type { Project } from "../../types";
 import { workflowRouteForType } from "../sidebar/sidebarLists";
 import { Kbd } from "../ui/kbd";
 import { Skeleton } from "../ui/skeleton";
-import type { HomeItem, HomeWorkflowRow } from "./homeItems";
+import { type HomeItem, homeSettleBlocker, type HomeWorkflowRow } from "./homeItems";
 import type { HomePreviewActions } from "./HomePreviewPane";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 import { HomeQueueList } from "./HomeQueueList";
@@ -210,6 +210,18 @@ export function HomeMissionControl() {
     },
     [openThread, openWorkflow],
   );
+  // The queue holds focus for Home's keys; while the preview stands alone, the preview does.
+  const focusQueue = useCallback(() => {
+    const target =
+      listRef.current ??
+      sectionRef.current?.querySelector<HTMLElement>('[data-slot="home-preview"]');
+    target?.focus({ preventScroll: true });
+  }, []);
+  const closeDetail = useCallback(() => {
+    setDetailOpen(false);
+    // The list mounts with this update; focus it once it is there.
+    requestAnimationFrame(() => listRef.current?.focus({ preventScroll: true }));
+  }, []);
   const { executeAction, menuItemsForThread } = controller;
   const actions = useMemo(
     (): HomePreviewActions => ({
@@ -248,14 +260,15 @@ export function HomeMissionControl() {
   // ── Focus ──────────────────────────────────────────────────────────
   // Home's keys are handled on this section, so something in it has to hold focus. The
   // queue takes it when Home opens with focus nowhere, and again when the focused control
-  // went away with its item (answered, settled) and focus fell back to the page.
+  // went away with its item (answered, settled) and focus fell back to the page. In the
+  // narrow layout the preview replaces the queue and takes its place here too.
   const selectedKind = selectedItem?.type === "thread" ? selectedItem.kind : null;
   const hasItems = itemIds.length > 0;
   useEffect(() => {
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    listRef.current?.focus({ preventScroll: true });
-  }, [hasItems, selectedId, selectedKind, showList]);
+    focusQueue();
+  }, [focusQueue, hasItems, selectedId, selectedKind, showList]);
 
   const select = useCallback(
     (itemId: string) => {
@@ -273,7 +286,12 @@ export function HomeMissionControl() {
     if (!(target instanceof HTMLElement) || !event.currentTarget.contains(target)) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (isTypingTarget(target)) return;
-    const onList = target === listRef.current;
+    // The queue, or the preview only while it stands in for the queue. A click in the
+    // preview beside the queue focuses it too: that is reading, and must not hand it
+    // Enter or the arrow keys.
+    const onQueue =
+      target === listRef.current ||
+      (narrow && detailOpen && target.dataset.slot === "home-preview");
     const move = (delta: 1 | -1) => {
       const next = stepHomeSelection(itemIds, selectedId, delta);
       if (next === null) return;
@@ -284,9 +302,7 @@ export function HomeMissionControl() {
     if (event.key === "Escape") {
       if (!narrow || !detailOpen) return;
       event.preventDefault();
-      setDetailOpen(false);
-      // The list mounts with this update; focus it once it is there.
-      requestAnimationFrame(() => listRef.current?.focus({ preventScroll: true }));
+      closeDetail();
       return;
     }
     if (event.key === "/") {
@@ -294,7 +310,7 @@ export function HomeMissionControl() {
       composerRef.current?.focus();
       return;
     }
-    if (onList && !event.shiftKey) {
+    if (onQueue && !event.shiftKey) {
       // Arrow keys and Enter belong to whatever has focus; only the queue itself gives
       // them to Home.
       if (event.key === "ArrowDown") return move(1);
@@ -328,9 +344,17 @@ export function HomeMissionControl() {
         openItem(selectedItem);
         return;
       case "e":
-        if (!selectedThread || selectedThread.pinnedAt != null) return;
+        if (selectedItem?.type !== "thread") return;
+        // The same rule as the Settle button, which says why.
+        if (
+          homeSettleBlocker({
+            kind: selectedItem.kind,
+            pinned: selectedItem.thread.pinnedAt != null,
+          }) !== null
+        )
+          return;
         event.preventDefault();
-        actions.settle(selectedThread.id);
+        actions.settle(selectedItem.thread.id);
         return;
       case "p":
         if (!selectedThread) return;
@@ -398,8 +422,9 @@ export function HomeMissionControl() {
                 )}
                 peek={selectedThread ? peeks.get(selectedThread.id) : undefined}
                 actions={actions}
+                holdsFocus={narrow}
                 snoozeMenu={{ ...snoozeMenu, onOpenChange: setSnoozeMenuOpen }}
-                onBack={narrow ? () => setDetailOpen(false) : undefined}
+                onBack={narrow ? closeDetail : undefined}
               />
             </Suspense>
           ) : null}

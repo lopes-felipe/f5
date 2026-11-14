@@ -11,6 +11,7 @@ import {
   PinIcon,
   PinOffIcon,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import type { ThreadActionMenuItem } from "../../hooks/useThreadActionController";
 import type { HomeThreadItemKind } from "../../lib/homeQueue";
@@ -45,6 +46,7 @@ import {
   type HomeThreadItem,
   type HomeWorkflowItem,
   type HomeWorkflowRow,
+  homeSettleBlocker,
   runningTurnElapsed,
 } from "./homeItems";
 import { type HomeThreadTail, useHomeThreadTail } from "./useHomeThreadTail";
@@ -63,6 +65,8 @@ export interface HomePreviewPaneProps {
   readonly project: Project | undefined;
   readonly peek: OrchestrationThreadPeek | undefined;
   readonly actions: HomePreviewActions;
+  /** The preview stands alone (narrow layout), so it holds focus for Home's keys. */
+  readonly holdsFocus?: boolean | undefined;
   /** The snooze menu is opened by its button or by Home's H key. */
   readonly snoozeMenu: {
     readonly open: boolean;
@@ -119,6 +123,23 @@ function PaneHeader(props: {
         {props.title}
       </h2>
     </header>
+  );
+}
+
+/**
+ * The pane's scrolling body. A click in its text focuses the body, not the pane: Home's
+ * letter keys keep working, the arrow keys scroll what is being read, and Enter, which
+ * the pane gets only while it stands in for the queue, does not act on it.
+ */
+function PaneBody(props: { readonly children: React.ReactNode }) {
+  return (
+    <div
+      tabIndex={-1}
+      data-slot="home-preview-body"
+      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3 outline-none"
+    >
+      {props.children}
+    </div>
   );
 }
 
@@ -332,6 +353,7 @@ function ThreadActions(props: {
   const { item, actions, snoozeMenu } = props;
   const threadId = item.thread.id;
   const pinned = item.thread.pinnedAt != null;
+  const settleBlocker = homeSettleBlocker({ kind: item.kind, pinned });
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Button size="sm" onClick={() => actions.openThread(threadId)}>
@@ -343,9 +365,9 @@ function ThreadActions(props: {
       <Button
         size="sm"
         variant="outline"
-        // The server refuses to settle a pinned thread.
-        disabled={pinned}
-        title={pinned ? "Unpin the thread to settle it" : undefined}
+        // The server refuses these; the title says what to do first.
+        disabled={settleBlocker !== null}
+        title={settleBlocker ?? undefined}
         onClick={() => actions.settle(threadId)}
       >
         <CheckCircle2Icon />
@@ -395,11 +417,27 @@ const REPLY_LABEL_BY_KIND: Record<HomeThreadItemKind, string> = {
   pinned: "Latest reply",
 };
 
+/**
+ * Focuses the preview when it stands alone and nothing else holds focus: as it opens over
+ * the queue, and again when it remounts for the next item (the last one was settled or
+ * snoozed and took the focused button with it).
+ */
+function useHoldFocus(holdsFocus: boolean | undefined) {
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (holdsFocus && document.activeElement === document.body) {
+      ref.current?.focus({ preventScroll: true });
+    }
+  }, [holdsFocus]);
+  return ref;
+}
+
 function ThreadPreview(props: {
   readonly item: HomeThreadItem;
   readonly project: Project | undefined;
   readonly peek: OrchestrationThreadPeek | undefined;
   readonly actions: HomePreviewActions;
+  readonly holdsFocus?: boolean | undefined;
   readonly snoozeMenu: HomePreviewPaneProps["snoozeMenu"];
   readonly onBack?: (() => void) | undefined;
 }) {
@@ -413,16 +451,20 @@ function ThreadPreview(props: {
   const tail = useHomeThreadTail(thread);
   const title = item.thread.title.trim() || "Untitled thread";
   const pill = pillForStatus(item.thread.status);
+  const articleRef = useHoldFocus(props.holdsFocus);
   if (!thread) return null;
   const decision = deriveHomeThreadDecision(thread);
   const cwd = resolveThreadWorkspaceCwd({ thread, projects });
 
   return (
     <article
+      ref={articleRef}
+      // Focusable by script only: it takes Home's keys while the queue is not on screen.
+      tabIndex={-1}
       aria-label={title}
       data-slot="home-preview"
       data-kind={item.kind}
-      className={PANE_CLASS_NAME}
+      className={cn(PANE_CLASS_NAME, "outline-none")}
     >
       <PaneHeader
         title={title}
@@ -444,7 +486,7 @@ function ThreadPreview(props: {
           </>
         }
       />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+      <PaneBody>
         {item.kind === "approval" ? <ApprovalBody decision={decision} /> : null}
         {item.kind === "question" ? <QuestionBody decision={decision} /> : null}
         {item.kind === "plan" && decision.plan ? (
@@ -477,7 +519,7 @@ function ThreadPreview(props: {
             replyLabel={REPLY_LABEL_BY_KIND[item.kind]}
           />
         )}
-      </div>
+      </PaneBody>
       <footer className="flex flex-col gap-2.5 border-t border-border px-4 py-3">
         <ThreadActions item={item} actions={props.actions} snoozeMenu={props.snoozeMenu} />
         <ThreadMeta thread={thread} peek={props.peek} />
@@ -497,16 +539,20 @@ function WorkflowPreview(props: {
   readonly item: HomeWorkflowItem;
   readonly project: Project | undefined;
   readonly actions: HomePreviewActions;
+  readonly holdsFocus?: boolean | undefined;
   readonly onBack?: (() => void) | undefined;
 }) {
   const workflow = props.item.workflow;
   const now = useNowMinute();
+  const articleRef = useHoldFocus(props.holdsFocus);
   return (
     <article
+      ref={articleRef}
+      tabIndex={-1}
       aria-label={workflow.title}
       data-slot="home-preview"
       data-kind="workflow"
-      className={PANE_CLASS_NAME}
+      className={cn(PANE_CLASS_NAME, "outline-none")}
     >
       <PaneHeader
         title={workflow.title}
@@ -523,7 +569,7 @@ function WorkflowPreview(props: {
           </>
         }
       />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+      <PaneBody>
         <Block label="Phases">
           <ol className="flex flex-col gap-2">
             {workflow.meta.phases.map((phase) => (
@@ -553,7 +599,7 @@ function WorkflowPreview(props: {
             ))}
           </ol>
         </Block>
-      </div>
+      </PaneBody>
       <footer className="flex flex-wrap items-center gap-1.5 border-t border-border px-4 py-3">
         <Button size="sm" onClick={() => props.actions.openWorkflow(workflow)}>
           Open workflow
@@ -578,6 +624,7 @@ export default function HomePreviewPane(props: HomePreviewPaneProps) {
       project={props.project}
       peek={props.peek}
       actions={props.actions}
+      holdsFocus={props.holdsFocus}
       snoozeMenu={props.snoozeMenu}
       onBack={props.onBack}
     />
@@ -587,6 +634,7 @@ export default function HomePreviewPane(props: HomePreviewPaneProps) {
       item={props.item}
       project={props.project}
       actions={props.actions}
+      holdsFocus={props.holdsFocus}
       onBack={props.onBack}
     />
   );
