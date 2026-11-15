@@ -9,16 +9,10 @@ import { getPrHubAccountGeneration, setPrHubAccount } from "../../lib/prHubAccou
 const api = vi.hoisted(() => ({ getOverview: vi.fn(), track: vi.fn(), openExternal: vi.fn() }));
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
 // The shared detail form has separate native action/browser coverage. Observe admission here.
-vi.mock("./PrDetailPanel", () => ({
-  PrDetailPanel: ({
-    pr,
-    confirmationMode,
-  }: {
-    pr: TrackedPullRequest;
-    confirmationMode: string;
-  }) => (
+vi.mock("./PrPageContent", () => ({
+  PrPageContent: ({ pr, compact }: { pr: TrackedPullRequest; compact?: boolean }) => (
     <p>
-      {pr.title} · {confirmationMode}
+      {pr.title} · {compact ? "inline" : "dialog"}
     </p>
   ),
 }));
