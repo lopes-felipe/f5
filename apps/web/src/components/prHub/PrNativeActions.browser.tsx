@@ -5,7 +5,7 @@ import { PullRequestKey, type TrackedPullRequest, type NativeApi } from "@t3tool
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
-import { PrDetailPanel } from "./PrDetailPanel";
+import { PrPageContent } from "./PrPageContent";
 import { PrActionDialogs } from "./PrActionDialogs";
 import { PrTimelineTab } from "./PrTimelineTab";
 import type { PrActionDialogProps } from "./usePrActions";
@@ -19,9 +19,8 @@ const api = vi.hoisted(() => ({
   legacy: vi.fn(),
   markSeen: vi.fn(),
 }));
-vi.mock("./PrDetailsTabs", () => ({
-  PrDetailsTabs: ({ summary }: { summary: React.ReactNode }) => <>{summary}</>,
-}));
+// The tabs have their own tests; these cover the action bar and its confirmations.
+vi.mock("./PrDetailsTabs", () => ({ PrDetailsTabs: () => null }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api }) as unknown as NativeApi,
 }));
@@ -143,7 +142,7 @@ function dialogProps(pendingAction: PrActionDialogProps["pendingAction"]): PrAct
     pendingAction,
     setPendingAction: vi.fn(),
     dialogTitle: "Native action",
-    reviewers: "42",
+    reviewers: ["42"],
     setReviewers: vi.fn(),
     mergeMethod: "squash",
     allowedMergeMethods: ["merge", "squash"],
@@ -282,7 +281,7 @@ it("a requested quick close opens its inline preview and requires explicit prepa
   const handled = vi.fn();
   const subject = nativePr();
   await mount(
-    <PrDetailPanel
+    <PrPageContent
       pr={{
         ...subject,
         forgeCapabilities: {
@@ -290,7 +289,7 @@ it("a requested quick close opens its inline preview and requires explicit prepa
           actions: [...subject.forgeCapabilities!.actions, "close"],
         },
       }}
-      confirmationMode="inline"
+      compact
       initialAction={{ kind: "close", id: "explicit-quick-close" }}
       onInitialActionHandled={handled}
     />,
@@ -317,9 +316,9 @@ it("a requested quick close opens its inline preview and requires explicit prepa
 it("rejects a quick action outside the freshly loaded PR capabilities without preparing it", async () => {
   const handled = vi.fn();
   await mount(
-    <PrDetailPanel
+    <PrPageContent
       pr={nativePr()}
-      confirmationMode="inline"
+      compact
       initialAction={{ kind: "close", id: "no-close-permission" }}
       onInitialActionHandled={handled}
     />,

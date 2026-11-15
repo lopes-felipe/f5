@@ -18,7 +18,14 @@ export interface PrQueueSearch {
 
 export const PR_QUEUE_STATUSES = ["active", "snoozed", "ignored", "closed"] as const;
 export type PrQueueStatus = (typeof PR_QUEUE_STATUSES)[number];
-export const PR_QUEUE_TABS = ["overview", "conversation", "threads", "files", "guide"] as const;
+export const PR_QUEUE_TABS = [
+  "overview",
+  "conversation",
+  "threads",
+  "files",
+  "checks",
+  "guide",
+] as const;
 export type PrQueueTab = (typeof PR_QUEUE_TABS)[number];
 export const PR_QUEUE_CI = ["success", "failure", "error", "pending", "none"] as const;
 export type PrQueueCi = (typeof PR_QUEUE_CI)[number];

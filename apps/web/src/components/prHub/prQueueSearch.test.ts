@@ -60,7 +60,12 @@ describe("parsePrQueueSearch", () => {
     const pr = "github:github.com/octo/repo#7";
     expect(parsePrQueueSearch({ pr, view: "peek", tab: "files" })).toEqual({ pr });
     expect(parsePrQueueSearch({ pr, view: "page", tab: "overview" })).toEqual({ pr, view: "page" });
-    expect(parsePrQueueSearch({ pr, view: "page", tab: "checks" })).toEqual({ pr, view: "page" });
+    expect(parsePrQueueSearch({ pr, view: "page", tab: "checks" })).toEqual({
+      pr,
+      view: "page",
+      tab: "checks",
+    });
+    expect(parsePrQueueSearch({ pr, view: "page", tab: "commits" })).toEqual({ pr, view: "page" });
     expect(parsePrQueueSearch({ view: "page" })).toEqual({});
   });
 });

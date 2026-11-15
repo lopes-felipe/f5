@@ -12,7 +12,7 @@ Forgejo/Gitea without leaving F5. Each repository can use its own account.
 1. Open **Pull requests**. The queue lists the pull requests that involve you, grouped by what
    they need.
 2. Select a row to read it in the side panel, or press <kbd>Enter</kbd> to open the whole pull
-   request with its conversation, review threads and files.
+   request with its conversation, review threads, files and checks.
 3. Use the button at the end of a row for its next step, such as **Review**, **Fix CI** or
    **Merge**.
 
@@ -54,10 +54,9 @@ when a linked thread is already working, the button reads **Open thread** instea
 
 Selecting a row opens the peek on the right: the next step, the review, checks and branch
 status, the start of the description, and linked threads. <kbd>Enter</kbd>, a double-click or
-**Open** shows the whole pull request, with **Summary**, **Timeline**, **Review threads**,
-**Files** and **Guide · Beta** tabs. In a window too narrow for the peek, selecting a row opens
-the pull request directly. The open pull request, its tab, the search and the filters are part
-of the address, so Back, Forward and copied links restore them.
+**Open** shows [the whole pull request](#the-pull-request-page). In a window too narrow for the
+peek, selecting a row opens the pull request directly. The open pull request, its tab, the
+search and the filters are part of the address, so Back, Forward and copied links restore them.
 
 ### Search and filters
 
@@ -113,6 +112,61 @@ Within a section, the most recently updated pull request comes first.
   stalled after** are marked **Stalled** in their row.
 - **Ignore** shows an **Undo** button for a few seconds. Ignored pull requests remain under
   **Ignored**, where **Restore to the queue** brings one back.
+
+## The pull request page
+
+The page shows one pull request at full width. The bar above it has **Queue** to go back, the
+position in the queue such as "3 of 6", and arrows for the previous and next pull request.
+
+The header shows the state, the repository and number, the title, the author, the branches,
+the size and the last update. Click the branches to copy the branch name.
+
+The action bar has one button for the next step, the same one as in the queue row, and:
+
+- **Merge**, on your own pull requests. Its menu has **Merge now**, **Merge when ready** and the
+  merge method. **Merge when ready** asks the forge to merge by itself once the required
+  reviews and checks pass. It is offered when the repository allows auto-merge and the pull
+  request cannot merge yet.
+- **Review**, when a review is requested from you. It opens the files; its menu has
+  **Approve**, **Comment** and **Request changes**.
+- **Snooze**.
+- **⋯** for the rest: **Open in F5**, **Get an AI recommendation**, **Comment**, **Re-request
+  review**, **Mark ready**, **Convert to draft**, **Close**, **Reopen**, **Copy link**, **Copy
+  number**, **Copy branch name**, **Open on GitHub** and **Ignore**.
+
+The page has six tabs:
+
+| Tab              | What it shows                                                                    |
+| ---------------- | -------------------------------------------------------------------------------- |
+| **Overview**     | Status, description, reviewers, labels, linked threads and the AI recommendation |
+| **Conversation** | Comments, reviews and events in order                                            |
+| **Threads**      | Review threads, with the number that are unresolved                              |
+| **Files**        | The diff, where you write a review                                               |
+| **Checks**       | Every check, grouped into failed, running, passed and skipped                    |
+| **Guide · Beta** | A generated tour of the change                                                   |
+
+**Overview** starts with the status of the pull request, one line each for **Review**,
+**Checks**, **Branch** and **Threads**, and **Requirements** when a branch rule blocks the
+merge. A line that you can move forward has its step next to it:
+
+| Line        | Step                                                                    |
+| ----------- | ----------------------------------------------------------------------- |
+| **Review**  | **Request reviewers** opens the reviewer picker                         |
+| **Checks**  | **View checks** opens the **Checks** tab                                |
+| **Branch**  | **Update branch**, or **Resolve with F5** when the branch has conflicts |
+| **Threads** | **View threads** opens the **Threads** tab                              |
+
+The peek in the queue shows the same lines and steps.
+
+To change reviewers, select **Request reviewers** and choose people from the list. On GitHub
+you can also type a login, or `org/team` for a team. Remove a reviewer with the × on their
+name, then apply the change.
+
+In **Checks**, failed and running checks are listed first. Passed and skipped checks are
+folded; select the group to open it.
+
+**Sync details**, at the end of the Overview, shows when F5 last verified the pull request and
+which branch rules it read. Open it when a status looks wrong.
 
 ## Safe actions
 
@@ -221,7 +275,7 @@ in the PR panel. Without a current thread, ordinary clicks open the in-app PR pa
 The panel uses the selected forge account; connect or select a matching account
 in **Pull requests** if a read is refused. Failed reads offer **Retry**.
 
-In **Review threads → Filter comments**, choose whether to show bot comments and
+In **Threads → Filter comments**, choose whether to show bot comments and
 resolved conversations. These choices persist locally. A thread with hidden bot
 comments keeps **Load more comments** available for unloaded human replies.
 Host restrictions on individual comments and threads can disable editing or
@@ -240,15 +294,14 @@ examples and original commits retain their text. Merge queues and native stack
 merges keep their host-generated messages. The setting applies to this profile;
 other forges retain their existing merge-message behavior.
 
-## Quick actions and row menus
+## Linked PR menus
 
-Hold **Shift** without another modifier to show quick actions in the PR inbox and
-on linked PRs in the thread header. Right-click either row to open its action menu.
-Linked PR menus also include **Copy link**, **Open in F5**, **Open on forge** and
-**Watch**.
+A linked PR's menu in the thread header has **Open in browser**, **Open in F5**, **Copy
+link**, **Watch** and **Unlink**, and the quick actions that fit its state: **Merge**,
+**Close**, **Mark ready** or **Reopen**. The pull request panel beside the thread has the same
+action bar as the pull request page; its **⋯** menu adds **Watch from this thread**.
 
-A quick action opens its confirmation view; it does not send a remote change.
+A quick action opens its confirmation view in the panel; it does not send a remote change.
 Linked PRs load their current state when opened, and unavailable actions are
 refused. **Prepare** shows the saved operation and **Confirm** submits it once.
-Only actions supported by that forge are offered. Releasing Shift, changing
-modifiers or leaving the window hides quick actions.
+Only actions supported by that forge are offered.
