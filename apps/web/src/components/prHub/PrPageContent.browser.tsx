@@ -23,6 +23,9 @@ const api = vi.hoisted(() => ({
   submitOperation: vi.fn(),
   listReviewerCandidates: vi.fn(),
   getThreadsForPr: vi.fn(),
+  getChecks: vi.fn(),
+  getCheckLog: vi.fn(),
+  resolveLocalCheckout: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api }) as unknown as NativeApi,
@@ -178,6 +181,59 @@ beforeEach(() => {
   api.getDetail.mockResolvedValue(detailResult());
   api.getOperation.mockResolvedValue(null);
   api.getThreadsForPr.mockResolvedValue([]);
+  api.getChecks.mockResolvedValue({
+    headOid: "head",
+    truncated: false,
+    refreshedAt: "2026-01-02T00:00:00.000Z",
+    checks: [
+      {
+        id: "501",
+        name: "build",
+        status: "failure",
+        description: null,
+        url: "https://github.com/octo/repo/actions/runs/9/job/501",
+        required: true,
+        workflow: "CI",
+        workflowRunId: "9",
+        startedAt: "2026-01-02T00:00:00.000Z",
+        completedAt: "2026-01-02T00:03:12.000Z",
+        logAvailable: true,
+      },
+      {
+        id: "502",
+        name: "e2e",
+        status: "pending",
+        description: null,
+        url: null,
+        workflow: "CI",
+        workflowRunId: "9",
+        startedAt: "2026-01-02T00:00:00.000Z",
+        completedAt: null,
+        logAvailable: false,
+      },
+      {
+        id: "503",
+        name: "lint",
+        status: "success",
+        description: null,
+        url: null,
+        workflow: "CI",
+        workflowRunId: "9",
+        startedAt: "2026-01-02T00:00:00.000Z",
+        completedAt: "2026-01-02T00:00:40.000Z",
+        logAvailable: true,
+      },
+    ],
+  });
+  api.getCheckLog.mockResolvedValue({
+    checkId: "501",
+    excerpt: "src/parser.ts(3,1): error TS2304\n##[error]Process completed with exit code 1.",
+    startLine: 41,
+    totalLines: 42,
+    errorLine: 42,
+    truncated: true,
+  });
+  api.resolveLocalCheckout.mockResolvedValue([]);
   api.listReviewerCandidates.mockResolvedValue({
     candidates: [{ login: "alice" }, { login: "bob" }],
     currentReviewers: [{ login: "alice" }],
@@ -268,17 +324,41 @@ it("runs each checklist step where it belongs", async () => {
   expect(onTabChange).toHaveBeenLastCalledWith("checks");
   const checks = page.getByRole("tabpanel", { name: "Checks" });
   await expect.element(checks).toHaveTextContent("1 failed, 1 running, 1 passed");
-  // What blocks is open; what passed is folded.
+  // What blocks is open, with the reason it failed; what passed is folded.
   await expect.element(checks.getByText("build", { exact: true })).toBeVisible();
-  await expect.element(checks.getByText("exit code 1")).toBeVisible();
   await expect.element(checks.getByText("Required")).toBeVisible();
+  await expect
+    .element(checks.getByText("##[error]Process completed with exit code 1."))
+    .toBeVisible();
   expect(checks.getByText("lint", { exact: true }).query()).toBeNull();
   await checks.getByRole("button", { name: /Passed/ }).click();
   await expect.element(checks.getByText("lint", { exact: true })).toBeVisible();
 
+  // The tab's own steps go through the same confirmation and agent run as the checklist's.
+  await checks.getByRole("button", { name: "Re-run failed jobs" }).click();
+  await expect.element(page.getByRole("dialog", { name: "Re-run failed jobs" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await checks.getByRole("button", { name: "Fix CI with F5" }).click();
+  await expect.poll(() => api.resolveLocalCheckout.mock.calls.length).toBe(1);
+  await expect.element(page.getByRole("dialog", { name: "No matching F5 project" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+
   await page.getByRole("tab", { name: "Overview" }).click();
   await page.getByRole("button", { name: "View threads" }).click();
   await expect.element(page.getByText("Threads stub")).toBeVisible();
+
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await page
+    .getByRole("region", { name: "Status" })
+    .getByRole("button", { name: "Re-run failed jobs" })
+    .click();
+  await expect.element(page.getByRole("dialog", { name: "Re-run failed jobs" })).toBeVisible();
+  expect(api.prepareOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Prepare re-run failed jobs", exact: true }).click();
+  await expect.poll(lastPayload).toEqual({ kind: "action", action: "rerun-failed-checks" });
+  // The re-run reaches the forge only after the explicit confirmation.
+  expect(api.submitOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await page.getByRole("tab", { name: "Overview" }).click();
   await page.getByRole("button", { name: "Update branch" }).click();

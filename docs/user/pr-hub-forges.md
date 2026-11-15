@@ -142,19 +142,19 @@ The page has six tabs:
 | **Conversation** | Comments, reviews and events in order                                            |
 | **Threads**      | Review threads, with the number that are unresolved                              |
 | **Files**        | The diff, where you write a review                                               |
-| **Checks**       | Every check, grouped into failed, running, passed and skipped                    |
+| **Checks**       | Every check of the latest commit, with the log of each failed job                |
 | **Guide · Beta** | A generated tour of the change                                                   |
 
 **Overview** starts with the status of the pull request, one line each for **Review**,
 **Checks**, **Branch** and **Threads**, and **Requirements** when a branch rule blocks the
 merge. A line that you can move forward has its step next to it:
 
-| Line        | Step                                                                    |
-| ----------- | ----------------------------------------------------------------------- |
-| **Review**  | **Request reviewers** opens the reviewer picker                         |
-| **Checks**  | **View checks** opens the **Checks** tab                                |
-| **Branch**  | **Update branch**, or **Resolve with F5** when the branch has conflicts |
-| **Threads** | **View threads** opens the **Threads** tab                              |
+| Line        | Step                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------ |
+| **Review**  | **Request reviewers** opens the reviewer picker                                      |
+| **Checks**  | **View checks**, and when checks failed **Re-run failed jobs** or **Fix CI with F5** |
+| **Branch**  | **Update branch**, or **Resolve with F5** when the branch has conflicts              |
+| **Threads** | **View threads** opens the **Threads** tab                                           |
 
 The peek in the queue shows the same lines and steps.
 
@@ -162,11 +162,34 @@ To change reviewers, select **Request reviewers** and choose people from the lis
 you can also type a login, or `org/team` for a team. Remove a reviewer with the × on their
 name, then apply the change.
 
-In **Checks**, failed and running checks are listed first. Passed and skipped checks are
-folded; select the group to open it.
-
 **Sync details**, at the end of the Overview, shows when F5 last verified the pull request and
 which branch rules it read. Open it when a status looks wrong.
+
+### Checks
+
+The **Checks** tab lists the checks of the latest commit: failed first, then running, then
+passed and skipped, which are folded until you select the group. Inside a group, checks are
+listed by workflow, with how long each one ran.
+
+A failed GitHub Actions job shows its log below it, cut down to the lines around the first
+error. The first three open by themselves; select **Show log** for the others.
+
+- **Copy** copies the excerpt. **Open full log** opens the whole log on GitHub.
+- **Re-run failed jobs** starts the failed and cancelled jobs of the commit again, after you
+  confirm. Jobs that passed are not run again, and neither is a run that a newer run of the
+  same workflow replaced. When GitHub refuses one workflow run, the others are still
+  restarted and F5 says how many. It needs write access to the repository.
+- **Fix CI with F5**, on your own pull requests, starts an F5 thread on the branch. F5 gives
+  the agent up to three failing checks with the end of their logs.
+- **Refresh** reads the checks from the forge again.
+
+Limits:
+
+- Logs and re-runs are for GitHub Actions. Checks from other apps, commit statuses and other
+  forges are listed with a link to their own page.
+- GitHub deletes old logs. F5 then says the log is no longer available.
+- A log over 8 MB is not shown; open it on GitHub.
+- F5 reads up to 300 checks for one commit and says so when there are more.
 
 ## Safe actions
 

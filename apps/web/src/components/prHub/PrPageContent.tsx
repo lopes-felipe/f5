@@ -110,6 +110,8 @@ export function PrPageContent({
         setActiveTab("files");
         break;
       case "fix_ci":
+        handlers.onFixCi();
+        break;
       case "resolve_conflicts":
       case "address_feedback":
         handlers.onRunInF5();
@@ -231,11 +233,18 @@ export function PrPageContent({
           isAnalyzingAdvisory,
           onAnalyzeAdvisory,
           onOpenThread,
-          onBranchAction: (kind) => {
+          onChecklistStep: (kind) => {
             if (kind === "update_branch") handlers.onUpdateBranch();
+            else if (kind === "rerun_checks") handlers.onRerunChecks();
+            else if (kind === "fix_ci") handlers.onFixCi();
             else handlers.onRunInF5();
           },
           defaultEditingReviewers,
+        }}
+        checks={{
+          onRerun: handlers.onRerunChecks,
+          onFixCi: handlers.onFixCi,
+          isStartingFix: dialogProps.isOpeningInF5,
         }}
       />
 
