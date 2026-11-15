@@ -5533,7 +5533,11 @@ export function buildTimelineRows(input: {
       continue;
     }
 
+    // A finished message or checkpoint can still be intermediate work in a running turn.
+    const isActiveTurnMessage = input.isWorking && index > lastUserMessageEntryIndex;
     const isLatestCompletion =
+      !isActiveTurnMessage &&
+      !timelineEntry.message.streaming &&
       timelineEntry.message.role === "assistant" &&
       input.completionDividerBeforeEntryId === timelineEntry.id;
     const message = timelineEntry.message;
@@ -5545,6 +5549,7 @@ export function buildTimelineRows(input: {
       promptStartByMessageId.get(message.id);
     const completionCompletedAt = turnSummary?.completedAt ?? message.completedAt;
     const isHistoricalCompletion =
+      !isActiveTurnMessage &&
       message.role === "assistant" &&
       !message.streaming &&
       turnId != null &&

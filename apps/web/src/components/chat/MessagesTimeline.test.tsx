@@ -283,6 +283,64 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it.each([false, true])(
+    "waits for the active turn to finish before showing checkpoint timing (streaming: %s)",
+    async (streaming) => {
+      const { deriveTimelineEntries } = await import("../../session-logic");
+      const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+      const turnId = TurnId.makeUnsafe("active-checkpoint");
+      const startedAt = "2026-11-14T12:40:00.000Z";
+      const completedAt = "2026-11-14T12:40:10.000Z";
+      const answer = {
+        id: MessageId.makeUnsafe("intermediate-answer"),
+        role: "assistant" as const,
+        text: "Still checking",
+        createdAt: startedAt,
+        completedAt,
+        streaming,
+        turnId,
+      };
+      const input = {
+        timelineEntries: deriveTimelineEntries(
+          [
+            {
+              id: MessageId.makeUnsafe("checkpoint-question"),
+              role: "user",
+              text: "Check this",
+              createdAt: startedAt,
+              streaming: false,
+              turnId,
+            },
+            answer,
+          ],
+          [],
+          [],
+          [],
+        ),
+        completionDividerBeforeEntryId: answer.id,
+        completionSummary: "Worked for 10s",
+        turnDiffSummaryByTurnId: new Map([[turnId, { turnId, startedAt, completedAt, files: [] }]]),
+        isWorking: true,
+        activeTurnStartedAt: startedAt,
+        liveActivity: null,
+        expandMcpToolCalls: false,
+        cache: createTimelineRowCache(),
+      };
+      expect(buildTimelineRows(input).find((row) => row.id === answer.id)).toMatchObject({
+        showCompletionDivider: false,
+        completionSummary: null,
+      });
+      if (!streaming) {
+        expect(
+          buildTimelineRows({ ...input, isWorking: false }).find((row) => row.id === answer.id),
+        ).toMatchObject({
+          showCompletionDivider: true,
+          completionSummary: "Worked for 10s",
+        });
+      }
+    },
+  );
+
   it("keeps a paginated turn start unknown until its persisted timing is available", async () => {
     const { deriveTimelineEntries } = await import("../../session-logic");
     const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");

@@ -8329,17 +8329,18 @@ export default memo(function ChatView({
                 )}
 
                 {/* Keep the controls available while following is enabled. */}
-                {(showScrollToBottom || autoFollow || isJumpingToLatest) && (
-                  <JumpToLatestButton
-                    tail={timelineTailSnapshot(timelineEntries.at(-1))}
-                    shortcutLabel={scrollToBottomShortcutLabel ?? null}
-                    onJump={jumpToLatest}
-                    following={autoFollow}
-                    onFollowingChange={handleFollowingChange}
-                    isAtEnd={!showScrollToBottom}
-                    jumping={isJumpingToLatest}
-                  />
-                )}
+                {timelineMessages.length > 0 &&
+                  (showScrollToBottom || autoFollow || isJumpingToLatest) && (
+                    <JumpToLatestButton
+                      tail={timelineTailSnapshot(timelineEntries.at(-1))}
+                      shortcutLabel={scrollToBottomShortcutLabel ?? null}
+                      onJump={jumpToLatest}
+                      following={autoFollow}
+                      onFollowingChange={handleFollowingChange}
+                      isAtEnd={!showScrollToBottom}
+                      jumping={isJumpingToLatest}
+                    />
+                  )}
                 <TimelineNavigationStatusBanner
                   status={timelineNavigation.status}
                   onRetry={threadFind.retryNavigation}

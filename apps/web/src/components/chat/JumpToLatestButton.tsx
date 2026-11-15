@@ -50,7 +50,7 @@ export function JumpToLatestButton(props: {
 
   return (
     <div className="pointer-events-none absolute bottom-[calc(var(--composer-dock-height,0px)+0.25rem)] left-1/2 z-30 flex max-w-[calc(100%_-_1rem)] -translate-x-1/2 justify-center py-1.5">
-      <div className="pointer-events-auto flex items-center rounded-full border border-border bg-popover shadow-md">
+      <div className="pointer-events-auto relative flex items-center rounded-full border border-border bg-popover shadow-md">
         <button
           type="button"
           onClick={props.onJump}
@@ -58,13 +58,6 @@ export function JumpToLatestButton(props: {
           aria-busy={props.jumping || undefined}
           className="relative flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-70"
         >
-          {hasNewContent ? (
-            <span
-              aria-hidden="true"
-              data-slot="jump-to-latest-new-content"
-              className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-info ring-2 ring-background motion-safe:animate-fade-in"
-            />
-          ) : null}
           {props.jumping ? (
             <LoaderIcon className="size-3.5 animate-spin" />
           ) : (
@@ -104,6 +97,13 @@ export function JumpToLatestButton(props: {
               Follow new messages. Scrolling up turns this off.
             </TooltipPopup>
           </Tooltip>
+        ) : null}
+        {hasNewContent ? (
+          <span
+            aria-hidden="true"
+            data-slot="jump-to-latest-new-content"
+            className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-info ring-2 ring-background motion-safe:animate-fade-in"
+          />
         ) : null}
       </div>
     </div>

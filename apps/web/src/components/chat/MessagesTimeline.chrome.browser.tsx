@@ -319,6 +319,30 @@ describe("JumpToLatestButton", () => {
   });
   const dot = () => document.querySelector('[data-slot="jump-to-latest-new-content"]');
 
+  it("places the new-content indicator to the right of the follow toggle", async () => {
+    const props = {
+      shortcutLabel: null,
+      onJump: () => {},
+      following: false,
+      onFollowingChange: () => {},
+      isAtEnd: false,
+    };
+    const screen = await render(<JumpToLatestButton {...props} tail={tail()} />);
+    try {
+      await screen.rerender(
+        <JumpToLatestButton {...props} tail={tail({ rowId: "new-message" })} />,
+      );
+      await vi.waitFor(() => expect(dot()).not.toBeNull());
+      const toggle = document.querySelector('[role="switch"]');
+      expect(toggle).not.toBeNull();
+      expect(dot()!.getBoundingClientRect().left).toBeGreaterThan(
+        toggle!.getBoundingClientRect().right,
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("latches the dot on same-message streaming but not on unrelated rerenders", async () => {
     const screen = await render(
       <JumpToLatestButton tail={tail()} shortcutLabel={null} onJump={() => {}} />,
