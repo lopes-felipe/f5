@@ -39,8 +39,6 @@ import {
 import { Kbd } from "../ui/kbd";
 import { toastManager } from "../ui/toast";
 import { TooltipProvider } from "../ui/tooltip";
-import { PrDetailPanel } from "./PrDetailPanel";
-import type { PrDetailTab } from "./PrDetailsTabs";
 import { isInteractiveTextTarget } from "./prHubKeyboard";
 import {
   PrQueueActionHost,
@@ -60,6 +58,7 @@ import {
   prQueueCommand,
   prSyncPillLabel,
 } from "./prQueueModel";
+import { PrPageContent } from "./PrPageContent";
 import { PrQueuePeek } from "./PrQueuePeek";
 import {
   parsePrQueueSearch,
@@ -73,17 +72,6 @@ import { usePrAdvisory, usePrQueue } from "./usePrQueue";
 
 /** Below this width there is no room for the peek; a row opens the page instead. */
 const PEEK_MIN_WIDTH = 1100;
-
-const DETAIL_TAB: Record<PrQueueTab, PrDetailTab> = {
-  overview: "summary",
-  conversation: "timeline",
-  threads: "review_threads",
-  files: "files",
-  guide: "guide",
-};
-const QUEUE_TAB = Object.fromEntries(
-  Object.entries(DETAIL_TAB).map(([tab, detail]) => [detail, tab]),
-) as Record<PrDetailTab, PrQueueTab>;
 
 type CollapseState = Partial<Record<PrHubSection, boolean>>;
 
@@ -171,6 +159,8 @@ function PrQueuePage({
   total,
   tab,
   advisory,
+  runningThreadId,
+  editReviewers,
   isAnalyzing,
   onAnalyze,
   onTabChange,
@@ -184,6 +174,9 @@ function PrQueuePage({
   total: number;
   tab: PrQueueTab;
   advisory: PrHubAdvisory | undefined;
+  runningThreadId: ThreadId | null;
+  /** The page was opened to request reviewers: start with that editor open. */
+  editReviewers: boolean;
   isAnalyzing: boolean;
   onAnalyze: () => void;
   onTabChange: (tab: PrQueueTab) => void;
@@ -227,15 +220,18 @@ function PrQueuePage({
       </div>
       <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col overflow-hidden px-6 py-4">
         {pr ? (
-          <PrDetailPanel
+          <PrPageContent
             key={pr.key}
             pr={pr}
             advisory={advisory}
             isAnalyzingAdvisory={isAnalyzing}
             onAnalyzeAdvisory={onAnalyze}
             onThreadCreated={onOpenThread}
-            tab={DETAIL_TAB[tab]}
-            onTabChange={(next) => onTabChange(QUEUE_TAB[next])}
+            onOpenThread={onOpenThread}
+            runningThreadId={runningThreadId}
+            tab={tab}
+            onTabChange={onTabChange}
+            defaultEditingReviewers={editReviewers}
           />
         ) : isLoading ? (
           <p role="status" className="text-sm text-muted-foreground">
@@ -294,6 +290,8 @@ export function PrQueueView({
   const requestId = useRef(0);
   const clearRequest = useCallback(() => setRequest(null), []);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // "Request reviewers" in the peek opens the page with the reviewer editor showing.
+  const [reviewerEditKey, setReviewerEditKey] = useState<PullRequestKey | null>(null);
 
   const queue = usePrQueue(search, collapse);
   const { overview, rows } = queue;
@@ -337,7 +335,10 @@ export function PrQueueView({
     if (canPeek) patch({ pr: key, view: undefined, tab: undefined }, peekOpen);
     else patch({ pr: key, view: "page", tab: undefined });
   };
-  const openPage = (key: PullRequestKey, tab?: PrQueueTab) => patch({ pr: key, view: "page", tab });
+  const openPage = (key: PullRequestKey, tab?: PrQueueTab, editReviewers = false) => {
+    setReviewerEditKey(editReviewers ? key : null);
+    patch({ pr: key, view: "page", tab });
+  };
   const closePeek = () => {
     setLocalCursor(cursorKey);
     patch({ pr: undefined, view: undefined, tab: undefined });
@@ -660,6 +661,8 @@ export function PrQueueView({
               total={rowKeys.length}
               tab={search.tab ?? "overview"}
               advisory={advisory}
+              runningThreadId={runningThreadId}
+              editReviewers={reviewerEditKey !== null && reviewerEditKey === queue.openPr?.key}
               isAnalyzing={isAnalyzing}
               onAnalyze={analyze}
               onTabChange={(tab) => patch({ tab }, true)}
@@ -689,7 +692,7 @@ export function PrQueueView({
                     actions={actions}
                     now={now}
                     onClose={closePeek}
-                    onOpenPage={() => openPage(activePr.key)}
+                    onOpenPage={(tab, editReviewers) => openPage(activePr.key, tab, editReviewers)}
                     onOpenThread={onOpenThread}
                   />
                 ) : null,

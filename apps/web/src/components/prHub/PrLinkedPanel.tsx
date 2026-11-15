@@ -10,7 +10,7 @@ import {
   getPrHubSelectedAccountId,
 } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
-import { PrDetailPanel } from "./PrDetailPanel";
+import { PrPageContent } from "./PrPageContent";
 
 /** Uses the normal PR model and write paths while retaining the thread and its draft. */
 export default function PrLinkedPanel({
@@ -79,10 +79,10 @@ export default function PrLinkedPanel({
           </div>
         ) : null}
         {value ? (
-          <PrDetailPanel
+          <PrPageContent
             key={`${generation}:${value.key}`}
             pr={value}
-            confirmationMode="inline"
+            compact
             initialAction={initialAction}
             onInitialActionHandled={onInitialActionHandled}
           />

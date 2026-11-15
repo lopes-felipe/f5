@@ -1,33 +1,37 @@
 import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { toastManager } from "~/components/ui/toast";
-import { PrReviewThreadsTab } from "./PrReviewThreadsTab";
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { UnderlineTabs, type UnderlineTab } from "~/components/ui/underline-tabs";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 
-import { cn } from "../../lib/utils";
+import { PrChecksTab } from "./PrChecksTab";
 import { PrFilesTab } from "./PrFilesTab";
-import { PrSummaryTab } from "./PrSummaryTab";
+import { PrOverviewTab, type PrOverviewExtras } from "./PrOverviewTab";
+import type { PrQueueTab } from "./prQueueSearch";
+import { PrReviewThreadsTab } from "./PrReviewThreadsTab";
 import { PrTimelineTab } from "./PrTimelineTab";
 import { usePrDetailMutations } from "./usePrDetailMutations";
 
 const PrReviewGuideTab = lazy(() =>
   import("./PrReviewGuideTab").then((module) => ({ default: module.PrReviewGuideTab })),
 );
-export type PrDetailTab = "summary" | "timeline" | "files" | "review_threads" | "guide";
+
+/** The tabs of a pull request; the same names the queue keeps in the URL. */
+export type PrDetailTab = PrQueueTab;
 
 export function PrDetailsTabs({
   pr,
-  summary,
   activeTab,
   onTabChange,
+  overview,
 }: {
   pr: TrackedPullRequest;
-  summary: ReactNode;
-  activeTab?: PrDetailTab;
-  onTabChange?: (tab: PrDetailTab) => void;
+  activeTab?: PrDetailTab | undefined;
+  onTabChange?: ((tab: PrDetailTab) => void) | undefined;
+  overview?: PrOverviewExtras | undefined;
 }) {
-  const [localTab, setLocalTab] = useState<PrDetailTab>("summary");
+  const [localTab, setLocalTab] = useState<PrDetailTab>("overview");
   const keybindings = useServerKeybindings();
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
@@ -51,40 +55,30 @@ export function PrDetailsTabs({
     onTabChange?.(next);
   };
   const mutations = usePrDetailMutations(pr);
-  const tabs: ReadonlyArray<{ readonly id: PrDetailTab; readonly label: string }> = [
-    { id: "summary", label: "Summary" },
-    { id: "timeline", label: "Timeline" },
-    { id: "review_threads", label: "Review threads" },
-    { id: "files", label: `Files (${pr.changedFiles})` },
-    { id: "guide", label: "Guide · Beta" },
+  const tabs: ReadonlyArray<UnderlineTab<PrDetailTab>> = [
+    { value: "overview", label: "Overview" },
+    { value: "conversation", label: "Conversation" },
+    {
+      value: "threads",
+      label: pr.unresolvedThreadCount > 0 ? `Threads (${pr.unresolvedThreadCount})` : "Threads",
+    },
+    { value: "files", label: `Files (${pr.changedFiles})` },
+    { value: "checks", label: "Checks" },
+    { value: "guide", label: "Guide · Beta" },
   ];
 
   return (
     <div data-pr-detail-tabs className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
-      <div
-        className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border"
-        role="tablist"
-      >
-        {tabs.map((candidate) => (
-          <button
-            key={candidate.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === candidate.id}
-            className={cn(
-              "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-              tab === candidate.id
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => setTab(candidate.id)}
-          >
-            {candidate.label}
-          </button>
-        ))}
-      </div>
+      <UnderlineTabs
+        className="shrink-0"
+        aria-label="Pull request sections"
+        tabs={tabs}
+        value={tab}
+        onValueChange={setTab}
+        scrollable
+      />
 
-      {tab === "timeline" ? (
+      {tab === "conversation" ? (
         <PrTimelineTab key={pr.key} pr={pr} active mutations={mutations} />
       ) : (
         <div
@@ -92,10 +86,18 @@ export function PrDetailsTabs({
           tabIndex={-1}
           className="min-h-0 flex-1 overflow-y-auto outline-none"
         >
-          {tab === "summary" ? (
-            <PrSummaryTab pr={pr} active summary={summary} mutations={mutations} />
-          ) : tab === "review_threads" ? (
+          {tab === "overview" ? (
+            <PrOverviewTab
+              key={pr.key}
+              pr={pr}
+              mutations={mutations}
+              onShowTab={setTab}
+              {...overview}
+            />
+          ) : tab === "threads" ? (
             <PrReviewThreadsTab key={pr.key} pr={pr} />
+          ) : tab === "checks" ? (
+            <PrChecksTab key={pr.key} pr={pr} />
           ) : tab === "guide" ? (
             <Suspense fallback={<p>Loading review guide…</p>}>
               <PrReviewGuideTab key={pr.key} pr={pr} />

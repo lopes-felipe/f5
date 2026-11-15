@@ -18,17 +18,16 @@ import type { PrHubThreadLink, ThreadId, TrackedPullRequest } from "@t3tools/con
 
 import { prHubDetailQueryOptions } from "../../lib/prHubReactQuery";
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
-import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
 import { PrMarkdown } from "./PrMarkdown";
-import { attentionVariant } from "./prHubPresentation";
-import { prStatusChecklist } from "./prQueueModel";
 import type { PrQueueActionState } from "./PrQueueActions";
-import { PR_TONE_DOT, PrThreadChip } from "./PrQueueTable";
+import type { PrQueueTab } from "./prQueueSearch";
+import { PrThreadChip } from "./PrQueueTable";
+import { PrStatusChecklist } from "./PrStatusChecklist";
 import { usePrMarkSeen } from "./usePrMarkSeen";
 
 /** How long a row must stay selected before its description is fetched. */
@@ -61,7 +60,8 @@ export function PrQueuePeek({
   actions: PrQueueActionState;
   now: number;
   onClose: () => void;
-  onOpenPage: () => void;
+  /** Opens the pull request page, on a tab and with the reviewer editor open when asked. */
+  onOpenPage: (tab?: PrQueueTab, editReviewers?: boolean) => void;
   onOpenThread: (threadId: ThreadId) => void;
 }) {
   usePrMarkSeen(pr);
@@ -128,7 +128,7 @@ export function PrQueuePeek({
               {primary.label}
             </Button>
           ) : null}
-          <Button size="sm" variant="outline" onClick={onOpenPage}>
+          <Button size="sm" variant="outline" onClick={() => onOpenPage()}>
             <Maximize2Icon /> Open <Kbd>↵</Kbd>
           </Button>
           {flags.isOpen && !flags.isIgnored ? (
@@ -187,36 +187,15 @@ export function PrQueuePeek({
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
         {pr.state === "open" ? (
-          <section aria-label="Status" className="flex flex-col gap-2">
-            {pr.nextAction ? (
-              <div className="flex flex-col gap-1">
-                <Badge variant={attentionVariant(pr)} className="self-start">
-                  {pr.nextAction}
-                </Badge>
-                {pr.primaryReason ? (
-                  <p className="text-xs text-muted-foreground">{pr.primaryReason}</p>
-                ) : null}
-              </div>
-            ) : null}
-            <ul className="flex flex-col rounded-lg border border-border">
-              {prStatusChecklist(pr).map((item) => (
-                <li
-                  key={item.id}
-                  className="flex items-baseline gap-2 border-b border-border px-3 py-1.5 text-xs last:border-b-0"
-                >
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "size-1.5 shrink-0 -translate-y-px rounded-full",
-                      PR_TONE_DOT[item.tone],
-                    )}
-                  />
-                  <span className="w-24 shrink-0 font-medium text-foreground">{item.label}</span>
-                  <span className="min-w-0 text-muted-foreground">{item.detail}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <PrStatusChecklist
+            pr={pr}
+            onAction={(kind) => {
+              if (kind === "update_branch" || kind === "resolve_conflicts") actions.run(kind);
+              else if (kind === "view_checks") onOpenPage("checks");
+              else if (kind === "view_threads") onOpenPage("threads");
+              else onOpenPage("overview", true);
+            }}
+          />
         ) : null}
 
         {links && links.length > 0 ? (
@@ -273,7 +252,7 @@ export function PrQueuePeek({
             </div>
           )}
           {body ? (
-            <Button size="xs" variant="ghost" className="self-start" onClick={onOpenPage}>
+            <Button size="xs" variant="ghost" className="self-start" onClick={() => onOpenPage()}>
               Read the full pull request
             </Button>
           ) : null}

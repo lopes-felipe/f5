@@ -7,6 +7,7 @@ import type {
 import { forgeCapabilitiesFor } from "@t3tools/shared/forgeCapabilities";
 import { canViewerReview } from "@t3tools/shared/prHub";
 
+import { prQuickActions } from "../../lib/prQuickActions";
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 
 export const PR_QUEUE_SECTION_LABELS: Record<PrHubSection, string> = {
@@ -67,7 +68,8 @@ export interface PrRowAction {
   readonly threadId?: ThreadId;
 }
 
-const AGENT_ACTIONS: ReadonlySet<PrRowActionKind> = new Set([
+/** Steps an agent takes in an F5 thread. */
+export const PR_AGENT_ACTIONS: ReadonlySet<PrRowActionKind> = new Set([
   "fix_ci",
   "resolve_conflicts",
   "address_feedback",
@@ -87,7 +89,7 @@ export function prRowPrimaryAction(
     return canViewerReview(pr) ? { kind: "review", label: "Review" } : null;
   }
   const action = authorAction(pr);
-  if (action && AGENT_ACTIONS.has(action.kind) && context.runningThreadId) {
+  if (action && PR_AGENT_ACTIONS.has(action.kind) && context.runningThreadId) {
     return { kind: "open_thread", label: "Open thread", threadId: context.runningThreadId };
   }
   return action;
@@ -115,6 +117,57 @@ function authorAction(pr: TrackedPullRequest): PrRowAction | null {
     default:
       return null;
   }
+}
+
+/** Which steps the page's action bar offers for a pull request. */
+export interface PrPageActionAvailability {
+  /** Merge now and Merge when ready, for the author. */
+  readonly canMerge: boolean;
+  readonly canMergeWhenReady: boolean;
+  /** The viewer is asked to review: Approve, Comment and Request changes join Review. */
+  readonly canReview: boolean;
+  readonly canApprove: boolean;
+  readonly canComment: boolean;
+  readonly canRequestChanges: boolean;
+  readonly canSnooze: boolean;
+  readonly canIgnore: boolean;
+  readonly canClose: boolean;
+  readonly canReopen: boolean;
+  readonly canMarkReady: boolean;
+  readonly canConvertToDraft: boolean;
+  readonly canReRequest: boolean;
+}
+
+export function prPageActionAvailability(pr: TrackedPullRequest): PrPageActionAvailability {
+  const caps = pr.forgeCapabilities ?? forgeCapabilitiesFor(pr.provider);
+  const open = pr.state === "open" && !pr.repositoryArchived;
+  const actionable = open && pr.ignoredAt === null;
+  const isAuthor = pr.roles.includes("author");
+  const quick = prQuickActions(pr);
+  const canReview = actionable && canViewerReview(pr);
+  const supports = (action: "approve" | "comment" | "request-changes") =>
+    pr.capabilities?.some((item) => item.action === action && item.supported) ?? false;
+  return {
+    canMerge: actionable && isAuthor && quick.includes("merge"),
+    canMergeWhenReady:
+      actionable && isAuthor && !pr.isDraft && !!caps?.actions.includes("enable-auto-merge"),
+    canReview,
+    canApprove: canReview && supports("approve"),
+    canComment: open && supports("comment"),
+    canRequestChanges: canReview && supports("request-changes"),
+    canSnooze: actionable,
+    canIgnore: actionable,
+    canClose: quick.includes("close"),
+    canReopen: quick.includes("reopen"),
+    canMarkReady: actionable && quick.includes("ready"),
+    canConvertToDraft: actionable && !pr.isDraft && !!caps?.actions.includes("draft"),
+    // The forge accepts a re-request only while the author waits on the reviewers it names.
+    canReRequest:
+      actionable &&
+      isAuthor &&
+      (pr.attentionState === "awaiting_review" || pr.attentionState === "unresolved_comments") &&
+      pr.reviewRequestReviewers.length > 0,
+  };
 }
 
 export type PrTone = "success" | "warning" | "danger" | "pending" | "muted";
@@ -152,21 +205,46 @@ export function prRowChecks(pr: TrackedPullRequest): PrRowCell {
   }
 }
 
+export type PrChecklistActionKind =
+  | "request_reviewers"
+  | "view_checks"
+  | "update_branch"
+  | "resolve_conflicts"
+  | "view_threads";
+
 export interface PrChecklistItem {
   readonly id: "review" | "checks" | "branch" | "threads" | "requirements";
   readonly label: string;
   readonly detail: string;
   readonly tone: PrTone;
+  /** The step that moves this line forward, when there is one the viewer can take. */
+  readonly action?: { readonly kind: PrChecklistActionKind; readonly label: string };
 }
 
-/** The merge-readiness summary shown in the peek: what is done and what still blocks. */
+/**
+ * The merge-readiness summary of the peek and the Overview tab: what is done, what still
+ * blocks, and the step that unblocks it.
+ */
 export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
   const items: PrChecklistItem[] = [];
   const waitingOn = pr.reviewRequestReviewers.slice(0, 3).join(", ");
+  const caps = pr.forgeCapabilities ?? forgeCapabilitiesFor(pr.provider);
+  const actionable = pr.state === "open" && pr.ignoredAt === null && !pr.repositoryArchived;
+  const isAuthor = pr.roles.includes("author");
+  const action = (
+    kind: PrChecklistActionKind,
+    label: string,
+    when: boolean,
+  ): Pick<PrChecklistItem, "action"> => (actionable && when ? { action: { kind, label } } : {});
   items.push({
     id: "review",
     label: "Review",
     tone: prRowReview(pr).tone,
+    ...action(
+      "request_reviewers",
+      "Request reviewers",
+      isAuthor && pr.reviewDecision !== "approved" && !!caps?.reviewers.request,
+    ),
     detail:
       pr.reviewDecision === "approved"
         ? "Approved"
@@ -184,6 +262,7 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
     id: "checks",
     label: "Checks",
     tone: prRowChecks(pr).tone,
+    ...action("view_checks", "View checks", pr.checkRollup !== "none"),
     detail:
       pr.checkRollup === "success"
         ? "All checks passed"
@@ -199,6 +278,13 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
   items.push({
     id: "branch",
     label: "Branch",
+    ...(pr.mergeable === "conflicting"
+      ? action("resolve_conflicts", "Resolve with F5", isAuthor)
+      : action(
+          "update_branch",
+          "Update branch",
+          behind && !!caps?.actions.includes("update-branch") && caps.updateMethods.length > 0,
+        )),
     tone:
       pr.mergeable === "conflicting"
         ? "danger"
@@ -222,6 +308,7 @@ export function prStatusChecklist(pr: TrackedPullRequest): PrChecklistItem[] {
       label: "Threads",
       tone: "warning",
       detail: `${pr.unresolvedThreadCount} unresolved`,
+      ...action("view_threads", "View threads", true),
     });
   }
   if (

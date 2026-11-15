@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PrHubAdvisory, TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
 
-import { PrDetailPanel } from "./PrDetailPanel";
+import { PrPageContent } from "./PrPageContent";
 import { TooltipProvider } from "../ui/tooltip";
 
 function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest {
@@ -102,35 +102,60 @@ function render(node: React.ReactElement): string {
   );
 }
 
-describe("PrDetailPanel", () => {
-  it("renders advisory state and the read-only suggest overflow trigger", () => {
+describe("PrPageContent", () => {
+  it("renders the header, the status checklist, the advisory and the tabs", () => {
     const pr = makePr();
     const markup = render(
-      <PrDetailPanel pr={pr} advisory={makeAdvisory(pr)} onAnalyzeAdvisory={() => {}} />,
+      <PrPageContent pr={pr} advisory={makeAdvisory(pr)} onAnalyzeAdvisory={() => {}} />,
     );
 
+    expect(markup).toContain("octo/repo#1");
+    expect(markup).toContain("feature/advisory → main");
+    expect(markup).toContain("2 files");
+    // The author's next step for failing CI, and the checklist line behind it.
     expect(markup).toContain("Fix CI");
+    expect(markup).toContain("Some checks failed");
+    expect(markup).toContain("View checks");
+    expect(markup).toContain("1 unresolved");
     expect(markup).toContain("90%");
     expect(markup).toContain("Fix failing CI before requesting more review.");
-    expect(markup).toContain("Details");
-    expect(markup).toContain("Summary");
-    expect(markup).toContain("Timeline");
-    expect(markup).toContain("Files (2)");
+    for (const tab of ["Overview", "Conversation", "Threads (1)", "Files (2)", "Checks", "Guide"]) {
+      expect(markup).toContain(tab);
+    }
+    // Sync diagnostics are folded away, not listed above the description.
+    expect(markup).toContain("Sync details");
+    expect(markup).not.toContain("Merge requirements");
     // Secondary actions live in a portalled, closed overflow menu; assert the
     // always-rendered trigger instead.
     expect(markup).toContain('aria-label="More actions"');
+    expect(markup).toContain('aria-label="Merge options"');
   });
 
-  it("renders the contextual primary action", () => {
+  it("offers a reviewer the review choices instead of the merge ones", () => {
     const pr = makePr({
       roles: ["review_requested"],
+      author: "alice",
       viewerReviewRequested: true,
       attentionState: "review_requested",
       attentionBucket: "needs_you",
     });
-    const markup = render(<PrDetailPanel pr={pr} />);
+    const markup = render(<PrPageContent pr={pr} />);
 
-    expect(markup).toContain("Approve");
+    expect(markup).toContain('aria-label="Review options"');
+    expect(markup).not.toContain('aria-label="Merge options"');
     expect(markup).toContain('aria-label="More actions"');
+  });
+
+  it("shows a merged pull request without steps that no longer apply", () => {
+    const markup = render(
+      <PrPageContent
+        pr={makePr({ state: "merged", attentionState: "merged", attentionBucket: "informational" })}
+      />,
+    );
+
+    expect(markup).toContain("Merged");
+    expect(markup).not.toContain("Snooze");
+    expect(markup).not.toContain('aria-label="Merge options"');
+    expect(markup).not.toContain('aria-label="Status"');
   });
 });
