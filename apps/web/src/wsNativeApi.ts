@@ -1136,6 +1136,7 @@ export function createWsNativeApi(): NativeApi {
       unsnooze: (input) => requestPrHub(PR_HUB_WS_METHODS.unsnooze, input),
       ignore: (input) => requestPrHub(PR_HUB_WS_METHODS.ignore, input),
       unignore: (input) => requestPrHub(PR_HUB_WS_METHODS.unignore, input),
+      bulkUpdate: (input) => requestPrHub(PR_HUB_WS_METHODS.bulkUpdate, input),
       acknowledgeAttention: (input) => requestPrHub(PR_HUB_WS_METHODS.acknowledgeAttention, input),
       markSeen: (input) => requestPrHub(PR_HUB_WS_METHODS.markSeen, input),
       markNotified: (input) => requestPrHub(PR_HUB_WS_METHODS.markNotified, input),

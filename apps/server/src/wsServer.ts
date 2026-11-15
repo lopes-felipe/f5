@@ -6204,6 +6204,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       }
 
+      case PR_HUB_WS_METHODS.bulkUpdate:
+        return yield* prHub.bulkUpdate(stripRequestTag(request.body));
+
       case PR_HUB_WS_METHODS.acknowledgeAttention:
         yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
         return yield* prHub.getOverview({
