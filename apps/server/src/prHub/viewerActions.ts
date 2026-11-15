@@ -19,6 +19,7 @@ import { type PrHubServiceShape } from "./Services/PrHubService.ts";
 import { ViewerIdentity } from "./discoveryModel.ts";
 
 import { persistPrHubState, prHubActionError } from "./errors.ts";
+import { prSeenBaseline } from "./seenBaseline.ts";
 export interface PrHubViewerActionsContext {
   readonly getSnapshot: Effect.Effect<PrHubSnapshot>;
   readonly resolveViewer: Effect.Effect<ViewerIdentity, SourceControlProviderError>;
@@ -64,6 +65,14 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
       }),
     );
 
+  /** The pull request's facts as of now, stored so later reads can say what changed since. */
+  const baselineJson = (snapshot: PrHubSnapshot, key: PullRequestKey, at: string) => {
+    const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((candidate) =>
+      sourceControlPullRequestKeysEqual(candidate.key, key),
+    );
+    return pr ? JSON.stringify(prSeenBaseline(pr, at)) : null;
+  };
+
   const acknowledgeAttention: PrHubServiceShape["acknowledgeAttention"] = (input) =>
     Effect.gen(function* () {
       const parsed = parseSourceControlPullRequestKey(input.key);
@@ -72,7 +81,8 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
         return yield* prHubActionError("The GitHub account changed. Refresh before acknowledging.");
       const at = new Date().toISOString();
       const rows = yield* sql<{ number: number }>`UPDATE pr_hub_viewer_state
-        SET last_acknowledged_fingerprint = ${input.attentionFingerprint}, acknowledged_at = ${at}
+        SET last_acknowledged_fingerprint = ${input.attentionFingerprint}, acknowledged_at = ${at},
+          seen_baseline_json = COALESCE(${baselineJson(snapshot, input.key, at)}, seen_baseline_json)
         WHERE provider_kind = ${parsed.provider} AND host = ${parsed.host}
           AND viewer_id = ${String(snapshot.account.viewerId)} AND repo = ${parsed.repository} AND number = ${parsed.number}
           AND attention_fingerprint = ${input.attentionFingerprint} RETURNING number`.pipe(
@@ -82,7 +92,7 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
         return yield* prHubActionError("The PR attention changed. Reload before acknowledging.");
       return yield* mutateLocalState(input.key, (pr) =>
         pr.attentionFingerprint === input.attentionFingerprint
-          ? { acknowledgedAt: at, notificationPending: false }
+          ? { acknowledgedAt: at, notificationPending: false, changesSinceSeen: [] }
           : {},
       );
     });
@@ -93,9 +103,11 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
       const snapshot = yield* getSnapshot;
       const viewerLogin = snapshot.account ? String(snapshot.account.viewerId) : null;
       if (!parsed || !viewerLogin) return snapshot;
+      const at = new Date().toISOString();
       yield* sql`
         UPDATE pr_hub_viewer_state
-        SET last_seen_fingerprint = ${input.attentionFingerprint}
+        SET last_seen_fingerprint = ${input.attentionFingerprint},
+          seen_baseline_json = COALESCE(${baselineJson(snapshot, input.key, at)}, seen_baseline_json)
         WHERE provider_kind = ${parsed.provider}
           AND host = ${parsed.host}
           AND viewer_id = ${viewerLogin}
@@ -105,7 +117,7 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
       `.pipe(persistPrHubState("prHub.markSeen"));
       return yield* mutateLocalState(input.key, (pr) =>
         pr.attentionFingerprint === input.attentionFingerprint
-          ? { notificationPending: false }
+          ? { notificationPending: false, changesSinceSeen: [] }
           : {},
       );
     });
@@ -188,7 +200,8 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
         UPDATE pr_hub_viewer_state
         SET
           ignored_at = ${ignoredAt},
-          last_seen_fingerprint = attention_fingerprint
+          last_seen_fingerprint = attention_fingerprint,
+          seen_baseline_json = COALESCE(${baselineJson(snapshot, input.key, ignoredAt)}, seen_baseline_json)
         WHERE provider_kind = ${parsed.provider}
           AND host = ${parsed.host}
           AND viewer_id = ${viewerLogin}
@@ -221,6 +234,60 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
         Effect.flatMap(hydrateSnapshot),
         Effect.flatMap(publishSnapshot),
       );
+    });
+
+  /**
+   * Snoozes, ignores or marks seen many pull requests at once: one transaction, then one
+   * publication, so the queue redraws once however many rows changed.
+   */
+  const bulkUpdate: PrHubServiceShape["bulkUpdate"] = (input) =>
+    Effect.gen(function* () {
+      const snapshot = yield* getSnapshot;
+      const viewerId = snapshot.account ? String(snapshot.account.viewerId) : null;
+      if (!viewerId) return yield* prHubActionError("A verified account is required.");
+      const until = input.until;
+      if (input.action === "snooze" && !(until && Date.parse(until) > Date.now()))
+        return yield* prHubActionError("Choose a snooze time in the future.");
+      const at = new Date().toISOString();
+      const targets = [...new Set(input.keys)].flatMap((key) => {
+        const parsed = parseSourceControlPullRequestKey(key);
+        return parsed ? [{ key, parsed }] : [];
+      });
+      const updated = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            let count = 0;
+            for (const { key, parsed } of targets) {
+              const baseline = baselineJson(snapshot, key, at);
+              const rows =
+                input.action === "snooze"
+                  ? yield* sql<{ number: number }>`UPDATE pr_hub_viewer_state
+                      SET snoozed_until = ${until ?? null}
+                      WHERE provider_kind = ${parsed.provider} AND host = ${parsed.host}
+                        AND viewer_id = ${viewerId} AND repo = ${parsed.repository}
+                        AND number = ${parsed.number} RETURNING number`
+                  : input.action === "ignore"
+                    ? yield* sql<{ number: number }>`UPDATE pr_hub_viewer_state
+                        SET ignored_at = ${at}, last_seen_fingerprint = attention_fingerprint,
+                          seen_baseline_json = COALESCE(${baseline}, seen_baseline_json)
+                        WHERE provider_kind = ${parsed.provider} AND host = ${parsed.host}
+                          AND viewer_id = ${viewerId} AND repo = ${parsed.repository}
+                          AND number = ${parsed.number} RETURNING number`
+                    : yield* sql<{ number: number }>`UPDATE pr_hub_viewer_state
+                        SET last_seen_fingerprint = attention_fingerprint,
+                          seen_baseline_json = COALESCE(${baseline}, seen_baseline_json)
+                        WHERE provider_kind = ${parsed.provider} AND host = ${parsed.host}
+                          AND viewer_id = ${viewerId} AND repo = ${parsed.repository}
+                          AND number = ${parsed.number} RETURNING number`;
+              count += rows.length;
+            }
+            return count;
+          }),
+        )
+        .pipe(persistPrHubState("prHub.bulkUpdate"));
+      if (updated > 0)
+        yield* resolveViewer.pipe(Effect.flatMap(hydrateSnapshot), Effect.flatMap(publishSnapshot));
+      return { updated };
     });
 
   const clearData: PrHubServiceShape["clearData"] = () =>
@@ -280,6 +347,7 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
     unsnooze,
     ignore,
     unignore,
+    bulkUpdate,
     clearData,
     claimNotifications,
     acknowledgeNotifications,

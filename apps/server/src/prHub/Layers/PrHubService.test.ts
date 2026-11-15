@@ -5,7 +5,7 @@ import {
   makeGitHubRequestScheduler,
 } from "../../git/githubRequestScheduler.ts";
 import { PrHubRepositoryLive } from "./PrHubRepository.ts";
-import type { TrackedPullRequest } from "@t3tools/contracts";
+import { PullRequestKey, type TrackedPullRequest } from "@t3tools/contracts";
 import type { PrHubServiceShape } from "../Services/PrHubService.ts";
 import { PrHubJobCoordinatorLive } from "./PrHubJobCoordinator.ts";
 import { PrHubDiscoveryLive } from "./PrHubDiscovery.ts";
@@ -1461,6 +1461,166 @@ it.effect("restores an ignored pull request to the queue", () => {
     assert.deepStrictEqual(restored.recentlyResolved, []);
   }).pipe(
     Effect.provide(makeLayer({ calls, searchResponses: [searchResponse("direct_review", [pr])] })),
+  );
+});
+
+it.effect("reports what changed since a pull request was last seen", () => {
+  const calls = makeCalls();
+  const before = makePrNode({ id: "PR_activity", number: 61, headRefOid: "head-a" });
+  const after = {
+    ...makePrNode({
+      id: "PR_activity",
+      number: 61,
+      headRefOid: "head-b",
+      checkState: "FAILURE",
+    }),
+    comments: { totalCount: 4 },
+  };
+  const arrival = makePrNode({ id: "PR_arrival", number: 62 });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    // The first sync is a silent baseline: nothing it finds is reported as new.
+    const first = yield* service.refreshNow({ mode: "force" });
+    assert.deepStrictEqual(first.pullRequests[0]?.changesSinceSeen, []);
+    assert.equal((yield* service.getOverview({})).unreadCount, 0);
+
+    const second = yield* service.refreshNow({ mode: "force" });
+    const byNumber = new Map(second.pullRequests.map((pr) => [pr.number, pr]));
+    assert.deepStrictEqual(byNumber.get(61)?.changesSinceSeen, [
+      { kind: "ci_failed" },
+      { kind: "commits" },
+      { kind: "comments", count: 3 },
+    ]);
+    // Found after the first sync and never opened.
+    assert.deepStrictEqual(byNumber.get(62)?.changesSinceSeen, [{ kind: "new" }]);
+    assert.equal((yield* service.getOverview({})).unreadCount, 2);
+    const unread = yield* service.listPullRequests({ unread: true, sort: "updated" });
+    assert.deepStrictEqual(unread.pullRequests.map((pr) => pr.number).toSorted(), [61, 62]);
+
+    const changed = byNumber.get(61)!;
+    const seen = yield* service.markSeen({
+      key: changed.key,
+      attentionFingerprint: changed.attentionFingerprint,
+    });
+    assert.deepStrictEqual(seen.pullRequests.find((pr) => pr.number === 61)?.changesSinceSeen, []);
+    assert.equal((yield* service.getOverview({})).unreadCount, 1);
+    const stored = yield* sql<{ seen_baseline_json: string }>`
+      SELECT seen_baseline_json FROM pr_hub_viewer_state WHERE number = ${61}`;
+    assert.include(JSON.parse(stored[0]!.seen_baseline_json), {
+      headRefOid: "head-b",
+      commentsCount: 4,
+      checkRollup: "failure",
+    });
+    // The baseline survives the next read of the same facts.
+    const third = yield* service.refreshNow({ mode: "force" });
+    assert.deepStrictEqual(third.pullRequests.find((pr) => pr.number === 61)?.changesSinceSeen, []);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [
+          searchResponse("direct_review", [before]),
+          searchResponse("direct_review", [after, arrival]),
+          searchResponse("direct_review", [after, arrival]),
+        ],
+      }),
+    ),
+  );
+});
+
+it.effect("updates many pull requests in one transaction and one publication", () => {
+  const calls = makeCalls();
+  const nodes = [71, 72, 73].map((number) => makePrNode({ id: `PR_bulk_${number}`, number }));
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    const tracked = (yield* service.refreshNow({ mode: "force" })).pullRequests;
+    const keys = tracked.map((pr) => pr.key).toSorted();
+    assert.equal(keys.length, 3);
+    const revision = async () => Number((await Effect.runPromise(service.getSnapshot)).revision);
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    const snoozed = () =>
+      sql<{ number: number }>`SELECT number FROM pr_hub_viewer_state
+        WHERE snoozed_until IS NOT NULL ORDER BY number`.pipe(
+        Effect.map((rows) => rows.map((row) => row.number)),
+      );
+
+    // A snooze needs a time, and a failure on any row leaves every row as it was.
+    assert.equal(
+      (yield* Effect.exit(service.bulkUpdate({ keys, action: "snooze" })))._tag,
+      "Failure",
+    );
+    yield* sql`CREATE TRIGGER fail_bulk BEFORE UPDATE ON pr_hub_viewer_state
+      WHEN NEW.number = 73 AND NEW.snoozed_until IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`;
+    const beforeFailure = yield* Effect.promise(revision);
+    assert.equal(
+      (yield* Effect.exit(service.bulkUpdate({ keys, action: "snooze", until })))._tag,
+      "Failure",
+    );
+    assert.deepStrictEqual(yield* snoozed(), []);
+    assert.equal(yield* Effect.promise(revision), beforeFailure);
+    yield* sql`DROP TRIGGER fail_bulk`;
+
+    // Duplicates and keys that are not tracked are skipped, not errors.
+    const result = yield* service.bulkUpdate({
+      keys: [
+        ...keys.slice(0, 2),
+        keys[0]!,
+        PullRequestKey.makeUnsafe("github:github.com/octo/repo#999"),
+      ],
+      action: "snooze",
+      until,
+    });
+    assert.deepStrictEqual(result, { updated: 2 });
+    assert.deepStrictEqual(yield* snoozed(), [71, 72]);
+    assert.equal(yield* Effect.promise(revision), beforeFailure + 1);
+    const afterSnooze = yield* service.getSnapshot;
+    assert.deepStrictEqual(
+      afterSnooze.pullRequests.map((pr) => [pr.number, pr.snoozedUntil]).toSorted(),
+      [
+        [71, until],
+        [72, until],
+        [73, null],
+      ],
+    );
+
+    yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL, seen_baseline_json = NULL`;
+    assert.deepStrictEqual(yield* service.bulkUpdate({ keys, action: "mark_seen" }), {
+      updated: 3,
+    });
+    const seen = yield* sql<{ seen: number; baseline: number }>`
+      SELECT count(*) FILTER (WHERE last_seen_fingerprint = attention_fingerprint) AS seen,
+        count(seen_baseline_json) AS baseline FROM pr_hub_viewer_state`;
+    assert.deepStrictEqual(seen, [{ seen: 3, baseline: 3 }]);
+    assert.isTrue(
+      (yield* service.getSnapshot).pullRequests.every((pr) => pr.changesSinceSeen?.length === 0),
+    );
+
+    assert.deepStrictEqual(yield* service.bulkUpdate({ keys: [keys[2]!], action: "ignore" }), {
+      updated: 1,
+    });
+    const afterIgnore = yield* service.getSnapshot;
+    assert.deepStrictEqual(afterIgnore.pullRequests.map((pr) => pr.number).toSorted(), [71, 72]);
+    assert.deepStrictEqual(
+      afterIgnore.recentlyResolved.map((pr) => [pr.number, pr.ignoredAt !== null]),
+      [[73, true]],
+    );
+    // Nothing matched: nothing is published.
+    const quiet = yield* Effect.promise(revision);
+    assert.deepStrictEqual(
+      yield* service.bulkUpdate({
+        keys: [PullRequestKey.makeUnsafe("github:github.com/octo/repo#999")],
+        action: "ignore",
+      }),
+      { updated: 0 },
+    );
+    assert.equal(yield* Effect.promise(revision), quiet);
+  }).pipe(
+    Effect.provide(makeLayer({ calls, searchResponses: [searchResponse("direct_review", nodes)] })),
   );
 });
 

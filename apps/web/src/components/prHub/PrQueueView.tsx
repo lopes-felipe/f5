@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
@@ -19,12 +27,13 @@ import type {
 } from "@t3tools/contracts";
 import { PR_HUB_SECTIONS } from "@t3tools/shared/prHub";
 
-import { useAppSettings } from "../../appSettings";
+import { readAppSettingsSnapshot, useAppSettings } from "../../appSettings";
 import {
   getPrHubAccountGeneration,
   getPrHubSelectedAccountId,
   setPrHubSelectedAccountId,
 } from "../../lib/prHubAccount";
+import type { PrSavedViewSetting } from "../../lib/prSavedViews";
 import { ensureNativeApi } from "../../nativeApi";
 import { AppTitlebar } from "../AppTitlebar";
 import { Button } from "../ui/button";
@@ -45,8 +54,10 @@ import {
   type PrQueueActionKind,
   type PrQueueActionRequest,
 } from "./PrQueueActions";
+import { PrQueueBulkBar } from "./PrQueueBulkBar";
 import {
   PrAccountSwitcher,
+  PrActivityPopover,
   PrQueueMenu,
   PrSyncPill,
   type PrQueueSettingsTarget,
@@ -60,18 +71,31 @@ import {
 } from "./prQueueModel";
 import { PrPageContent } from "./PrPageContent";
 import { PrQueuePeek } from "./PrQueuePeek";
+import { PrQueueSavedViews } from "./PrQueueSavedViews";
 import {
   parsePrQueueSearch,
+  prActiveSavedView,
+  prQueueFilters,
   prQueueIsFiltered,
+  prSavedQueries,
+  prSavedViewSearch,
   type PrQueueSearch,
   type PrQueueTab,
 } from "./prQueueSearch";
+import {
+  prunePrSelection,
+  selectPrRange,
+  setPrSelection,
+  togglePrSelection,
+} from "./prQueueSelection";
 import { PrQueueSkeletonRows, PrQueueTable, useRunningPrThread } from "./PrQueueTable";
 import { PrQueueToolbar } from "./PrQueueToolbar";
 import { usePrAdvisory, usePrQueue } from "./usePrQueue";
 
 /** Below this width there is no room for the peek; a row opens the page instead. */
 const PEEK_MIN_WIDTH = 1100;
+
+const NO_SELECTION: ReadonlySet<PullRequestKey> = new Set();
 
 type CollapseState = Partial<Record<PrHubSection, boolean>>;
 
@@ -293,9 +317,30 @@ export function PrQueueView({
   // "Request reviewers" in the peek opens the page with the reviewer editor showing.
   const [reviewerEditKey, setReviewerEditKey] = useState<PullRequestKey | null>(null);
 
-  const queue = usePrQueue(search, collapse);
+  const savedViews = settings.prHubSavedViews;
+  const savedQueries = useMemo(() => prSavedQueries(savedViews), [savedViews]);
+  const queue = usePrQueue(search, collapse, savedQueries);
   const { overview, rows } = queue;
   const rowKeys = rows.map((pr) => pr.key);
+  // Rows are ticked for bulk actions in the active queue only; a row that leaves the
+  // screen leaves the selection.
+  const selectable = (search.status ?? "active") === "active";
+  const [selection, setSelection] = useState<ReadonlySet<PullRequestKey>>(NO_SELECTION);
+  const selectionAnchor = useRef<PullRequestKey | null>(null);
+  const selectedKeys = selectable ? prunePrSelection(selection, rowKeys) : NO_SELECTION;
+  useEffect(() => {
+    if (selectedKeys !== selection) setSelection(selectedKeys);
+  }, [selectedKeys, selection]);
+  const clearSelection = useCallback(() => setSelection(NO_SELECTION), []);
+  const toggleSelected = (key: PullRequestKey, range: boolean) => {
+    const anchor = selectionAnchor.current;
+    selectionAnchor.current = key;
+    setSelection((current) =>
+      range ? selectPrRange(rowKeys, current, anchor, key) : togglePrSelection(current, key),
+    );
+  };
+  const selectAll = (keys: readonly PullRequestKey[], on: boolean) =>
+    setSelection((current) => setPrSelection(current, keys, on));
   const openKey = (search.pr as PullRequestKey | undefined) ?? null;
   const showPage = openKey !== null && (search.view === "page" || !canPeek);
   const peekOpen = openKey !== null && !showPage;
@@ -419,7 +464,9 @@ export function PrQueueView({
     const list = target?.closest("[role=listbox]");
     if (list && list.getAttribute("aria-label") !== "Pull requests") return;
     // A focused control keeps the keys that operate it.
-    const control = target?.closest("button, a, summary, [role=tab], [role=menuitem]");
+    const control = target?.closest(
+      "button, a, summary, [role=tab], [role=menuitem], [role=checkbox]",
+    );
     if (control && [" ", "Enter", "ArrowDown", "ArrowUp"].includes(event.key)) return;
     switch (command) {
       case "next":
@@ -446,8 +493,13 @@ export function PrQueueView({
         break;
       case "back":
         if (showPage) leavePage();
+        else if (selectedKeys.size > 0) clearSelection();
         else if (peekOpen) closePeek();
         else return;
+        break;
+      case "select":
+        if (!cursorKey || !selectable) return;
+        toggleSelected(cursorKey, false);
         break;
       case "search":
         searchInputRef.current?.focus();
@@ -478,6 +530,15 @@ export function PrQueueView({
   const synced = overview?.sync?.lastSyncedAt ? ` ${prSyncPillLabel(overview.sync, now)}.` : "";
   const clearFilters = () =>
     onSearchChange(parsePrQueueSearch({ pr: search.pr, status: search.status }));
+  const activeView = prActiveSavedView(search, savedViews);
+  const changeSavedViews = (
+    update: (current: readonly PrSavedViewSetting[]) => readonly PrSavedViewSetting[],
+    select?: PrSavedViewSetting,
+  ) => {
+    // An Undo can arrive after other changes, so the update starts from what is stored.
+    updateSettings({ prHubSavedViews: update(readAppSettingsSnapshot().prHubSavedViews) });
+    if (select) onSearchChange(prSavedViewSearch(search, select));
+  };
 
   // Backlog is a healthy refresh, but while searches or detail reads are still queued the
   // queue is not known to be empty.
@@ -502,11 +563,14 @@ export function PrQueueView({
           viewerLogin={overview?.viewerLogin ?? null}
           cursorKey={cursorKey}
           openKey={peekOpen ? cursorKey : null}
+          selectedKeys={selectable ? selectedKeys : null}
           stalledHours={settings.prHubStalledAfterHours}
           now={now}
           isStale={queue.isStale}
           onSelect={select}
           onOpenPage={openPage}
+          onToggleSelected={toggleSelected}
+          onSelectAll={selectAll}
           onAction={requestAction}
           onOpenThread={onOpenThread}
           onToggleSection={toggleSection}
@@ -635,6 +699,11 @@ export function PrQueueView({
           }
           trailing={
             <>
+              <PrActivityPopover
+                overview={overview}
+                now={now}
+                onOpen={(key) => (showPage ? patch({ pr: key, tab: undefined }) : select(key))}
+              />
               <PrAccountSwitcher
                 selectedAccountId={getPrHubSelectedAccountId()}
                 onSelect={(accountId) => {
@@ -682,8 +751,28 @@ export function PrQueueView({
               onChange={(change) => patch(change, "q" in change)}
               onOpenUrl={openUrl}
             />
+            {selectable ? (
+              <PrQueueSavedViews
+                views={savedViews}
+                activeView={activeView}
+                filters={prQueueFilters(search)}
+                isFiltered={filtered}
+                counts={overview?.savedCounts}
+                onSelectQueue={clearFilters}
+                onSelectView={(view) => onSearchChange(prSavedViewSearch(search, view))}
+                onChange={changeSavedViews}
+              />
+            ) : null}
             <div className="flex min-h-0 flex-1">
-              <main className="flex min-h-0 min-w-0 flex-1 flex-col">{body}</main>
+              <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {body}
+                {selectedKeys.size > 0 ? (
+                  <PrQueueBulkBar
+                    selected={rows.filter((pr) => selectedKeys.has(pr.key))}
+                    onClear={clearSelection}
+                  />
+                ) : null}
+              </main>
               {host((actions) =>
                 peekOpen && activePr ? (
                   <PrQueuePeek

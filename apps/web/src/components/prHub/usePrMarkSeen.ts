@@ -9,6 +9,8 @@ export function usePrMarkSeen(pr: TrackedPullRequest | null): void {
   const accountGeneration = getPrHubAccountGeneration();
   const key = pr?.key;
   const fingerprint = pr?.attentionFingerprint;
+  // Activity that arrives while the pull request is on screen is seen as well.
+  const changes = pr?.changesSinceSeen?.length ? JSON.stringify(pr.changesSinceSeen) : "";
   useEffect(() => {
     if (!accountGeneration || !key || !fingerprint) return;
     // A visible detail is seen; merely loading the queue never marks the collection.
@@ -19,5 +21,5 @@ export function usePrMarkSeen(pr: TrackedPullRequest | null): void {
         .catch(() => {});
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [accountGeneration, key, fingerprint]);
+  }, [accountGeneration, key, fingerprint, changes]);
 }
