@@ -29,6 +29,11 @@ import { PrStackSection } from "./PrStackSection";
 import { PrStatusChecklist } from "./PrStatusChecklist";
 import type { usePrDetailMutations } from "./usePrDetailMutations";
 
+export type PrChecklistStep = Exclude<
+  PrChecklistActionKind,
+  "view_checks" | "view_threads" | "request_reviewers"
+>;
+
 /** What the Overview tab shows besides the pull request's own detail. */
 export interface PrOverviewExtras {
   advisory?: PrHubAdvisory | undefined;
@@ -36,8 +41,8 @@ export interface PrOverviewExtras {
   onAnalyzeAdvisory?: (() => void) | undefined;
   /** Set where a linked thread can be opened; without it the threads are not listed. */
   onOpenThread?: ((threadId: ThreadId) => void) | undefined;
-  /** The branch steps of the status checklist; the other steps stay inside the tabs. */
-  onBranchAction?: ((kind: "update_branch" | "resolve_conflicts") => void) | undefined;
+  /** The checklist steps that change the pull request; the others stay inside the tabs. */
+  onChecklistStep?: ((kind: PrChecklistStep) => void) | undefined;
   /** Opens the reviewer editor at once, for "Request reviewers" pressed elsewhere. */
   defaultEditingReviewers?: boolean | undefined;
 }
@@ -199,7 +204,7 @@ export function PrOverviewTab({
   isAnalyzingAdvisory = false,
   onAnalyzeAdvisory,
   onOpenThread,
-  onBranchAction,
+  onChecklistStep,
   defaultEditingReviewers = false,
 }: PrOverviewExtras & {
   pr: TrackedPullRequest;
@@ -217,7 +222,7 @@ export function PrOverviewTab({
     if (kind === "view_checks") onShowTab("checks");
     else if (kind === "view_threads") onShowTab("threads");
     else if (kind === "request_reviewers") setEditingReviewers(true);
-    else onBranchAction?.(kind);
+    else onChecklistStep?.(kind);
   };
 
   return (

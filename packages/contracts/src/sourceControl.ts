@@ -129,8 +129,15 @@ export const ForgeAction = Schema.Literals([
   "disable-auto-merge",
   "revert",
   "approve-workflows",
+  "rerun-failed-checks",
 ]);
 export type ForgeAction = typeof ForgeAction.Type;
+/** What the forge allows on a change request's checks beyond listing them. */
+export const ForgeCheckCapabilities = Schema.Struct({
+  logs: Schema.Boolean,
+  rerun: Schema.Boolean,
+});
+export type ForgeCheckCapabilities = typeof ForgeCheckCapabilities.Type;
 export const ForgeCapabilities = Schema.Struct({
   diff: Schema.Boolean,
   comment: Schema.Boolean,
@@ -151,5 +158,9 @@ export const ForgeCapabilities = Schema.Struct({
   edit: Schema.Struct({ changeRequest: Schema.Boolean, comment: Schema.Boolean }),
   stacks: Schema.Boolean,
   stackActions: Schema.Boolean,
+  // Snapshots saved before checks had capabilities decode as a forge that has neither.
+  checks: ForgeCheckCapabilities.pipe(
+    Schema.withDecodingDefault(() => ({ logs: false, rerun: false })),
+  ),
 });
 export type ForgeCapabilities = typeof ForgeCapabilities.Type;
