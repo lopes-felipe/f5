@@ -209,6 +209,7 @@ export function ChatComposer({
     activePendingProgress,
     isComposerApprovalState,
   } = pendingInteraction;
+  const isComposerQuestionState = !activePendingApproval && pendingUserInputs.length > 0;
   // The editor points at the highlighted option only while the list is on screen.
   const composerSuggestionsVisible = composerMenuOpen && !isComposerApprovalState;
   const { interactionMode, showPlanFollowUpPrompt, activeProposedPlan } = modeControls;
@@ -441,7 +442,10 @@ export function ChatComposer({
         <form
           ref={composerFormRef}
           onSubmit={sendControls.onSend}
-          className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) shrink-0"
+          className={cn(
+            "mx-auto w-full min-w-0 max-w-(--chat-content-max-width) shrink-0",
+            isComposerQuestionState && "flex min-h-0 shrink flex-col",
+          )}
           aria-label={collapsed ? "Message composer (collapsed)" : "Message composer"}
           data-chat-composer-form="true"
           onFocusCapture={(event) => {
@@ -470,6 +474,7 @@ export function ChatComposer({
             data-chat-composer-shell="true"
             className={cn(
               "group relative rounded-xl border bg-card shadow-lg/5 transition-[border-color,box-shadow,background-color] duration-(--duration-fast)",
+              isComposerQuestionState && "flex min-h-0 flex-col",
               isDragOverComposer
                 ? "border-primary/70 bg-accent/30"
                 : isComposerApprovalState
@@ -509,7 +514,10 @@ export function ChatComposer({
                 />
               </div>
             ) : pendingUserInputs.length > 0 ? (
-              <div className="rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40">
+              <div
+                className="min-h-0 overflow-y-auto overscroll-contain rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40"
+                data-composer-question-scroll=""
+              >
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
                   cwd={threadWorkspaceCwd(activeThread, activeProject)}
@@ -549,6 +557,7 @@ export function ChatComposer({
               data-composer-editor-area="true"
               className={cn(
                 "relative px-3 pb-2 sm:px-4",
+                isComposerQuestionState && "shrink-0",
                 hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
                 expandToggleVisible && "pe-9 sm:pe-9",
               )}
@@ -873,7 +882,7 @@ export function ChatComposer({
               <div
                 data-chat-composer-footer="true"
                 className={cn(
-                  "@container/composer-footer flex w-full items-center justify-between px-2 pb-2",
+                  "@container/composer-footer flex w-full shrink-0 items-center justify-between px-2 pb-2",
                   isComposerFooterCompact ? "gap-1.5" : "flex-wrap gap-2 sm:flex-nowrap sm:gap-1",
                 )}
               >

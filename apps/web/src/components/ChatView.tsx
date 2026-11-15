@@ -8230,10 +8230,7 @@ export default memo(function ChatView({
           {/* Main content area with optional plan sidebar */}
           <div className="flex min-h-0 min-w-0 flex-1">
             {/* Chat column */}
-            <div
-              className="flex min-h-0 min-w-0 flex-1 flex-col"
-              style={composerRedesign ? { containerType: "size" } : undefined}
-            >
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col" style={{ containerType: "size" }}>
               {/* Messages Wrapper */}
               <div
                 {...CONVERSATION_WORKSPACE_AREA}
