@@ -1,6 +1,8 @@
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   PullRequestKey,
+  ThreadId,
   type PrAttentionState,
   type TrackedPullRequest,
   type PrHubSnapshot,
@@ -10,6 +12,7 @@ import {
   makePrHubChangeRelay,
   prHubInvalidation,
   prHubOverview,
+  withPrHubThreadLinks,
 } from "./readModel.ts";
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
@@ -189,6 +192,28 @@ describe("PR Hub bounded read model", () => {
       expect(overview.counts.needs_you).toBe(4);
     });
 
+    it("offers filter values from the active queue, most common first", () => {
+      const labelled = {
+        ...data,
+        pullRequests: [
+          ...data.pullRequests.map((pr) => ({ ...pr, labels: pr.number < 4 ? ["bug"] : [] })),
+          row(30, {
+            attentionState: "review_requested",
+            author: "zoe",
+            labels: ["bug", "size:S"],
+            repository: { owner: "acme", repo: "web", nameWithOwner: "acme/web" },
+          }),
+          // Ignored rows are not in the queue, so they offer nothing to filter by.
+          row(31, { attentionState: "review_requested", author: "ghost", ignoredAt: daysAgo(1) }),
+        ],
+      };
+      expect(prHubOverview(labelled, "1").facets).toEqual({
+        repositories: ["octo/repo", "acme/web"],
+        authors: ["me", "someone", "zoe"],
+        labels: ["bug", "size:S"],
+      });
+    });
+
     it("lists one section of the active queue and stamps it on every row", () => {
       const review = listPrHubPullRequests(data, "1", { section: "review" }).pullRequests;
       expect(review.map((pr) => pr.number)).toEqual([1, 11]);
@@ -291,6 +316,33 @@ describe("PR Hub bounded read model", () => {
     expect(initial.resyncRequired).toBe(true);
     expect(initial.changedKeys).toEqual([]);
     expect(initial.counts.needs_you).toBe(5000);
+  });
+  it("sends a list page without thread links when they cannot be read", async () => {
+    const page = listPrHubPullRequests(snapshot(), "1", { limit: 2 });
+    const keys = page.pullRequests.map((pr) => pr.key);
+    const link = { threadId: ThreadId.makeUnsafe("thread-1"), title: "Fix CI" };
+    const asked: string[][] = [];
+    const linked = await Effect.runPromise(
+      withPrHubThreadLinks(page, (requested) => {
+        asked.push([...requested]);
+        return Effect.succeed({ [keys[0]!]: [link] });
+      }),
+    );
+    expect(asked).toEqual([keys]);
+    expect(linked.threadLinks).toEqual({ [keys[0]!]: [link] });
+    expect(linked.pullRequests).toBe(page.pullRequests);
+
+    const failed = await Effect.runPromise(
+      withPrHubThreadLinks(page, () => Effect.fail(new Error("database is locked"))),
+    );
+    expect(failed).toBe(page);
+    expect(failed.threadLinks).toBeUndefined();
+
+    // An empty page has nothing to look up.
+    const empty = { ...page, pullRequests: [] };
+    expect(
+      await Effect.runPromise(withPrHubThreadLinks(empty, () => Effect.die("not called"))),
+    ).toBe(empty);
   });
   it("renumbers relayed change events and asks for a resync after a dropped one", () => {
     const relay = makePrHubChangeRelay();
