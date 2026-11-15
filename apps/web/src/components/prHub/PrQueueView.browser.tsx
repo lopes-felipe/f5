@@ -8,6 +8,7 @@ import {
   type NativeApi,
   type PrHubListInput,
   type PrHubOverview,
+  type PrHubOverviewInput,
   type PrHubSection,
   type TrackedPullRequest,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { APP_SETTINGS_STORAGE_KEY } from "../../appSettings";
 import {
   getPrHubSelectedAccountId,
   setPrHubAccount,
@@ -34,6 +36,9 @@ const api = vi.hoisted(() => ({
   refresh: vi.fn(),
   track: vi.fn(),
   getOperation: vi.fn(),
+  bulkUpdate: vi.fn(),
+  getFiles: vi.fn(),
+  merge: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api }) as unknown as NativeApi,
@@ -165,10 +170,29 @@ const tracked = () =>
 const isActive = (pr: TrackedPullRequest) =>
   pr.state === "open" && pr.ignoredAt === null && pr.snoozedUntil === null;
 
-function overview(accountId?: string): PrHubOverview {
-  const active = (accountId === OTHER_ACCOUNT ? server.otherAccount : server.prs).filter(isActive);
+const isUnread = (pr: TrackedPullRequest) => (pr.changesSinceSeen?.length ?? 0) > 0;
+
+function overview(input: PrHubOverviewInput = {}): PrHubOverview {
+  const active = (input.accountId === OTHER_ACCOUNT ? server.otherAccount : server.prs).filter(
+    isActive,
+  );
   const count = (section: PrHubSection) => active.filter((pr) => pr.section === section).length;
   return {
+    unreadCount: active.filter(isUnread).length,
+    ...(input.savedQueries?.length
+      ? {
+          savedCounts: Object.fromEntries(
+            input.savedQueries.map((saved) => [
+              saved.id,
+              active.filter(
+                (pr) =>
+                  ["review", "action", "ready"].includes(pr.section ?? "") &&
+                  pr.title.toLowerCase().includes((saved.query ?? "").toLowerCase()),
+              ).length,
+            ]),
+          ),
+        }
+      : {}),
     status: server.status,
     host: "github.com",
     viewerLogin: "me",
@@ -215,6 +239,7 @@ async function list(input: PrHubListInput & { cursor?: string }) {
             : isActive(pr);
     return (
       visible &&
+      (!input.unread || isUnread(pr)) &&
       (!input.section || pr.section === input.section) &&
       (!input.query || pr.title.toLowerCase().includes(input.query.toLowerCase())) &&
       (!input.repository || pr.repository.nameWithOwner === input.repository)
@@ -280,6 +305,7 @@ beforeEach(() => {
   history.length = 0;
   window.localStorage.removeItem(PR_QUEUE_COLLAPSE_STORAGE_KEY);
   setPrHubSelectedAccountId(undefined);
+  window.localStorage.removeItem(APP_SETTINGS_STORAGE_KEY);
   setPrHubAccount({ host: "github.com", viewerId: 1, generation: "gen-1" });
   Object.assign(server, {
     prs: QUEUE,
@@ -291,9 +317,10 @@ beforeEach(() => {
     backlog: false,
     otherAccount: [],
   });
-  api.getOverview.mockImplementation(async (input?: { accountId?: string }) =>
-    overview(input?.accountId),
-  );
+  api.getOverview.mockImplementation(async (input?: PrHubOverviewInput) => overview(input));
+  api.bulkUpdate.mockImplementation(async ({ keys }: { keys: readonly string[] }) => ({
+    updated: keys.length,
+  }));
   api.listPullRequests.mockImplementation(list);
   api.getDetail.mockImplementation(async () => ({
     stale: false,
@@ -587,6 +614,277 @@ it("switches between status lists without section headers", async () => {
     .element(page.getByRole("button", { name: /Review requested/ }))
     .not.toBeInTheDocument();
   expect(lastSearch()).toEqual({ status: "ignored" });
+  // Rows are ticked for bulk actions in the active queue only.
+  await expect
+    .element(page.getByRole("checkbox", { name: "Select octo/repo#8" }))
+    .not.toBeInTheDocument();
+});
+
+const bulkBar = () => page.getByRole("toolbar", { name: "Selected pull requests" });
+const tick = (number: number) => page.getByRole("checkbox", { name: `Select octo/repo#${number}` });
+
+it("ticks rows with the mouse and the keyboard and updates them in one request", async () => {
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+
+  await tick(1).click();
+  await expect.element(bulkBar()).toHaveTextContent("1 selected");
+  // Shift-click extends from the last row ticked, across sections.
+  await row("Charlie fix").click({ modifiers: ["Shift"] });
+  await expect.element(bulkBar()).toHaveTextContent("3 selected");
+  await expect.element(tick(2)).toBeChecked();
+  // Extending the selection is not opening the row.
+  expect(lastSearch()).toBeUndefined();
+
+  // X ticks or unticks the row under the cursor.
+  await userEvent.keyboard("j");
+  await expect.element(row("Alpha review")).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("x");
+  await expect.element(bulkBar()).toHaveTextContent("2 selected");
+  await expect.element(tick(1)).not.toBeChecked();
+
+  await bulkBar().getByRole("button", { name: "Mark seen" }).click();
+  await expect.poll(() => api.bulkUpdate.mock.calls.length).toBe(1);
+  // Each row goes with the attention it showed, so one that changed meanwhile stays unread.
+  expect(api.bulkUpdate.mock.calls[0]?.[0]).toMatchObject({
+    keys: [keyOf(2), keyOf(3)],
+    action: "mark_seen",
+    seenFingerprints: { [keyOf(2)]: "fp-2", [keyOf(3)]: "fp-3" },
+  });
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+  await expect.element(tick(2)).not.toBeChecked();
+});
+
+it("ticks a whole section, snoozes the selection and clears it with Escape", async () => {
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  const section = page.getByRole("checkbox", { name: "Select all in Review requested" });
+  await section.click();
+  await expect.element(bulkBar()).toHaveTextContent("2 selected");
+  await expect.element(tick(1)).toBeChecked();
+  await expect.element(tick(2)).toBeChecked();
+  await expect.element(tick(3)).not.toBeChecked();
+
+  // Escape clears the selection before it closes anything else.
+  await row("Charlie fix").click();
+  await expect.element(peek(3)).toBeVisible();
+  await page.getByRole("listbox", { name: "Pull requests" }).click({ position: { x: 5, y: 5 } });
+  await userEvent.keyboard("{Escape}");
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+  await expect.element(peek(3)).toBeVisible();
+
+  await section.click();
+  await bulkBar().getByRole("button", { name: "Snooze" }).click();
+  await expect.element(page.getByText("Snooze 2 pull requests")).toBeVisible();
+  await page.getByRole("button", { name: "Snooze", exact: true }).last().click();
+  await expect.poll(() => api.bulkUpdate.mock.calls.length).toBe(1);
+  const input = api.bulkUpdate.mock.calls[0]?.[0] as { until: string };
+  expect(input).toMatchObject({ keys: [keyOf(1), keyOf(2)], action: "snooze" });
+  expect(Date.parse(input.until)).toBeGreaterThan(Date.now());
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+});
+
+it("merges the ready pull requests of a selection after one confirmation", async () => {
+  server.prs = QUEUE.map((pr) =>
+    pr.number === 4 ? { ...pr, allowedMergeMethods: ["squash"], headRefOid: "abcdef1234567" } : pr,
+  );
+  api.getFiles.mockResolvedValue({
+    files: [],
+    comparison: {
+      baseRepository: "octo/repo",
+      baseRef: "main",
+      baseOid: "base",
+      headRepository: "octo/repo",
+      headRef: "feature-4",
+      headOid: "abcdef1234567",
+      mergeBaseOid: "base",
+      mode: "current_pr",
+    },
+  });
+  api.merge.mockResolvedValue({});
+  await renderQueue();
+  await expect.element(row("Delta ready")).toBeVisible();
+  await tick(3).click();
+  // Nothing in the selection is ready to merge yet.
+  await expect
+    .element(bulkBar().getByRole("button", { name: /Merge ready/ }))
+    .not.toBeInTheDocument();
+  await tick(4).click();
+  await bulkBar().getByRole("button", { name: "Merge ready (1)" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Merge 1 pull request" });
+  await expect.element(dialog).toBeVisible();
+  const listed = dialog.getByRole("list", { name: "Pull requests to merge" });
+  await expect.element(listed).toHaveTextContent("Delta ready");
+  await expect.element(listed).toHaveTextContent("abcdef1");
+  await expect.element(listed).toHaveTextContent("squash");
+  await expect.element(listed).not.toHaveTextContent("Charlie fix");
+  expect(api.merge).not.toHaveBeenCalled();
+
+  await dialog.getByRole("button", { name: "Merge 1 pull request" }).click();
+  const report = page.getByRole("dialog", { name: "Merged 1 of 1" });
+  await expect.element(report).toBeVisible();
+  expect(api.getFiles).toHaveBeenCalledWith({ key: keyOf(4), mode: "force" });
+  expect(api.merge.mock.calls[0]?.[0]).toMatchObject({
+    url: "https://github.com/octo/repo/pull/4",
+    method: "squash",
+    expectedComparison: { headOid: "abcdef1234567" },
+  });
+  await report.getByRole("button", { name: "Done" }).click();
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+});
+
+it("keeps the merge report when the merged pull requests leave the queue", async () => {
+  const ready = (number: number, title: string) =>
+    makePr(number, title, "ready", {
+      allowedMergeMethods: ["squash"],
+      headRefOid: `head-${number}`,
+    });
+  server.prs = [
+    ...QUEUE.filter((pr) => pr.number !== 4),
+    ready(4, "Delta ready"),
+    ready(9, "India ready"),
+  ];
+  api.getFiles.mockImplementation(async ({ key }: { key: string }) => ({
+    files: [],
+    comparison: {
+      baseRepository: "octo/repo",
+      baseRef: "main",
+      baseOid: "base",
+      headRepository: "octo/repo",
+      headRef: "feature",
+      // The second pull request got a commit after it was listed.
+      headOid: key === keyOf(9) ? "head-pushed" : "head-4",
+      mergeBaseOid: "base",
+      mode: "current_pr",
+    },
+  }));
+  // As on the server: a merge refreshes the hub, and the merged row leaves the queue.
+  api.merge.mockImplementation(async ({ url }: { url: string }) => {
+    server.prs = server.prs.filter((pr) => pr.url !== url);
+    await queryClient.invalidateQueries({ queryKey: ["prHub"] });
+    return {};
+  });
+  await renderQueue();
+  await expect.element(row("India ready")).toBeVisible();
+  await tick(4).click();
+  await tick(9).click();
+  await bulkBar().getByRole("button", { name: "Merge ready (2)" }).click();
+  await page
+    .getByRole("dialog", { name: "Merge 2 pull requests" })
+    .getByRole("button", { name: "Merge 2 pull requests" })
+    .click();
+
+  // The first row is gone from the queue and from the selection. The report still lists
+  // both pull requests, each with what happened to it.
+  const report = page.getByRole("dialog", { name: "Merged 1 of 2" });
+  await expect.element(report).toBeVisible();
+  await expect.element(row("Delta ready")).not.toBeInTheDocument();
+  const listed = report.getByRole("list", { name: "Pull requests to merge" });
+  await expect.element(listed.getByRole("listitem")).toHaveLength(2);
+  await expect.element(listed).toHaveTextContent("Delta ready");
+  await expect.element(listed).toHaveTextContent("Not merged. New commits were pushed");
+  expect(api.merge).toHaveBeenCalledTimes(1);
+
+  // With every selected row merged the bar is gone, and the report stays until dismissed.
+  server.prs = server.prs.filter((pr) => pr.number !== 9);
+  await queryClient.invalidateQueries({ queryKey: ["prHub"] });
+  await expect.element(bulkBar()).not.toBeInTheDocument();
+  await expect.element(report).toBeVisible();
+  await report.getByRole("button", { name: "Done" }).click();
+  await expect.element(report).not.toBeInTheDocument();
+});
+
+it("keeps a search as a saved view tab with its count", async () => {
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  // Nothing to save and no views yet: the row of tabs stays out of the way.
+  await expect.element(page.getByRole("tablist", { name: "Saved views" })).not.toBeInTheDocument();
+  await active?.unmount();
+
+  await renderQueue({ q: "review" });
+  await expect.element(row("Alpha review")).toBeVisible();
+  await page.getByRole("button", { name: "Save view" }).click();
+  const dialog = page.getByRole("dialog", { name: "Save view" });
+  await dialog.getByRole("textbox", { name: "View name" }).fill("  Reviews ");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+
+  const tab = page.getByRole("tab", { name: /Reviews/ });
+  await expect.element(tab).toHaveAttribute("aria-selected", "true");
+  const saved = lastSearch()?.saved;
+  expect(lastSearch()).toEqual({ q: "review", saved });
+  // The overview counts the view's pull requests that need you.
+  await expect.element(tab).toHaveTextContent("2");
+  expect(
+    api.getOverview.mock.calls.some(
+      ([input]) =>
+        JSON.stringify((input as PrHubOverviewInput).savedQueries) ===
+        JSON.stringify([{ id: saved, query: "review" }]),
+    ),
+  ).toBe(true);
+
+  // Queue clears the filters and leaves the tab; the tab brings them back.
+  await page.getByRole("tab", { name: "Queue" }).click();
+  await expect.poll(lastSearch).toEqual({});
+  await expect.element(row("Charlie fix")).toBeVisible();
+  await tab.click();
+  await expect.poll(lastSearch).toEqual({ q: "review", saved });
+  await expect.element(row("Charlie fix")).not.toBeInTheDocument();
+
+  // An edited search is no longer the saved view.
+  await page.getByRole("combobox", { name: "Search pull requests" }).fill("alpha");
+  await expect.element(tab).toHaveAttribute("aria-selected", "false");
+  await expect.element(page.getByRole("button", { name: "Save view" })).toBeEnabled();
+  await tab.click();
+
+  await page.getByRole("button", { name: "Options for the view Reviews" }).click();
+  await page.getByRole("menuitem", { name: "Rename…" }).click();
+  const rename = page.getByRole("dialog", { name: "Rename view" });
+  await rename.getByRole("textbox", { name: "View name" }).fill("My reviews");
+  await rename.getByRole("button", { name: "Rename", exact: true }).click();
+  await expect.element(page.getByRole("tab", { name: /My reviews/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "Options for the view My reviews" }).click();
+  await page.getByRole("menuitem", { name: "Delete view" }).click();
+  await expect.element(page.getByRole("tab", { name: /My reviews/ })).not.toBeInTheDocument();
+});
+
+it("marks unread rows and lists them under Activity", async () => {
+  server.prs = QUEUE.map((pr) =>
+    pr.number === 1
+      ? { ...pr, changesSinceSeen: [{ kind: "comments", count: 2 }, { kind: "commits" }] }
+      : pr.number === 3
+        ? { ...pr, changesSinceSeen: [{ kind: "ci_failed" }] }
+        : { ...pr, changesSinceSeen: [] },
+  );
+  await renderQueue();
+  await expect.element(row("Alpha review")).toHaveTextContent("2 new comments · New commits");
+  await expect.element(row("Alpha review")).toHaveAttribute("data-unread", "true");
+  await expect.element(row("Bravo review")).not.toHaveAttribute("data-unread");
+
+  const activity = page.getByRole("button", { name: "Activity: 2 unread" });
+  await expect.element(activity).toBeVisible();
+  // The list is read when it is opened, not with the queue.
+  expect(api.listPullRequests.mock.calls.some(([input]) => (input as PrHubListInput).unread)).toBe(
+    false,
+  );
+  await activity.click();
+  const unread = page.getByRole("list", { name: "Unread pull requests" });
+  await expect.element(unread).toHaveTextContent("Checks failed");
+  await expect.element(unread.getByRole("listitem")).toHaveLength(2);
+
+  await page.getByRole("button", { name: "Mark these seen" }).click();
+  await expect.poll(() => api.bulkUpdate.mock.calls.length).toBe(1);
+  expect(api.bulkUpdate.mock.calls[0]?.[0]).toMatchObject({
+    keys: [keyOf(1), keyOf(3)],
+    action: "mark_seen",
+    seenFingerprints: { [keyOf(1)]: "fp-1", [keyOf(3)]: "fp-3" },
+  });
+
+  await unread.getByRole("button", { name: /Charlie fix/ }).click();
+  await expect.poll(lastSearch).toEqual({ pr: keyOf(3) });
+  await expect.element(peek(3)).toBeVisible();
 });
 
 it("shows the error and Retry when a search fails, not rows that do not match it", async () => {

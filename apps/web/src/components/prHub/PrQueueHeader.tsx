@@ -1,11 +1,23 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { EllipsisIcon, LinkIcon, RefreshCwIcon, SettingsIcon, UsersIcon } from "lucide-react";
-import type { ForgeAccount, PrHubOverview, TrackedPullRequest } from "@t3tools/contracts";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import {
+  BellIcon,
+  EllipsisIcon,
+  LinkIcon,
+  RefreshCwIcon,
+  SettingsIcon,
+  UsersIcon,
+} from "lucide-react";
+import type {
+  ForgeAccount,
+  PrHubOverview,
+  PullRequestKey,
+  TrackedPullRequest,
+} from "@t3tools/contracts";
 
-import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
-import { forgeAccountsQueryOptions } from "../../lib/prHubReactQuery";
-import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
+import { getPrHubAccountGeneration, getPrHubSelectedAccountId } from "../../lib/prHubAccount";
+import { forgeAccountsQueryOptions, prHubActivityQueryOptions } from "../../lib/prHubReactQuery";
+import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
 import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
@@ -22,8 +34,10 @@ import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { toastManager } from "../ui/toast";
 import { forgeProviderLabel } from "./forgePresentation";
-import { prSyncPillDetail, prSyncPillLabel } from "./prQueueModel";
+import { prChangesText, prSyncPillDetail, prSyncPillLabel } from "./prQueueModel";
+import { prSeenFingerprints } from "./prQueueSelection";
 
 const SYNC_DOT: Record<NonNullable<PrHubOverview["sync"]>["state"], string> = {
   idle: "bg-success",
@@ -144,6 +158,126 @@ export function PrSyncPill({
             <RefreshCwIcon className={isRefreshing ? "animate-spin" : ""} />
             {isRefreshing ? "Refreshing…" : "Refresh now"}
           </Button>
+        </div>
+      </PopoverPopup>
+    </Popover>
+  );
+}
+
+/**
+ * What changed since you last looked: the most recent unread pull requests of the active
+ * queue. Opening one marks it seen; Mark these seen clears the ones listed.
+ */
+export function PrActivityPopover({
+  overview,
+  now,
+  onOpen,
+}: {
+  overview: PrHubOverview | undefined;
+  now: number;
+  onOpen: (key: PullRequestKey) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const unread = overview?.unreadCount ?? 0;
+  // Nothing is read until the list is opened.
+  const query = useInfiniteQuery(prHubActivityQueryOptions(open ? overview?.revision : undefined));
+  const rows = query.data?.pages.flatMap((page) => page.pullRequests) ?? [];
+  const markAllSeen = () => {
+    if (marking || rows.length === 0) return;
+    setMarking(true);
+    void ensureNativeApi()
+      .prHub.bulkUpdate({
+        keys: rows.map((pr) => pr.key),
+        action: "mark_seen",
+        accountId: getPrHubSelectedAccountId(),
+        // Only what is listed here is marked: a row that changed since stays unread.
+        seenFingerprints: prSeenFingerprints(rows),
+      })
+      .catch((error: unknown) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not mark the pull requests as seen",
+          description: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .finally(() => setMarking(false));
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={unread > 0 ? `Activity: ${unread} unread` : "Activity"}
+            className="text-muted-foreground"
+          />
+        }
+      >
+        <BellIcon aria-hidden="true" />
+        {unread > 0 ? (
+          <span className="rounded-full bg-primary px-1.5 text-2xs font-medium text-primary-foreground tabular-nums">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : null}
+      </PopoverTrigger>
+      <PopoverPopup align="end" className="w-96">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <PopoverTitle className="text-sm">Activity</PopoverTitle>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={marking || rows.length === 0}
+              onClick={markAllSeen}
+            >
+              Mark these seen
+            </Button>
+          </div>
+          {rows.length > 0 ? (
+            <ul
+              aria-label="Unread pull requests"
+              className="-mx-2 flex max-h-96 flex-col overflow-y-auto"
+            >
+              {rows.map((pr) => (
+                <li key={pr.key}>
+                  <button
+                    type="button"
+                    className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                    onClick={() => {
+                      setOpen(false);
+                      onOpen(pr.key);
+                    }}
+                  >
+                    <span className="truncate text-sm font-medium text-foreground">{pr.title}</span>
+                    <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      <span className="truncate font-mono">
+                        {pr.repository.nameWithOwner}#{pr.number}
+                      </span>
+                      <span className="shrink-0 text-foreground">· {prChangesText(pr, 3)}</span>
+                      <span className="ms-auto shrink-0 tabular-nums">
+                        {formatRelativeTimeLabel(pr.updatedAt, now)}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p role="status" className="text-xs text-muted-foreground">
+              {query.isError
+                ? "The activity could not be loaded."
+                : query.isPending && query.fetchStatus !== "idle"
+                  ? "Loading activity…"
+                  : "Nothing new since you last looked."}
+            </p>
+          )}
+          {unread > rows.length && rows.length > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Showing the {rows.length} most recent of {unread}.
+            </p>
+          ) : null}
         </div>
       </PopoverPopup>
     </Popover>
