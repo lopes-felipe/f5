@@ -401,8 +401,8 @@ export function PrChecksTab({ pr, onRerun, onFixCi, isStartingFix = false }: PrC
       ) : null}
       {outdated ? (
         <p className="text-xs text-muted-foreground">
-          These checks belong to a newer commit than the one shown above. Refresh the pull request
-          to see it.
+          These checks are from a different commit than the one shown above. Refresh to bring both
+          up to date.
         </p>
       ) : null}
       {groups.map((group) => (

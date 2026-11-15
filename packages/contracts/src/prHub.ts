@@ -737,6 +737,8 @@ export const PrHubCheckLogUnavailable = Schema.Literals([
   "expired",
   "forbidden",
   "failed",
+  // The server reads GitHub through a `gh` too old to print logs.
+  "client_outdated",
 ]);
 export type PrHubCheckLogUnavailable = typeof PrHubCheckLogUnavailable.Type;
 

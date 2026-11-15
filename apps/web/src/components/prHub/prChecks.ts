@@ -125,6 +125,8 @@ export function prCheckLogUnavailableText(
       return "Your account is not allowed to read this log.";
     case "failed":
       return "The log could not be loaded. It may be too large to show here.";
+    case "client_outdated":
+      return "The installed GitHub CLI (gh) is too old to read job logs. Update gh, or open the log on GitHub.";
   }
 }
 

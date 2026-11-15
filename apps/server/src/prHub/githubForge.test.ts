@@ -42,9 +42,11 @@ function fixture(
       Effect.succeed({ host: ref.host, viewerId: 42, login: "reader", generation: "a" }),
     request: (input: GitHubApiRequest) => {
       calls.push(input);
+      const next = (responses.shift() ?? pr) as { httpStatus?: number };
       return Effect.succeed({
-        status: 200,
-        body: responses.shift() ?? pr,
+        // A response that names its status is an error answer from GitHub.
+        status: typeof next.httpStatus === "number" ? next.httpStatus : 200,
+        body: next,
         graphqlErrors: [],
         links: {},
         etag: null,
@@ -414,6 +416,65 @@ describe("re-running failed checks", () => {
       ["POST", "repos/team/repo/actions/runs/11/rerun-failed-jobs"],
       ["POST", "repos/team/repo/actions/runs/13/rerun-failed-jobs"],
     ]);
+  });
+
+  it("restarts one run at a time and says when GitHub refuses or cannot confirm", async () => {
+    const superseded = fixture([
+      pr,
+      {
+        total_count: 2,
+        workflow_runs: [
+          { ...run(11, "cancelled"), workflow_id: 70, event: "pull_request", run_number: 4 },
+          {
+            ...run(12, "", "in_progress"),
+            workflow_id: 70,
+            event: "pull_request",
+            run_number: 5,
+          },
+        ],
+      },
+    ]);
+    // An old cancelled run next to the run that replaced it leaves nothing to restart.
+    const none = await Effect.runPromise(
+      superseded.provider
+        .workflowRuns!.listFailed({ ref, expectedHeadOid: "head-sha" })
+        .pipe(Effect.result),
+    );
+    expect(none._tag).toBe("Failure");
+    expect(superseded.calls.some((call) => call.method === "POST")).toBe(false);
+
+    const accepted = fixture([{}]);
+    expect(
+      await Effect.runPromise(accepted.provider.workflowRuns!.rerunFailedJobs({ ref, runId: 11 })),
+    ).toBeNull();
+    expect(accepted.calls[0]).toMatchObject({
+      method: "POST",
+      endpoint: "repos/team/repo/actions/runs/11/rerun-failed-jobs",
+    });
+
+    const refused = fixture([{ httpStatus: 403, message: "This workflow is disabled." }]);
+    expect(
+      await Effect.runPromise(refused.provider.workflowRuns!.rerunFailedJobs({ ref, runId: 11 })),
+    ).toBe("GitHub refused to re-run a workflow run (403): This workflow is disabled.");
+
+    const unconfirmed = await Effect.runPromise(
+      fixture([{ httpStatus: 502 }])
+        .provider.workflowRuns!.rerunFailedJobs({ ref, runId: 11 })
+        .pipe(Effect.result),
+    );
+    expect(unconfirmed._tag).toBe("Failure");
+    if (unconfirmed._tag === "Failure") expect(unconfirmed.failure.requestDispatched).toBe(true);
+
+    const read = fixture([{ id: 11, status: "queued", run_attempt: 3 }]);
+    expect(await Effect.runPromise(read.provider.workflowRuns!.get({ ref, runId: 11 }))).toEqual({
+      id: 11,
+      attempt: 3,
+      completed: false,
+    });
+    expect(read.calls[0]).toMatchObject({
+      method: "GET",
+      endpoint: "repos/team/repo/actions/runs/11",
+    });
   });
 
   it("sends nothing without a prepared head, after a push, or when no run failed", async () => {

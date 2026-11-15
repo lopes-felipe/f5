@@ -176,7 +176,9 @@ error. The first three open by themselves; select **Show log** for the others.
 
 - **Copy** copies the excerpt. **Open full log** opens the whole log on GitHub.
 - **Re-run failed jobs** starts the failed and cancelled jobs of the commit again, after you
-  confirm. Jobs that passed are not run again. It needs write access to the repository.
+  confirm. Jobs that passed are not run again, and neither is a run that a newer run of the
+  same workflow replaced. When GitHub refuses one workflow run, the others are still
+  restarted and F5 says how many. It needs write access to the repository.
 - **Fix CI with F5**, on your own pull requests, starts an F5 thread on the branch. F5 gives
   the agent up to three failing checks with the end of their logs.
 - **Refresh** reads the checks from the forge again.

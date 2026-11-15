@@ -219,6 +219,8 @@ describe("row cells and checklist", () => {
     ).toEqual(["View checks", "Fix CI with F5"]);
     expect(checks({ provider: "gitlab" })).toEqual(["View checks", "Fix CI with F5"]);
     expect(prCanRerunChecks(makePr({ state: "merged" }))).toBe(false);
+    // The Checks tab asks the same question, so an ignored pull request has no Re-run there.
+    expect(prCanRerunChecks(makePr({ ignoredAt: "2026-11-02T00:00:00.000Z" }))).toBe(false);
   });
 
   it("offers a reviewer no author steps, and nothing on a closed or ignored pull request", () => {

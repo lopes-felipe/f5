@@ -16,7 +16,7 @@ import {
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import { record, text } from "./forgeModel.ts";
 import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
-import { failedGitHubWorkflowRuns } from "./githubChecks.ts";
+import { failedGitHubWorkflowRuns, gitHubWorkflowRunOf } from "./githubChecks.ts";
 
 export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvider {
   const scope = <A>(
@@ -157,10 +157,69 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
       }
       return yield* failure("comments", "The bounded comment read exceeds 1,000 records.");
     });
+  const workflowRuns: NonNullable<ForgeProvider["workflowRuns"]> = {
+    listFailed: ({ ref, expectedHeadOid }) =>
+      Effect.gen(function* () {
+        const detail = yield* getDetail(ref);
+        if (detail.headRefOid !== expectedHeadOid)
+          return yield* failure("rerun-failed-checks", "The pull request head has changed.");
+        const listing = failedGitHubWorkflowRuns(
+          yield* request(
+            ref,
+            `/actions/runs?head_sha=${encodeURIComponent(expectedHeadOid)}&per_page=100`,
+          ),
+          expectedHeadOid,
+        );
+        if (!listing.complete)
+          return yield* failure("rerun-failed-checks", "The workflow run list is incomplete.");
+        if (listing.runs.length === 0)
+          return yield* failure(
+            "rerun-failed-checks",
+            "No failed GitHub Actions run can be re-run at this revision. A check from another app is re-run from its own page.",
+          );
+        return listing.runs;
+      }),
+    rerunFailedJobs: ({ ref, runId }) =>
+      scope(ref, (context) =>
+        github.request({
+          cwd,
+          context,
+          method: "POST",
+          endpoint: `repos/${ref.repository.split("/").map(encodeURIComponent).join("/")}/actions/runs/${runId}/rerun-failed-jobs`,
+        }),
+      ).pipe(
+        Effect.flatMap((response) => {
+          if (response.status >= 200 && response.status < 300) return Effect.succeed(null);
+          // A 4xx is GitHub's answer: this run was not restarted. A 5xx may have been.
+          if (response.status >= 500)
+            return Effect.fail(
+              failure(
+                "rerun-failed-checks",
+                `GitHub did not confirm the re-run (${response.status}).`,
+                true,
+              ),
+            );
+          const reason = text(record(response.body).message)?.slice(0, 200);
+          return Effect.succeed(
+            `GitHub refused to re-run a workflow run (${response.status})${reason ? `: ${reason}` : "."}`,
+          );
+        }),
+      ),
+    get: ({ ref, runId }) =>
+      request(ref, `/actions/runs/${runId}`).pipe(
+        Effect.flatMap((value) => {
+          const run = gitHubWorkflowRunOf(value);
+          return run
+            ? Effect.succeed(run)
+            : Effect.fail(failure("rerun-failed-checks", "GitHub returned an invalid run."));
+        }),
+      ),
+  };
   const original = makeGitHubSourceControlProvider(github);
   return {
     ...original,
     forgeCapabilities: GITHUB_FORGE_CAPABILITIES,
+    workflowRuns,
     getDetail,
     listPullRequests: (ref, limit = 100) =>
       request(ref, `/pulls?state=open&per_page=${Math.min(limit, 100)}`).pipe(
@@ -433,25 +492,16 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               { id: yield* node(ref) },
             );
           case "rerun-failed-checks": {
-            const sha = input.expectedHeadOid;
-            if (!sha)
+            if (!input.expectedHeadOid)
               return yield* failure("rerun-failed-checks", "A prepared head revision is required.");
-            const detail = yield* getDetail(ref);
-            if (detail.headRefOid !== sha)
-              return yield* failure("rerun-failed-checks", "The pull request head has changed.");
-            const runs = failedGitHubWorkflowRuns(
-              yield* request(ref, `/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`),
-              sha,
-            );
-            if (!runs.complete)
-              return yield* failure("rerun-failed-checks", "The workflow run list is incomplete.");
-            if (runs.ids.length === 0)
-              return yield* failure(
-                "rerun-failed-checks",
-                "No failed GitHub Actions run can be re-run at this revision.",
-              );
-            for (const id of runs.ids)
-              yield* request(ref, `/actions/runs/${id}/rerun-failed-jobs`, "POST");
+            const runs = yield* workflowRuns.listFailed({
+              ref,
+              expectedHeadOid: input.expectedHeadOid,
+            });
+            for (const run of runs) {
+              const refused = yield* workflowRuns.rerunFailedJobs({ ref, runId: run.id });
+              if (refused !== null) return yield* failure("rerun-failed-checks", refused, true);
+            }
             return null;
           }
           case "approve-workflows": {

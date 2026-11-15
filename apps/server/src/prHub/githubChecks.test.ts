@@ -195,7 +195,38 @@ describe("failedGitHubWorkflowRuns", () => {
         },
         "head-1",
       ),
-    ).toEqual({ ids: [1, 4, 5], total: 6, complete: true });
+    ).toEqual({
+      runs: [1, 4, 5].map((id) => ({ id, attempt: 1, completed: true })),
+      total: 6,
+      complete: true,
+    });
+  });
+
+  it("leaves out a run that a newer run of the same workflow replaced", () => {
+    const of = (id: number, run_number: number, conclusion: string | null, extra = {}) => ({
+      ...run(id, conclusion === null ? "in_progress" : "completed", conclusion),
+      workflow_id: 70,
+      event: "pull_request",
+      run_number,
+      ...extra,
+    });
+    const listing = (runs: unknown[]) =>
+      failedGitHubWorkflowRuns({ total_count: runs.length, workflow_runs: runs }, "head-1").runs;
+    // The cancelled run was replaced by the one still running: nothing to restart.
+    expect(listing([of(1, 40, "cancelled"), of(2, 41, null)])).toEqual([]);
+    // The newest run failed, on its second attempt.
+    expect(listing([of(2, 41, "failure", { run_attempt: 2 }), of(1, 40, "cancelled")])).toEqual([
+      { id: 2, attempt: 2, completed: true },
+    ]);
+    // Another workflow, and the same workflow started by another event, count on their own.
+    expect(
+      listing([
+        of(1, 40, "cancelled"),
+        of(2, 41, "success"),
+        of(3, 12, "failure", { workflow_id: 71 }),
+        of(4, 7, "timed_out", { event: "push" }),
+      ]).map((value) => value.id),
+    ).toEqual([3, 4]);
   });
 
   it("reports an incomplete listing instead of re-running part of it", () => {
@@ -206,7 +237,7 @@ describe("failedGitHubWorkflowRuns", () => {
       ).complete,
     ).toBe(false);
     expect(failedGitHubWorkflowRuns({ message: "Not Found" }, "head-1")).toEqual({
-      ids: [],
+      runs: [],
       total: 0,
       complete: false,
     });

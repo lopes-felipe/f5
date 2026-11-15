@@ -10,7 +10,11 @@ import { GITHUB_FORGE_CAPABILITIES } from "@t3tools/shared/forgeCapabilities";
 import { SqlClient } from "effect/unstable/sql";
 import { ServerConfig } from "../config.ts";
 import { GitHubCliError } from "../git/Errors.ts";
-import type { GitHubApiRequest, GitHubApiResponse } from "../git/githubApi.ts";
+import {
+  GITHUB_CLI_LOGS_UNSUPPORTED,
+  type GitHubApiRequest,
+  type GitHubApiResponse,
+} from "../git/githubApi.ts";
 import { makeFakeGitHubCli } from "../git/testDoubles.ts";
 import Migration102 from "../persistence/Migrations/102_ForgeAccounts.ts";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -53,11 +57,11 @@ const job = (id: number, name: string, conclusion: string | null, slug = "github
       ? { app: { slug }, workflowRun: { databaseId: 9, workflow: { name: "CI" } } }
       : { app: { slug }, workflowRun: null },
 });
-const checksBody = (nodes: unknown[]) => ({
+const checksBody = (nodes: unknown[], headRefOid: string) => ({
   data: {
     repository: {
       pullRequest: {
-        headRefOid: "head-1",
+        headRefOid,
         commits: {
           nodes: [
             {
@@ -82,13 +86,27 @@ const LOG = [
 
 interface State {
   checks: unknown[];
+  /** The head GitHub reports with the checks, and the head the hub tracks (null: untracked). */
+  head: string;
+  trackedHead: string | null;
   log: GitHubApiResponse | GitHubCliError;
-  runs: unknown;
   requests: GitHubApiRequest[];
-  actions: Array<{ action: string; expectedHeadOid: string | undefined }>;
-  actionFailure: SourceControlProviderError | null;
+  /** The failed runs the forge lists, or why it lists none. */
+  failedRuns: WorkflowRun[] | SourceControlProviderError;
+  /** What the forge answers when asked to restart a run; accepted when absent. */
+  rerunAnswers: Record<number, string | SourceControlProviderError>;
+  /** The runs the forge was asked to restart, in order. */
+  reruns: number[];
+  /** A run as the forge reports it now; unchanged since it was listed when absent. */
+  runsNow: Record<number, WorkflowRun>;
   detailChecks: Array<{ name: string; status: "failure" | "success" }>;
 }
+interface WorkflowRun {
+  id: number;
+  attempt: number;
+  completed: boolean;
+}
+const failedRun = (id: number, attempt = 1): WorkflowRun => ({ id, attempt, completed: true });
 
 interface FixtureOptions {
   readonly github: boolean;
@@ -106,11 +124,14 @@ const fixture = (options: FixtureOptions) =>
         job(502, "test", null),
         job(503, "deploy preview", "FAILURE", "vercel"),
       ],
+      head: "head-1",
+      trackedHead: "head-1",
       log: response(200, LOG),
-      runs: { total_count: 1, workflow_runs: [] },
       requests: [],
-      actions: [],
-      actionFailure: null,
+      failedRuns: [failedRun(11)],
+      rerunAnswers: {},
+      reruns: [],
+      runsNow: {},
       detailChecks: [
         { name: "pipeline", status: "failure" },
         { name: "lint", status: "success" },
@@ -123,11 +144,9 @@ const fixture = (options: FixtureOptions) =>
       request: (input: GitHubApiRequest) => {
         state.requests.push(input);
         if (input.endpoint === "graphql")
-          return Effect.succeed(response(200, checksBody(state.checks)));
+          return Effect.succeed(response(200, checksBody(state.checks, state.head)));
         if (input.endpoint.endsWith("/logs"))
           return "_tag" in state.log ? Effect.fail(state.log) : Effect.succeed(state.log);
-        if (input.endpoint.endsWith("/actions/runs"))
-          return Effect.succeed(response(200, state.runs));
         return Effect.succeed(response(404, { message: "Not Found" }));
       },
     };
@@ -135,14 +154,31 @@ const fixture = (options: FixtureOptions) =>
       forgeCapabilities: options.capabilities ?? GITHUB_FORGE_CAPABILITIES,
       getDetail: () =>
         Effect.succeed({ number: 7, title: "A pull request", headRefOid: "head-1", raw: {} }),
-      performAction: (input: { action: string; expectedHeadOid?: string }) =>
-        Effect.suspend(() => {
-          state.actions.push({ action: input.action, expectedHeadOid: input.expectedHeadOid });
-          return state.actionFailure ? Effect.fail(state.actionFailure) : Effect.succeed(null);
-        }),
+      workflowRuns: {
+        listFailed: () =>
+          Effect.suspend(() =>
+            Array.isArray(state.failedRuns)
+              ? Effect.succeed(state.failedRuns)
+              : Effect.fail(state.failedRuns),
+          ),
+        rerunFailedJobs: (input: { runId: number }) =>
+          Effect.suspend(() => {
+            state.reruns.push(input.runId);
+            const answer = state.rerunAnswers[input.runId] ?? null;
+            return typeof answer === "string" || answer === null
+              ? Effect.succeed(answer)
+              : Effect.fail(answer);
+          }),
+        get: (input: { runId: number }) =>
+          Effect.sync(() => state.runsNow[input.runId] ?? failedRun(input.runId)),
+      },
     } as unknown as ForgeProvider;
     const hub = {
-      getSnapshot: Effect.succeed({ account: { generation: account.generation } }),
+      getSnapshot: Effect.sync(() => ({
+        account: { generation: account.generation },
+        pullRequests: state.trackedHead ? [{ key, headRefOid: state.trackedHead }] : [],
+        recentlyResolved: [],
+      })),
       getDetail: () =>
         Effect.succeed({
           detail: {
@@ -347,15 +383,54 @@ it.effect("re-runs failed checks through a prepared operation at the prepared he
   run(({ engine, state }) =>
     Effect.gen(function* () {
       const input = rerun("rerun-1");
+      state.failedRuns = [failedRun(11), failedRun(13)];
       assert.strictEqual((yield* engine.prepareOperation(input)).status, "prepared");
-      assert.strictEqual(state.actions.length, 0);
-      assert.strictEqual((yield* engine.submitOperation(identify(input))).status, "succeeded");
-      assert.deepStrictEqual(state.actions, [
-        { action: "rerun-failed-checks", expectedHeadOid: "head-1" },
-      ]);
+      assert.strictEqual(state.reruns.length, 0);
+      const done = yield* engine.submitOperation(identify(input));
+      assert.strictEqual(done.status, "succeeded");
+      assert.strictEqual(done.warning, undefined);
+      assert.deepStrictEqual(state.reruns, [11, 13]);
       // A second submit of the same operation sends nothing.
       assert.strictEqual((yield* engine.submitOperation(identify(input))).status, "succeeded");
-      assert.strictEqual(state.actions.length, 1);
+      assert.strictEqual(state.reruns.length, 2);
+    }),
+  ),
+);
+
+const unconfirmed = new SourceControlProviderError({
+  provider: "github",
+  operation: "forge.request",
+  kind: "network",
+  detail: "The connection was reset.",
+  requestDispatched: true,
+});
+
+it.effect("restarts the other runs when GitHub refuses one, and says so", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.failedRuns = [failedRun(11), failedRun(12), failedRun(13)];
+      state.rerunAnswers = { 12: "GitHub refused to re-run a workflow run (403)." };
+      const input = rerun("rerun-refused-one");
+      yield* engine.prepareOperation(input);
+      const done = yield* engine.submitOperation(identify(input));
+      assert.deepStrictEqual(state.reruns, [11, 12, 13]);
+      assert.strictEqual(done.status, "succeeded");
+      assert.strictEqual(
+        done.warning,
+        "2 of 3 failed runs were restarted. GitHub refused to re-run a workflow run (403).",
+      );
+      // Nothing is left pending, so the next action on the pull request can be prepared.
+      assert.strictEqual(
+        (yield* engine.prepareOperation(rerun("rerun-after-refusal"))).status,
+        "prepared",
+      );
+
+      // A re-run GitHub refuses outright restarted nothing: it failed, with the reason.
+      state.failedRuns = [failedRun(21)];
+      state.rerunAnswers = { 21: "GitHub refused to re-run a workflow run (403)." };
+      const refused = yield* engine.submitOperation(identify(rerun("rerun-after-refusal")));
+      assert.strictEqual(refused.status, "failed");
+      assert.strictEqual(refused.error, "GitHub refused to re-run a workflow run (403).");
     }),
   ),
 );
@@ -363,7 +438,7 @@ it.effect("re-runs failed checks through a prepared operation at the prepared he
 it.effect("reports a re-run that was never sent as failed", () =>
   run(({ engine, state }) =>
     Effect.gen(function* () {
-      state.actionFailure = new SourceControlProviderError({
+      state.failedRuns = new SourceControlProviderError({
         provider: "github",
         operation: "rerun-failed-checks",
         kind: "invalid_response",
@@ -382,16 +457,11 @@ it.effect("reports a re-run that was never sent as failed", () =>
   ),
 );
 
-it.effect("recovers an unconfirmed re-run from the workflow runs of the prepared head", () =>
+it.effect("recovers an unconfirmed re-run from the runs it asked to restart", () =>
   run(({ engine, state }) =>
     Effect.gen(function* () {
-      state.actionFailure = new SourceControlProviderError({
-        provider: "github",
-        operation: "forge.request",
-        kind: "network",
-        detail: "The connection was reset.",
-        requestDispatched: true,
-      });
+      state.failedRuns = [failedRun(11, 2)];
+      state.rerunAnswers = { 11: unconfirmed };
       const input = rerun("rerun-unknown");
       yield* engine.prepareOperation(input);
       assert.strictEqual(
@@ -399,31 +469,115 @@ it.effect("recovers an unconfirmed re-run from the workflow runs of the prepared
         "outcome_unknown",
       );
 
-      // A run that is still failed means the re-run cannot be confirmed.
-      state.runs = {
-        total_count: 2,
-        workflow_runs: [
-          { id: 11, status: "completed", conclusion: "failure", head_sha: "head-1" },
-          { id: 12, status: "completed", conclusion: "success", head_sha: "head-1" },
-        ],
-      };
+      // The run is on the attempt it was on: the re-run cannot be confirmed.
       assert.strictEqual(
         (yield* engine.recoverOperation(identify(input))).status,
         "outcome_unknown",
       );
-      const read = state.requests.at(-1);
-      assert.strictEqual(read?.endpoint, "repos/team/repo/actions/runs");
-      assert.deepStrictEqual(read?.query, { head_sha: "head-1", per_page: 100 });
 
-      state.runs = {
-        total_count: 2,
-        workflow_runs: [
-          { id: 11, status: "in_progress", conclusion: null, head_sha: "head-1" },
-          { id: 12, status: "completed", conclusion: "success", head_sha: "head-1" },
-        ],
-      };
-      assert.strictEqual((yield* engine.recoverOperation(identify(input))).status, "succeeded");
-      assert.strictEqual(state.actions.length, 1);
+      // The re-run ran and failed again before anyone looked. It was still sent, whatever
+      // other failed runs the commit has by now.
+      state.runsNow = { 11: failedRun(11, 3) };
+      state.failedRuns = [failedRun(11, 3), failedRun(99)];
+      const recovered = yield* engine.recoverOperation(identify(input));
+      assert.strictEqual(recovered.status, "succeeded");
+      assert.strictEqual(recovered.warning, undefined);
+      assert.deepStrictEqual(state.reruns, [11]);
+    }),
+  ),
+);
+
+it.effect("recovers a re-run that stopped partway from the runs it reached", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.failedRuns = [failedRun(11), failedRun(12), failedRun(13)];
+      state.rerunAnswers = { 12: unconfirmed };
+      const input = rerun("rerun-partway");
+      yield* engine.prepareOperation(input);
+      assert.strictEqual(
+        (yield* engine.submitOperation(identify(input))).status,
+        "outcome_unknown",
+      );
+      // The third run was never asked for.
+      assert.deepStrictEqual(state.reruns, [11, 12]);
+
+      // The first is running again; the second never started. That settles the operation,
+      // and names what is left.
+      state.runsNow = { 11: { id: 11, attempt: 2, completed: false } };
+      const recovered = yield* engine.recoverOperation(identify(input));
+      assert.strictEqual(recovered.status, "succeeded");
+      assert.strictEqual(
+        recovered.warning,
+        "1 of 2 failed runs were restarted. Re-run the others if they still fail.",
+      );
+      assert.strictEqual(
+        (yield* engine.prepareOperation(rerun("rerun-after-partway"))).status,
+        "prepared",
+      );
+    }),
+  ),
+);
+
+it.effect("does not serve one commit's checks as the next commit's", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      assert.strictEqual((yield* engine.getChecks({ key })).headOid, "head-1");
+      assert.strictEqual(graphqlReads(state), 1);
+
+      // A push from outside: the hub tracks the new head inside the cache's lifetime.
+      state.head = "head-2";
+      state.trackedHead = "head-2";
+      state.checks = [job(601, "static", null)];
+      const next = yield* engine.getChecks({ key });
+      assert.strictEqual(next.headOid, "head-2");
+      assert.deepStrictEqual(
+        next.checks.map((check) => check.id),
+        ["601"],
+      );
+      assert.strictEqual(graphqlReads(state), 2);
+      // The new commit's checks are reused as before.
+      yield* engine.getChecks({ key });
+      assert.strictEqual(graphqlReads(state), 2);
+
+      // A pull request the hub does not track has no head to compare with.
+      state.trackedHead = null;
+      yield* engine.getChecks({ key });
+      assert.strictEqual(graphqlReads(state), 2);
+    }),
+  ),
+);
+
+it.effect("reads a second job's log without reading the checks again", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.checks = [job(501, "static", "FAILURE"), job(504, "unit", "FAILURE")];
+      yield* engine.getCheckLog({ key, checkId: "501" });
+      assert.strictEqual(graphqlReads(state), 1);
+      // The cached checks list cannot be used any more (the head moved), but the job is
+      // still known to be this pull request's, so only its log is fetched.
+      const reads = graphqlReads(state);
+      state.checks = [];
+      state.head = "head-2";
+      state.trackedHead = "head-2";
+      assert.strictEqual((yield* engine.getCheckLog({ key, checkId: "504" })).errorLine, 3);
+      assert.strictEqual(graphqlReads(state), reads);
+      assert.strictEqual(logReads(state).length, 2);
+    }),
+  ),
+);
+
+it.effect("says when the GitHub CLI is too old to print a log", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.log = new GitHubCliError({
+        operation: "request",
+        kind: "generic",
+        detail: GITHUB_CLI_LOGS_UNSUPPORTED,
+      });
+      assert.strictEqual(
+        (yield* engine.getCheckLog({ key, checkId: "501" })).unavailable,
+        "client_outdated",
+      );
     }),
   ),
 );
@@ -444,7 +598,7 @@ for (const capabilities of [
             .pipe(Effect.result);
           assert.strictEqual(result._tag, "Failure");
           if (result._tag === "Failure") assert.strictEqual(result.failure.kind, "unsupported");
-          assert.strictEqual(state.actions.length, 0);
+          assert.strictEqual(state.reruns.length, 0);
         }),
       { github: true, capabilities },
     ),

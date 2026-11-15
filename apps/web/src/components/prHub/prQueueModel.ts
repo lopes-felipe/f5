@@ -233,6 +233,7 @@ export function prCanRerunChecks(pr: TrackedPullRequest): boolean {
   const caps = pr.forgeCapabilities ?? forgeCapabilitiesFor(pr.provider);
   return (
     pr.state === "open" &&
+    pr.ignoredAt === null &&
     !pr.repositoryArchived &&
     !!caps?.checks.rerun &&
     caps.actions.includes("rerun-failed-checks")

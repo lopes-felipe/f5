@@ -40,6 +40,10 @@ export interface GitHubApiResponse {
   readonly rateLimitResource: string | null;
 }
 
+/** An older `gh` has no flag for printing terminal text, so it cannot return a job log. */
+export const GITHUB_CLI_LOGS_UNSUPPORTED =
+  "The installed GitHub CLI (`gh`) is too old to print job logs.";
+
 export interface GitHubApiRequest {
   readonly cwd: string;
   readonly context: GitHubCredentialContext;
@@ -404,6 +408,16 @@ export function makeGitHubApi(
                   status: error.status,
                   category: error.category,
                 });
+                if (
+                  result.code !== 0 &&
+                  input.terminalText &&
+                  result.stderr.includes("unknown flag: --allow-escape-sequences")
+                )
+                  return yield* new GitHubCliError({
+                    operation: "request",
+                    kind: "generic",
+                    detail: GITHUB_CLI_LOGS_UNSUPPORTED,
+                  });
                 if (result.code !== 0) {
                   const normalized = normalizeGitHubCliError(
                     "request",

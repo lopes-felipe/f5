@@ -125,28 +125,75 @@ export const readGitHubChecks = <E>(
 
 const RERUNNABLE_CONCLUSIONS = new Set(["failure", "cancelled", "timed_out"]);
 
+/** A workflow run as far as a re-run needs to know it. */
+export interface GitHubWorkflowRun {
+  readonly id: number;
+  /** Starts at 1 and goes up each time the run is run again. */
+  readonly attempt: number;
+  readonly completed: boolean;
+}
+
 export interface GitHubFailedWorkflowRuns {
-  /** Finished workflow runs of the commit that failed, were cancelled or timed out. */
-  readonly ids: ReadonlyArray<number>;
+  /**
+   * The current run of each workflow at the commit, when it finished and failed, was
+   * cancelled or timed out.
+   */
+  readonly runs: ReadonlyArray<GitHubWorkflowRun>;
   /** How many workflow runs the commit has. */
   readonly total: number;
   /** False when the listing is malformed or has more runs than one page holds. */
   readonly complete: boolean;
 }
 
-/** Picks the workflow runs "re-run failed jobs" applies to from a commit's run listing. */
+const positiveInt = (value: unknown): number | null => {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+};
+
+/** Reads one run of the Actions API; null when it is not a workflow run. */
+export function gitHubWorkflowRunOf(value: unknown): GitHubWorkflowRun | null {
+  const run = record(value);
+  const id = positiveInt(run.id);
+  if (id === null || typeof run.status !== "string") return null;
+  return { id, attempt: positiveInt(run.run_attempt) ?? 1, completed: run.status === "completed" };
+}
+
+/**
+ * Picks the workflow runs "re-run failed jobs" applies to from a commit's run listing.
+ * A commit can hold several runs of one workflow: a newer run replaces an older one, and
+ * cancels it when the workflow has a concurrency group. Only the newest run of a workflow
+ * and event counts. Starting a replaced run again would cancel the run that replaced it.
+ */
 export function failedGitHubWorkflowRuns(body: unknown, headOid: string): GitHubFailedWorkflowRuns {
   const listing = record(body);
-  const runs = Array.isArray(listing.workflow_runs) ? listing.workflow_runs.map(record) : null;
-  if (!runs) return { ids: [], total: 0, complete: false };
-  const ids: number[] = [];
-  let complete = Number(listing.total_count) <= runs.length;
-  for (const run of runs) {
+  const listed = Array.isArray(listing.workflow_runs) ? listing.workflow_runs.map(record) : null;
+  if (!listed) return { runs: [], total: 0, complete: false };
+  let complete = Number(listing.total_count) <= listed.length;
+  const newest = new Map<string, Record<string, unknown>>();
+  for (const run of listed) {
     if (run.head_sha !== headOid) continue;
-    if (run.status !== "completed" || !RERUNNABLE_CONCLUSIONS.has(String(run.conclusion))) continue;
-    const id = Number(run.id);
-    if (Number.isSafeInteger(id) && id > 0) ids.push(id);
-    else complete = false;
+    const id = positiveInt(run.id);
+    if (id === null) {
+      complete = false;
+      continue;
+    }
+    // A run that does not name its workflow stands alone.
+    const workflow = positiveInt(run.workflow_id);
+    const slot = workflow === null ? `run:${id}` : `${workflow}:${String(run.event)}`;
+    const current = newest.get(slot);
+    const order = (value: Record<string, unknown>) => [
+      positiveInt(value.run_number) ?? 0,
+      positiveInt(value.id) ?? 0,
+    ];
+    const [number, runId] = order(run);
+    const [currentNumber, currentId] = current ? order(current) : [-1, -1];
+    if (number! > currentNumber! || (number === currentNumber && runId! > currentId!))
+      newest.set(slot, run);
   }
-  return { ids, total: runs.length, complete };
+  const runs: GitHubWorkflowRun[] = [];
+  for (const value of newest.values()) {
+    const run = gitHubWorkflowRunOf(value);
+    if (run?.completed && RERUNNABLE_CONCLUSIONS.has(String(value.conclusion))) runs.push(run);
+  }
+  return { runs, total: listed.length, complete };
 }

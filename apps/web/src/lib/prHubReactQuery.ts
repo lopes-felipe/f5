@@ -63,6 +63,10 @@ export function prHubChecksQueryOptions(key: PullRequestKey) {
     queryKey: ["prHub", "checks", accountGeneration, key] as const,
     queryFn: async () => ensureNativeApi().prHub.getChecks({ key, accountGeneration }),
     staleTime: 15_000,
+    // The hub reports a change when the overall result changes, not when one job of many
+    // finishes, so a list with running jobs is read again while it is on screen.
+    refetchInterval: (query) =>
+      query.state.data?.checks.some((check) => check.status === "pending") ? 30_000 : false,
   });
 }
 
