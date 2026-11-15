@@ -43,6 +43,8 @@ import {
   PrHubThreadsInput,
   PrHubThreadStateInput,
   PrHubTrackInput,
+  PrHubChecksInput,
+  PrHubCheckLogInput,
 } from "./prHub";
 import {
   ForgeAccountInput,
@@ -786,6 +788,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(PR_HUB_WS_METHODS.recoverOperation, ForgeOperationInput),
   tagRequestBody(PR_HUB_WS_METHODS.cancelOperation, ForgeOperationInput),
   tagRequestBody(PR_HUB_WS_METHODS.listReviewerCandidates, PrHubStackInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getChecks, PrHubChecksInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getCheckLog, PrHubCheckLogInput),
 
   tagRequestBody(PR_HUB_WS_METHODS.getOverview, PrHubOverviewInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.claimNotifications, PrHubClaimNotificationsInput),

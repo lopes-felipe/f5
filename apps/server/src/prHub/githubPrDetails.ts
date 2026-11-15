@@ -207,7 +207,8 @@ export function sortChecks(checks: ReadonlyArray<PrHubCheck>): ReadonlyArray<PrH
   return checks.toSorted((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)));
 }
 
-function checkOf(value: UnknownRecord): PrHubCheck | null {
+/** One node of a commit's status check rollup: a check run or a commit status. */
+export function checkOf(value: UnknownRecord): PrHubCheck | null {
   if (value.__typename === "CheckRun") {
     const conclusion = stringOf(value.conclusion).toUpperCase();
     const status = stringOf(value.status).toUpperCase();
