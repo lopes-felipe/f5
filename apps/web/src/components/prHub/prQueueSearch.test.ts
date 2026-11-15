@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_PR_SAVED_VIEWS, normalizePrSavedViews } from "../../lib/prSavedViews";
 import {
   parsePrQueueSearch,
+  prActiveSavedView,
+  prQueueFilters,
   prQueueIsFiltered,
   prQueueListInput,
   prQueueQuery,
   prQueueSuggestions,
+  prSavedQueries,
+  prSavedViewSearch,
 } from "./prQueueSearch";
 
 describe("parsePrQueueSearch", () => {
@@ -23,9 +28,11 @@ describe("parsePrQueueSearch", () => {
         review: "approved",
         draft: "hide",
         status: "snoozed",
+        saved: "view-1",
         unknown: "x",
       }),
     ).toEqual({
+      saved: "view-1",
       pr: "github:github.com/octo/repo#7",
       view: "page",
       tab: "files",
@@ -171,8 +178,86 @@ describe("queue list requests", () => {
 
   it("knows when the queue is narrowed", () => {
     expect(prQueueIsFiltered({})).toBe(false);
-    expect(prQueueIsFiltered({ pr: "x", status: "closed", q: "  " })).toBe(false);
+    expect(prQueueIsFiltered({ pr: "x", status: "closed", q: "  ", saved: "v" })).toBe(false);
     expect(prQueueIsFiltered({ q: "fix" })).toBe(true);
     expect(prQueueIsFiltered({ draft: "hide" })).toBe(true);
+  });
+});
+
+describe("saved views", () => {
+  const bugs = { id: "bugs", name: "Bugs", query: { label: "bug", review: "approved" } };
+  const mine = { id: "mine", name: "Mine", query: { q: "author:me", repo: "octo/web" } };
+  const views = [bugs, mine];
+
+  it("keeps only the search and filters of the queue", () => {
+    expect(
+      prQueueFilters({
+        pr: "github:github.com/octo/repo#7",
+        view: "page",
+        status: "snoozed",
+        saved: "bugs",
+        q: " crash ",
+        label: "bug",
+        ci: "failure",
+      }),
+    ).toEqual({ q: "crash", label: "bug", ci: "failure" });
+    expect(prQueueFilters({ q: "   " })).toEqual({});
+  });
+
+  it("shows a view by replacing the filters and keeping what is open", () => {
+    expect(
+      prSavedViewSearch({ pr: "github:github.com/octo/repo#7", q: "old", ci: "failure" }, bugs),
+    ).toEqual({
+      pr: "github:github.com/octo/repo#7",
+      label: "bug",
+      review: "approved",
+      saved: "bugs",
+    });
+  });
+
+  it("is the active view only while the filters are the saved ones", () => {
+    const shown = prSavedViewSearch({}, bugs);
+    expect(prActiveSavedView(shown, views)).toBe(bugs);
+    expect(prActiveSavedView({ ...shown, q: "crash" }, views)).toBeNull();
+    expect(prActiveSavedView({ ...shown, review: "none" }, views)).toBeNull();
+    // Trailing space while typing does not make it another view.
+    expect(prActiveSavedView({ ...prSavedViewSearch({}, mine), q: "author:me " }, views)).toBe(
+      mine,
+    );
+    expect(prActiveSavedView({ label: "bug", review: "approved" }, views)).toBeNull();
+    expect(prActiveSavedView({ ...shown, saved: "gone" }, views)).toBeNull();
+    expect(prActiveSavedView({ ...shown, status: "closed" }, views)).toBeNull();
+  });
+
+  it("asks the server to count each view with the list's own filters", () => {
+    expect(prSavedQueries(views)).toEqual([
+      { id: "bugs", query: "label:bug", review: "approved" },
+      { id: "mine", query: "author:me", repository: "octo/web" },
+    ]);
+    const { query, review } = prQueueListInput(prQueueFilters(prSavedViewSearch({}, bugs)));
+    expect({ id: "bugs", query, review }).toEqual(prSavedQueries([bugs])[0]);
+  });
+
+  it("drops stored views it cannot show, without losing the others", () => {
+    expect(
+      normalizePrSavedViews([
+        bugs,
+        { id: "bugs", name: "Same id", query: { q: "x" } },
+        { id: "blank", name: "   ", query: { q: "x" } },
+        { id: "empty", name: "No filters", query: { pr: "x", status: "closed" } },
+        { id: "", name: "No id", query: { q: "x" } },
+        { id: "odd", name: "  Odd   name  ", query: { q: "x", label: 3, extra: "y" } },
+        null,
+        "view",
+      ]),
+    ).toEqual([bugs, { id: "odd", name: "Odd name", query: { q: "x" } }]);
+    expect(normalizePrSavedViews(undefined)).toEqual([]);
+    expect(normalizePrSavedViews({})).toEqual([]);
+    const many = Array.from({ length: 20 }, (_, index) => ({
+      id: `v${index}`,
+      name: `View ${index}`,
+      query: { q: "x" },
+    }));
+    expect(normalizePrSavedViews(many)).toHaveLength(MAX_PR_SAVED_VIEWS);
   });
 });

@@ -41,6 +41,8 @@ import type {
   PrHubReviewDraftResult,
   PrHubUnresolvedThreadsResult,
   PrHubIgnoreInput,
+  PrHubBulkUpdateInput,
+  PrHubBulkUpdateResult,
   PrHubLocalCandidatesInput,
   PrHubResolveCheckoutInput,
   PrHubLocalCheckoutCandidate,
@@ -111,6 +113,9 @@ export interface PrHubServiceShape {
   readonly unignore: (
     input: PrHubIgnoreInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly bulkUpdate: (
+    input: PrHubBulkUpdateInput,
+  ) => Effect.Effect<PrHubBulkUpdateResult, SourceControlProviderError>;
   readonly acknowledgeAttention: (
     input: PrHubAcknowledgeAttentionInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;

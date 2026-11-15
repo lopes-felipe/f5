@@ -151,7 +151,31 @@ export const PrHubMergeRequirements = Schema.Struct({
 });
 export type PrHubMergeRequirements = typeof PrHubMergeRequirements.Type;
 
+/** What happened to a pull request since the viewer last looked at it, most important first. */
+export const PrHubChangeKind = Schema.Literals([
+  "new",
+  "merged",
+  "closed",
+  "ready",
+  "changes_requested",
+  "approved",
+  "ci_failed",
+  "conflict",
+  "commits",
+  "comments",
+  "ci_passed",
+]);
+export type PrHubChangeKind = typeof PrHubChangeKind.Type;
+export const PrHubChange = Schema.Struct({
+  kind: PrHubChangeKind,
+  /** How many, for kinds that count (new comments). */
+  count: Schema.optional(NonNegativeInt),
+});
+export type PrHubChange = typeof PrHubChange.Type;
+
 export const TrackedPullRequest = Schema.Struct({
+  /** Empty once seen; absent on forges and servers that do not record what was seen. */
+  changesSinceSeen: Schema.optional(Schema.Array(PrHubChange)),
   allowedMergeMethods: Schema.optional(
     Schema.Array(Schema.Literals(["squash", "merge", "rebase"])),
   ),
@@ -317,22 +341,41 @@ export const PrHubListFilter = Schema.Literals([
   "notification_pending",
 ]);
 export type PrHubListFilter = typeof PrHubListFilter.Type;
-export const PrHubOverviewInput = Schema.Struct({
+const prHubAccountScope = {
   accountId: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   stalledBefore: Schema.optional(IsoDateTime),
-});
-export type PrHubOverviewInput = typeof PrHubOverviewInput.Type;
-export const PrHubListInput = Schema.Struct({
-  ...PrHubOverviewInput.fields,
-  filter: Schema.optional(PrHubListFilter),
-  section: Schema.optional(PrHubSection),
+};
+/** The search and filters that narrow the queue; a saved view keeps one of these. */
+const prHubQueueFilters = {
   query: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   draft: Schema.optional(Schema.Literals(["only", "hide"])),
   review: Schema.optional(PrReviewDecision),
   repository: Schema.optional(Schema.String),
-  relationship: Schema.optional(PrViewerRole),
   ci: Schema.optional(PrCheckRollup),
+};
+export const PrHubSavedQuery = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  ...prHubQueueFilters,
+});
+export type PrHubSavedQuery = typeof PrHubSavedQuery.Type;
+export const PR_HUB_MAX_SAVED_VIEWS = 12;
+export const PrHubOverviewInput = Schema.Struct({
+  ...prHubAccountScope,
+  /** Saved views to count; the overview answers with `savedCounts`. */
+  savedQueries: Schema.optional(
+    Schema.Array(PrHubSavedQuery).check(Schema.isMaxLength(PR_HUB_MAX_SAVED_VIEWS)),
+  ),
+});
+export type PrHubOverviewInput = typeof PrHubOverviewInput.Type;
+export const PrHubListInput = Schema.Struct({
+  ...prHubAccountScope,
+  ...prHubQueueFilters,
+  filter: Schema.optional(PrHubListFilter),
+  section: Schema.optional(PrHubSection),
+  /** Only pull requests that changed since the viewer last looked at them. */
+  unread: Schema.optional(Schema.Boolean),
+  relationship: Schema.optional(PrViewerRole),
   visibility: Schema.optional(Schema.Literals(["active", "snoozed", "ignored", "resolved", "any"])),
   lifecycle: Schema.optional(Schema.Literals(["open", "closed", "merged"])),
   sort: Schema.optional(Schema.Literals(["priority", "updated"])),
@@ -351,6 +394,10 @@ export const PrHubOverview = Schema.Struct({
   /** Active pull requests per queue section. */
   sectionCounts: Schema.optional(Schema.Record(PrHubSection, NonNegativeInt)),
   sync: Schema.optional(PrHubSyncState),
+  /** Active pull requests that changed since the viewer last looked at them. */
+  unreadCount: Schema.optional(NonNegativeInt),
+  /** Per saved query id: matches that need the viewer (review, action, ready). */
+  savedCounts: Schema.optional(Schema.Record(Schema.String, NonNegativeInt)),
   /** Values the queue's filters offer, most common first, from active pull requests. */
   facets: Schema.optional(
     Schema.Struct({
@@ -495,6 +542,29 @@ export type PrHubIgnoreInput = typeof PrHubIgnoreInput.Type;
 
 export const PrHubUnignoreInput = PrHubIgnoreInput;
 export type PrHubUnignoreInput = typeof PrHubUnignoreInput.Type;
+
+export const PR_HUB_BULK_MAX_KEYS = 200;
+/** One local change to many pull requests of one account, stored and published once. */
+export const PrHubBulkUpdateInput = Schema.Struct({
+  accountId: Schema.optional(Schema.String),
+  accountGeneration: Schema.optional(Schema.String),
+  keys: Schema.Array(PullRequestKey).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(PR_HUB_BULK_MAX_KEYS),
+  ),
+  action: Schema.Literals(["snooze", "ignore", "mark_seen"]),
+  /** Required for `snooze`. */
+  until: Schema.optional(IsoDateTime),
+  /**
+   * For `mark_seen`: the attention fingerprint each pull request had on the screen where
+   * it was marked, by key. A pull request whose attention changed since then, or that has
+   * no fingerprint here, stays unread.
+   */
+  seenFingerprints: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type PrHubBulkUpdateInput = typeof PrHubBulkUpdateInput.Type;
+export const PrHubBulkUpdateResult = Schema.Struct({ updated: NonNegativeInt });
+export type PrHubBulkUpdateResult = typeof PrHubBulkUpdateResult.Type;
 
 export const PrHubAcknowledgeAttentionInput = Schema.Struct({
   accountGeneration: Schema.String,
@@ -1253,6 +1323,7 @@ export const PR_HUB_WS_METHODS = {
   unsnooze: "prHub.unsnooze",
   ignore: "prHub.ignore",
   unignore: "prHub.unignore",
+  bulkUpdate: "prHub.bulkUpdate",
   markSeen: "prHub.markSeen",
   acknowledgeAttention: "prHub.acknowledgeAttention",
   markNotified: "prHub.markNotified",

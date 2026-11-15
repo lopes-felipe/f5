@@ -749,6 +749,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       unsnooze,
       ignore,
       unignore,
+      bulkUpdate,
       clearData,
       claimNotifications,
       acknowledgeNotifications,
@@ -781,7 +782,13 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                   scheduler,
                 );
                 return {
-                  ...prHubOverview(snapshot, snapshot.revision ?? "0", input.stalledBefore),
+                  ...prHubOverview(
+                    snapshot,
+                    snapshot.revision ?? "0",
+                    input.stalledBefore,
+                    undefined,
+                    input.savedQueries,
+                  ),
                   scheduler,
                   nextRefreshAt,
                   sync: prHubSyncState(snapshot, scheduler, nextRefreshAt),
@@ -806,6 +813,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       unsnooze,
       ignore,
       unignore,
+      bulkUpdate,
       acknowledgeAttention,
       markSeen,
       markNotified,
@@ -1035,6 +1043,8 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       unsnooze: (input) => withLocalAccount(operations.unsnooze(input), input.accountGeneration),
       ignore: (input) => withLocalAccount(operations.ignore(input), input.accountGeneration),
       unignore: (input) => withLocalAccount(operations.unignore(input), input.accountGeneration),
+      bulkUpdate: (input) =>
+        withLocalAccount(operations.bulkUpdate(input), input.accountGeneration),
       approve: (input) => withPrAccount(operations.approve(input), input, true, "review"),
       requestChanges: (input) =>
         withPrAccount(operations.requestChanges(input), input, true, "review"),
