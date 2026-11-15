@@ -1,0 +1,1 @@
+- Add breathing room above the Following button so the last message and Working indicator remain clear of the floating control.

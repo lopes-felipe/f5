@@ -1698,10 +1698,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 {listHeaderContent}
               </>
             }
-            // Reserves room for the floating composer dock so the last row
-            // scrolls fully clear of it.
+            // Reserve room for both the composer dock and the floating follow
+            // controls, leaving a gap above the button for the last timeline row.
             ListFooterComponent={
-              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
+              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+2.5rem)] sm:h-[calc(var(--composer-dock-height,0px)+2.75rem)]" />
             }
           />
           {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
