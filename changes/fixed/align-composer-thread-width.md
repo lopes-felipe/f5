@@ -1,0 +1,1 @@
+- Align the message composer and floating Following control with the conversation's content width and side margins.

@@ -99,6 +99,7 @@ import { SectionLabel } from "../ui/section-label";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { FileChip } from "./FileChip";
 import { ComposerDockSpacer } from "./composer/ComposerDock";
+import { CHAT_CONTENT_GUTTERS_CLASS_NAME } from "./chatLayout";
 import { openFileInEditor } from "../../lib/openFileInEditor";
 import { useFileNavigation } from "../../fileNavigationContext";
 import { Button } from "../ui/button";
@@ -1626,7 +1627,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // through `listHeaderContent` would silently drop it on empty threads.
     return (
       <div
-        className="flex h-full flex-col overflow-y-auto overscroll-y-contain pl-3 pr-10 pb-(--composer-dock-height) sm:pl-5"
+        className={cn(
+          "flex h-full flex-col overflow-y-auto overscroll-y-contain pb-(--composer-dock-height)",
+          CHAT_CONTENT_GUTTERS_CLASS_NAME,
+        )}
         data-slot="messages-scroll-container"
       >
         {listHeaderContent ? <div className="pt-3 sm:pt-4">{listHeaderContent}</div> : null}
@@ -1694,7 +1698,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // queries — the LegendList's overflow container has inline styles that
             // make class-based selectors fragile.
             data-slot="messages-scroll-container"
-            className="h-full overflow-x-hidden overscroll-y-contain pl-3 pr-10 sm:pl-5"
+            className={cn(
+              "h-full overflow-x-hidden overscroll-y-contain",
+              CHAT_CONTENT_GUTTERS_CLASS_NAME,
+            )}
             ListHeaderComponent={
               <>
                 <div className="h-3 sm:h-4" />
@@ -1703,7 +1710,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             }
             // The follow control overlays the timeline; only the composer needs a spacer.
             ListFooterComponent={
-              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
+              <ComposerDockSpacer
+                className={
+                  isWorking
+                    ? "h-(--composer-dock-height)"
+                    : "h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]"
+                }
+              />
             }
           />
           {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
@@ -1973,7 +1986,10 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
       ref={element}
       data-thread-find-active={active ? "true" : undefined}
       data-row-entering={entering ? "" : undefined}
-      className={cn(compactBottom ? "pb-1.5" : "pb-4", entering && "motion-safe:animate-rise")}
+      className={cn(
+        compactBottom ? "pb-1.5" : row.kind === "working" ? "pb-0.5 sm:pb-1.5" : "pb-4",
+        entering && "motion-safe:animate-rise",
+      )}
       {...testRenderCountProps}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -5218,7 +5234,8 @@ function WorkingRowContent(props: {
           <span className="min-w-0 line-clamp-4 wrap-break-word">{row.thought}</span>
         </div>
       ) : null}
-      <div className="flex min-w-0 items-center gap-2 pt-1 pr-[var(--timeline-follow-controls-width,0px)] text-ui text-muted-foreground">
+      {/* Match the follow button's 1.5rem height plus its two border pixels. */}
+      <div className="flex h-[calc(1.5rem+2px)] min-w-0 items-center gap-2 pr-[var(--timeline-follow-controls-width,0px)] text-xs text-muted-foreground">
         <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
           <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
           <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />

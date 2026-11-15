@@ -7,6 +7,7 @@ import { Kbd } from "../ui/kbd";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { classifyTimelineTailChange, type TimelineTailSnapshot } from "./MessagesTimeline.logic";
+import { CHAT_CONTENT_COLUMN_CLASS_NAME } from "./chatLayout";
 
 /** The last timeline entry, as the pill compares it. */
 export function timelineTailSnapshot(
@@ -69,7 +70,12 @@ export function JumpToLatestButton(props: {
   const hasNewContent = !props.isAtEnd && latched !== null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--composer-dock-height,0px)+1rem)] z-30 mx-auto flex w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] justify-center px-3 py-1.5 sm:bottom-[calc(var(--composer-dock-height,0px)+1.25rem)] sm:px-5">
+    <div
+      className={
+        CHAT_CONTENT_COLUMN_CLASS_NAME +
+        " pointer-events-none absolute inset-x-0 bottom-(--composer-dock-height) z-30 flex justify-center py-1 sm:bottom-[calc(var(--composer-dock-height,0px)+0.25rem)]"
+      }
+    >
       <div
         ref={controlRef}
         className="pointer-events-auto relative flex max-w-full items-center rounded-full border border-border bg-popover shadow-md"
@@ -79,7 +85,7 @@ export function JumpToLatestButton(props: {
           onClick={props.onJump}
           disabled={props.jumping}
           aria-busy={props.jumping || undefined}
-          className="relative flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-70"
+          className="relative flex h-6 items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-xs text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-70"
         >
           {props.jumping ? (
             <LoaderIcon className="size-3.5 animate-spin" />
@@ -106,14 +112,14 @@ export function JumpToLatestButton(props: {
           <Tooltip>
             <TooltipTrigger
               render={
-                <span className="inline-flex shrink-0 items-center border-l border-border px-2" />
+                <span className="inline-flex shrink-0 items-center border-l border-border px-1.5" />
               }
             >
               <Switch
                 aria-label="Follow new messages"
                 checked={props.following ?? false}
                 onCheckedChange={props.onFollowingChange}
-                className="[--thumb-size:--spacing(3.5)] sm:[--thumb-size:--spacing(3.5)]"
+                className="[--thumb-size:--spacing(3)] sm:[--thumb-size:--spacing(3)]"
               />
             </TooltipTrigger>
             <TooltipPopup side="top">

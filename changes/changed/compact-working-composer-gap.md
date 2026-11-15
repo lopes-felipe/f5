@@ -1,0 +1,1 @@
+- Bring the Working indicator and centered Following control closer to the composer, align their vertical centers, match their font sizes, and reduce the control's height, padding, and toggle size.
