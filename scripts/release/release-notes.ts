@@ -86,7 +86,9 @@ export function collectBetaChanges(input: {
   const base = previousTag === undefined ? undefined : "refs/tags/" + previousTag;
   const dir = FRAGMENTS_DIR + "/";
   const paths = base
-    ? git(["diff", "--no-renames", "--diff-filter=A", "--name-only", base, sourceSha, "--", dir])
+    ? // Modified paths too: a fragment deleted by stable preparation can be recreated at the same
+      // path. Entries the previous release already had are filtered out below.
+      git(["diff", "--no-renames", "--diff-filter=AM", "--name-only", base, sourceSha, "--", dir])
         .split("\n")
         .map((line) => line.trim())
     : undefined;

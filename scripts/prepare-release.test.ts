@@ -229,6 +229,28 @@ describe("releaseChangelog", { timeout: 60_000 }, () => {
     );
   });
 
+  it("keeps a shipped path pending when its content changed after the release", () => {
+    const fixture = createGitFixture("release-changelog-");
+    fixtures.push(fixture);
+    fixture.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n");
+    fixture.write("changes/README.md", "# Fragments\n");
+    fixture.commit("work", 1_000);
+    releaseChangelog(fixture.root, "0.2.0", "2026-11-14");
+    fixture.write("changes/added/late.md", "- Shipped with 0.2.0.\n");
+    fixture.write("changes/fixed/edited.md", "- Original wording.\n");
+    fixture.commit("Release 0.2.0 with late fragments", 2_000);
+    fixture.git(["tag", "v0.2.0"]);
+    fixture.write("changes/fixed/edited.md", "- New change reusing the path.\n");
+    fixture.commit("edit", 3_000);
+
+    releaseChangelog(fixture.root, "0.3.0", "2026-11-20");
+    const text = readFileSync(join(fixture.root, "CHANGELOG.md"), "utf8");
+    expect(text).toContain(
+      "## [0.3.0] - 2026-11-20\n\n### Fixed\n\n- New change reusing the path.\n\n## [0.2.0] - 2026-11-14\n\n### Added\n\n- Shipped with 0.2.0.\n",
+    );
+    expect(text).not.toContain("Original wording");
+  });
+
   it("refolds late fragments into an unpublished version for recovery", () => {
     const fixture = createGitFixture("release-changelog-");
     fixtures.push(fixture);

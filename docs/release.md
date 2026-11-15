@@ -26,7 +26,9 @@ published release, beta or stable, whose commit is an ancestor of the candidate:
 fragments added under `changes/` and any bullets added to `CHANGELOG.md`'s
 Unreleased section. An entry whose first line the previous release already had,
 in its changelog or its fragments, is not listed again, so renamed fragments and
-entries folded back by a withdrawal are not announced twice. Unpublished and
+entries folded back by a withdrawal are not announced twice. Fragments added or
+modified since that release are read, so a fragment reworded after a beta
+appears again with its new wording. Unpublished and
 superseded betas do not count, so their entries appear in the next published
 beta. The desktop updater shows every intermediate release's notes in a row, so
 each entry appears once there. If git fails while collecting entries, the notes

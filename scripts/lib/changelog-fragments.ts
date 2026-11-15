@@ -155,7 +155,12 @@ export function splitEntries(lines: readonly string[]): string[] {
 /** The entries of a fragment, or a clear error describing what is wrong with it. */
 export function validateFragment(path: string, content: string): string[] {
   if (parseFragmentPath(path) === null) throw new Error(`${path} is not a changelog fragment`);
-  const entries = splitEntries(content.split(/\r?\n/));
+  const lines = content.split(/\r?\n/);
+  // An open fence would swallow every later heading once folded into CHANGELOG.md.
+  if (lines.length > 0 && fencedLines([...lines, "#"]).at(-1)) {
+    throw new Error(`${path} has an unclosed code fence`);
+  }
+  const entries = splitEntries(lines);
   if (entries.length === 0) throw new Error(`${path} is empty; add a "- " bullet`);
   for (const entry of entries) {
     const first = entry.split("\n")[0]!;
@@ -419,8 +424,13 @@ export function unreleasedGroups(changelog: string): SectionGroups {
   return range ? parseSection(lines.slice(range.start, range.end)) : emptyGroups();
 }
 
-const bulletLines = (lines: readonly string[]) =>
-  lines.filter((line) => /^- \S/.test(line)).map((line) => line.trimEnd());
+/** Top-level bullet lines, skipping fenced examples (a `- ` line in a code block is not an entry). */
+const bulletLines = (lines: readonly string[]) => {
+  const fenced = fencedLines(lines);
+  return lines
+    .filter((line, index) => !fenced[index] && /^- \S/.test(line))
+    .map((line) => line.trimEnd());
+};
 
 /** Top-level bullets between `## [Unreleased]` and the next release heading. */
 export function unreleasedBullets(changelog: string): string[] {

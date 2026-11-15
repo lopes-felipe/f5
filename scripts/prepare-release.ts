@@ -5,12 +5,12 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareCliReleaseVersions, versionToken } from "@t3tools/shared/cliRelease";
 import {
-  FRAGMENTS_DIR,
   addFragments,
   findOutsideFences,
   parseSection,
   readFragments,
   renderSection,
+  splitEntries,
   unreleasedRange,
   type Fragment,
 } from "./lib/changelog-fragments.ts";
@@ -96,10 +96,11 @@ function gitIn(root: string, args: readonly string[]): string | undefined {
 }
 
 /**
- * Splits fragments into those still pending and those that already shipped: present, unchanged
- * in path, at the newest stable tag merged into HEAD. Release preparation deletes every fragment
- * it folds, so a fragment at that tag landed while the preparation PR was open and shipped with
- * that release.
+ * Splits fragments into those still pending and those that already shipped: present with the
+ * same entries at the newest stable tag merged into HEAD. Release preparation deletes every
+ * fragment it folds, so a fragment at that tag landed while the preparation PR was open and
+ * shipped with that release. A fragment edited since, or a new one reusing a shipped path, stays
+ * pending.
  */
 export function splitShippedFragments(
   root: string,
@@ -111,20 +112,22 @@ export function splitShippedFragments(
     .filter((name) => /^v\d+\.\d+\.\d+$/.test(name))
     .toSorted((a, b) => compareCliReleaseVersions(b.slice(1), a.slice(1)))[0];
   if (!tag || fragments.length === 0) return { pending: [...fragments] };
-  const atTag = new Set(
-    (gitIn(root, ["ls-tree", "-r", "--name-only", tag, "--", FRAGMENTS_DIR + "/"]) ?? "")
-      .split("\n")
-      .map((line) => line.trim()),
-  );
+  const unchangedSinceTag = (fragment: Fragment) => {
+    const atTag = gitIn(root, ["show", tag + ":" + fragment.path]);
+    return (
+      atTag !== undefined &&
+      splitEntries(atTag.split(/\r?\n/)).join("\n\n") === fragment.entries.join("\n\n")
+    );
+  };
   const version = tag.slice(1);
   const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8").split(/\r?\n/);
-  const shipped = fragments.filter((fragment) => atTag.has(fragment.path));
+  const shipped = fragments.filter(unchangedSinceTag);
   // Without its section (never expected), keep the entries rather than lose them.
   if (shipped.length === 0 || !changelog.some(sectionHeading(version))) {
     return { pending: [...fragments] };
   }
   return {
-    pending: fragments.filter((fragment) => !atTag.has(fragment.path)),
+    pending: fragments.filter((fragment) => !shipped.includes(fragment)),
     shipped: { version, fragments: shipped },
   };
 }

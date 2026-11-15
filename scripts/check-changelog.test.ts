@@ -87,6 +87,7 @@ describe("unreleased entries", () => {
     ["a wording fix to a released bullet", changelog([], ["- Shipped thing, reworded."])],
     ["an empty bullet", changelog(["- "])],
     ["a heading without a bullet", changelog(["### Fixed"])],
+    ["a bullet inside a fenced example", changelog(["```md", "- Not an entry.", "```"])],
   ])("ignores %s", (_label, after) => expect(addsUnreleasedEntry(base, after)).toBe(false));
 
   it("ignores reordering or moving an existing bullet into Unreleased", () => {

@@ -65,6 +65,8 @@ describe("validateFragment", () => {
     ["Fixed a thing.\n", /outside a "- " bullet/],
     ["- x\n\nA separate paragraph.\n", /outside a "- " bullet/],
     ["```\ncode\n```\n", /outside a "- " bullet/],
+    ["- Example:\n  ~~~\n  sample\n", /unclosed code fence/],
+    ["- Example:\n  ```\n", /unclosed code fence/],
     ["-\n", /outside a "- " bullet/],
   ])("rejects %j", (content, message) =>
     expect(() => validateFragment(path, content)).toThrow(message),

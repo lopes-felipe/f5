@@ -222,6 +222,31 @@ describe("collectBetaChanges", { timeout: 60_000 }, () => {
     expect(changes.fragments.map((fragment) => fragment.path)).toEqual(["changes/added/new.md"]);
   });
 
+  it("lists a new entry in a fragment recreated at a path the previous release had", () => {
+    const { fixture, collect } = setup();
+    fixture.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n");
+    fixture.write("changes/README.md", "# Fragments\n");
+    fixture.write("changes/fixed/startup.md", "- Startup fix in beta 1.\n");
+    fixture.commit("beta 1", 1_000);
+    fixture.git(["tag", "v0.2.0-beta.1"]);
+    releaseChangelog(fixture.root, "0.2.0", "2026-11-14");
+    fixture.commit("Release 0.2.0 (preparation merged)", 2_000);
+    const withdrawn = fixture
+      .git(["show", "HEAD:CHANGELOG.md"])
+      .split("\n")
+      .filter((line) => !line.startsWith("## [0.2.0] - "))
+      .join("\n");
+    fixture.write("CHANGELOG.md", withdrawn + "\n");
+    fixture.write("changes/fixed/startup.md", "- Another startup fix.\n");
+    const head = fixture.commit("withdraw, then a new fragment at the same path", 3_000);
+
+    const changes = collect(head, "v0.2.0-beta.1");
+    expect(changes.fragments).toEqual([
+      { path: "changes/fixed/startup.md", category: "fixed", entries: ["- Another startup fix."] },
+    ]);
+    expect(changes.legacy.known.get("fixed") ?? []).toEqual([]);
+  });
+
   it("does not re-announce a renamed or migrated entry", () => {
     const { fixture, collect } = setup();
     fixture.write(
