@@ -46,6 +46,28 @@ describe("openNotificationTarget", () => {
     expect(navigate).toHaveBeenCalledWith(expected);
   });
 
+  it("keeps the Pull requests search and filters when the queue is already open", async () => {
+    const { navigate, asNavigate } = navigateSpy();
+    const target = { kind: "prHub", prKey: "o/r#2" } as const;
+    await openNotificationTarget(asNavigate, target, {
+      focus: false,
+      current: {
+        pathname: "/pull-requests",
+        search: { pr: "o/r#1", view: "page", tab: "files", q: "layout", status: "snoozed" },
+      },
+    });
+    expect(navigate).toHaveBeenLastCalledWith({
+      to: "/pull-requests",
+      search: { pr: "o/r#2", q: "layout", status: "snoozed" },
+    });
+    // Another page's parameters are not the queue's, even when they share a name.
+    await openNotificationTarget(asNavigate, target, {
+      focus: false,
+      current: { pathname: "/upstream", search: { q: "layout", tab: "files" } },
+    });
+    expect(navigate).toHaveBeenLastCalledWith({ to: "/pull-requests", search: { pr: "o/r#2" } });
+  });
+
   it("does nothing for a notification without a target", async () => {
     const { navigate, asNavigate } = navigateSpy();
     await openNotificationTarget(asNavigate, { kind: "none" }, { focus: false });

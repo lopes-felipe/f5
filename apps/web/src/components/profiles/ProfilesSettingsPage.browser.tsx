@@ -19,9 +19,12 @@ vi.mock("../../nativeApi", () => ({
   readNativeApi: () => nativeApiRef.current,
 }));
 
-// The GitHub sign-in on this page has its own tests.
+// The GitHub sign-in and the forge accounts on this page have their own tests.
 vi.mock("../settings/GithubAccountPanel", () => ({
   GithubAccountPanel: () => null,
+}));
+vi.mock("../settings/ForgeAccountsPanel", () => ({
+  ForgeAccountsPanel: () => null,
 }));
 
 const { AccountsSettings: ProfilesSettings } =
