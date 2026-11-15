@@ -2482,6 +2482,9 @@ export default memo(function ChatView({
       projectAttachmentPreviewHandoff,
     ],
   );
+  const showFollowingControls =
+    timelineMessages.length > 0 &&
+    (showScrollToBottom || (isWorking && autoFollow) || isJumpingToLatest);
   const imageSources = messageAttachmentSources(timelineMessages);
   useEffect(() => {
     setExpandedImage((existing) =>
@@ -8328,19 +8331,18 @@ export default memo(function ChatView({
                   <ThreadDetailsLoadingState testId="chat-thread-details-loading" />
                 )}
 
-                {/* Keep the controls available while following is enabled. */}
-                {timelineMessages.length > 0 &&
-                  (showScrollToBottom || autoFollow || isJumpingToLatest) && (
-                    <JumpToLatestButton
-                      tail={timelineTailSnapshot(timelineEntries.at(-1))}
-                      shortcutLabel={scrollToBottomShortcutLabel ?? null}
-                      onJump={jumpToLatest}
-                      following={autoFollow}
-                      onFollowingChange={handleFollowingChange}
-                      isAtEnd={!showScrollToBottom}
-                      jumping={isJumpingToLatest}
-                    />
-                  )}
+                {/* Keep navigation available away from the end, including settled turns. */}
+                {showFollowingControls && (
+                  <JumpToLatestButton
+                    tail={timelineTailSnapshot(timelineEntries.at(-1))}
+                    shortcutLabel={scrollToBottomShortcutLabel ?? null}
+                    onJump={jumpToLatest}
+                    following={autoFollow}
+                    onFollowingChange={handleFollowingChange}
+                    isAtEnd={!showScrollToBottom}
+                    jumping={isJumpingToLatest}
+                  />
+                )}
                 <TimelineNavigationStatusBanner
                   status={timelineNavigation.status}
                   onRetry={threadFind.retryNavigation}

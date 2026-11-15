@@ -1,0 +1,1 @@
+- Hide Following at the end of a completed turn and show Jump to latest again when scrolling up through the conversation.

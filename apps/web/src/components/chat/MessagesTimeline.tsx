@@ -973,7 +973,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [listRef]);
 
   const disclosurePinsEndRef = useRef(false);
-  const disclosureSettleFrameRef = useRef<number | null>(null);
+  const endSettleFrameRef = useRef<number | null>(null);
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
   const leaveEnd = useCallback(() => {
@@ -985,11 +985,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     liveFollowEnabledRef.current = false;
     onAutoFollowChange?.(false);
     disclosurePinsEndRef.current = false;
-    if (disclosureSettleFrameRef.current !== null) {
-      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
-      disclosureSettleFrameRef.current = null;
+    if (endSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(endSettleFrameRef.current);
+      endSettleFrameRef.current = null;
     }
   }, [onAutoFollowChange, onLeaveEnd]);
+
+  // Following is an explicit intent, independent of LegendList's transient
+  // at-end measurement while a tool result or diff changes height.
+  const pinTimelineToEnd = useCallback(() => {
+    if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
+    const node = listRef.current?.getScrollableNode?.();
+    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
+  }, [listRef]);
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {
@@ -1015,6 +1023,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }
       syncFrame = window.requestAnimationFrame(() => {
         syncFrame = 0;
+        pinTimelineToEnd();
         syncIsAtEndFromListState();
         measureTurnRailGutter();
       });
@@ -1115,6 +1124,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     leaveEnd,
     listRef,
     measureTurnRailGutter,
+    pinTimelineToEnd,
     requestOlderHistory,
     syncIsAtEndFromListState,
   ]);
@@ -1146,43 +1156,36 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
   }, [requestOlderHistory, syncIsAtEndFromListState]);
 
-  // A disclosure toggled at the end keeps the end in view while rows re-measure.
-  // Anywhere else, maintainVisibleContentPosition holds the toggled row in place.
-  const pinDisclosureToEnd = useCallback(() => {
-    if (!disclosurePinsEndRef.current) return;
-    const node = listRef.current?.getScrollableNode?.();
-    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
-  }, [listRef]);
-  // Settles two frames after the last toggle or row resize, since tool output
-  // can render a few frames late.
-  const scheduleDisclosureSettle = useCallback(() => {
-    if (disclosureSettleFrameRef.current !== null) {
-      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+  // Follow measured geometry, including updates within an existing work group.
+  // Settle two frames after the last resize because tool output can render late.
+  const scheduleEndSettle = useCallback(() => {
+    if (endSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(endSettleFrameRef.current);
     }
-    disclosureSettleFrameRef.current = window.requestAnimationFrame(() => {
-      pinDisclosureToEnd();
-      disclosureSettleFrameRef.current = window.requestAnimationFrame(() => {
-        pinDisclosureToEnd();
+    endSettleFrameRef.current = window.requestAnimationFrame(() => {
+      pinTimelineToEnd();
+      endSettleFrameRef.current = window.requestAnimationFrame(() => {
+        pinTimelineToEnd();
         disclosurePinsEndRef.current = false;
-        disclosureSettleFrameRef.current = null;
+        endSettleFrameRef.current = null;
         syncIsAtEndFromListState();
       });
     });
-  }, [pinDisclosureToEnd, syncIsAtEndFromListState]);
+  }, [pinTimelineToEnd, syncIsAtEndFromListState]);
   const pinEndThroughDisclosure = useCallback(() => {
     if (!isAtEndRef.current) return;
     disclosurePinsEndRef.current = true;
-    scheduleDisclosureSettle();
-  }, [scheduleDisclosureSettle]);
+    scheduleEndSettle();
+  }, [scheduleEndSettle]);
   const handleItemSizeChanged = useCallback(() => {
-    if (!disclosurePinsEndRef.current) return;
-    queueMicrotask(pinDisclosureToEnd);
-    scheduleDisclosureSettle();
-  }, [pinDisclosureToEnd, scheduleDisclosureSettle]);
+    if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
+    queueMicrotask(pinTimelineToEnd);
+    scheduleEndSettle();
+  }, [pinTimelineToEnd, scheduleEndSettle]);
   useEffect(
     () => () => {
-      if (disclosureSettleFrameRef.current !== null) {
-        window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+      if (endSettleFrameRef.current !== null) {
+        window.cancelAnimationFrame(endSettleFrameRef.current);
       }
     },
     [],
@@ -1698,10 +1701,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 {listHeaderContent}
               </>
             }
-            // Reserve room for both the composer dock and the floating follow
-            // controls, leaving a gap above the button for the last timeline row.
+            // The follow control overlays the timeline; only the composer needs a spacer.
             ListFooterComponent={
-              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+2.5rem)] sm:h-[calc(var(--composer-dock-height,0px)+2.75rem)]" />
+              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
             }
           />
           {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
@@ -5216,7 +5218,7 @@ function WorkingRowContent(props: {
           <span className="min-w-0 line-clamp-4 wrap-break-word">{row.thought}</span>
         </div>
       ) : null}
-      <div className="flex min-w-0 items-center gap-2 pt-1 text-ui text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-2 pt-1 pr-[var(--timeline-follow-controls-width,0px)] text-ui text-muted-foreground">
         <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
           <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
           <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />

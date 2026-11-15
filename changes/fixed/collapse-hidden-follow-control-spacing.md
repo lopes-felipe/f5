@@ -1,0 +1,1 @@
+- Remove the dedicated vertical space for Following so the control floats over the conversation without leaving an empty band above the composer.

@@ -1,5 +1,5 @@
 import { ArrowDownIcon, LoaderIcon } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import type { ChatMessage } from "../../types";
 import { messageTextRevision } from "../../lib/streamingTextRevision";
@@ -37,6 +37,26 @@ export function JumpToLatestButton(props: {
   isAtEnd?: boolean;
   jumping?: boolean;
 }) {
+  const controlRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const control = controlRef.current;
+    const host = control?.closest<HTMLElement>("[data-composer-dock-host]");
+    if (!control || !host) return;
+    // Keep the Working activity to the left of the centered overlay.
+    const publishWidth = () => {
+      host.style.setProperty(
+        "--timeline-follow-controls-width",
+        "calc(50% + " + String(Math.ceil(control.offsetWidth / 2) + 12) + "px)",
+      );
+    };
+    publishWidth();
+    const observer = new ResizeObserver(publishWidth);
+    observer.observe(control);
+    return () => {
+      observer.disconnect();
+      host.style.removeProperty("--timeline-follow-controls-width");
+    };
+  }, []);
   const [baseline, setBaseline] = useState(props.tail);
   const [latched, setLatched] = useState<"new-messages" | "response-updated" | null>(null);
   const change = classifyTimelineTailChange(baseline, props.tail);
@@ -49,8 +69,11 @@ export function JumpToLatestButton(props: {
   const hasNewContent = !props.isAtEnd && latched !== null;
 
   return (
-    <div className="pointer-events-none absolute bottom-[calc(var(--composer-dock-height,0px)+0.25rem)] left-1/2 z-30 flex max-w-[calc(100%_-_1rem)] -translate-x-1/2 justify-center py-1.5">
-      <div className="pointer-events-auto relative flex items-center rounded-full border border-border bg-popover shadow-md">
+    <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--composer-dock-height,0px)+1rem)] z-30 mx-auto flex w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] justify-center px-3 py-1.5 sm:bottom-[calc(var(--composer-dock-height,0px)+1.25rem)] sm:px-5">
+      <div
+        ref={controlRef}
+        className="pointer-events-auto relative flex max-w-full items-center rounded-full border border-border bg-popover shadow-md"
+      >
         <button
           type="button"
           onClick={props.onJump}

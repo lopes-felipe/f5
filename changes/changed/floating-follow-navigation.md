@@ -1,0 +1,1 @@
+- Center the floating Following control alongside the Working indicator, keeping activity text clear of the button.
