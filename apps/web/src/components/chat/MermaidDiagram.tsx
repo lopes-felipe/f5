@@ -105,7 +105,12 @@ export function MermaidDiagram({
           {code}
         </div>
       ) : url ? (
-        <button type="button" aria-label="Expand Mermaid diagram" onClick={() => setExpanded(true)}>
+        <button
+          type="button"
+          aria-label="Expand Mermaid diagram"
+          className="block w-full"
+          onClick={() => setExpanded(true)}
+        >
           <img
             src={url}
             alt="Mermaid diagram"

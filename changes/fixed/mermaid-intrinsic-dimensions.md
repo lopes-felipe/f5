@@ -1,0 +1,1 @@
+- Fix Mermaid diagrams appearing as blank space by preserving explicit SVG dimensions and fitting the preview to narrow conversation panels.
