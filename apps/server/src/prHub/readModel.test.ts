@@ -5,7 +5,18 @@ import {
   type TrackedPullRequest,
   type PrHubSnapshot,
 } from "@t3tools/contracts";
-import { listPrHubPullRequests, prHubInvalidation, prHubOverview } from "./readModel.ts";
+import {
+  listPrHubPullRequests,
+  makePrHubChangeRelay,
+  prHubInvalidation,
+  prHubOverview,
+} from "./readModel.ts";
+
+// One clock reading for the whole file. Read per call, two rows built a millisecond apart
+// get different timestamps, and a sort that should tie on `updatedAt` orders them by it.
+const NOW = Date.now();
+const daysAgo = (days: number) => new Date(NOW - days * 86_400_000).toISOString();
+
 function makePr(
   overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
 ): TrackedPullRequest {
@@ -48,7 +59,7 @@ function makePr(
     labels: [],
     assignees: [],
     createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-02T00:00:00.000Z",
+    updatedAt: daysAgo(1),
     snoozedUntil: null,
     ignoredAt: null,
     notificationPending: false,
@@ -108,12 +119,12 @@ describe("PR Hub bounded read model", () => {
       pullRequests: [
         makePr({
           attentionState: "ready_to_merge",
-          title: "fix:crash in repo:org/name is:open",
+          title: "fix:crash in area:org/name is:open",
         }),
       ],
     };
     expect(
-      listPrHubPullRequests(colonData, "1", { query: "fix:crash repo:org/name is:open" })
+      listPrHubPullRequests(colonData, "1", { query: "fix:crash area:org/name is:open" })
         .pullRequests,
     ).toHaveLength(1);
     expect(
@@ -125,6 +136,99 @@ describe("PR Hub bounded read model", () => {
     expect(
       listPrHubPullRequests(data, "1", { query: "review:__proto__" }).pullRequests,
     ).toHaveLength(0);
+  });
+  describe("queue sections", () => {
+    const key = (number: number) =>
+      PullRequestKey.makeUnsafe(`github:github.com/octo/repo#${number}`);
+    const row = (
+      number: number,
+      overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
+    ) => makePr({ number, key: key(number), ...overrides });
+    const mine = { roles: ["author" as const], author: "me" };
+    const data: PrHubSnapshot = {
+      ...snapshot(0),
+      pullRequests: [
+        row(1, { attentionState: "review_requested", reviewRequestSource: "direct" }),
+        row(2, {
+          attentionState: "team_review_requested",
+          attentionBucket: "informational",
+          viewerReviewRequested: true,
+          reviewRequestSource: "team",
+        }),
+        row(3, { ...mine, attentionState: "ci_failing" }),
+        row(4, { ...mine, attentionState: "ready_to_merge" }),
+        row(5, {
+          ...mine,
+          attentionState: "awaiting_review",
+          attentionBucket: "waiting_on_others",
+        }),
+        row(6, {
+          ...mine,
+          attentionState: "draft",
+          attentionBucket: "informational",
+          isDraft: true,
+        }),
+        row(7, { attentionState: "mentioned", attentionBucket: "informational" }),
+        row(8, { ...mine, attentionState: "ci_failing", updatedAt: daysAgo(45) }),
+        row(9, { attentionState: "review_requested", ignoredAt: daysAgo(1) }),
+        row(10, { attentionState: "review_requested", snoozedUntil: daysAgo(-1) }),
+        row(11, { attentionState: "review_requested", updatedAt: daysAgo(3) }),
+      ],
+    };
+
+    it("counts each section once and builds the badge from review, action and ready", () => {
+      const overview = prHubOverview(data, "1");
+      expect(overview.sectionCounts).toEqual({
+        review: 2,
+        action: 1,
+        ready: 1,
+        waiting: 1,
+        drafts: 1,
+        team: 1,
+        other: 1,
+        stale: 1,
+      });
+      // Team, stale, ignored and snoozed rows never reach the badge.
+      expect(overview.counts.needs_you).toBe(4);
+    });
+
+    it("lists one section of the active queue and stamps it on every row", () => {
+      const review = listPrHubPullRequests(data, "1", { section: "review" }).pullRequests;
+      expect(review.map((pr) => pr.number)).toEqual([1, 11]);
+      expect(review.every((pr) => pr.section === "review")).toBe(true);
+      expect(
+        listPrHubPullRequests(data, "1", { section: "stale" }).pullRequests.map((pr) => pr.number),
+      ).toEqual([8]);
+      expect(
+        listPrHubPullRequests(data, "1", {
+          section: "review",
+          visibility: "ignored",
+        }).pullRequests.map((pr) => pr.number),
+      ).toEqual([9]);
+    });
+
+    it("orders by section, then urgency, then most recently updated", () => {
+      const ordered = listPrHubPullRequests(data, "1", { visibility: "active" }).pullRequests;
+      expect(ordered.map((pr) => pr.number)).toEqual([1, 11, 3, 4, 5, 6, 2, 7, 8]);
+    });
+
+    it("filters by repository with the repo: qualifier", () => {
+      const other = makePr({
+        attentionState: "review_requested",
+        number: 20,
+        key: PullRequestKey.makeUnsafe("github:github.com/acme/web#20"),
+        repository: { owner: "acme", repo: "web", nameWithOwner: "acme/web" },
+      });
+      const mixed = { ...data, pullRequests: [...data.pullRequests, other] };
+      const numbers = (query: string) =>
+        listPrHubPullRequests(mixed, "1", { query, visibility: "active", limit: 100 })
+          .pullRequests.map((pr) => pr.number)
+          .toSorted((a, b) => a - b);
+      expect(numbers("repo:acme/web")).toEqual([20]);
+      expect(numbers("repo:WEB")).toEqual([20]);
+      expect(numbers("-repo:acme/web")).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 11]);
+      expect(numbers("repo:acme/other")).toEqual([]);
+    });
   });
   it("paginates 5000 PRs without duplicates and rejects changed revision/filter/account cursors", () => {
     const data = snapshot();
@@ -149,6 +253,31 @@ describe("PR Hub bounded read model", () => {
     );
     expect(listPrHubPullRequests(data, "1", {}).pullRequests).toHaveLength(50);
   });
+  it("rejects a cursor when a row has moved across the page boundary at the same revision", () => {
+    // Sections follow the clock and the settings, which do not change the revision.
+    const data = snapshot();
+    const first = listPrHubPullRequests(data, "1", { limit: 2, sort: "updated" });
+    expect(first.nextCursor).not.toBeNull();
+    const moved = first.pullRequests[0]!.key;
+    const reordered = {
+      ...data,
+      pullRequests: data.pullRequests.map((pr) =>
+        pr.key === moved ? { ...pr, updatedAt: "2000-01-01T00:00:00.000Z" } : pr,
+      ),
+    };
+    expect(
+      listPrHubPullRequests(reordered, "1", {
+        limit: 2,
+        sort: "updated",
+        cursor: first.nextCursor!,
+      }).status,
+    ).toBe("cursor_stale");
+    // Unchanged rows keep the cursor valid.
+    expect(
+      listPrHubPullRequests(data, "1", { limit: 2, sort: "updated", cursor: first.nextCursor! })
+        .status,
+    ).toBe("ok");
+  });
   it("publishes one changed key and bounds large invalidations", () => {
     const before = snapshot();
     const after = {
@@ -165,6 +294,36 @@ describe("PR Hub bounded read model", () => {
     expect(initial.resyncRequired).toBe(true);
     expect(initial.changedKeys).toEqual([]);
     expect(initial.counts.needs_you).toBe(5000);
+  });
+  it("renumbers relayed change events and asks for a resync after a dropped one", () => {
+    const relay = makePrHubChangeRelay();
+    const github = relay();
+    const forge = relay();
+    const event = (sequence?: number, resyncRequired = false) => ({
+      ...prHubInvalidation(null, snapshot(), "1"),
+      changedKeys: [],
+      resyncRequired,
+      ...(sequence === undefined ? {} : { sequence }),
+    });
+    const relayed = [
+      github(event(1)),
+      github(event(2)),
+      // An unnumbered hub keeps its own request and is not counted as a gap.
+      forge(event(undefined, true)),
+      forge(event()),
+      // Events 3 and 4 never arrived: their changed keys are lost.
+      github(event(5)),
+      github(event(6)),
+    ];
+    expect(relayed.map((item) => item.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(relayed.map((item) => item.resyncRequired)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+    ]);
   });
   it("never presents an unscanned empty inbox as complete monitoring", () => {
     const overview = prHubOverview(snapshot(0), "1");

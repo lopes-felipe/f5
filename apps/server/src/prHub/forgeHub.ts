@@ -1,6 +1,7 @@
 import { Effect, Option, PubSub, Schema, Semaphore, Stream } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import {
+  DEFAULT_SERVER_SETTINGS,
   TrackedPullRequest,
   PrHubDetailResult,
   PrHubFilesPage,
@@ -36,6 +37,8 @@ import {
   login,
 } from "./forgeModel.ts";
 import { listPrHubPullRequests, prHubInvalidation, prHubOverview } from "./readModel.ts";
+import { applyPrHubRelevance } from "./relevance.ts";
+import { prHubSyncState } from "./syncState.ts";
 
 const PAGE_INFO = { hasNextPage: false, endCursor: null, truncated: false } as const;
 const MAX_TRACKED = 500;
@@ -650,15 +653,29 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
           catch: () => error("Could not inspect local repositories.", "generic"),
         });
       });
+    // Sections depend on the clock and on the viewer's settings (stale cutoff, promoted
+    // teams), so every read stamps them, as the GitHub hub does.
+    const relevantSnapshot = settings.getSettings.pipe(
+      Effect.map((current) => current.prHub),
+      Effect.catch(() => Effect.succeed(DEFAULT_SERVER_SETTINGS.prHub)),
+      Effect.map((prHub) => applyPrHubRelevance(snapshot(), prHub)),
+    );
     return {
       startMonitoring,
-      getSnapshot: Effect.sync(snapshot),
+      getSnapshot: relevantSnapshot,
       refreshNow,
       streamChanges: Stream.fromPubSub(changes),
       getOverview: (input) =>
-        Effect.sync(() => prHubOverview(snapshot(), String(revision), input.stalledBefore)),
+        relevantSnapshot.pipe(
+          Effect.map((current) => ({
+            ...prHubOverview(current, String(revision), input.stalledBefore),
+            sync: prHubSyncState(current, undefined, null),
+          })),
+        ),
       listPullRequests: (input) =>
-        Effect.sync(() => listPrHubPullRequests(snapshot(), String(revision), input)),
+        relevantSnapshot.pipe(
+          Effect.map((current) => listPrHubPullRequests(current, String(revision), input)),
+        ),
       track,
       getDetail,
       getFiles,
@@ -702,6 +719,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         editLocal(input.key, input.accountGeneration, {
           ignoredAt: new Date().toISOString(),
         }),
+      unignore: (input) => editLocal(input.key, input.accountGeneration, { ignoredAt: null }),
       acknowledgeAttention: (input) =>
         editLocal(input.key, input.accountGeneration, {
           acknowledgedAt: new Date().toISOString(),

@@ -32,6 +32,15 @@ export function prSearchPredicate(raw: string, viewer: string | null) {
       add((pr) => normalize(pr.author ?? "") === normalize(author));
       continue;
     }
+    if (key === "repo") {
+      // `owner/name` is exact; a bare name matches that repository under any owner.
+      add((pr) =>
+        value.includes("/")
+          ? normalize(pr.repository.nameWithOwner) === normalize(value)
+          : normalize(pr.repository.repo) === normalize(value),
+      );
+      continue;
+    }
     if (key === "draft" && /^(true|false)$/i.test(value)) {
       add((pr) => pr.isDraft === (normalize(value) === "true"));
       continue;
