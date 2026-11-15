@@ -39,7 +39,7 @@ export function PrTrackForm({ onTracked }: { onTracked: (pr: TrackedPullRequest)
           disabled={busy}
         />
         <Button type="submit" size="sm" variant="outline" disabled={busy || !url.trim()}>
-          {busy ? "Tracking?" : "Track PR"}
+          {busy ? "Tracking…" : "Track PR"}
         </Button>
       </div>
       {error ? (

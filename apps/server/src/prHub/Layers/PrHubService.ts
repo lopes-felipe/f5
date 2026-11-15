@@ -21,6 +21,8 @@ import { GitHubRequestPriority, githubRequestScheduler } from "../../git/githubR
 import { mapGitHubCliError } from "../../sourceControl/GitHubSourceControlProvider.ts";
 import { PrHubDiscovery } from "../Services/PrHubDiscovery.ts";
 import { excludePrHubRepositories, listPrHubPullRequests, prHubOverview } from "../readModel.ts";
+import { applyPrHubRelevance } from "../relevance.ts";
+import { prHubSyncState } from "../syncState.ts";
 import { decodeUnresolvedThreads, GITHUB_UNRESOLVED_THREADS_QUERY } from "../reviewThreads.ts";
 
 import {
@@ -99,7 +101,9 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
     const providerKind = "github" as const;
     const cwd = accountCwd(serverConfig.cwd);
     const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
-    const changePubSub = yield* PubSub.sliding<PrHubChanged>(1);
+    // Room for a burst. Events that still do not fit are dropped oldest first, which the
+    // reader sees as a jump in their sequence numbers.
+    const changePubSub = yield* PubSub.sliding<PrHubChanged>(16);
     const actionRefreshPubSub = yield* PubSub.sliding<void>(1);
     const jobCoordinator = yield* PrHubJobCoordinator;
     const viewerRef = yield* Ref.make<ViewerIdentity | null>(null);
@@ -210,7 +214,13 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             );
             const changed = JSON.stringify([...excluded].sort()) !== repository.scopeSignature();
             return (changed ? publishSnapshot(snapshot) : Effect.succeed(snapshot)).pipe(
-              Effect.map((current) => excludePrHubRepositories(current, excluded)),
+              Effect.map((current) =>
+                // Sections depend on the clock and on settings, so every read re-stamps them.
+                applyPrHubRelevance(
+                  excludePrHubRepositories(current, excluded),
+                  currentSettings.prHub,
+                ),
+              ),
             );
           }),
         ),
@@ -710,6 +720,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             normalized,
             viewer.login,
             previous.get(`${normalized.repository.nameWithOwner}#${ref.number}`),
+            latest.prHub,
           ),
           manuallyTracked: true,
         };
@@ -737,6 +748,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       snooze,
       unsnooze,
       ignore,
+      unignore,
       clearData,
       claimNotifications,
       acknowledgeNotifications,
@@ -763,14 +775,16 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
               Effect.orDie,
               Effect.map((current) => {
                 const scheduler = githubRequestScheduler.status(host);
+                const nextRefreshAt = nextPrHubRefreshAt(
+                  snapshot,
+                  current.prHub.pollIntervalSeconds,
+                  scheduler,
+                );
                 return {
                   ...prHubOverview(snapshot, snapshot.revision ?? "0", input.stalledBefore),
                   scheduler,
-                  nextRefreshAt: nextPrHubRefreshAt(
-                    snapshot,
-                    current.prHub.pollIntervalSeconds,
-                    scheduler,
-                  ),
+                  nextRefreshAt,
+                  sync: prHubSyncState(snapshot, scheduler, nextRefreshAt),
                 };
               }),
             ),
@@ -791,6 +805,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       snooze,
       unsnooze,
       ignore,
+      unignore,
       acknowledgeAttention,
       markSeen,
       markNotified,
@@ -1019,6 +1034,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       snooze: (input) => withLocalAccount(operations.snooze(input), input.accountGeneration),
       unsnooze: (input) => withLocalAccount(operations.unsnooze(input), input.accountGeneration),
       ignore: (input) => withLocalAccount(operations.ignore(input), input.accountGeneration),
+      unignore: (input) => withLocalAccount(operations.unignore(input), input.accountGeneration),
       approve: (input) => withPrAccount(operations.approve(input), input, true, "review"),
       requestChanges: (input) =>
         withPrAccount(operations.requestChanges(input), input, true, "review"),

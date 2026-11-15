@@ -12,7 +12,7 @@ export function prHubRecoveryCandidates(
 ) {
   const protectedWork = protectedPrHubWork(sql);
   const resolvedBefore = new Date(now - RESOLVED_RETENTION_MS).toISOString();
-  return sql`SELECT p.*, v.viewer_id, v.facts_verified, v.attention_bucket, v.viewer_payload_json
+  return sql`SELECT p.*, v.viewer_id, v.facts_verified, v.attention_bucket, v.roles_json, v.viewer_payload_json
     FROM pr_hub_prs p JOIN pr_hub_viewer_state v
       ON p.provider_kind = v.provider_kind AND p.host = v.host AND p.repo = v.repo AND p.number = v.number
     WHERE p.provider_kind = 'github' AND p.host = ${account.host} AND v.viewer_id = ${account.viewerId}

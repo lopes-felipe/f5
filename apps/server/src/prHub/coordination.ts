@@ -1,4 +1,4 @@
-import { nextPrHubRefreshAt } from "./refreshSchedule.ts";
+import { nextPrHubRefreshAt, PR_HUB_BACKLOG_ERROR_KIND } from "./refreshSchedule.ts";
 import { githubRequestScheduler } from "../git/githubRequestScheduler.ts";
 import { withPrHubDiscoveryWork } from "./discoveryLease.ts";
 
@@ -170,6 +170,7 @@ export function createPrHubRefresh(
                     pr,
                     viewer.login,
                     previousState.get(`${pr.repository.nameWithOwner}#${pr.number}`),
+                    latest.prHub,
                   ),
                 );
               yield* persistPullRequests(viewer, recovered, {
@@ -197,6 +198,7 @@ export function createPrHubRefresh(
                 pr,
                 viewer.login,
                 previousState.get(`${pr.repository.nameWithOwner}#${pr.number}`),
+                latestSettings.prHub,
               ),
             );
           const reconcilePolicy: ReconcilePolicy =
@@ -213,13 +215,19 @@ export function createPrHubRefresh(
             tracked.flatMap((pr) => (pr.nodeId ? [pr.nodeId] : [])),
           ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           const now = new Date().toISOString();
+          // Deferred work is backlog the next poll continues, not a failed refresh.
+          const failed = fetched.degraded && !fetched.resumable;
           yield* upsertRefreshState({
             viewerId: String(viewer.context.viewerId),
             viewerLogin: viewer.login,
-            status: fetched.degraded ? "degraded" : "ok",
+            status: failed ? "degraded" : "ok",
             lastPolledAt: now,
             lastSuccessAt: fetched.degraded ? null : now,
-            errorKind: fetched.degraded ? "degraded" : undefined,
+            errorKind: failed
+              ? "degraded"
+              : fetched.degraded
+                ? PR_HUB_BACKLOG_ERROR_KIND
+                : undefined,
             errorMessage: fetched.errorMessage,
             cappedBuckets: fetched.cappedBuckets,
             coverage: fetched.coverage,

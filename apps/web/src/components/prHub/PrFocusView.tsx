@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { PrHubAdvisory, PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
 import { sourceControlPullRequestKeysEqual } from "@t3tools/shared/sourceControl";
@@ -8,7 +8,6 @@ import { PrEmptyState } from "./PrEmptyState";
 import { Kbd } from "../ui/kbd";
 import { PrDetailPanel, type PrDetailHandle } from "./PrDetailPanel";
 import type { PrModeViewProps } from "./PrInboxView";
-import { comparePrPriority } from "./prHubPresentation";
 import { isInteractiveTextTarget } from "./prHubKeyboard";
 
 function isAnalyzing(
@@ -37,7 +36,8 @@ export function PrFocusView({
   onSelectionChange,
   refreshIncomplete = false,
 }: PrModeViewProps) {
-  const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
+  // The server orders the queue; re-sorting here would disagree with its pagination.
+  const ordered = prs;
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
   const index = ordered.findIndex((pr) => pr.key === selectedKey);
   const setIndex = useCallback(

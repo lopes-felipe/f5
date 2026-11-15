@@ -177,6 +177,79 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
         }),
       ).pipe(Effect.provide(SqliteClient.layerMemory())),
   );
+  it.effect("applies the stale cutoff setting to overview, list and snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Migration102;
+        const forgejo: ForgeAccount = {
+          ...account,
+          id: "forgejo-stale",
+          provider: "forgejo",
+          host: "forgejo.example.com",
+        };
+        // Last updated long ago: stale under the default cutoff of 30 days.
+        const pull = {
+          number: 7,
+          title: "Old but open",
+          state: "open",
+          user: { login: "alice" },
+          head: { sha: "head", ref: "topic" },
+          base: { ref: "main" },
+          html_url: "https://forgejo.example.com/group/repo/pulls/7",
+          updated_at: "2026-01-02T00:00:00Z",
+        };
+        const provider = makeForgeSourceControlProvider({
+          kind: "forgejo",
+          resolveAccount: () =>
+            Effect.succeed({
+              kind: "forgejo",
+              host: forgejo.host,
+              login: forgejo.login,
+              repository: "group/repo",
+              token: "secret",
+            }),
+          fetch: (async (input) => {
+            const url = new URL(String(input));
+            if (url.pathname.endsWith("/pulls")) return Response.json([pull]);
+            if (url.pathname.includes("/branches/")) return Response.json({});
+            if (url.pathname.includes("/statuses/")) return Response.json([]);
+            return Response.json(pull);
+          }) as typeof fetch,
+        });
+        let staleAfterDays = DEFAULT_SERVER_SETTINGS.prHub.staleAfterDays;
+        const hub = yield* makeForgePrHubService(forgejo, provider).pipe(
+          Effect.provideService(ServerSettingsService, {
+            ...settings,
+            getSettings: Effect.sync(() => ({
+              ...DEFAULT_SERVER_SETTINGS,
+              prHub: { ...DEFAULT_SERVER_SETTINGS.prHub, staleAfterDays },
+            })),
+          }),
+          Effect.provideService(ForgeAccounts, routedAccounts(forgejo, "group/repo")),
+        );
+        yield* hub.refreshNow({ mode: "force" });
+        const sections = Effect.gen(function* () {
+          const overview = yield* hub.getOverview({});
+          const listed = yield* hub.listPullRequests({});
+          const snapshot = yield* hub.getSnapshot;
+          return {
+            stale: overview.sectionCounts?.stale,
+            listed: listed.pullRequests.map((pr) => pr.section),
+            snapshot: snapshot.pullRequests.map((pr) => pr.section),
+          };
+        });
+        assert.deepEqual(yield* sections, { stale: 1, listed: ["stale"], snapshot: ["stale"] });
+        // 0 turns the cutoff off; a longer cutoff keeps the row out of Stale too.
+        staleAfterDays = 0;
+        const off = yield* sections;
+        assert.equal(off.stale, 0);
+        assert.notInclude(off.listed, "stale");
+        assert.notInclude(off.snapshot, "stale");
+        staleAfterDays = 100_000;
+        assert.equal((yield* sections).stale, 0);
+      }),
+    ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
   it.effect("refreshes discovered pipeline checks on every poll and marks partial reads", () =>
     Effect.scoped(
       Effect.gen(function* () {
