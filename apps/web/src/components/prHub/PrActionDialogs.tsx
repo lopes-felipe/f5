@@ -11,7 +11,6 @@ import { PrReviewSubmit } from "./PrReviewSubmit";
 import { Button } from "../ui/button";
 import {
   Dialog,
-  DialogClose,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -38,6 +37,7 @@ const SELF_CONFIRMING: ReadonlySet<PrPendingAction> = new Set([
   "autoMerge",
   "convertToDraft",
   "updateBranch",
+  "rerunChecks",
 ]);
 
 /**
@@ -276,6 +276,20 @@ export function PrActionDialogs({
               label="Convert to draft"
               onSucceeded={() => setPendingAction(null)}
             />
+          ) : null}
+          {pendingAction === "rerunChecks" ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Starts the failed and cancelled jobs of this commit's GitHub Actions runs again.
+                Jobs that passed are not run again.
+              </p>
+              <ForgeOperationPanel
+                pr={pr}
+                payload={{ kind: "action", action: "rerun-failed-checks" }}
+                label="Re-run failed jobs"
+                onSucceeded={() => setPendingAction(null)}
+              />
+            </>
           ) : null}
           {native &&
           pendingAction === "merge" &&

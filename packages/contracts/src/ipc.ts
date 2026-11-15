@@ -407,6 +407,10 @@ import type {
   PrHubAcknowledgeNotificationsInput,
   PrHubNotificationBatch,
   PrHubDetailInput,
+  PrHubChecksInput,
+  PrHubChecksResult,
+  PrHubCheckLogInput,
+  PrHubCheckLog,
   PrHubDetailMutationResult,
   PrHubDetailResult,
   PrHubFilesInput,
@@ -1524,6 +1528,8 @@ export interface NativeApi {
     recoverOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     cancelOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     listReviewerCandidates: (input: PrHubStackInput) => Promise<unknown>;
+    getChecks: (input: PrHubChecksInput) => Promise<PrHubChecksResult>;
+    getCheckLog: (input: PrHubCheckLogInput) => Promise<PrHubCheckLog>;
 
     getOverview: (input?: PrHubOverviewInput) => Promise<PrHubOverview>;
     claimNotifications: (input: PrHubClaimNotificationsInput) => Promise<PrHubNotificationBatch>;

@@ -190,7 +190,9 @@ export function PrQueuePeek({
           <PrStatusChecklist
             pr={pr}
             onAction={(kind) => {
-              if (kind === "update_branch" || kind === "resolve_conflicts") actions.run(kind);
+              if (kind === "update_branch" || kind === "resolve_conflicts" || kind === "fix_ci")
+                actions.run(kind);
+              else if (kind === "rerun_checks") handlers.onRerunChecks();
               else if (kind === "view_checks") onOpenPage("checks");
               else if (kind === "view_threads") onOpenPage("threads");
               else onOpenPage("overview", true);

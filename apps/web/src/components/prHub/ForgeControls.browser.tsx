@@ -36,6 +36,7 @@ const common: ForgeCapabilities = {
   edit: { changeRequest: true, comment: true },
   stacks: false,
   stackActions: false,
+  checks: { logs: false, rerun: false },
 };
 function fixture(provider: TrackedPullRequest["provider"] = "gitlab"): TrackedPullRequest {
   const caps: ForgeCapabilities = {

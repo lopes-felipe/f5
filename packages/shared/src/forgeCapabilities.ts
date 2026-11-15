@@ -21,6 +21,7 @@ const COMMON = {
   stackActions: false,
   edit: { changeRequest: true, comment: true },
   reviewers: { request: true, listCandidates: true },
+  checks: { logs: false, rerun: false },
 } as const;
 export const FORGE_CAPABILITIES: Readonly<Record<ForgeKind, ForgeCapabilities>> = {
   gitlab: {
@@ -111,7 +112,10 @@ export const GITHUB_FORGE_CAPABILITIES: ForgeCapabilities = {
     "disable-auto-merge",
     "revert",
     "approve-workflows",
+    "rerun-failed-checks",
   ],
+  // GitHub Actions jobs have logs and can be re-run; other check providers cannot.
+  checks: { logs: true, rerun: true },
   mergeMethods: ["merge", "squash", "rebase"],
   updateMethods: ["merge", "rebase"],
   search: true,
