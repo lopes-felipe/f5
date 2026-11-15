@@ -23,7 +23,7 @@ export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
   const accountGeneration = getPrHubAccountGeneration();
   const query = useInfiniteQuery(prHubReviewThreadsQueryOptions(pr.key));
   return (
-    <div role="tabpanel" aria-label="Review threads" className="space-y-3">
+    <div role="tabpanel" aria-label="Threads" className="space-y-3">
       <Menu>
         <MenuTrigger render={<Button size="xs" variant="outline" />}>Filter comments</MenuTrigger>
         <MenuPopup>
