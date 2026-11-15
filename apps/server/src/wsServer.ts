@@ -144,6 +144,7 @@ import { awaitActivation, waitForActivation, reportActive } from "./distribution
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
 import { prHubPeekErrorCode } from "./prHub/prHubPeekError.ts";
+import { withPrHubThreadLinks } from "./prHub/readModel.ts";
 import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
@@ -5993,8 +5994,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case PR_HUB_WS_METHODS.getOverview:
         return yield* prHub.getOverview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.listPullRequests:
-        return yield* prHub.listPullRequests(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.listPullRequests: {
+        const page = yield* prHub.listPullRequests(stripRequestTag(request.body));
+        if (Option.isNone(prHubExtensions)) return page;
+        return yield* withPrHubThreadLinks(page, prHubExtensions.value.getThreadsForPrs);
+      }
 
       case PR_HUB_WS_METHODS.refresh: {
         const body = stripRequestTag(request.body);
