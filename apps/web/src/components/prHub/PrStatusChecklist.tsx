@@ -47,14 +47,19 @@ export function PrStatusChecklist({
             />
             <span className="w-24 shrink-0 font-medium text-foreground">{item.label}</span>
             <span className="min-w-0 flex-1 text-muted-foreground">{item.detail}</span>
-            {item.action && onAction ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-sm font-medium text-foreground underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                onClick={() => onAction(item.action!.kind)}
-              >
-                {item.action.label}
-              </button>
+            {onAction && item.actions.length > 0 ? (
+              <span className="flex max-w-3/5 shrink-0 flex-wrap justify-end gap-x-3 gap-y-1">
+                {item.actions.map((action) => (
+                  <button
+                    key={action.kind}
+                    type="button"
+                    className="rounded-sm font-medium text-foreground underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                    onClick={() => onAction(action.kind)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </span>
             ) : null}
           </li>
         ))}
