@@ -10,6 +10,7 @@ import {
   ProjectId,
   ServerHealth,
   ThreadId,
+  UPSTREAM_PORTS_WS_METHODS,
   WS_CHANNELS,
   WS_METHODS,
   type OrchestrationReadModel,
@@ -260,6 +261,10 @@ describe("WebSocket Server", () => {
     const response = await sendRequest(ws, WS_METHODS.githubLoginStatus, {});
     expect(response.error).toBeUndefined();
     expect(response.result).toMatchObject({ state: "idle" });
+
+    const upstream = await sendRequest(ws, UPSTREAM_PORTS_WS_METHODS.listProjects, {});
+    expect(upstream.error).toBeUndefined();
+    expect(upstream.result).toEqual({ projects: [] });
   });
 
   it("writes rpc and websocket observability records when enabled", async () => {
