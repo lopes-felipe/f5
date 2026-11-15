@@ -1723,6 +1723,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           {ribbonOrigin && isWorking ? (
             <LiveWorkingRibbon
               startedAt={activeTurnStartedAt}
+              boundsElement={
+                grabButtonRef.current?.closest<HTMLElement>("[data-working-ribbon-bounds]") ?? null
+              }
               origin={ribbonOrigin}
               onRelease={handleRibbonRelease}
               onOrphanedFocus={restoreRibbonFocus}
@@ -5236,48 +5239,57 @@ function WorkingRowContent(props: {
       ) : null}
       {/* Match the follow button's 1.5rem height plus its two border pixels. */}
       <div className="flex h-[calc(1.5rem+2px)] min-w-0 items-center gap-2 pr-[var(--timeline-follow-controls-width,0px)] text-xs text-muted-foreground">
-        <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
-          <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
-          <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />
-          <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:400ms]" />
-        </span>
-        {reducedMotion ? (
-          <span className="shrink-0 tabular-nums">
-            <LiveWorkingLabel startedAt={row.createdAt} />
-          </span>
-        ) : (
-          // Picks the label up as a steerable ribbon; looks like plain text at rest.
-          <button
-            ref={grabButtonRef}
-            type="button"
-            data-working-ribbon-grab=""
-            // Static: a focused control whose name ticked every second
-            // would be re-announced by screen readers on each tick.
-            aria-label="Working. Press to steer the text"
+        <div data-working-ribbon-bounds="" className="relative flex h-full min-w-0 flex-1">
+          <div
             className={cn(
-              "m-0 shrink-0 cursor-grab appearance-none rounded-sm border-0 bg-transparent p-0 font-[inherit] leading-[inherit] tracking-[inherit] text-inherit tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "flex min-w-0 flex-1 items-center gap-2",
               externals.ribbonActive && "invisible",
             )}
-            onKeyDown={(event) => {
-              // Focus returns here while the key that grabbed the ribbon
-              // may still be held (it dropped for lack of room); its
-              // autorepeat must not pick the ribbon straight back up.
-              // Chromium already ignores repeats here; other engines may not.
-              if (event.repeat && (event.key === "Enter" || event.key === " ")) {
-                event.preventDefault();
-              }
-            }}
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              actions.startRibbon({ x: rect.right, y: rect.top + rect.height / 2 });
-            }}
           >
-            <LiveWorkingLabel startedAt={row.createdAt} />
-          </button>
-        )}
-        {row.activity ? (
-          <span className="min-w-0 truncate text-muted-foreground">· {row.activity}</span>
-        ) : null}
+            <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:400ms]" />
+            </span>
+            {reducedMotion ? (
+              <span className="shrink-0 tabular-nums">
+                <LiveWorkingLabel startedAt={row.createdAt} />
+              </span>
+            ) : (
+              // Picks the label up as a steerable ribbon; looks like plain text at rest.
+              <button
+                ref={grabButtonRef}
+                type="button"
+                data-working-ribbon-grab=""
+                // Static: a focused control whose name ticked every second
+                // would be re-announced by screen readers on each tick.
+                aria-label="Working. Press to steer the text"
+                className={cn(
+                  "m-0 shrink-0 cursor-grab appearance-none rounded-sm border-0 bg-transparent p-0 font-[inherit] leading-[inherit] tracking-[inherit] text-inherit tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  externals.ribbonActive && "invisible",
+                )}
+                onKeyDown={(event) => {
+                  // Focus returns here while the key that grabbed the ribbon
+                  // may still be held (it dropped for lack of room); its
+                  // autorepeat must not pick the ribbon straight back up.
+                  // Chromium already ignores repeats here; other engines may not.
+                  if (event.repeat && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                  }
+                }}
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  actions.startRibbon({ x: rect.right, y: rect.top + rect.height / 2 });
+                }}
+              >
+                <LiveWorkingLabel startedAt={row.createdAt} />
+              </button>
+            )}
+            {row.activity ? (
+              <span className="min-w-0 truncate text-muted-foreground">· {row.activity}</span>
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );

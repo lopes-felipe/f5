@@ -3617,7 +3617,7 @@ describe("MessagesTimeline working ribbon", () => {
       await grab(host);
       expect(ribbonText(host)).toBe("Working…");
       const stageNode = stage(host);
-      await userEvent.keyboard("{ArrowDown>}");
+      await userEvent.keyboard("{ArrowRight>}");
       try {
         mounted.api().setTimelineState({ activeTurnStartedAt: TURN_START });
         await vi.waitFor(() => {
@@ -3628,31 +3628,42 @@ describe("MessagesTimeline working ribbon", () => {
         expectPlacedGlyphs(host);
         const before = headGlyph(host);
         await vi.waitFor(() => {
-          expect(headGlyph(host).y).toBeGreaterThan(before.y + 20);
+          expect(headGlyph(host).x).toBeGreaterThan(before.x + 20);
         });
       } finally {
-        await userEvent.keyboard("{/ArrowDown}");
+        await userEvent.keyboard("{/ArrowRight}");
       }
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("keeps the playfield above the composer dock", async () => {
+  it("confines the playfield to the Working element above the composer dock", async () => {
     const mounted = await mountWorkingTimeline();
     const { host } = mounted;
     try {
       await grab(host);
       const dockHost = host.querySelector<HTMLElement>("[data-composer-dock-host]")!;
-      expect(stage(host)!.getBoundingClientRect().bottom).toBeCloseTo(
-        dockHost.getBoundingClientRect().bottom,
-        0,
+      const region = host.querySelector<HTMLElement>("[data-working-ribbon-bounds]")!;
+      const expectAligned = () => {
+        const rect = stage(host)!.getBoundingClientRect();
+        const bounds = region.getBoundingClientRect();
+        expect(rect.left).toBeCloseTo(bounds.left, 0);
+        expect(rect.top).toBeCloseTo(bounds.top, 0);
+        expect(rect.width).toBeCloseTo(bounds.width, 0);
+        expect(rect.height).toBeCloseTo(bounds.height, 0);
+        expectGlyphsInsideStage(host);
+      };
+      expectAligned();
+      expect(getComputedStyle(glyphs(host)[0]!).fontSize).toBe(
+        getComputedStyle(grabButton(host)!).fontSize,
       );
+      expect(getComputedStyle(grabButton(host)!).visibility).toBe("hidden");
       mounted.api().setDockHeight(120);
       await vi.waitFor(() => {
-        expect(stage(host)!.getBoundingClientRect().bottom).toBeCloseTo(
+        expectAligned();
+        expect(stage(host)!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
           dockHost.getBoundingClientRect().bottom - 120,
-          0,
         );
       });
       expect(document.activeElement).toBe(stage(host));
@@ -3671,21 +3682,21 @@ describe("MessagesTimeline working ribbon", () => {
     const { host } = mounted;
     try {
       await grab(host);
-      // Lay a long vertical trail, then shrink the stage below it.
-      await userEvent.keyboard("{ArrowDown>}");
+      // Steer across the status region, then make that element narrower.
+      await userEvent.keyboard("{ArrowRight>}");
       try {
         await vi.waitFor(
           () => {
-            expect(headGlyph(host).y).toBeGreaterThan(300);
+            expect(headGlyph(host).x).toBeGreaterThan(300);
           },
           { timeout: 3_000 },
         );
       } finally {
-        await userEvent.keyboard("{/ArrowDown}");
+        await userEvent.keyboard("{/ArrowRight}");
       }
-      mounted.api().setHeight(120);
+      host.querySelector<HTMLElement>("[data-working-ribbon-bounds]")!.style.maxWidth = "200px";
       await vi.waitFor(() => {
-        expect(stage(host)!.getBoundingClientRect().height).toBeCloseTo(120, 0);
+        expect(stage(host)!.getBoundingClientRect().width).toBeCloseTo(200, 0);
       });
       await nextFrames(2);
       expectGlyphsInsideStage(host);
