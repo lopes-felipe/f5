@@ -12,7 +12,10 @@ import {
   prHubOverview,
 } from "./readModel.ts";
 
-const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+// One clock reading for the whole file. Read per call, two rows built a millisecond apart
+// get different timestamps, and a sort that should tie on `updatedAt` orders them by it.
+const NOW = Date.now();
+const daysAgo = (days: number) => new Date(NOW - days * 86_400_000).toISOString();
 
 function makePr(
   overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
