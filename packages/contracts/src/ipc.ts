@@ -442,6 +442,8 @@ import type {
   PrHubReviewGuideInput,
   PullRequestReviewGuideResult,
   PrHubIgnoreInput,
+  PrHubBulkUpdateInput,
+  PrHubBulkUpdateResult,
   PrHubLocalCandidatesInput,
   PrHubResolveCheckoutInput,
   PrHubLocalCheckoutCandidate,
@@ -1546,6 +1548,7 @@ export interface NativeApi {
     unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubOverview>;
     ignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
     unignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
+    bulkUpdate: (input: PrHubBulkUpdateInput) => Promise<PrHubBulkUpdateResult>;
     acknowledgeAttention: (input: PrHubAcknowledgeAttentionInput) => Promise<PrHubOverview>;
     markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubOverview>;
     markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;

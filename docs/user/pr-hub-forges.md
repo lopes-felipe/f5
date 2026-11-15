@@ -75,6 +75,77 @@ text; unquoted words can match in any order, and quoted phrases stay together.
 - **Active**, **Snoozed**, **Ignored** and **Closed** switch between the queue and the pull
   requests you set aside or finished.
 
+### Saved views
+
+A saved view keeps a search and its filters as a tab above the queue.
+
+1. Search or filter the queue.
+2. Select **Save view** and name the view.
+
+The tab shows how many of the view's pull requests are in **Review requested**, **Your action**
+or **Ready to merge**. **Queue** goes back to the queue without filters. To rename or delete a
+view, select its tab, then **⋯** at the end of the tabs. If you change the search or a filter
+while a view is selected, the queue shows the new results and the view itself is unchanged.
+
+You can keep up to 12 views. They are stored with this app's settings on this computer, not on
+the forge.
+
+### What changed since you last looked
+
+A row is bold when something happened to the pull request since you last opened it. The first
+two changes are written after its number, for example **2 new comments · Checks failed**.
+
+| Text                                  | Meaning                                                      |
+| ------------------------------------- | ------------------------------------------------------------ |
+| **New**                               | Someone else's, it needs you, and you have not opened it yet |
+| **New commits**                       | Someone else pushed (your own pushes are not reported)       |
+| **1 new comment**, **3 new comments** | Comments added to the conversation                           |
+| **Checks failed**, **Checks passed**  | Checks started failing, or recovered                         |
+| **Approved**, **Changes requested**   | A review changed the decision                                |
+| **Conflicts**                         | The branch no longer merges cleanly                          |
+| **Ready to merge**                    | Reviews and checks now allow the merge                       |
+| **Merged**, **Closed**                | It was merged or closed                                      |
+
+Opening a pull request in the peek or on its page marks it seen. The bell in the title bar
+shows how many pull requests in the queue have changes and lists the 20 most recent; select
+one to open it, or **Mark these seen** to clear the ones listed. A pull request that changed
+again after the list was read stays unread.
+
+Your own pull request that you have not opened here says what it needs (**Ready to merge**,
+**Checks failed**, **Changes requested**, **Conflicts** or its comments) instead of **New**.
+A pull request you have never opened is marked only while it is in **Review requested**,
+**Your action** or **Ready to merge**: one that goes stale or moves to the team queue is no
+longer marked.
+
+Pull requests found by the first sync of an account start as seen. Changes are tracked for
+GitHub accounts; pull requests on other forges are never marked.
+
+### Acting on several pull requests
+
+Tick the checkbox at the start of a row to select it. A bar appears at the bottom of the queue.
+
+- <kbd>X</kbd> ticks the row under the cursor.
+- Shift-click a row to tick every row from the last one you ticked to it.
+- The checkbox in a section's header ticks every row loaded in that section.
+- A selection holds at most 200 pull requests. F5 says when rows were left out; act on the
+  selection, then select the rest.
+
+| Button          | What it does                                                                |
+| --------------- | --------------------------------------------------------------------------- |
+| **Snooze**      | Hides the selection until the time you pick                                 |
+| **Ignore**      | Moves the selection to **Ignored**, where you can restore each pull request |
+| **Mark seen**   | Clears the changes shown on the selection                                   |
+| **Merge ready** | Merges the selected pull requests that are in **Ready to merge**            |
+| **Clear**       | Unticks everything. <kbd>Esc</kbd> does the same                            |
+
+**Merge ready** lists each pull request with the commit and the merge method it will use, and
+merges nothing until you confirm. It then merges one at a time. If a pull request received new
+commits after it was listed, or the forge refuses the merge, F5 reports it and continues with
+the next one. One confirmation covers at most 10 pull requests, and only those on GitHub.
+
+Rows can be selected in the **Active** list only. A row that leaves the list leaves the
+selection.
+
 ### Keyboard
 
 These keys work on the Pull requests page when you are not typing in a field. They are also
@@ -85,7 +156,7 @@ listed in the keyboard shortcuts dialog.
 | <kbd>J</kbd> / <kbd>K</kbd>, arrows | Next or previous pull request                |
 | <kbd>Space</kbd>                    | Open or close the peek                       |
 | <kbd>Enter</kbd>                    | Open the pull request                        |
-| <kbd>Esc</kbd>                      | Back to the queue                            |
+| <kbd>Esc</kbd>                      | Clear the selection, or back to the queue    |
 | <kbd>/</kbd>                        | Search                                       |
 | <kbd>A</kbd>                        | Run the row's next step                      |
 | <kbd>M</kbd>                        | Merge                                        |
@@ -93,6 +164,7 @@ listed in the keyboard shortcuts dialog.
 | <kbd>E</kbd>                        | Ignore, or restore an ignored pull request   |
 | <kbd>O</kbd>                        | Open on the forge                            |
 | <kbd>R</kbd>                        | Refresh                                      |
+| <kbd>X</kbd>                        | Select or deselect the pull request          |
 | <kbd>[</kbd> / <kbd>]</kbd>         | Previous or next pull request, from its page |
 
 ### What the sidebar badge counts

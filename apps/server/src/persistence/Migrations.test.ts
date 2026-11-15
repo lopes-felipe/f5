@@ -143,6 +143,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 164, name: "UpstreamPortReviewRecovery" },
       { migration_id: 165, name: "UsageResetCreditGrant" },
       { migration_id: 166, name: "ThreadPullRequestLookupIndex" },
+      { migration_id: 167, name: "PrHubSeenBaseline" },
     ]);
     // The queue reads linked threads by pull request; the lookup uses its own index.
     const linkLookup = yield* sql<{
