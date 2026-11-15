@@ -201,6 +201,28 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
       );
     });
 
+  /** Brings an ignored PR back; what it showed before stays seen, so undo never notifies. */
+  const unignore: PrHubServiceShape["unignore"] = (input) =>
+    Effect.gen(function* () {
+      const parsed = parseSourceControlPullRequestKey(input.key);
+      const snapshot = yield* getSnapshot;
+      const viewerLogin = snapshot.account ? String(snapshot.account.viewerId) : null;
+      if (!parsed || !viewerLogin) return snapshot;
+      yield* sql`
+        UPDATE pr_hub_viewer_state
+        SET ignored_at = NULL
+        WHERE provider_kind = ${parsed.provider}
+          AND host = ${parsed.host}
+          AND viewer_id = ${viewerLogin}
+          AND repo = ${parsed.repository}
+          AND number = ${parsed.number}
+      `.pipe(persistPrHubState("prHub.unignore"));
+      return yield* resolveViewer.pipe(
+        Effect.flatMap(hydrateSnapshot),
+        Effect.flatMap(publishSnapshot),
+      );
+    });
+
   const clearData: PrHubServiceShape["clearData"] = () =>
     Effect.gen(function* () {
       const viewer = yield* Ref.get(viewerRef);
@@ -257,6 +279,7 @@ export function createPrHubViewerActions(context: PrHubViewerActionsContext & Ow
     snooze,
     unsnooze,
     ignore,
+    unignore,
     clearData,
     claimNotifications,
     acknowledgeNotifications,

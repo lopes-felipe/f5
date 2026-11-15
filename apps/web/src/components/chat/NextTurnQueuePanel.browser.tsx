@@ -135,6 +135,14 @@ describe("NextTurnQueuePanel", () => {
     await expect.element(page.getByText("Run the queued follow-up")).toBeInTheDocument();
     await expect.element(page.getByText("Up next")).toBeInTheDocument();
     await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
+    const collapse = page.getByRole("button", { name: "Collapse queue" });
+    expect(collapse.element().querySelector(".lucide-chevron-down")).not.toBeNull();
+    await collapse.click();
+    const expand = page.getByRole("button", { name: "Expand queue" });
+    expect(expand.element().querySelector(".lucide-chevron-up")).not.toBeNull();
+    await expect.element(page.getByText("Run the queued follow-up")).not.toBeInTheDocument();
+    await expand.click();
+    await expect.element(page.getByText("Run the queued follow-up")).toBeInTheDocument();
   });
 
   it("folds the usage-limit auto-continue into the card and shows it again when unfolded", async () => {

@@ -328,6 +328,8 @@ describe("mergeThreadTurn", () => {
       outputTokens: 2,
       cacheReadTokens: 3,
       cacheWriteTokens: 4,
+      totalTokens: 10,
+      tokenProvenance: "provider-reported",
       completedAt: minute(5),
     });
     const replaced = mergeThreadTurn(

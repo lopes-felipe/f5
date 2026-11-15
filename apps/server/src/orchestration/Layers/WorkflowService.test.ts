@@ -3059,6 +3059,30 @@ describe("WorkflowService", () => {
     expect(workflow?.title).toBe("Archived workflow title still updates");
   });
 
+  it.each([false, true])(
+    "deletes a workflow with one atomic command (deleteThreads=%s)",
+    async (deleteThreads) => {
+      const workflow = makeWorkflow();
+      harness = await createHarness(makeReadModel({ workflow }));
+      const result = await Effect.runPromise(
+        harness.service.deleteWorkflow(workflow.id, deleteThreads),
+      );
+      const commands = harness.dispatched.filter(
+        (command) =>
+          command.type === "project.workflow.delete" || command.type === "project.workflow.archive",
+      );
+      expect(commands).toEqual([
+        expect.objectContaining({
+          type: "project.workflow.delete",
+          workflowId: workflow.id,
+          deleteThreads,
+        }),
+      ]);
+      // This narrow engine fixture commits no child events; never guess its IDs.
+      expect(result).toEqual(deleteThreads ? { deletedThreadIds: [] } : undefined);
+    },
+  );
+
   it("archives and unarchives workflows without deleting them", async () => {
     const workflow = makeWorkflow();
     harness = await createHarness(makeReadModel({ workflow }));

@@ -486,7 +486,7 @@ describe("ProviderCommandReactor", () => {
     const interruptTurn = vi.fn<ProviderServiceShape["interruptTurn"]>(() => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
-    const stopSession = vi.fn((input: unknown) =>
+    const stopSession = vi.fn<ProviderServiceShape["stopSession"]>((input) =>
       Effect.sync(() => {
         const threadId =
           typeof input === "object" && input !== null && "threadId" in input
@@ -5140,6 +5140,42 @@ describe("ProviderCommandReactor", () => {
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     expect(thread?.title).toBe(DEFAULT_NEW_THREAD_TITLE);
+  });
+
+  it("retries failed deleted-thread shutdown without writing to the deleted conversation", async () => {
+    const harness = await createHarness({ bridgeTurnDelivery: false });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const intent = await pendingTurn(harness, threadId, "deleted-shutdown");
+    await Effect.runPromise(harness.reactor.deliverTurnStart(intent).pipe(Effect.scoped));
+    expect(harness.runtimeSessions).toHaveLength(1);
+    harness.stopSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterProcessError({
+          provider: "codex",
+          threadId,
+          detail: "Temporary shutdown failure",
+        }),
+      ),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("delete-with-shutdown-retry"),
+        threadId,
+      }),
+    );
+    await waitFor(() => harness.stopSession.mock.calls.length >= 1);
+    expect(harness.runtimeSessions).toHaveLength(1);
+    const afterDelete = await Effect.runPromise(harness.engine.getReadModel());
+    await waitFor(() => harness.runtimeSessions.length === 0);
+    expect(harness.stopSession).toHaveBeenCalledTimes(2);
+    const afterRetry = await Effect.runPromise(harness.engine.getReadModel());
+    expect(afterRetry.snapshotSequence).toBe(afterDelete.snapshotSequence);
+    expect(afterRetry.threads.find((thread) => thread.id === threadId)?.deletedAt).not.toBeNull();
+    await expect(
+      Effect.runPromise(harness.reactor.deliverTurnStart(intent).pipe(Effect.scoped)),
+    ).rejects.toMatchObject({ certainty: "not_sent", retryable: false });
+    expect(harness.runtimeSessions).toHaveLength(0);
   });
 
   it("does not apply a generated title after the thread is deleted", async () => {

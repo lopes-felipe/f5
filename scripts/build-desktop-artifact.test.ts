@@ -1,4 +1,10 @@
 import { matchesGlob } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { DEVELOPMENT_ICON_OVERRIDES, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -8,7 +14,30 @@ import {
   createBuildConfig,
   DESKTOP_ASAR_UNPACK,
   resolveMacFileExclusions,
+  stageProductionWebIcons,
 } from "./build-desktop-artifact.ts";
+
+it("stages production web icons when reusing a development server bundle", async () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const stage = await mkdtemp(join(tmpdir(), "f5-production-web-icons-"));
+  try {
+    await mkdir(join(stage, "dist/client"), { recursive: true });
+    for (const icon of DEVELOPMENT_ICON_OVERRIDES)
+      await copyFile(join(root, icon.sourceRelativePath), join(stage, icon.targetRelativePath));
+    await Effect.runPromise(
+      stageProductionWebIcons(root, stage).pipe(Effect.provide(NodeServices.layer)),
+    );
+    for (const icon of PUBLISH_ICON_OVERRIDES)
+      expect(await readFile(join(stage, icon.targetRelativePath))).toEqual(
+        await readFile(join(root, icon.sourceRelativePath)),
+      );
+    expect(await readFile(join(stage, "dist/client/favicon.ico"))).not.toEqual(
+      await readFile(join(root, "assets/dev/blueprint-web-favicon.ico")),
+    );
+  } finally {
+    await rm(stage, { recursive: true, force: true });
+  }
+});
 
 it("builds Debian and AppImage installers together without changing other targets", async () => {
   const config = await Effect.runPromise(

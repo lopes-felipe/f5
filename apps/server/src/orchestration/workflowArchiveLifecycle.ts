@@ -64,6 +64,60 @@ export function workflowEntries(
   }));
 }
 
+/** Parent and child deletions commit together; internal compensation stays record-only. */
+export const decideWorkflowDelete = Effect.fn("decideWorkflowDelete")(function* (input: {
+  entry: WorkflowEntry;
+  readModel: OrchestrationReadModel;
+  command: OrchestrationCommand;
+  deleteThreads: boolean | undefined;
+  event: Omit<OrchestrationEvent, "sequence">;
+}) {
+  if (!input.deleteThreads) return input.event;
+  const entries = workflowEntries(input.readModel);
+  const owner = entries.find(
+    (entry) => entry.kind === input.entry.kind && entry.workflow.id === input.entry.workflow.id,
+  );
+  if (!owner) {
+    return yield* new OrchestrationCommandInvariantError({
+      commandType: input.command.type,
+      detail: "Workflow does not exist.",
+    });
+  }
+  const threadIds = new Set(owner.threadIds);
+  const events: Omit<OrchestrationEvent, "sequence">[] = [input.event];
+  let pinRevision = input.readModel.pinRevision ?? 0;
+  for (const thread of input.readModel.threads) {
+    if (!threadIds.has(thread.id) || thread.deletedAt !== null) continue;
+    const sharedOwner = entries.some(
+      (entry) =>
+        entry.workflow.deletedAt === null &&
+        !(entry.kind === owner.kind && entry.workflow.id === owner.workflow.id) &&
+        entry.threadIds.includes(thread.id),
+    );
+    if (sharedOwner || thread.projectId !== owner.workflow.projectId) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: input.command.type,
+        detail: "Cannot delete a thread owned by another workflow or project.",
+      });
+    }
+    events.push({
+      ...withEventBase({
+        commandId: input.command.commandId,
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        occurredAt: input.event.occurredAt,
+      }),
+      type: "thread.deleted",
+      payload: {
+        threadId: thread.id,
+        deletedAt: input.event.occurredAt,
+        ...(thread.pinnedAt != null ? { pinRevision: ++pinRevision } : {}),
+      },
+    });
+  }
+  return events;
+});
+
 /** Project deletion releases workflow retention even when old workflow JSON remains. */
 export function retainedWorkflowThreadIds(model: OrchestrationReadModel): Set<ThreadId> {
   const deletedProjects = new Set(
@@ -300,7 +354,7 @@ export function makeWorkflowArchiveLifecycle(
   kind: WorkflowEntry["kind"],
 ) {
   const withWorkflowGate = makeOperationGate<WorkflowEntry["workflow"]["id"]>();
-  return <E = never>(
+  const changeArchive = <E = never>(
     workflowId: WorkflowEntry["workflow"]["id"],
     archived: boolean,
     reconcile?: (model: OrchestrationReadModel) => Effect.Effect<void, E>,
@@ -312,4 +366,13 @@ export function makeWorkflowArchiveLifecycle(
         if (wasArchived && !archived && reconcile) yield* reconcile(yield* engine.getReadModel());
       }).pipe(Effect.mapError((cause) => new Error(String(cause)))),
     );
+  return {
+    archive: (workflowId: WorkflowEntry["workflow"]["id"]) => changeArchive(workflowId, true),
+    unarchive: <E = never>(
+      workflowId: WorkflowEntry["workflow"]["id"],
+      reconcile?: (model: OrchestrationReadModel) => Effect.Effect<void, E>,
+    ) => changeArchive(workflowId, false, reconcile),
+    delete: <A, E>(workflowId: WorkflowEntry["workflow"]["id"], operation: Effect.Effect<A, E>) =>
+      withWorkflowGate(workflowId, operation),
+  };
 }

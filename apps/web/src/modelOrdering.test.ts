@@ -11,6 +11,32 @@ const CODEX_WORK_ID = ProviderInstanceId.make("codex_work");
 const CLAUDE_ID = ProviderInstanceId.make("claudeAgent");
 
 describe("model ordering", () => {
+  it("orders known families by capability tier and descending versions", () => {
+    expect(
+      sortModelsForProviderInstance(
+        [
+          "claude-haiku-5-5",
+          "claude-fable-5",
+          "claude-opus-5-5",
+          "claude-fable-5-2",
+          "claude-sonnet-5-5",
+        ].map((slug) => ({ slug })),
+      ).map((model) => model.slug),
+    ).toEqual([
+      "claude-fable-5-2",
+      "claude-fable-5",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
+    ]);
+    expect(
+      sortModelsForProviderInstance(
+        ["gpt-6-luna", "gpt-6.1-terra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra"].map((slug) => ({
+          slug,
+        })),
+      ).map((model) => model.slug),
+    ).toEqual(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6.1-terra", "gpt-6-luna"]);
+  });
   it("groups favorites first while preserving provider model order inside each group", () => {
     const models = [
       { slug: "gpt-5.5" },

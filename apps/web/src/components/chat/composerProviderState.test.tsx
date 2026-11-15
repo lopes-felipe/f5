@@ -8,6 +8,7 @@ import {
 import {
   getComposerProviderState,
   withImplicitFastModeDefault,
+  withComposerModelDefaults,
   getComposerReasoningStep,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
@@ -19,6 +20,22 @@ import {
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
+
+it("defaults reasoning to High while retaining explicit choices and unsupported models", () => {
+  const caps = {
+    optionDescriptors: [
+      selectDescriptor("effort", [
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ]),
+    ],
+  };
+  expect(withComposerModelDefaults(caps, undefined)).toEqual([{ id: "effort", value: "high" }]);
+  expect(withComposerModelDefaults(caps, [{ id: "effort", value: "medium" }])).toEqual([
+    { id: "effort", value: "medium" },
+  ]);
+  expect(withComposerModelDefaults({ optionDescriptors: [] }, undefined)).toBeUndefined();
+});
 
 it("defaults Fast to Normal only when the model supports it and no choice was saved", () => {
   const caps = {
@@ -33,6 +50,39 @@ it("defaults Fast to Normal only when the model supports it and no choice was sa
     ]);
   }
   expect(withImplicitFastModeDefault({ optionDescriptors: [] }, undefined)).toBeUndefined();
+});
+
+it("dispatches High for a known model before its catalog capabilities arrive", () => {
+  const state = getComposerProviderState({
+    provider: PROVIDER,
+    model: "gpt-6-luna",
+    models: [],
+    modelOptions: undefined,
+  });
+  expect(state.promptEffort).toBe("high");
+  expect(state.modelOptionsForDispatch).toContainEqual({ id: "reasoningEffort", value: "high" });
+  const saved = getComposerProviderState({
+    provider: PROVIDER,
+    model: "gpt-6-luna",
+    models: [],
+    modelOptions: [
+      { id: "reasoningEffort", value: "low" },
+      { id: "fastMode", value: true },
+    ],
+  });
+  expect(saved.modelOptionsForDispatch).toContainEqual({ id: "fastMode", value: true });
+  expect(saved.promptEffort).toBe("low");
+  const partial = getComposerProviderState({
+    provider: PROVIDER,
+    model: "gpt-6-luna",
+    models: modelWith([booleanDescriptor("fastMode")]).map((model) => ({
+      ...model,
+      slug: "gpt-6-luna",
+    })),
+    modelOptions: [{ id: "fastMode", value: true }],
+  });
+  expect(partial.promptEffort).toBe("high");
+  expect(partial.modelOptionsForDispatch).toContainEqual({ id: "fastMode", value: true });
 });
 
 function selectDescriptor(

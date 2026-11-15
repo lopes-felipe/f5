@@ -127,6 +127,7 @@ import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
   deriveTimelineTurnRailItems,
+  deriveTimelineAssistantRailItems,
   deriveCodexCollaborationResponseRows,
   findLastUserMessageRowIndex,
   findNearestMinimapMarkerIndex,
@@ -367,6 +368,32 @@ describe("timeline row navigation mapping", () => {
 });
 
 describe("timeline turn rail", () => {
+  it("anchors the answer rail at completed replies, excluding commentary and tools", () => {
+    expect(
+      deriveTimelineAssistantRailItems([
+        { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
+        { id: "thought", kind: "message", message: { role: "assistant", text: "Checking…" } },
+        { id: "tool", kind: "work" },
+        {
+          id: "answer",
+          kind: "message",
+          createdAt: "2026-03-17T19:12:00.000Z",
+          showCompletionDivider: true,
+          message: { role: "assistant", text: "Final answer" },
+        },
+        { id: "u2", kind: "message", message: { role: "user", text: "Follow-up" } },
+        { id: "streaming", kind: "message", message: { role: "assistant", text: "In progress" } },
+      ]),
+    ).toEqual([
+      {
+        id: "answer",
+        rowIndex: 3,
+        createdAt: "2026-03-17T19:12:00.000Z",
+        userText: "Question",
+        assistantText: "Final answer",
+      },
+    ]);
+  });
   it("resolves measured gutter geometry", () => {
     expect([47, 48, 0, Number.NaN].map(resolveTimelineTurnRailHasPersistentGutter)).toEqual([
       false,

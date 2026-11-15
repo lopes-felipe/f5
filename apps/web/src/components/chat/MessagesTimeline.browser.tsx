@@ -362,6 +362,74 @@ describe("MessagesTimeline (LegendList)", () => {
     });
   });
 
+  it("puts prompts on the right and navigates completed answers from the left rail", async () => {
+    await page.viewport(1200, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const entries = makeOverflowEntries(40).map((entry, index): TimelineEntry => {
+      if (entry.kind !== "message") return entry;
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          turnId: TurnId.makeUnsafe(`rail-turn-${Math.floor(index / 2)}`),
+          ...(entry.message.role === "assistant"
+            ? { completedAt: new Date(Date.parse(entry.createdAt) + 1000).toISOString() }
+            : {}),
+        },
+      };
+    });
+    let listRef: LegendListRef | null = null;
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={entries}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const container = await waitForScrollContainer(host);
+      const userRail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail"]')!;
+      const answerRail = host.querySelector<HTMLElement>(
+        '[data-testid="timeline-assistant-rail"]',
+      )!;
+      expect(userRail.dataset.railSide).toBe("right");
+      expect(answerRail.dataset.railSide).toBe("left");
+      const strip = answerRail.querySelector<HTMLButtonElement>("button")!;
+      await scrollTimelineToOffset(listRef, container, container.scrollHeight);
+      const rect = strip.getBoundingClientRect();
+      strip.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          clientY: rect.top + 1,
+          clientX: rect.left + 1,
+        }),
+      );
+      await vi.waitFor(() => {
+        const answer = host.querySelector<HTMLElement>('[data-message-id="overflow-assistant-1"]');
+        expect(answer).not.toBeNull();
+        expect(isElementVisibleWithinContainer(answer!, container)).toBe(true);
+      });
+      await page.viewport(600, 896);
+      await vi.waitFor(() => {
+        const column = host.querySelector<HTMLElement>('[data-timeline-root="true"]')!;
+        const rightStrip = userRail.querySelector("button")!;
+        expect(strip.getBoundingClientRect().right).toBeLessThanOrEqual(
+          column.getBoundingClientRect().left,
+        );
+        expect(rightStrip.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+          column.getBoundingClientRect().right,
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("scrolls the timeline when the wheel turns over the turn rail or minimap", async () => {
     await page.viewport(1200, 896);
     const host = document.createElement("div");
@@ -453,8 +521,9 @@ describe("MessagesTimeline (LegendList)", () => {
     });
     const messageText = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
     const contentColumn = host.querySelector<HTMLElement>('[data-timeline-root="true"]');
-    expect(strip!.getBoundingClientRect().right).toBeLessThanOrEqual(
-      contentColumn!.getBoundingClientRect().left,
+    expect(rail!.dataset.railSide).toBe("right");
+    expect(strip!.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      contentColumn!.getBoundingClientRect().right,
     );
     expect(getComputedStyle(messageText!).pointerEvents).not.toBe("none");
 
@@ -1172,6 +1241,39 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps follow disabled by default even after reaching the bottom", async () => {
+    const initialEntries = makeOverflowEntries(16);
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(value) => {
+          api = value;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      const before = node.scrollTop;
+      api!.setEntries([
+        ...initialEntries,
+        makeAssistantEntry("default-off-tail", "New reply\n\n".repeat(30), 120),
+      ]);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("auto-follows appended rows when the user is already at the end", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];
@@ -1181,6 +1283,7 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
@@ -1236,6 +1339,7 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={240}
         initialIsWorking
@@ -1403,6 +1507,8 @@ describe("MessagesTimeline (LegendList)", () => {
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
       const beforeContinuedStream = node.scrollHeight;
+      // Reaching the bottom does not enable following; the reader opts in.
+      api!.setAutoFollow(true);
       api!.setEntries([
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
@@ -4146,6 +4252,7 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={800}
         initialIsWorking
@@ -4199,6 +4306,7 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={initialEntries}
         initialHeight={800}
         initialIsWorking
@@ -4243,6 +4351,7 @@ describe("MessagesTimeline HTML renders", () => {
     document.body.append(host);
     const screen = await render(
       <TimelineHarness
+        initialAutoFollow
         initialEntries={[
           ...makeOverflowEntries(16),
           makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),

@@ -58,7 +58,10 @@ export function registerDesktopFileActions(
     openExternal: (url: string) => Promise<void>;
     revealFile: (filePath: string) => Promise<void>;
   },
-): { nativeMenuSelected: (owner: number, target: string) => void } {
+): {
+  nativeMenuSelected: (owner: number, target: string, action?: "editor" | "reveal") => void;
+  clearNativeMenu: (owner: number) => void;
+} {
   const authorizations = new FileActionAuthorizations();
   ipc.removeHandler("desktop:release-editor-open");
   ipc.handle("desktop:release-editor-open", (event, authorization: unknown) => {
@@ -93,14 +96,15 @@ export function registerDesktopFileActions(
   ipc.removeHandler("desktop:reveal-file");
   ipc.handle("desktop:reveal-file", async (event, raw: unknown, trusted: unknown) => {
     actions.assertCaller(event);
-    authorizations.consume(event.sender.id, String(raw), trusted === true);
+    authorizations.consume(event.sender.id, String(raw), trusted === true, undefined, "reveal");
     const target = await resolveLocalTarget(raw, false);
     await actions.revealFile(target.absolutePath);
   });
   return {
-    nativeMenuSelected(owner, target) {
+    clearNativeMenu: (owner) => authorizations.clearNativeMenu(owner),
+    nativeMenuSelected(owner, target, action) {
       if (Path.isAbsolute(target) && target.length <= 32768 && !target.includes("\0"))
-        authorizations.nativeMenuSelected(owner, target);
+        authorizations.nativeMenuSelected(owner, target, action);
     },
   };
 }

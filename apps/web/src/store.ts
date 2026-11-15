@@ -1921,6 +1921,25 @@ export function markThreadHistoryBackfilling(state: AppState, threadId: ThreadId
   return threads === state.threads ? state : { ...state, threads };
 }
 
+/** Release an interrupted request without losing its cursors or claiming full coverage. */
+export function cancelThreadHistoryBackfill(
+  state: AppState,
+  threadId: ThreadId,
+  expectedGeneration: number,
+): AppState {
+  const threads = updateThread(state.threads, threadId, (thread) => {
+    const history = ensureThreadHistoryState(thread.history);
+    if (
+      !thread.detailsLoaded ||
+      history.generation !== expectedGeneration ||
+      history.stage !== "backfilling"
+    )
+      return thread;
+    return { ...thread, history: { ...history, stage: "tail" } };
+  });
+  return threads === state.threads ? state : { ...state, threads };
+}
+
 export function markThreadHistoryComplete(
   state: AppState,
   threadId: ThreadId,
@@ -2321,6 +2340,7 @@ interface AppStore extends AppState {
     expectedGeneration: number,
   ) => void;
   markThreadHistoryBackfilling: (threadId: ThreadId) => void;
+  cancelThreadHistoryBackfill: (threadId: ThreadId, expectedGeneration: number) => void;
   markThreadHistoryComplete: (threadId: ThreadId, expectedGeneration: number) => void;
   markThreadHistoryError: (threadId: ThreadId, expectedGeneration: number) => void;
   syncThreadDetails: (threadId: ThreadId, details: OrchestrationThreadTailDetails) => void;
@@ -2368,6 +2388,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => prependOlderThreadActivitiesPage(state, threadId, page, expectedGeneration)),
   markThreadHistoryBackfilling: (threadId) =>
     set((state) => markThreadHistoryBackfilling(state, threadId)),
+  cancelThreadHistoryBackfill: (threadId, expectedGeneration) =>
+    set((state) => cancelThreadHistoryBackfill(state, threadId, expectedGeneration)),
   markThreadHistoryComplete: (threadId, expectedGeneration) =>
     set((state) => markThreadHistoryComplete(state, threadId, expectedGeneration)),
   markThreadHistoryError: (threadId, expectedGeneration) =>

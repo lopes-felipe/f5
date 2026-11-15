@@ -341,6 +341,8 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository thread turns", (it) =>
         outputTokens: 20,
         cacheReadTokens: 40,
         cacheWriteTokens: 5,
+        totalTokens: 100,
+        tokenProvenance: "provider-reported",
         completedAt: at(2),
       });
 

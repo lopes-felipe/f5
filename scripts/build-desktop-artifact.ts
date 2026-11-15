@@ -19,7 +19,7 @@ import {
   verifyStagedLockfile,
 } from "./verify-staged-lockfile.ts";
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
-import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { BRAND_ASSET_PATHS, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -50,6 +50,21 @@ const ProductionMacIconSource = Effect.zipWith(
   Effect.service(Path.Path),
   (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionMacIconPng),
 );
+
+/** Release artifacts must not inherit the local server build's development favicons. */
+export const stageProductionWebIcons = Effect.fn("stageProductionWebIcons")(function* (
+  repoRoot: string,
+  stageServerDir: string,
+) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  for (const override of PUBLISH_ICON_OVERRIDES) {
+    yield* fs.copyFile(
+      path.join(repoRoot, override.sourceRelativePath),
+      path.join(stageServerDir, override.targetRelativePath),
+    );
+  }
+});
 const ProductionLinuxIconSource = Effect.zipWith(
   RepoRoot,
   Effect.service(Path.Path),
@@ -705,6 +720,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
   yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
+  // Local server builds carry development favicons. Always stage production
+  // web assets, including when reusing those builds with --skip-build.
+  yield* stageProductionWebIcons(repoRoot, path.join(stageAppDir, "apps/server"));
   if (options.platform !== "linux") {
     yield* runCommand(
       ChildProcess.make(

@@ -480,6 +480,7 @@ import type {
   OrchestrationDeleteCodeReviewWorkflowInput,
   OrchestrationDeleteInvestigationWorkflowInput,
   OrchestrationDeleteWorkflowInput,
+  OrchestrationDeleteWorkflowResult,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetStartupSnapshotInput,
@@ -1539,6 +1540,7 @@ export interface NativeApi {
     snooze: (input: PrHubSnoozeInput) => Promise<PrHubOverview>;
     unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubOverview>;
     ignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
+    unignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
     acknowledgeAttention: (input: PrHubAcknowledgeAttentionInput) => Promise<PrHubOverview>;
     markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubOverview>;
     markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;
@@ -1650,11 +1652,15 @@ export interface NativeApi {
     unarchiveInvestigationWorkflow: (
       input: OrchestrationUnarchiveInvestigationWorkflowInput,
     ) => Promise<void>;
-    deleteWorkflow: (input: OrchestrationDeleteWorkflowInput) => Promise<void>;
-    deleteCodeReviewWorkflow: (input: OrchestrationDeleteCodeReviewWorkflowInput) => Promise<void>;
+    deleteWorkflow: (
+      input: OrchestrationDeleteWorkflowInput,
+    ) => Promise<OrchestrationDeleteWorkflowResult>;
+    deleteCodeReviewWorkflow: (
+      input: OrchestrationDeleteCodeReviewWorkflowInput,
+    ) => Promise<OrchestrationDeleteWorkflowResult>;
     deleteInvestigationWorkflow: (
       input: OrchestrationDeleteInvestigationWorkflowInput,
-    ) => Promise<void>;
+    ) => Promise<OrchestrationDeleteWorkflowResult>;
     skipDocumentReaderPass: (
       input: OrchestrationSkipDocumentReaderPassInput,
     ) => Promise<OrchestrationSkipDocumentReaderPassResult>;

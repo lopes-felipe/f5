@@ -519,6 +519,39 @@ const make = Effect.gen(function* () {
       return project ? (yield* readProjectSettings(global, project)).settings : global;
     });
   const threadModelOptions = new Map<string, ProviderModelOptions>();
+  // Keep failed shutdowns until the adapter confirms success. Tombstones seed
+  // this work again at startup, so a restart cannot forget a surviving runtime.
+  const deletedSessionStops = new Map<ThreadId, { attempts: number; retryAt: number }>();
+  const stopDeletedSession = (threadId: ThreadId) =>
+    withThreadTurnGate(
+      threadId,
+      providerService.stopSession({ threadId }).pipe(
+        Effect.tap(() => Effect.sync(() => deletedSessionStops.delete(threadId))),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+          return Effect.sync(() => {
+            const attempts = (deletedSessionStops.get(threadId)?.attempts ?? 0) + 1;
+            deletedSessionStops.set(threadId, {
+              attempts,
+              retryAt: Date.now() + Math.min(30_000, 1_000 * 2 ** Math.min(attempts - 1, 5)),
+            });
+          }).pipe(
+            Effect.andThen(
+              Effect.logError("Failed to stop provider for deleted thread; shutdown will retry", {
+                threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+        }),
+        Effect.ensuring(
+          Effect.sync(() => {
+            threadProviderOptions.delete(threadId);
+            threadModelOptions.delete(threadId);
+          }),
+        ),
+      ),
+    );
 
   const requireDeliverableThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const thread = yield* resolveThread(threadId);
@@ -4063,8 +4096,8 @@ const make = Effect.gen(function* () {
           break;
         }
         case "thread.deleted":
-          threadProviderOptions.delete(event.payload.threadId);
-          threadModelOptions.delete(event.payload.threadId);
+          deletedSessionStops.set(event.payload.threadId, { attempts: 0, retryAt: 0 });
+          yield* stopDeletedSession(event.payload.threadId);
           break;
         case "thread.turn-start-requested":
           yield* processTurnStartRequested(event);
@@ -4201,6 +4234,50 @@ const make = Effect.gen(function* () {
     );
 
     const readModel = yield* orchestrationEngine.getReadModel();
+    const deletedIds = new Set(
+      readModel.threads.filter((thread) => thread.deletedAt !== null).map((thread) => thread.id),
+    );
+    let needsDeletedSessionDiscovery = deletedIds.size > 0;
+    const discoverDeletedSessions = Effect.gen(function* () {
+      if (!needsDeletedSessionDiscovery) return;
+      const bindings = yield* providerSessionDirectory.listBindings({ excludeStopped: true });
+      for (const binding of bindings)
+        if (deletedIds.has(binding.threadId) && binding.status !== "stopped")
+          deletedSessionStops.set(binding.threadId, { attempts: 0, retryAt: 0 });
+      needsDeletedSessionDiscovery = false;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logError("Failed to discover deleted-thread runtimes; discovery will retry", {
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+    yield* discoverDeletedSessions;
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.sleep("1 second").pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              discoverDeletedSessions.pipe(
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    Effect.forEach(
+                      [...deletedSessionStops].filter(
+                        ([, pending]) => pending.retryAt <= Date.now(),
+                      ),
+                      ([threadId]) => stopDeletedSession(threadId),
+                      { discard: true, concurrency: 4 },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
     yield* Effect.forEach(
       readModel.threads,
       (thread) => {

@@ -321,8 +321,8 @@ export function ArchiveSettings() {
               : null,
             workflowCount > 0
               ? items.length === 1
-                ? "This removes the workflow record; associated threads are kept."
-                : `${workflowCount} workflow record${workflowCount === 1 ? "" : "s"} will be removed; associated threads are kept.`
+                ? "This permanently deletes the workflow and all its associated threads and conversation history."
+                : `${workflowCount} workflows and all their associated threads and conversation history will be permanently deleted.`
               : null,
           ]
             .filter(Boolean)

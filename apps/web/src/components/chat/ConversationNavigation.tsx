@@ -6,6 +6,7 @@ import { cn } from "../../lib/utils";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { TimelineTurnRailItem } from "./MessagesTimeline.logic";
 
 export interface ConversationNavigationSnapshot {
@@ -70,20 +71,26 @@ export const ConversationNavigation = memo(function ConversationNavigation(
   if (open && props.disabled) setOpen(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Conversation navigation"
-            title="Conversation navigation"
-            disabled={props.disabled}
-          />
-        }
-      >
-        <ListTreeIcon aria-hidden="true" />
-      </PopoverTrigger>
+      <Tooltip>
+        <PopoverTrigger
+          render={
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Conversation navigation"
+                  disabled={props.disabled}
+                />
+              }
+            />
+          }
+        >
+          <ListTreeIcon aria-hidden="true" />
+        </PopoverTrigger>
+        <TooltipPopup side="bottom">Conversation navigation</TooltipPopup>
+      </Tooltip>
       {open ? (
         <PopoverPopup
           side="bottom"

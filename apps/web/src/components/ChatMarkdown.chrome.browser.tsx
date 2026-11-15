@@ -10,6 +10,13 @@ import { threadFindRanges } from "./chat/threadFindHighlights";
 import ChatMarkdown from "./ChatMarkdown";
 import { toastManager } from "./ui/toast";
 
+vi.mock("../nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../nativeApi")>()),
+  readNativeApi: () => ({
+    projects: { listDirectory: async () => ({ entries: [{ path: "app.ts", kind: "file" }] }) },
+  }),
+}));
+
 const clipboard = vi.hoisted(() => ({
   write: vi.fn(async (_value: string) => {}),
 }));

@@ -1,5 +1,8 @@
 import type { PrHubSchedulerState, PrHubSnapshot } from "@t3tools/contracts";
 
+/** `errorKind` of a refresh whose only gaps are deferred work the next poll continues. */
+export const PR_HUB_BACKLOG_ERROR_KIND = "backlog";
+
 /** Shared by admission, background wakeups and the dashboard; this only schedules reads. */
 export function nextPrHubRefreshAt(
   snapshot: PrHubSnapshot,
@@ -12,6 +15,7 @@ export function nextPrHubRefreshAt(
   const pending =
     snapshot.status === "degraded" ||
     snapshot.status === "error" ||
+    snapshot.errorKind === PR_HUB_BACKLOG_ERROR_KIND ||
     snapshot.coverage?.some((scope) => (scope.remainingTasks ?? 0) > 0);
   const graphql = scheduler.resources.find((resource) => resource.resource === "graphql");
   const search = scheduler.resources.find((resource) => resource.resource === "search");

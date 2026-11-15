@@ -30,6 +30,7 @@ import {
 import { Button } from "../components/ui/button";
 import { DatabaseDamageBanner } from "../components/DatabaseDamageBanner";
 import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
+import { TooltipProvider } from "../components/ui/tooltip";
 
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
@@ -100,19 +101,21 @@ function RootRouteView() {
       settings={appearanceSettings}
       appearance={resolvedTheme}
     >
-      <ToastProvider position={toastPosition}>
-        <AnchoredToastProvider>
-          <EventRouter />
-          <RunningThreadSync />
-          <DesktopProjectBootstrap />
-          <HtmlPreviewHost />
-          <SlowRpcWarningToastCoordinator />
-          <DatabaseDamageBanner />
-          <WebSocketConnectionSurface>
-            <Outlet />
-          </WebSocketConnectionSurface>
-        </AnchoredToastProvider>
-      </ToastProvider>
+      <TooltipProvider>
+        <ToastProvider position={toastPosition}>
+          <AnchoredToastProvider>
+            <EventRouter />
+            <RunningThreadSync />
+            <DesktopProjectBootstrap />
+            <HtmlPreviewHost />
+            <SlowRpcWarningToastCoordinator />
+            <DatabaseDamageBanner />
+            <WebSocketConnectionSurface>
+              <Outlet />
+            </WebSocketConnectionSurface>
+          </AnchoredToastProvider>
+        </ToastProvider>
+      </TooltipProvider>
     </HtmlRenderThemeProvider>
   );
 }

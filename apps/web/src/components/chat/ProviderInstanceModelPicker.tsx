@@ -276,9 +276,9 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
           Number(favoriteKeys.has(modelKey(right.instance.instanceId, right.slug))) -
           Number(favoriteKeys.has(modelKey(left.instance.instanceId, left.slug)));
         if (favoriteDelta !== 0) return favoriteDelta;
-        const nameDelta = left.name.localeCompare(right.name, undefined, { numeric: true });
-        if (nameDelta !== 0) return nameDelta;
-        return left.instance.displayName.localeCompare(right.instance.displayName);
+        // The catalog has already applied capability and manual ordering.
+        // Stable sorting groups favorites without replacing that order with names.
+        return 0;
       }),
     }));
   }, [

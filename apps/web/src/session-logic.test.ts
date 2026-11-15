@@ -26,6 +26,7 @@ import {
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  formatElapsed,
 } from "./session-logic";
 import {
   DEFAULT_INTERACTION_MODE,
@@ -57,6 +58,17 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("elapsed time units", () => {
+  it("uses milliseconds below one second and seconds for actual multi-second intervals", () => {
+    const start = "2026-11-14T12:37:46.000Z";
+    expect(formatElapsed(start, start)).toBe("0ms");
+    expect(formatElapsed(start, "2026-11-14T12:37:46.044Z")).toBe("44ms");
+    expect(formatElapsed(start, "2026-11-14T12:37:46.999Z")).toBe("999ms");
+    expect(formatElapsed(start, "2026-11-14T12:37:47.000Z")).toBe("1.0s");
+    expect(formatElapsed(start, "2026-11-14T12:37:50.400Z")).toBe("4.4s");
+  });
+});
 
 describe("deriveLiveWorkActivity", () => {
   const turnId = TurnId.makeUnsafe("turn-live");

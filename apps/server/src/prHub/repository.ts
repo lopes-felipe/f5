@@ -1,4 +1,6 @@
 import { prHubRecoveryCandidates } from "./recovery.ts";
+import { applyPrHubRelevance } from "./relevance.ts";
+import { PR_HUB_BACKLOG_ERROR_KIND } from "./refreshSchedule.ts";
 import { assertPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { unknownMergeRequirements } from "./mergeRequirements.ts";
 import { createPrHubViewerActions, type PrHubViewerActionsContext } from "./viewerActions.ts";
@@ -73,6 +75,8 @@ export function createPrHubRepository(
   let monitoringExclusions = new Set<string>();
   let monitoringScopeSignature = "[]";
   const publicationLock = Semaphore.makeUnsafe(1);
+  // Numbers the change events of this hub so that a reader can tell when one was dropped.
+  let publicationSequence = 0;
   const advancePublicationRevision = sql<{
     revision: number;
   }>`UPDATE pr_hub_publication SET revision = revision + 1 WHERE id = 1 RETURNING revision`;
@@ -99,6 +103,7 @@ export function createPrHubRepository(
       yield* PubSub.publish(changePubSub, {
         ...invalidation,
         resyncRequired: invalidation.resyncRequired || scopeSignature !== monitoringScopeSignature,
+        sequence: ++publicationSequence,
       });
       monitoringExclusions = excluded;
       monitoringScopeSignature = scopeSignature;
@@ -306,12 +311,14 @@ export function createPrHubRepository(
               ...scope,
               status: "partial" as const,
               remainingTasks: unverifiedCount,
+              remainingHydrations: unverifiedCount,
               description: recoveryMessage,
             }
           : scope,
       );
-      return {
-        status: hasUnverifiedFacts ? "degraded" : (refresh?.status ?? "ok"),
+      const snapshot = {
+        // Saved rows awaiting revalidation are backlog the next poll continues, not a failure.
+        status: refresh?.status ?? "ok",
         account: viewer.context,
         viewerLogin: resolvedViewer,
         host,
@@ -327,13 +334,18 @@ export function createPrHubRepository(
         pullRequests: sortTrackedPrs(pullRequests),
         recentlyResolved: sortTrackedPrs(recentlyResolved),
         lastPolledAt: refresh?.last_polled_at ?? null,
-        ...(refresh?.error_kind ? { errorKind: refresh.error_kind } : {}),
+        ...(refresh?.error_kind
+          ? { errorKind: refresh.error_kind }
+          : hasUnverifiedFacts
+            ? { errorKind: PR_HUB_BACKLOG_ERROR_KIND }
+            : {}),
         ...(refresh?.error_message || recoveryMessage
           ? { errorMessage: [refresh?.error_message, recoveryMessage].filter(Boolean).join(" ") }
           : {}),
         coverage: effectiveCoverage,
         cappedBuckets: effectiveCoverage.flatMap((scope) => scope.limits ?? []),
       } satisfies PrHubSnapshot;
+      return applyPrHubRelevance(snapshot, recoverySettings.prHub);
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("failed to hydrate PR Hub snapshot", {
@@ -576,6 +588,14 @@ export function createPrHubRepository(
                 pr_hub_viewer_state.last_seen_fingerprint = pr_hub_viewer_state.attention_fingerprint OR
                 pr_hub_viewer_state.last_notified_fingerprint = pr_hub_viewer_state.attention_fingerprint
               ) THEN excluded.attention_fingerprint
+              -- A team request that became the viewer's own only because its team was added
+              -- to "Teams whose review requests are mine" is not new activity: the request
+              -- was already there. Without this, promoting a team notifies every one of its
+              -- pending requests. A personal request carries the review_requested role.
+              WHEN pr_hub_viewer_state.attention_state = 'team_review_requested'
+                AND excluded.attention_state IN ('review_requested', 're_review_requested')
+                AND instr(excluded.roles_json, '"review_requested"') = 0
+              THEN excluded.attention_fingerprint
               ELSE pr_hub_viewer_state.last_seen_fingerprint END,
             attention_model_version = 2,
             viewer_login = excluded.viewer_login,

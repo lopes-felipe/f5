@@ -116,6 +116,20 @@ export const GIT_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Flag my PRs as stalled after"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["git.pr-stale"],
+    label: "Move PRs to Stale after",
+    description: "Days without activity before a pull request leaves the queue for Stale.",
+    keywords: ["stale", "old", "inactive", "days", "needs you", "badge"],
+    targetSelector: '[aria-label="Move PRs to Stale after"]',
+  },
+  {
+    ...SETTINGS_ITEM_ROUTES["git.pr-direct-teams"],
+    label: "Teams whose review requests are mine",
+    description: "Count review requests to these teams as requests to you.",
+    keywords: ["team", "codeowners", "review request", "needs you", "team queue"],
+    targetSelector: '[aria-label="Teams whose review requests are mine"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["git.pr-exclude"],
     label: "Excluded repositories",
     description: "Drop pull requests from these repositories before PR Hub stores them.",

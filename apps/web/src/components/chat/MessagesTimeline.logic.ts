@@ -587,6 +587,7 @@ export interface TimelineTurnRailRowSource {
   readonly id: string;
   readonly kind: string;
   readonly createdAt?: string | null;
+  readonly showCompletionDivider?: boolean;
   readonly message?: {
     readonly role: "user" | "assistant" | "system";
     readonly text: string;
@@ -692,6 +693,34 @@ export function deriveTimelineTurnRailItems(
     }
   }
   if (current) items.push(current);
+  return items;
+}
+
+/** Completed answers only: commentary and tool output are not answer destinations. */
+export function deriveTimelineAssistantRailItems(
+  rows: ReadonlyArray<TimelineTurnRailRowSource>,
+): TimelineTurnRailItem[] {
+  const items: TimelineTurnRailItem[] = [];
+  let userText: string | null = null;
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex]!;
+    if (row.kind !== "message" || !row.message) continue;
+    if (row.message.role === "user") {
+      userText = cachedPreview(userPreviewCache, row.message, () =>
+        resolveTurnRailUserPreview(row.message!),
+      );
+    } else if (row.message.role === "assistant" && row.showCompletionDivider) {
+      items.push({
+        id: row.id,
+        rowIndex,
+        createdAt: row.createdAt ?? null,
+        userText,
+        assistantText: cachedPreview(assistantPreviewCache, row.message, () =>
+          compactTurnRailPreview(row.message!.text),
+        ),
+      });
+    }
+  }
   return items;
 }
 

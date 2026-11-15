@@ -27,7 +27,7 @@ import {
   type OrchestrationCommandExecution,
   type OrchestrationEvent,
   type OrchestrationGetThreadCommandExecutionsResult,
-  type MessageId,
+  MessageId,
   type OrchestrationReadModel,
   type ProjectId,
   type ProjectScript,
@@ -2267,6 +2267,11 @@ describe("ChatView timeline (full app)", () => {
         expect(
           requests.filter((method) => method === ORCHESTRATION_WS_METHODS.getThreadHistoryPage),
         ).toHaveLength(kind === "message" ? 1 : 0);
+        await page.getByRole("button", { name: "Close find" }).click();
+        await expect
+          .element(page.getByRole("textbox", { name: "Find in thread" }))
+          .not.toBeInTheDocument();
+        await vi.waitFor(() => expect(document.activeElement).toBe(editor));
       } finally {
         await mounted.cleanup();
       }
@@ -2426,6 +2431,91 @@ describe("ChatView timeline (full app)", () => {
             model: "claude-fable-5",
           });
         });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it.each([
+    ["claudeAgent", "claude-opus-5-5", "effort", "high"],
+    ["claudeAgent", "claude-opus-5-5", "effort", "medium"],
+    ["codex", "gpt-6-luna", "reasoningEffort", "high"],
+    ["codex", "gpt-6-luna", "reasoningEffort", "medium"],
+  ] as const)(
+    "shows High in a fresh %s draft and preserves %s %s %s on Enter",
+    async (provider, model, optionId, chosen) => {
+      const draft = useComposerDraftStore.getState();
+      draft.setProjectDraftThreadId(PROJECT_ID, THREAD_ID, {
+        runtimeMode: "full-access",
+        envMode: "local",
+      });
+      draft.setProvider(THREAD_ID, provider);
+      draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make(provider));
+      draft.setModel(THREAD_ID, model);
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            providers: [
+              createTestServerProvider(provider, {
+                models: [
+                  {
+                    slug: model,
+                    name: model,
+                    isCustom: false,
+                    capabilities: {
+                      source: "reported",
+                      supportsEffort: true,
+                      optionDescriptors: [
+                        {
+                          id: optionId,
+                          label: "Reasoning",
+                          type: "select",
+                          currentValue: "medium",
+                          options: [
+                            { id: "low", label: "Low" },
+                            { id: "medium", label: "Medium", isDefault: true },
+                            { id: "high", label: "High" },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        const control = () => document.querySelector('[data-composer-control="effort"]');
+        await waitForComposerEditor();
+        await vi.waitFor(() => expect(control()?.getAttribute("data-effort-level")).toBe("high"), {
+          timeout: 8_000,
+        });
+        if (chosen === "medium") {
+          (control() as HTMLElement).click();
+          await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
+        }
+        await vi.waitFor(() => expect(control()?.getAttribute("data-effort-level")).toBe(chosen));
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "oi");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        (await waitForComposerEditor()).focus();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+        );
+        const command = getSubmittedTurnCommand(
+          getDispatchCommandRequests("thread.turn.start")[0]!,
+        ) as {
+          modelSelection?: { options?: unknown };
+        };
+        expect(command.modelSelection?.options).toContainEqual({ id: optionId, value: chosen });
+        await vi.waitFor(() => expect(control()?.getAttribute("data-effort-level")).toBe(chosen));
       } finally {
         await mounted.cleanup();
       }
@@ -3709,6 +3799,88 @@ describe("ChatView timeline (full app)", () => {
         "Dismissed answer",
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("focuses the composer and shows tool-free completion timing before checkpoints arrive", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "focus-completion-question" as MessageId,
+        targetText: "Question",
+      }),
+    });
+    const outside = document.createElement("button");
+    outside.textContent = "Outside composer";
+    document.body.append(outside);
+    try {
+      const editor = await waitForComposerEditor();
+      const turnId = TurnId.makeUnsafe("focus-completion");
+      useStore.setState((state) => ({
+        threads: state.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                session: null,
+                latestTurn: {
+                  turnId,
+                  state: "running",
+                  requestedAt: isoAt(190),
+                  startedAt: isoAt(200),
+                  completedAt: null,
+                  assistantMessageId: null,
+                },
+              }
+            : thread,
+        ),
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      outside.focus();
+      expect(document.activeElement).toBe(outside);
+      useStore.setState((state) => ({
+        threads: state.threads.map((thread) =>
+          thread.id === THREAD_ID && thread.latestTurn
+            ? {
+                ...thread,
+                latestTurn: { ...thread.latestTurn, state: "completed", completedAt: isoAt(247) },
+                messages: [
+                  ...thread.messages,
+                  {
+                    id: MessageId.makeUnsafe("completed-user"),
+                    role: "user",
+                    text: "Last question",
+                    turnId,
+                    createdAt: isoAt(190),
+                    streaming: false,
+                  },
+                  {
+                    id: MessageId.makeUnsafe("completed-answer"),
+                    role: "assistant",
+                    text: "Latest answer without tools",
+                    turnId,
+                    createdAt: isoAt(233),
+                    completedAt: isoAt(244),
+                    streaming: false,
+                    reasoningTokens: 285,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      }));
+      await vi.waitFor(() => expect(document.activeElement).toBe(editor));
+      await expect.element(page.getByText("Worked for 57s", { exact: true })).toBeVisible();
+      await expect
+        .element(page.getByText("57s • Tokens: Not reported", { exact: true }))
+        .toBeVisible();
+      const tokens = document.querySelector<HTMLElement>(
+        '[data-message-id="completed-answer"] [data-slot="assistant-message-meta"] [tabindex="0"]',
+      )!;
+      await page.elementLocator(tokens).hover();
+      await expect.element(page.getByRole("row", { name: "Reasoning 285" })).toBeVisible();
+    } finally {
+      outside.remove();
       await mounted.cleanup();
     }
   });
@@ -6560,7 +6732,7 @@ describe("ChatView timeline (full app)", () => {
   it("keeps the model's default effort picked after seeding a thread's effort", async () => {
     const mounted = await mountThreadWithSavedLowEffort();
     try {
-      // Picking the default effort (High here) stores no options, like the Codex picker does.
+      // Clearing an explicit selection restores the implicit composer default (High).
       useComposerDraftStore.getState().setModelOptions(THREAD_ID, null);
       expect(await sendAndReadCodexEffort()).toEqual({ selection: "high", modelOptions: "high" });
       expect(

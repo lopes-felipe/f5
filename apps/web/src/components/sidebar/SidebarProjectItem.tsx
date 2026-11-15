@@ -460,7 +460,12 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
         <Collapsible className="group/collapsible" open={project.expanded}>
           <div className="group/project-header relative">
             <SidebarMenuButton
-              className="h-8 gap-2 rounded-lg px-2 text-left text-ui font-medium text-foreground hover:bg-accent/60 hover:text-foreground group-hover/project-header:bg-accent/60 group-has-[[data-sidebar=menu-action]]/menu-item:pe-20"
+              className={cn(
+                "h-8 gap-2 rounded-lg px-2 text-left text-ui font-medium text-foreground hover:bg-accent/60 hover:text-foreground group-hover/project-header:bg-accent/60",
+                isScratchProject(project)
+                  ? "group-has-[[data-sidebar=menu-action]]/menu-item:pe-14"
+                  : "group-has-[[data-sidebar=menu-action]]/menu-item:pe-20",
+              )}
               aria-expanded={project.expanded}
               {...dragHandleProps.attributes}
               {...dragHandleProps.listeners}
@@ -542,7 +547,10 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                       />
                     }
                     showOnHover
-                    className={cn(PROJECT_ACTION_CLASS_NAME, "right-[3.75rem]")}
+                    className={cn(
+                      PROJECT_ACTION_CLASS_NAME,
+                      isScratchProject(project) ? "right-8" : "right-[3.75rem]",
+                    )}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();

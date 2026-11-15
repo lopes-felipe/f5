@@ -12,6 +12,15 @@ function compareIsoDescending(left: string, right: string): number {
   return right.localeCompare(left);
 }
 
+/** Shared destination after a confirmed deletion removes the active conversation. */
+export function survivingThreadAfterDeletion(threads: ReadonlyArray<Thread>, now = Date.now()) {
+  return sortThreadsByActivity(
+    threads.filter(
+      (thread) => !isArchivedThread(thread) && !thread.settledAt && !isSnoozedThread(thread, now),
+    ),
+  )[0];
+}
+
 /** The fields activity ordering reads; `Thread` and thread summaries both fit. */
 export type ActivityOrderedThread = Pick<Thread, "id" | "createdAt" | "lastInteractionAt">;
 

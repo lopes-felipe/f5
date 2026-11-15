@@ -313,6 +313,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.streaming": {
     category: "conversation",
   },
+  "conversation.auto-follow": {
+    category: "conversation",
+  },
   "conversation.remote-images": {
     category: "conversation",
   },
@@ -453,6 +456,12 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "git",
   },
   "git.pr-stalled": {
+    category: "git",
+  },
+  "git.pr-stale": {
+    category: "git",
+  },
+  "git.pr-direct-teams": {
     category: "git",
   },
   "git.pr-exclude": {

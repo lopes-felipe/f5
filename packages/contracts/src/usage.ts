@@ -94,6 +94,8 @@ export const UsageThreadTurn = Schema.Struct({
   outputTokens: Schema.NullOr(NonNegativeInt),
   cacheReadTokens: Schema.NullOr(NonNegativeInt),
   cacheWriteTokens: Schema.NullOr(NonNegativeInt),
+  totalTokens: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  tokenProvenance: Schema.optional(UsageTokenProvenance),
   completedAt: IsoDateTime,
 });
 export type UsageThreadTurn = typeof UsageThreadTurn.Type;
@@ -324,6 +326,8 @@ export type UsageSummary = typeof UsageSummary.Type;
 
 export const UsageGetAccountsInput = Schema.Struct({
   refresh: Schema.optional(Schema.Literals(["if-stale", "force", "none"])),
+  /** Restricts refreshing to this instance; the response still includes every account snapshot. */
+  providerInstanceId: Schema.optional(ProviderInstanceId),
 });
 export type UsageGetAccountsInput = typeof UsageGetAccountsInput.Type;
 export const AccountUsageErrorCode = Schema.Literals([

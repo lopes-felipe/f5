@@ -20,10 +20,15 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
   hitStripWidth: number;
   activeTickIndex: number;
   onSelect: (item: TimelineTurnRailItem) => void;
+  side?: "left" | "right";
+  target?: "user" | "assistant";
   /** Native, non-passive wheel listener so the rail can scroll the timeline under it. */
   onWheel?: (event: WheelEvent) => void;
 }) {
   const { onWheel } = props;
+  const right = props.side === "right";
+  const assistant = props.target === "assistant";
+  const testId = assistant ? "timeline-assistant-rail" : "timeline-turn-rail";
   const wheelTargetRef = useCallback(
     (node: HTMLDivElement | null) => {
       if (!node || !onWheel) return;
@@ -37,6 +42,9 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
     activeIndex !== null && activeIndex < props.items.length ? activeIndex : null;
   const activeItem =
     resolvedActiveIndex === null ? null : (props.items[resolvedActiveIndex] ?? null);
+  const primaryText = assistant ? activeItem?.assistantText : activeItem?.userText;
+  const secondaryText = assistant ? activeItem?.userText : activeItem?.assistantText;
+  const fallbackLabel = assistant ? "Agent response" : "User message";
   const activeTopPercent =
     resolvedActiveIndex === null
       ? 0
@@ -75,22 +83,25 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
     <div
       ref={wheelTargetRef}
       className={cn(
-        "group/turn-rail pointer-events-none absolute inset-y-0 left-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
+        "group/turn-rail pointer-events-none absolute inset-y-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
+        right ? "right-5" : "left-0",
         props.hasPersistentGutter
           ? "opacity-100"
           : "opacity-60 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
       )}
-      data-testid="timeline-turn-rail"
+      data-testid={testId}
+      data-rail-side={right ? "right" : "left"}
       data-persistent-gutter={props.hasPersistentGutter ? "true" : "false"}
     >
       <div className="relative h-full w-full select-none">
         <button
-          aria-label={`Jump to message: ${activeItem?.userText ?? "User message"}`}
+          aria-label={`Jump to message: ${primaryText ?? fallbackLabel}`}
           className={cn(
-            "absolute top-1/2 left-1 -translate-y-1/2 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+            "absolute top-1/2 -translate-y-1/2 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+            right ? "right-1" : "left-1",
             props.hitStripWidth > 0 ? "pointer-events-auto" : "pointer-events-none",
           )}
-          data-testid="timeline-turn-rail-strip"
+          data-testid={`${testId}-strip`}
           onBlur={() => setActiveIndex(null)}
           onClick={(event) => {
             if (timelineTurnRailEventTargetsPreview(event.target)) return;
@@ -138,7 +149,13 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
           <div
             className={cn(
               "absolute top-0 h-full w-px bg-border/15",
-              props.hasPersistentGutter ? "left-3" : "left-0",
+              right
+                ? props.hasPersistentGutter
+                  ? "right-3"
+                  : "right-0"
+                : props.hasPersistentGutter
+                  ? "left-3"
+                  : "left-0",
             )}
           />
           {props.items.map((item, index) => {
@@ -148,8 +165,8 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
               <span
                 aria-hidden="true"
                 className={cn(
-                  "pointer-events-none absolute left-0 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/35 transition-[background-color,width] duration-150",
-                  index === props.activeTickIndex && "bg-foreground/90",
+                  "pointer-events-none absolute h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/35 transition-[background-color,width] duration-150",
+                  right ? "right-0" : "left-0",
                   activeDistance === 0
                     ? "w-6 bg-muted-foreground/75"
                     : activeDistance === 1
@@ -157,9 +174,16 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
                       : activeDistance === 2
                         ? "w-2.5"
                         : "w-2",
+                  index === props.activeTickIndex && "bg-foreground/90",
                 )}
-                data-turn-rail-active={index === props.activeTickIndex ? "true" : "false"}
-                data-turn-rail-tick
+                data-turn-rail-active={
+                  !assistant ? (index === props.activeTickIndex ? "true" : "false") : undefined
+                }
+                data-turn-rail-tick={!assistant ? "" : undefined}
+                data-assistant-rail-active={
+                  assistant ? (index === props.activeTickIndex ? "true" : "false") : undefined
+                }
+                data-assistant-rail-tick={assistant ? "" : undefined}
                 key={item.id}
                 style={{ top: `${resolveTimelineTurnRailTopPercent(index, props.items.length)}%` }}
               />
@@ -167,7 +191,10 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
           })}
           {activeItem ? (
             <span
-              className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"
+              className={cn(
+                "pointer-events-auto absolute w-80 max-w-[calc(100vw-4rem)] cursor-text select-text",
+                right ? "right-8" : "left-8",
+              )}
               data-turn-rail-preview
               onMouseMove={(event) => event.stopPropagation()}
               style={{
@@ -177,9 +204,9 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
             >
               <span className="block rounded-xl border bg-popover p-3 text-left text-popover-foreground shadow-lg/5">
                 <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
-                  {activeItem.userText ?? "User message"}
+                  {primaryText ?? fallbackLabel}
                 </span>
-                {activeItem.assistantText ? (
+                {secondaryText ? (
                   <span
                     className="mt-1 max-h-[3.75rem] overflow-hidden text-sm leading-5 text-muted-foreground"
                     style={{
@@ -188,7 +215,7 @@ export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
                       WebkitLineClamp: 3,
                     }}
                   >
-                    {activeItem.assistantText}
+                    {secondaryText}
                   </span>
                 ) : null}
               </span>

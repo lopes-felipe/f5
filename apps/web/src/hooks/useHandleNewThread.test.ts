@@ -66,6 +66,26 @@ describe("seedDraftThreadFromModelPreferences", () => {
     });
   });
 
+  it("clears remembered effort for capability-aware defaulting and permits a new selection", () => {
+    useModelPreferencesStore.setState({
+      lastProvider: "codex",
+      lastModelByProvider: { codex: "gpt-6-luna" },
+      lastModelOptions: { codex: { reasoningEffort: "medium", fastMode: true } },
+    });
+    const threadId = ThreadId.makeUnsafe("fresh-high");
+    seedDraftThreadFromModelPreferences(threadId);
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions).toEqual({
+      codex: { fastMode: true },
+    });
+    useComposerDraftStore.getState().setModelOptions(threadId, {
+      codex: { reasoningEffort: "low", fastMode: true },
+    });
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions?.codex
+        ?.reasoningEffort,
+    ).toBe("low");
+  });
+
   it("uses an explicit project default before remembered models", () => {
     useStore.setState({
       projects: useStore
@@ -139,11 +159,7 @@ describe("seedDraftThreadFromModelPreferences", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
       provider: "claudeAgent",
       model: "claude-opus-4-6",
-      modelOptions: {
-        claudeAgent: {
-          effort: "max",
-        },
-      },
+      modelOptions: null,
     });
   });
 
@@ -177,7 +193,6 @@ describe("seedDraftThreadFromModelPreferences", () => {
       model: "claude-opus-4-6",
       modelOptions: {
         claudeAgent: {
-          effort: "max",
           fastMode: true,
         },
       },

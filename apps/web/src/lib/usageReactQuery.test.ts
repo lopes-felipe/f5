@@ -1,4 +1,4 @@
-import type { UsageAccounts } from "@t3tools/contracts";
+import { ProviderInstanceId, type UsageAccounts } from "@t3tools/contracts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -129,6 +129,35 @@ describe("refreshUsageSummaries", () => {
 });
 
 describe("forceRefreshUsageAccounts", () => {
+  it("runs queued scopes after rejection and lets a queued global cover later callers", async () => {
+    const client = new QueryClient();
+    let rejectFirst!: (error: Error) => void;
+    api.getAccounts
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockResolvedValue(account("idle"));
+    const a = ProviderInstanceId.make("a");
+    const b = ProviderInstanceId.make("b");
+    const first = forceRefreshUsageAccounts(client, a);
+    const rejected = expect(first).rejects.toThrow("probe failed");
+    await flush();
+    const second = forceRefreshUsageAccounts(client, b);
+    const global = forceRefreshUsageAccounts(client);
+    expect(forceRefreshUsageAccounts(client, ProviderInstanceId.make("c"))).toBe(global);
+    rejectFirst(new Error("probe failed"));
+    await rejected;
+    await Promise.all([second, global]);
+    expect(api.getAccounts.mock.calls.map(([request]) => request)).toEqual([
+      { refresh: "force", providerInstanceId: a },
+      { refresh: "force", providerInstanceId: b },
+      { refresh: "force" },
+    ]);
+    client.clear();
+  });
   it("discards a delayed ordinary poll and shares duplicate force requests", async () => {
     const client = new QueryClient();
     const ordinary = deferred<UsageAccounts>();
@@ -140,7 +169,7 @@ describe("forceRefreshUsageAccounts", () => {
     await flush();
     // The first load is interactive; once accounts are cached, polls yield to interactive reads.
     expect(api.getAccounts).toHaveBeenLastCalledWith(
-      { refresh: "if-stale" },
+      { refresh: "none" },
       { priority: "interactive" },
     );
 

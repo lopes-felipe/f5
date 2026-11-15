@@ -11,7 +11,6 @@ import {
   type HistoryDirection,
 } from "../../navigationHistory";
 import { NotificationsBell } from "../../notificationCenter/NotificationsBell";
-import { ProfileSwitcher } from "../ProfileSwitcher";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { SidebarHeader, SidebarTrigger, useSidebar } from "../ui/sidebar";
@@ -19,31 +18,19 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { DesktopUpdateInstalledNotesDialog, DesktopUpdatePill } from "./DesktopUpdatePill";
 import type { DesktopUpdateController } from "./useDesktopUpdate";
 
-function F5Wordmark() {
+function F5Icon() {
   return (
-    <svg
-      aria-label="F5"
-      role="img"
-      className="h-3 w-auto shrink-0 text-foreground"
-      viewBox="0 0 84 44"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <text
-        x="1"
-        y="33"
-        fill="currentColor"
-        fontFamily="'Arial Black', 'SF Pro Display', sans-serif"
-        fontSize="34"
-        fontWeight="900"
-        letterSpacing="-2"
-      >
-        F5
-      </text>
-    </svg>
+    <img
+      alt="F5"
+      src="/icon.png"
+      width={24}
+      height={24}
+      className="size-6 shrink-0 object-contain"
+    />
   );
 }
 
-/** Wordmark only; the version and release stage live in the tooltip. */
+/** Brand icon only; the version and release stage live in the tooltip. */
 function SidebarWordmark() {
   const { isMobile } = useSidebar();
   return (
@@ -53,7 +40,7 @@ function SidebarWordmark() {
         <TooltipTrigger
           render={
             <span className="inline-flex cursor-default items-center rounded-md px-1 py-1">
-              <F5Wordmark />
+              <F5Icon />
             </span>
           }
         />
@@ -99,26 +86,25 @@ function HistoryNavigationButton({ direction }: { direction: HistoryDirection })
   );
 }
 
-/** Wordmark, history navigation (desktop), notifications, profile switcher and update controls. */
+/** Wordmark on the left; history and notifications on the right. */
 export function SidebarBrandHeader({ update }: { update: DesktopUpdateController }) {
   return (
     <SidebarHeader
       className={cn(
-        "flex-row items-center gap-2 py-0",
-        isElectron ? "drag-region h-(--app-header-height) pr-3 pl-[90px]" : "h-12 px-3",
+        "flex-row items-center gap-1 px-3 py-0",
+        isElectron ? "drag-region h-(--app-header-height) pl-[90px]" : "h-12",
       )}
     >
       <SidebarWordmark />
-      {isElectron ? (
-        <div className="hidden shrink-0 items-center md:flex">
-          <HistoryNavigationButton direction="back" />
-          <HistoryNavigationButton direction="forward" />
-        </div>
-      ) : null}
-      <div className="ml-auto flex min-w-0 items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        {isElectron ? (
+          <div className="hidden shrink-0 items-center md:flex">
+            <HistoryNavigationButton direction="back" />
+            <HistoryNavigationButton direction="forward" />
+          </div>
+        ) : null}
         {isElectron && update.showButton ? <DesktopUpdatePill update={update} /> : null}
         <NotificationsBell />
-        <ProfileSwitcher />
       </div>
       {isElectron ? <DesktopUpdateInstalledNotesDialog update={update} /> : null}
     </SidebarHeader>

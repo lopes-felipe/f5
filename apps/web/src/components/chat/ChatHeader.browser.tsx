@@ -35,6 +35,12 @@ vi.mock("../ui/sidebar", () => ({
 }));
 
 import { ChatHeader } from "./ChatHeader";
+import {
+  displayProfilePatchFor,
+  getDisplayProfile,
+  readAppSettingsSnapshot,
+  updateAppSettings,
+} from "../../appSettings";
 
 type ChatHeaderProps = ComponentProps<typeof ChatHeader>;
 
@@ -99,6 +105,24 @@ function renderHeader(overrides: Partial<ChatHeaderProps> = {}, width = 900) {
 }
 
 describe("ChatHeader", () => {
+  it("changes display density from the header", async () => {
+    const previousSettings = readAppSettingsSnapshot();
+    updateAppSettings(displayProfilePatchFor("detailed"));
+    const screen = await renderHeader();
+    try {
+      await page
+        .getByRole("group", { name: "Conversation view" })
+        .getByRole("button", { name: "Display density" })
+        .click();
+      await expect.element(page.getByRole("menuitemcheckbox", { name: "Detailed" })).toBeChecked();
+      await page.getByRole("menuitemcheckbox", { name: "Minimal" }).click();
+      expect(getDisplayProfile(readAppSettingsSnapshot())).toBe("minimal");
+    } finally {
+      await screen.unmount();
+      updateAppSettings(previousSettings);
+    }
+  });
+
   it.each([
     ["scratch", "after the first message creates the thread's folder."],
     ["standard", "because the project's folder is missing."],

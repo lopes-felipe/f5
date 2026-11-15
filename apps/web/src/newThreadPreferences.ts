@@ -8,11 +8,15 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   type ProviderModelOptions,
 } from "@t3tools/contracts";
-import { providerSelectionsToModelOptions } from "./providerModelOptions";
+import {
+  providerSelectionsToModelOptions,
+  providerModelOptionsToSelections,
+} from "./providerModelOptions";
+import { isEffortSelection } from "./components/chat/effortLevels";
 import type { Project } from "./types";
 import type { ModelPreferencesState } from "./modelPreferencesStore";
 /** Shared project/remembered defaults for new conversations and scheduled conversations. */
-export function resolveNewThreadPreferences(
+function resolveRawNewThreadPreferences(
   project: Pick<Project, "id" | "defaultModelSelection" | "defaultModel"> | undefined,
   settings: ServerSettings,
   preferences: Pick<
@@ -20,6 +24,7 @@ export function resolveNewThreadPreferences(
     "lastProvider" | "lastModelByProvider" | "lastModelOptions"
   >,
 ): {
+  source: "project" | "remembered" | "fallback";
   provider?: ProviderKind;
   instanceId?: ProviderInstanceId;
   model?: string;
@@ -35,6 +40,7 @@ export function resolveNewThreadPreferences(
       ? driver
       : inferProviderForModel(selection.model, "codex");
     return {
+      source: "project",
       provider,
       instanceId: selection.instanceId,
       model: selection.model,
@@ -45,11 +51,12 @@ export function resolveNewThreadPreferences(
   if (project?.defaultModel) {
     const provider = inferProviderForModel(project.defaultModel, "codex");
     if (enabled(ProviderInstanceId.make(provider)))
-      return { provider, model: project.defaultModel };
+      return { source: "project", provider, model: project.defaultModel };
     needsFallback = true;
   }
   if (preferences.lastProvider && enabled(ProviderInstanceId.make(preferences.lastProvider)))
     return {
+      source: "remembered",
       provider: preferences.lastProvider,
       ...(preferences.lastModelByProvider[preferences.lastProvider]
         ? { model: preferences.lastModelByProvider[preferences.lastProvider]! }
@@ -58,17 +65,37 @@ export function resolveNewThreadPreferences(
     };
   if (preferences.lastProvider) needsFallback = true;
   if (!needsFallback)
-    return preferences.lastModelOptions ? { options: preferences.lastModelOptions } : {};
+    return preferences.lastModelOptions
+      ? { source: "remembered", options: preferences.lastModelOptions }
+      : { source: "fallback" };
   const fallback = [...Object.keys(settings.providers), ...Object.keys(settings.providerInstances)]
     .map((id) => ProviderInstanceId.make(id))
     .find((id) => enabled(id) && isKnownProviderKind(settings.providerInstances[id]?.driver ?? id));
-  if (!fallback) return {};
+  if (!fallback) return { source: "fallback" };
   const driver = settings.providerInstances[fallback]?.driver ?? fallback;
-  if (!isKnownProviderKind(driver)) return {};
+  if (!isKnownProviderKind(driver)) return { source: "fallback" };
   return {
+    source: "fallback",
     provider: driver,
     instanceId: fallback,
     model: DEFAULT_MODEL_BY_PROVIDER[driver as ProviderKind],
     options: null,
   };
+}
+
+/** Remembered traits carry over, but new conversations choose their own effort. */
+export function resolveNewThreadPreferences(
+  ...args: Parameters<typeof resolveRawNewThreadPreferences>
+): ReturnType<typeof resolveRawNewThreadPreferences> {
+  const result = resolveRawNewThreadPreferences(...args);
+  if (result.source !== "remembered" || result.options == null) return result;
+  let options: ProviderModelOptions = {};
+  for (const provider of Object.keys(result.options)) {
+    if (!isKnownProviderKind(provider)) continue;
+    const selections = providerModelOptionsToSelections(provider, result.options)?.filter(
+      (option) => !isEffortSelection(option.id, option.value),
+    );
+    options = { ...options, ...providerSelectionsToModelOptions(provider, selections) };
+  }
+  return { ...result, options: Object.keys(options).length ? options : null };
 }

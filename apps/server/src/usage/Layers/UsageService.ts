@@ -174,11 +174,27 @@ const make = Effect.gen(function* () {
   const getAccounts: UsageServiceShape["getAccounts"] = (request) =>
     Effect.gen(function* () {
       const instances = yield* registry.listInstances;
+      if (request.providerInstanceId !== undefined) {
+        const instance = instances.find((entry) => entry.instanceId === request.providerInstanceId);
+        if (!instance?.accountUsage)
+          return yield* new UsageQueryError({
+            message: "The selected provider instance does not support account usage.",
+          });
+        const snapshot = yield* instance.accountUsage.getSnapshot;
+        if (!snapshot.enabled)
+          return yield* new UsageQueryError({
+            message: "The selected provider instance is disabled.",
+          });
+      }
       const capabilities = instances.flatMap((instance) =>
         instance.accountUsage ? [instance.accountUsage] : [],
       );
-      yield* Effect.forEach(capabilities, (capability) =>
-        capability.refresh(request.refresh, permits),
+      yield* Effect.forEach(instances, (instance) =>
+        instance.accountUsage &&
+        (request.providerInstanceId === undefined ||
+          request.providerInstanceId === instance.instanceId)
+          ? instance.accountUsage.refresh(request.refresh, permits)
+          : Effect.void,
       );
       const snapshots = yield* Effect.forEach(capabilities, (capability) =>
         capability.getSnapshot.pipe(

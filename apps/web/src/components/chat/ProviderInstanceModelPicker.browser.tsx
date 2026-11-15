@@ -13,6 +13,7 @@ import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { createTestServerProvider } from "../../testServerProvider";
+import { sortModelsForProviderInstance } from "../../modelOrdering";
 import { TooltipProvider } from "../ui/tooltip";
 import { ProviderInstanceModelPicker } from "./ProviderInstanceModelPicker";
 
@@ -177,6 +178,44 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
 });
 
 describe("ProviderInstanceModelPicker", () => {
+  it("preserves capability ordering, including newly reported model versions, instead of alphabetizing names", async () => {
+    const models = sortModelsForProviderInstance([
+      { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
+      { slug: "claude-opus-4-6", name: "Claude Opus 4.6" },
+      { slug: "claude-opus-5-5", name: "Claude Opus 5.5" },
+      { slug: "claude-fable-5-2", name: "Claude Fable 5.2" },
+      { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+      { slug: "claude-opus-5-6", name: "Claude Opus 5.6" },
+    ]);
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CLAUDE_ID}
+          model="claude-opus-5-5"
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={new Map([[CLAUDE_ID, models]])}
+          onInstanceModelChange={() => {}}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /Claude Opus 5.5/ }).click();
+    await expect
+      .poll(() =>
+        [...document.querySelectorAll("[data-model-picker-row]")].map(
+          (row) => row.textContent?.match(/Claude (?:Fable|Opus|Sonnet|Haiku) \d+\.\d+/)?.[0],
+        ),
+      )
+      .toEqual([
+        "Claude Fable 5.2",
+        "Claude Opus 5.6",
+        "Claude Opus 5.5",
+        "Claude Opus 4.6",
+        "Claude Sonnet 5.5",
+        "Claude Haiku 5.5",
+      ]);
+  });
+
   it("keeps composition keys in search and uses the short window height", async () => {
     await page.viewport(800, 300);
     const onChange = vi.fn();

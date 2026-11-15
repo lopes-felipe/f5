@@ -3,18 +3,25 @@ import { randomUUID } from "node:crypto";
 /** One-shot authorizations survive async UI work, but stay scoped to their renderer and target. */
 export class FileActionAuthorizations {
   private readonly pending = new Map<string, { owner: number; target?: string; expires: number }>();
-  private readonly nativeMenus = new Map<number, { target: string; expires: number }>();
+  private readonly nativeMenus = new Map<
+    number,
+    { target: string; action: "editor" | "reveal"; expires: number }
+  >();
   constructor(private readonly now: () => number = () => Date.now()) {}
 
-  nativeMenuSelected(owner: number, target: string): void {
+  clearNativeMenu(owner: number): void {
+    this.nativeMenus.delete(owner);
+  }
+
+  nativeMenuSelected(owner: number, target: string, action: "editor" | "reveal" = "editor"): void {
     this.prune();
-    this.nativeMenus.set(owner, { target, expires: this.now() + 60_000 });
+    this.nativeMenus.set(owner, { target, action, expires: this.now() + 60_000 });
   }
 
   prepare(owner: number, target: string | undefined, trustedGesture: boolean): string {
     this.prune();
     const menu = this.nativeMenus.get(owner);
-    const menuAuthorized = Boolean(menu && menu.target === target);
+    const menuAuthorized = Boolean(menu && menu.target === target && menu.action === "editor");
     if (!trustedGesture && !menuAuthorized)
       throw new Error("File actions require a user gesture or native-menu selection.");
     if (menuAuthorized) this.nativeMenus.delete(owner);
@@ -28,11 +35,18 @@ export class FileActionAuthorizations {
     return token;
   }
 
-  consume(owner: number, target: string, trustedGesture: boolean, token?: unknown): void {
+  consume(
+    owner: number,
+    target: string,
+    trustedGesture: boolean,
+    token?: unknown,
+    action: "editor" | "reveal" = "editor",
+  ): void {
     this.prune();
     if (token !== undefined) {
       const grant = typeof token === "string" ? this.pending.get(token) : undefined;
       if (
+        action !== "editor" ||
         !grant ||
         grant.owner !== owner ||
         (grant.target !== undefined && grant.target !== target)
@@ -42,7 +56,12 @@ export class FileActionAuthorizations {
       this.pending.delete(token as string);
       return;
     }
-    if (!trustedGesture) throw new Error("File actions require a user gesture.");
+    if (!trustedGesture) {
+      const menu = this.nativeMenus.get(owner);
+      if (!menu || menu.target !== target || menu.action !== action)
+        throw new Error("File actions require a user gesture.");
+      this.nativeMenus.delete(owner);
+    }
   }
 
   release(owner: number, token: unknown): void {

@@ -1,6 +1,5 @@
-import { stepEffortOptions } from "./effortLevels";
+import { findEffortSelectDescriptor, stepEffortOptions } from "./effortLevels";
 import {
-  type ModelCapabilities,
   type ProviderDriverKind,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -20,6 +19,8 @@ import type { ReactNode } from "react";
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+import { defaultComposerEffort, withComposerModelDefaults } from "./composerModelDefaults";
+export { withImplicitFastModeDefault, withComposerModelDefaults } from "./composerModelDefaults";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -49,15 +50,30 @@ type TraitsRenderInput = {
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const { provider, model, models, modelOptions } = input;
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({
+  const reportedDescriptors = getProviderOptionDescriptors({
     caps,
-    selections: withImplicitFastModeDefault(caps, modelOptions),
+    selections: withComposerModelDefaults(caps, modelOptions),
   });
+  const descriptors =
+    !findEffortSelectDescriptor(reportedDescriptors) &&
+    provider === "codex" &&
+    resolveModelCapabilities("codex", model).source === "built-in"
+      ? getComposerEffortDescriptors(input)
+      : reportedDescriptors;
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
       descriptor.type === "select",
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
+  const dispatchOptions = buildProviderOptionSelectionsFromDescriptors(descriptors);
+  const descriptorIds = new Set(descriptors.map((descriptor) => descriptor.id));
+  const modelOptionsForDispatch =
+    reportedDescriptors.length === 0 && dispatchOptions
+      ? [
+          ...(modelOptions ?? []).filter((option) => !descriptorIds.has(option.id)),
+          ...dispatchOptions,
+        ]
+      : dispatchOptions;
   const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
   const ultrathinkActive =
     promptEffort !== null && primarySelectDescriptor?.promptInjectedValues?.includes(promptEffort);
@@ -65,7 +81,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   return {
     provider,
     promptEffort,
-    modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
+    modelOptionsForDispatch,
     ...(ultrathinkActive
       ? {
           composerFrameClassName: "ultrathink-frame",
@@ -94,15 +110,17 @@ export function getComposerEffortDescriptors(
   input: ComposerProviderStateInput,
 ): ReadonlyArray<ProviderOptionDescriptor> {
   const reported = getProviderModelCapabilities(input.models, input.model, input.provider);
+  const modelOptions = withComposerModelDefaults(reported, input.modelOptions);
   let descriptors = getProviderOptionDescriptors({
     caps: reported,
-    selections: input.modelOptions,
+    selections: modelOptions,
   });
   if (input.provider === "codex") {
     const caps = resolveModelCapabilities("codex", input.model, reported);
     const current = resolveCodexEffectiveReasoningEffort(
       input.model,
-      getProviderOptionStringSelectionValue(input.modelOptions, "reasoningEffort"),
+      getProviderOptionStringSelectionValue(modelOptions, "reasoningEffort") ??
+        defaultComposerEffort(caps.effortOptions),
       reported,
     );
     const effort: ProviderOptionDescriptor[] = caps.effortOptions.length
@@ -125,28 +143,13 @@ export function getComposerEffortDescriptors(
   return descriptors;
 }
 
-export function withImplicitFastModeDefault(
-  caps: ModelCapabilities,
-  options: ReadonlyArray<ProviderOptionSelection> | null | undefined,
-): ReadonlyArray<ProviderOptionSelection> | undefined {
-  if (
-    options?.some((option) => option.id === "fastMode") ||
-    !caps.optionDescriptors?.some(
-      (descriptor) => descriptor.id === "fastMode" && descriptor.type === "boolean",
-    )
-  ) {
-    return options ?? undefined;
-  }
-  return [...(options ?? []), { id: "fastMode", value: false }];
-}
-
 function renderTraitsControl(
   Component: typeof TraitsMenuContent | typeof TraitsPicker,
   input: TraitsRenderInput,
   presentation: { tintTrigger?: boolean } = {},
 ): ReactNode {
   const { provider, threadRef, draftId, model, models } = input;
-  const modelOptions = withImplicitFastModeDefault(
+  const modelOptions = withComposerModelDefaults(
     getProviderModelCapabilities(models, model, provider),
     input.modelOptions,
   );

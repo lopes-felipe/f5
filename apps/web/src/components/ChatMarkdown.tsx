@@ -42,9 +42,8 @@ import type { Components, ExtraProps } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDiffWordWrap } from "../appSettings";
-import { openFileInEditor } from "../lib/openFileInEditor";
-import { findWorkspaceBasenameFile } from "../lib/workspaceBasename";
-import { readNativeApi } from "../nativeApi";
+import { openMarkdownFileLink } from "../lib/openMarkdownFileLink";
+import { showLocalPathContextMenu } from "../lib/localPathContextMenu";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -64,11 +63,9 @@ import {
   collectMarkdownLinkHrefs,
   chatMarkdownUrlTransform,
   isMarkdownFileLinkLabel,
-  resolveMarkdownFileEditorTarget,
   resolveMarkdownFileLinkMeta,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
-import { inferEntryKindFromPath } from "../vscode-icons";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { ThreadReferenceChip } from "./chat/ThreadReferenceChip";
 import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
@@ -241,16 +238,7 @@ function MarkdownFileChip({
   const handleClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (handleFileNavigation(meta.targetPath)) {
-      return;
-    }
-    const api = readNativeApi();
-    // The lookup runs after the editor grant is captured, so a slow search keeps the click valid.
-    void openFileInEditor(meta.targetPath, undefined, () =>
-      resolveMarkdownFileEditorTarget(meta, cwd, (name) =>
-        api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
-      ),
-    );
+    void openMarkdownFileLink(meta, cwd, handleFileNavigation);
   };
 
   return (
@@ -279,12 +267,20 @@ function MarkdownFileChip({
                 : {})}
               className="chat-markdown-file-link"
               onClick={handleClick}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void showLocalPathContextMenu(meta.filePath, {
+                  x: event.clientX,
+                  y: event.clientY,
+                });
+              }}
             />
           }
         >
           <VscodeEntryIcon
             pathValue={meta.filePath}
-            kind={inferEntryKindFromPath(meta.filePath)}
+            kind={/[\\/]$/.test(meta.filePath) ? "directory" : "file"}
             theme={theme}
             className="chat-markdown-file-link-icon"
           />

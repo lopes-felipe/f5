@@ -2343,23 +2343,29 @@ describe("Thread sidebar", () => {
         "Home",
         "Search threads",
         "Pull requests",
-        "Scheduled",
         "Usage",
+        "Scheduled",
         "Projects",
         "Recent",
       ]);
-      // The flex-1/min-w-0 icon buttons only get width from the strip's layout; guard it, since
-      // DOM presence alone passed while 0.1.9 rendered Pull requests and Usage at 0px.
+      // The flex-1/min-w-0 icon buttons only get width from the strip's layout.
       for (const button of navigation.querySelectorAll<HTMLElement>("button[aria-label]")) {
         expect(
           button.getBoundingClientRect().width,
           `${button.getAttribute("aria-label")} width`,
         ).toBeGreaterThan(0);
       }
-      const footer = document.querySelector('[data-sidebar="footer"]')!;
-      expect(footer.querySelector('[aria-label="Usage"]')).toBeNull();
-      expect(footer.querySelector('[aria-label="Pull requests"]')).toBeNull();
-      // The notifications bell lives in the title bar, beside the profile switcher.
+      const footer = document.querySelector<HTMLElement>('[data-sidebar="footer"]')!;
+      expect(navigation.querySelector('button[aria-label="Usage"]')).not.toBeNull();
+      expect(footer.querySelector('button[aria-label="Pull requests"]')).toBeNull();
+      expect(footer.querySelector('button[aria-label="Usage limits"]')).not.toBeNull();
+      const settingsButton = footer.querySelector<HTMLButtonElement>(
+        'button[aria-label="Settings"]',
+      )!;
+      expect(settingsButton.textContent).toBe("");
+      expect(settingsButton.querySelector("svg")).not.toBeNull();
+      expect(footer.querySelector('button[aria-label="Keyboard shortcuts"]')).not.toBeNull();
+      // The notifications bell stays in the title bar.
       const bell = document.querySelector('[data-testid="sidebar-notifications"]');
       expect(bell).toBeInstanceOf(HTMLElement);
       expect(bell!.closest('[data-sidebar="header"]')).not.toBeNull();
@@ -2396,14 +2402,14 @@ describe("Thread sidebar", () => {
       );
       await vi.waitFor(() => expect(projectsToggle.getAttribute("aria-checked")).toBe("true"));
       const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
-      const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
-      expect(usageButton.hasAttribute("aria-current")).toBe(false);
+      const usageButton = footer.querySelector<HTMLButtonElement>('[aria-label="Usage limits"]')!;
       usageButton.click();
-      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
-      await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
-      await vi.waitFor(() =>
-        expect(document.querySelector('[data-sidebar="footer"]')?.textContent).toContain("Back"),
+      const openUsage = await waitForElement(
+        () => document.querySelector<HTMLAnchorElement>('[aria-label="Open Usage"]'),
+        "The limits panel should offer the full Usage page.",
       );
+      openUsage.click();
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
       expect(homeButton.hasAttribute("aria-current")).toBe(false);
       // Pull requests is marked in the strip, so its page keeps Settings in the footer.
       const pullRequestsButton = navigation.querySelector<HTMLButtonElement>(
@@ -2413,11 +2419,10 @@ describe("Thread sidebar", () => {
       pullRequestsButton.click();
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/pull-requests"));
       await vi.waitFor(() => expect(pullRequestsButton.getAttribute("aria-current")).toBe("page"));
-      expect(usageButton.hasAttribute("aria-current")).toBe(false);
       await vi.waitFor(() => {
-        const footerText = document.querySelector('[data-sidebar="footer"]')?.textContent;
-        expect(footerText).toContain("Settings");
-        expect(footerText).not.toContain("Back");
+        const footer = document.querySelector('[data-sidebar="footer"]');
+        expect(footer?.querySelector('button[aria-label="Settings"]')).not.toBeNull();
+        expect(footer?.textContent).not.toContain("Back");
       });
       expect(navigation.textContent).not.toContain("Bots");
 
@@ -5093,8 +5098,17 @@ describe("Thread sidebar", () => {
         const ownRow = await waitForSidebarThreadRow(LONG_THREAD_TITLE);
         useStore.getState().evictThreadDetails([otherId]);
         // Crossing a row on the way elsewhere reads nothing.
-        await userEvent.hover(otherRow);
-        await userEvent.hover(document.body);
+        // Dispatch a sweep synchronously: driver round trips can exceed the hover delay.
+        otherRow.dispatchEvent(
+          new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }),
+        );
+        otherRow.dispatchEvent(
+          new PointerEvent("pointerout", {
+            bubbles: true,
+            pointerType: "mouse",
+            relatedTarget: document.body,
+          }),
+        );
         await sleep(400);
         expect(peekReads()).toBe(0);
 

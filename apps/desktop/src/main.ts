@@ -3909,7 +3909,10 @@ function registerIpcHandlers(): void {
       position?: { x: number; y: number },
       fileAction?: { editorTarget: string },
     ) => {
-      if (fileAction) assertFileCaller(event);
+      if (fileAction) {
+        assertFileCaller(event);
+        fileActions.clearNativeMenu(event.sender.id);
+      }
       if (!Array.isArray(items) || items.length === 0) {
         return null;
       }
@@ -3925,8 +3928,15 @@ function registerIpcHandlers(): void {
         const template = buildContextMenuTemplate(
           items,
           (id) => {
-            if (id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
-              fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
+            if (
+              (id === "open-in-editor" || id === "reveal-in-file-manager") &&
+              typeof fileAction?.editorTarget === "string"
+            )
+              fileActions.nativeMenuSelected(
+                event.sender.id,
+                fileAction.editorTarget,
+                id === "open-in-editor" ? "editor" : "reveal",
+              );
             resolve(id);
           },
           getDestructiveMenuIcon() ?? undefined,
