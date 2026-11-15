@@ -131,7 +131,7 @@ export function JumpToLatestButton(props: {
           <span
             aria-hidden="true"
             data-slot="jump-to-latest-new-content"
-            className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-info ring-2 ring-background motion-safe:animate-fade-in"
+            className="absolute -top-0.5 -right-1 size-2 rounded-full bg-info ring-2 ring-background motion-safe:animate-fade-in"
           />
         ) : null}
       </div>

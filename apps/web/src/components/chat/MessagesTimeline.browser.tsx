@@ -1274,6 +1274,55 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("follows growing tool output with a stable Working tail, then yields to manual scrolling", async () => {
+    const commandId = "growing-command-follow";
+    const history = makeOverflowEntries(16);
+    const entries = (lines: number) => [
+      ...history,
+      makeCommandEntry(commandId, { output: "tool output\n".repeat(lines) }),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.body.appendChild(document.createElement("div"));
+    const screen = await render(
+      <TimelineHarness
+        initialAutoFollow
+        initialIsWorking
+        initialEntries={entries(2)}
+        initialExpandedCommandExecutions={{ [commandId]: true }}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(value) => {
+          api = value;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => node);
+      for (const lines of [8, 14]) {
+        const beforeHeight = node.scrollHeight;
+        api!.setEntries(entries(lines));
+        await vi.waitFor(() => {
+          expect(node.scrollHeight).toBeGreaterThan(beforeHeight);
+          expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeLessThan(8);
+        });
+      }
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      node.scrollTop -= 120;
+      node.dispatchEvent(new Event("scroll"));
+      await waitForTimelineLayout(() => node);
+      const beforeScroll = node.scrollTop;
+      api!.setEntries(entries(18));
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - beforeScroll)).toBeLessThan(8);
+      expect(node.scrollHeight - node.scrollTop - node.clientHeight).toBeGreaterThan(40);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("auto-follows appended rows when the user is already at the end", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];
