@@ -2343,7 +2343,6 @@ describe("Thread sidebar", () => {
         "Home",
         "Search threads",
         "Pull requests",
-        "Usage",
         "Scheduled",
         "Projects",
         "Recent",
@@ -2356,7 +2355,7 @@ describe("Thread sidebar", () => {
         ).toBeGreaterThan(0);
       }
       const footer = document.querySelector<HTMLElement>('[data-sidebar="footer"]')!;
-      expect(navigation.querySelector('button[aria-label="Usage"]')).not.toBeNull();
+      expect(navigation.querySelector('button[aria-label="Usage"]')).toBeNull();
       expect(footer.querySelector('button[aria-label="Pull requests"]')).toBeNull();
       expect(footer.querySelector('button[aria-label="Usage limits"]')).not.toBeNull();
       const settingsButton = footer.querySelector<HTMLButtonElement>(

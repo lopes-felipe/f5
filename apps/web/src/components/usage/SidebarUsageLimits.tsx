@@ -1,14 +1,7 @@
 import type { ThreadId } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
-import {
-  ChevronUpIcon,
-  ExternalLinkIcon,
-  GaugeIcon,
-  PinIcon,
-  PinOffIcon,
-  RefreshCwIcon,
-} from "lucide-react";
+import { ChevronUpIcon, ExternalLinkIcon, PinIcon, PinOffIcon, RefreshCwIcon } from "lucide-react";
 import { useEffect, useState, type ComponentType } from "react";
 
 import { useActiveComposerSelection } from "../../activeComposerSelection";
@@ -23,7 +16,8 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { providerLabel } from "./format";
 import { UsageBar } from "./kit";
-import { sidebarUsageWindows } from "./sidebarUsageWindows";
+import { sidebarUsageWindows, sidebarWeeklyUsageWindow } from "./sidebarUsageWindows";
+import { UsageRing } from "./UsageRing";
 
 function LimitAction(props: {
   label: string;
@@ -56,7 +50,7 @@ function LimitAction(props: {
   );
 }
 
-/** Collapsed by default; opening or pinning reads snapshots but never starts provider polling. */
+/** Reads cached snapshots for the weekly meter, without starting provider probes. */
 export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) {
   const selection = useActiveComposerSelection(
     (state) =>
@@ -68,13 +62,12 @@ export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) 
   const client = useQueryClient();
   const isUsage = useLocation({ select: (location) => location.pathname === "/usage" });
   const visible = pinned || open;
-  const accountsQuery = useQuery(
-    usageCachedAccountsQueryOptions(visible && selection?.instanceId != null),
-  );
+  const accountsQuery = useQuery(usageCachedAccountsQueryOptions(selection?.instanceId != null));
   const account = selection?.instanceId
     ? accountsQuery.data?.find((candidate) => candidate.providerInstanceId === selection.instanceId)
     : undefined;
   const windows = account ? sidebarUsageWindows(account) : [];
+  const weekly = sidebarWeeklyUsageWindow(windows);
   const refresh = useMutation({
     mutationKey: ["usage", "sidebar-refresh", selection?.instanceId],
     mutationFn: async () => {
@@ -100,7 +93,7 @@ export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) 
   const panel = (
     <section aria-label="Conversation usage limits" className="min-w-0 w-full space-y-3">
       <div className="flex min-w-0 items-center gap-1">
-        <GaugeIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+        <UsageRing percent={weekly?.usedPercent ?? null} />
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={account?.displayName}>
           {label} limits
         </span>
@@ -235,7 +228,7 @@ export function SidebarUsageLimits({ threadId }: { threadId: ThreadId | null }) 
           />
         }
       >
-        <GaugeIcon aria-hidden="true" className="size-4" />
+        <UsageRing percent={weekly?.usedPercent ?? null} />
         <span className="min-w-0 flex-1 truncate text-left">
           Usage{selection ? ` · ${label}` : ""}
         </span>
